@@ -1258,6 +1258,8 @@ class FleetProvider:
                 # Every serving process passes through adoption (fresh launch,
                 # reload, guest bind), so the warning fires in each of them.
                 planning.warn_when_chat_downsized(role_launches[0])
+            if role is WorkerRole.EMBED:
+                planning.warn_when_embed_window_below_chunk(role_launches[0])
             self._retire_clients(old_clients)
 
     def _swap_for(self, role: WorkerRole) -> SwapManager | None:

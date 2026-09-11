@@ -51,6 +51,7 @@ def _fake_launch(
     launch.weights_bytes = weights_bytes
     launch.replica = replica
     launch.built_ctx_target = built_ctx_target
+    launch.token_cap = None
     return launch
 
 
@@ -847,6 +848,22 @@ def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> 
     FleetProvider()._ensure_fleet()
     assert captured[WorkerRole.EMBED] == cold_load_timeout_s(weights)
     assert captured[WorkerRole.RERANK] is None
+
+
+def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
+    """Every serving process passes through adoption, so the window check fires there."""
+    launch = _fake_launch(WorkerRole.EMBED)
+    launch.rerank_mode = None
+    launch.model_id = launch.role
+    seen: list[object] = []
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda *_a, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+    )
+    monkeypatch.setattr(planning_mod, "warn_when_embed_window_below_chunk", seen.append)
+    FleetProvider()._ensure_fleet()
+    assert seen == [launch]
 
 
 def test_embed_without_server_raises(engine_installed: Path) -> None:
