@@ -802,12 +802,15 @@ class ChatScreen(Screen[None]):
         reporter.update(0, f"Adding {label}...", indeterminate=True)
         reg_result = register_sources(paths, force=force)
         registered = reg_result.registered
-        for name in reg_result.skipped:
+        for name in reg_result.name_taken:
             call_from_thread(self, self.notify, msg.CMD_ADD_NAME_TAKEN.format(name=name))
         if reg_result.tracked:
             call_from_thread(
                 self, self.notify, msg.CMD_ADD_TRACKED.format(names=", ".join(reg_result.tracked))
             )
+        if reg_result.overlapping:
+            names = ", ".join(reg_result.overlapping)
+            call_from_thread(self, self.notify, msg.CMD_ADD_OVERLAPPING.format(names=names))
         if not reg_result.reached_corpus:
             call_from_thread(self, self.notify, msg.CMD_ADD_NOTHING, severity="warning")
             return

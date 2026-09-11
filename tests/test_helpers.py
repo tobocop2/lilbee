@@ -55,7 +55,7 @@ class TestRegisterPaths:
             result = register_paths([two], con)
 
         assert result.registered == []
-        assert result.skipped == ["corpus"]
+        assert result.name_taken == ["corpus"]
         mock_print.assert_called_once()
         assert "is taken by another source" in str(mock_print.call_args)
 
@@ -70,5 +70,5 @@ class TestRegisterPaths:
             result = register_paths([src], con)
 
         assert result.tracked == ["corpus"]
-        assert result.skipped == []
+        assert result.name_taken == []
         mock_print.assert_not_called()

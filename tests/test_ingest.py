@@ -5142,7 +5142,7 @@ class TestRegisteredRootHelpers:
 
         result = register_sources([])
         assert result.registered == []
-        assert result.skipped == []
+        assert result.name_taken == []
         assert cfg.linked_roots == {}
 
 
@@ -5162,7 +5162,8 @@ class TestRegisterSources:
         [
             (RegisterResult(registered=["corpus"]), True),
             (RegisterResult(tracked=["corpus"]), True),
-            (RegisterResult(skipped=["papers"]), True),
+            (RegisterResult(overlapping=["papers"]), True),
+            (RegisterResult(name_taken=["corpus"]), False),
             (RegisterResult(), False),
             (RegisterResult(refused=["logo.svg: vector graphic, not a document"]), False),
         ],
@@ -5181,7 +5182,7 @@ class TestRegisterSources:
         result = register_sources([corpus])
         assert result.registered == []
         assert result.tracked == ["corpus"]  # already tracked, not a collision
-        assert result.skipped == []
+        assert result.name_taken == []
         assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
 
     def test_label_collision_needs_force(self, isolated_env, tmp_path):
@@ -5193,10 +5194,10 @@ class TestRegisterSources:
         two = tmp_path / "b" / "corpus"
         two.mkdir(parents=True)
         register_sources([one])
-        # Same basename, different live path: skipped without force.
+        # Same basename, different live path: name taken without force.
         result = register_sources([two])
         assert result.registered == []
-        assert result.skipped == ["corpus"]
+        assert result.name_taken == ["corpus"]
         assert cfg.linked_roots == {"corpus": str(one.resolve())}
         # force overwrites the label.
         forced = register_sources([two], force=True)
@@ -5228,7 +5229,7 @@ class TestRegisterSources:
         result = register_sources([inside])
         assert result.registered == []
         assert result.tracked == ["sub"]  # owned by the documents dir already
-        assert result.skipped == []
+        assert result.name_taken == []
         assert cfg.linked_roots == {}
 
     def test_registration_persists_to_config_toml(self, isolated_env, tmp_path):
@@ -5273,8 +5274,25 @@ class TestRegisterSources:
         register_sources([corpus])
         result = register_sources([corpus / "papers"])
         assert result.registered == []
-        assert result.skipped == ["papers"]
+        assert result.overlapping == ["papers"]
+        assert result.name_taken == []
+        assert result.reached_corpus is True
         assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
+
+    def test_label_held_by_another_source_is_name_taken_and_not_in_the_corpus(
+        self, isolated_env, tmp_path
+    ):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        register_sources([one])
+        result = register_sources([tmp_path / "b" / "corpus"])
+        assert result.name_taken == ["corpus"]
+        assert result.overlapping == []
+        assert result.reached_corpus is False
+        assert cfg.linked_roots == {"corpus": str(one.resolve())}
 
     def test_rejects_root_containing_existing_root(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources
@@ -5308,7 +5326,7 @@ class TestRegisterSources:
         external.mkdir()
         result = register_sources([external], force=True)
         assert result.registered == []
-        assert result.skipped == ["reports"]
+        assert result.name_taken == ["reports"]
         assert cfg.linked_roots == {}
 
 
@@ -5412,7 +5430,7 @@ class TestRegisterSourcesClearsMarkers:
         result = register_sources([corpus])
 
         assert result.tracked == ["corpus"]
-        assert result.skipped == []
+        assert result.name_taken == []
         assert result.registered == []
 
 
@@ -5462,6 +5480,35 @@ class TestCliSurface:
         line = describe_registration(RegisterResult(registered=[], tracked=["cv-manual.pdf"]))
         assert "already tracked: cv-manual.pdf" in line
         assert line != "Registered 0 source(s)"
+
+    def test_registration_line_names_what_overlaps_a_registered_source(self):
+        from lilbee.app.ingest import RegisterResult
+        from lilbee.cli.helpers import describe_registration
+
+        line = describe_registration(RegisterResult(overlapping=["papers"]))
+        assert "overlaps a registered source: papers" in line
+
+    def test_add_paths_skips_the_sync_when_the_name_is_taken(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """A label held by another source registers nothing, so no sync runs."""
+        from rich.console import Console
+
+        from lilbee.app.ingest import register_sources
+        from lilbee.cli.helpers import add_paths
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        register_sources([one])
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+        runs: list[int] = []
+        console = Console(record=True, width=120)
+
+        add_paths([two], console, run_sync=lambda: runs.append(1))
+
+        assert runs == []
+        assert "is taken by another source" in console.export_text()
 
 
 class TestPythonApiSurface:
@@ -5532,6 +5579,26 @@ class TestMcpSurface:
         run_sync.assert_not_called()
         assert "indexed nothing" in result["error"]
 
+    async def test_add_tool_reports_a_taken_name_without_a_sync(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.app.ingest import register_sources
+        from lilbee.mcp_server import add as mcp_add
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        register_sources([one])
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
+            result = await mcp_add([str(two)])
+
+        run_sync.assert_not_called()
+        assert result["name_taken"] == ["corpus"]
+        assert result["overlapping"] == []
+        assert result["sync"] is None
+
 
 class TestHttpSurface:
     async def test_add_handler_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
@@ -5575,6 +5642,29 @@ class TestHttpSurface:
         run_sync.assert_not_called()
         assert summary.sync is None
         assert summary.errors == ["logo.svg: vector graphic, not a document"]
+
+    async def test_add_handler_reports_a_taken_name_without_a_sync(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.app.ingest import register_sources
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.ingest import _run_add
+
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        register_sources([one])
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
+            summary = await _run_add(
+                paths=[str(two)], force=False, enable_ocr=None, ocr_timeout=None, sse=SseStream()
+            )
+
+        run_sync.assert_not_called()
+        assert summary.name_taken == ["corpus"]
+        assert summary.overlapping == []
+        assert summary.sync is None
 
 
 class TestTuiSurface:
@@ -5671,6 +5761,67 @@ class TestTuiSurface:
                     await pilot.pause()
                 thread.join(timeout=5)
                 assert not errors, errors
+
+    def test_do_add_names_a_taken_label_and_skips_the_sync(self, isolated_env, tmp_path):
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+
+        screen = ChatScreen.__new__(ChatScreen)
+        notify = MagicMock()
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
+            mock.patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(name_taken=["corpus"]),
+            ),
+            mock.patch("lilbee.runtime.asyncio_loop.run") as run,
+        ):
+            screen._do_add([tmp_path / "corpus"], MagicMock(spec=ProgressReporter))
+
+        run.assert_not_called()
+        toasts = [call.args[2] for call in notify.call_args_list]
+        assert msg.CMD_ADD_NAME_TAKEN.format(name="corpus") in toasts
+        assert msg.CMD_ADD_NOTHING in toasts
+
+    def test_do_add_names_an_overlapping_source_and_syncs(self, isolated_env, tmp_path):
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.data.ingest import SyncResult
+
+        screen = ChatScreen.__new__(ChatScreen)
+        notify = MagicMock()
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
+            mock.patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(overlapping=["papers"]),
+            ),
+            mock.patch("lilbee.runtime.asyncio_loop.run", return_value=SyncResult()) as run,
+        ):
+            screen._do_add([tmp_path / "papers"], MagicMock(spec=ProgressReporter))
+
+        run.assert_called_once()
+        toasts = [call.args[2] for call in notify.call_args_list]
+        assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
+
+
+def test_every_add_surface_names_each_registration_outcome():
+    """The surfaces that render a registration name the taken-label and overlap outcomes."""
+    import lilbee
+
+    package = Path(lilbee.__file__).parent
+    surfaces = [
+        "mcp_server.py",
+        "server/handlers/ingest.py",
+        "cli/helpers.py",
+        "cli/commands/ingest_sync.py",
+        "cli/tui/screens/chat.py",
+    ]
+    for name in surfaces:
+        text = (package / name).read_text(encoding="utf-8")
+        assert "name_taken" in text and "overlapping" in text, name
 
 
 def test_every_add_surface_asks_whether_anything_reached_the_corpus():

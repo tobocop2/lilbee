@@ -2340,8 +2340,30 @@ class TestAddJson:
         assert result.exit_code == 0
         data = json.loads(result.output.strip())
         assert data["copied"] == []
-        assert "notes.txt" in data["skipped"]
+        assert "notes.txt" in data["name_taken"]
         assert "Warning" not in result.output
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_reports_a_taken_name_without_a_sync(self, mock_sync, isolated_env, tmp_path):
+        """The second directory called corpus registers nothing and runs no sync."""
+        one = tmp_path / "a" / "corpus"
+        one.mkdir(parents=True)
+        (one / "doc.txt").write_text("content", encoding="utf-8")
+        two = tmp_path / "b" / "corpus"
+        two.mkdir(parents=True)
+        (two / "other.txt").write_text("content", encoding="utf-8")
+
+        first = runner.invoke(app, ["--json", "add", str(one)])
+        second = runner.invoke(app, ["--json", "add", str(two)])
+
+        assert first.exit_code == 0 and second.exit_code == 0
+        assert json.loads(first.output.strip())["copied"] == ["corpus"]
+        data = json.loads(second.output.strip())
+        assert data["copied"] == []
+        assert data["name_taken"] == ["corpus"]
+        assert data["overlapping"] == []
+        assert data["sync"] is None
+        mock_sync.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

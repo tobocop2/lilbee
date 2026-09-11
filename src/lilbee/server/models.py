@@ -461,14 +461,15 @@ class AddSummary(BaseModel):
     """Summary returned by the add-files handler."""
 
     copied: list[str]
-    skipped: list[str]
     errors: list[str]
+    name_taken: list[str] = []
+    """Labels held by a different source; nothing was registered and no sync ran."""
+    overlapping: list[str] = []
+    """Paths inside or around a registered source; that source covers them in the sync."""
     tracked: list[str] = []
     """Named sources the knowledge base already tracks, so nothing was registered.
 
-    Distinct from ``skipped``, which is what could not be registered because the
-    name is held by a different source. These need no action from the caller:
-    the sync in the same request covers them.
+    These need no action from the caller: the sync in the same request covers them.
     """
     sync: SyncSummary | None = None
     already_ingesting: list[str] = []

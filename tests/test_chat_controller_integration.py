@@ -116,7 +116,7 @@ async def test_do_add_reports_progress_and_runs_sync(tmp_path: Path) -> None:
 
         from lilbee.app.ingest import RegisterResult
 
-        reg_result = RegisterResult(registered=[src.name], skipped=[])
+        reg_result = RegisterResult(registered=[src.name])
 
         import threading as _th
 
@@ -163,7 +163,7 @@ async def test_do_add_force_propagates_to_register_sources(tmp_path: Path) -> No
 
         from lilbee.app.ingest import RegisterResult
 
-        reg_result = RegisterResult(registered=[src.name], skipped=[])
+        reg_result = RegisterResult(registered=[src.name])
 
         import threading as _th
 
@@ -200,8 +200,8 @@ async def test_do_add_force_propagates_to_register_sources(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
-async def test_do_add_passes_skipped_files_through_register_result(tmp_path: Path) -> None:
-    """_do_add observes register_sources' skipped list and keeps running."""
+async def test_do_add_passes_taken_names_through_register_result(tmp_path: Path) -> None:
+    """_do_add observes register_sources' name_taken list and keeps running."""
 
     src = tmp_path / "doc.pdf"
     src.write_bytes(b"x")
@@ -215,7 +215,7 @@ async def test_do_add_passes_skipped_files_through_register_result(tmp_path: Pat
 
         from lilbee.app.ingest import RegisterResult
 
-        reg_result = RegisterResult(registered=[src.name], skipped=["exists.pdf"])
+        reg_result = RegisterResult(registered=[src.name], name_taken=["exists.pdf"])
 
         import threading as _th
 
@@ -998,7 +998,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
     from lilbee.app.ingest import RegisterResult
 
-    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    reg_result = RegisterResult(registered=[src.name])
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         on_progress(
@@ -1048,7 +1048,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     from lilbee.app.ingest import RegisterResult
 
-    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    reg_result = RegisterResult(registered=[src.name])
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         # Per-page rasterization progress fires while the file is being
@@ -1118,7 +1118,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     from lilbee.app.ingest import RegisterResult
 
-    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    reg_result = RegisterResult(registered=[src.name])
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         # Three files start concurrently. The pipeline emits FILE_START for each.
@@ -1232,7 +1232,7 @@ def test_do_add_skipped_alongside_indexed_is_partial_success(tmp_path: Path) -> 
 
     from lilbee.app.ingest import RegisterResult
 
-    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    reg_result = RegisterResult(registered=[src.name])
     captured: list[Exception] = []
     notify_calls: list[tuple[object, ...]] = []
     unregister = MagicMock()
@@ -1282,7 +1282,7 @@ def test_do_add_raises_when_nothing_indexed(tmp_path: Path) -> None:
 
     from lilbee.app.ingest import RegisterResult
 
-    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    reg_result = RegisterResult(registered=[src.name])
     captured: list[Exception] = []
     unregister = MagicMock()
 
@@ -1322,7 +1322,7 @@ def test_do_add_other_sources_do_not_mask_a_dead_add(tmp_path: Path) -> None:
 
     from lilbee.app.ingest import RegisterResult
 
-    reg_result = RegisterResult(registered=[src.name], skipped=[])
+    reg_result = RegisterResult(registered=[src.name])
     captured: list[Exception] = []
     unregister = MagicMock()
 

@@ -21,27 +21,29 @@ class RegisterResult:
     """Result of registering source roots into the knowledge base."""
 
     registered: list[str] = field(default_factory=list)  # labels newly registered
-    skipped: list[str] = field(default_factory=list)
+    name_taken: list[str] = field(default_factory=list)
+    """Labels held by a different live source or an owned entry; ``--force`` overwrites."""
+    overlapping: list[str] = field(default_factory=list)
+    """Paths nesting under or over ``documents_dir`` or a live root; that source covers them."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
     tracked: list[str] = field(default_factory=list)
     """Named sources the knowledge base already tracks, so nothing was registered.
 
     Either the path already lives under ``documents_dir`` or this exact source is
-    already registered under that label. Split from ``skipped`` because there is
-    nothing wrong to report and ``--force`` would change nothing: the sync that
-    follows covers them. ``skipped`` is only what could not be registered -- a
-    label held by a different source, or an overlap that would double-index.
+    already registered under that label. Nothing is wrong and ``--force`` would
+    change nothing: the sync that follows covers them.
     """
 
     @property
     def reached_corpus(self) -> bool:
         """Whether a named path is in the corpus, so a sync has something to index for it.
 
-        A refused or missing path is not, and a sync after one is a whole-vault
-        pass whose summary would read as the outcome of the add.
+        A refused or missing path is not, and neither is one whose label another
+        source holds; a sync after one is a whole-vault pass whose summary would
+        read as the outcome of the add.
         """
-        return bool(self.registered or self.skipped or self.tracked)
+        return bool(self.registered or self.tracked or self.overlapping)
 
 
 def _resolve_label(
@@ -145,11 +147,11 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
                 result.tracked.append(already)  # this exact source is already registered
                 continue
             if _overlaps_existing(src, docs_resolved, roots):
-                result.skipped.append(p.name)  # nests under/over another root; would double-index
+                result.overlapping.append(p.name)  # would walk the same files twice
                 continue
             label = _resolve_label(src.name, roots, docs_resolved, force=force)
             if label is None:
-                result.skipped.append(src.name)  # name taken; --force to overwrite
+                result.name_taken.append(src.name)
                 continue
             roots[label] = str(src)
             by_target[str(src)] = label

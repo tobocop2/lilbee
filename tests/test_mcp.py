@@ -716,7 +716,7 @@ class TestAdd:
         assert result["command"] == "add"
         assert "test.txt" in result["copied"]
         assert result["errors"] == []
-        assert result["skipped"] == []
+        assert result["name_taken"] == []
         # Registered in place, not copied into documents_dir.
         assert cfg.linked_roots == {"test.txt": str(src.resolve())}
         mock_sync.assert_awaited_once()
@@ -756,7 +756,7 @@ class TestAdd:
 
         result = await add([str(two)])
 
-        assert "exist" in result["skipped"]
+        assert "exist" in result["name_taken"]
         assert result["copied"] == []
         assert cfg.linked_roots == {"exist": str(one)}  # unchanged
 
@@ -773,7 +773,7 @@ class TestAdd:
         result = await add([str(two)], force=True)
 
         assert "exist" in result["copied"]
-        assert result["skipped"] == []
+        assert result["name_taken"] == []
         assert cfg.linked_roots == {"exist": str(two.resolve())}  # re-pointed
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -814,7 +814,7 @@ class TestAdd:
         result = await add([])
 
         assert result["copied"] == []
-        assert result["skipped"] == []
+        assert result["name_taken"] == []
         assert result["errors"] == []
 
     @mock.patch(

@@ -416,20 +416,19 @@ async def add(
         functools.partial(register_sources, valid, force=force)
     )
     errors.extend(reg_result.refused)
-    sync_result = await _sync_after_add(
-        reg_result.reached_corpus or bool(crawled_count), enable_ocr, ocr_timeout
-    )
+    reached = reg_result.reached_corpus or bool(crawled_count)
+    sync_result = await _sync_after_add(reached, enable_ocr, ocr_timeout)
     result: dict[str, Any] = {
         "command": "add",
         "copied": reg_result.registered,
-        "skipped": reg_result.skipped,
+        "name_taken": reg_result.name_taken,
+        "overlapping": reg_result.overlapping,
         "tracked": reg_result.tracked,
         "crawled": crawled_count,
         "errors": errors,
         "sync": sync_result,
     }
-    indexed = len(reg_result.registered) + len(reg_result.tracked) + crawled_count
-    if errors and not indexed:
+    if errors and not reached:
         # Nothing was added. Returning the success shape with a warning let a
         # caller report the add as done over an untouched index.
         return _error("add indexed nothing. " + " ".join(errors))
