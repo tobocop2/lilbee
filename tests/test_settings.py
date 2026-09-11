@@ -407,6 +407,26 @@ class TestTableModelSetting:
         assert "table_model" in WRITABLE_CONFIG_FIELDS
         assert "table_model" in REINDEX_FIELDS
 
+    def test_table_model_change_flags_no_reindex_while_layout_detection_is_off(self, monkeypatch):
+        """xberg reads table_model only inside layout detection, so the change is inert."""
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "layout_detection", False)
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        result = appset.apply_settings_update({"table_model": "tatr"})
+        assert result.updated == ["table_model"]
+        assert result.reindex_required is False
+
+    def test_table_model_change_flags_a_reindex_once_layout_detection_is_on(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        monkeypatch.setattr(appset.cfg, "layout_detection", True)
+        assert appset.apply_settings_update({"table_model": "tatr"}).reindex_required is True
+        monkeypatch.setattr(appset.cfg, "layout_detection", False)
+        both = appset.apply_settings_update({"table_model": "disabled", "layout_detection": True})
+        assert both.reindex_required is True
+
 
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""

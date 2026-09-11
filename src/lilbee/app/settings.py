@@ -419,7 +419,7 @@ def apply_settings_update(
         _restore_snapshot(snapshot)
         raise
     _invalidate_caches(set(effective_updates))
-    reindex_required = bool(REINDEX_FIELDS & set(updates))
+    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
@@ -487,6 +487,15 @@ def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
     dim = _embedder_dim_from_gguf(cfg.embedding_model, registry)
     if dim is not None and dim != cfg.embedding_dim:
         cfg.embedding_dim = dim
+
+
+def _inert_reindex_keys() -> set[str]:
+    """Reindex keys that change no extraction output under the effective config.
+
+    xberg reads ``table_model`` only inside layout detection, so a change to it
+    while ``layout_detection`` is off is not worth a rebuild.
+    """
+    return set() if cfg.layout_detection else {"table_model"}
 
 
 def _embed_reindex_required() -> bool:
