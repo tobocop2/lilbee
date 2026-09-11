@@ -1,7 +1,7 @@
 """Binds lilbee's providers into xberg's process-global OCR/embedding/tokenizer backends.
 
 Each backend module declares an :class:`XbergBinding` and self-registers it here at
-import. The bind is a locked unregister-then-register: a rebuild invalidates the
+import. A bind is a locked unregister-then-register: a rebuild invalidates the
 captured provider, and the lock avoids racing xberg's "already registered".
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, Any
 
@@ -30,25 +30,15 @@ class BackendKind(Enum):
 class XbergBinding:
     """How to bind one lilbee backend into xberg. Declared by each backend module.
 
-    ``enabled`` gates registration on live cfg (embedding is always on; OCR and
-    the tokenizer are opt-in). ``make`` builds the backend from the current
-    provider, capturing the provider callable the binding routes through.
+    ``enabled`` gates registration at services init on live cfg (embedding is
+    always on; OCR and the tokenizer are opt-in). ``make`` builds the backend from
+    the current provider, capturing the provider callable the binding routes through.
     """
 
     kind: BackendKind
     name: str
     enabled: Callable[[Config], bool]
     make: Callable[[LLMProvider, Config], Any]
-
-
-# Keyed by kind, not name: embedding and tokenizer both register as "lilbee".
-_BINDINGS: dict[BackendKind, XbergBinding] = {}
-_bind_lock = threading.Lock()
-
-
-def register_binding(binding: XbergBinding) -> None:
-    """Add a backend binding to the registry (called at backend-module import)."""
-    _BINDINGS[binding.kind] = binding
 
 
 def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
@@ -76,17 +66,51 @@ def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
     }[kind]
 
 
-def _sync(binding: XbergBinding, provider: LLMProvider, cfg: Config) -> None:
-    list_fn, register_fn, unregister_fn = _registry_fns(binding.kind)
-    with _bind_lock:
-        present = binding.name in list_fn()
-        if binding.enabled(cfg):
-            # Re-register so the backend always binds to the current provider.
+@dataclass
+class _BackendRegistry:
+    """The binding table, the bind lock, and the provider each kind is bound to."""
+
+    # Keyed by kind, not name: embedding and tokenizer both register as "lilbee".
+    bindings: dict[BackendKind, XbergBinding] = field(default_factory=dict)
+    bound: dict[BackendKind, LLMProvider] = field(default_factory=dict)
+    lock: threading.Lock = field(default_factory=threading.Lock)
+
+    def bind(self, kind: BackendKind, provider: LLMProvider, cfg: Config) -> None:
+        """Register *kind* for *provider*; a no-op when xberg already holds that binding."""
+        binding = self.bindings[kind]
+        list_fn, register_fn, unregister_fn = _registry_fns(kind)
+        with self.lock:
+            present = binding.name in list_fn()
+            if present and self.bound.get(kind) is provider:
+                return
             if present:
                 unregister_fn(binding.name)
             register_fn(binding.make(provider, cfg))
-        elif present:
-            unregister_fn(binding.name)
+            self.bound[kind] = provider
+
+    def unbind(self, kind: BackendKind) -> None:
+        """Unregister *kind* from xberg when present."""
+        binding = self.bindings[kind]
+        list_fn, _register_fn, unregister_fn = _registry_fns(kind)
+        with self.lock:
+            if binding.name in list_fn():
+                unregister_fn(binding.name)
+            self.bound.pop(kind, None)
+
+    def sync(self, kind: BackendKind, provider: LLMProvider, cfg: Config) -> None:
+        """Bind or unbind *kind* as its ``enabled`` gate says under *cfg*."""
+        if self.bindings[kind].enabled(cfg):
+            self.bind(kind, provider, cfg)
+        else:
+            self.unbind(kind)
+
+
+_registry = _BackendRegistry()
+
+
+def register_binding(binding: XbergBinding) -> None:
+    """Add a backend binding to the registry (called at backend-module import)."""
+    _registry.bindings[binding.kind] = binding
 
 
 def _load_bindings() -> None:
@@ -99,8 +123,8 @@ def sync_xberg_backends(provider: LLMProvider) -> None:
     from lilbee.core.config import cfg
 
     _load_bindings()
-    for binding in _BINDINGS.values():
-        _sync(binding, provider, cfg)
+    for kind in _registry.bindings:
+        _registry.sync(kind, provider, cfg)
 
 
 def sync_xberg_backend(kind: BackendKind, provider: LLMProvider) -> None:
@@ -108,4 +132,12 @@ def sync_xberg_backend(kind: BackendKind, provider: LLMProvider) -> None:
     from lilbee.core.config import cfg
 
     _load_bindings()
-    _sync(_BINDINGS[kind], provider, cfg)
+    _registry.sync(kind, provider, cfg)
+
+
+def bind_backend(kind: BackendKind, provider: LLMProvider) -> None:
+    """Bind one backend to *provider* on demand, whatever its ``enabled`` gate says."""
+    from lilbee.core.config import cfg
+
+    _load_bindings()
+    _registry.bind(kind, provider, cfg)

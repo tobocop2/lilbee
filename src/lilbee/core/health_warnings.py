@@ -24,7 +24,7 @@ class WarningCode(StrEnum):
     SCALAR_INDEX_UNAVAILABLE = "scalar_index_unavailable"
     """A scalar index is registered but its files are gone; filtered search is degraded."""
     EMBED_WINDOW_BELOW_CHUNK = "embed_window_below_chunk"
-    """The embedder's window is below the configured chunk size; chunks are cut to fit it."""
+    """The embedder's window is below the chunk budget; chunks are sized in its tokens."""
 
 
 class HealthWarning(BaseModel):
