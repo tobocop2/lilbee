@@ -175,7 +175,7 @@ SEARCHING_FOR = "Searching for: {query}"
 def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:
     """Register *paths* as source roots, reporting what happened to each."""
     result = register_sources(paths, force=force)
-    for name in result.skipped:
+    for name in result.name_taken:
         warning = NAME_TAKEN_WARNING.format(name=name)
         con.print(f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {warning}")
     return result
@@ -193,6 +193,8 @@ def describe_registration(result: RegisterResult) -> str:
         parts.append(f"Registered {len(result.registered)} source(s)")
     if result.tracked:
         parts.append(f"already tracked: {', '.join(result.tracked)}")
+    if result.overlapping:
+        parts.append(f"overlaps a registered source: {', '.join(result.overlapping)}")
     return ", ".join(parts) if parts else "Registered 0 source(s)"
 
 

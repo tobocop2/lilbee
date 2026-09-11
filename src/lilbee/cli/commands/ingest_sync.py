@@ -514,7 +514,8 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
         {
             "command": "add",
             "copied": reg_result.registered,
-            "skipped": reg_result.skipped,
+            "name_taken": reg_result.name_taken,
+            "overlapping": reg_result.overlapping,
             "tracked": reg_result.tracked,
             "refused": reg_result.refused,
             "crawled": len(crawled_paths),

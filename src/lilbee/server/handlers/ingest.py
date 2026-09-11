@@ -112,20 +112,22 @@ async def _run_add(
         if sse.cancel.is_set():
             return AddSummary(
                 copied=reg_result.registered,
-                skipped=reg_result.skipped,
+                name_taken=reg_result.name_taken,
+                overlapping=reg_result.overlapping,
                 tracked=reg_result.tracked,
                 errors=errors,
             )
 
         if not reg_result.reached_corpus:
-            return AddSummary(copied=[], skipped=[], errors=errors)
+            return AddSummary(copied=[], name_taken=reg_result.name_taken, errors=errors)
 
         with temporary_ocr_config(enable_ocr, ocr_timeout):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
         return AddSummary(
             copied=reg_result.registered,
-            skipped=reg_result.skipped,
+            name_taken=reg_result.name_taken,
+            overlapping=reg_result.overlapping,
             tracked=reg_result.tracked,
             errors=errors,
             sync=SyncSummary(**sync_result.model_dump()),
@@ -308,7 +310,6 @@ async def _run_upload(files: list[tuple[str, bytes]], sse: SseStream) -> AddSumm
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
         return AddSummary(
             copied=written,
-            skipped=[],
             errors=[],
             sync=SyncSummary(**sync_result.model_dump()),
         )

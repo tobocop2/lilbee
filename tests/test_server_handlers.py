@@ -9,6 +9,7 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from conftest import PICKS_CHAT, PICKS_EMBEDDING, PICKS_RERANK
+from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode
 from lilbee.data.ingest import SyncResult
@@ -4972,9 +4973,7 @@ class TestAddHandlerCancel:
         sse = SseStream()
         sse.cancel.set()
 
-        reg_result = MagicMock()
-        reg_result.registered = ["test.txt"]
-        reg_result.skipped = []
+        reg_result = RegisterResult(registered=["test.txt"])
 
         with patch("lilbee.server.handlers.ingest.register_sources", return_value=reg_result):
             result = await _ingest_h._run_add(
