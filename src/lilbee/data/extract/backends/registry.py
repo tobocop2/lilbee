@@ -68,7 +68,7 @@ def _registry_fns(kind: BackendKind) -> tuple[Any, Any, Any]:
 
 @dataclass
 class _BackendRegistry:
-    """The binding table, the bind lock, and the provider each kind is bound to."""
+    """The binding table, the bind lock, and the provider each kind was last bound to."""
 
     # Keyed by kind, not name: embedding and tokenizer both register as "lilbee".
     bindings: dict[BackendKind, XbergBinding] = field(default_factory=dict)
@@ -95,7 +95,6 @@ class _BackendRegistry:
         with self.lock:
             if binding.name in list_fn():
                 unregister_fn(binding.name)
-            self.bound.pop(kind, None)
 
     def sync(self, kind: BackendKind, provider: LLMProvider, cfg: Config) -> None:
         """Bind or unbind *kind* as its ``enabled`` gate says under *cfg*."""
