@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
-from cachetools import TTLCache
+from cachetools import TTLCache, cached
 from pydantic import BaseModel
 
 from lilbee.catalog.models import CatalogModel, ModelFamily
@@ -14,10 +16,12 @@ from lilbee.core.config import cfg
 
 _BYTES_PER_GB = 1024**3
 _FITS_HEADROOM_BYTES = 1 * _BYTES_PER_GB
+_MEMORY_PROBE_TTL_S = 60.0
 
-# Cache the budget keyed on gpu_memory_fraction so repeated catalog requests
-# share one probe; the probe is an nvidia-smi subprocess without pynvml.
-_available_memory_cache: TTLCache[float, int] = TTLCache[float, int](maxsize=8, ttl=60.0)
+# The probe is an nvidia-smi subprocess without pynvml; the catalog stamps a fit
+# chip on every page, so repeated requests share one probe per fraction.
+_available_memory_cache: TTLCache[Any, int] = TTLCache(maxsize=8, ttl=_MEMORY_PROBE_TTL_S)
+_available_memory_lock = threading.Lock()
 
 
 class FitLevel(StrEnum):
@@ -95,24 +99,20 @@ def available_memory_for_fit() -> int | None:
     Single entry point so the TUI and the HTTP catalog handler classify fit
     against the same number; otherwise the same model would chip differently in
     each surface.
-
-    Result is cached briefly keyed on gpu_memory_fraction: the underlying probe
-    is expensive (an nvidia-smi subprocess with a 5s timeout when pynvml is
-    absent) and the catalog stamps a fit chip on every page, so an uncached
-    probe repeats that cost per request.
     """
     try:
-        from lilbee.providers.model_cache import get_available_memory
-
-        fraction = cfg.gpu_memory_fraction
-        cached = _available_memory_cache.get(fraction)
-        if cached is not None:
-            return cached
-        budget = get_available_memory(fraction, total=True)
+        budget = _probe_available_memory(cfg.gpu_memory_fraction)
     except Exception:
         return None
-    _available_memory_cache[fraction] = budget
     return budget + _expert_offload_headroom()
+
+
+@cached(_available_memory_cache, lock=_available_memory_lock)
+def _probe_available_memory(fraction: float) -> int:
+    """Whole-fleet memory budget after *fraction*, one probe per fraction per TTL."""
+    from lilbee.providers.model_cache import get_available_memory
+
+    return get_available_memory(fraction, total=True)
 
 
 def _expert_offload_headroom() -> int:

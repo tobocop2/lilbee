@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
@@ -175,6 +175,16 @@ class StatusConfigInfo(BaseModel):
     vision_model: str = ""
     reranker_model: str = ""
     enable_ocr: bool | None = None
+    num_ctx: int | None = None
+    num_ctx_max: int | None = None
+    chat_n_ctx_target: int | None = None
+    flash_attention: bool | None = None
+    kv_cache_type: KvCacheType | None = None
+    n_gpu_layers: int | None = None
+    cpu_moe: bool | None = None
+    n_cpu_moe: int | None = None
+    main_gpu: int | None = None
+    gpu_devices: str | None = None
 
 
 class StatusEntityInfo(BaseModel):

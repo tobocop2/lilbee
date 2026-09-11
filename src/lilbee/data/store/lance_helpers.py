@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     import lancedb
     import lancedb.table
     import pyarrow as pa
+    from lancedb.index import IndexConfig
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +25,10 @@ log = logging.getLogger(__name__)
 # arm, named here so the store's query and index code shares one spelling with
 # its sibling _TITLE_COLUMN.
 _CHUNK_COLUMN = "chunk"
+
+# Index types as LanceDB's IndexConfig reports them.
+_FTS_INDEX_TYPE = "FTS"
+_SCALAR_INDEX_TYPES = frozenset({"bitmap", "btree"})
 
 
 def install_lancedb_thread_error_suppressor() -> None:
@@ -138,56 +143,48 @@ def _has_fts_index(table: lancedb.table.Table, column: str = _CHUNK_COLUMN) -> b
     """Return True when an FTS index on *column* already exists."""
     try:
         for idx in table.list_indices():
-            if idx.index_type == "FTS" and column in idx.columns:
+            if idx.index_type == _FTS_INDEX_TYPE and column in idx.columns:
                 return True
     except Exception:
         return False
     return False
 
 
+def _dangling_indices(table: lancedb.table.Table, lancedb_dir: Path) -> list[IndexConfig]:
+    """Registered indexes whose directory under ``_indices`` is gone.
+
+    LanceDB keeps the registration in the manifest after the index directory
+    is removed, and every query through the index then fails on a missing
+    file. ``optimize()`` and ``index_stats()`` do not notice; only the
+    directory does. Empty when the manifest cannot be read.
+    """
+    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
+    try:
+        registered = table.list_indices()
+    except Exception:
+        return []
+    return [idx for idx in registered if not (indices_dir / idx.index_uuid).is_dir()]
+
+
 def _fts_index_dangling(
     table: lancedb.table.Table, lancedb_dir: Path, column: str = _CHUNK_COLUMN
 ) -> bool:
-    """True when an FTS index on *column* is registered but its files are gone.
-
-    LanceDB keeps the registration in the manifest after the index directory
-    under ``_indices`` is removed, and every query on it then fails on a
-    missing file. ``optimize()`` and ``index_stats()`` do not notice; only the
-    directory does.
-    """
-    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
-    try:
-        return any(
-            idx.index_type == "FTS"
-            and column in idx.columns
-            and not (indices_dir / idx.index_uuid).is_dir()
-            for idx in table.list_indices()
-        )
-    except Exception:
-        return False
+    """True when an FTS index on *column* is registered but its files are gone."""
+    return any(
+        idx.index_type == _FTS_INDEX_TYPE and column in idx.columns
+        for idx in _dangling_indices(table, lancedb_dir)
+    )
 
 
 def _scalar_index_dangling(table: lancedb.table.Table, lancedb_dir: Path) -> list[str]:
-    """Column names whose scalar (BITMAP/BTree) index is registered but its files are gone.
-
-    LanceDB keeps the registration in the manifest after the index directory
-    under ``_indices`` is removed, and every prefilter on the column then fails
-    on a missing file. Returns the dangling column names, empty when none.
-    """
-    indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
-    dangling: list[str] = []
-    try:
-        for idx in table.list_indices():
-            if (
-                idx.index_type.lower() in ("bitmap", "btree")
-                and not (indices_dir / idx.index_uuid).is_dir()
-            ):
-                for column in idx.columns:
-                    if column not in dangling:
-                        dangling.append(column)
-    except Exception:
-        return []
-    return dangling
+    """Column names whose scalar (BITMAP/BTree) index is registered but its files are gone."""
+    columns = [
+        column
+        for idx in _dangling_indices(table, lancedb_dir)
+        if idx.index_type.lower() in _SCALAR_INDEX_TYPES
+        for column in idx.columns
+    ]
+    return list(dict.fromkeys(columns))
 
 
 def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:

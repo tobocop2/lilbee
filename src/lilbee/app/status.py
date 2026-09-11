@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import KvCacheType
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.ingest.skip_marker import describe_skips, load_skip_markers
 from lilbee.data.types import SkippedSource
@@ -91,6 +92,16 @@ class StatusConfig(BaseModel):
     vision_model: str = ""
     reranker_model: str = ""
     enable_ocr: bool | None = None
+    num_ctx: int | None = None
+    num_ctx_max: int | None = None
+    chat_n_ctx_target: int | None = None
+    flash_attention: bool | None = None
+    kv_cache_type: KvCacheType | None = None
+    n_gpu_layers: int | None = None
+    cpu_moe: bool | None = None
+    n_cpu_moe: int | None = None
+    main_gpu: int | None = None
+    gpu_devices: str | None = None
 
 
 class IndexStatus(BaseModel):
@@ -156,6 +167,16 @@ def gather_status() -> StatusResult:
             vision_model=cfg.vision_model,
             reranker_model=cfg.reranker_model,
             enable_ocr=cfg.enable_ocr,
+            num_ctx=cfg.num_ctx,
+            num_ctx_max=cfg.num_ctx_max,
+            chat_n_ctx_target=cfg.chat_n_ctx_target,
+            flash_attention=cfg.flash_attention,
+            kv_cache_type=cfg.kv_cache_type,
+            n_gpu_layers=cfg.n_gpu_layers,
+            cpu_moe=cfg.cpu_moe,
+            n_cpu_moe=cfg.n_cpu_moe,
+            main_gpu=cfg.main_gpu,
+            gpu_devices=cfg.gpu_devices,
         ),
         sources=[
             SourceInfo(

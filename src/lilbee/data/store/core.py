@@ -695,8 +695,8 @@ class Store:
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
                     if self._fts_index_dangling(table):
-                        # optimize() can prune a legacy FTS index's files; rebuild to match.
-                        self._rebuild_fts(table, "optimize() pruned its files")
+                        # Suspected producer of a dangling legacy FTS index; unconfirmed.
+                        self._rebuild_fts(table, "its files are missing after optimize()")
                         return
                 except Exception as exc:
                     if _is_fts_position_overflow(exc):
@@ -1132,9 +1132,14 @@ class Store:
             if hits is not None:
                 return hits
 
-        rows = self._vector_arm(
-            table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
-        )
+        try:
+            rows = self._vector_arm(
+                table, query_vector, top_k * self._config.candidate_multiplier, chunk_type
+            )
+        except Exception:
+            # A dead scalar index fails the prefilter; the next query re-verifies.
+            self._scalar_ready = False
+            raise
         log.debug(
             "Vector search: query=%r, candidates=%d, max_distance=%.2f",
             query_text or "vector-only",
@@ -1167,7 +1172,6 @@ class Store:
         not build and an index that fails mid-query drop every query to vector
         recall alike, so both stamp the flag, and a working index clears it.
         """
-        self.ensure_scalar_indexes(blocking=False)
         if not self._fts_ready:
             self.ensure_fts_index(blocking=False)
             table.checkout_latest()
@@ -1185,6 +1189,8 @@ class Store:
             # Falling back changes recall characteristics for the query;
             # a corpus-wide FTS breakage must not present as silence.
             self._fts_degraded = True
+            # A dead scalar index fails the same way; the next query re-verifies.
+            self._scalar_ready = False
             log.warning("Hybrid search failed, falling back to vector-only", exc_info=True)
             return None
         self._fts_degraded = False
