@@ -117,11 +117,7 @@ async def _run_add(
                 errors=errors,
             )
 
-        if not reg_result.registered and not reg_result.skipped and not reg_result.tracked:
-            # Nothing reached the corpus, and sync() is a whole-vault pass
-            # holding the ingest lock. A *tracked* or *skipped* file is not this
-            # case: it is already in the corpus but may never have been indexed,
-            # and a tracked one may have just had its skip marker cleared.
+        if not reg_result.reached_corpus:
             return AddSummary(copied=[], skipped=[], errors=errors)
 
         with temporary_ocr_config(enable_ocr, ocr_timeout):

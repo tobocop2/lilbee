@@ -1019,21 +1019,26 @@ async def _run_post_ingest_passes(
     store: Any,
     *,
     indexed_anything: bool,
+    clusters_stale: bool,
     touched: set[str],
     cancel: CancelSignal | None,
 ) -> None:
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
     The index and wiki passes only run when this sync indexed something. The
-    entity lifecycle runs every sync (a cheap no-op when off or already current)
-    so turning the setting on takes effect without a separate operation.
+    concept clusters are recomputed only when a source was added, updated or
+    removed: a relocation changes no co-occurrence. The entity lifecycle runs
+    every sync (a cheap no-op when off or already current) so turning the
+    setting on takes effect without a separate operation.
     """
     if indexed_anything:
         store.ensure_fts_index()
         store.ensure_scalar_indexes()
         store.ensure_vector_index()
         store.optimize_sources()
+    if clusters_stale:
         await _rebuild_concept_clusters()
+    if indexed_anything:
         await _update_wiki(touched, active_config())
 
     from lilbee.retrieval.entities.lifecycle import ensure_entities
@@ -1128,7 +1133,11 @@ async def _sync_across_workers(
             _forget_ignored, store.get_sources(), IgnoreRules.for_corpus()
         )
     await _run_post_ingest_passes(
-        store, indexed_anything=bool(touched), touched=touched, cancel=cancel
+        store,
+        indexed_anything=bool(touched),
+        clusters_stale=bool(result.added or result.updated or result.removed),
+        touched=touched,
+        cancel=cancel,
     )
     on_progress(
         EventType.DONE,
@@ -1289,6 +1298,7 @@ async def sync(
         await _run_post_ingest_passes(
             _store,
             indexed_anything=bool(state.planned or relocated),
+            clusters_stale=bool(added or updated or ignored or refused),
             # The old names of relocated sources ride along so the wiki index
             # subtracts them in the same pass that merges their new ones.
             touched=set(added) | set(updated) | set(relocated) | set(state.relocated_from),

@@ -212,11 +212,14 @@ def add_paths(
     overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
     runner); it defaults to a plain ``asyncio.run(sync())``.
     """
-    summary = describe_registration(register_paths(paths, con, force=force))
+    registration = register_paths(paths, con, force=force)
+    summary = describe_registration(registration)
     if chat_mode:
         print(summary)
     else:
         con.print(f"[{theme.MUTED}]{summary}[/{theme.MUTED}]")
+    if not registration.reached_corpus:
+        return
 
     if background:
         from lilbee.cli.sync import run_sync_background

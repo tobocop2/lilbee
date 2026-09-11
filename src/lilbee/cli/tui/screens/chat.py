@@ -808,6 +808,9 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self, self.notify, msg.CMD_ADD_TRACKED.format(names=", ".join(reg_result.tracked))
             )
+        if not reg_result.reached_corpus:
+            call_from_thread(self, self.notify, msg.CMD_ADD_NOTHING, severity="warning")
+            return
         reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
 
         try:

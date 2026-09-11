@@ -32,6 +32,8 @@ def _mock_embedder():
             list_models=mock.MagicMock(return_value=[cfg.embedding_model]),
             pull_model=mock.MagicMock(),
             shutdown=mock.MagicMock(),
+            # No managed embedder window: the chunker keeps the configured budget.
+            embed_token_cap=mock.MagicMock(return_value=None),
         ),
     ):
         yield
@@ -127,6 +129,7 @@ class TestCreate:
             ),
             pull_model=mock.MagicMock(),
             shutdown=mock.MagicMock(),
+            embed_token_cap=mock.MagicMock(return_value=None),
         )
         with mock.patch("lilbee.providers.factory.create_provider") as factory:
             bee = Lilbee(tmp_path / "userprov", provider=custom_provider)

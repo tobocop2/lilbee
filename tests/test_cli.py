@@ -2314,6 +2314,20 @@ class TestAddJson:
         assert "sync" in data
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_add_json_skips_the_sync_when_nothing_reached_the_corpus(
+        self, mock_sync, isolated_env, tmp_path
+    ):
+        """A refused file registers nothing, so the add reports itself without a sync."""
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+        result = runner.invoke(app, ["--json", "add", str(drawing)])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert data["refused"] == ["logo.svg: vector graphic, not a document"]
+        assert data["sync"] is None
+        mock_sync.assert_not_called()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_json_skipped_no_stdout_pollution(self, mock_sync, isolated_env, tmp_path):
         """JSON add with existing file returns skipped list, no console warnings."""
         src = tmp_path / "source" / "notes.txt"

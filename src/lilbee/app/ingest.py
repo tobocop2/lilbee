@@ -34,6 +34,15 @@ class RegisterResult:
     label held by a different source, or an overlap that would double-index.
     """
 
+    @property
+    def reached_corpus(self) -> bool:
+        """Whether a named path is in the corpus, so a sync has something to index for it.
+
+        A refused or missing path is not, and a sync after one is a whole-vault
+        pass whose summary would read as the outcome of the add.
+        """
+        return bool(self.registered or self.skipped or self.tracked)
+
 
 def _resolve_label(
     base: str, roots: dict[str, str], docs_resolved: Path, *, force: bool
