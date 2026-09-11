@@ -12,6 +12,7 @@ import pytest
 from xberg import Metadata
 
 import lilbee.app.services as svc_mod
+from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
 from tests.conftest import make_pdf
 
@@ -1286,6 +1287,27 @@ class TestSyncDropsNewlyIgnored:
         result = await sync(prune_ignored=True)
         assert result.removed == ["drop.txt"]
         assert {s["filename"] for s in svc_mod.get_services().store.get_sources()} == {"keep.txt"}
+
+    async def test_a_removal_only_sync_rebuilds_the_clusters(
+        self, mock_extract_file, isolated_env, monkeypatch
+    ):
+        """A removed source leaves stale concept nodes behind unless Leiden runs again."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        monkeypatch.setattr(cfg, "concept_graph", True)
+        concepts = svc_mod.get_services().concepts
+        concepts.get_graph.return_value = True
+        await self._ingest_two(isolated_env)
+        concepts.rebuild_clusters.reset_mock()
+        (isolated_env / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
+
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True):
+            result = await sync(prune_ignored=True)
+
+        assert result.removed == ["drop.txt"]
+        assert result.added == [] and result.updated == []
+        concepts.rebuild_clusters.assert_called_once()
 
     async def test_a_shard_worker_leaves_removal_to_the_parent(
         self, mock_extract_file, isolated_env
@@ -3024,6 +3046,25 @@ class TestStreamedPlan:
         assert result.relocated == ["zmoved.txt"]
         assert "zmoved.txt" not in result.added
         mock_svc.store.relocate_sources.assert_called_once()
+
+    async def test_a_relocation_only_sync_leaves_the_clusters_alone(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """A move changes no concept co-occurrence, so Leiden has nothing new to see."""
+        from lilbee.data.ingest import file_hash
+
+        monkeypatch.setattr(cfg, "concept_graph", True)
+        mock_svc.concepts.get_graph.return_value = True
+        moved = isolated_env / "zmoved.txt"
+        moved.write_text("the relocated document", encoding="utf-8")
+        mock_svc.store.upsert_source("old/moved.txt", file_hash(moved), 1, source_type="document")
+
+        with mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True):
+            result = await self._sync_with_extraction()
+
+        assert result.relocated == ["zmoved.txt"]
+        assert result.added == [] and result.updated == []
+        mock_svc.concepts.rebuild_clusters.assert_not_called()
         assert mock_svc.store.relocate_sources.call_args.args[0][0][:2] == (
             "old/moved.txt",
             "zmoved.txt",
@@ -5116,6 +5157,20 @@ class TestRegisterSources:
         assert result.registered == ["corpus"]
         assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
 
+    @pytest.mark.parametrize(
+        ("result", "expected"),
+        [
+            (RegisterResult(registered=["corpus"]), True),
+            (RegisterResult(tracked=["corpus"]), True),
+            (RegisterResult(skipped=["papers"]), True),
+            (RegisterResult(), False),
+            (RegisterResult(refused=["logo.svg: vector graphic, not a document"]), False),
+        ],
+    )
+    def test_reached_corpus_says_whether_a_sync_has_anything_to_index(self, result, expected):
+        """Every add surface asks this before running a whole-vault sync."""
+        assert result.reached_corpus is expected
+
     def test_reregistering_same_path_is_idempotent(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources
         from lilbee.core.config import cfg
@@ -5382,6 +5437,24 @@ class TestCliSurface:
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
 
+    def test_add_paths_skips_the_sync_when_nothing_reached_the_corpus(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """A refused path registers nothing, so no whole-vault sync runs and the line says so."""
+        from rich.console import Console
+
+        from lilbee.cli.helpers import add_paths
+
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+        runs: list[int] = []
+        console = Console(record=True, width=120)
+
+        add_paths([drawing], console, run_sync=lambda: runs.append(1))
+
+        assert runs == []
+        assert "Registered 0 source(s)" in console.export_text()
+
     def test_registration_line_names_what_was_already_tracked(self):
         from lilbee.app.ingest import RegisterResult
         from lilbee.cli.helpers import describe_registration
@@ -5410,6 +5483,22 @@ class TestPythonApiSurface:
         bee.add([corpus])
         assert "corpus/gone.txt" in _indexed(mock_svc)
 
+    def test_lilbee_add_skips_the_sync_when_nothing_reached_the_corpus(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.api import Lilbee
+
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+        bee = Lilbee(config=cfg)
+        bee._services = mock_svc
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
+            result = bee.add([drawing])
+
+        run_sync.assert_not_called()
+        assert result.added == [] and result.failed == []
+
 
 class TestMcpSurface:
     async def test_add_tool_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
@@ -5428,6 +5517,20 @@ class TestMcpSurface:
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
         assert result["tracked"] == ["corpus"]
+
+    async def test_add_tool_skips_the_sync_when_nothing_reached_the_corpus(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.mcp_server import add as mcp_add
+
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
+            result = await mcp_add([str(drawing)])
+
+        run_sync.assert_not_called()
+        assert "indexed nothing" in result["error"]
 
 
 class TestHttpSurface:
@@ -5450,6 +5553,28 @@ class TestHttpSurface:
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
         assert summary.tracked == ["corpus"]
+
+    async def test_add_handler_skips_the_sync_when_nothing_reached_the_corpus(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.ingest import _run_add
+
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+
+        with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
+            summary = await _run_add(
+                paths=[str(drawing)],
+                force=False,
+                enable_ocr=None,
+                ocr_timeout=None,
+                sse=SseStream(),
+            )
+
+        run_sync.assert_not_called()
+        assert summary.sync is None
+        assert summary.errors == ["logo.svg: vector graphic, not a document"]
 
 
 class TestTuiSurface:
@@ -5505,6 +5630,64 @@ class TestTuiSurface:
                 assert not errors, errors
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
+
+    async def test_do_add_skips_the_sync_when_nothing_reached_the_corpus(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        import threading
+
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from tests._lilbee_app_test_host import await_chat, ready_services
+
+        drawing = tmp_path / "logo.svg"
+        drawing.write_text("<svg/>", encoding="utf-8")
+
+        with ready_services():
+            import lilbee.app.services as svc_mod
+
+            mock_svc.provider.role_ready.return_value = True
+            svc_mod.set_services(mock_svc)
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                screen = await await_chat(app, pilot)
+                assert screen is not None
+                errors: list[BaseException] = []
+
+                def _worker() -> None:
+                    try:
+                        with mock.patch(
+                            "lilbee.data.ingest.sync", new_callable=mock.AsyncMock
+                        ) as run_sync:
+                            screen._do_add([drawing], MagicMock(spec=ProgressReporter))
+                        run_sync.assert_not_called()
+                    except BaseException as exc:  # pragma: no cover - surfaced below
+                        errors.append(exc)
+
+                thread = threading.Thread(target=_worker, daemon=True)
+                thread.start()
+                while thread.is_alive():
+                    await pilot.pause()
+                thread.join(timeout=5)
+                assert not errors, errors
+
+
+def test_every_add_surface_asks_whether_anything_reached_the_corpus():
+    """One predicate decides whether a sync follows registration on every surface."""
+    import lilbee
+
+    package = Path(lilbee.__file__).parent
+    surfaces = [
+        "api.py",
+        "mcp_server.py",
+        "server/handlers/ingest.py",
+        "cli/helpers.py",
+        "cli/commands/ingest_sync.py",
+        "cli/tui/screens/chat.py",
+    ]
+    for name in surfaces:
+        assert "reached_corpus" in (package / name).read_text(encoding="utf-8"), name
 
 
 def test_every_add_surface_funnels_through_register_sources():

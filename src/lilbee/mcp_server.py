@@ -342,6 +342,19 @@ async def sync(
         ).model_dump()
 
 
+async def _sync_after_add(
+    reached_corpus: bool, enable_ocr: bool | None, ocr_timeout: float | None
+) -> dict[str, Any] | None:
+    """The sync that follows an add, or None when nothing named reached the corpus."""
+    from lilbee.app.ingest import temporary_ocr_config
+    from lilbee.data.ingest import sync as run_sync
+
+    if not reached_corpus:
+        return None
+    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
+        return (await run_sync(quiet=True, cancel=cancel)).model_dump()
+
+
 @_tool
 async def add(
     paths: list[str],
@@ -355,7 +368,6 @@ async def add(
     the caller's machine when the server is remote. URLs are fetched as single
     pages; use ``crawl`` for sites."""
     from lilbee.app.ingest import register_sources
-    from lilbee.data.ingest import sync as run_sync
 
     errors: list[str] = []
     valid: list[Path] = []
@@ -404,12 +416,9 @@ async def add(
         functools.partial(register_sources, valid, force=force)
     )
     errors.extend(reg_result.refused)
-
-    from lilbee.app.ingest import temporary_ocr_config
-
-    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
-        sync_result = (await run_sync(quiet=True, cancel=cancel)).model_dump()
-
+    sync_result = await _sync_after_add(
+        reg_result.reached_corpus or bool(crawled_count), enable_ocr, ocr_timeout
+    )
     result: dict[str, Any] = {
         "command": "add",
         "copied": reg_result.registered,
@@ -424,7 +433,7 @@ async def add(
         # Nothing was added. Returning the success shape with a warning let a
         # caller report the add as done over an untouched index.
         return _error("add indexed nothing. " + " ".join(errors))
-    if errors or sync_result.get("failed"):
+    if errors or (sync_result is not None and sync_result.get("failed")):
         result["warning"] = "some files could not be processed"
     return result
 

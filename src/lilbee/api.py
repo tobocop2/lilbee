@@ -150,11 +150,13 @@ class Lilbee:
         Registers each path as a source root (indexed in place), then syncs.
         """
         # heavy: data.ingest transitively imports spaCy via wiki
+        from lilbee.data.ingest import SyncResult
         from lilbee.data.ingest import sync as _sync
 
         resolved = [Path(p).resolve() for p in paths]
         with config_scope(self._config), services_scope(self._services):
-            register_sources(resolved, force=True)
+            if not register_sources(resolved, force=True).reached_corpus:
+                return SyncResult()
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:

@@ -508,7 +508,8 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
     # Headless one-shot ingest: only the embed server is needed, so suppress eager
     # start (matching the interactive path) instead of warming every role's VRAM.
     cfg.worker_pool_eager_start = False
-    result = asyncio.run(sync(quiet=True))
+    # A sync is a whole-vault pass; run it only when something named reached the corpus.
+    result = asyncio.run(sync(quiet=True)) if reg_result.reached_corpus or crawled_paths else None
     json_output(
         {
             "command": "add",
@@ -517,7 +518,7 @@ def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: 
             "tracked": reg_result.tracked,
             "refused": reg_result.refused,
             "crawled": len(crawled_paths),
-            "sync": sync_result_to_json(result),
+            "sync": None if result is None else sync_result_to_json(result),
         }
     )
 
