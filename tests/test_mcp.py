@@ -11,6 +11,7 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
+from lilbee.data.ingest.discovery import ExclusionReason
 from lilbee.data.store import SearchChunk, Store
 from lilbee.mcp_server import (
     add,
@@ -775,6 +776,27 @@ class TestAdd:
         assert "exist" in result["copied"]
         assert result["name_taken"] == []
         assert cfg.linked_roots == {"exist": str(two.resolve())}  # re-pointed
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_overlapping_path_beside_a_refused_file_syncs(self, mock_sync, tmp_path):
+        """An overlapping path reaches the corpus, so a refused sibling is a warning."""
+        from lilbee.core import settings
+
+        root = tmp_path / "root"
+        sub = root / "sub"
+        sub.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"root": str(root)})
+        logo = tmp_path / "logo.svg"
+        logo.write_text("<svg/>", encoding="utf-8")
+
+        result = await add([str(sub), str(logo)])
+
+        assert not result.get("error")
+        assert result["overlapping"] == ["sub"]
+        assert result["copied"] == []
+        assert result["errors"] == [f"logo.svg: {ExclusionReason.VECTOR_GRAPHIC}"]
+        assert result["warning"] == "some files could not be processed"
+        mock_sync.assert_awaited_once()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_directory(self, mock_sync, tmp_path):
