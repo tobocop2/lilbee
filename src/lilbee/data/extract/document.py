@@ -514,11 +514,18 @@ async def _collect_members(
     members: list[MemberRecords],
     on_progress: DetailedProgressCallback,
 ) -> None:
-    from lilbee.data.ingest.discovery import archive_content_types, member_content_type
+    # circular: document -> ingest.discovery via the ingest package's pipeline import
+    from lilbee.data.ingest.discovery import archive_content_types, classify_file
 
+    unsupported: list[str] = []
     for entry in doc.children or []:
         name = f"{prefix}/{entry.path}"
-        content_type = member_content_type(entry.path, entry.mime_type)
+        # The same gate discovery applies on disk: a member of an unsupported format
+        # is never chunked, so an archive of machine output cannot flood the index.
+        content_type = classify_file(Path(entry.path))
+        if content_type is None:
+            unsupported.append(entry.path)
+            continue
         if content_type in archive_content_types():
             await _collect_members(entry.result, name, members, on_progress)
             continue
@@ -530,6 +537,13 @@ async def _collect_members(
         except ChunkLimitError as exc:
             raise ChunkLimitError(exc.count, exc.limit, member=name) from None
         members.append(MemberRecords(name, content_type, records, page_texts, meta))
+    if unsupported:
+        log.info(
+            "Skipped %d member(s) of %s, unsupported format: %s",
+            len(unsupported),
+            prefix,
+            ", ".join(sorted(unsupported)),
+        )
 
 
 async def _extract_document(
