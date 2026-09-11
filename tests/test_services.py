@@ -194,6 +194,42 @@ class TestSyncTokenizerBackend:
         assert backend.count_tokens("hello") == 42
         provider.count_tokens.assert_called_once_with("hello")
 
+    def test_bind_backend_registers_once_per_provider(self, monkeypatch):
+        """The chunker binds on demand; a second call for the same provider is a no-op."""
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        listed: list[str] = []
+        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
+        reg.side_effect = lambda backend: listed.append(backend.name())
+        provider = MagicMock()
+        bind_backend(BackendKind.TOKENIZER, provider)
+        bind_backend(BackendKind.TOKENIZER, provider)
+        reg.assert_called_once()
+        unreg.assert_not_called()
+
+    def test_bind_backend_rebinds_a_different_provider(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        listed: list[str] = []
+        reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
+        reg.side_effect = lambda backend: listed.append(backend.name())
+        bind_backend(BackendKind.TOKENIZER, MagicMock())
+        bind_backend(BackendKind.TOKENIZER, MagicMock())
+        assert reg.call_count == 2
+        unreg.assert_called_once_with("lilbee")
+
+    def test_bind_backend_rebinds_after_an_external_unregister(self, monkeypatch):
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+        provider = MagicMock()
+        bind_backend(BackendKind.TOKENIZER, provider)
+        bind_backend(BackendKind.TOKENIZER, provider)
+        assert reg.call_count == 2
+
     def test_settings_change_syncs_tokenizer_backend(self, monkeypatch):
         """Toggling token_sizing via any settings path re-syncs the backend."""
         from lilbee.app.services import set_services

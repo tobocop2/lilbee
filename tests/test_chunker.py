@@ -4,6 +4,7 @@ These tests verify chunking invariants regardless of the underlying
 implementation.
 """
 
+import re
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,13 +19,19 @@ from tests.conftest import make_mock_services
 
 @pytest.fixture(autouse=True)
 def mock_services():
-    """Mock services for every chunker test: the budget reads the provider's embed cap."""
+    """Mock services for every chunker test: the sizer reads the provider's embed cap
+    and binds its tokenizer to the provider; the binding is dropped after each test."""
+    import xberg
+
     import lilbee.app.services as svc_mod
+    from lilbee.data.types import TokenizerBackendName
 
     services = make_mock_services()
     svc_mod.set_services(services)
     yield services
     svc_mod.set_services(None)
+    if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
+        xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
 
 
 @dataclass
@@ -180,35 +187,76 @@ class TestBuildChunkingConfig:
         assert max_overlap == 40 * CHARS_PER_TOKEN
 
 
-class TestChunkBudgetBoundedByEmbedCap:
-    """A chunk of N characters is at most N tokens, so a budget at the engine's token
-    cap is the largest one the embedder can never truncate."""
+_BGE_SMALL_CAP = 504
+"""bge-small-en-v1.5 serves a 512 window; the cap is one margin below it."""
+_TOKEN = re.compile(r"\w{1,4}|[^\w\s]")
 
-    def test_char_budget_is_cut_to_the_served_cap(self, monkeypatch, mock_services):
+
+def _wordpiece_like(text: str) -> int:
+    """A tokenizer that splits words into pieces of four letters and counts punctuation."""
+    return len(_TOKEN.findall(text))
+
+
+_PROSE = " ".join(
+    f"Paragraph {i}: the aqueduct carried water across the valley to the city on a slope."
+    for i in range(300)
+)
+_DENSE = "\n".join(
+    f"{i:04x}:" + "".join(f"{(i * 7 + j) % 16:x}" for j in range(64)) for i in range(400)
+)
+
+
+@pytest.fixture
+def bge_small_embedder(mock_services):
+    """The mock provider as a 512-window embedder that counts with its own tokenizer."""
+    mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
+    mock_services.provider.count_tokens.side_effect = _wordpiece_like
+    return mock_services.provider
+
+
+class TestChunkBudgetUnderTheEmbedWindow:
+    """When the embedder's window is below the character budget, chunks are sized in
+    the embedder's own tokens at the cap; a wide window leaves the character budget."""
+
+    def test_binding_window_selects_tokenizer_sizing_at_the_cap(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import _char_budget
+        from lilbee.data.extract.chunk import _size_params
 
+        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
-        monkeypatch.setattr(cfg, "chunk_overlap", 100)
-        mock_services.provider.embed_token_cap.return_value = 504
-        assert _char_budget() == (504, 252)
+        monkeypatch.setattr(cfg, "chunk_overlap", 300)
+        mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
+        max_size, overlap, sizing = _size_params()
+        assert (max_size, overlap) == (_BGE_SMALL_CAP, _BGE_SMALL_CAP // 2)
+        assert str(sizing) == _TOKENIZER_SIZING
 
-    def test_char_budget_stays_configured_under_a_wide_window(self, monkeypatch, mock_services):
+    def test_wide_window_keeps_the_character_budget(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
-        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _char_budget
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
 
+        monkeypatch.setattr(cfg, "token_sizing", False)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "chunk_overlap", 100)
         mock_services.provider.embed_token_cap.return_value = 512 * CHARS_PER_TOKEN
-        assert _char_budget() == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
+        assert _size_params() == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN, "characters")
 
-    def test_char_budget_is_unbounded_without_a_managed_embedder(self, monkeypatch, mock_services):
+    def test_character_budget_is_never_cut_to_the_cap(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
         from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _char_budget
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+        mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
+        assert _char_budget() == (512 * CHARS_PER_TOKEN, 100 * CHARS_PER_TOKEN)
+
+    def test_no_managed_embedder_keeps_the_character_budget(self, monkeypatch, mock_services):
+        from lilbee.core.config import cfg
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN, _size_params
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
         mock_services.provider.embed_token_cap.return_value = None
-        assert _char_budget()[0] == 512 * CHARS_PER_TOKEN
+        assert _size_params()[0] == 512 * CHARS_PER_TOKEN
 
     def test_token_sizing_budget_is_cut_to_the_served_cap(self, monkeypatch, mock_services):
         from lilbee.core.config import cfg
@@ -217,9 +265,41 @@ class TestChunkBudgetBoundedByEmbedCap:
         monkeypatch.setattr(cfg, "token_sizing", True)
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "chunk_overlap", 300)
-        mock_services.provider.embed_token_cap.return_value = 504
+        mock_services.provider.embed_token_cap.return_value = _BGE_SMALL_CAP
         max_size, overlap, _sizing = _size_params()
-        assert (max_size, overlap) == (504, 252)
+        assert (max_size, overlap) == (_BGE_SMALL_CAP, _BGE_SMALL_CAP // 2)
+
+    def test_chunks_fit_the_cap_in_the_embedders_tokens_without_shrinking_prose(
+        self, monkeypatch, bge_small_embedder
+    ):
+        """Under the real bge-small cap, no chunk exceeds it under the tokenizer the
+        chunker sized with, and prose chunks keep near the configured size."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "chunk_overlap", 100)
+
+        prose = chunk_text(_PROSE, use_semantic=False)
+        dense = chunk_text(_DENSE, use_semantic=False)
+
+        assert max(_wordpiece_like(c) for c in prose + dense) <= _BGE_SMALL_CAP
+        assert max(len(c) for c in prose) > 2 * _BGE_SMALL_CAP
+        assert max(len(c) for c in dense) <= _BGE_SMALL_CAP * 4
+
+    def test_tokenizer_is_bound_to_the_provider_on_first_use(self, monkeypatch, bge_small_embedder):
+        import xberg
+
+        from lilbee.core.config import cfg
+        from lilbee.data.types import TokenizerBackendName
+
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        assert TokenizerBackendName.LILBEE not in xberg.list_tokenizer_backends()
+        chunk_text("a short line", use_semantic=False)
+        assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
+        bge_small_embedder.count_tokens.assert_called()
 
 
 _TOKENIZER_SIZING = '{"type":"tokenizer","model":"lilbee"}'

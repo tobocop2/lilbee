@@ -539,6 +539,8 @@ def _default_provider_mock():
     provider.chat_prefill_progress.return_value = None
     # The chunker bounds its budget to the embed cap; None keeps the configured budget.
     provider.embed_token_cap.return_value = None
+    # xberg probes a tokenizer binding with a one-character count at registration.
+    provider.count_tokens.return_value = 1
     provider.health_warnings.return_value = []
     # warm_progress feeds the /api/warm/stream handler (WarmProgress | None);
     # default to None (idle). Warm-stream tests override this.

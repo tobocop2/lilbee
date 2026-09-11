@@ -342,24 +342,28 @@ class TestEmbedTokenCap:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
 
-    def test_warning_names_the_cap_and_the_chunk_size_that_fits(self, monkeypatch) -> None:
+    def test_binding_window_reports_token_sizing_in_effect(self, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "token_sizing", False)
         warning = ep.embed_window_warning(504)
         assert warning is not None
         assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
-        assert "504" in warning.message and "512" in warning.message
-        assert "504 characters" in warning.message
-        assert warning.remedy is not None
-        assert "chunk_size to 126" in warning.remedy
-        assert "token_sizing" in warning.remedy
+        assert "504 tokens per input" in warning.message
+        assert "chunk_size 512" in warning.message
+        assert "Token sizing is in effect" in warning.message
+        assert "504 tokens" in warning.message
+        assert "cut" not in warning.message
+        assert warning.remedy is None
 
-    def test_warning_counts_in_tokens_under_token_sizing(self, monkeypatch) -> None:
+    def test_warning_under_token_sizing_names_the_chunk_size_that_matches(
+        self, monkeypatch
+    ) -> None:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "token_sizing", True)
         assert ep.embed_window_warning(512) is None
         warning = ep.embed_window_warning(504)
         assert warning is not None
-        assert "504 tokens so" in warning.message
+        assert "Token sizing is in effect" in warning.message
         assert warning.remedy == "Set chunk_size to 504 to match the window."

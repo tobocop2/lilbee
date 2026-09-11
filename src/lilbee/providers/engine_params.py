@@ -52,8 +52,8 @@ def resolve_embed_ctx(meta: dict[str, str] | None, model_path: Path) -> int:
     truncation becomes impossible. Token-dense text (numeric tables, dense
     identifiers) otherwise reaches ~2x chunk_size tokens against a 1x cap and
     silently loses its tail at embed time. A trained context below that budget
-    caps the window instead, and the chunker bounds itself to the served cap
-    (see :func:`embed_token_cap`)."""
+    caps the window instead, and the chunker then sizes chunks in the embedder's
+    own tokens at the served cap (see :func:`embed_token_cap`)."""
     from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
     train_ctx = train_ctx_from_meta(meta, fallback=EMBED_FALLBACK_CTX, model_path=model_path)
@@ -66,26 +66,29 @@ def embed_token_cap(ctx: int) -> int:
 
 
 def embed_window_warning(cap: int) -> HealthWarning | None:
-    """The degradation when *cap* is below the configured chunk budget, else None."""
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+    """The warning when token sizing is in effect because *cap* binds the chunker, else None."""
+    from lilbee.data.extract.chunk import CHARS_PER_TOKEN, token_sizing_in_effect
 
-    # token_sizing budgets in tokens; the character chunkers budget in chars.
-    per_token = 1 if cfg.token_sizing else CHARS_PER_TOKEN
-    unit = "tokens" if cfg.token_sizing else "characters"
-    budget = cfg.chunk_size * per_token
-    if cap >= budget:
+    if cfg.token_sizing:
+        if cap >= cfg.chunk_size:
+            return None
+        allowed = f"the configured chunk_size {cfg.chunk_size} in tokens"
+        remedy = f"Set chunk_size to {cap} to match the window."
+    elif token_sizing_in_effect(cap):
+        chars = cfg.chunk_size * CHARS_PER_TOKEN
+        allowed = f"the {chars} characters that chunk_size {cfg.chunk_size} allows"
+        remedy = None
+    else:
         return None
-    remedy = f"Set chunk_size to {cap // per_token} to match the window"
-    if not cfg.token_sizing:
-        remedy += ", or turn on token_sizing to size chunks in the embedder's own tokens"
     return HealthWarning(
         code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
         message=(
-            f"The embedding model accepts {cap} tokens per input, below the configured "
-            f"chunk_size of {cfg.chunk_size} tokens ({budget} {unit}). Chunks are cut "
-            f"at {cap} {unit} so none loses text at embedding time."
+            f"The embedding model accepts {cap} tokens per input, below {allowed}. "
+            f"Token sizing is in effect for this embedder: chunks are sized with its own "
+            f"tokenizer at up to {min(cfg.chunk_size, cap)} tokens, so none loses text "
+            f"at embedding time."
         ),
-        remedy=f"{remedy}.",
+        remedy=remedy,
     )
 
 

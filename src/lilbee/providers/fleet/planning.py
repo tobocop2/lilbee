@@ -102,7 +102,7 @@ def warn_when_embed_window_below_chunk(launch: InstanceLaunch) -> None:
         return
     warning = engine_params.embed_window_warning(launch.token_cap)
     if warning is not None:
-        log.warning("%s %s", warning.message, warning.remedy)
+        log.warning("%s", " ".join(filter(None, (warning.message, warning.remedy))))
 
 
 def warn_when_chat_downsized(launch: InstanceLaunch) -> None:

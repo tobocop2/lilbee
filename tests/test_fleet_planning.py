@@ -3817,7 +3817,8 @@ class TestWarnWhenChatDownsized:
             planning_mod.warn_when_embed_window_below_chunk(launch)
         assert len(caplog.records) == 1
         assert "504 tokens" in caplog.records[0].message
-        assert "chunk_size to 126" in caplog.records[0].message
+        assert "Token sizing is in effect" in caplog.records[0].message
+        assert not caplog.records[0].message.endswith("None")
 
     def test_stays_quiet_when_the_embed_window_covers_the_chunk_budget(
         self, caplog, monkeypatch

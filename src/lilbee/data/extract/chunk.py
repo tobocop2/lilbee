@@ -31,41 +31,60 @@ def _embed_token_cap() -> int | None:
     return get_services().provider.embed_token_cap()
 
 
-def _bounded(budget: int) -> int:
-    """*budget* cut to the embed token cap: N characters are at most N tokens."""
-    cap = _embed_token_cap()
-    return budget if cap is None else min(budget, cap)
+def token_sizing_in_effect(cap: int | None) -> bool:
+    """Whether chunks are sized in the embedder's tokens: opted in, or its window binds.
+
+    The window binds when *cap* is below the character budget ``chunk_size``
+    allows, so a character-sized chunk could exceed it at embedding time.
+    """
+    config = active_config()
+    if config.token_sizing:
+        return True
+    return cap is not None and cap < config.chunk_size * CHARS_PER_TOKEN
 
 
 def _char_budget() -> tuple[int, int]:
     """Return (max_chars, max_overlap) in characters from the token-based cfg."""
     config = active_config()
-    max_chars = _bounded(config.chunk_size * CHARS_PER_TOKEN)
+    max_chars = config.chunk_size * CHARS_PER_TOKEN
     max_overlap = min(config.chunk_overlap * CHARS_PER_TOKEN, max_chars // 2)
     return max_chars, max_overlap
+
+
+def _tokenizer_sizing() -> ChunkSizing:
+    """xberg sizing through lilbee's tokenizer backend, bound to the provider on demand.
+
+    xberg fails extraction when a sizing names an unregistered tokenizer, so the
+    bind precedes every sizing that routes to it. The bind is a no-op once the
+    current provider holds the binding.
+    """
+    from xberg import ChunkSizing
+
+    from lilbee.app.services import get_services
+
+    from .backends import BackendKind, bind_backend
+
+    bind_backend(BackendKind.TOKENIZER, get_services().provider)
+    return ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE)
 
 
 def _size_params() -> tuple[int, int, ChunkSizing | str]:
     """Return (max, overlap, sizing) for the plain and heading chunkers.
 
-    With ``cfg.token_sizing`` on, the budget is a raw token count and ``sizing``
-    routes to lilbee's registered tokenizer backend, so ``chunk_size`` is a real
-    token ceiling. Otherwise the character heuristic with xberg's default
-    character sizer. The semantic chunker does not use this -- it sizes by
-    characters and ignores ChunkSizing."""
+    Under token sizing (``cfg.token_sizing``, or an embed window below the
+    character budget) the budget is a token count no larger than the embedder's
+    cap and ``sizing`` routes to lilbee's tokenizer backend, so no chunk loses
+    text at embedding time. Otherwise the character heuristic with xberg's
+    default character sizer. The semantic chunker does not use this -- it sizes
+    by characters and ignores ChunkSizing."""
     config = active_config()
-    if config.token_sizing:
-        from xberg import ChunkSizing
-
-        max_tokens = _bounded(config.chunk_size)
-        overlap = min(config.chunk_overlap, max_tokens // 2)
-        return (
-            max_tokens,
-            overlap,
-            ChunkSizing(type="tokenizer", model=TokenizerBackendName.LILBEE),
-        )
-    max_chars, max_overlap = _char_budget()
-    return max_chars, max_overlap, _CHARACTER_SIZING
+    cap = _embed_token_cap()
+    if not token_sizing_in_effect(cap):
+        max_chars, max_overlap = _char_budget()
+        return max_chars, max_overlap, _CHARACTER_SIZING
+    max_tokens = config.chunk_size if cap is None else min(config.chunk_size, cap)
+    overlap = min(config.chunk_overlap, max_tokens // 2)
+    return max_tokens, overlap, _tokenizer_sizing()
 
 
 def _semantic_embedding_config() -> EmbeddingConfig:
