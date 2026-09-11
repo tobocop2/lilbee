@@ -332,9 +332,9 @@ def _clear_gpu_memory_cache():
     """
     from lilbee.runtime import hardware
 
-    hardware._AVAILABLE_MEMORY_CACHE.clear()
+    hardware._available_memory_cache.clear()
     yield
-    hardware._AVAILABLE_MEMORY_CACHE.clear()
+    hardware._available_memory_cache.clear()
 
 
 @pytest.fixture(autouse=True)
