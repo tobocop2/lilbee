@@ -1345,7 +1345,9 @@ def planned_embed_token_cap(ref: str) -> int | None:
         meta = read_gguf_metadata(path)
     except (ProviderError, OSError, ValueError):
         return None
-    return engine_params.embed_token_cap(_role_ctx(WorkerRole.EMBED, path, meta))
+    return engine_params.embed_token_cap(
+        apply_ctx_downshift(WorkerRole.EMBED, _role_ctx(WorkerRole.EMBED, path, meta))
+    )
 
 
 def _ref_is_moe(ref: str) -> bool:
