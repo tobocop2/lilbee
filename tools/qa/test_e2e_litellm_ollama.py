@@ -8,7 +8,9 @@ asserting `returncode >= 0` distinguishes a clean failure from a crash.
 
 Skips cleanly when no ollama daemon is reachable on the default port. The
 matrix runs cells without ollama too, and the absence of the daemon is a
-test-environment fact, not a regression.
+test-environment fact, not a regression. The dedicated ollama-pypi lane
+sets LILBEE_QA_OLLAMA_REQUIRED=1, which turns those skips into failures
+so the drift coverage cannot disappear silently.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from conftest import (
 _OLLAMA_DEFAULT_HOST = "127.0.0.1"
 _OLLAMA_DEFAULT_PORT = 11434
 _OLLAMA_HEALTHCHECK_TIMEOUT = 2.0
+_OLLAMA_REQUIRED_ENV_VAR = "LILBEE_QA_OLLAMA_REQUIRED"
 # Remote ollama responses run cold-start each test, ~40s slower than the
 # in-process llama.cpp ASK_TIMEOUT covers; bump above the local-model budget.
 _OLLAMA_ASK_TIMEOUT = 360.0
@@ -60,14 +63,22 @@ def _ollama_reachable() -> bool:
         return False
 
 
+def _ollama_required() -> bool:
+    """Whether this lane must fail instead of skip when ollama is absent."""
+    return os.environ.get(_OLLAMA_REQUIRED_ENV_VAR) == "1"
+
+
 @pytest.fixture(scope="session")
 def ollama_url() -> str:
     """Resolve the ollama daemon URL or skip the suite."""
     if not _ollama_reachable():
-        pytest.skip(
+        message = (
             "ollama daemon not reachable on 127.0.0.1:11434; "
             "set LILBEE_QA_OLLAMA_HOST/PORT or start `ollama serve`"
         )
+        if _ollama_required():
+            pytest.fail(f"{message} (required in this lane)")
+        pytest.skip(message)
     return _ollama_base_url()
 
 
@@ -86,10 +97,13 @@ def ollama_chat_model(ollama_url: str) -> str:
     payload = response.json()
     models = payload.get("models", [])
     if not models:
-        pytest.skip(
+        message = (
             f"no models installed in ollama; pull one (e.g. `ollama pull qwen3:0.6b`) "
             f"or set {OLLAMA_MODEL_ENV_VAR}"
         )
+        if _ollama_required():
+            pytest.fail(f"{message} (required in this lane)")
+        pytest.skip(message)
     return models[0]["name"]
 
 
@@ -133,6 +147,8 @@ def _skip_without_litellm(lane: Lane, lilbee_data: Path) -> None:
     import importlib.util
 
     if importlib.util.find_spec("litellm") is None:
+        if _ollama_required():
+            pytest.fail("litellm not importable in a lane that requires the ollama path")
         pytest.skip("litellm not importable; ollama provider path not available")
 
 
