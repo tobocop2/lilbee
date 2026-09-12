@@ -10,7 +10,7 @@ from textual.app import ComposeResult
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
-from lilbee.catalog.models import CatalogResult, ModelFamily, ModelVariant
+from lilbee.catalog.models import CatalogModel, CatalogResult, ModelFamily, ModelVariant
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.catalog_grouping import (
@@ -480,6 +480,42 @@ async def test_discover_rail_fills_when_the_probe_failed() -> None:
         screen._populate_discover_rails()
         grid = screen.query_one("#discover-grid-for-you", ModelGrid)
         assert [r.name for r in grid.rows] == ["Llama 8B"]
+
+
+async def test_discover_fresh_rail_drops_cards_for_you_already_took() -> None:
+    """A For You backfill pick leaves Fresh, which backfills the slot."""
+    from lilbee.cli.tui.widgets.model_grid import ModelGrid
+
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._available_memory_bytes = 16 * 1024**3
+        screen._families = []
+        screen._hf_models = [
+            CatalogModel(
+                hf_repo=f"org/model-{i}-GGUF",
+                gguf_filename=f"model-{i}-Q4_K_M.gguf",
+                size_gb=1.0,
+                min_ram_gb=2.0,
+                description="x",
+                featured=False,
+                downloads=1_000 - i,
+                task=ModelTask.CHAT,
+                compat=ModelCompat.SUPPORTED,
+            )
+            for i in range(7)
+        ]
+        screen._hf_fetched_tasks.add(ModelTask.CHAT)
+        screen._family_rows_cache = None
+        screen._hf_rows_cache = None
+        screen._populate_discover_rails()
+        for_you = screen.query_one("#discover-grid-for-you", ModelGrid).rows
+        fresh = screen.query_one("#discover-grid-fresh", ModelGrid).rows
+        for_you_refs = {r.ref for r in for_you}
+        fresh_refs = {r.ref for r in fresh}
+        assert for_you_refs == {"org/model-0-GGUF"}
+        assert len(fresh) == 6
+        assert for_you_refs.isdisjoint(fresh_refs)
 
 
 async def test_action_select_tab_idempotent_when_already_active() -> None:
