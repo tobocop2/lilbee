@@ -1279,6 +1279,36 @@ class TestEnsureVectorIndex:
             assert store.ensure_vector_index() is True
         optimize_spy.assert_called_once()
 
+    def test_optimize_rebuilds_fts_when_vector_path_prunes_it(self, store, test_config):
+        """The vector path optimizes the same chunks table every sync, so a prune
+        that drops the FTS files there must re-register in the same step.
+
+        The prune is simulated; the producer of the dangling index is not confirmed."""
+        import shutil
+
+        from lilbee.core.config import CHUNKS_TABLE
+
+        test_config.ann_index_threshold = 50
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        store.ensure_fts_index()
+        store.ensure_vector_index()
+        table = store.open_table("chunks")
+        assert table is not None
+
+        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
+
+        def _optimize_then_prune():
+            for d in indices_dir.iterdir():
+                shutil.rmtree(d)
+
+        with (
+            mock.patch.object(type(table), "optimize", side_effect=_optimize_then_prune),
+            mock.patch.object(type(store), "_rebuild_fts") as rebuild_spy,
+        ):
+            assert store.ensure_vector_index() is True
+
+        rebuild_spy.assert_called_once()
+
     def test_build_failure_warns_and_returns_false(self, store, test_config, caplog):
         """bb-con: a real ANN build failure at scale is surfaced as a warning with
         the flat-search impact, not swallowed at debug."""
