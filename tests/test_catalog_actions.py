@@ -3,6 +3,7 @@ on_key digit intercept, Esc back-navigation, discover-rail population edges."""
 
 from __future__ import annotations
 
+import random
 import sys
 
 import pytest
@@ -23,7 +24,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     KeyStatus,
     LocalCatalogRow,
 )
-from lilbee.runtime.hardware import FitChip, FitLevel
+from lilbee.runtime.hardware import FitChip, FitLevel, chip_for_size
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 
@@ -454,6 +455,25 @@ def test_stamp_fit_no_op_without_probe() -> None:
     # Should not raise; row.fit stays None.
     screen._stamp_fit(rows)
     assert rows[0].fit is None
+
+
+def test_stamp_fit_matches_the_shared_helper_over_seeded_sizes() -> None:
+    """The screen stamps through chip_for_size, including unmeasurable rows."""
+    rng = random.Random(20260912)
+    sizes = [round(rng.uniform(0, 20), 6) for _ in range(50)]
+    sizes += [0.0, -1.0, 4.0]
+    budget = 8 * 1024**3
+    screen = CatalogScreen.__new__(CatalogScreen)
+    screen._available_memory_bytes = budget
+    rows = [_row(f"m-{size}") for size in sizes]
+    for row, size in zip(rows, sizes, strict=True):
+        row.sort_size = size
+    screen._stamp_fit(rows)
+    for row, size in zip(rows, sizes, strict=True):
+        assert row.fit == chip_for_size(size, budget)
+    assert rows[-3].fit is None
+    assert rows[-2].fit is None
+    assert rows[-1].fit == FitChip(level=FitLevel.FITS, headroom_gb=4.0)
 
 
 async def test_discover_rail_fills_when_the_probe_failed() -> None:
