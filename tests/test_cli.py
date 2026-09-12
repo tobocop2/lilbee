@@ -1861,6 +1861,18 @@ class TestRemove:
         assert "corpus" not in cfg.linked_roots  # root un-registered
         assert (source / "a.txt").read_text() == "keep"  # source untouched
 
+    def test_remove_suppresses_eager_start(self, isolated_env, mock_svc):
+        """Remove only touches the store; it must not eager-warm the fleet."""
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["test.pdf"], not_found=[]
+        )
+        cfg.worker_pool_eager_start = True
+        result = runner.invoke(app, ["remove", "test.pdf"])
+        assert result.exit_code == 0
+        assert cfg.worker_pool_eager_start is False
+
 
 class TestChunks:
     """Test chunks command."""

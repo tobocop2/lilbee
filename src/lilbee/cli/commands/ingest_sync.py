@@ -640,6 +640,8 @@ def remove(
     files on disk are never deleted.
     """
     apply_overrides(data_dir=data_dir, use_global=use_global)
+    # Remove only touches the store, never the engine; skip the eager fleet warm.
+    cfg.worker_pool_eager_start = False
 
     known = [s["filename"] for s in get_services().store.get_sources()]
     targets = expand_remove_targets(names, known=known)
