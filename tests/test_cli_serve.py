@@ -90,12 +90,18 @@ class TestTokenCommand:
 
 
 class TestServeCommand:
+    @mock.patch("lilbee.cli.commands.servers.install_health_access_filter")
     @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
     @mock.patch("lilbee.server.create_app")
     def test_default_host_port(
-        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        mock_install_filter,
     ):
         mock_create_app.return_value = "fake_app"
         result = runner.invoke(app, ["serve"])
@@ -103,6 +109,7 @@ class TestServeCommand:
         mock_asyncio_run.assert_called_once()
         mock_setup_logging.assert_called_once()
         mock_setup_log_file.assert_called_once()
+        mock_install_filter.assert_called_once()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")

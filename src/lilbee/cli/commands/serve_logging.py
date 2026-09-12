@@ -20,6 +20,8 @@ _FAULT_LOG_FILE_NAME = "server-fault.log"
 _MAX_BYTES = 2_097_152  # 2 MiB
 _BACKUP_COUNT = 3
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
+_UVICORN_ACCESS_LOGGER = "uvicorn.access"
+_HEALTH_ACCESS_PATH = "/api/health"
 
 
 def setup_server_log_file() -> Path:
@@ -106,3 +108,19 @@ def setup_server_logging() -> None:
     setup_server_log_file()
     enable_fault_log()
     install_excepthook()
+
+
+class _HealthAccessFilter(logging.Filter):
+    """Drop uvicorn access records for the health endpoint."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _HEALTH_ACCESS_PATH not in record.getMessage()
+
+
+def install_health_access_filter() -> None:
+    """Quiet health-poll lines on the uvicorn access logger. Idempotent."""
+    access_logger = logging.getLogger(_UVICORN_ACCESS_LOGGER)
+    for filt in access_logger.filters:
+        if isinstance(filt, _HealthAccessFilter):
+            return
+    access_logger.addFilter(_HealthAccessFilter())
