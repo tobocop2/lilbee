@@ -2254,6 +2254,30 @@ class TestShutdownRoute:
             # which a slow flush could lose the race to a wall-clock timer.
             raise_signal.assert_called_once_with(signal_mod.SIGTERM)
 
+    def test_registered_exit_hook_replaces_the_signal(self, client):
+        """A serving loop stops through its own exit flag, not a self-signal.
+
+        Regression: the route raised SIGTERM at its own process, and the
+        handler's SystemExit landed back inside the request's ASGI stack,
+        where uvicorn's BaseException wrapper swallowed it; the server kept
+        serving after the 202.
+        """
+        import signal as signal_mod
+
+        from lilbee.app.services import set_server_exit_hook
+
+        calls: list[None] = []
+        set_server_exit_hook(lambda: calls.append(None))
+        try:
+            with mock.patch.object(signal_mod, "raise_signal") as raise_signal:
+                response = client.post("/api/shutdown")
+                assert response.status_code == 202
+                assert response.json() == {"status": "shutting_down"}
+                assert calls == [None]
+                raise_signal.assert_not_called()
+        finally:
+            set_server_exit_hook(None)
+
 
 class TestPaginationAndTopKLowerBounds:
     """Upper bounds without lower bounds let 0 and negatives through.

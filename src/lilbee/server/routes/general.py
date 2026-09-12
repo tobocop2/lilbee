@@ -19,6 +19,7 @@ from litestar.response import Stream
 from litestar.status_codes import HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
 from pydantic import ValidationError
 
+from lilbee.app.services import request_server_exit
 from lilbee.app.settings import config_write_failure_message
 from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
@@ -50,18 +51,24 @@ async def status_route() -> StatusResponse:
     return await handlers.status()
 
 
+async def _stop_server() -> None:
+    """Stop the serving loop when one runs; otherwise raise SIGTERM."""
+    if not request_server_exit():
+        signal.raise_signal(signal.SIGTERM)
+
+
 @post("/api/shutdown", status_code=HTTP_202_ACCEPTED)
 async def shutdown_route() -> Response[ShutdownResponse]:
-    """Gracefully stop the server, exactly as an external SIGTERM would.
+    """Gracefully stop the server through its serving loop.
 
-    The signal rides a background task so it is raised after the response has
+    The stop rides a background task so it runs after the response has
     been handed to the transport, rather than after a guessed delay that a
     slow flush could lose.
     """
     return Response(
         await handlers.shutdown(),
         status_code=HTTP_202_ACCEPTED,
-        background=BackgroundTask(signal.raise_signal, signal.SIGTERM),
+        background=BackgroundTask(_stop_server),
     )
 
 
