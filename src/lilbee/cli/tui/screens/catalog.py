@@ -86,7 +86,7 @@ from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
 from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, get_provider_api_key
-from lilbee.runtime.hardware import available_memory_for_fit, compute_fit
+from lilbee.runtime.hardware import available_memory_for_fit, chip_for_size
 
 log = logging.getLogger(__name__)
 
@@ -1191,16 +1191,8 @@ class CatalogScreen(Screen[None]):
         renderer omits the chip. Available-memory probe is captured once
         at __init__; if the probe failed, every row falls through chip-less.
         """
-        if self._available_memory_bytes is None:
-            return
-        bytes_per_gb = 1024**3
         for row in rows:
-            if row.sort_size <= 0:
-                continue
-            row.fit = compute_fit(
-                model_size_bytes=int(row.sort_size * bytes_per_gb),
-                available_bytes=self._available_memory_bytes,
-            )
+            row.fit = chip_for_size(row.sort_size, self._available_memory_bytes)
 
     def _build_rows(self) -> list[LocalCatalogRow]:
         """Build filtered table rows from current data sources."""

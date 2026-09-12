@@ -5,9 +5,12 @@ from __future__ import annotations
 from conftest import make_test_catalog_model
 from lilbee.catalog.models import ModelFamily, ModelVariant
 from lilbee.runtime.hardware import (
+    FIT_RANK,
+    FitChip,
     FitLevel,
     SizeVariantInfo,
     available_memory_for_fit,
+    chip_for_size,
     compute_fit,
     family_size_variants,
     fit_for_size,
@@ -70,6 +73,22 @@ def test_fit_for_size_is_unknown_without_a_budget() -> None:
 
 def test_fit_for_size_is_unknown_without_a_size() -> None:
     assert fit_for_size(0.0, 8 * _GB) is None
+
+
+def test_chip_for_size_returns_the_full_chip_for_a_footprint() -> None:
+    assert chip_for_size(4.0, 8 * _GB) == FitChip(level=FitLevel.FITS, headroom_gb=4.0)
+    assert chip_for_size(10.0, 8 * _GB) == FitChip(level=FitLevel.WONT_RUN, headroom_gb=-2.0)
+
+
+def test_chip_for_size_is_unknown_without_a_budget_or_size() -> None:
+    assert chip_for_size(4.0, None) is None
+    assert chip_for_size(0.0, 8 * _GB) is None
+    assert chip_for_size(-1.0, 8 * _GB) is None
+
+
+def test_fit_rank_covers_every_level_best_first() -> None:
+    assert set(FIT_RANK) == set(FitLevel)
+    assert [FIT_RANK[level] for level in FitLevel] == [0, 1, 2]
 
 
 def test_make_fit_filter_returns_no_predicate_without_a_threshold() -> None:

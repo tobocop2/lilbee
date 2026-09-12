@@ -30,12 +30,9 @@ class FitLevel(StrEnum):
     WONT_RUN = "wont_run"
 
 
-# Fit levels in rank order, best first.
-FIT_RANK: dict[FitLevel, int] = {
-    FitLevel.FITS: 0,
-    FitLevel.TIGHT: 1,
-    FitLevel.WONT_RUN: 2,
-}
+# Fit levels in rank order, best first. Derived from the enum so a new level
+# cannot miss the map.
+FIT_RANK: dict[FitLevel, int] = {level: rank for rank, level in enumerate(FitLevel)}
 
 
 @dataclass(frozen=True)
@@ -63,11 +60,17 @@ def compute_fit(model_size_bytes: int, available_bytes: int) -> FitChip:
     return FitChip(level=level, headroom_gb=headroom_gb)
 
 
-def fit_for_size(size_gb: float, available_bytes: int | None) -> FitLevel | None:
-    """Fit level for a *size_gb* footprint, or None when it cannot be measured."""
+def chip_for_size(size_gb: float, available_bytes: int | None) -> FitChip | None:
+    """Fit chip for a *size_gb* footprint, or None when it cannot be measured."""
     if available_bytes is None or size_gb <= 0:
         return None
-    return compute_fit(int(size_gb * _BYTES_PER_GB), available_bytes).level
+    return compute_fit(int(size_gb * _BYTES_PER_GB), available_bytes)
+
+
+def fit_for_size(size_gb: float, available_bytes: int | None) -> FitLevel | None:
+    """Fit level for a *size_gb* footprint, or None when it cannot be measured."""
+    chip = chip_for_size(size_gb, available_bytes)
+    return None if chip is None else chip.level
 
 
 def make_fit_filter(
