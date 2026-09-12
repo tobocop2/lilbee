@@ -6,6 +6,7 @@ from lilbee.data.store import SearchChunk
 from lilbee.data.store.fusion import (
     adaptive_weight_scale,
     fuse_arms,
+    fuse_ranked_lists,
     normalized_bm25,
     vector_similarity,
 )
@@ -374,3 +375,80 @@ class TestTitleArmFusion:
         high = fuse_arms([], [], [_chunk("t.md", 0, bm25=3.0)], title_weight=1.0)
         assert low[0].score < high[0].score
         assert high[0].score == pytest.approx(1.0 / 3.0)
+
+
+class TestFuseRankedLists:
+    """RRF over per-query rankings: the typed question's own retrieval fused
+    with the condensed rewrite's, so drift cannot crowd out the question."""
+
+    def test_no_lists_fuses_to_nothing(self):
+        assert fuse_ranked_lists([]) == []
+        assert fuse_ranked_lists([[], []]) == []
+
+    def test_top_of_both_queries_scores_one(self):
+        fused = fuse_ranked_lists(
+            [[_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, distance=0.2)]]
+        )
+        assert len(fused) == 1
+        assert fused[0].score == pytest.approx(1.0)
+
+    def test_single_live_list_is_not_demoted(self):
+        live = [_chunk("a.md", 0, distance=0.2), _chunk("b.md", 0, distance=0.4)]
+        fused = fuse_ranked_lists([live, []])
+        assert [r.source for r in fused] == ["a.md", "b.md"]
+        assert fused[0].score == pytest.approx(1.0)
+
+    def test_consensus_beats_single_query_support(self):
+        both = _chunk("both.md", 0, distance=0.4)
+        single = _chunk("single.md", 0, distance=0.2)
+        fused = fuse_ranked_lists([[single, both], [both]])
+        scores = {r.source: r.score for r in fused}
+        assert scores["both.md"] > scores["single.md"]
+
+    def test_single_query_head_outranks_deep_other_query_tail(self):
+        """Each query's winner stays visible: a rank-1 row from one query
+        outranks rows the other query buried."""
+        head = _chunk("head.md", 0, distance=0.2)
+        tail = [_chunk("tail.md", i, distance=0.5) for i in range(10)]
+        fused = fuse_ranked_lists([[head], tail])
+        assert fused[0].source == "head.md"
+
+    def test_closest_distance_wins(self):
+        fused = fuse_ranked_lists(
+            [
+                [_chunk("a.md", 0, distance=0.8, bm25=5.0)],
+                [_chunk("a.md", 0, distance=0.2)],
+            ]
+        )
+        assert fused[0].distance == pytest.approx(0.2)
+        assert fused[0].bm25_score == pytest.approx(5.0)
+
+    def test_farther_duplicate_keeps_the_seen_distance(self):
+        fused = fuse_ranked_lists(
+            [[_chunk("a.md", 0, distance=0.2)], [_chunk("a.md", 0, distance=0.8)]]
+        )
+        assert fused[0].distance == pytest.approx(0.2)
+
+    def test_missing_distance_keeps_the_other(self):
+        fused = fuse_ranked_lists([[_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0)]])
+        assert fused[0].distance == pytest.approx(0.3)
+
+    def test_distance_fills_in_when_first_copy_lacks_it(self):
+        fused = fuse_ranked_lists([[_chunk("a.md", 0)], [_chunk("a.md", 0, distance=0.4)]])
+        assert fused[0].distance == pytest.approx(0.4)
+
+    def test_lexical_support_unions(self):
+        fused = fuse_ranked_lists(
+            [[_chunk("a.md", 0, distance=0.3)], [_chunk("a.md", 0, bm25=9.0)]]
+        )
+        assert fused[0].bm25_score == pytest.approx(9.0)
+        assert fused[0].distance == pytest.approx(0.3)
+
+    def test_rank_order_ignores_score_magnitude(self):
+        """Each list's incoming scores never enter the fusion: ranks alone decide."""
+        first = _chunk("first.md", 0, distance=0.9)
+        first.score = 0.01
+        second = _chunk("second.md", 0, distance=0.1)
+        second.score = 0.99
+        fused = fuse_ranked_lists([[first, second], []])
+        assert [r.source for r in fused] == ["first.md", "second.md"]
