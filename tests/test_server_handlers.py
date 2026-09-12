@@ -3085,6 +3085,31 @@ class TestModelsCatalog:
         assert result.has_more is True
 
     @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_next_offset_advances_past_an_empty_page(self, mock_get_catalog, mock_svc):
+        """An empty page with rows behind it still names the next offset."""
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=None, limit=20, offset=0, models=[], has_more=True
+        )
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog(task="chat", limit=20, offset=0)
+        assert result.models == []
+        assert result.next_offset == 20
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_next_offset_is_none_on_the_last_page(self, mock_get_catalog, mock_svc):
+        """The last page reports no next offset."""
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=None, limit=20, offset=20, models=[], has_more=False
+        )
+        mock_svc.registry.list_installed.return_value = []
+        result = await handlers.models_catalog(task="chat", limit=20, offset=20)
+        assert result.next_offset is None
+
+    @patch("lilbee.server.handlers.models.get_catalog")
     async def test_installed_reflects_registry_not_routing_provider(
         self, mock_get_catalog, mock_svc
     ):
