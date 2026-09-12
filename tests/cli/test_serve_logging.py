@@ -16,8 +16,10 @@ from lilbee.cli.commands import serve_logging
 from lilbee.cli.commands.serve_logging import (
     _BACKUP_COUNT,
     _MAX_BYTES,
+    _HealthAccessFilter,
     enable_fault_log,
     install_excepthook,
+    install_health_access_filter,
     setup_server_log_file,
     setup_server_logging,
 )
@@ -205,3 +207,49 @@ def test_excepthook_install_idempotent(data_root: Path, caplog: pytest.LogCaptur
         sys.excepthook(RuntimeError, RuntimeError("once"), None)
     assert caplog.text.count("unhandled exception") == 1
     assert called == [RuntimeError]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_access_filters() -> Iterator[None]:
+    access_logger = logging.getLogger("uvicorn.access")
+    before = list(access_logger.filters)
+    for filt in before:
+        access_logger.removeFilter(filt)
+    yield
+    for filt in access_logger.filters[:]:
+        access_logger.removeFilter(filt)
+    for filt in before:
+        access_logger.addFilter(filt)
+
+
+def _access_record(path: str) -> logging.LogRecord:
+    access_logger = logging.getLogger("uvicorn.access")
+    return access_logger.makeRecord(
+        access_logger.name,
+        logging.INFO,
+        __file__,
+        0,
+        '%s - "%s %s HTTP/%s" %d',
+        ("127.0.0.1:1", "GET", path, "1.1", 200),
+        None,
+    )
+
+
+def test_health_access_filter_drops_health_record() -> None:
+    install_health_access_filter()
+    access_logger = logging.getLogger("uvicorn.access")
+    assert access_logger.filter(_access_record("/api/health")) is False
+
+
+def test_health_access_filter_keeps_other_records() -> None:
+    install_health_access_filter()
+    access_logger = logging.getLogger("uvicorn.access")
+    assert access_logger.filter(_access_record("/api/status"))
+
+
+def test_install_health_access_filter_idempotent() -> None:
+    install_health_access_filter()
+    install_health_access_filter()
+    access_logger = logging.getLogger("uvicorn.access")
+    ours = [f for f in access_logger.filters if isinstance(f, _HealthAccessFilter)]
+    assert len(ours) == 1

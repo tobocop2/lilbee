@@ -18,7 +18,11 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.commands.serve_logging import setup_server_log_file, setup_server_logging
+from lilbee.cli.commands.serve_logging import (
+    install_health_access_filter,
+    setup_server_log_file,
+    setup_server_logging,
+)
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     SERVER_LOCK_TIMEOUT,
@@ -170,6 +174,8 @@ def serve(
         app = create_app()
         # Litestar's app construction reconfigures root logging; re-install the file handler.
         setup_server_log_file()
+        # Install after app construction so Litestar's logging reconfig cannot drop the filter.
+        install_health_access_filter()
         config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
         server = uvicorn.Server(config)
         asyncio.run(_run_server(server, config, cfg.server_host))
