@@ -298,12 +298,19 @@ async def _emit_sources_and_memories(
 
     SOURCES carries the cited subset (what the answer referenced), falling back to
     the full retrieved set when the answer cited nothing, mirroring
-    ``Searcher.ask_stream``. Auto-extraction trails ``done`` so clients that stop
-    at ``done`` are unaffected; the memories are stored regardless.
+    ``Searcher.ask_stream``. Recalled memories always ride along: they were in the
+    prompt whether the answer cited a document or not. Auto-extraction trails
+    ``done`` so clients that stop at ``done`` are unaffected; the memories are
+    stored regardless.
     """
     answer = "".join(answer_parts)
     cited = cited_subset(answer, sources)
-    source_list = cited if cited else sources
+    if cited:
+        cited_sources = {c.source for c in cited}
+        memories = [s for s in sources if s.memory_id is not None and s.source not in cited_sources]
+        source_list = [*cited, *memories]
+    else:
+        source_list = sources
     yield sse_event(SseEvent.SOURCES, [clean_result(s) for s in source_list])
     yield sse_done({})
     async for event in _emit_extracted_memories(question, answer):

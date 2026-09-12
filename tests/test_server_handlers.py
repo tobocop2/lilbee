@@ -547,6 +547,25 @@ class TestAsk:
         assert result.answer == "No docs found."
         assert result.sources == []
 
+    async def test_memory_source_carries_its_id(self, mock_svc):
+        from lilbee.retrieval.query import AskResult
+
+        memory = _SAMPLE_CHUNK.model_copy(
+            update={
+                "source": "memory:m1",
+                "content_type": "memory",
+                "chunk": "the user prefers terse answers",
+                "page_start": 0,
+                "page_end": 0,
+                "chunk_index": 0,
+                "memory_id": "m1",
+            }
+        )
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="Done.", sources=[memory])
+        result = await handlers.ask("what?")
+        assert [s.source for s in result.sources] == ["memory:m1"]
+        assert result.sources[0].memory_id == "m1"
+
     async def test_rewritten_retrieval_query_reaches_the_response(self, mock_svc):
         """A follow-up rewritten for retrieval is visible, so a client can show
         the query the answer was actually grounded in."""
@@ -744,6 +763,31 @@ class TestAskStream:
         sources_event = next(e for e in events if e and e.startswith("event: sources"))
         payload = json.loads(sources_event.split("data: ")[1].strip())
         assert [s["source"] for s in payload] == ["cited.md"]
+
+    async def test_sources_event_keeps_memories_alongside_cited_subset(self, mock_svc):
+        """Recalled memories were in the prompt whether the answer cited a
+        document or not, so SOURCES unions them onto the cited subset."""
+        cited = _SAMPLE_CHUNK.model_copy(update={"source": "cited.md", "chunk_index": 0})
+        other = _SAMPLE_CHUNK.model_copy(update={"source": "other.md", "chunk_index": 1})
+        memory = _SAMPLE_CHUNK.model_copy(
+            update={
+                "source": "memory:m1",
+                "content_type": "memory",
+                "chunk": "the user prefers terse answers",
+                "page_start": 0,
+                "page_end": 0,
+                "chunk_index": 0,
+                "memory_id": "m1",
+            }
+        )
+        mock_svc.searcher.build_rag_context.return_value = RagContext([cited, other, memory], [])
+        mock_svc.provider.chat.return_value = iter(["see [1] for details"])
+        events = [e async for e in handlers.ask_stream("question")]
+        sources_event = next(e for e in events if e and e.startswith("event: sources"))
+        payload = json.loads(sources_event.split("data: ")[1].strip())
+        assert [s["source"] for s in payload] == ["cited.md", "memory:m1"]
+        assert payload[1]["memory_id"] == "m1"
+        assert "memory_id" not in payload[0]
 
     async def test_model_sources_block_suppressed_in_grounded_stream(self, mock_svc):
         """A model that appends its own Sources block must not double up with the
