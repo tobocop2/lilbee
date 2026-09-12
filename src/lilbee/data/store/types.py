@@ -157,6 +157,7 @@ class SearchChunk(BaseModel):
     field; the arm-specific fields below it are provenance.
     Vector-arm rows carry ``distance``; FTS-arm rows carry ``bm25_score``;
     reranked rows additionally carry ``rerank_score`` (higher = better).
+    Memory pseudo-rows carry ``memory_id`` and a ``memory:<id>`` source.
     """
 
     model_config = ConfigDict(populate_by_name=True)
@@ -197,6 +198,10 @@ class SearchChunk(BaseModel):
     # normalized reciprocal-rank fusion on the hybrid path, clamped cosine
     # similarity on vector-only, list-normalized BM25 on FTS-only probes.
     score: float | None = None
+    # Set only on memory pseudo-rows built from a recalled MemoryRow (never by
+    # the store): the memory id, so consumers can tell a memory source apart
+    # from a retrieved passage and link it back to /api/memories.
+    memory_id: str | None = None
 
 
 class SourceRecord(TypedDict):
@@ -319,6 +324,12 @@ class MemorySource(StrEnum):
 LOCAL_OWNER = "local"
 AGENT_OWNER_PREFIX = "agent:"
 
+# Memory pseudo-source values on SearchChunk: ``"memory:<id>"`` with a
+# ``"memory"`` content type. Built by retrieval, never stored in the chunks
+# table, so recalled facts show in sources without a backing document.
+MEMORY_SOURCE_PREFIX = "memory:"
+MEMORY_CONTENT_TYPE = "memory"
+
 
 def agent_owner(agent_id: str) -> str:
     """Owner string for an agent identity (``"opencode"`` -> ``"agent:opencode"``)."""
@@ -328,6 +339,16 @@ def agent_owner(agent_id: str) -> str:
 def is_agent_owner(owner: str) -> bool:
     """True when *owner* is an agent namespace rather than the local human."""
     return owner.startswith(AGENT_OWNER_PREFIX)
+
+
+def memory_source(memory_id: str) -> str:
+    """Source value for a recalled memory (``"abc"`` -> ``"memory:abc"``)."""
+    return f"{MEMORY_SOURCE_PREFIX}{memory_id}"
+
+
+def is_memory_source(source: str) -> bool:
+    """True when *source* names a recalled memory rather than a document."""
+    return source.startswith(MEMORY_SOURCE_PREFIX)
 
 
 class MemoryRow(BaseModel):

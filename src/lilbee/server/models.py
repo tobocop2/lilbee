@@ -150,6 +150,9 @@ class CleanedChunk(BaseModel):
     # the source isn't resolvable as a vault file. Clients use this to open
     # the source in a native editor instead of fetching ``/api/source``.
     vault_path: str | None = None
+    # Set only on recalled-memory sources (``source`` is ``memory:<id>``), so
+    # clients can mark them as memory and link them to ``GET /api/memories``.
+    memory_id: str | None = None
 
 
 class StatusSourceInfo(BaseModel):

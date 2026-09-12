@@ -113,6 +113,7 @@ def _make_result(
     rerank_score=None,
     vector=None,
     score=_AUTO_SCORE,
+    memory_id=None,
 ) -> SearchChunk:
     if score is _AUTO_SCORE:
         # Mirror the store contract: every search path sets the canonical
@@ -134,6 +135,7 @@ def _make_result(
         rerank_score=rerank_score,
         vector=vector or [0.1],
         score=score,
+        memory_id=memory_id,
     )
 
 
@@ -259,6 +261,15 @@ class TestFormatSource:
         monkeypatch.setattr("lilbee.data.ingest.discovery.resolve_source_path", _raise)
         r = _make_result(source="doc.md", content_type="text")
         assert format_source(r) == "doc.md"
+
+    def test_memory_row_renders_plain_label_without_link(self):
+        r = _make_result(source="memory:m1", content_type="memory", memory_id="m1")
+        assert format_source(r) == "memory:m1"
+
+    def test_memory_source_string_renders_without_link(self):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        assert source_markdown_link("memory:m1") == "memory:m1"
 
 
 class TestUniqueSources:
@@ -1975,7 +1986,7 @@ class TestMemoryGroundedFallback:
             mock_svc.store.bm25_probe.return_value = []
             result = get_services().searcher.ask_raw("what's my name?")
             assert result.answer == "Your name is Tobias."
-            assert result.sources == []
+            assert [s.source for s in result.sources] == ["memory:m1"]
         finally:
             cfg.memory_enabled = False
 
@@ -2008,6 +2019,30 @@ class TestMemoryGroundedFallback:
             mock_svc.store.bm25_probe.return_value = []
             result = get_services().searcher.ask_raw("what's my name?")
             assert result.answer == "Your name is Tobias."
+        finally:
+            cfg.memory_enabled = False
+
+    def test_recalled_facts_appear_as_memory_sources(self, mock_svc):
+        self._enable_memory(mock_svc, [_memory_fact("The user's name is Tobias.")])
+        try:
+            mock_svc.store.has_chunks.return_value = True
+            mock_svc.store.search.return_value = []
+            mock_svc.store.bm25_probe.return_value = []
+            result = get_services().searcher.ask_raw("what's my name?")
+            assert [s.source for s in result.sources] == ["memory:m1"]
+        finally:
+            cfg.memory_enabled = False
+
+    def test_grounded_turn_lists_memories_after_documents(self, mock_svc):
+        self._enable_memory(mock_svc, [_memory_fact("The user prefers terse answers.")])
+        try:
+            mock_svc.store.search.return_value = [
+                _make_result(source="a.pdf", chunk="alpha", distance=0.1)
+            ]
+            result = get_services().searcher.ask_raw("summarize a.pdf")
+            assert [s.source for s in result.sources] == ["a.pdf", "memory:m1"]
+            assert result.sources[1].memory_id == "m1"
+            assert result.sources[0].memory_id is None
         finally:
             cfg.memory_enabled = False
 

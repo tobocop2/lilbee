@@ -82,7 +82,7 @@ from lilbee.retrieval.query.intent import (
     refers_to_history,
     title_candidates,
 )
-from lilbee.retrieval.query.memory import format_memory_block
+from lilbee.retrieval.query.memory import format_memory_block, memory_to_chunk
 from lilbee.retrieval.query.neighbors import expand_neighbors
 from lilbee.retrieval.query.structural import is_structural_chunk
 from lilbee.retrieval.query.tokenize import _idf_weights, _tokenize
@@ -977,9 +977,12 @@ class Searcher:
                 # for this question answer via the memory-injected direct
                 # prompt instead of a refusal. Facts only -- always-injected
                 # preferences say nothing about answerability.
-                if self._memory_facts(question):
+                memory_chunks = self._memory_sources(question)
+                if memory_chunks:
                     return RagContext(
-                        [], self.direct_messages(question, history), retrieval_query=rewrite
+                        memory_chunks,
+                        self.direct_messages(question, history),
+                        retrieval_query=rewrite,
                     )
                 return None
             results = prepare_results(results, self._config.diversity_max_per_source)
@@ -1000,6 +1003,8 @@ class Searcher:
 
         Split from build_rag_context so an overflow retry can refit the same
         retrieved set tighter without re-running retrieval or condensation.
+        Recalled memory facts join the returned sources after the fit, so they
+        are visible without consuming the document budget or the prompt context.
         """
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         base_results = list(results)
@@ -1012,7 +1017,9 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages, base_results, retrieval_query)
+        return RagContext(
+            [*results, *self._memory_sources(question)], messages, base_results, retrieval_query
+        )
 
     def _context_budget(
         self,
@@ -1131,6 +1138,12 @@ class Searcher:
             top_k=self._config.memory_top_k,
             max_distance=self._config.memory_max_distance,
         )
+
+    def _memory_sources(self, question: str) -> list[SearchChunk]:
+        """Recalled facts for *question* as marked source rows, or empty."""
+        if self._config.memory_token_budget <= 0:
+            return []
+        return [memory_to_chunk(memory) for memory in self._memory_facts(question)]
 
     def _answer_aggregate(self, aggregate: AggregateQuery) -> str:
         """Answer a count-shaped question with an exact full-corpus scan.

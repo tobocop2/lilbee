@@ -32,6 +32,19 @@ class TestOwnerHelpers:
         assert is_agent_owner(LOCAL_OWNER) is False
 
 
+class TestMemorySourceHelpers:
+    def test_memory_source_prefixes_the_id(self):
+        from lilbee.data.store import memory_source
+
+        assert memory_source("abc") == "memory:abc"
+
+    def test_is_memory_source_matches_prefix_only(self):
+        from lilbee.data.store import is_memory_source
+
+        assert is_memory_source("memory:abc") is True
+        assert is_memory_source("doc.md") is False
+
+
 @pytest.fixture()
 def test_config(tmp_path):
     """A Config pointing at a temp LanceDB dir."""
