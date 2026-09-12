@@ -1580,20 +1580,127 @@ class TestIsBareHfRepo:
 
 class TestTaskToPipeline:
     def test_chat(self) -> None:
-        assert _query.task_to_pipeline("chat") == ("text-generation", None)
+        assert _query.task_to_pipeline("chat") == (("text-generation",), None)
 
     def test_embedding(self) -> None:
-        expected = ("feature-extraction", "sentence-transformers")
+        expected = (("feature-extraction", "sentence-similarity"), "sentence-transformers")
         assert _query.task_to_pipeline("embedding") == expected
 
     def test_vision(self) -> None:
-        assert _query.task_to_pipeline("vision") == ("image-text-to-text", None)
+        expected = (("image-text-to-text", "image-to-text"), None)
+        assert _query.task_to_pipeline("vision") == expected
+
+    def test_rerank(self) -> None:
+        expected = (("text-classification", "text-ranking"), None)
+        assert _query.task_to_pipeline("rerank") == expected
 
     def test_unknown(self) -> None:
-        assert _query.task_to_pipeline("unknown") == ("text-generation", None)
+        assert _query.task_to_pipeline("unknown") == (("text-generation",), None)
 
     def test_none(self) -> None:
-        assert _query.task_to_pipeline(None) == ("text-generation", None)
+        assert _query.task_to_pipeline(None) == (("text-generation",), None)
+
+
+class TestFetchHfPageMergesTags:
+    @staticmethod
+    def _row(repo: str, downloads: int) -> CatalogModel:
+        return CatalogModel(
+            hf_repo=repo,
+            gguf_filename="*.gguf",
+            size_gb=1.0,
+            min_ram_gb=2.0,
+            description="",
+            featured=False,
+            downloads=downloads,
+            task="embedding",
+        )
+
+    @staticmethod
+    def _fetch_by_tag(monkeypatch: pytest.MonkeyPatch, pages: dict[str, HfPage]) -> None:
+        def _fetch(**kwargs: Any) -> HfPage:
+            return pages.get(str(kwargs["pipeline_tag"]), _EMPTY_HF_PAGE)
+
+        monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
+
+    def test_embedding_search_finds_a_repo_only_the_second_tag_lists(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """nomic-embed-text-v1.5 carries sentence-similarity, invisible to one tag."""
+        nomic = self._row("nomic-ai/nomic-embed-text-v1.5-GGUF", 155590)
+        self._fetch_by_tag(
+            monkeypatch, {"sentence-similarity": HfPage(models=[nomic], has_more=False)}
+        )
+        result = get_catalog(task=ModelTask.EMBEDDING, search="nomic-embed-text")
+        assert "nomic-ai/nomic-embed-text-v1.5-GGUF" in [m.hf_repo for m in result.models]
+
+    def test_merged_page_orders_by_downloads_across_tags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._fetch_by_tag(
+            monkeypatch,
+            {
+                "feature-extraction": HfPage(models=[self._row("a/low-GGUF", 100)], has_more=False),
+                "sentence-similarity": HfPage(
+                    models=[self._row("b/high-GGUF", 9000)], has_more=False
+                ),
+            },
+        )
+        window = _models.PageWindow(rest_offset=0, rest_limit=10)
+        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
+        assert [m.hf_repo for m in page.models] == ["b/high-GGUF", "a/low-GGUF"]
+
+    def test_merged_page_dedupes_a_repo_listed_under_both_tags(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        dupe = self._row("a/dupe-GGUF", 500)
+        self._fetch_by_tag(
+            monkeypatch,
+            {
+                "feature-extraction": HfPage(models=[dupe], has_more=False),
+                "sentence-similarity": HfPage(models=[dupe], has_more=False),
+            },
+        )
+        window = _models.PageWindow(rest_offset=0, rest_limit=10)
+        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
+        assert [m.hf_repo for m in page.models] == ["a/dupe-GGUF"]
+
+    def test_merged_page_caps_at_the_window_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        first = [self._row(f"a/m{i}-GGUF", 100 * (i + 1)) for i in range(3)]
+        second = [self._row(f"b/n{i}-GGUF", 1000 * (i + 1)) for i in range(3)]
+        self._fetch_by_tag(
+            monkeypatch,
+            {
+                "feature-extraction": HfPage(models=first, has_more=False),
+                "sentence-similarity": HfPage(models=second, has_more=False),
+            },
+        )
+        window = _models.PageWindow(rest_offset=0, rest_limit=2)
+        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
+        assert [m.downloads for m in page.models] == [3000, 2000]
+
+    def test_merged_has_more_when_either_page_has_more(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._fetch_by_tag(
+            monkeypatch,
+            {
+                "feature-extraction": HfPage(models=[], has_more=False),
+                "sentence-similarity": HfPage(models=[], has_more=True),
+            },
+        )
+        window = _models.PageWindow(rest_offset=0, rest_limit=10)
+        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
+        assert page.has_more is True
+
+
+class TestDedupeModels:
+    def test_drops_repeats_keeping_first_order(self) -> None:
+        first = make_test_catalog_model(hf_repo="a/first-GGUF")
+        second = make_test_catalog_model(hf_repo="b/second-GGUF")
+        assert _models.dedupe_models([first, second, first]) == [first, second]
+
+    def test_empty_stays_empty(self) -> None:
+        assert _models.dedupe_models([]) == []
 
 
 class TestPipelineToTask:

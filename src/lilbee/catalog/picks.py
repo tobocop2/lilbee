@@ -9,7 +9,7 @@ from dataclasses import replace
 
 from lilbee.app.services import get_services
 from lilbee.catalog.hf_client import repo_has_mmproj
-from lilbee.catalog.models import CatalogModel
+from lilbee.catalog.models import CatalogModel, dedupe_models
 from lilbee.catalog.refs import hf_repo_from_ref
 from lilbee.catalog.types import CatalogSize, ModelCompat, ModelTask
 
@@ -63,20 +63,24 @@ def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> l
     """Trending models serving *task*, most popular first. Empty on fetch failure.
 
     Stops at *needed* so the vision probe costs one request per candidate
-    examined, not per candidate fetched.
+    examined, not per candidate fetched. Tag pages concatenate in order; the
+    API exposes no score to merge by.
     """
     # circular: query -> picks via get_picks
     from lilbee.catalog.query import task_to_pipeline
 
-    pipeline_tag, library = task_to_pipeline(task)
-    page = get_services().hf_client.fetch_models(
-        pipeline_tag=pipeline_tag,
-        sort=TRENDING_SORT,
-        limit=limit,
-        library=library,
-    )
+    pipeline_tags, library = task_to_pipeline(task)
+    models: list[CatalogModel] = []
+    for tag in pipeline_tags:
+        page = get_services().hf_client.fetch_models(
+            pipeline_tag=tag,
+            sort=TRENDING_SORT,
+            limit=limit,
+            library=library,
+        )
+        models.extend(page.models)
     qualified: list[CatalogModel] = []
-    for model in page.models:
+    for model in dedupe_models(models):
         if model.task != task or not _serves_role(model, task):
             continue
         qualified.append(model)

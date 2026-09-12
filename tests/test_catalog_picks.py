@@ -308,6 +308,49 @@ class TestPickFlagAndCaching:
         assert len(calls) > before
 
 
+class TestMultiTagFanout:
+    @staticmethod
+    def _fetch_by_tag(monkeypatch, pages: dict[str, list[CatalogModel]]) -> list[dict]:
+        """Route hf_client.fetch_models to per-tag lists; return the call log."""
+        from lilbee.app.services import get_services
+
+        calls: list[dict] = []
+
+        def fake(**kw):
+            calls.append(kw)
+            return HfPage(models=list(pages.get(str(kw.get("pipeline_tag")), [])), has_more=False)
+
+        monkeypatch.setattr(get_services().hf_client, "fetch_models", fake)
+        return calls
+
+    def test_embedding_picks_draw_from_both_pipeline_tags(self, monkeypatch) -> None:
+        """A repo listed only under sentence-similarity is still picked."""
+        from lilbee.catalog.picks import picks_for
+
+        gte = _model("e/gte-base-GGUF", "embedding", 100_000_000)
+        nomic = _model("nomic-ai/nomic-embed-text-v1.5-GGUF", "embedding", 150_000_000)
+        calls = self._fetch_by_tag(
+            monkeypatch,
+            {"feature-extraction": [gte], "sentence-similarity": [nomic]},
+        )
+        repos = [m.hf_repo for m in picks_for(ModelTask.EMBEDDING)]
+
+        assert repos == ["e/gte-base-GGUF", "nomic-ai/nomic-embed-text-v1.5-GGUF"]
+        assert {"feature-extraction", "sentence-similarity"} <= {c["pipeline_tag"] for c in calls}
+
+    def test_trending_concat_dedupes_a_repo_listed_under_both_tags(self, monkeypatch) -> None:
+        from lilbee.catalog.picks import picks_for
+
+        gte = _model("e/gte-base-GGUF", "embedding", 100_000_000)
+        self._fetch_by_tag(
+            monkeypatch,
+            {"feature-extraction": [gte], "sentence-similarity": [gte]},
+        )
+        repos = [m.hf_repo for m in picks_for(ModelTask.EMBEDDING)]
+
+        assert repos == ["e/gte-base-GGUF"]
+
+
 class TestTrendingRequest:
     def test_requests_the_trending_ranking(self, monkeypatch) -> None:
         from lilbee.catalog.picks import TRENDING_SORT, get_picks

@@ -193,6 +193,17 @@ class HfPage:
     has_more: bool
 
 
+def dedupe_models(models: list[CatalogModel]) -> list[CatalogModel]:
+    """Models in first-seen order, later repeats dropped."""
+    seen: set[str] = set()
+    unique: list[CatalogModel] = []
+    for model in models:
+        if model.hf_repo not in seen:
+            seen.add(model.hf_repo)
+            unique.append(model)
+    return unique
+
+
 @dataclass(frozen=True)
 class ModelVariant:
     """One quantization within a model family. ``filename`` may be a glob."""
