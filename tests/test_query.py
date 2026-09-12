@@ -2855,7 +2855,8 @@ class TestHistoryCondensation:
             cfg.query_expansion_count = 3
         assert rag is not None
         messages = rag.messages
-        assert mock_svc.store.search.call_args[1]["query_text"] == rewritten
+        texts = [c[1]["query_text"] for c in mock_svc.store.search.call_args_list]
+        assert texts == [rewritten, "and when was it written?"]
         assert "and when was it written?" in messages[-1]["content"]
         assert rewritten not in messages[-1]["content"]
 
@@ -2907,7 +2908,8 @@ class TestHistoryCondensation:
         finally:
             cfg.query_expansion_count = 3
         expected = "when was the Split Rock journal written"
-        assert mock_svc.store.search.call_args[1]["query_text"] == expected
+        texts = [c[1]["query_text"] for c in mock_svc.store.search.call_args_list]
+        assert texts == [expected, "and when was it written?"]
 
     def test_context_carries_the_rewrite(self, mock_svc):
         """The query retrieval actually ran is on the context, so a client can
@@ -3037,6 +3039,179 @@ class TestHistoryCondensation:
         )
         assert rewritten == "standalone question"
         assert mock_svc.provider.chat.call_args.kwargs["options"]["think"] is False
+
+
+class TestTypedRewriteFusion:
+    """A rewrite that absorbed conversation context must not crowd out the
+    typed question's own retrieval: the turn searches both and fuses."""
+
+    _HISTORY: ClassVar[list[dict[str, str]]] = [
+        {"role": "user", "content": "who kept the lighthouse journal at Split Rock"},
+        {"role": "assistant", "content": "It was kept by E. Larsen [1]."},
+    ]
+
+    @pytest.fixture(autouse=True)
+    def _rewrite_on(self, monkeypatch):
+        monkeypatch.setattr(cfg, "history_rewrite", True)
+        monkeypatch.setattr(cfg, "query_expansion_count", 0)
+
+    def _build(self, mock_svc, question, rewritten, rewrite_rows, typed_rows, **kwargs):
+        mock_svc.provider.chat.return_value = _text_result(rewritten)
+        mock_svc.store.search.side_effect = [rewrite_rows, typed_rows]
+        return get_services().searcher.build_rag_context(
+            question, history=list(self._HISTORY), **kwargs
+        )
+
+    def test_both_rankings_reach_the_context(self, mock_svc):
+        rewritten = "when was the Split Rock lighthouse journal written"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [_make_result(source="typed.md", chunk="typed evidence")],
+        )
+        assert rag is not None
+        assert {r.source for r in rag.results} == {"rewrite.md", "typed.md"}
+        assert rag.retrieval_query == rewritten
+
+    def test_typed_winner_survives_on_its_own_evidence(self, mock_svc):
+        """The same chunk far from the rewrite but close to the typed
+        question keeps the close distance through the fuse, so the relevance
+        filter judges it on the evidence that found it."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="drift.md", chunk="drifted passage", distance=0.7)],
+            [_make_result(source="drift.md", chunk="drifted passage", distance=0.2)],
+        )
+        assert rag is not None
+        assert [r.source for r in rag.results] == ["drift.md"]
+        assert rag.results[0].distance == pytest.approx(0.2)
+
+    def test_typed_arm_makes_no_llm_call(self, mock_svc):
+        self._build(
+            mock_svc,
+            "and when was it written?",
+            "when was the Split Rock lighthouse journal written",
+            [_make_result()],
+            [_make_result(source="typed.md", chunk="typed evidence")],
+        )
+        assert mock_svc.provider.chat.call_count == 1
+
+    def test_silent_rewrite_arm_keeps_typed_results(self, mock_svc):
+        """A rewrite that retrieves nothing no longer refuses the turn when
+        the typed question matches."""
+        rewritten = "when was the Split Rock lighthouse journal written"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [],
+            [_make_result(source="typed.md", chunk="typed evidence")],
+        )
+        assert rag is not None
+        assert [r.source for r in rag.results] == ["typed.md"]
+        assert rag.retrieval_query == rewritten
+
+    def test_silent_typed_arm_keeps_rewrite_results(self, mock_svc):
+        rewritten = "when was the Split Rock lighthouse journal written"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [],
+        )
+        assert rag is not None
+        assert [r.source for r in rag.results] == ["rewrite.md"]
+
+    def test_no_rewrite_searches_once(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result()]
+        rag = get_services().searcher.build_rag_context(
+            "who designed the Split Rock lighthouse?", history=list(self._HISTORY)
+        )
+        assert rag is not None
+        assert mock_svc.store.search.call_count == 1
+        assert mock_svc.store.search.call_args[1]["query_text"] == (
+            "who designed the Split Rock lighthouse?"
+        )
+
+    def test_structured_prefix_routes_the_typed_arm(self, mock_svc):
+        """A mode prefix on the typed question reaches the typed arm's own
+        search rather than polluting it as literal text."""
+        term_row = _make_result(source="term.md", chunk="term evidence", bm25_score=9.0)
+        mock_svc.store.bm25_probe.return_value = [term_row]
+        rag = self._build(
+            mock_svc,
+            "term:it",
+            "who kept the lighthouse journal",
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [],
+        )
+        assert rag is not None
+        assert {r.source for r in rag.results} == {"rewrite.md", "term.md"}
+        probed = [c[0][0] for c in mock_svc.store.bm25_probe.call_args_list]
+        assert "it" in probed
+
+    def test_typed_arm_drops_structural_chunk(self, mock_svc):
+        """With the structural filter on, a TOC the typed arm surfaced is
+        dropped like the rewrite arm's."""
+        cfg.filter_structural_chunks = True
+        toc = "A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            "when was the Split Rock lighthouse journal written",
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [
+                _make_result(source="typed.md", chunk="typed evidence"),
+                _make_result(source="toc.md", chunk=toc),
+            ],
+        )
+        assert rag is not None
+        assert "toc.md" not in {r.source for r in rag.results}
+        assert "typed.md" in {r.source for r in rag.results}
+
+    def test_high_relevance_threshold_drops_single_query_rows(self, mock_svc):
+        """Fused single-query rows score at most their query share (0.5 for
+        two queries), so a threshold above that drops each query's winner
+        and only a row both queries found survives."""
+        cfg.min_relevance_score = 0.6
+        rewritten = "when was the Split Rock lighthouse journal written"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [_make_result(source="typed.md", chunk="typed evidence")],
+        )
+        assert rag is None
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="both.md", chunk="shared evidence")],
+            [_make_result(source="both.md", chunk="shared evidence")],
+        )
+        assert rag is not None
+        assert [r.source for r in rag.results] == ["both.md"]
+
+    def test_wiki_scope_refuses_the_typed_arm(self, mock_svc):
+        """A disabled wiki serves nothing on either arm: the typed arm honors
+        the same scope guard as the main search."""
+        mock_svc.provider.chat.return_value = _text_result(
+            "when was the Split Rock lighthouse journal written"
+        )
+        rag = get_services().searcher.build_rag_context(
+            "and when was it written?",
+            history=list(self._HISTORY),
+            chunk_type=ChunkType.WIKI,
+        )
+        assert rag is None
+        assert mock_svc.store.search.call_count == 0
 
 
 class TestAskRawWithReranker:

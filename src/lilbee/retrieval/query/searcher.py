@@ -25,6 +25,7 @@ from lilbee.data.store import (
     cosine_sim,
     human_recall_predicate,
 )
+from lilbee.data.store.fusion import fuse_ranked_lists
 from lilbee.providers.base import (
     LLMProvider,
     ProviderError,
@@ -297,6 +298,16 @@ class Searcher:
             except (ValueError, TypeError):
                 filtered.append(r)
         return filtered if filtered else results
+
+    def _drop_structural(self, results: list[SearchChunk]) -> list[SearchChunk]:
+        """Drop structural chunks the lexical arms did not support."""
+        if not self._config.filter_structural_chunks:
+            return results
+        return [
+            r
+            for i, r in enumerate(results)
+            if r.bm25_score is not None or i == 0 or not is_structural_chunk(r.chunk)
+        ]
 
     def _apply_guardrails(
         self,
@@ -658,20 +669,9 @@ class Searcher:
         # HTTP, and MCP copies of a bare distance cutoff dropped both-arm
         # rows the fusion layer deliberately keeps past max_distance.
         results = filter_results(results, self._config.max_distance)
-        # Drop tables-of-contents and cover pages that only the vector arm
-        # surfaced: they dilute context precision without answering a question.
-        # Filtered from the top_k*2 candidate buffer so enough real passages
-        # remain for the downstream trim. Runs before the concept boost so a
-        # boost cannot promote a structural chunk into the rank-0 exemption.
-        if self._config.filter_structural_chunks:
-            # A lexical (BM25 or title) hit or the top-ranked row is content the
-            # answer may need, whatever its shape, so it is never dropped; only
-            # structural chunks the lexical arms did not support are removed.
-            results = [
-                r
-                for i, r in enumerate(results)
-                if r.bm25_score is not None or i == 0 or not is_structural_chunk(r.chunk)
-            ]
+        # Runs before the concept boost so a boost cannot promote a
+        # structural chunk into the rank-0 exemption.
+        results = self._drop_structural(results)
         results = self._apply_concept_boost(results, question)
         results = order_by_fusion(results)
         # Rerank when a cross-encoder is loaded so every search surface (HTTP,
@@ -923,6 +923,28 @@ class Searcher:
             return top_source
         return None
 
+    def _search_typed_arm(
+        self, question: str, top_k: int, chunk_type: ChunkType | None
+    ) -> list[SearchChunk]:
+        """Direct retrieval for the typed question.
+
+        Applies the temporal and structural filters; skips expansion,
+        intent routing, concept boost, and rerank.
+        """
+        mode, clean_query = self._parse_structured_query(question)
+        if mode is not None:
+            typed = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            return self._apply_temporal_filter(typed, clean_query)
+        if self._refuse_wiki_scope(chunk_type):
+            return []
+        typed = self._store.search(
+            self._embedder.embed_query(question),
+            top_k=top_k,
+            query_text=question,
+            chunk_type=self._retrieval_scope(chunk_type),
+        )
+        return self._drop_structural(self._apply_temporal_filter(typed, question))
+
     def build_rag_context(
         self,
         question: str,
@@ -968,6 +990,9 @@ class Searcher:
             if self._config.reranker_model:
                 retrieve_k = max(retrieve_k, self._config.rerank_candidates)
             results = self.search(retrieval_query, top_k=retrieve_k, chunk_type=chunk_type)
+            if rewrite is not None:
+                typed_results = self._search_typed_arm(question, retrieve_k, chunk_type)
+                results = fuse_ranked_lists([results, typed_results])
             results = filter_results(
                 results, self._config.max_distance, self._config.min_relevance_score
             )

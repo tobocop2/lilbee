@@ -29,6 +29,13 @@ other. Arm depth matters as much as the formula: rows both arms rank
 mid-pool accumulate two contributions, so deep candidate pools crowd out
 single-arm certainty; the hybrid path therefore feeds fusion arms of
 exactly ``top_k`` rows.
+
+Per-query fusion serves the history-rewrite path: the condensed rewrite's
+ranking fuses with the typed question's own retrieval at equal weight, so
+a rewrite that absorbed conversation context cannot crowd out the
+question's evidence. Shares normalize over the live lists, so one silent
+query does not demote the other, and a row found by both keeps the
+closest distance and any lexical support.
 """
 
 from __future__ import annotations
@@ -113,12 +120,13 @@ def _merge_arm(
     merged: dict[tuple[str, int], SearchChunk],
     rows: list[SearchChunk],
     share: float,
+    *,
+    keep_closest_distance: bool = False,
 ) -> None:
     """Fold one arm's ranked rows into *merged*, each contributing *share* of its rank weight.
 
-    A lexical row (title or chunk FTS) carries ``bm25_score``; when the row was
-    already seen, that provenance is kept from whichever lexical arm set it
-    first, so the lexical-support exemption applies either way.
+    A row seen before keeps the first lexical support; with
+    *keep_closest_distance* it also keeps the closest distance.
     """
     for rank, row in enumerate(rows, start=1):
         key = _key(row)
@@ -128,6 +136,12 @@ def _merge_arm(
             merged[key] = row.model_copy(update={"score": contribution})
         else:
             update: dict[str, object] = {"score": (seen.score or 0.0) + contribution}
+            if (
+                keep_closest_distance
+                and row.distance is not None
+                and (seen.distance is None or row.distance < seen.distance)
+            ):
+                update["distance"] = row.distance
             if seen.bm25_score is None and row.bm25_score is not None:
                 update["bm25_score"] = row.bm25_score
             merged[key] = seen.model_copy(update=update)
@@ -164,4 +178,23 @@ def fuse_arms(
         _merge_arm(merged, fts_rows, lexical_weight / weight_total)
     if title_rows and title_weight > 0:
         _merge_arm(merged, title_rows, title_weight / weight_total)
+    return sorted(merged.values(), key=lambda r: r.score or 0.0, reverse=True)
+
+
+def fuse_ranked_lists(query_lists: list[list[SearchChunk]]) -> list[SearchChunk]:
+    """Fuse equally-weighted per-query rankings by reciprocal rank.
+
+    Each live list contributes its rank weights scaled by its share of the
+    lists in the call, so one silent query does not demote the other. A row
+    found by several queries keeps the closest distance and any lexical
+    support. The result is sorted by score descending and deduplicated on
+    (source, chunk_index).
+    """
+    lists = [rows for rows in query_lists if rows]
+    if not lists:
+        return []
+    share = 1.0 / len(lists)
+    merged: dict[tuple[str, int], SearchChunk] = {}
+    for rows in lists:
+        _merge_arm(merged, rows, share, keep_closest_distance=True)
     return sorted(merged.values(), key=lambda r: r.score or 0.0, reverse=True)
