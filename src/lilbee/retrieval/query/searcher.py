@@ -218,12 +218,15 @@ class AskResult(BaseModel):
     consumer can tell whether the answer was grounded without re-parsing the text.
     ``retrieval_query`` carries the follow-up rewrite retrieval ran on, or ``None``
     when the question as typed was searched.
+    ``dropped_sources`` names the chunks the budget fit shed, so a caller can say
+    what went in and what was trimmed.
     """
 
     answer: str
     sources: list[SearchChunk]
     cited_sources: list[SearchChunk] = Field(default_factory=list)
     retrieval_query: str | None = None
+    dropped_sources: list[SearchChunk] = Field(default_factory=list)
 
 
 class StructuredQuery(NamedTuple):
@@ -242,12 +245,16 @@ class RagContext(NamedTuple):
 
     ``retrieval_query`` is the standalone rewrite retrieval ran on, set only when
     it replaced the question as typed.
+
+    ``dropped`` names the chunks the budget fit shed, so a caller can say what
+    went in and what was trimmed. ``None`` when no fit ran.
     """
 
     results: list[SearchChunk]
     messages: list[ChatMessage]
     base_results: list[SearchChunk] | None = None
     retrieval_query: str | None = None
+    dropped: list[SearchChunk] | None = None
 
 
 class Searcher:
@@ -1004,7 +1011,7 @@ class Searcher:
         system = self._system_with_memory(self._config.rag_system_prompt, question)
         base_results = list(results)
         budget = self._context_budget(system, question, history, scale)
-        results, used = self._fit_to_budget(results, budget)
+        results, used, dropped = self._fit_to_budget(results, budget)
         results = self._widen_with_neighbors(results, max(0, budget - used))
         context = build_context(results)
         prompt = CONTEXT_TEMPLATE.format(context=context, question=question)
@@ -1012,7 +1019,7 @@ class Searcher:
         if history:
             messages.extend(history)
         messages.append({"role": "user", "content": prompt})
-        return RagContext(results, messages, base_results, retrieval_query)
+        return RagContext(results, messages, base_results, retrieval_query, dropped)
 
     def _context_budget(
         self,
@@ -1045,32 +1052,36 @@ class Searcher:
 
     def _fit_to_budget(
         self, results: list[SearchChunk], budget: int
-    ) -> tuple[list[SearchChunk], int]:
-        """Fit *results* into *budget*: the kept sources and the tokens they cost.
+    ) -> tuple[list[SearchChunk], int, list[SearchChunk]]:
+        """Fit *results* into *budget*: kept sources, tokens spent, dropped sources.
 
         ``max_context_sources`` caps by count; this caps by tokens so a
         retrieval-heavy query degrades gracefully instead of erroring with
-        CONTEXT_OVERFLOW. The top-ranked source is always kept.
+        CONTEXT_OVERFLOW. The top-ranked source is always kept. A chunk that
+        does not fit is skipped rather than terminal, so later smaller chunks
+        still fill the remaining budget in rank order.
 
         Returning the spent total lets the caller derive the leftover for
         neighbor expansion instead of re-deriving the same per-chunk cost, so
         the two stages cannot drift apart on the accounting.
         """
         kept: list[SearchChunk] = []
+        dropped: list[SearchChunk] = []
         used = 0
         for r in results:
             cost = estimate_budget_tokens(r.chunk) + _PER_SOURCE_TOKENS
             if kept and used + cost > budget:
-                break
+                dropped.append(r)
+                continue
             kept.append(r)
             used += cost
-        if len(kept) < len(results):
+        if dropped:
             log.info(
                 "Kept %d of %d sources to fit the model context window.",
                 len(kept),
                 len(results),
             )
-        return kept, used
+        return kept, used, dropped
 
     def _widen_with_neighbors(self, results: list[SearchChunk], leftover: int) -> list[SearchChunk]:
         """Widen each fitted passage with adjacent same-source chunks.
@@ -1373,6 +1384,7 @@ class Searcher:
         if rag is None:
             return AskResult(answer=GROUNDED_REFUSAL, sources=[])
         results, messages = rag.results, rag.messages
+        dropped = rag.dropped or []
         opts = options if options is not None else self._config.generation_options()
         try:
             result = self._provider.chat(
@@ -1393,6 +1405,7 @@ class Searcher:
                 scale=_OVERFLOW_RETRY_SCALE,
             )
             results, messages = retry.results, retry.messages
+            dropped = retry.dropped or []
             result = self._provider.chat(
                 self._messages_for_provider(messages), options=opts or None
             )
@@ -1405,6 +1418,7 @@ class Searcher:
             sources=results,
             cited_sources=cited_subset(strip_llm_citations(clean), results),
             retrieval_query=rag.retrieval_query,
+            dropped_sources=dropped,
         )
 
     def ask(

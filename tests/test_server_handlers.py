@@ -565,6 +565,19 @@ class TestAsk:
         result = await handlers.ask("what?")
         assert result.retrieval_query is None
 
+    async def test_dropped_sources_reach_the_response(self, mock_svc):
+        """A budget-trimmed turn reports what it shed, vectors stripped like
+        every other chunk crossing the wire."""
+        from lilbee.retrieval.query import AskResult
+
+        shed = _SAMPLE_CHUNK.model_copy(update={"source": "shed.pdf"})
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="42 [1]", sources=[_SAMPLE_CHUNK], dropped_sources=[shed]
+        )
+        result = await handlers.ask("what?")
+        assert [s.source for s in result.dropped_sources] == ["shed.pdf"]
+        assert "vector" not in result.dropped_sources[0].model_dump()
+
     async def test_empty_question_raises(self):
         with pytest.raises(ValueError, match="question must not be empty"):
             await handlers.ask("")
@@ -1059,6 +1072,31 @@ class TestChat:
         )
         result = await handlers.chat("and what did he record?", [])
         assert result.retrieval_query == "what did the lighthouse keeper record"
+
+    async def test_grounded_turn_reports_dropped_sources(self, mock_svc, monkeypatch):
+        """A budget-trimmed chat turn reports what the fit shed."""
+        from lilbee.server.chat_dispatch.canonical import (
+            CanonicalResponse,
+            CanonicalUsage,
+            StopReason,
+            TextBlock,
+        )
+
+        monkeypatch.setattr(
+            _rag_h,
+            "dispatch_chat",
+            lambda req: CanonicalResponse(
+                id="msg_test",
+                model=req.model,
+                content=[TextBlock(text="ok")],
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=0, output_tokens=0),
+            ),
+        )
+        shed = _SAMPLE_CHUNK.model_copy(update={"source": "shed.pdf"})
+        mock_svc.searcher.build_rag_context.return_value = _rag_return()._replace(dropped=[shed])
+        result = await handlers.chat("what?", [])
+        assert [s.source for s in result.dropped_sources] == ["shed.pdf"]
 
     async def test_ungrounded_turn_carries_no_retrieval_query(self, mock_svc, monkeypatch):
         """A pure-LLM turn runs no retrieval, so there is no query to report."""
