@@ -2707,7 +2707,7 @@ class TestModelsCatalog:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
+        mock_get_catalog.return_value = CatalogResult(total=None, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
         h._hosted_cache.clear()
         monkeypatch.setattr(
@@ -2729,15 +2729,15 @@ class TestModelsCatalog:
         frontier = [m for m in resp.models if m.source == ModelSource.FRONTIER]
         assert frontier and frontier[0].display_name == "gemini-2.0-flash"
         assert frontier[0].key_status == "ready"
-        # An untruncated page and its total are the same set.
-        assert resp.total == len(resp.models) == 1
+        # The browse total is unknown; clients page on has_more.
+        assert resp.total is None
         assert resp.has_more is False
 
     @patch("lilbee.server.handlers.models.get_catalog")
-    async def test_untruncated_page_and_total_are_the_same_set(
+    async def test_mixed_page_of_native_and_hosted_rows_reports_no_total(
         self, mock_get_catalog, mock_svc, monkeypatch
     ):
-        """A mixed page of native and hosted rows totals every row it returns."""
+        """A mixed page of native and hosted rows reports no total on browse."""
         from conftest import make_test_catalog_model
         from lilbee.catalog import CatalogResult
 
@@ -2746,14 +2746,30 @@ class TestModelsCatalog:
             make_test_catalog_model(name="Unmeasured", size_gb=0.0),
         ]
         mock_get_catalog.return_value = CatalogResult(
-            total=len(natives), limit=20, offset=0, models=natives, has_more=False
+            total=None, limit=20, offset=0, models=natives, has_more=False
         )
         mock_svc.registry.list_installed.return_value = []
         self._stub_frontier(monkeypatch, "gemini-2.0-flash", "gemini-2.0-pro")
         resp = await handlers.models_catalog(task="chat", max_fit="fits")
         assert len(resp.models) == 4
-        assert resp.total == len(resp.models)
+        assert resp.total is None
         assert resp.has_more is False
+
+    @patch("lilbee.server.handlers.models.get_catalog")
+    async def test_browse_total_is_none_on_every_page(
+        self, mock_get_catalog, mock_svc, monkeypatch
+    ):
+        """The browse total is unknown, so both pages report none and agree."""
+        from lilbee.catalog import CatalogResult
+
+        mock_get_catalog.return_value = CatalogResult(
+            total=None, limit=20, offset=0, models=[], has_more=True
+        )
+        mock_svc.registry.list_installed.return_value = []
+        first = await handlers.models_catalog(task="chat", limit=20, offset=0)
+        second = await handlers.models_catalog(task="chat", limit=20, offset=20)
+        assert first.total is None
+        assert second.total is None
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_hosted_skipped_when_featured_filter(
@@ -2787,7 +2803,7 @@ class TestModelsCatalog:
         assert resp.total == 0
 
     @patch("lilbee.server.handlers.models.get_catalog")
-    async def test_later_page_omits_hosted_rows_but_total_counts_them(
+    async def test_later_page_omits_hosted_rows_and_reports_no_total(
         self, mock_get_catalog, mock_svc, monkeypatch
     ):
         import lilbee.server.handlers.models as h
@@ -2795,7 +2811,7 @@ class TestModelsCatalog:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=20, models=[])
+        mock_get_catalog.return_value = CatalogResult(total=None, limit=20, offset=20, models=[])
         mock_svc.registry.list_installed.return_value = []
         h._hosted_cache.clear()
         monkeypatch.setattr(
@@ -2815,8 +2831,8 @@ class TestModelsCatalog:
         )
         resp = await handlers.models_catalog(task="chat", offset=20)
         assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
-        # The row rides page one only, but the total counts it on every page.
-        assert resp.total == 1
+        # The browse total is unknown on every page; clients page on has_more.
+        assert resp.total is None
         assert resp.offset == 20
 
     @staticmethod
@@ -2852,7 +2868,7 @@ class TestModelsCatalog:
         from lilbee.catalog import CatalogResult
 
         mock_get_catalog.return_value = CatalogResult(
-            total=0, limit=0, offset=0, models=[], has_more=True
+            total=None, limit=0, offset=0, models=[], has_more=True
         )
         mock_svc.registry.list_installed.return_value = []
         self._stub_frontier(monkeypatch, "g1", "g2", "g3")
@@ -2862,7 +2878,7 @@ class TestModelsCatalog:
         assert mock_get_catalog.call_args.kwargs["offset"] == 0
         assert resp.limit == 2
         assert resp.offset == 0
-        assert resp.total == 3
+        assert resp.total is None
         assert resp.has_more is True
 
     @patch("lilbee.server.handlers.models.get_catalog")
@@ -2875,7 +2891,7 @@ class TestModelsCatalog:
 
         natives = [make_test_catalog_model(name=f"N{i}") for i in range(17)]
         mock_get_catalog.return_value = CatalogResult(
-            total=17, limit=17, offset=0, models=natives, has_more=True
+            total=None, limit=17, offset=0, models=natives, has_more=True
         )
         mock_svc.registry.list_installed.return_value = []
         self._stub_frontier(monkeypatch, "g1", "g2", "g3")
@@ -2885,7 +2901,7 @@ class TestModelsCatalog:
         assert [m.display_name for m in first.models[:3]] == ["g1", "g2", "g3"]
         assert mock_get_catalog.call_args.kwargs["limit"] == 17
         assert mock_get_catalog.call_args.kwargs["offset"] == 0
-        assert first.total == 20
+        assert first.total is None
 
         second = await handlers.models_catalog(task="chat", limit=20, offset=20)
         assert not [m for m in second.models if m.provider]
@@ -2901,7 +2917,7 @@ class TestModelsCatalog:
         from lilbee.catalog import CatalogResult
 
         mock_get_catalog.return_value = CatalogResult(
-            total=0, limit=1, offset=0, models=[], has_more=False
+            total=None, limit=1, offset=0, models=[], has_more=False
         )
         mock_svc.registry.list_installed.return_value = []
         self._stub_frontier(monkeypatch, "g1", "g2", "g3")
@@ -2919,7 +2935,7 @@ class TestModelsCatalog:
         from lilbee.catalog.types import ModelSource, ModelTask
         from lilbee.modelhub.model_manager.types import RemoteModel
 
-        mock_get_catalog.return_value = CatalogResult(total=0, limit=20, offset=0, models=[])
+        mock_get_catalog.return_value = CatalogResult(total=None, limit=20, offset=0, models=[])
         mock_svc.registry.list_installed.return_value = []
         h._hosted_cache.clear()
         monkeypatch.setattr(
@@ -2939,14 +2955,14 @@ class TestModelsCatalog:
         )
         resp = await handlers.models_catalog(task="chat", installed=False)
         assert not [m for m in resp.models if m.source == ModelSource.FRONTIER]
-        assert resp.total == 0
+        assert resp.total is None
 
     @patch("lilbee.server.handlers.models.get_catalog")
     async def test_returns_catalog_response(self, mock_get_catalog, mock_svc):
         from lilbee.catalog import CatalogModel, CatalogResult
 
         mock_get_catalog.return_value = CatalogResult(
-            total=1,
+            total=None,
             limit=20,
             offset=0,
             models=[
@@ -2967,7 +2983,7 @@ class TestModelsCatalog:
         ]
         result = await handlers.models_catalog()
 
-        assert result.total == 1
+        assert result.total is None
         assert result.has_more is False
         assert len(result.models) == 1
         m = result.models[0]

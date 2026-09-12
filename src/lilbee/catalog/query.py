@@ -68,7 +68,9 @@ def get_catalog(
 ) -> CatalogResult:
     """One catalog page: the picks lead and the HuggingFace rows fill the rest of the window.
 
-    A window that ends inside the picks makes no HuggingFace request.
+    A window that ends inside the picks makes no HuggingFace request. The
+    browse total is unknown because HuggingFace exposes no count, so it is
+    None and clients page on has_more.
     """
     picks = get_picks()
     installed_filter = _installed_filter(installed, model_manager)
@@ -101,7 +103,7 @@ def get_catalog(
         has_more = hf_page.has_more
 
     return CatalogResult(
-        total=len(leading) + len(hf_models),
+        total=len(leading) if featured else None,
         limit=limit,
         offset=offset,
         models=page,
