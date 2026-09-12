@@ -163,6 +163,7 @@ class LocalCatalogRow:
     size_variants: list[SizeVariant] = field(default_factory=list)
     fit: FitChip | None = None
     compat: ModelCompat = ModelCompat.UNKNOWN
+    safety_stripped: bool = False
     kind: Literal[CatalogRowKind.LOCAL] = CatalogRowKind.LOCAL
 
 
@@ -276,6 +277,7 @@ def variant_to_row(v: ModelVariant, f: ModelFamily, installed: bool) -> LocalCat
         variant=v,
         family=f,
         compat=v.compat,
+        safety_stripped=v.safety_stripped,
     )
 
 
@@ -298,6 +300,7 @@ def catalog_to_row(m: CatalogModel, installed: bool) -> LocalCatalogRow:
         catalog_model=m,
         # An installed model demonstrably runs, whatever the catalog probe said.
         compat=ModelCompat.SUPPORTED if installed else m.compat,
+        safety_stripped=m.safety_stripped,
     )
 
 

@@ -16,6 +16,7 @@ from huggingface_hub import ModelInfo
 from huggingface_hub.hf_api import RepoSibling
 
 from lilbee.catalog.compat import classify
+from lilbee.catalog.content import is_safety_stripped
 from lilbee.catalog.models import (
     CatalogModel,
     HfGgufMeta,
@@ -79,7 +80,14 @@ DEFAULT_TIMEOUT = 30.0
 
 # Fields requested from the HF listing API via ``?expand=``. Without this
 # expand, the default response omits siblings, cardData, and gguf.
-_HF_EXPAND_FIELDS: list[str] = ["gguf", "siblings", "downloads", "pipeline_tag", "cardData"]
+_HF_EXPAND_FIELDS: list[str] = [
+    "gguf",
+    "siblings",
+    "downloads",
+    "pipeline_tag",
+    "cardData",
+    "tags",
+]
 
 # HF ``?search=`` is a single space-tokenized substring match on the model id.
 # Multiple ``search=`` params are silently ignored, so the user's query is
@@ -269,6 +277,7 @@ class HfClient:
                     architecture=gguf_meta.architecture,
                     compat=classify(gguf_meta.architecture),
                     params=gguf_meta.total,
+                    safety_stripped=is_safety_stripped(item.tags or []),
                 )
             )
             self.cache_arch(item.id, gguf_meta.architecture)

@@ -1146,6 +1146,7 @@ def catalog_browse(
                 "description": m.description,
                 "architecture": m.architecture,
                 "compat": m.compat.value,
+                "safety_stripped": m.safety_stripped,
             }
             for m in result.models
         ],
