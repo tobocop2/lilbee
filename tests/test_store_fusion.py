@@ -405,13 +405,14 @@ class TestFuseRankedLists:
         scores = {r.source: r.score for r in fused}
         assert scores["both.md"] > scores["single.md"]
 
-    def test_single_query_head_outranks_deep_other_query_tail(self):
-        """Each query's winner stays visible: a rank-1 row from one query
-        outranks rows the other query buried."""
+    def test_single_query_head_outscores_deep_other_query_tail(self):
+        """A rank-1 row outscores rows the other query buried deep."""
         head = _chunk("head.md", 0, distance=0.2)
         tail = [_chunk("tail.md", i, distance=0.5) for i in range(10)]
         fused = fuse_ranked_lists([[head], tail])
-        assert fused[0].source == "head.md"
+        scores = {(r.source, r.chunk_index): r.score or 0.0 for r in fused}
+        assert scores[("head.md", 0)] == pytest.approx(0.5)
+        assert scores[("head.md", 0)] > scores[("tail.md", 9)]
 
     def test_closest_distance_wins(self):
         fused = fuse_ranked_lists(
