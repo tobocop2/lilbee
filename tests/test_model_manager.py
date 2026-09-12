@@ -49,6 +49,25 @@ class TestNativeIdentitiesCache:
         result = mgr.list_native_identities()
         assert result == frozenset()
 
+    def test_refetches_past_soft_ttl(self) -> None:
+        from lilbee.modelhub.model_manager import core as mm_core
+        from lilbee.modelhub.model_manager.core import ModelManager as MM
+
+        mgr = MM(Path("/nonexistent"))
+        fake_registry = mock.MagicMock()
+        m = mock.MagicMock()
+        m.ref = "test/m"
+        m.hf_repo = "test/m"
+        fake_registry.list_installed.return_value = [m]
+        mgr._registry = fake_registry  # type: ignore[assignment]
+        with mock.patch.object(mm_core.time, "monotonic") as mock_clock:
+            mock_clock.side_effect = [0.0, 100.0]
+            first = mgr.list_native_identities()
+            second = mgr.list_native_identities()
+        assert fake_registry.list_installed.call_count == 2
+        assert first == second
+        assert first is not second
+
 
 class TestModelSource:
     def test_native_value(self) -> None:
@@ -277,6 +296,55 @@ class TestModelManagerListInstalled:
             mgr.list_installed(ModelSource.REMOTE)
 
         # Past the TTL the second call refetches, doubling the per-fetch calls.
+        assert mock_get.call_count == 2 * after_first
+
+    def test_polling_at_old_probe_period_hits_cache(self) -> None:
+        """Polls every 30s share one fetch instead of refetching each time."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": []}
+        mock_response.raise_for_status = mock.Mock()
+
+        from lilbee.modelhub.model_manager import core as mm_core
+
+        # Real 30s polls land just past the mark; the soft TTL absorbs the drift.
+        ticks = [30.0 * i + 0.001 * i for i in range(10)]
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+            ) as mock_get,
+            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
+        ):
+            mock_clock.side_effect = ticks
+            mgr = ModelManager(Path("/tmp"))
+            mgr.list_installed(ModelSource.REMOTE)
+            after_first = mock_get.call_count
+            for _ in ticks[1:]:
+                assert mgr.list_installed(ModelSource.REMOTE) == []
+
+        assert mock_get.call_count == after_first
+
+    def test_polling_past_max_age_refetches(self) -> None:
+        """Steady polling still refetches once the hard staleness bound passes."""
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": []}
+        mock_response.raise_for_status = mock.Mock()
+
+        from lilbee.modelhub.model_manager import core as mm_core
+
+        ticks = [float(t) for t in range(0, 301, 30)]
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+            ) as mock_get,
+            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
+        ):
+            mock_clock.side_effect = ticks
+            mgr = ModelManager(Path("/tmp"))
+            mgr.list_installed(ModelSource.REMOTE)
+            after_first = mock_get.call_count
+            for _ in ticks[1:]:
+                assert mgr.list_installed(ModelSource.REMOTE) == []
+
         assert mock_get.call_count == 2 * after_first
 
     def test_pull_invalidates_cache(self, tmp_path: Path) -> None:

@@ -3,8 +3,9 @@
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Generic, TypeVar
 
 from lilbee.catalog.compat import UnsupportedQuantError
 from lilbee.catalog.models import CatalogModel
@@ -19,7 +20,29 @@ from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
-_INSTALLED_CACHE_TTL_SECONDS = 30.0
+_CACHE_T = TypeVar("_CACHE_T")
+
+_INSTALLED_CACHE_SOFT_TTL_SECONDS = 60.0
+_INSTALLED_CACHE_MAX_AGE_SECONDS = 300.0
+
+
+@dataclass
+class _CacheEntry(Generic[_CACHE_T]):
+    """Installed-listing cache entry with a sliding soft deadline and a hard staleness bound."""
+
+    filled_at: float
+    last_seen_at: float
+    value: _CACHE_T
+
+
+def _cache_hit(entry: _CacheEntry[_CACHE_T], now: float) -> _CACHE_T | None:
+    """Live cached value, else None. A live read slides the soft deadline forward."""
+    if now - entry.filled_at >= _INSTALLED_CACHE_MAX_AGE_SECONDS:
+        return None
+    if now - entry.last_seen_at > _INSTALLED_CACHE_SOFT_TTL_SECONDS:
+        return None
+    entry.last_seen_at = now
+    return entry.value
 
 
 def _prefixed_source(model: str) -> ModelSource | None:
@@ -47,26 +70,28 @@ class ModelManager:
         self._registry = ModelRegistry(self._models_dir)
         # Memoize list_installed results to avoid walking the registry
         # filesystem and hitting the backend HTTP endpoint on every call.
-        # The catalog filter path fires this per request. Time-based TTL
-        # plus explicit invalidation on pull/remove keeps freshness.
-        self._installed_cache: dict[ModelSource | None, tuple[float, list[str]]] = {}
+        # The catalog filter path fires this per request. Reads slide the
+        # soft deadline, so steady polling refetches only at the hard
+        # bound; the bound plus explicit invalidation on pull/remove
+        # keeps freshness.
+        self._installed_cache: dict[ModelSource | None, _CacheEntry[list[str]]] = {}
         # Identity cache: refs + hf_repos of installed natives. The catalog
         # screen reads this to mark rows as installed without re-walking
         # the registry on every screen mount (~150-300 ms saved).
-        self._native_identities_cache: tuple[float, frozenset[str]] | None = None
+        self._native_identities_cache: _CacheEntry[frozenset[str]] | None = None
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         """List installed model names. ``source=None`` lists all sources.
 
-        Memoized with a ``_INSTALLED_CACHE_TTL_SECONDS`` TTL and
+        Memoized with a sliding soft TTL plus a hard staleness bound, and
         invalidated eagerly by ``pull``/``remove``.
         """
         now = time.monotonic()
         cached = self._installed_cache.get(source)
         if cached is not None:
-            cached_at, cached_result = cached
-            if now - cached_at < _INSTALLED_CACHE_TTL_SECONDS:
-                return cached_result
+            hit = _cache_hit(cached, now)
+            if hit is not None:
+                return hit
 
         if source is None:
             native = set(self._list_native())
@@ -77,7 +102,7 @@ class ModelManager:
         else:
             result = self._list_remote()
 
-        self._installed_cache[source] = (now, result)
+        self._installed_cache[source] = _CacheEntry(now, now, result)
         return result
 
     def list_native_identities(self) -> frozenset[str]:
@@ -89,9 +114,9 @@ class ModelManager:
         """
         now = time.monotonic()
         if self._native_identities_cache is not None:
-            cached_at, cached_result = self._native_identities_cache
-            if now - cached_at < _INSTALLED_CACHE_TTL_SECONDS:
-                return cached_result
+            hit = _cache_hit(self._native_identities_cache, now)
+            if hit is not None:
+                return hit
         identities: set[str] = set()
         try:
             for m in self._registry.list_installed():
@@ -100,7 +125,7 @@ class ModelManager:
         except Exception:
             log.debug("ModelRegistry.list_installed failed", exc_info=True)
         result = frozenset(identities)
-        self._native_identities_cache = (now, result)
+        self._native_identities_cache = _CacheEntry(now, now, result)
         return result
 
     def _invalidate_installed_cache(self) -> None:
