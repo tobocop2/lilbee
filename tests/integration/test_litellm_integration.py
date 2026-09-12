@@ -7,7 +7,6 @@ scheduled ollama-pypi lane in qa-matrix.yml.
 
 from __future__ import annotations
 
-import socket
 import subprocess
 import sys
 import time
@@ -28,6 +27,7 @@ from lilbee.providers.base import (  # noqa: E402
     TokenUsage,
     ToolCallDelta,
 )
+from lilbee.providers.fleet.swap_manager import _pick_free_ports  # noqa: E402
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
 from lilbee.providers.local_servers import OLLAMA  # noqa: E402
 from lilbee.providers.local_servers.spec import LocalServerSpec  # noqa: E402
@@ -43,16 +43,10 @@ OLLAMA_EMBED_MODEL = "ollama/nomic-embed-text"
 pytestmark = [pytest.mark.slow]
 
 
-def _pick_free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
-
-
 @pytest.fixture(scope="module")
 def ollama_stub_base() -> Iterator[str]:
     """Base URL of a freshly spawned Ollama stub server."""
-    port = _pick_free_port()
+    (port,) = _pick_free_ports(1)
     proc = subprocess.Popen([sys.executable, str(_STUB), "--port", str(port)])
     base = f"http://127.0.0.1:{port}"
     try:
