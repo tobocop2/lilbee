@@ -746,6 +746,14 @@ class TestExpandQuery:
         assert len(variants) == 2
         mock_svc.provider.chat.assert_called_once()
 
+    def test_counts_single_character_terms_for_short_query(self, mock_svc):
+        # "R" is query content, so a 3-token query with a single-character
+        # subject runs LLM expansion instead of skipping as short.
+        mock_svc.provider.chat.return_value = _text_result("v one\nv two")
+        variants = get_services().searcher._expand_query("R intro guide", self._QUESTION_VEC)
+        assert len(variants) == 2
+        mock_svc.provider.chat.assert_called_once()
+
     def test_short_threshold_zero_disables_skip(self, mock_svc):
         old = cfg.expansion_short_query_tokens
         cfg.expansion_short_query_tokens = 0
@@ -1649,6 +1657,45 @@ class TestSelectContext:
         )
         assert len(result) == 1
         assert result[0].source == "a.md"
+
+    def test_single_character_subject_selects_naming_chunk(self, mock_svc):
+        chunks = [
+            _make_result(chunk="Python programming tutorial", source="a.md"),
+            _make_result(chunk="R programming guide", source="b.md"),
+            _make_result(chunk="unrelated filler words here", source="c.md"),
+        ]
+        result = get_services().searcher.select_context(
+            chunks, "What about R programming?", max_sources=1
+        )
+        assert [r.source for r in result] == ["b.md"]
+
+    def test_hyphenated_identifier_selects_naming_chunk(self, mock_svc):
+        chunks = [
+            _make_result(chunk="the reimbursement was issued yesterday", source="a.md"),
+            _make_result(chunk="the W-2 was issued in January", source="b.md"),
+            _make_result(chunk="unrelated filler words here", source="c.md"),
+        ]
+        result = get_services().searcher.select_context(
+            chunks, "When was the W-2 issued?", max_sources=1
+        )
+        assert [r.source for r in result] == ["b.md"]
+
+    def test_capped_fragment_loses_to_distinctive_term(self, mock_svc):
+        # The contraction splinter "s" is exactly as rare as "deploy", so its
+        # raw IDF ties; only the single-character cap breaks the tie. The
+        # noise chunk ranks first so a tie would select it.
+        chunks = [
+            _make_result(chunk="model's readme guide", source="noise.md"),
+            _make_result(chunk="deploy checklist notes", source="deploy.md"),
+            _make_result(chunk="alpha beta gamma delta", source="f1.md"),
+            _make_result(chunk="kappa lambda mu nu", source="f2.md"),
+            _make_result(chunk="oak pine birch cedar", source="f3.md"),
+            _make_result(chunk="ember quartz flint shale", source="f4.md"),
+        ]
+        result = get_services().searcher.select_context(
+            chunks, "What's the deploy status", max_sources=1
+        )
+        assert [r.source for r in result] == ["deploy.md"]
 
 
 class TestShouldSkipExpansion:
