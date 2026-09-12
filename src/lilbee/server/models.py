@@ -405,13 +405,18 @@ class CatalogEntryResponse(BaseModel):
 
 
 class ModelsCatalogResponse(BaseModel):
-    """Response for GET /api/models/catalog."""
+    """Response for GET /api/models/catalog.
+
+    ``next_offset`` names the offset to request next, None on the last page, so
+    a short filtered page never strands the client.
+    """
 
     total: int | None
     limit: int
     offset: int
     models: list[CatalogEntryResponse]
     has_more: bool = False
+    next_offset: int | None
 
 
 class InstalledModelEntry(BaseModel):
