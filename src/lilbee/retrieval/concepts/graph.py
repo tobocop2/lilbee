@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 import pyarrow as pa
@@ -44,6 +44,31 @@ def _iter_row_batches(table: lancedb.table.Table) -> Iterator[list[dict[str, Any
     """Yield a table's rows as bounded-size lists of dicts."""
     for batch in table.to_arrow().to_batches(max_chunksize=_TABLE_SCAN_BATCH_ROWS):
         yield batch.to_pylist()
+
+
+def _quoted(values: Collection[str]) -> str:
+    """SQL string list for an IN predicate, in stable order."""
+    return ", ".join(f"'{escape_sql_string(value)}'" for value in sorted(values))
+
+
+def _distinct_chunk_count(cc_table: Any) -> int:
+    """Chunks carrying at least one concept."""
+    keys: set[tuple[str, int]] = set()
+    for rows in _iter_row_batches(cc_table):
+        for row in rows:
+            keys.add((row["chunk_source"], row["chunk_index"]))
+    return len(keys)
+
+
+def _affected_predicates(
+    touched: set[str], affected_ids: set[int], affected: set[str]
+) -> tuple[str, str]:
+    """Scoped delete predicates covering the touched communities."""
+    parts = [f"concept IN ({_quoted(touched)})"]
+    if affected_ids:
+        parts.append(f"cluster_id IN ({', '.join(str(cid) for cid in sorted(affected_ids))})")
+    edge_list = _quoted(affected)
+    return " OR ".join(parts), f"source IN ({edge_list}) OR target IN ({edge_list})"
 
 
 class _PmiInputs(NamedTuple):
@@ -372,7 +397,123 @@ class ConceptGraph:
                     cooccurrences[(a, b)] += 1
         return _PmiInputs(cooccurrences, concept_counts, len(per_chunk), map_exists=True)
 
-    def rebuild_clusters(self) -> None:
+    def rebuild_clusters(self, added: Collection[str] = (), updated: Collection[str] = ()) -> None:
+        """Re-run Leiden clustering; scoped to changed sources when any are named.
+
+        Empty *added*/*updated* re-partitions the whole corpus. Otherwise only
+        the communities touching the changed sources' concepts are re-run and
+        merged back; untouched clusters keep their rows. Removals pass nothing:
+        their rows are already gone, so only a full pass clears their nodes.
+        """
+        changed = set(added) | set(updated)
+        if changed and self._recluster_changed(changed, sweep_orphans=bool(updated)):
+            return
+        self._rebuild_all()
+
+    def _recluster_changed(self, changed: set[str], *, sweep_orphans: bool) -> bool:
+        """Re-partition the communities touching *changed*. False needs a full pass."""
+        nodes_table = self._store.open_table(CONCEPT_NODES_TABLE)
+        if nodes_table is None:
+            return False
+        node_rows = nodes_table.to_arrow().to_pylist()
+        if not node_rows:
+            return False
+        cc_table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
+        if cc_table is None:
+            return True
+        touched = self._touched_concepts(cc_table, changed)
+        if touched:
+            self._recluster_affected(cc_table, node_rows, touched)
+        if sweep_orphans:
+            self._sweep_orphan_concepts(cc_table, node_rows)
+        return True
+
+    @staticmethod
+    def _touched_concepts(cc_table: Any, changed: set[str]) -> set[str]:
+        """Distinct concepts the changed sources' chunks currently carry."""
+        rows = cc_table.search().where(f"chunk_source IN ({_quoted(changed)})").to_list()
+        return {row["concept"] for row in rows}
+
+    def _recluster_affected(
+        self, cc_table: Any, node_rows: list[dict[str, Any]], touched: set[str]
+    ) -> None:
+        """Re-partition the touched communities and merge the result back."""
+        concept_to_cluster = {row["concept"]: row["cluster_id"] for row in node_rows}
+        affected_ids = {concept_to_cluster[c] for c in touched if c in concept_to_cluster}
+        affected = set(touched)
+        affected.update(c for c, cid in concept_to_cluster.items() if cid in affected_ids)
+        counts, cooccurrences = self._affected_pmi_inputs(cc_table, affected)
+        pmi_weights = _compute_pmi(cooccurrences, counts, _distinct_chunk_count(cc_table))
+        node_records: list[dict[str, Any]] = []
+        edge_rows = [{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()]
+        if pmi_weights:
+            partition, degree_map = _leiden_partition(edge_rows)
+            next_id = max(row["cluster_id"] for row in node_rows) + 1
+            node_records = [
+                {"concept": c, "cluster_id": next_id + cid, "degree": degree_map.get(c, 0)}
+                for c, cid in partition.items()
+                if c in affected
+            ]
+        nodes_predicate, edges_predicate = _affected_predicates(touched, affected_ids, affected)
+        self._store.clear_and_add(
+            CONCEPT_NODES_TABLE, _concept_nodes_schema(), node_records, nodes_predicate
+        )
+        self._store.clear_and_add(
+            CONCEPT_EDGES_TABLE, _concept_edges_schema(), edge_rows, edges_predicate
+        )
+
+    def _affected_pmi_inputs(
+        self, cc_table: Any, affected: set[str]
+    ) -> tuple[Counter[str], Counter[tuple[str, str]]]:
+        """Corpus counts and co-occurrences for pairs touching *affected*.
+
+        A pair's chunks all hold its affected endpoint, so the neighborhood
+        carries every affected pair's co-occurrence count exactly; only the
+        outside neighbors' document frequencies need a second count.
+        """
+        chunk_rows = cc_table.search().where(f"concept IN ({_quoted(affected)})").to_list()
+        chunk_keys = {(row["chunk_source"], row["chunk_index"]) for row in chunk_rows}
+        concepts_by_chunk = self._chunk_concepts_batch(cc_table, chunk_keys)
+        counts: Counter[str] = Counter()
+        cooccurrences: Counter[tuple[str, str]] = Counter()
+        for concepts in concepts_by_chunk.values():
+            ordered = sorted(concepts)
+            for concept in ordered:
+                if concept in affected:
+                    counts[concept] += 1
+            for i, first in enumerate(ordered):
+                for second in ordered[i + 1 :]:
+                    if first in affected or second in affected:
+                        cooccurrences[(first, second)] += 1
+        neighbors = {c for concepts in concepts_by_chunk.values() for c in concepts} - affected
+        if neighbors:
+            count_rows = cc_table.search().where(f"concept IN ({_quoted(neighbors)})").to_list()
+            seen: dict[str, set[tuple[str, int]]] = {}
+            for row in count_rows:
+                seen.setdefault(row["concept"], set()).add(
+                    (row["chunk_source"], row["chunk_index"])
+                )
+            for concept, keys in seen.items():
+                counts[concept] = len(keys)
+        return counts, cooccurrences
+
+    def _sweep_orphan_concepts(self, cc_table: Any, node_rows: list[dict[str, Any]]) -> None:
+        """Delete nodes and edges for concepts no chunk carries anymore."""
+        live = {row["concept"] for rows in _iter_row_batches(cc_table) for row in rows}
+        orphans = {row["concept"] for row in node_rows} - live
+        if orphans:
+            quoted = _quoted(orphans)
+            self._store.clear_and_add(
+                CONCEPT_NODES_TABLE, _concept_nodes_schema(), [], f"concept IN ({quoted})"
+            )
+            self._store.clear_and_add(
+                CONCEPT_EDGES_TABLE,
+                _concept_edges_schema(),
+                [],
+                f"source IN ({quoted}) OR target IN ({quoted})",
+            )
+
+    def _rebuild_all(self) -> None:
         """Recompute corpus PMI from the chunk_concepts map, re-run Leiden, compact.
 
         PMI is a corpus-level statistic, so it is computed once over corpus-wide

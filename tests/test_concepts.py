@@ -1013,6 +1013,368 @@ class TestRebuildClusters:
         assert mock_svc.store.open_table.call_count == 3
 
 
+def _connected_components(edge_rows):
+    """Deterministic Leiden stand-in: connected components over the edge set."""
+    from collections import Counter
+
+    parent: dict[str, str] = {}
+
+    def find(node: str) -> str:
+        parent.setdefault(node, node)
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    for row in edge_rows:
+        parent[find(row["source"])] = find(row["target"])
+    groups: dict[str, list[str]] = {}
+    for node in parent:
+        groups.setdefault(find(node), []).append(node)
+    partition = {node: cid for cid, members in enumerate(groups.values()) for node in members}
+    degrees: Counter[str] = Counter()
+    for row in edge_rows:
+        degrees[row["source"]] += 1
+        degrees[row["target"]] += 1
+    return partition, dict(degrees)
+
+
+def _comembership(partition: dict[str, int]) -> set[tuple[str, str]]:
+    """Pairs of concepts sharing a community, for id-agnostic comparison."""
+    concepts = sorted(partition)
+    return {
+        (a, b)
+        for i, a in enumerate(concepts)
+        for b in concepts[i + 1 :]
+        if partition[a] == partition[b]
+    }
+
+
+class TestRebuildIncremental:
+    @staticmethod
+    def _seeded_graph():
+        """Real store holding two disjoint topic pairs across four chunks."""
+        from lilbee.data.store import Store
+
+        store = Store(cfg)
+        graph = ConceptGraph(cfg, store)
+        chunks = [("a.md", 0), ("a.md", 1), ("b.md", 0), ("b.md", 1)]
+        concepts = [["alpha", "beta"], ["alpha", "beta"], ["gamma", "delta"], ["gamma", "delta"]]
+        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        return store, graph
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_added_sources_recluster_only_their_communities(self, mock_leiden, mock_svc):
+        """Leiden runs on the touched subgraph; the untouched cluster keeps its rows."""
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        before = {
+            r["concept"]: r["cluster_id"]
+            for r in store.open_table(CONCEPT_NODES_TABLE).search().to_list()
+        }
+        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+
+        graph.rebuild_clusters(added=["c.md"])
+
+        touched_edges = mock_leiden.call_args.args[0]
+        assert {c for row in touched_edges for c in (row["source"], row["target"])} == {
+            "alpha",
+            "beta",
+        }
+        after = {
+            r["concept"]: r["cluster_id"]
+            for r in store.open_table(CONCEPT_NODES_TABLE).search().to_list()
+        }
+        assert after["gamma"] == before["gamma"] and after["delta"] == before["delta"]
+
+    @staticmethod
+    def _node_map(store):
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        return {
+            r["concept"]: r["cluster_id"]
+            for r in store.open_table(CONCEPT_NODES_TABLE).search().to_list()
+        }
+
+    @staticmethod
+    def _edge_map(store):
+        from lilbee.core.config import CONCEPT_EDGES_TABLE
+
+        return {
+            (r["source"], r["target"]): r["weight"]
+            for r in store.open_table(CONCEPT_EDGES_TABLE).search().to_list()
+        }
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_missing_nodes_table_falls_back_to_full_rebuild(self, mock_leiden, cg, mock_svc):
+        """No stored clustering to merge into: the named sources still get a full pass."""
+        import pyarrow as pa
+
+        from lilbee.core.config import CHUNK_CONCEPTS_TABLE, CONCEPT_NODES_TABLE
+
+        cc_tbl = MagicMock()
+        cc_tbl.to_arrow.return_value = pa.table(
+            {
+                "chunk_source": ["a.md", "a.md", "b.md", "b.md"],
+                "chunk_index": [0, 0, 0, 0],
+                "concept": ["alpha", "beta", "gamma", "delta"],
+            }
+        )
+
+        def side(name):
+            if name == CHUNK_CONCEPTS_TABLE:
+                return cc_tbl
+            if name == CONCEPT_NODES_TABLE:
+                return None
+            return MagicMock()
+
+        mock_svc.store.open_table.side_effect = side
+        mock_leiden.side_effect = _connected_components
+
+        cg.rebuild_clusters(added=["a.md"])
+
+        [edges] = [call.args[0] for call in mock_leiden.call_args_list]
+        assert {(r["source"], r["target"]) for r in edges} == {
+            ("alpha", "beta"),
+            ("delta", "gamma"),
+        }
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_empty_nodes_table_falls_back_to_full_rebuild(self, mock_leiden, mock_svc):
+        """A present-but-empty nodes table is a cold start, not a merge base."""
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        store.clear_table(CONCEPT_NODES_TABLE, "concept IS NOT NULL")
+
+        graph.rebuild_clusters(added=["a.md"])
+
+        [edges] = [call.args[0] for call in mock_leiden.call_args_list]
+        assert {(r["source"], r["target"]) for r in edges} == {
+            ("alpha", "beta"),
+            ("delta", "gamma"),
+        }
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_missing_chunk_concepts_map_is_a_noop(self, mock_leiden, cg, mock_svc):
+        """No map, no stats: like the full pass, the scoped pass changes nothing."""
+        import pyarrow as pa
+
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        nodes_tbl = MagicMock()
+        nodes_tbl.to_arrow.return_value = pa.table(
+            {"concept": ["alpha"], "cluster_id": [0], "degree": [1]}
+        )
+        mock_svc.store.open_table.side_effect = lambda name: (
+            nodes_tbl if name == CONCEPT_NODES_TABLE else None
+        )
+
+        cg.rebuild_clusters(added=["a.md"])
+
+        mock_leiden.assert_not_called()
+        mock_svc.store.clear_and_add.assert_not_called()
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_updated_sources_sweep_orphaned_concepts(self, mock_leiden, mock_svc):
+        """An update that drops every concept orphans its nodes; the sweep clears them."""
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        before = self._node_map(store)
+        store.delete_by_source("a.md")
+        mock_leiden.reset_mock()
+
+        graph.rebuild_clusters(updated=["a.md"])
+
+        mock_leiden.assert_not_called()
+        after = self._node_map(store)
+        assert set(after) == {"gamma", "delta"}
+        assert after["gamma"] == before["gamma"] and after["delta"] == before["delta"]
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_added_conceptless_sources_are_a_noop(self, mock_leiden, mock_svc):
+        """A pure add carrying no concepts has no community to recluster."""
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        nodes_before = self._node_map(store)
+        edges_before = self._edge_map(store)
+        mock_leiden.reset_mock()
+
+        graph.rebuild_clusters(added=["ghost.md"])
+
+        mock_leiden.assert_not_called()
+        assert self._node_map(store) == nodes_before
+        assert self._edge_map(store) == edges_before
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_updated_sources_keep_live_concepts(self, mock_leiden, mock_svc):
+        """An update that keeps its concepts reclusters normally; the sweep is empty."""
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        before = self._node_map(store)
+
+        graph.rebuild_clusters(updated=["a.md"])
+
+        after = self._node_map(store)
+        assert set(after) == set(before)
+        assert after["gamma"] == before["gamma"] and after["delta"] == before["delta"]
+        assert after["alpha"] == after["beta"] != before["alpha"]
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_affected_pairs_below_chance_clear_only_their_region(self, mock_leiden, mock_svc):
+        """Touched pairs at/below chance dissolve their region; the rest of the graph stands."""
+        from lilbee.data.store import Store
+
+        store = Store(cfg)
+        graph = ConceptGraph(cfg, store)
+        chunks = [("g0.md", 0), ("g1.md", 0), ("s.md", 0), ("t.md", 0)]
+        concepts = [["g", "d"], ["g", "d"], ["s"], ["t"]]
+        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        calls = 0
+
+        def fake_leiden(edge_rows):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return {"g": 1, "d": 1}, {"g": 1, "d": 1}
+            return _connected_components(edge_rows)
+
+        mock_leiden.side_effect = fake_leiden
+        graph.rebuild_clusters()
+        assert self._node_map(store) == {"g": 1, "d": 1}
+        mock_leiden.reset_mock()
+        graph.write_concept_records(
+            graph.build_concept_records([("c1.md", 0), ("c2.md", 0)], [["s"], ["t"]])
+        )
+
+        graph.rebuild_clusters(added=["c1.md", "c2.md"])
+
+        mock_leiden.assert_not_called()
+        assert self._node_map(store) == {"g": 1, "d": 1}
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_cross_boundary_pairs_keep_outside_nodes_in_place(self, mock_leiden, mock_svc):
+        """Cross pairs join the subgraph for attraction but keep their old clusters."""
+        from lilbee.data.store import Store
+
+        store = Store(cfg)
+        graph = ConceptGraph(cfg, store)
+        chunks = [("a.md", 0), ("a.md", 1), ("b.md", 0), ("b.md", 1)]
+        concepts = [
+            ["alpha", "beta", "omega", "zeta"],
+            ["alpha", "beta"],
+            ["gamma", "delta"],
+            ["gamma", "delta"],
+        ]
+        graph.write_concept_records(graph.build_concept_records(chunks, concepts))
+        seed_partition = {
+            "alpha": 0,
+            "beta": 0,
+            "gamma": 1,
+            "delta": 1,
+            "omega": 9,
+            "zeta": 9,
+        }
+        calls = 0
+
+        def fake_leiden(edge_rows):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return dict(seed_partition), dict.fromkeys(seed_partition, 1)
+            return _connected_components(edge_rows)
+
+        mock_leiden.side_effect = fake_leiden
+        graph.rebuild_clusters()
+        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+
+        graph.rebuild_clusters(added=["c.md"])
+
+        [edges] = [call.args[0] for call in mock_leiden.call_args_list[1:]]
+        assert {(r["source"], r["target"]) for r in edges} == {
+            ("alpha", "beta"),
+            ("alpha", "omega"),
+            ("alpha", "zeta"),
+            ("beta", "omega"),
+            ("beta", "zeta"),
+        }
+        after = self._node_map(store)
+        assert after["alpha"] == after["beta"] == 10
+        assert after["gamma"] == after["delta"] == 1
+        assert after["omega"] == after["zeta"] == 9
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_brand_new_concepts_join_as_a_fresh_community(self, mock_leiden, mock_svc):
+        """Per-file appends land unclustered; the merge absorbs them with their cluster."""
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        old_max = max(self._node_map(store).values())
+        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["new1", "new2"]]))
+
+        graph.rebuild_clusters(added=["c.md"])
+
+        [edges] = [call.args[0] for call in mock_leiden.call_args_list[1:]]
+        assert {(r["source"], r["target"]) for r in edges} == {
+            ("alpha", "beta"),
+            ("new1", "new2"),
+        }
+        after = self._node_map(store)
+        assert after["alpha"] == after["beta"] > old_max
+        assert after["new1"] == after["new2"] > old_max
+        assert len(after) == 6
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_touched_concepts_outside_every_cluster_rejoin(self, mock_leiden, mock_svc):
+        """Touched concepts with no stored rows are partitioned fresh and re-added."""
+        from lilbee.core.config import CONCEPT_NODES_TABLE
+
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        store.clear_table(CONCEPT_NODES_TABLE, "concept IN ('alpha', 'beta')")
+        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+        # The append re-adds unclustered rows; drop them so the touched pair is
+        # genuinely outside every stored cluster.
+        store.clear_table(CONCEPT_NODES_TABLE, "concept IN ('alpha', 'beta')")
+
+        graph.rebuild_clusters(added=["c.md"])
+
+        [edges] = [call.args[0] for call in mock_leiden.call_args_list[1:]]
+        assert [(r["source"], r["target"]) for r in edges] == [("alpha", "beta")]
+        after = self._node_map(store)
+        assert after["alpha"] == after["beta"] > after["gamma"]
+        assert after["gamma"] == after["delta"]
+        assert len(after) == 4
+
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_incremental_matches_full_rebuild_on_a_partial_add(self, mock_leiden, mock_svc):
+        """Same partition structure and affected weights; untouched weights stay stale."""
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        stale_weight = self._edge_map(store)[("delta", "gamma")]
+        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+
+        graph.rebuild_clusters(added=["c.md"])
+        inc_nodes, inc_edges = self._node_map(store), self._edge_map(store)
+        graph.rebuild_clusters()
+        full_nodes, full_edges = self._node_map(store), self._edge_map(store)
+
+        assert set(inc_nodes) == set(full_nodes)
+        assert _comembership(inc_nodes) == _comembership(full_nodes)
+        assert inc_edges[("alpha", "beta")] == full_edges[("alpha", "beta")]
+        assert inc_edges[("delta", "gamma")] == stale_weight
+        assert full_edges[("delta", "gamma")] != stale_weight
+
+
 class TestGetGraph:
     def test_returns_true_when_enabled(self, cg, mock_svc):
         mock_svc.store.open_table.return_value = MagicMock()

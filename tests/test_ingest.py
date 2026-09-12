@@ -1307,7 +1307,7 @@ class TestSyncDropsNewlyIgnored:
 
         assert result.removed == ["drop.txt"]
         assert result.added == [] and result.updated == []
-        concepts.rebuild_clusters.assert_called_once()
+        concepts.rebuild_clusters.assert_called_once_with()
 
     async def test_a_shard_worker_leaves_removal_to_the_parent(
         self, mock_extract_file, isolated_env
@@ -4390,7 +4390,7 @@ class TestConceptIndexing:
         from lilbee.data.ingest import sync
 
         await sync(quiet=True)
-        mock_svc.concepts.rebuild_clusters.assert_called()
+        mock_svc.concepts.rebuild_clusters.assert_called_once_with({"concept_test4.txt"}, set())
 
     @mock.patch(
         "lilbee.data.extract.xberg.aextract_document",
