@@ -2073,7 +2073,8 @@ class CatalogScreen(Screen[None]):
           single rail-friendly slice.
         - Fresh on the Hub: most-downloaded non-featured HF rows as a
           recency-ish proxy (the API doesn't expose 'newly uploaded' as
-          a sort key today; downloads-desc surfaces buzzy recent uploads).
+          a sort key today; downloads-desc surfaces buzzy recent uploads),
+          skipping rows For You already took.
         """
         try:
             rails = self.query_one("#discover-rails", DiscoverRails)
@@ -2084,8 +2085,9 @@ class CatalogScreen(Screen[None]):
         remote_rows = self._all_remote_rows()
         for_you = for_you_by_role(family_rows + hf_rows)
         collection = [r for r in family_rows + remote_rows if r.installed][:6]
+        taken_refs = {r.ref for r in for_you}
         fresh = sorted(
-            (r for r in hf_rows if not r.featured),
+            (r for r in hf_rows if not r.featured and r.ref not in taken_refs),
             key=lambda r: -r.sort_downloads,
         )[:6]
         rails.set_rails(for_you=for_you, collection=collection, fresh=fresh)
