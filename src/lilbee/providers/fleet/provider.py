@@ -1813,10 +1813,11 @@ class FleetProvider:
         """Exact token count of *text* under the embedding model's tokenizer.
 
         Routes to the embed server's ``/tokenize`` so chunk sizing counts the same
-        tokens the embedder will consume. Raises ``ProviderError`` when no embed
-        server is configured; callers on the chunk-sizing path degrade to an
-        estimate rather than propagate it.
+        tokens the embedder consumes, with the same rediscovery retry as embedding.
         """
+        return self._with_rediscover(lambda: self._count_once(text), role=WorkerRole.EMBED)
+
+    def _count_once(self, text: str) -> int:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.count_tokens(text))
 

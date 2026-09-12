@@ -513,6 +513,28 @@ def test_count_tokens_without_server_raises() -> None:
         p.count_tokens("hello")
 
 
+def test_count_tokens_connection_failure_rediscovers_once_and_recovers(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A vanished engine rediscovers for a count as it does for an embedding."""
+    _swap, _machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_embed_launch()])
+    clients: list[MagicMock] = []
+
+    def _client_factory(_endpoint, _model, **_kw):
+        client = _fake_client()
+        if not clients:
+            client.count_tokens.side_effect = _connection_error()
+        else:
+            client.count_tokens.return_value = 7
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", _client_factory)
+    p = FleetProvider()
+    assert p.count_tokens("hello") == 7
+    assert len(clients) == 2  # first pool failed, rediscovery built a second
+
+
 def test_embed_routes_to_least_busy_replica() -> None:
     # Data-parallel replicas: a request goes to the idlest replica in the pool.
     busy, idle = _fake_client(5), _fake_client(1)

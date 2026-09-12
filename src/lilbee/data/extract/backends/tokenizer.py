@@ -34,10 +34,9 @@ class LilbeeTokenizerBackend:
     """Counts chunk-sizing tokens with lilbee's embedder tokenizer.
 
     ``count_fn`` is read live (an embedding-model swap needs no re-registration).
-    xberg requires a non-zero count for non-empty text, so any failure degrades to
-    the character estimate rather than raising: the embedder may be unloaded (the
-    registration probe, or chunking outside an ingest), and a raise or zero would
-    abort extraction or make every span look within budget.
+    Only a backend without a local tokenizer degrades to the character estimate;
+    any other failure raises to the caller. xberg requires a non-zero count for
+    non-empty text, so a zero count degrades to the estimate as well.
     """
 
     def __init__(self, *, count_fn: Callable[[str], int]) -> None:
@@ -55,7 +54,7 @@ class LilbeeTokenizerBackend:
             return 0
         try:
             count = self._count_fn(text)
-        except Exception:  # embedder unreachable/erroring: degrade, never crash chunking
+        except NotImplementedError:  # SDK embedders expose no local tokenizer
             log.debug("exact token count failed; using character estimate", exc_info=True)
             return _estimate_tokens(text)
         return count if count > 0 else _estimate_tokens(text)

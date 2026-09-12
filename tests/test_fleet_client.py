@@ -1910,6 +1910,51 @@ def test_count_tokens_returns_tokenize_length() -> None:
     assert client.count_tokens("hello world") == 4
 
 
+def test_count_tokens_retries_on_busy_then_succeeds(monkeypatch) -> None:
+    """A cold replica's 429s are waited out for a count as they are for an embed."""
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if request.url.path.endswith("/tokenize"):
+            if calls["n"] < 3:
+                return httpx.Response(429, json={"error": "warming"})
+            return httpx.Response(200, json={"tokens": [1, 2, 3, 4]})
+        return httpx.Response(404)
+
+    assert _client(handler).count_tokens("hello world") == 4
+    assert calls["n"] == 3  # two 429s retried, third succeeds
+
+
+def test_count_tokens_with_cold_load_deadline_rides_out_more_429s_than_attempt_cap(
+    monkeypatch,
+) -> None:
+    # An EMBED client built with a cold-load deadline waits out the full warm for
+    # a count as it does for an embedding: chunk sizing must not estimate around
+    # a cold engine it could have waited for.
+    from lilbee.providers.fleet.client import _EMBED_BUSY_RETRIES
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    # Pin the clock so the deadline never actually passes: the retry rides out the
+    # warmup on the deadline branch, never on the attempt count.
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    warmup = _EMBED_BUSY_RETRIES + 5  # more 429s than the fixed attempt cap tolerates
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= warmup:
+            return httpx.Response(429, json={"error": "warming"})
+        return httpx.Response(200, json={"tokens": [1, 2, 3]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
+    client = LlamaServerClient("http://gpu0", "test-model", http=http, embed_busy_deadline_s=600.0)
+    client._needs_alternation = False
+    assert client.count_tokens("hello") == 3
+    assert calls["n"] == warmup + 1
+
+
 def test_embed_retries_with_exact_tokenize_on_context_overflow() -> None:
     """A token-dense input the char estimate trusts can overflow the context; embed
     retries that batch with exact server-side tokenization so it truncates (bb-54r)."""

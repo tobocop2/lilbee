@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from lilbee.data.extract.backends.tokenizer import LilbeeTokenizerBackend, _estimate_tokens
 from lilbee.data.types import TokenizerBackendName
 
@@ -34,13 +36,26 @@ def test_empty_text_is_zero_without_calling_count_fn():
     assert calls == []
 
 
-def test_exception_falls_back_to_char_estimate():
+def test_not_implemented_falls_back_to_char_estimate():
+    """SDK embedders expose no local tokenizer, so the count degrades to a guess."""
+
     def boom(_text: str) -> int:
-        raise RuntimeError("embedder unreachable")
+        raise NotImplementedError("SDK backends have no local tokenizer")
 
     backend = LilbeeTokenizerBackend(count_fn=boom)
     text = "x" * 9
     assert backend.count_tokens(text) == _estimate_tokens(text)
+
+
+def test_unexpected_error_raises_instead_of_estimating():
+    """A count that fails after the embed-grade wait raises to the caller."""
+
+    def boom(_text: str) -> int:
+        raise RuntimeError("embedder unreachable")
+
+    backend = LilbeeTokenizerBackend(count_fn=boom)
+    with pytest.raises(RuntimeError, match="embedder unreachable"):
+        backend.count_tokens("x" * 9)
 
 
 def test_zero_count_for_non_empty_text_falls_back_to_estimate():
