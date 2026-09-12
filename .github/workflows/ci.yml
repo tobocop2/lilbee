@@ -327,7 +327,7 @@ jobs:
           # GITHUB_ENV export would apply to every later step in the job, and
           # ollama's bundled runner links the same libggml/libllama SONAMEs this
           # tarball ships, so it would load these instead of its own and
-          # segfault on the model warm-up.
+          # segfault when it first loads a model.
           if command -v cygpath >/dev/null 2>&1; then
             cygpath -w "${bindir}" >> "${GITHUB_PATH}"
           else
@@ -482,8 +482,7 @@ jobs:
       # KEEP_ALIVE=-1 pins loaded models in memory: the litellm tests run well
       # past ollama's 5-minute default unload, and a cold reload plus first
       # generation on a loaded runner overruns the request timeout ("Couldn't
-      # reach the provider ... or it timed out"). The warm-up calls pay the
-      # load cost here, where nothing is timing the request.
+      # reach the provider ... or it timed out").
       # ollama runs its llama-server subprocess at --log-verbosity 4 and wires its
       # output to the daemon's stderr, so this file carries the "load_backend:
       # loaded CPU backend from libggml-cpu-<variant>.so" line. OLLAMA_DEBUG=1 adds
@@ -516,37 +515,6 @@ jobs:
             exit 1
           fi
           du -sh ~/.ollama/models
-
-      # Ollama's model runner segfaults here often enough to kill whole runs
-      # ("llama runner process has terminated: signal: segmentation fault"),
-      # and the pull steps around it already retry. Warming a model is setup,
-      # not a subject under test, so a transient crash must not fail the job
-      # before a single test runs. Three failures still fail it.
-      - name: Warm up Ollama models (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          warm_up() {
-            ollama run qwen3:0.6b "warm up" >/dev/null &&
-              curl -fsS localhost:11434/api/embed \
-                -d '{"model":"nomic-embed-text","input":"warm up"}' >/dev/null
-          }
-
-          delay=5
-          for attempt in 1 2 3; do
-            if warm_up; then
-              exit 0
-            fi
-            if [ "${attempt}" -lt 3 ]; then
-              echo "Ollama warm-up failed (attempt ${attempt}/3). Retry in ${delay}s."
-              sleep "${delay}"
-              delay=$((delay * 2))
-            fi
-          done
-          echo "::error::Ollama warm-up failed after 3 attempts."
-          exit 1
 
       # On step failure, not job failure, so a later green rerun cannot discard
       # the evidence.
@@ -605,30 +573,6 @@ jobs:
           models: |
             qwen3:0.6b
             nomic-embed-text
-
-      # Same retry as the Linux/macOS warm-up: one runner crash must not end
-      # the job. ollama.exe reports failure through the exit code, not an
-      # exception, so check it rather than relying on try/catch alone.
-      - name: Warm up Ollama models (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            & C:\ollama\ollama.exe run qwen3:0.6b "warm up" | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-              try {
-                Invoke-RestMethod -Method Post -Uri "http://localhost:11434/api/embed" `
-                  -Body '{"model":"nomic-embed-text","input":"warm up"}' | Out-Null
-                exit 0
-              } catch { }
-            }
-            if ($attempt -lt 3) {
-              Write-Host "Ollama warm-up failed (attempt $attempt/3). Retry in 5s."
-              Start-Sleep -Seconds 5
-            }
-          }
-          Write-Host "::error::Ollama warm-up failed after 3 attempts."
-          exit 1
 
       - name: Restore GGUF models from release mirror
         id: ci-models
