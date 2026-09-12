@@ -55,6 +55,9 @@ scripts/*
 !scripts/promote_release.sh
 !scripts/release_watch.sh
 !scripts/release_selfheal.sh
+!scripts/compute_version_tag.sh
+!scripts/detect_promotion.sh
+!scripts/create_prerelease.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py

@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Stand-in for the gh CLI, driven by files under $FIXTURE. Only the calls
+# scripts/create_prerelease.sh makes are implemented; anything else is a loud
+# failure so a new call site cannot pass a test silently.
+set -uo pipefail
+
+log() { echo "$*" >> "${FIXTURE}/actions.log"; }
+
+sub="$1"; shift
+[ "${sub}" = "release" ] || { echo "stub gh: unhandled ${sub}" >&2; exit 1; }
+op="$1"; shift
+
+case "${op}" in
+  view)
+    tag="$1"
+    log "view ${tag}"
+    if [ "$#" -gt 3 ]; then
+      # Body fetch: $FIXTURE/release_body/<tag> holds the source notes.
+      [ -f "${FIXTURE}/release_body/${tag}" ] || exit 1
+      cat "${FIXTURE}/release_body/${tag}"
+    else
+      # Existence probe: $FIXTURE/releases/<tag> marks an existing release.
+      [ -f "${FIXTURE}/releases/${tag}" ]
+    fi
+    ;;
+  create)
+    tag="$1"; shift
+    notes_file=""
+    prev=""
+    for arg in "$@"; do
+      [ "${prev}" = "--notes-file" ] && notes_file="${arg}"
+      prev="${arg}"
+    done
+    log "create ${tag}"
+    cp "${notes_file}" "${FIXTURE}/created_notes"
+    ;;
+  *) echo "stub gh: unhandled release ${op}" >&2; exit 1 ;;
+esac

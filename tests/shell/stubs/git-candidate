@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Stand-in for git, driven by files under $FIXTURE. Only the calls
+# scripts/detect_promotion.sh makes are implemented; anything else is a loud
+# failure so a new call site cannot pass a test silently.
+set -uo pipefail
+
+case "$1" in
+  rev-parse)
+    # $FIXTURE/parent holds the HEAD^ sha; absent means no parent commit.
+    [ -f "${FIXTURE}/parent" ] || exit 1
+    cat "${FIXTURE}/parent"
+    ;;
+  ls-remote)
+    cat "${FIXTURE}/ls_remote"
+    ;;
+  diff)
+    # $FIXTURE/diff_rc holds the exit status: 0 means version-only change.
+    exit "$(cat "${FIXTURE}/diff_rc")"
+    ;;
+  *) echo "stub git: unhandled $1" >&2; exit 1 ;;
+esac

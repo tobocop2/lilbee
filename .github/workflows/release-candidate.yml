@@ -56,30 +56,7 @@ jobs:
           REF_NAME: ${{ github.ref_name }}
           GITHUB_REF: ${{ github.ref }}
           INPUT_REF: ${{ inputs.ref }}
-        run: |
-          set -euo pipefail
-          VERSION=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
-          if [ -z "${VERSION}" ]; then
-            echo "could not parse version from pyproject.toml" >&2
-            exit 1
-          fi
-          if [ "${EVENT_NAME}" = "push" ]; then
-            TAG="${REF_NAME}"
-            REF="${GITHUB_REF}"
-            # Sanity: tag should match pyproject.toml version (allow with-or-without 'v').
-            if [ "${TAG}" != "v${VERSION}" ] && [ "${TAG}" != "${VERSION}" ]; then
-              echo "tag ${TAG} does not match pyproject.toml version ${VERSION}" >&2
-              exit 1
-            fi
-          else
-            TAG="v${VERSION}"
-            REF="${INPUT_REF:-${GITHUB_REF}}"
-          fi
-          {
-            echo "version=${VERSION}"
-            echo "tag=${TAG}"
-            echo "ref=${REF}"
-          } >> "$GITHUB_OUTPUT"
+        run: scripts/compute_version_tag.sh pyproject.toml "$EVENT_NAME" "$REF_NAME" "$GITHUB_REF" "$INPUT_REF" >> "$GITHUB_OUTPUT"
 
       # A promotion (scripts/promote_release.sh, `make promote`) is a tag whose
       # parent commit is itself a v* tag and whose only change is the version
@@ -93,21 +70,7 @@ jobs:
         shell: bash
         env:
           TAG: ${{ steps.ver.outputs.tag }}
-        run: |
-          set -euo pipefail
-          promoted_from=""
-          parent=$(git rev-parse -q --verify HEAD^ 2>/dev/null || echo "")
-          if [ -n "${parent}" ]; then
-            # ls-remote instead of fetching all tags; strip annotated-tag ^{} peels.
-            from_tag=$(git ls-remote --tags origin \
-              | awk -v sha="${parent}" '$1 == sha && $2 ~ /^refs\/tags\/v/ && $2 !~ /\^\{\}$/ { sub("refs/tags/", "", $2); print $2; exit }')
-            if [ -n "${from_tag}" ] && [ "${from_tag}" != "${TAG}" ] \
-              && git diff --quiet HEAD^ HEAD -- . ':(exclude)pyproject.toml' ':(exclude)uv.lock'; then
-              promoted_from="${from_tag}"
-              echo "${TAG} is a same-source promotion of ${from_tag}"
-            fi
-          fi
-          echo "promoted_from=${promoted_from}" >> "$GITHUB_OUTPUT"
+        run: scripts/detect_promotion.sh "$TAG" >> "$GITHUB_OUTPUT"
 
   # Fast fail-first gate: lock consistency, lint, and formatting in a few
   # minutes, so a trivial breakage never burns hours of the executable matrix
@@ -171,27 +134,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
           VERSION: ${{ needs.resolve.outputs.version }}
           REPO: ${{ github.repository }}
           PROMOTED_FROM: ${{ needs.resolve.outputs.promoted_from }}
-        run: |
-          set -euo pipefail
-          gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1 && exit 0
-          notes=$(mktemp)
-          if [ -n "$PROMOTED_FROM" ] \
-            && gh release view "$PROMOTED_FROM" --repo "$REPO" --json body -q .body > "${notes}.src" 2>/dev/null; then
-            {
-              echo "Promoted from [${PROMOTED_FROM}](https://github.com/${REPO}/releases/tag/${PROMOTED_FROM}): the same source, released as ${VERSION}."
-              echo
-              cat "${notes}.src"
-            } > "$notes"
-          else
-            echo "Release candidate building; executables attach here as each one finishes." > "$notes"
-          fi
-          gh release create "$TAG" --repo "$REPO" --prerelease --notes-file "$notes"
+        run: scripts/create_prerelease.sh "$TAG" "$VERSION" "$REPO" "$PROMOTED_FROM"
 
   build-binaries:
     needs: [resolve, create-prerelease]
