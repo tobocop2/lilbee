@@ -1098,14 +1098,20 @@ class LlamaServerClient:
                 )
             return list(data)
 
-        # Bulk ingest can afford to wait out a cold-start warmup rather than drop
-        # files. With a cold-load deadline (the EMBED-role client) the retry waits
-        # out a still-loading replica for the full budget llama-swap keeps it alive,
-        # instead of dropping the file after the fixed attempt cap; without one the
-        # fixed count bounds an interactive caller.
+        return self._with_busy_retry(_call)
+
+    def _with_busy_retry(self, call: Callable[[], _T]) -> _T:
+        """Run *call*, waiting out a cold replica on the embed cold-load budget.
+
+        Bulk ingest waits out a cold-start warmup rather than dropping files. With
+        a cold-load deadline (the EMBED-role client) the retry waits out a
+        still-loading replica for the full budget llama-swap keeps it alive,
+        instead of dropping the file after the fixed attempt cap; without one the
+        fixed count bounds an interactive caller.
+        """
         if self._embed_busy_deadline_s is not None:
-            return retry_on_busy(_call, deadline=time.monotonic() + self._embed_busy_deadline_s)
-        return retry_on_busy(_call, retries=_EMBED_BUSY_RETRIES)
+            return retry_on_busy(call, deadline=time.monotonic() + self._embed_busy_deadline_s)
+        return retry_on_busy(call, retries=_EMBED_BUSY_RETRIES)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
@@ -1167,16 +1173,21 @@ class LlamaServerClient:
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
     def _tokenize(self, text: str) -> list[int]:
-        resp = self._http.post(
-            self._native_route(_TOKENIZE_PATH),
-            json={
-                "content": text,
-                "add_special": _TOKENIZE_ADD_SPECIAL,
-                "parse_special": _TOKENIZE_PARSE_SPECIAL,
-            },
-        )
-        _raise_for_status(resp)
-        return list(resp.json()["tokens"])
+        """Token ids for *text*; a cold replica is waited out like an embedding."""
+
+        def _call() -> list[int]:
+            resp = self._http.post(
+                self._native_route(_TOKENIZE_PATH),
+                json={
+                    "content": text,
+                    "add_special": _TOKENIZE_ADD_SPECIAL,
+                    "parse_special": _TOKENIZE_PARSE_SPECIAL,
+                },
+            )
+            _raise_for_status(resp)
+            return list(resp.json()["tokens"])
+
+        return self._with_busy_retry(_call)
 
     def count_tokens(self, text: str) -> int:
         """Number of tokens *text* encodes to under the server's tokenizer."""
