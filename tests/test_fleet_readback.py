@@ -74,22 +74,30 @@ class TestDeviceFootprint:
 
 class TestReportDivergence:
     def test_warns_when_the_engine_used_materially_more(self, caplog) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             warned = report_divergence(
                 WorkerRole.CHAT, "org/m.gguf", 4 * 1024**3, 6 * 1024**3, tolerance=0.15
             )
-        assert warned is True
+        assert warned is not None
+        assert warned.code is WarningCode.PLACEMENT_DIVERGED
+        assert warned.remedy is not None
         assert "allocated 6.0 GiB" in caplog.text
         assert "planned for 4.0 GiB" in caplog.text
         assert "+50%" in caplog.text
 
     def test_warns_when_the_estimate_was_far_too_large(self, caplog) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
         # Quieter, but it is why a role gets fewer slots or a split it did not need.
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             warned = report_divergence(
                 WorkerRole.RERANK, "org/r.gguf", 8 * 1024**3, 2 * 1024**3, tolerance=0.15
             )
-        assert warned is True
+        assert warned is not None
+        assert warned.code is WarningCode.PLACEMENT_DIVERGED
+        assert warned.remedy is None
         assert "-75%" in caplog.text
 
     def test_the_binding_fraction_is_the_one_that_leaves_least_room(self, monkeypatch) -> None:
@@ -133,7 +141,7 @@ class TestReportDivergence:
                 int(4.6 * 1024**3),  # +15%: quiet under the old constant
                 tolerance=readback._TOLERANCE,
             )
-        assert warned is True
+        assert warned is not None
         assert "+15%" in caplog.text
 
     def test_a_shortfall_keeps_the_wider_tolerance(self, monkeypatch, caplog) -> None:
@@ -151,7 +159,7 @@ class TestReportDivergence:
                 int(3.2 * 1024**3),  # -20%, inside the baseline tolerance
                 tolerance=readback._TOLERANCE,
             )
-        assert warned is False
+        assert warned is None
 
     @pytest.mark.parametrize("usable", [0.5, 0.75, 0.9, 0.95, 1.0])
     @pytest.mark.parametrize("serve", [0.5, 0.75, 0.9, 1.0])
@@ -171,15 +179,15 @@ class TestReportDivergence:
             warned = report_divergence(
                 WorkerRole.CHAT, "org/m.gguf", 4 * 1024**3, int(4.3 * 1024**3), tolerance=0.15
             )
-        assert warned is False
+        assert warned is None
         assert caplog.text == ""
 
     def test_an_unparsed_or_unestimated_instance_says_nothing(self, caplog) -> None:
         # No buffer report, or a model enrolled at its file size with no estimate:
         # there is no comparison to make, and a warning would be noise.
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
-            assert report_divergence(WorkerRole.CHAT, "m", 0, 6 * 1024**3, tolerance=0.15) is False
-            assert report_divergence(WorkerRole.CHAT, "m", 4 * 1024**3, 0, tolerance=0.15) is False
+            assert report_divergence(WorkerRole.CHAT, "m", 0, 6 * 1024**3, tolerance=0.15) is None
+            assert report_divergence(WorkerRole.CHAT, "m", 4 * 1024**3, 0, tolerance=0.15) is None
         assert caplog.text == ""
 
 
@@ -220,14 +228,14 @@ class TestTheCheckRunsOnARealLog:
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
             # The engine really allocated ~0.22 GiB; planning charged 4 GiB.
             warned = check_launch(tmp_path, "chat-0", WorkerRole.CHAT, "org/m.gguf", 4 * 1024**3)
-        assert warned is True
+        assert warned is not None
         assert "planned for 4.0 GiB" in caplog.text
 
     def test_a_missing_log_says_nothing(self, tmp_path, caplog) -> None:
         from lilbee.providers.fleet.readback import check_launch
 
         with caplog.at_level(logging.WARNING, logger="lilbee.providers.fleet.readback"):
-            assert check_launch(tmp_path, "chat-0", WorkerRole.CHAT, "m", 4 * 1024**3) is False
+            assert check_launch(tmp_path, "chat-0", WorkerRole.CHAT, "m", 4 * 1024**3) is None
         assert caplog.text == ""
 
     def test_the_engine_is_told_where_to_write_and_how_loudly(self, tmp_path) -> None:
