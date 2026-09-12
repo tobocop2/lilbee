@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -134,6 +135,22 @@ class TestSyncEmbeddingBackend:
         assert backend.shutdown() is None
 
 
+@contextmanager
+def _isolated_tokenizer_binding():
+    """Run with xberg's process-global tokenizer slot empty, and leave it empty."""
+    import xberg
+
+    from lilbee.data.types import TokenizerBackendName
+
+    if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
+        xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+    try:
+        yield
+    finally:
+        if TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends():
+            xberg.unregister_tokenizer_backend(TokenizerBackendName.LILBEE)
+
+
 class TestSyncTokenizerBackend:
     def _patch_xberg(self, monkeypatch, *, listed):
         reg = MagicMock()
@@ -148,7 +165,9 @@ class TestSyncTokenizerBackend:
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, unreg = self._patch_xberg(monkeypatch, listed=[])
-        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
+        provider = MagicMock()
+        provider.count_tokens.return_value = 7
+        sync_xberg_backend(BackendKind.TOKENIZER, provider)
         reg.assert_called_once()
         unreg.assert_not_called()
 
@@ -159,7 +178,9 @@ class TestSyncTokenizerBackend:
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
-        sync_xberg_backend(BackendKind.TOKENIZER, MagicMock())
+        provider = MagicMock()
+        provider.count_tokens.return_value = 7
+        sync_xberg_backend(BackendKind.TOKENIZER, provider)
         unreg.assert_called_once_with("lilbee")
         reg.assert_called_once()
 
@@ -192,7 +213,8 @@ class TestSyncTokenizerBackend:
         backend = reg.call_args.args[0]
         assert backend.name() == "lilbee"
         assert backend.count_tokens("hello") == 42
-        provider.count_tokens.assert_called_once_with("hello")
+        assert provider.count_tokens.call_count == 2  # probe, then the routed count
+        provider.count_tokens.assert_called_with("hello")
 
     def test_bind_backend_registers_once_per_provider(self, monkeypatch):
         """The chunker binds on demand; a second call for the same provider is a no-op."""
@@ -203,6 +225,7 @@ class TestSyncTokenizerBackend:
         reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
         reg.side_effect = lambda backend: listed.append(backend.name())
         provider = MagicMock()
+        provider.count_tokens.return_value = 7
         bind_backend(BackendKind.TOKENIZER, provider)
         bind_backend(BackendKind.TOKENIZER, provider)
         reg.assert_called_once()
@@ -215,8 +238,12 @@ class TestSyncTokenizerBackend:
         listed: list[str] = []
         reg, unreg = self._patch_xberg(monkeypatch, listed=listed)
         reg.side_effect = lambda backend: listed.append(backend.name())
-        bind_backend(BackendKind.TOKENIZER, MagicMock())
-        bind_backend(BackendKind.TOKENIZER, MagicMock())
+        first = MagicMock()
+        first.count_tokens.return_value = 7
+        second = MagicMock()
+        second.count_tokens.return_value = 7
+        bind_backend(BackendKind.TOKENIZER, first)
+        bind_backend(BackendKind.TOKENIZER, second)
         assert reg.call_count == 2
         unreg.assert_called_once_with("lilbee")
 
@@ -226,6 +253,7 @@ class TestSyncTokenizerBackend:
         monkeypatch.setattr(cfg, "token_sizing", False)
         reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
         provider = MagicMock()
+        provider.count_tokens.return_value = 7
         bind_backend(BackendKind.TOKENIZER, provider)
         bind_backend(BackendKind.TOKENIZER, provider)
         assert reg.call_count == 2
@@ -244,6 +272,52 @@ class TestSyncTokenizerBackend:
             reg.assert_called_once()
         finally:
             set_services(None)
+
+    def test_sync_skips_an_unusable_tokenizer_count(self, monkeypatch):
+        """An unbuildable embedder must not crash services init: sync leaves the
+        tokenizer unregistered against the real xberg probe, and chunking rebinds
+        on demand."""
+        import xberg
+
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.types import TokenizerBackendName
+        from lilbee.providers.base import ProviderError
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        provider = MagicMock()
+        provider.count_tokens.side_effect = ProviderError("No embedding model is configured")
+        with _isolated_tokenizer_binding():
+            sync_xberg_backend(BackendKind.TOKENIZER, provider)
+            assert TokenizerBackendName.LILBEE not in xberg.list_tokenizer_backends()
+
+    def test_bind_backend_raises_the_real_count_error(self):
+        """Mid-ingest binding fails loud with the count error itself, not xberg's
+        validation mask, so the file fails with its actionable cause."""
+        from lilbee.data.extract.backends import BackendKind, bind_backend
+        from lilbee.providers.base import ProviderError
+
+        provider = MagicMock()
+        provider.count_tokens.side_effect = ProviderError("No embedding model is configured")
+        with (
+            _isolated_tokenizer_binding(),
+            pytest.raises(ProviderError, match="No embedding model is configured"),
+        ):
+            bind_backend(BackendKind.TOKENIZER, provider)
+
+    def test_sync_registers_an_sdk_backend_on_its_estimate(self, monkeypatch):
+        """SDK embedders have no local tokenizer; the estimate still passes the
+        real xberg probe, so registration succeeds."""
+        import xberg
+
+        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.types import TokenizerBackendName
+
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        provider = MagicMock()
+        provider.count_tokens.side_effect = NotImplementedError("no local tokenizer")
+        with _isolated_tokenizer_binding():
+            sync_xberg_backend(BackendKind.TOKENIZER, provider)
+            assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
 
 
 class TestServicesDataclass:

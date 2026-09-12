@@ -18,11 +18,17 @@ from .registry import BackendKind, XbergBinding, register_binding
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from lilbee.core.config.model import Config
+    from lilbee.providers.base import LLMProvider
+
 log = logging.getLogger(__name__)
 
 # Over-counting fallback for when the exact count is unavailable: splits a touch
 # early rather than emitting an over-length chunk. Mirrors providers.fleet.client.
 _FALLBACK_CHARS_PER_TOKEN = 3
+
+# Non-empty input for the pre-registration count probe; the result is discarded.
+_PROBE_TEXT = "probe"
 
 
 def _estimate_tokens(text: str) -> int:
@@ -60,11 +66,19 @@ class LilbeeTokenizerBackend:
         return count if count > 0 else _estimate_tokens(text)
 
 
+def _make_tokenizer_backend(provider: LLMProvider, cfg: Config) -> LilbeeTokenizerBackend:
+    """Build the tokenizer backend, probing its count before xberg does."""
+    backend = LilbeeTokenizerBackend(count_fn=provider.count_tokens)
+    # xberg masks a probe failure as a validation error; fail first with the real one.
+    backend.count_tokens(_PROBE_TEXT)
+    return backend
+
+
 register_binding(
     XbergBinding(
         kind=BackendKind.TOKENIZER,
         name=TokenizerBackendName.LILBEE,
         enabled=lambda cfg: cfg.token_sizing,
-        make=lambda provider, cfg: LilbeeTokenizerBackend(count_fn=provider.count_tokens),
+        make=_make_tokenizer_backend,
     )
 )
