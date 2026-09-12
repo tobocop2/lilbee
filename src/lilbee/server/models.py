@@ -405,6 +405,7 @@ class CatalogEntryResponse(BaseModel):
     size_variants: list[SizeVariantInfo] = []
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
+    safety_stripped: bool = False
     provider: str = ""
     key_status: KeyStatus | None = None
 

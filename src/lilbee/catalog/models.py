@@ -147,6 +147,9 @@ class CatalogModel:
     params: int = 0
     # HuggingFace trending rank. 0 when the listing omits it.
     trending_score: int = 0
+    # Safety-stripped (abliterated/uncensored) per the repo's HF tags. Browse
+    # rows carry it; recommendation rails exclude rows that set it.
+    safety_stripped: bool = False
 
     @property
     def ref(self) -> str:
@@ -217,6 +220,7 @@ class ModelVariant:
     size_mb: int
     mmproj_filename: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
+    safety_stripped: bool = False
 
 
 @dataclass(frozen=True)

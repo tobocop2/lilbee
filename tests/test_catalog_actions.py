@@ -1336,7 +1336,17 @@ class TestForYouByRole:
     """Discover's For You rail: one runnable pick per role, in role order."""
 
     @staticmethod
-    def _row(name, task, *, compat, fit_level, featured=True, downloads=1_000_000, sort_size=4.6):
+    def _row(
+        name,
+        task,
+        *,
+        compat,
+        fit_level,
+        featured=True,
+        downloads=1_000_000,
+        sort_size=4.6,
+        stripped=False,
+    ):
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
         from lilbee.runtime.hardware import FitChip
 
@@ -1353,6 +1363,7 @@ class TestForYouByRole:
             sort_size=sort_size,
             ref=f"a/{name}-GGUF",
             compat=compat,
+            safety_stripped=stripped,
         )
         row.fit = None if fit_level is None else FitChip(level=fit_level, headroom_gb=1.0)
         return row
@@ -1537,6 +1548,51 @@ class TestForYouByRole:
         ]
         (pick,) = for_you_by_role(rows)
         assert pick.name == "Zeta"
+
+    def test_a_safety_stripped_row_is_never_offered(self) -> None:
+        """The rail is a recommendation, not a listing; stripped rows stay out."""
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+        from lilbee.runtime.hardware import FitLevel
+
+        rows = [
+            self._row(
+                "ChatStripped",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                stripped=True,
+            ),
+            self._row("ChatGood", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "ChatGood"
+
+    def test_the_backfill_skips_a_safety_stripped_row(self) -> None:
+        rows = [
+            self._row(
+                "ChatHuge", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.WONT_RUN
+            ),
+            self._row(
+                "ChatStripped",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                featured=False,
+                downloads=900,
+                stripped=True,
+            ),
+            self._row(
+                "ChatSpare",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                featured=False,
+                downloads=10,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "ChatSpare"
 
     def test_a_role_with_nothing_runnable_yields_no_pick(self) -> None:
         """An empty role is a legitimate outcome, not an error."""

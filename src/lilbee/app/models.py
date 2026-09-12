@@ -109,6 +109,7 @@ class CatalogEntryData(BaseModel):
     featured: bool
     architecture: str = ""
     compat: ModelCompat = ModelCompat.UNKNOWN
+    safety_stripped: bool = False
 
     @classmethod
     def from_catalog_model(cls, entry: CatalogModel) -> CatalogEntryData:
@@ -124,6 +125,7 @@ class CatalogEntryData(BaseModel):
             featured=entry.featured,
             architecture=entry.architecture,
             compat=entry.compat,
+            safety_stripped=entry.safety_stripped,
         )
 
 

@@ -348,6 +348,7 @@ def _build_catalog_entry(
         size_variants=_row_size_variants(enriched, families_by_repo),
         architecture=enriched.architecture,
         compat=enriched.compat,
+        safety_stripped=enriched.safety_stripped,
     )
 
 
