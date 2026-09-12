@@ -16,6 +16,7 @@ from lilbee.app.services import (
     peek_services,
     reset_services,
     reset_services_on_exit,
+    set_server_exit_hook,
     set_services,
     wait_for_hard_exit_teardown,
 )
@@ -125,6 +126,20 @@ def test_signal_without_services_still_exits():
     install_engine_lifecycle_hooks()
     with pytest.raises(SystemExit):
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+
+
+def test_hard_exit_invokes_the_registered_exit_hook():
+    """A SystemExit swallowed mid-request must still stop the serving loop."""
+    calls: list[None] = []
+    set_server_exit_hook(lambda: calls.append(None))
+    try:
+        install_engine_lifecycle_hooks()
+        with pytest.raises(SystemExit):
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        _join_teardown()
+    finally:
+        set_server_exit_hook(None)
+    assert calls == [None]
 
 
 def test_cli_entry_point_installs_the_hooks():
