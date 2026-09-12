@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from lilbee.data.store import ChunkType, CitationRecord, SearchChunk
+from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
 
 CONTEXT_TEMPLATE = """Context:
 {context}
@@ -147,6 +147,8 @@ def source_markdown_link(source: str) -> str:
     live answer's Sources block uses; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
     label = _source_label(source)
+    if is_memory_source(source):
+        return label
     url = _source_file_url(source)
     return f"[{label}]({url})" if url else label
 
@@ -154,8 +156,11 @@ def source_markdown_link(source: str) -> str:
 def format_source(result: SearchChunk, citations: list[CitationRecord] | None = None) -> str:
     """Format a source as a clickable, readable citation: a ``[label](file-url)``
     markdown link plus any page/line locator. Web docs render as ``host · slug``;
-    wiki chunks append their indented transitive citations.
+    wiki chunks append their indented transitive citations. Memory rows render
+    as their plain ``memory:<id>`` label: they have no file to link.
     """
+    if result.memory_id is not None:
+        return _source_label(result.source)
     head = source_markdown_link(result.source)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
