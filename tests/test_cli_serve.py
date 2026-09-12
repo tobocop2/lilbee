@@ -242,6 +242,30 @@ class TestRunServer:
 
         assert not (cfg.data_dir / "server.port").exists()
 
+    def test_registers_exit_hook_while_serving(self):
+        """The shutdown route stops this loop; the hook clears on the way out."""
+        from lilbee.app.services import request_server_exit
+        from lilbee.cli.commands.servers import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = []
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+
+        seen: list[bool] = []
+
+        async def capture_hook() -> None:
+            seen.append(request_server_exit())
+
+        fake_server_obj.main_loop = capture_hook
+        fake_config = mock.MagicMock()
+
+        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+
+        assert seen == [True]
+        assert fake_server_obj.should_exit is True
+        assert request_server_exit() is False
+
     def test_loads_config_when_not_loaded(self):
         from lilbee.cli.commands.servers import _run_server
 

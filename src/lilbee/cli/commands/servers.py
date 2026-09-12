@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 
-from lilbee.app.services import wait_for_hard_exit_teardown
+from lilbee.app.services import set_server_exit_hook, wait_for_hard_exit_teardown
 from lilbee.cli.app import (
     apply_overrides,
     console,
@@ -70,6 +70,9 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     def _cleanup_port_file() -> None:
         port_path.unlink(missing_ok=True)
 
+    def _request_exit() -> None:
+        server.should_exit = True
+
     if not config.loaded:
         config.load()
     server.lifespan = config.lifespan_class(config)
@@ -80,6 +83,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     started = False
     parent_watcher: asyncio.Task[None] | None = None
     try:
+        set_server_exit_hook(_request_exit)
         await server.startup()
         started = True
 
@@ -100,6 +104,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             console.print(f"Listening on http://{host}:{actual_port}")
         await server.main_loop()
     finally:
+        set_server_exit_hook(None)
         if parent_watcher is not None and not parent_watcher.done():
             parent_watcher.cancel()
         port_path.unlink(missing_ok=True)

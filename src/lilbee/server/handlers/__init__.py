@@ -146,12 +146,12 @@ async def health() -> HealthResponse:
 
 
 async def shutdown() -> ShutdownResponse:
-    """Accept an API-requested stop; the route's background task sends SIGTERM.
+    """Accept an API-requested stop; the route's background task stops the server.
 
     Litestar runs that task only after the response has been handed to the
-    transport, so the signal cannot beat the 202 out and no wall-clock delay
-    has to be guessed. Routing through SIGTERM keeps the fleet teardown and
-    shutdown logging identical however the stop arrives.
+    transport, so the stop cannot beat the 202 out and no wall-clock delay
+    has to be guessed. Stopping through the serving loop keeps teardown
+    ordered; without a loop the task falls back to SIGTERM.
     """
     log.info("Shutdown requested via the API")
     return ShutdownResponse(status="shutting_down")

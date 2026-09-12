@@ -392,6 +392,36 @@ def reset_store() -> None:
     old_store.close()
 
 
+class _ServerExit:
+    """Holds the running server's graceful-exit callback while it serves."""
+
+    def __init__(self) -> None:
+        self._hook: Callable[[], None] | None = None
+
+    def set(self, hook: Callable[[], None] | None) -> None:
+        self._hook = hook
+
+    def request(self) -> bool:
+        """Run the hook; False when no server registered one."""
+        if self._hook is None:
+            return False
+        self._hook()
+        return True
+
+
+_server_exit = _ServerExit()
+
+
+def set_server_exit_hook(hook: Callable[[], None] | None) -> None:
+    """Register the running server's graceful-exit callback (None clears it)."""
+    _server_exit.set(hook)
+
+
+def request_server_exit() -> bool:
+    """Ask the running server to exit; False when none registered."""
+    return _server_exit.request()
+
+
 class _EngineLifecycle:
     """Owns the hard-exit hooks that stop the engine fleet."""
 
@@ -423,15 +453,18 @@ class _EngineLifecycle:
     def _on_hard_exit(self, signum: int, frame: object) -> None:
         """Stop the fleet on its own thread, then exit with the signal status.
 
-        Signal handlers all run on the main thread, and a second signal can
-        interrupt this one mid-teardown: the kernel pairs SIGCONT with SIGHUP
-        for an orphaned process group, and Textual's SIGCONT handler raises
-        once the event loop is gone, which aborted the reap half-done and
-        orphaned a loaded fleet. A dedicated non-daemon thread cannot be
-        interrupted by signals, and the interpreter waits for it even as the
-        SystemExit unwinds the main thread.
+        The serving loop is asked to stop first: a SystemExit raised while the
+        main thread runs a request dies inside that request's ASGI wrapper, so
+        the flag stops the loop when the raise cannot reach it. Signal handlers
+        all run on the main thread, and a second signal can interrupt this one
+        mid-teardown: the kernel pairs SIGCONT with SIGHUP for an orphaned
+        process group, and Textual's SIGCONT handler raises once the event loop
+        is gone, which aborted the reap half-done and orphaned a loaded fleet.
+        A dedicated non-daemon thread cannot be interrupted by signals, and the
+        interpreter waits for it even as the SystemExit unwinds the main thread.
         """
         del frame
+        request_server_exit()
         threading.Thread(
             target=_teardown_for_signal, args=(signum,), name=_HARD_EXIT_THREAD_NAME
         ).start()
