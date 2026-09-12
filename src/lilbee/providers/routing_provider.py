@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 from lilbee.app.services import get_services
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.core.config import cfg
-from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
     ChatResult,
@@ -362,9 +362,17 @@ class RoutingProvider(LLMProvider):
         return None if local is None else local.embed_token_cap()
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Serving degradations of the local engine; none for a remote or unset embedder."""
+        """Serving degradations of the local engine; the embed warning needs a local embedder."""
         local = self._local_embedder()
-        return [] if local is None else local.health_warnings()
+        if local is not None:
+            return local.health_warnings()
+        if self._local is None:
+            return []
+        return [
+            w
+            for w in self._local.health_warnings()
+            if w.code != WarningCode.EMBED_WINDOW_BELOW_CHUNK
+        ]
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """Chat prefill progress of the local engine, or None when none exists."""

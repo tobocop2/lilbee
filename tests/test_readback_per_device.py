@@ -27,6 +27,8 @@ class TestASkewedSplitIsCaught:
     lands 80/20 passed silently, and card 0 is the one that OOMs."""
 
     def test_a_skewed_split_with_the_right_total_is_reported(self, tmp_path, caplog) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
         engine_log_path(tmp_path, "chat-0").write_text(_split_log(8000.0, 2000.0))
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
             warned = check_launch(
@@ -37,7 +39,8 @@ class TestASkewedSplitIsCaught:
                 5000 * MIB * 2,
                 est_by_device={"CUDA0": 5000 * MIB, "CUDA1": 5000 * MIB},
             )
-        assert warned is True
+        assert warned is not None
+        assert warned.code is WarningCode.PLACEMENT_DIVERGED
         assert "CUDA0" in caplog.text
 
     def test_a_split_that_landed_as_planned_stays_quiet(self, tmp_path, caplog) -> None:
@@ -51,7 +54,7 @@ class TestASkewedSplitIsCaught:
                 5000 * MIB * 2,
                 est_by_device={"CUDA0": 5000 * MIB, "CUDA1": 5000 * MIB},
             )
-        assert warned is False
+        assert warned is None
         assert caplog.text == ""
 
     def test_a_role_that_landed_on_an_unplanned_card_is_reported(self, tmp_path, caplog) -> None:
@@ -66,7 +69,7 @@ class TestASkewedSplitIsCaught:
                 10000 * MIB,
                 est_by_device={"CUDA0": 10000 * MIB},
             )
-        assert warned is True
+        assert warned is not None
         assert "CUDA1" in caplog.text
 
     def test_without_a_per_device_estimate_the_total_is_still_checked(
@@ -76,7 +79,7 @@ class TestASkewedSplitIsCaught:
         engine_log_path(tmp_path, "chat-0").write_text(_split_log(8000.0, 8000.0))
         with caplog.at_level(logging.WARNING, logger=_LOGGER):
             warned = check_launch(tmp_path, "chat-0", WorkerRole.CHAT, "m", 4000 * MIB)
-        assert warned is True
+        assert warned is not None
 
 
 class TestTheDeviceNameIsTheJoin:
