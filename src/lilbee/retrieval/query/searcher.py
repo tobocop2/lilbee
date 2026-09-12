@@ -25,6 +25,7 @@ from lilbee.data.store import (
     cosine_sim,
     human_recall_predicate,
 )
+from lilbee.data.store.fusion import fuse_ranked_lists
 from lilbee.providers.base import (
     LLMProvider,
     ProviderError,
@@ -923,6 +924,24 @@ class Searcher:
             return top_source
         return None
 
+    def _search_typed_arm(
+        self, question: str, top_k: int, chunk_type: ChunkType | None
+    ) -> list[SearchChunk]:
+        """Direct retrieval for the typed question: no expansion or rerank."""
+        mode, clean_query = self._parse_structured_query(question)
+        if mode is not None:
+            typed = self._search_structured(mode, clean_query, top_k, chunk_type=chunk_type)
+            return self._apply_temporal_filter(typed, clean_query)
+        if self._refuse_wiki_scope(chunk_type):
+            return []
+        typed = self._store.search(
+            self._embedder.embed_query(question),
+            top_k=top_k,
+            query_text=question,
+            chunk_type=self._retrieval_scope(chunk_type),
+        )
+        return self._apply_temporal_filter(typed, question)
+
     def build_rag_context(
         self,
         question: str,
@@ -968,6 +987,9 @@ class Searcher:
             if self._config.reranker_model:
                 retrieve_k = max(retrieve_k, self._config.rerank_candidates)
             results = self.search(retrieval_query, top_k=retrieve_k, chunk_type=chunk_type)
+            if rewrite is not None:
+                typed_results = self._search_typed_arm(question, retrieve_k, chunk_type)
+                results = fuse_ranked_lists([results, typed_results])
             results = filter_results(
                 results, self._config.max_distance, self._config.min_relevance_score
             )
