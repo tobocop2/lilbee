@@ -881,6 +881,9 @@ class Store:
             if _has_vector_index(table):
                 table.optimize()
                 log.debug("Vector index optimized on '%s'", CHUNKS_TABLE)
+                if self._fts_index_dangling(table):
+                    # Re-register in the same step when the prune dropped the FTS files.
+                    self._rebuild_fts(table, "its files are missing after optimize()")
                 return True
             if not force and (threshold <= 0 or table.count_rows() < threshold):
                 return False
