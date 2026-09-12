@@ -15,6 +15,8 @@ from .lance_helpers import (
 from .ranking import cosine_sim, mmr_rerank
 from .types import (
     LOCAL_OWNER,
+    MEMORY_CONTENT_TYPE,
+    MEMORY_SOURCE_PREFIX,
     SOURCE_STAT_UNKNOWN,
     ChunkType,
     ChunkWrite,
@@ -36,12 +38,16 @@ from .types import (
     SourceType,
     agent_owner,
     is_agent_owner,
+    is_memory_source,
+    memory_source,
     scope_to_chunk_type,
     source_stat,
 )
 
 __all__ = [
     "LOCAL_OWNER",
+    "MEMORY_CONTENT_TYPE",
+    "MEMORY_SOURCE_PREFIX",
     "SOURCE_STAT_UNKNOWN",
     "ChunkType",
     "ChunkWrite",
@@ -70,7 +76,9 @@ __all__ = [
     "human_recall_predicate",
     "install_lancedb_thread_error_suppressor",
     "is_agent_owner",
+    "is_memory_source",
     "local_owner_predicate",
+    "memory_source",
     "mmr_rerank",
     "safe_delete",
     "scope_to_chunk_type",

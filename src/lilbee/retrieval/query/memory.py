@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
+from lilbee.data.store import (
+    MEMORY_CONTENT_TYPE,
+    MemoryRow,
+    SearchChunk,
+    memory_source,
+)
 from lilbee.retrieval.query.history_window import estimate_text_tokens
-
-if TYPE_CHECKING:
-    from lilbee.data.store import MemoryRow
 
 # The block is framed as untrusted data so a poisoned or agent-authored memory
 # cannot steer the model with system authority.
@@ -43,3 +44,21 @@ def format_memory_block(
     if not lines:
         return ""
     return "\n".join([MEMORY_BLOCK_HEADER, *lines, MEMORY_BLOCK_FOOTER])
+
+
+def memory_to_chunk(memory: MemoryRow) -> SearchChunk:
+    """Project a recalled memory onto a marked source row for the sources list."""
+    return SearchChunk.model_validate(
+        {
+            "source": memory_source(memory.id),
+            "content_type": MEMORY_CONTENT_TYPE,
+            "page_start": 0,
+            "page_end": 0,
+            "line_start": 0,
+            "line_end": 0,
+            "chunk": memory.text,
+            "chunk_index": 0,
+            "vector": list(memory.vector),
+            "memory_id": memory.id,
+        }
+    )

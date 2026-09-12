@@ -12,6 +12,7 @@ from lilbee.retrieval.query.memory import (
     MEMORY_BLOCK_FOOTER,
     MEMORY_BLOCK_HEADER,
     format_memory_block,
+    memory_to_chunk,
 )
 
 
@@ -164,3 +165,51 @@ class TestSystemWithMemory:
         cfg.memory_enabled = False
         result = _searcher(MagicMock(), MagicMock())._system_with_memory("BASE", "q")
         assert result == "BASE"
+
+
+class TestMemoryToChunk:
+    def test_projects_fact_onto_a_marked_row(self):
+        memory = _mem("uses rust")
+        memory.id = "m9"
+        memory.vector = [0.1, 0.2]
+        chunk = memory_to_chunk(memory)
+        assert chunk.source == "memory:m9"
+        assert chunk.content_type == "memory"
+        assert chunk.chunk == "uses rust"
+        assert chunk.memory_id == "m9"
+        assert chunk.vector == [0.1, 0.2]
+        assert (chunk.page_start, chunk.page_end, chunk.line_start, chunk.line_end) == (0, 0, 0, 0)
+        assert chunk.chunk_index == 0
+
+
+class TestMemorySources:
+    def _recall_setup(self, facts):
+        cfg.memory_enabled = True
+        cfg.memory_top_k = 5
+        store = MagicMock()
+        store.search_memories.return_value = facts
+        embedder = MagicMock()
+        embedder.embedding_available.return_value = True
+        embedder.embed_query.return_value = np.asarray([0.1, 0.2], dtype=np.float32)
+        return store, embedder
+
+    def test_lists_recalled_facts_as_marked_chunks(self):
+        store, embedder = self._recall_setup([_mem("uses rust")])
+        chunks = _searcher(store, embedder)._memory_sources("q")
+        assert [c.source for c in chunks] == ["memory:i"]
+        assert [c.memory_id for c in chunks] == ["i"]
+
+    def test_empty_when_disabled(self):
+        cfg.memory_enabled = False
+        store, embedder = MagicMock(), MagicMock()
+        assert _searcher(store, embedder)._memory_sources("q") == []
+        store.search_memories.assert_not_called()
+
+    def test_empty_when_budget_zero_skips_recall(self):
+        cfg.memory_enabled = True
+        cfg.memory_token_budget = 0
+        store = MagicMock()
+        embedder = MagicMock()
+        assert _searcher(store, embedder)._memory_sources("q") == []
+        store.search_memories.assert_not_called()
+        embedder.embed_query.assert_not_called()
