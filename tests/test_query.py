@@ -2687,6 +2687,13 @@ class TestAggregateRoute:
         assert "369" in result.answer
         assert "123456" in result.answer
 
+    def test_possessive_total_count_answers_without_llm(self, mock_svc):
+        mock_svc.store.count_sources.return_value = 8
+        mock_svc.store.count_chunks.return_value = 8
+        result = get_services().searcher.ask_raw("how many documents do you have?")
+        assert "8 documents" in result.answer
+        mock_svc.provider.chat.assert_not_called()
+
     def test_typed_count_declines_precisely(self, mock_svc, tmp_path):
         old_dir = cfg.data_dir
         cfg.data_dir = tmp_path / "no_schema_here"
