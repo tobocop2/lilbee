@@ -7,7 +7,14 @@ from typing import Any
 from huggingface_hub.utils import HFValidationError, validate_repo_id
 
 from lilbee.app.services import get_services
-from lilbee.catalog.models import CatalogModel, CatalogResult, HfPage, PageWindow, page_window
+from lilbee.catalog.models import (
+    CatalogModel,
+    CatalogResult,
+    HfPage,
+    PageWindow,
+    dedupe_models,
+    page_window,
+)
 from lilbee.catalog.picks import get_picks
 from lilbee.catalog.refs import (
     GGUF_GLOB,
@@ -113,13 +120,22 @@ def get_catalog(
 
 def _fetch_hf_page(task: ModelTask | None, search: str, window: PageWindow) -> HfPage:
     """The HuggingFace rows that fill the rest of *window*."""
-    hf_task, hf_library = task_to_pipeline(task)
-    return get_services().hf_client.fetch_models(
-        pipeline_tag=hf_task,
-        limit=window.rest_limit,
-        offset=window.rest_offset,
-        library=hf_library,
-        search=search,
+    hf_tags, hf_library = task_to_pipeline(task)
+    pages = [
+        get_services().hf_client.fetch_models(
+            pipeline_tag=tag,
+            limit=window.rest_limit,
+            offset=window.rest_offset,
+            library=hf_library,
+            search=search,
+        )
+        for tag in hf_tags
+    ]
+    merged = dedupe_models([m for page in pages for m in page.models])
+    merged.sort(key=lambda m: m.downloads, reverse=True)
+    return HfPage(
+        models=merged[: window.rest_limit],
+        has_more=any(page.has_more for page in pages),
     )
 
 
@@ -161,15 +177,18 @@ def _filter_models(
     return models
 
 
-def task_to_pipeline(task: ModelTask | None) -> tuple[str, str | None]:
-    """Map task name to HuggingFace pipeline tag and library filter."""
-    mapping: dict[ModelTask, tuple[str, str | None]] = {
-        ModelTask.CHAT: ("text-generation", None),
-        ModelTask.EMBEDDING: ("feature-extraction", "sentence-transformers"),
-        ModelTask.VISION: ("image-text-to-text", None),
-        ModelTask.RERANK: ("text-classification", None),
+def task_to_pipeline(task: ModelTask | None) -> tuple[tuple[str, ...], str | None]:
+    """Map task name to HuggingFace pipeline tags and library filter."""
+    mapping: dict[ModelTask, tuple[tuple[str, ...], str | None]] = {
+        ModelTask.CHAT: (("text-generation",), None),
+        ModelTask.EMBEDDING: (
+            ("feature-extraction", "sentence-similarity"),
+            "sentence-transformers",
+        ),
+        ModelTask.VISION: (("image-text-to-text", "image-to-text"), None),
+        ModelTask.RERANK: (("text-classification", "text-ranking"), None),
     }
-    return mapping.get(task or ModelTask.CHAT, ("text-generation", None))
+    return mapping.get(task or ModelTask.CHAT, (("text-generation",), None))
 
 
 _PIPELINE_TO_TASK: dict[str, ModelTask] = {
