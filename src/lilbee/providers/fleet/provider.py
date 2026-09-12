@@ -1460,12 +1460,18 @@ class FleetProvider:
         return planning.planned_embed_token_cap(cfg.embedding_model)
 
     def health_warnings(self) -> list[HealthWarning]:
-        """Serving degradations: an embed window below the configured chunk budget."""
+        """Serving degradations: the embed window and any placement divergences."""
+        warnings: list[HealthWarning] = []
         cap = self.embed_token_cap()
-        if cap is None:
-            return []
-        warning = engine_params.embed_window_warning(cap)
-        return [] if warning is None else [warning]
+        if cap is not None:
+            warning = engine_params.embed_window_warning(cap)
+            if warning is not None:
+                warnings.append(warning)
+        with self._lock:
+            swaps = list(self._swaps.values())
+        for swap in swaps:
+            warnings.extend(swap.health_warnings())
+        return warnings
 
     def chat_prefill_progress(self) -> tuple[int, int] | None:
         """``(processed, total)`` of a chat prefill in flight, or None when idle."""

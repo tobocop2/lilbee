@@ -134,11 +134,12 @@ class TestCheckMemoryReport:
     def test_an_empty_report_is_said_not_swallowed(self, caplog) -> None:
         # The engine took the flag but reported nothing lilbee can use; silence
         # here would read as "estimate fine" forever, like the log-format drift.
+        # Said via the log, but no divergence to surface on health.
         with caplog.at_level(logging.WARNING):
             warned = check_memory_report(
                 WorkerRole.CHAT, "m", 4 * GIB, {"CUDA0": 4 * GIB}, {"data": []}
             )
-        assert warned
+        assert warned is None
         assert "unverified" in caplog.text
 
     def test_host_rows_never_charge_a_card(self, caplog) -> None:
@@ -295,7 +296,7 @@ class TestSwapManagerRouting:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         log_checks: list[str] = []
-        monkeypatch.setattr(sm, "check_launch", lambda *a, **k: log_checks.append("log") or False)
+        monkeypatch.setattr(sm, "check_launch", lambda *a, **k: log_checks.append("log"))
         monkeypatch.setattr(sm, "report_missing_log", lambda *a, **k: False)
         monkeypatch.setattr(
             sm, "_probe_client", lambda: pytest.fail("log mode must not touch HTTP")

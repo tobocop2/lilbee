@@ -25,6 +25,8 @@ class WarningCode(StrEnum):
     """A scalar index is registered but its files are gone; filtered search is degraded."""
     EMBED_WINDOW_BELOW_CHUNK = "embed_window_below_chunk"
     """The embedder's window is below the chunk budget; chunks are sized in its tokens."""
+    PLACEMENT_DIVERGED = "placement_diverged"
+    """The engine allocated materially more or less GPU memory than planned."""
 
 
 class HealthWarning(BaseModel):

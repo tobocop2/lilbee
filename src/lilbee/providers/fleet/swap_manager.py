@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING, BinaryIO
 import httpx
 import psutil
 
+from lilbee.core.health_warnings import HealthWarning
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.binary import engine_pin, resolve_llama_swap
 from lilbee.providers.fleet.child_guard import release_death_pipe, spawn_bound_child
@@ -209,6 +210,10 @@ class SwapManager:
         # so the check runs once per start rather than on every readiness poll.
         self._estimate_checked: set[str] = set()
         self._launch_by_model: dict[str, InstanceLaunch] = {}
+        # Placement divergences by model id, surfaced on health. Guarded because
+        # role_ready probes off the provider lock while health reads anytime.
+        self._placement_warnings: dict[str, HealthWarning] = {}
+        self._warnings_lock = threading.Lock()
         self._state_path = data_dir / _state_filename(os.getpid(), group.value)
         self._proc: subprocess.Popen[bytes] | None = None
         self._log_file: BinaryIO | None = None
@@ -265,6 +270,8 @@ class SwapManager:
         self._launches_payload = [launch.to_state() for launch in launches]
         self._launch_by_model = {launch.model_id: launch for launch in launches}
         self._estimate_checked.clear()
+        with self._warnings_lock:
+            self._placement_warnings.clear()
         self._config_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(
@@ -387,7 +394,7 @@ class SwapManager:
                 continue
             if launch.est_vram_bytes <= 0:
                 continue
-            check_launch(
+            warning = check_launch(
                 self._log_path.parent,
                 model_id,
                 launch.role,
@@ -396,6 +403,9 @@ class SwapManager:
                 launch.est_vram_by_device,
                 launch.est_unreported_bytes,
             )
+            if warning is not None:
+                with self._warnings_lock:
+                    self._placement_warnings[model_id] = warning
 
     def _check_memory_estimate(self, model_id: str, launch: InstanceLaunch) -> None:
         """Run the estimate check off the engine's own ``GET /memory``.
@@ -425,13 +435,21 @@ class SwapManager:
             return
         if launch.est_vram_bytes <= 0:
             return
-        check_memory_report(
+        warning = check_memory_report(
             launch.role,
             launch.model,
             launch.est_vram_bytes,
             launch.est_vram_by_device,
             payload,
         )
+        if warning is not None:
+            with self._warnings_lock:
+                self._placement_warnings[model_id] = warning
+
+    def health_warnings(self) -> list[HealthWarning]:
+        """Placement divergences recorded from ready engines in this group."""
+        with self._warnings_lock:
+            return list(self._placement_warnings.values())
 
     def is_live(self) -> bool:
         """Whether the swap process is up and its proxy answers ``/running``."""

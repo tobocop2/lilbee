@@ -36,6 +36,7 @@ import re
 import subprocess
 from pathlib import Path
 
+from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
@@ -151,6 +152,34 @@ def device_label(device: FleetDevice) -> str:
     return f"{device.backend}{device.index}"
 
 
+def divergence_warning(
+    role: WorkerRole,
+    model: str,
+    estimated_bytes: int,
+    actual_bytes: int,
+    *,
+    tolerance: float,
+) -> HealthWarning | None:
+    """The placement warning when the engine's footprint diverges from the estimate."""
+    if estimated_bytes <= 0 or actual_bytes <= 0:
+        return None
+    ratio = actual_bytes / estimated_bytes
+    limit = min(tolerance, _absorbable_overrun()) if ratio > 1.0 else tolerance
+    if abs(ratio - 1.0) <= limit:
+        return None
+    return HealthWarning(
+        code=WarningCode.PLACEMENT_DIVERGED,
+        message=(
+            f"The {role.value} model {model} allocated {actual_bytes / 1024**3:.1f} GiB "
+            f"of GPU memory but was planned for {estimated_bytes / 1024**3:.1f} GiB "
+            f"({(ratio - 1.0) * 100:+.0f}%). Placement decisions for this model were "
+            f"made on the smaller figure; if it fails to load or runs slowly, that "
+            f"gap is why."
+        ),
+        remedy="Free up GPU memory or use a smaller model." if ratio > 1.0 else None,
+    )
+
+
 def report_divergence(
     role: WorkerRole,
     model: str,
@@ -158,34 +187,21 @@ def report_divergence(
     actual_bytes: int,
     *,
     tolerance: float,
-) -> bool:
+) -> HealthWarning | None:
     """Warn when the engine's real footprint diverges materially from the estimate.
 
-    Returns whether a warning was emitted, so a caller can record that this
-    instance has already been checked and not repeat it on every request.
+    Returns the warning when one was emitted, so a caller can surface it and not
+    repeat the check on every request.
 
     Both directions are worth saying. An under-estimate is how a plan that fit on
     paper OOMs, and it is the one that ends in a failed load. A large
     over-estimate is quieter but costs capacity: it is why a role gets fewer
     slots, a narrower context, or a split it did not need.
     """
-    if estimated_bytes <= 0 or actual_bytes <= 0:
-        return False
-    ratio = actual_bytes / estimated_bytes
-    limit = min(tolerance, _absorbable_overrun()) if ratio > 1.0 else tolerance
-    if abs(ratio - 1.0) <= limit:
-        return False
-    log.warning(
-        "The %s model %s allocated %.1f GiB of GPU memory but was planned for %.1f GiB "
-        "(%+.0f%%). Placement decisions for this model were made on the smaller figure; "
-        "if it fails to load or runs slowly, that gap is why.",
-        role.value,
-        model,
-        actual_bytes / 1024**3,
-        estimated_bytes / 1024**3,
-        (ratio - 1.0) * 100,
-    )
-    return True
+    warning = divergence_warning(role, model, estimated_bytes, actual_bytes, tolerance=tolerance)
+    if warning is not None:
+        log.warning("%s", warning.message)
+    return warning
 
 
 # The engine's own log, one per instance, beside the swap process's log. Named
@@ -233,7 +249,7 @@ def check_launch(
     estimated_bytes: int,
     est_by_device: dict[str, int] | None = None,
     unreported_bytes: int = 0,
-) -> bool:
+) -> HealthWarning | None:
     """Compare the engine's own report for *model_id* against the estimate.
 
     Checked per device when *est_by_device* says what each card was planned for,
@@ -261,9 +277,9 @@ def check_launch(
         # No log at all. Usually the engine simply has not written one yet, so
         # this is silent by default. It is also exactly what a wrong environment
         # variable name looks like, which is how an earlier spelling went
-        # unnoticed: the check returned False forever and read as "estimate fine".
+        # unnoticed: the check returned None forever and read as "estimate fine".
         # report_missing_log is how a caller that knows the engine is up says so.
-        return False
+        return None
     per_device = {
         label: size
         for label, size in parse_device_buffers(text).items()
@@ -286,7 +302,7 @@ def check_launch(
                 engine_build(text) or "unknown",
                 VERIFIED_ENGINE_BUILD,
             )
-        return False
+        return None
     return report_divergence(
         role, model, estimated_bytes - unreported_bytes, actual, tolerance=_TOLERANCE
     )
@@ -335,18 +351,13 @@ def _absorbable_overrun() -> float:
     return max(0.0, 1.0 / committed - 1.0) * _MARGIN_WARN_FRACTION
 
 
-def _report_per_device(
+def _per_device_warning(
     role: WorkerRole,
     model: str,
     estimated: dict[str, int],
     actual: dict[str, int],
-) -> bool:
-    """Warn about the card that diverged worst, naming both figures.
-
-    One warning rather than one per card: the operator needs to know the plan did
-    not hold and which card to look at, and a split that skews puts every card out
-    at once by construction.
-    """
+) -> HealthWarning | None:
+    """The placement warning for the card that diverged worst, naming both figures."""
     worst_label, worst_gap, worst_over = "", 0.0, False
     for label in set(estimated) | set(actual):
         planned, landed = estimated.get(label, 0), actual.get(label, 0)
@@ -359,18 +370,36 @@ def _report_per_device(
             worst_label, worst_gap, worst_over = label, gap, over
     limit = min(_TOLERANCE, _absorbable_overrun()) if worst_over else _TOLERANCE
     if not worst_label or (estimated.get(worst_label) and worst_gap <= limit):
-        return False
-    log.warning(
-        "The %s model %s did not land where it was planned: %s holds %.1f GiB but was "
-        "planned for %.1f GiB. Placement, the tensor split and the context were all "
-        "decided per card, so a total that looks right can still overrun one of them.",
-        role.value,
-        model,
-        worst_label,
-        actual.get(worst_label, 0) / 1024**3,
-        estimated.get(worst_label, 0) / 1024**3,
+        return None
+    return HealthWarning(
+        code=WarningCode.PLACEMENT_DIVERGED,
+        message=(
+            f"The {role.value} model {model} did not land where it was planned: "
+            f"{worst_label} holds {actual.get(worst_label, 0) / 1024**3:.1f} GiB but was "
+            f"planned for {estimated.get(worst_label, 0) / 1024**3:.1f} GiB. Placement, "
+            f"the tensor split and the context were all decided per card, so a total "
+            f"that looks right can still overrun one of them."
+        ),
+        remedy="Free up GPU memory or use a smaller model." if worst_over else None,
     )
-    return True
+
+
+def _report_per_device(
+    role: WorkerRole,
+    model: str,
+    estimated: dict[str, int],
+    actual: dict[str, int],
+) -> HealthWarning | None:
+    """Warn about the card that diverged worst, naming both figures.
+
+    One warning rather than one per card: the operator needs to know the plan did
+    not hold and which card to look at, and a split that skews puts every card out
+    at once by construction.
+    """
+    warning = _per_device_warning(role, model, estimated, actual)
+    if warning is not None:
+        log.warning("%s", warning.message)
+    return warning
 
 
 # llama-server flag (llama.cpp PR 26130) that both enables GET /memory and
@@ -449,7 +478,7 @@ def check_memory_report(
     estimated_bytes: int,
     est_by_device: dict[str, int] | None,
     payload: object,
-) -> bool:
+) -> HealthWarning | None:
     """Compare a ``GET /memory`` payload against the estimate; the API-mode twin
     of :func:`check_launch`.
 
@@ -474,7 +503,7 @@ def check_memory_report(
             "changed since the build lilbee's reader was written against.",
             role.value,
         )
-        return True
+        return None
     if est_by_device:
         return _report_per_device(role, model, est_by_device, per_device)
     return report_divergence(

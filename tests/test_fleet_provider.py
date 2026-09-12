@@ -87,6 +87,9 @@ class _FakeSwap:
     def role_ready(self, role: WorkerRole) -> bool:
         return role in self.ready
 
+    def health_warnings(self) -> list:
+        return []
+
     def reload(self, launches: list) -> None:
         self.reloads += 1
 
@@ -2761,20 +2764,25 @@ class TestRoutingProviderEmbedCap:
     @staticmethod
     def _routing_over_a_capped_engine(monkeypatch, embedding_model: str):
         """A RoutingProvider whose local engine would report a cap and a warning."""
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
         from lilbee.providers.routing_provider import RoutingProvider
 
         monkeypatch.setattr(cfg, "embedding_model", embedding_model)
         routing = RoutingProvider()
         local = MagicMock()
         local.embed_token_cap.return_value = 504
-        local.health_warnings.return_value = ["warned"]
+        local.health_warnings.return_value = [
+            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut")
+        ]
         routing._local = local
         return routing
 
     def test_delegates_to_the_local_engine_for_a_local_embedder(self, monkeypatch) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
         routing = self._routing_over_a_capped_engine(monkeypatch, "org/repo/e.gguf")
         assert routing.embed_token_cap() == 504
-        assert routing.health_warnings() == ["warned"]
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]
 
     def test_reports_nothing_for_a_remote_embedder(self, monkeypatch) -> None:
         """The local engine's cap is not the remote embedder's, so it is not reported."""
@@ -2786,6 +2794,21 @@ class TestRoutingProviderEmbedCap:
         routing = self._routing_over_a_capped_engine(monkeypatch, "")
         assert routing.embed_token_cap() is None
         assert routing.health_warnings() == []
+
+    def test_keeps_placement_warnings_for_a_remote_embedder(self, monkeypatch) -> None:
+        """Placement covers every local role, so it is not gated on the embedder."""
+        from lilbee.core.health_warnings import HealthWarning, WarningCode
+        from lilbee.providers.routing_provider import RoutingProvider
+
+        monkeypatch.setattr(cfg, "embedding_model", "openai/text-embedding-3-small")
+        routing = RoutingProvider()
+        local = MagicMock()
+        local.health_warnings.return_value = [
+            HealthWarning(code=WarningCode.EMBED_WINDOW_BELOW_CHUNK, message="chunks are cut"),
+            HealthWarning(code=WarningCode.PLACEMENT_DIVERGED, message="off plan"),
+        ]
+        routing._local = local
+        assert [w.code for w in routing.health_warnings()] == [WarningCode.PLACEMENT_DIVERGED]
 
 
 class _FakeReplica:
