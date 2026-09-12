@@ -535,12 +535,14 @@ class TestCatalogScreenAsync:
             await pilot.pause()
             # Open the filter via `/`, not a bare focus on a hidden input.
             await pilot.press("slash")
-            await pilot.pause()
-            assert isinstance(catalog.focused, Input)
+            assert await pump_until(pilot, lambda: isinstance(catalog.focused, Input)), (
+                f"`/` never focused the filter; focus is on {catalog.focused}"
+            )
             catalog.action_go_back()
-            await pilot.pause()
+            assert await pump_until(pilot, lambda: not isinstance(catalog.focused, Input)), (
+                f"Escape left focus on the filter; focus is on {catalog.focused}"
+            )
             assert isinstance(app.screen, CatalogScreen)
-            assert not isinstance(catalog.focused, Input)
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_sort_cycle_visits_all_four_columns(self, mock_catalog: mock.MagicMock) -> None:
