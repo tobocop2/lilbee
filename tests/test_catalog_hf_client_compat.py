@@ -70,3 +70,30 @@ def test_fetch_classifies_compat_from_the_declared_architecture(
     by_arch = {m.architecture: m.compat for m in models}
     assert by_arch["qwen3"] is ModelCompat.SUPPORTED
     assert by_arch["no-such-arch-xyz"] is not ModelCompat.SUPPORTED
+
+
+def test_fetch_marks_a_stripped_repo_from_its_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The content flag comes from upstream tags, not the repo name."""
+    clean, stripped = _hf_row("qwen3"), _hf_row("qwen3")
+    stripped["id"] = "x/Qwen3-8B-Uncensored-GGUF"
+    stripped["tags"] = ["gguf", "uncensored", "text-generation"]
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([clean, stripped]))
+    models = HfClient().fetch_models().models
+
+    by_repo = {m.hf_repo: m.safety_stripped for m in models}
+    assert by_repo["acme/test-GGUF"] is False
+    assert by_repo["x/Qwen3-8B-Uncensored-GGUF"] is True
+
+
+def test_fetch_requests_the_tags_expand(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without ``tags`` in the expand the flag would always read clean."""
+    seen: dict[str, object] = {}
+
+    def fake_get(*args: object, **kwargs: object) -> httpx.Response:
+        seen["params"] = kwargs["params"]
+        return _mock_response([])
+
+    monkeypatch.setattr(httpx, "get", fake_get)
+    HfClient().fetch_models()
+
+    assert "tags" in str(seen["params"])

@@ -34,6 +34,7 @@ def _catalog_to_variant(model: CatalogModel) -> ModelVariant:
         quant=extract_quant(model.gguf_filename),
         size_mb=int(model.size_gb * 1024),
         compat=model.compat,
+        safety_stripped=model.safety_stripped,
     )
 
 

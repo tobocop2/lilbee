@@ -161,6 +161,7 @@ class EnrichedModel:
     source: ModelSource
     architecture: str
     compat: ModelCompat
+    safety_stripped: bool
 
 
 def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[EnrichedModel]:
@@ -190,6 +191,7 @@ def enrich_catalog(result: CatalogResult, installed_refs: set[str]) -> list[Enri
                 source=ModelSource.NATIVE,
                 architecture=m.architecture,
                 compat=m.compat,
+                safety_stripped=m.safety_stripped,
             )
         )
     return enriched

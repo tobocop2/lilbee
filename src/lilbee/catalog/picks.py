@@ -54,6 +54,9 @@ def _serves_role(model: CatalogModel, task: ModelTask) -> bool:
         # A pick is a recommendation. Offering an architecture the bundled
         # engine cannot load turns one click into a failed download.
         return False
+    if model.safety_stripped:
+        # A pick is a recommendation. A stripped model stays in browse.
+        return False
     if task == ModelTask.VISION:
         return repo_has_mmproj(model.hf_repo)
     return reclassify_by_name(model.hf_repo, ModelTask.CHAT) == task

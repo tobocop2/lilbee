@@ -177,6 +177,21 @@ class TestRoleVerification:
 
         assert [m.hf_repo for m in picks_for(ModelTask.RERANK)] == ["ok/bge-reranker-GGUF"]
 
+    def test_a_safety_stripped_model_is_never_picked(self, monkeypatch) -> None:
+        """A pick is a recommendation: a stripped model must not be offered."""
+        from dataclasses import replace
+
+        from lilbee.catalog.picks import picks_for
+
+        clean = _model("ok/Qwen3-8B-GGUF", "chat", 8_000_000_000)
+        stripped = replace(
+            _model("x/Qwen3-8B-Uncensored-GGUF", "chat", 8_000_000_000),
+            safety_stripped=True,
+        )
+        _stub_fetch(monkeypatch, {"chat": [stripped, clean]})
+
+        assert [m.hf_repo for m in picks_for(ModelTask.CHAT)] == ["ok/Qwen3-8B-GGUF"]
+
     def test_vision_is_settled_by_the_projector_probe(self, monkeypatch) -> None:
         """An mmproj sibling is definitive, and catches VL repos no name matches.
 

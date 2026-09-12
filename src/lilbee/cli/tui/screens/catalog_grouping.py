@@ -42,9 +42,11 @@ def row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
 
 
 def _is_runnable_pick(row: LocalCatalogRow) -> bool:
-    """Whether the engine supports the row and the host cannot prove it will not run."""
-    return row.compat is ModelCompat.SUPPORTED and (
-        row.fit is None or row.fit.level is not FitLevel.WONT_RUN
+    """Whether the row is a safe recommendation: supported, runnable, unstripped."""
+    return (
+        row.compat is ModelCompat.SUPPORTED
+        and not row.safety_stripped
+        and (row.fit is None or row.fit.level is not FitLevel.WONT_RUN)
     )
 
 
