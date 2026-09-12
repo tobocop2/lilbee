@@ -324,7 +324,7 @@ class TestAddEndpoint:
     async def test_add_where_nothing_reaches_the_corpus_skips_the_sync(
         self, mock_extract_file, isolated_env
     ):
-        """A batch with no copied and no skipped file must not run the
+        """A batch with nothing reaching the corpus must not run the
         whole-vault sync, which holds the ingest lock for nothing."""
         from lilbee.server.app import create_app
 
@@ -337,7 +337,8 @@ class TestAddEndpoint:
         assert resp.status_code == 201
         events = _parse_sse_events(resp.content)
         summary = [d for t, d in events if t == "done" and "copied" in d][-1]
-        assert summary["copied"] == [] and summary["skipped"] == []
+        assert summary["copied"] == []
+        assert summary["name_taken"] == [] and summary["overlapping"] == []
         sync_mock.assert_not_called()
 
     async def test_add_with_force_flag(self, mock_extract_file, isolated_env, tmp_path):
@@ -781,7 +782,8 @@ class TestAddIngestMutex:
         # so it has to say the batch was partial. Without this a caller reads
         # done as "all ingested" and never retries the contended file.
         assert summary["already_ingesting"] == ["held.txt"]
-        assert "held.txt" not in summary["skipped"]
+        assert "held.txt" not in summary["name_taken"]
+        assert "held.txt" not in summary["overlapping"]
 
     async def test_distinct_relative_paths_get_distinct_locks(self, isolated_env):
         """Two uploads that land at different paths must not share one lock.
