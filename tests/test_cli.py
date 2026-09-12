@@ -2420,6 +2420,31 @@ class TestAskJson:
         assert data["retrieval_query"] == "when was the journal written"
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_ask_json_carries_dropped_sources(self, mock_sync, mock_svc):
+        from lilbee.data.store import SearchChunk
+        from lilbee.retrieval.query import AskResult
+
+        shed = SearchChunk(
+            source="shed.pdf",
+            content_type="pdf",
+            chunk="trimmed",
+            page_start=1,
+            page_end=1,
+            line_start=0,
+            line_end=0,
+            chunk_index=3,
+            vector=[0.1],
+        )
+        mock_svc.searcher.ask_raw.return_value = AskResult(
+            answer="42 [1]", sources=[], dropped_sources=[shed]
+        )
+        result = runner.invoke(app, ["--json", "ask", "what?"])
+        assert result.exit_code == 0
+        data = json.loads(result.output.strip())
+        assert [s["source"] for s in data["dropped_sources"]] == ["shed.pdf"]
+        assert "vector" not in data["dropped_sources"][0]
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_json_no_results(self, mock_sync, mock_svc):
         from lilbee.retrieval.query import AskResult
 

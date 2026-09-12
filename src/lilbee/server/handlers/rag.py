@@ -164,6 +164,7 @@ async def ask(
         sources=[CleanedChunk(**clean_result(s)) for s in result.sources],
         cited_sources=[CleanedChunk(**clean_result(s)) for s in result.cited_sources],
         retrieval_query=result.retrieval_query,
+        dropped_sources=[CleanedChunk(**clean_result(s)) for s in result.dropped_sources],
     )
 
 
@@ -507,6 +508,7 @@ async def chat(
     history, compaction = await asyncio.to_thread(_manage_history, history, summary)
     _persist_summary(session_id, compaction)
     retrieval_query: str | None = None
+    dropped: list[SearchChunk] = []
     if _retrieval_off(searcher, top_k):
         # Chat-only mode or an explicit top_k:0 pure-LLM call.
         sources: list[SearchChunk] = []
@@ -530,6 +532,7 @@ async def chat(
             )
         sources, messages = rag.results, rag.messages
         retrieval_query = rag.retrieval_query
+        dropped = rag.dropped or []
     req = _build_canonical_request(messages, options)
     response = await asyncio.to_thread(dispatch_chat, req)
     text = _join_text_blocks(response.content)
@@ -552,6 +555,7 @@ async def chat(
         ],
         compaction=compaction,
         retrieval_query=retrieval_query,
+        dropped_sources=[CleanedChunk(**clean_result(s)) for s in dropped],
     )
 
 

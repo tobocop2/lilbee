@@ -330,6 +330,7 @@ def ask(
                     "sources": [clean_result(s) for s in result.sources],
                     "cited_sources": [clean_result(s) for s in result.cited_sources],
                     "retrieval_query": result.retrieval_query,
+                    "dropped_sources": [clean_result(s) for s in result.dropped_sources],
                 }
             )
             return

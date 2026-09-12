@@ -1028,6 +1028,35 @@ class TestContextBudget:
             _fit(results)
         assert "to fit the model context window" in caplog.text
 
+    def test_fit_skips_an_over_budget_chunk_for_a_later_fittable_one(self, mock_svc):
+        """A small chunk ranked below a large one still fills the budget; the
+        skipped chunk is reported as dropped, not silently lost."""
+        searcher = get_services().searcher
+        small, huge = "x" * 100, "x" * 9000
+        results = [
+            _make_result(source="a.pdf", chunk=small),
+            _make_result(source="b.pdf", chunk=huge),
+            _make_result(source="c.pdf", chunk=small),
+        ]
+        one = estimate_budget_tokens(small) + _PER_SOURCE_TOKENS
+        kept, used, dropped = searcher._fit_to_budget(results, one * 2)
+        assert [r.source for r in kept] == ["a.pdf", "c.pdf"]
+        assert [r.source for r in dropped] == ["b.pdf"]
+        assert used == one * 2
+
+    def test_finalize_reports_dropped_sources_on_the_context(self, mock_svc):
+        """The shed chunks land on the context with their identities, so a
+        caller can say what went in and what was trimmed."""
+        cfg.num_ctx = 1400
+        searcher = get_services().searcher
+        results = [_make_result(source=f"{i}.pdf", chunk="x" * 300) for i in range(5)]
+        rag = searcher._finalize_context(results, "q", None)
+        kept = {r.source for r in rag.results}
+        dropped = {r.source for r in rag.dropped or []}
+        assert dropped, "a tight budget must shed sources and say so"
+        assert kept.isdisjoint(dropped)
+        assert kept | dropped == {f"{i}.pdf" for i in range(5)}
+
 
 class TestNeighborExpansion:
     """Selected chunks widen with adjacent same-source chunks at answer time."""
@@ -1142,7 +1171,7 @@ class TestNeighborExpansion:
 
         searcher = get_services().searcher
         budget = searcher._context_budget(system, question, None, 1.0)
-        fitted, used = searcher._fit_to_budget(base, budget)
+        fitted, used, _ = searcher._fit_to_budget(base, budget)
         widened = searcher._widen_with_neighbors(fitted, max(0, budget - used))
 
         # Non-vacuous: at least one neighbor was actually merged in.
@@ -1166,6 +1195,22 @@ class TestAskRaw:
         assert result.answer == "5 quarts."
         assert len(result.sources) == 1
         assert result.sources[0].source == "test.pdf"
+
+    def test_ask_raw_reports_dropped_sources(self, mock_svc):
+        """A tight budget sheds sources; the answer names what it dropped."""
+        cfg.num_ctx = 1400
+        # Distinct text per source: identical chunks collapse in near-identical
+        # dedup before the budget fit ever sees them.
+        mock_svc.store.search.return_value = [
+            _make_result(source=f"{i}.pdf", chunk=chr(ord("a") + i) * 300) for i in range(5)
+        ]
+        mock_svc.provider.chat.return_value = _text_result("answer")
+        result = get_services().searcher.ask_raw("q")
+        kept = {r.source for r in result.sources}
+        dropped = {r.source for r in result.dropped_sources}
+        assert dropped, "a tight budget must shed sources and say so"
+        assert kept.isdisjoint(dropped)
+        assert kept | dropped == {f"{i}.pdf" for i in range(5)}
 
     def test_a_source_only_named_in_the_models_own_block_is_not_cited(self, mock_svc):
         """cited_sources is the grounding signal JSON callers read, so it must
@@ -2531,6 +2576,28 @@ class TestKnownItemRoute:
         first = mock_svc.provider.chat.call_args_list[0][0][0][-1]["content"]
         second = mock_svc.provider.chat.call_args_list[1][0][0][-1]["content"]
         assert len(second) < len(first)
+
+    def test_overflow_retry_reports_the_tighter_fits_drops(self, mock_svc):
+        """After an overflow refit, kept and dropped partition the retrieved
+        set: every chunk is either in the answer's context or named as shed."""
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            _make_result(source="survey_report.pdf", chunk="word " * 400, chunk_index=i)
+            for i in range(40)
+        ]
+        mock_svc.provider.served_chat_ctx.return_value = 8192
+        mock_svc.provider.chat.side_effect = [
+            ProviderError("overflow", kind=ProviderErrorKind.CONTEXT_OVERFLOW),
+            _text_result("fits now [1]"),
+        ]
+        result = get_services().searcher.ask_raw("summarize survey_report.pdf")
+        kept = {r.chunk_index for r in result.sources}
+        dropped = {r.chunk_index for r in result.dropped_sources}
+        assert dropped, "the tighter refit must shed chunks and say so"
+        assert kept.isdisjoint(dropped)
+        assert kept | dropped == set(range(40))
 
     def test_budget_falls_back_to_config_when_served_ctx_unknown(self, mock_svc):
         mock_svc.store.get_sources.return_value = [self._source("survey_report.pdf")]

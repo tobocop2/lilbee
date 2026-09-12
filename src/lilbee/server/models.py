@@ -296,6 +296,8 @@ class AskResponse(BaseModel):
     """Set when a /api/chat turn compacted its history before answering."""
     retrieval_query: str | None = None
     """The standalone rewrite retrieval ran on, when a follow-up was rewritten."""
+    dropped_sources: list[CleanedChunk] = Field(default_factory=list)
+    """Chunks the budget fit shed, so a client can say what was trimmed."""
 
 
 class SetModelResponse(BaseModel):
