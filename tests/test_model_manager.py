@@ -6,6 +6,7 @@ from unittest import mock
 
 import httpx
 import pytest
+from cachetools import TTLCache
 
 from lilbee.catalog.models import CatalogModel
 from lilbee.catalog.types import ModelSource, ModelTask
@@ -49,7 +50,7 @@ class TestNativeIdentitiesCache:
         result = mgr.list_native_identities()
         assert result == frozenset()
 
-    def test_refetches_past_soft_ttl(self) -> None:
+    def test_refetches_past_ttl(self) -> None:
         from lilbee.modelhub.model_manager import core as mm_core
         from lilbee.modelhub.model_manager.core import ModelManager as MM
 
@@ -60,10 +61,14 @@ class TestNativeIdentitiesCache:
         m.hf_repo = "test/m"
         fake_registry.list_installed.return_value = [m]
         mgr._registry = fake_registry  # type: ignore[assignment]
-        with mock.patch.object(mm_core.time, "monotonic") as mock_clock:
-            mock_clock.side_effect = [0.0, 100.0]
-            first = mgr.list_native_identities()
-            second = mgr.list_native_identities()
+        # cachetools binds its timer at construction, so drive the cache clock.
+        clock = {"t": 0.0}
+        mgr._native_identities_cache = TTLCache(
+            maxsize=1, ttl=mm_core._INSTALLED_CACHE_TTL_SECONDS, timer=lambda: clock["t"]
+        )
+        first = mgr.list_native_identities()
+        clock["t"] = 100.0
+        second = mgr.list_native_identities()
         assert fake_registry.list_installed.call_count == 2
         assert first == second
         assert first is not second
@@ -282,70 +287,73 @@ class TestModelManagerListInstalled:
 
         from lilbee.modelhub.model_manager import core as mm_core
 
-        with (
-            mock.patch(
-                "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
-            ) as mock_get,
-            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
-        ):
-            # One clock tick per list_installed call: second tick is past TTL.
-            mock_clock.side_effect = [0.0, 100.0]
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ) as mock_get:
             mgr = ModelManager(Path("/tmp"))
+            # cachetools binds its timer at construction, so drive the cache clock.
+            clock = {"t": 0.0}
+            mgr._installed_cache = TTLCache(
+                maxsize=8, ttl=mm_core._INSTALLED_CACHE_TTL_SECONDS, timer=lambda: clock["t"]
+            )
             mgr.list_installed(ModelSource.REMOTE)
             after_first = mock_get.call_count
+            clock["t"] = 100.0
             mgr.list_installed(ModelSource.REMOTE)
 
         # Past the TTL the second call refetches, doubling the per-fetch calls.
         assert mock_get.call_count == 2 * after_first
 
-    def test_polling_at_old_probe_period_hits_cache(self) -> None:
-        """Polls every 30s share one fetch instead of refetching each time."""
+    def test_poll_within_ttl_hits_cache(self) -> None:
+        """A 30s poll inside the TTL window shares the first fetch."""
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
         from lilbee.modelhub.model_manager import core as mm_core
 
-        # Real 30s polls land just past the mark; the soft TTL absorbs the drift.
-        ticks = [30.0 * i + 0.001 * i for i in range(10)]
-        with (
-            mock.patch(
-                "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
-            ) as mock_get,
-            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
-        ):
-            mock_clock.side_effect = ticks
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ) as mock_get:
             mgr = ModelManager(Path("/tmp"))
+            # cachetools binds its timer at construction, so drive the cache clock.
+            clock = {"t": 0.0}
+            mgr._installed_cache = TTLCache(
+                maxsize=8, ttl=mm_core._INSTALLED_CACHE_TTL_SECONDS, timer=lambda: clock["t"]
+            )
             mgr.list_installed(ModelSource.REMOTE)
             after_first = mock_get.call_count
-            for _ in ticks[1:]:
-                assert mgr.list_installed(ModelSource.REMOTE) == []
+            # Real 30s polls land just past the mark; the TTL absorbs the drift.
+            clock["t"] = 30.001
+            assert mgr.list_installed(ModelSource.REMOTE) == []
 
         assert mock_get.call_count == after_first
 
-    def test_polling_past_max_age_refetches(self) -> None:
-        """Steady polling still refetches once the hard staleness bound passes."""
+    def test_staleness_bounded_by_ttl(self) -> None:
+        """Steady 30s polling refetches each TTL window instead of holding stale data."""
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
         mock_response.raise_for_status = mock.Mock()
 
         from lilbee.modelhub.model_manager import core as mm_core
 
-        ticks = [float(t) for t in range(0, 301, 30)]
-        with (
-            mock.patch(
-                "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
-            ) as mock_get,
-            mock.patch.object(mm_core.time, "monotonic") as mock_clock,
-        ):
-            mock_clock.side_effect = ticks
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ) as mock_get:
             mgr = ModelManager(Path("/tmp"))
+            # cachetools binds its timer at construction, so drive the cache clock.
+            clock = {"t": 0.0}
+            mgr._installed_cache = TTLCache(
+                maxsize=8, ttl=mm_core._INSTALLED_CACHE_TTL_SECONDS, timer=lambda: clock["t"]
+            )
             mgr.list_installed(ModelSource.REMOTE)
             after_first = mock_get.call_count
-            for _ in ticks[1:]:
+            for tick in (30.001, 61.0, 91.0, 122.0):
+                clock["t"] = tick
                 assert mgr.list_installed(ModelSource.REMOTE) == []
 
-        assert mock_get.call_count == 2 * after_first
+        # Fetches at t=0, t=61, and t=122; the 30s polls in between hit.
+        assert mock_get.call_count == 3 * after_first
 
     def test_pull_invalidates_cache(self, tmp_path: Path) -> None:
         """After pull(), the next list_installed must refetch."""
