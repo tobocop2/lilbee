@@ -3156,6 +3156,49 @@ class TestTypedRewriteFusion:
         probed = [c[0][0] for c in mock_svc.store.bm25_probe.call_args_list]
         assert "it" in probed
 
+    def test_typed_arm_drops_structural_chunk(self, mock_svc):
+        """With the structural filter on, a TOC the typed arm surfaced is
+        dropped like the rewrite arm's."""
+        cfg.filter_structural_chunks = True
+        toc = "A. Summary ......... 1\nB. Intro ......... 3\nC. Trends ......... 9\n"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            "when was the Split Rock lighthouse journal written",
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [
+                _make_result(source="typed.md", chunk="typed evidence"),
+                _make_result(source="toc.md", chunk=toc),
+            ],
+        )
+        assert rag is not None
+        assert "toc.md" not in {r.source for r in rag.results}
+        assert "typed.md" in {r.source for r in rag.results}
+
+    def test_high_relevance_threshold_drops_single_query_rows(self, mock_svc):
+        """Fused single-query rows score at most their query share (0.5 for
+        two queries), so a threshold above that drops each query's winner
+        and only a row both queries found survives."""
+        cfg.min_relevance_score = 0.6
+        rewritten = "when was the Split Rock lighthouse journal written"
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="rewrite.md", chunk="rewrite evidence")],
+            [_make_result(source="typed.md", chunk="typed evidence")],
+        )
+        assert rag is None
+        rag = self._build(
+            mock_svc,
+            "and when was it written?",
+            rewritten,
+            [_make_result(source="both.md", chunk="shared evidence")],
+            [_make_result(source="both.md", chunk="shared evidence")],
+        )
+        assert rag is not None
+        assert [r.source for r in rag.results] == ["both.md"]
+
     def test_wiki_scope_refuses_the_typed_arm(self, mock_svc):
         """A disabled wiki serves nothing on either arm: the typed arm honors
         the same scope guard as the main search."""
