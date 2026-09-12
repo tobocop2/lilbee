@@ -7,6 +7,7 @@ captured provider, and the lock avoids racing xberg's "already registered".
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -16,6 +17,8 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from lilbee.core.config.model import Config
     from lilbee.providers.base import LLMProvider
+
+log = logging.getLogger(__name__)
 
 
 class BackendKind(Enum):
@@ -98,10 +101,19 @@ class _BackendRegistry:
 
     def sync(self, kind: BackendKind, provider: LLMProvider, cfg: Config) -> None:
         """Bind or unbind *kind* as its ``enabled`` gate says under *cfg*."""
-        if self.bindings[kind].enabled(cfg):
-            self.bind(kind, provider, cfg)
-        else:
+        if not self.bindings[kind].enabled(cfg):
             self.unbind(kind)
+        elif kind is BackendKind.TOKENIZER:
+            self._bind_tokenizer_or_skip(provider, cfg)
+        else:
+            self.bind(kind, provider, cfg)
+
+    def _bind_tokenizer_or_skip(self, provider: LLMProvider, cfg: Config) -> None:
+        """Bind the tokenizer, surviving an unusable count for the on-demand rebind."""
+        try:
+            self.bind(BackendKind.TOKENIZER, provider, cfg)
+        except Exception:
+            log.warning("tokenizer count unavailable; leaving it unregistered", exc_info=True)
 
 
 _registry = _BackendRegistry()
