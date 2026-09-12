@@ -164,7 +164,7 @@ class CatalogModel:
 class CatalogResult:
     """Paginated catalog result."""
 
-    total: int
+    total: int | None
     limit: int
     offset: int
     models: list[CatalogModel]

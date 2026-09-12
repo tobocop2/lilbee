@@ -483,7 +483,7 @@ async def models_catalog(
     ]
 
     return ModelsCatalogResponse(
-        total=len(hosted) + result.total,
+        total=None if result.total is None else len(hosted) + result.total,
         limit=limit,
         offset=offset,
         has_more=result.has_more,

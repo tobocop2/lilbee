@@ -407,7 +407,7 @@ class CatalogEntryResponse(BaseModel):
 class ModelsCatalogResponse(BaseModel):
     """Response for GET /api/models/catalog."""
 
-    total: int
+    total: int | None
     limit: int
     offset: int
     models: list[CatalogEntryResponse]

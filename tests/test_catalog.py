@@ -567,7 +567,7 @@ class TestGetCatalog:
     def test_returns_featured_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog()
-        assert result.total == len(SAMPLE_PICKS)
+        assert result.total is None
         assert all(m.featured for m in result.models)
 
     def test_pagination(self) -> None:
@@ -617,8 +617,17 @@ class TestGetCatalog:
         result = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
         assert not [m for m in result.models if m.featured]
         assert [(c["offset"], c["limit"]) for c in calls] == [(10 - len(PICKS_CHAT), 10)]
-        assert result.total == len(PICKS_CHAT) + len(upstream)
+        assert result.total is None
         assert result.has_more is True
+
+    def test_browse_total_is_none_on_every_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The browse total is unknown, so both pages report none and agree."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
+        self._record_hf_pages(monkeypatch, upstream)
+        first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
+        second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        assert first.total is None
+        assert second.total is None
 
     def test_page_inside_the_picks_fetches_no_hf_rows(
         self, monkeypatch: pytest.MonkeyPatch
@@ -650,11 +659,11 @@ class TestGetCatalog:
         assert last.has_more is False
 
     def test_zero_width_window_returns_no_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A page of no rows reports the picks total and leaves the HF rows to the next page."""
+        """A page of no rows reports no total and leaves the HF rows to the next page."""
         calls = self._record_hf_pages(monkeypatch, [])
         result = get_catalog(task=ModelTask.CHAT, limit=0, offset=0)
         assert result.models == []
-        assert result.total == len(PICKS_CHAT)
+        assert result.total is None
         assert calls == []
         assert result.has_more is True
 
@@ -666,13 +675,13 @@ class TestGetCatalog:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task=ModelTask.EMBEDDING)
         assert all(m.task == "embedding" for m in result.models)
-        assert result.total == len(PICKS_EMBEDDING)
+        assert result.total is None
 
     def test_filter_by_task_vision(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(task=ModelTask.VISION)
         assert all(m.task == "vision" for m in result.models)
-        assert result.total == len(PICKS_VISION)
+        assert result.total is None
 
     def test_search_by_name(self) -> None:
         result = get_catalog(search="Qwen3")
@@ -686,11 +695,13 @@ class TestGetCatalog:
 
     def test_search_case_insensitive(self) -> None:
         result = get_catalog(search="QWEN3")
-        assert result.total > 0
+        assert result.models
+        assert result.total is None
 
     def test_search_no_results(self) -> None:
         result = get_catalog(search="nonexistent_model_xyz")
-        assert result.total == 0
+        assert result.models == []
+        assert result.total is None
 
     def test_filter_size_small(self) -> None:
         result = get_catalog(size=CatalogSize.SMALL)
@@ -718,7 +729,9 @@ class TestGetCatalog:
 
     def test_filter_size_unknown_bucket_matches_nothing(self) -> None:
         """An unrecognized bucket filters everything out rather than raising."""
-        assert get_catalog(size="gigantic").total == 0  # type: ignore[arg-type]
+        result = get_catalog(size="gigantic")  # type: ignore[arg-type]
+        assert result.models == []
+        assert result.total is None
 
     def test_largest_first_page_is_all_rows_the_host_cannot_load(self) -> None:
         """The control for the fit filter: this is the page a client has to fix itself."""
@@ -774,14 +787,14 @@ class TestGetCatalog:
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
         )
         assert [m.hf_repo for m in result.models] == ["test/Small0", "test/Small1"]
-        assert result.total == 2
+        assert result.total is None
         assert result.has_more is True
 
-    def test_fit_filter_totals_every_row_it_keeps(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An untruncated page and its total are the same set, fail-open rows included.
+    def test_fit_filter_browse_page_reports_no_total(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A filtered browse page reports no total, fail-open rows included.
 
         A row with no measurable size is kept because the host cannot prove it
-        won't run, so it has to be counted too.
+        won't run, and the client pages on has_more.
         """
         upstream = [
             make_test_catalog_model(name="Small", size_gb=2.0),
@@ -800,7 +813,7 @@ class TestGetCatalog:
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
         )
         assert sorted(m.hf_repo for m in result.models) == ["test/Small", "test/Unmeasured"]
-        assert result.total == len(result.models)
+        assert result.total is None
         assert result.has_more is False
 
     def test_filter_featured_true(self) -> None:
@@ -810,7 +823,7 @@ class TestGetCatalog:
     def test_filter_featured_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
         result = get_catalog(featured=False)
-        assert result.total == 0
+        assert result.total is None
 
     def test_sort_featured(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(get_services().hf_client, "fetch_models", lambda **kw: _EMPTY_HF_PAGE)
@@ -864,7 +877,7 @@ class TestGetCatalog:
                 raise RuntimeError("no manager")
 
         result = get_catalog(installed=True, model_manager=BadManager())
-        assert result.total == 0
+        assert result.total is None
 
     def test_combines_featured_and_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
         hf_models = [
