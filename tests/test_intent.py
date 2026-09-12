@@ -226,6 +226,35 @@ class TestParseAggregate:
         assert agg is not None
         assert agg.kind is AggregateKind.TOTAL_SOURCES
 
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "how many documents do you have?",
+            "how many files do you have?",
+            "how many documents do I have?",
+            "how many papers do we have?",
+            "how many documents have you got?",
+            "how many sources have I got?",
+        ],
+    )
+    def test_possessive_phrasings_route_to_total(self, question):
+        agg = parse_aggregate(question)
+        assert agg is not None
+        assert agg.kind is AggregateKind.TOTAL_SOURCES
+
+    @pytest.mark.parametrize(
+        "question",
+        [
+            "how many people do you have?",
+            "how many documents do researchers have?",
+            "how many documents do you have about birds?",
+        ],
+    )
+    def test_entity_and_filtered_counts_still_decline(self, question):
+        agg = parse_aggregate(question)
+        assert agg is not None
+        assert agg.kind is AggregateKind.UNSUPPORTED
+
     def test_association_question_parses_both_nouns(self):
         agg = parse_aggregate("how many shipments is each part number associated with?")
         assert agg is not None

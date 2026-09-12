@@ -116,10 +116,12 @@ ENGLISH = QueryLanguage(
     how_many_pattern=re.compile(
         r"^\s*(?:roughly\s+|approximately\s+|about\s+)?how\s+many\b", re.IGNORECASE
     ),
-    # "how many documents/books/sources are there/indexed": corpus totals.
+    # "how many documents are there/indexed/do you have/have you got": totals.
     total_pattern=re.compile(
         r"how\s+many\s+" + _EN_OF_THESE + _EN_CORPUS_NOUNS + r"\s*"
-        r"(?:are\s+(?:there|indexed|in\s+the\s+index)|do(?:es)?\s+.*\b(?:index|corpus|vault)\b.*)?[?\s]*$",
+        r"(?:are\s+(?:there|indexed|in\s+the\s+index)"
+        r"|(?:do\s+(?:you|i|we)\s+have|have\s+(?:you|i|we)\s+got)"
+        r"|do(?:es)?\s+.*\b(?:index|corpus|vault)\b.*)?[?\s]*$",
         re.IGNORECASE,
     ),
     # "how many X is each Y associated with" / "how many X per Y": typed
