@@ -256,7 +256,8 @@ class TestSyncAcrossWorkers:
         verdicts = self._one_verdict(SyncResult(removed=["gone.txt"]))
         await self._run(specs, monkeypatch, verdicts, merged=[], passes=passes)
         [kwargs] = passes
-        assert kwargs["clusters_stale"] is True
+        assert kwargs["cluster_removed"] == ["gone.txt"]
+        assert kwargs["cluster_added"] == [] and kwargs["cluster_updated"] == []
         assert kwargs["indexed_anything"] is False
 
     async def test_a_relocation_only_run_leaves_the_clusters_alone(self, specs, monkeypatch):
@@ -265,7 +266,9 @@ class TestSyncAcrossWorkers:
         verdicts = self._one_verdict(SyncResult(relocated=["moved.txt"]))
         await self._run(specs, monkeypatch, verdicts, merged=[], passes=passes)
         [kwargs] = passes
-        assert kwargs["clusters_stale"] is False
+        assert kwargs["cluster_added"] == []
+        assert kwargs["cluster_updated"] == []
+        assert kwargs["cluster_removed"] == []
         assert kwargs["indexed_anything"] is True
         assert kwargs["touched"] == {"moved.txt"}
 

@@ -9,7 +9,15 @@ import os
 import threading
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Callable, Coroutine, Iterable, Iterator, Mapping
+from collections.abc import (
+    AsyncGenerator,
+    Callable,
+    Collection,
+    Coroutine,
+    Iterable,
+    Iterator,
+    Mapping,
+)
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from itertools import count
@@ -154,8 +162,16 @@ def _max_concurrent() -> int:
     return max(cpu_quota(), embed_inflight_target())
 
 
-async def _rebuild_concept_clusters() -> None:
-    """Re-run Leiden clustering after sync. No-op if disabled."""
+async def _rebuild_concept_clusters(
+    added: Collection[str] = (),
+    updated: Collection[str] = (),
+    removed: Collection[str] = (),
+) -> None:
+    """Re-run Leiden clustering after sync. No-op if disabled.
+
+    Removals force a full pass: their rows are already gone, so the touched
+    communities are unrecoverable. Adds and updates recluster incrementally.
+    """
     if not active_config().concept_graph:
         return
     from lilbee.retrieval.concepts import concepts_available
@@ -166,7 +182,10 @@ async def _rebuild_concept_clusters() -> None:
         cg = get_services().concepts
         if not cg.get_graph():
             return
-        await to_ingest_thread(cg.rebuild_clusters)
+        if removed:
+            await to_ingest_thread(cg.rebuild_clusters)
+        else:
+            await to_ingest_thread(cg.rebuild_clusters, set(added), set(updated))
     except Exception:
         log.warning("Concept cluster rebuild failed", exc_info=True)
 
@@ -1019,7 +1038,9 @@ async def _run_post_ingest_passes(
     store: Any,
     *,
     indexed_anything: bool,
-    clusters_stale: bool,
+    cluster_added: Collection[str],
+    cluster_updated: Collection[str],
+    cluster_removed: Collection[str],
     touched: set[str],
     cancel: CancelSignal | None,
 ) -> None:
@@ -1036,8 +1057,8 @@ async def _run_post_ingest_passes(
         store.ensure_scalar_indexes()
         store.ensure_vector_index()
         store.optimize_sources()
-    if clusters_stale:
-        await _rebuild_concept_clusters()
+    if cluster_added or cluster_updated or cluster_removed:
+        await _rebuild_concept_clusters(cluster_added, cluster_updated, cluster_removed)
     if indexed_anything:
         await _update_wiki(touched, active_config())
 
@@ -1135,7 +1156,9 @@ async def _sync_across_workers(
     await _run_post_ingest_passes(
         store,
         indexed_anything=bool(touched),
-        clusters_stale=bool(result.added or result.updated or result.removed),
+        cluster_added=result.added,
+        cluster_updated=result.updated,
+        cluster_removed=result.removed,
         touched=touched,
         cancel=cancel,
     )
@@ -1298,7 +1321,9 @@ async def sync(
         await _run_post_ingest_passes(
             _store,
             indexed_anything=bool(state.planned or relocated),
-            clusters_stale=bool(added or updated or ignored or refused),
+            cluster_added=added,
+            cluster_updated=updated,
+            cluster_removed=[*ignored, *refused],
             # The old names of relocated sources ride along so the wiki index
             # subtracts them in the same pass that merges their new ones.
             touched=set(added) | set(updated) | set(relocated) | set(state.relocated_from),
