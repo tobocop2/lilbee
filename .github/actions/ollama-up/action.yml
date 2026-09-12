@@ -5,6 +5,10 @@ inputs:
   model:
     description: "Ollama model ref to pull (e.g. qwen3:0.6b)."
     required: true
+  version:
+    description: "Ollama version to install (e.g. 0.33.3)."
+    required: false
+    default: "0.33.3"
 
 runs:
   using: composite
@@ -13,7 +17,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        curl -fsSL https://ollama.com/install.sh | sh
+        curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="${{ inputs.version }}" sh
         # Stop the systemd service install.sh starts: it holds port 11434 as the
         # 'ollama' user, so the daemon below would lose the bind and die.
         sudo systemctl disable --now ollama

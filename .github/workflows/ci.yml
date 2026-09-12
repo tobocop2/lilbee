@@ -245,9 +245,6 @@ jobs:
     # hit the unauthenticated rate limit (429) on the featured-model sweep.
     env:
       HF_TOKEN: ${{ secrets.HF_TOKEN }}
-      # Never below 0.32.2: earlier builds segfault in the Sapphire Rapids CPU
-      # backend on the first inference (ollama#17205).
-      OLLAMA_PIN: "0.33.3"
     strategy:
       fail-fast: false
       matrix:
@@ -324,10 +321,7 @@ jobs:
           # PATH only, deliberately no loader variable: llama-server and every
           # library it pulls in carry RUNPATH $ORIGIN on Linux and LC_RPATH
           # @loader_path on macOS, so the engine resolves its own libraries. A
-          # GITHUB_ENV export would apply to every later step in the job, and
-          # ollama's bundled runner links the same libggml/libllama SONAMEs this
-          # tarball ships, so it would load these instead of its own and
-          # segfault on the model warm-up.
+          # GITHUB_ENV export would apply to every later step in the job.
           if command -v cygpath >/dev/null 2>&1; then
             cygpath -w "${bindir}" >> "${GITHUB_PATH}"
           else
@@ -381,11 +375,6 @@ jobs:
             echo "${helperdir}" >> "${GITHUB_PATH}"
           fi
 
-      # No cache for C:\ollama: the extracted tree (ollama plus its CUDA/ROCm
-      # runner DLLs) was 1.4 GB, the largest entry in the repo, to save a ~1 min
-      # download. Against a hard 10 GB cap it was evicting engine caches worth
-      # ~50 min apiece to a release build.
-
       - name: Install dependencies
         run: uv sync --locked --all-extras
 
@@ -436,200 +425,6 @@ jobs:
       # nothing ever wrote ~/.cache/huggingface/hub. The cache block that used to
       # sit here only churned a key off pyproject.toml and consumed the cap.
 
-      # Linux only, deliberately. The entry is ~750 MB per OS, and the repo cache
-      # sits against a hard 10 GB cap where every GB evicts an engine cache worth
-      # ~50 min to a release build. Windows/macOS re-pull.
-      #
-      # This is the runner's model store, which only works because the step below
-      # stops the daemon that install.sh runs as the 'ollama' user. The v1 entry
-      # was written against that other store and never fed a pull, so start a
-      # fresh key here.
-      - name: Cache Ollama models
-        if: runner.os == 'Linux'
-        uses: actions/cache@v6
-        with:
-          path: ~/.ollama/models
-          key: ollama-models-${{ runner.os }}-qwen3-nomic-v2
-
-      # install.sh also registers a systemd service that runs the daemon as the
-      # 'ollama' user, whose model store is /usr/share/ollama/.ollama/models.
-      # That daemon takes port 11434 first, so the 'ollama serve' below loses the
-      # bind and dies, every pull writes to a store no cache covers, and
-      # OLLAMA_KEEP_ALIVE never reaches the daemon that serves the tests. Stop it
-      # and serve the models ourselves.
-      - name: Install Ollama (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION="${OLLAMA_PIN}" sh
-          sudo systemctl disable --now ollama
-
-      - name: Install Ollama (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          curl -fsSL "https://github.com/ollama/ollama/releases/download/v${OLLAMA_PIN}/Ollama-darwin.zip" -o /tmp/ollama.zip
-          unzip -q /tmp/ollama.zip -d /tmp/ollama
-          sudo mv /tmp/ollama/Ollama.app /Applications/
-          sudo ln -sf /Applications/Ollama.app/Contents/Resources/ollama /usr/local/bin/ollama
-
-      - name: Install Ollama (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Invoke-WebRequest -Uri "https://github.com/ollama/ollama/releases/download/v$env:OLLAMA_PIN/ollama-windows-amd64.zip" -OutFile "$env:TEMP\ollama.zip"
-          Expand-Archive "$env:TEMP\ollama.zip" -DestinationPath "C:\ollama" -Force
-
-      # KEEP_ALIVE=-1 pins loaded models in memory: the litellm tests run well
-      # past ollama's 5-minute default unload, and a cold reload plus first
-      # generation on a loaded runner overruns the request timeout ("Couldn't
-      # reach the provider ... or it timed out"). The warm-up calls pay the
-      # load cost here, where nothing is timing the request.
-      # ollama runs its llama-server subprocess at --log-verbosity 4 and wires its
-      # output to the daemon's stderr, so this file carries the "load_backend:
-      # loaded CPU backend from libggml-cpu-<variant>.so" line. OLLAMA_DEBUG=1 adds
-      # the launched binary path and the LD_LIBRARY_PATH ollama built for it.
-      - name: Start Ollama (Linux/macOS)
-        if: runner.os != 'Windows'
-        run: |
-          OLLAMA_DEBUG=1 OLLAMA_KEEP_ALIVE=-1 nohup ollama serve > "${RUNNER_TEMP}/ollama-serve.log" 2>&1 &
-          for _ in $(seq 1 30); do
-            curl -fsS localhost:11434/api/version >/dev/null 2>&1 && break
-            sleep 1
-          done
-
-      - name: Pull Ollama models (Linux/macOS)
-        if: runner.os != 'Windows'
-        uses: ./.github/actions/ollama-pull
-        with:
-          models: |
-            qwen3:0.6b
-            nomic-embed-text
-
-      # Guards the cache against a silent return to a daemon with its own store:
-      # if the pull did not land here, there is nothing to save and the next run
-      # re-downloads ~800 MB.
-      - name: Check the models landed in the cached store (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          if [ ! -d ~/.ollama/models/blobs ]; then
-            echo "::error::The pull did not write to ~/.ollama/models. Another daemon owns port 11434."
-            exit 1
-          fi
-          du -sh ~/.ollama/models
-
-      # Ollama's model runner segfaults here often enough to kill whole runs
-      # ("llama runner process has terminated: signal: segmentation fault"),
-      # and the pull steps around it already retry. Warming a model is setup,
-      # not a subject under test, so a transient crash must not fail the job
-      # before a single test runs. Three failures still fail it.
-      - name: Warm up Ollama models (Linux/macOS)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          warm_up() {
-            ollama run qwen3:0.6b "warm up" >/dev/null &&
-              curl -fsS localhost:11434/api/embed \
-                -d '{"model":"nomic-embed-text","input":"warm up"}' >/dev/null
-          }
-
-          delay=5
-          for attempt in 1 2 3; do
-            if warm_up; then
-              exit 0
-            fi
-            if [ "${attempt}" -lt 3 ]; then
-              echo "Ollama warm-up failed (attempt ${attempt}/3). Retry in ${delay}s."
-              sleep "${delay}"
-              delay=$((delay * 2))
-            fi
-          done
-          echo "::error::Ollama warm-up failed after 3 attempts."
-          exit 1
-
-      # On step failure, not job failure, so a later green rerun cannot discard
-      # the evidence.
-      - name: Collect diagnostics for the Ollama crash
-        if: failure() && runner.os != 'Windows'
-        shell: bash
-        run: |
-          set +e
-          out="${RUNNER_TEMP}/ollama-diagnostics"
-          mkdir -p "${out}"
-          cp "${RUNNER_TEMP}/ollama-serve.log" "${out}/" 2>/dev/null
-          ollama -v > "${out}/ollama-version.txt" 2>&1
-          # Spelled out per OS: only uname, uptime and df exist on both.
-          {
-            uname -a
-            uptime
-            df -h
-          } > "${out}/host.txt" 2>&1
-          if [ "${RUNNER_OS}" = "Linux" ]; then
-            { nproc; free -g; } >> "${out}/host.txt" 2>&1
-            lscpu > "${out}/lscpu.txt" 2>&1
-            sudo dmesg | tail -50 > "${out}/dmesg.txt" 2>&1
-          else
-            { sysctl -n hw.model hw.ncpu hw.memsize; vm_stat; } >> "${out}/host.txt" 2>&1
-          fi
-          echo "--- kernel segfault lines, if any ---"
-          grep -i "segfault\|general protection" "${out}/dmesg.txt" 2>/dev/null || echo "none in dmesg"
-          echo "--- backend variant loaded by ollama ---"
-          grep -i "load_backend\|loaded CPU backend" "${out}/ollama-serve.log" 2>/dev/null || echo "no backend line captured"
-
-      - name: Upload the Ollama crash diagnostics
-        if: failure() && runner.os != 'Windows'
-        uses: actions/upload-artifact@v7
-        with:
-          name: ollama-diagnostics-${{ runner.os }}-${{ matrix.python-version }}
-          path: ${{ runner.temp }}/ollama-diagnostics
-          if-no-files-found: ignore
-          retention-days: 14
-
-      - name: Start Ollama (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $env:OLLAMA_KEEP_ALIVE = "-1"
-          Start-Process -FilePath "C:\ollama\ollama.exe" -ArgumentList "serve" -WindowStyle Hidden
-          foreach ($i in 1..30) {
-            try { Invoke-RestMethod "http://localhost:11434/api/version" | Out-Null; break }
-            catch { Start-Sleep -Seconds 1 }
-          }
-
-      - name: Pull Ollama models (Windows)
-        if: runner.os == 'Windows'
-        uses: ./.github/actions/ollama-pull
-        with:
-          ollama: C:/ollama/ollama.exe
-          models: |
-            qwen3:0.6b
-            nomic-embed-text
-
-      # Same retry as the Linux/macOS warm-up: one runner crash must not end
-      # the job. ollama.exe reports failure through the exit code, not an
-      # exception, so check it rather than relying on try/catch alone.
-      - name: Warm up Ollama models (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          for ($attempt = 1; $attempt -le 3; $attempt++) {
-            & C:\ollama\ollama.exe run qwen3:0.6b "warm up" | Out-Null
-            if ($LASTEXITCODE -eq 0) {
-              try {
-                Invoke-RestMethod -Method Post -Uri "http://localhost:11434/api/embed" `
-                  -Body '{"model":"nomic-embed-text","input":"warm up"}' | Out-Null
-                exit 0
-              } catch { }
-            }
-            if ($attempt -lt 3) {
-              Write-Host "Ollama warm-up failed (attempt $attempt/3). Retry in 5s."
-              Start-Sleep -Seconds 5
-            }
-          }
-          Write-Host "::error::Ollama warm-up failed after 3 attempts."
-          exit 1
-
       - name: Restore GGUF models from release mirror
         id: ci-models
         uses: ./.github/actions/restore-ci-models
@@ -653,6 +448,5 @@ jobs:
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: auto
-          OLLAMA_HOST: http://127.0.0.1:11434
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
           HF_TOKEN: ${{ secrets.HF_TOKEN }}

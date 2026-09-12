@@ -1,19 +1,27 @@
-"""SDK-backed provider integration tests: real Ollama server, no mocks.
+"""SDK-backed provider integration tests against an Ollama-shaped stub.
 
-Requires litellm installed and Ollama running at OLLAMA_HOST (default
-localhost:11434) with the qwen3:0.6b and nomic-embed-text models pulled.
+Spawns ``_ollama_stub.py`` over real HTTP: no daemon, no model pulls,
+deterministic. Drift against a real Ollama daemon is covered by the
+scheduled ollama-pypi lane in qa-matrix.yml.
 """
 
 from __future__ import annotations
 
-import os
+import socket
+import subprocess
+import sys
+import time
+from collections.abc import Iterator
+from pathlib import Path
 
+import httpx
 import numpy as np
 import pytest
 
 litellm = pytest.importorskip("litellm")
 
 from lilbee.core.config import cfg  # noqa: E402
+from lilbee.providers import litellm_sdk as _litellm_sdk_mod  # noqa: E402
 from lilbee.providers.base import (  # noqa: E402
     ChatResult,
     StreamFinish,
@@ -21,47 +29,75 @@ from lilbee.providers.base import (  # noqa: E402
     ToolCallDelta,
 )
 from lilbee.providers.litellm_sdk import LitellmSdkBackend  # noqa: E402
+from lilbee.providers.local_servers import OLLAMA  # noqa: E402
+from lilbee.providers.local_servers.spec import LocalServerSpec  # noqa: E402
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider  # noqa: E402
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+_STUB = Path(__file__).parent / "_ollama_stub.py"
 # Ollama keeps its own ``name:tag`` shape; lilbee's config layer requires
 # the ``ollama/`` prefix so its routing knows where to send the request.
 OLLAMA_MODEL = "ollama/qwen3:0.6b"
 OLLAMA_EMBED_MODEL = "ollama/nomic-embed-text"
 
 
-def _ollama_reachable() -> bool:
-    try:
-        import httpx
-
-        resp = httpx.get(f"{OLLAMA_HOST}/api/tags", timeout=5)
-        return resp.status_code == 200
-    except Exception:
-        return False
-
-
 pytestmark = [pytest.mark.slow]
 
-# Per class, not per module: TestSdkFactory asserts config-boundary behaviour
-# and opens no socket, so it must run whether or not a daemon is reachable.
-requires_ollama = pytest.mark.skipif(not _ollama_reachable(), reason="Ollama not running")
+
+def _pick_free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+@pytest.fixture(scope="module")
+def ollama_stub_base() -> Iterator[str]:
+    """Base URL of a freshly spawned Ollama stub server."""
+    port = _pick_free_port()
+    proc = subprocess.Popen([sys.executable, str(_STUB), "--port", str(port)])
+    base = f"http://127.0.0.1:{port}"
+    try:
+        deadline = time.monotonic() + 15.0
+        while time.monotonic() < deadline:
+            try:
+                if httpx.get(f"{base}/api/tags", timeout=1.0).status_code == 200:
+                    break
+            except httpx.HTTPError:
+                time.sleep(0.05)
+        else:
+            raise RuntimeError("ollama stub did not become ready")
+        yield base
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10.0)
 
 
 @pytest.fixture(autouse=True)
-def _isolate_cfg():
+def _isolate_cfg(ollama_stub_base: str):
     snapshot = {name: getattr(cfg, name) for name in type(cfg).model_fields}
     # ollama/ refs resolve their api_base from this field, so point it at the
-    # real server for the duration of each test.
-    cfg.ollama_base_url = OLLAMA_HOST
+    # stub for the duration of each test.
+    cfg.ollama_base_url = ollama_stub_base
     yield
     for name, val in snapshot.items():
         setattr(cfg, name, val)
 
 
-@requires_ollama
+@pytest.fixture(autouse=True)
+def _stub_detects_as_ollama(monkeypatch: pytest.MonkeyPatch, ollama_stub_base: str):
+    """Map the stub URL to the Ollama spec; its random port matches no URL pattern."""
+    real_detect = _litellm_sdk_mod.detect_local_server
+
+    def _detect(base_url: str) -> LocalServerSpec | None:
+        if base_url.rstrip("/") == ollama_stub_base:
+            return OLLAMA
+        return real_detect(base_url)
+
+    monkeypatch.setattr(_litellm_sdk_mod, "detect_local_server", _detect)
+
+
 class TestSdkEmbed:
     def test_embed_returns_vectors(self) -> None:
-        """Real embedding via Ollama returns float vectors."""
+        """Embedding via the stub returns float vectors."""
         cfg.embedding_model = OLLAMA_EMBED_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.embed(["hello world"])
@@ -81,10 +117,9 @@ class TestSdkEmbed:
         assert all(len(v) > 0 for v in result)
 
 
-@requires_ollama
 class TestSdkChat:
     def test_chat_returns_response(self) -> None:
-        """Real chat completion via Ollama returns non-empty text."""
+        """Chat completion via the stub returns non-empty text."""
         cfg.chat_model = OLLAMA_MODEL
         provider = SdkLLMProvider(LitellmSdkBackend())
         result = provider.chat(
@@ -126,10 +161,9 @@ class TestSdkChat:
         assert len(result.text) > 0
 
 
-@requires_ollama
 class TestSdkModelManagement:
     def test_list_models(self) -> None:
-        """list_models returns models from Ollama."""
+        """list_models returns the stub's models."""
         provider = SdkLLMProvider(LitellmSdkBackend())
         models = provider.list_models()
 
@@ -152,7 +186,6 @@ class TestSdkFactory:
         from lilbee.providers.factory import create_provider
 
         cfg.llm_provider = "remote"
-        cfg.ollama_base_url = OLLAMA_HOST
         provider = create_provider(cfg)
 
         assert isinstance(provider, SdkLLMProvider)

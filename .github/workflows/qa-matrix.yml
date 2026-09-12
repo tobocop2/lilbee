@@ -8,6 +8,10 @@ on:
     paths:
       - 'tools/qa/**'
       - '.github/workflows/qa-matrix.yml'
+  # Weekly drift check: litellm upgrades and Ollama API changes arrive on a
+  # calendar, not on a diff. Only ollama-pypi runs on this trigger.
+  schedule:
+    - cron: '0 8 * * 1'
   workflow_dispatch:
     inputs:
       lilbee_version:
@@ -49,6 +53,9 @@ permissions:
 env:
   # Ollama-registry analogue of conftest's _DEFAULT_CHAT_MODEL; keep param count aligned.
   OLLAMA_TINY_MODEL: qwen3:0.6b
+  # Same floor as ci.yml's OLLAMA_PIN: earlier builds segfault in the
+  # Sapphire Rapids CPU backend on the first inference (ollama#17205).
+  OLLAMA_PIN: "0.33.3"
 
 concurrency:
   group: qa-matrix-${{ github.ref }}
@@ -57,6 +64,7 @@ concurrency:
 jobs:
   native:
     name: native (${{ matrix.label }}, ${{ matrix.lane }})
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -158,6 +166,7 @@ jobs:
         uses: ./.github/actions/ollama-up
         with:
           model: ${{ env.OLLAMA_TINY_MODEL }}
+          version: ${{ env.OLLAMA_PIN }}
 
       - name: Run QA matrix
         env:
@@ -194,6 +203,7 @@ jobs:
   # Same lanes against Arch/Fedora containers (where most Linux install bugs surface).
   linux-distros:
     name: linux-distros (${{ matrix.label }}, ${{ matrix.lane }})
+    if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
       matrix:
@@ -289,6 +299,7 @@ jobs:
         uses: ./.github/actions/ollama-up
         with:
           model: ${{ env.OLLAMA_TINY_MODEL }}
+          version: ${{ env.OLLAMA_PIN }}
 
       - name: Run QA matrix
         env:
@@ -371,11 +382,13 @@ jobs:
         uses: ./.github/actions/ollama-up
         with:
           model: ${{ env.OLLAMA_TINY_MODEL }}
+          version: ${{ env.OLLAMA_PIN }}
 
       - name: Run ollama tests only
         env:
           LILBEE_QA_LANE: l1-pypi
           LILBEE_QA_MODELS_DIR: ${{ github.workspace }}/.lilbee-qa-models
+          LILBEE_QA_OLLAMA_REQUIRED: "1"
           PYTHONUNBUFFERED: "1"
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -402,6 +415,7 @@ jobs:
   # Dedicated [crawler] lane on a single ubuntu cell; isolation rationale matches ollama-pypi.
   crawler-pypi:
     name: crawler-pypi (ubuntu-latest)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
