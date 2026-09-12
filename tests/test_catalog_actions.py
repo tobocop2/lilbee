@@ -1280,7 +1280,7 @@ class TestForYouByRole:
     """Discover's For You rail: one runnable pick per role, in role order."""
 
     @staticmethod
-    def _row(name, task, *, compat, fit_level, featured=True, downloads=1_000_000):
+    def _row(name, task, *, compat, fit_level, featured=True, downloads=1_000_000, sort_size=4.6):
         from lilbee.cli.tui.screens.catalog_utils import LocalCatalogRow
         from lilbee.runtime.hardware import FitChip
 
@@ -1288,13 +1288,13 @@ class TestForYouByRole:
             name=name,
             task=task,
             params="8B",
-            size="4.6 GB",
+            size=f"{sort_size:.1f} GB",
             quant="Q4_K_M",
             downloads="1M",
             featured=featured,
             installed=False,
             sort_downloads=downloads,
-            sort_size=4.6,
+            sort_size=sort_size,
             ref=f"a/{name}-GGUF",
             compat=compat,
         )
@@ -1501,6 +1501,91 @@ class TestForYouByRole:
             ),
         ]
         assert for_you_by_role(rows) == []
+
+    def test_a_failed_probe_picks_the_smallest_row_across_featured(self) -> None:
+        """Nothing is measured, so size decides across the featured boundary."""
+        rows = [
+            self._row(
+                "BigA",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=None,
+                sort_size=101.2,
+            ),
+            self._row(
+                "BigB",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=None,
+                sort_size=101.2,
+            ),
+            self._row(
+                "Small",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=None,
+                featured=False,
+                downloads=900_000,
+                sort_size=1.4,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "Small"
+
+    def test_a_failed_probe_breaks_size_ties_alphabetically(self) -> None:
+        """Popularity does not decide when nothing is measured."""
+        rows = [
+            self._row(
+                "Zebra",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=None,
+                featured=False,
+                downloads=900,
+                sort_size=1.4,
+            ),
+            self._row(
+                "Aardvark",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=None,
+                featured=False,
+                downloads=10,
+                sort_size=1.4,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "Aardvark"
+
+    def test_a_working_probe_keeps_featured_leads_regardless_of_size(self) -> None:
+        """A measured featured row wins over a smaller non-featured row."""
+        rows = [
+            self._row(
+                "BigA",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                sort_size=101.2,
+            ),
+            self._row(
+                "BigB",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                sort_size=101.2,
+            ),
+            self._row(
+                "Small",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                featured=False,
+                downloads=900_000,
+                sort_size=1.4,
+            ),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "BigA"
 
 
 async def test_spinner_tick_updates_the_loading_more_hint() -> None:

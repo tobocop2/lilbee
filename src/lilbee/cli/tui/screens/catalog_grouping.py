@@ -58,23 +58,36 @@ def _backfill_sort_key(row: LocalCatalogRow) -> tuple[int, int, str]:
     return (_unknown_fit_rank(row), -row.sort_downloads, row.name.lower())
 
 
+def _failed_probe_sort_key(row: LocalCatalogRow) -> tuple[float, str]:
+    """Rank an unmeasured Discover pick: smallest first, then alphabetical."""
+    return (row.sort_size, row.name.lower())
+
+
+def _pick_for_task(candidates: list[LocalCatalogRow]) -> LocalCatalogRow:
+    """One Discover pick for a role: smallest when nothing is measured, else featured-leads."""
+    if all(r.fit is None for r in candidates):
+        return min(candidates, key=_failed_probe_sort_key)
+    featured = [r for r in candidates if r.featured]
+    if featured:
+        return min(featured, key=for_you_sort_key)
+    return min(candidates, key=_backfill_sort_key)
+
+
 def for_you_by_role(rows: list[LocalCatalogRow]) -> list[LocalCatalogRow]:
     """Runnable picks grouped by role: chat, embedding, vision, rerank.
 
-    Featured rows lead, known fit first. A role whose featured rows cannot run
-    backfills with the most downloaded row the host cannot rule out, so a card
-    that does not fit is replaced rather than dropped. A role with nothing
-    runnable yields no pick.
+    Featured rows lead, known fit first. When no row carries a fit chip
+    the smallest row wins across featured and non-featured rows. A role
+    whose featured rows cannot run backfills with the most downloaded row
+    the host cannot rule out, so a card that does not fit is replaced
+    rather than dropped. A role with nothing runnable yields no pick.
     """
     runnable = [r for r in rows if _is_runnable_pick(r)]
     out: list[LocalCatalogRow] = []
     for task in TASK_BUCKET_ORDER:
         candidates = [r for r in runnable if r.task == task]
-        featured = [r for r in candidates if r.featured]
-        if featured:
-            out.append(min(featured, key=for_you_sort_key))
-        elif candidates:
-            out.append(min(candidates, key=_backfill_sort_key))
+        if candidates:
+            out.append(_pick_for_task(candidates))
     return out
 
 
