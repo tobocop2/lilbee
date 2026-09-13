@@ -16,7 +16,6 @@ _TOOL_ROLE = "tool"
 _CHARS_PER_TOKEN = 3
 # Per-message token overhead for the role markers and chat-template wrappers the
 # server adds around each message. Owned by base; retrieval budgets the same number.
-_PER_MESSAGE_OVERHEAD = CHAT_MESSAGE_OVERHEAD_TOKENS
 
 
 def estimate_tokens(text: str) -> int:
@@ -26,7 +25,7 @@ def estimate_tokens(text: str) -> int:
 
 def _message_tokens(message: dict[str, Any]) -> int:
     """Estimated tokens a wire message contributes (content + tool-call JSON + overhead)."""
-    total = _PER_MESSAGE_OVERHEAD
+    total = CHAT_MESSAGE_OVERHEAD_TOKENS
     content = message.get("content")
     if isinstance(content, str):
         total += estimate_tokens(content)

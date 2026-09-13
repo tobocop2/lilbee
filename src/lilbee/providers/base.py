@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
@@ -50,7 +51,7 @@ def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
 
 def estimate_budget_tokens(text: str) -> int:
     """Conservative token cost of *text* for budgeting (see BUDGET_CHARS_PER_TOKEN)."""
-    return max(1, -(-len(text) // BUDGET_CHARS_PER_TOKEN))
+    return max(1, math.ceil(len(text) / BUDGET_CHARS_PER_TOKEN))
 
 
 THINK_OPEN_TAG = "<think>"
