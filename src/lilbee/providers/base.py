@@ -33,6 +33,10 @@ T_co = TypeVar("T_co", covariant=True)
 # do nothing about.
 GENERATION_RESERVE_TOKENS = 1024
 CONTEXT_WINDOW_MARGIN_TOKENS = 128
+# Per-message tokens the chat template adds around each message. One owner:
+# the fleet windowing ENFORCES it and retrieval BUDGETS it, so a prompt
+# retrieval assembles fits the check the provider runs.
+CHAT_MESSAGE_OVERHEAD_TOKENS = 8
 
 # Chars-per-token assumed when BUDGETING context, deliberately harsher than the
 # display estimator's 4: dense OCR/legal text tokenizes at ~2.5-3 chars per token.
@@ -46,7 +50,7 @@ def prompt_token_budget(ctx: int, num_predict: int | None = None) -> int:
 
 def estimate_budget_tokens(text: str) -> int:
     """Conservative token cost of *text* for budgeting (see BUDGET_CHARS_PER_TOKEN)."""
-    return max(1, len(text) // BUDGET_CHARS_PER_TOKEN)
+    return max(1, -(-len(text) // BUDGET_CHARS_PER_TOKEN))
 
 
 THINK_OPEN_TAG = "<think>"

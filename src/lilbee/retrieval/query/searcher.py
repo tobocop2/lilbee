@@ -27,6 +27,7 @@ from lilbee.data.store import (
 )
 from lilbee.data.store.fusion import fuse_ranked_lists
 from lilbee.providers.base import (
+    CHAT_MESSAGE_OVERHEAD_TOKENS,
     LLMProvider,
     ProviderError,
     ProviderErrorKind,
@@ -1077,12 +1078,14 @@ class Searcher:
         ctx = min(configured, served) if served else configured
         # Fit inside what the provider will actually accept: prompt_token_budget
         # already removes the generation reserve and the engine's margin, so the
-        # sources get what is left after the rest of the prompt.
+        # sources get what is left after the rest of the prompt. The per-message
+        # overhead is what the provider's windowing charges per message.
         non_source = (
             estimate_budget_tokens(system)
             + estimate_budget_tokens(question)
             + sum(estimate_budget_tokens(m["content"]) for m in history or [])
             + _CONTEXT_TEMPLATE_TOKENS
+            + CHAT_MESSAGE_OVERHEAD_TOKENS * (len(history or []) + 2)
         )
         return int((prompt_token_budget(ctx) - non_source) * scale)
 
