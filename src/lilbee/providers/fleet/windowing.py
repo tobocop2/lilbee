@@ -7,14 +7,15 @@ import math
 from dataclasses import dataclass
 from typing import Any
 
+from lilbee.providers.base import CHAT_MESSAGE_OVERHEAD_TOKENS
+
 _SYSTEM_ROLE = "system"
 _TOOL_ROLE = "tool"
 # Conservative chars-per-token: below the ~4 English average so the estimate
 # over-counts tokens and the window errs toward dropping more, never overflowing.
 _CHARS_PER_TOKEN = 3
 # Per-message token overhead for the role markers and chat-template wrappers the
-# server adds around each message.
-_PER_MESSAGE_OVERHEAD = 8
+# server adds around each message. Owned by base; retrieval budgets the same number.
 
 
 def estimate_tokens(text: str) -> int:
@@ -24,7 +25,7 @@ def estimate_tokens(text: str) -> int:
 
 def _message_tokens(message: dict[str, Any]) -> int:
     """Estimated tokens a wire message contributes (content + tool-call JSON + overhead)."""
-    total = _PER_MESSAGE_OVERHEAD
+    total = CHAT_MESSAGE_OVERHEAD_TOKENS
     content = message.get("content")
     if isinstance(content, str):
         total += estimate_tokens(content)

@@ -1797,12 +1797,14 @@ class FleetProvider:
         # silently evicted.
         requested = (options or {}).get("num_predict")
         reserve = min(requested, GENERATION_RESERVE_TOKENS) if requested else None
-        result = window_messages(messages, tools, prompt_token_budget(self._chat_ctx, reserve))
+        budget = prompt_token_budget(self._chat_ctx, reserve)
+        result = window_messages(messages, tools, budget)
         if not result.fits:
             raise ProviderError(
                 f"Prompt of about {result.prompt_tokens} tokens exceeds the "
-                f"{self._chat_ctx}-token context window for {model!r}. Shorten the "
-                "conversation or the system prompt.",
+                f"{budget}-token prompt budget for {model!r} "
+                f"({self._chat_ctx}-token window minus reserve and margin). "
+                "Shorten the conversation or the system prompt.",
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
