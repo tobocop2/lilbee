@@ -136,13 +136,19 @@ def test_an_unrelated_setting_keeps_the_memoized_picks(
     from lilbee.catalog import picks as picks_mod
     from lilbee.catalog.models import CatalogModel
 
-    def fail_resolve() -> tuple[CatalogModel, ...]:
-        raise AssertionError("picks must not re-resolve on an unrelated write")
+    calls: list[None] = []
 
-    monkeypatch.setattr(picks_mod, "_resolve_picks", fail_resolve)
+    def fake_resolve() -> tuple[CatalogModel, ...]:
+        calls.append(None)
+        return ()
+
+    monkeypatch.setattr(picks_mod, "_resolve_picks", fake_resolve)
     try:
         picks_mod.seed_picks(())
+        assert picks_mod.get_picks() == ()
+        assert calls == []
         apply_settings_update({"top_k": 5})
         assert picks_mod.get_picks() == ()
+        assert len(calls) == 0
     finally:
         picks_mod.reset_picks()
