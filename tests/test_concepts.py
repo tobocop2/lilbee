@@ -1374,6 +1374,26 @@ class TestRebuildIncremental:
         assert inc_edges[("delta", "gamma")] == stale_weight
         assert full_edges[("delta", "gamma")] != stale_weight
 
+    @patch("lilbee.retrieval.concepts.graph._leiden_partition")
+    def test_empty_batch_map_with_existing_keys_falls_back_to_full_rebuild(
+        self, mock_leiden, mock_svc
+    ):
+        """An empty batch map over existing keys means the lookup failed: run a full pass."""
+        mock_leiden.side_effect = _connected_components
+        store, graph = self._seeded_graph()
+        graph.rebuild_clusters()
+        graph.write_concept_records(graph.build_concept_records([("c.md", 0)], [["alpha", "beta"]]))
+
+        with patch.object(ConceptGraph, "_chunk_concepts_batch", return_value={}):
+            graph.rebuild_clusters(added=["c.md"])
+
+        [edges] = [call.args[0] for call in mock_leiden.call_args_list[1:]]
+        assert {(r["source"], r["target"]) for r in edges} == {
+            ("alpha", "beta"),
+            ("delta", "gamma"),
+        }
+        assert set(self._node_map(store)) == {"alpha", "beta", "gamma", "delta"}
+
 
 class TestGetGraph:
     def test_returns_true_when_enabled(self, cg, mock_svc):
