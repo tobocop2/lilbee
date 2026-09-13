@@ -1,6 +1,7 @@
 """ModelManager: native and SDK-backed model lifecycle operations."""
 
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -60,6 +61,8 @@ class ModelManager:
         self._native_identities_cache: TTLCache[str, frozenset[str]] = TTLCache(
             maxsize=1, ttl=_INSTALLED_CACHE_TTL_SECONDS
         )
+        # TTLCache splices an internal link list without a lock; every access holds this one.
+        self._cache_lock = threading.Lock()
 
     def list_installed(self, source: ModelSource | None = None) -> list[str]:
         """List installed model names. ``source=None`` lists all sources.
@@ -67,7 +70,8 @@ class ModelManager:
         Memoized with a ``_INSTALLED_CACHE_TTL_SECONDS`` TTL and
         invalidated eagerly by ``pull``/``remove``.
         """
-        cached = self._installed_cache.get(source)
+        with self._cache_lock:
+            cached = self._installed_cache.get(source)
         if cached is not None:
             return cached
 
@@ -80,7 +84,8 @@ class ModelManager:
         else:
             result = self._list_remote()
 
-        self._installed_cache[source] = result
+        with self._cache_lock:
+            self._installed_cache[source] = result
         return result
 
     def list_native_identities(self) -> frozenset[str]:
@@ -90,7 +95,8 @@ class ModelManager:
         mark catalog rows as installed without re-walking the registry
         on every screen mount.
         """
-        cached = self._native_identities_cache.get(_NATIVE_IDENTITIES_CACHE_KEY)
+        with self._cache_lock:
+            cached = self._native_identities_cache.get(_NATIVE_IDENTITIES_CACHE_KEY)
         if cached is not None:
             return cached
         identities: set[str] = set()
@@ -101,13 +107,15 @@ class ModelManager:
         except Exception:
             log.debug("ModelRegistry.list_installed failed", exc_info=True)
         result = frozenset(identities)
-        self._native_identities_cache[_NATIVE_IDENTITIES_CACHE_KEY] = result
+        with self._cache_lock:
+            self._native_identities_cache[_NATIVE_IDENTITIES_CACHE_KEY] = result
         return result
 
     def _invalidate_installed_cache(self) -> None:
         """Drop all cached list_installed results and the route-layer cache."""
-        self._installed_cache.clear()
-        self._native_identities_cache.clear()
+        with self._cache_lock:
+            self._installed_cache.clear()
+            self._native_identities_cache.clear()
         from lilbee.app.services import peek_services
 
         # peek_services is None for a standalone ModelManager (test setup);

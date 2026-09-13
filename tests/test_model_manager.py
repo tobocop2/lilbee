@@ -1,5 +1,7 @@
 """Tests for model_manager.py: model lifecycle management across sources."""
 
+import sys
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
@@ -146,6 +148,63 @@ def _install_registry_model(
     )
     registry.install(repo, filename, source, manifest)
     return f"{repo}/{filename}"
+
+
+def _read_installed_loop(
+    mgr: ModelManager, keys: list[ModelSource | None], errors: list[BaseException]
+) -> None:
+    """Read every installed-cache key in a loop, collecting races."""
+    try:
+        for i in range(500):
+            mgr.list_installed(keys[i % len(keys)])
+    except Exception as exc:
+        errors.append(exc)
+
+
+def _read_identities_loop(mgr: ModelManager, errors: list[BaseException]) -> None:
+    """Read the identities cache in a loop, collecting races."""
+    try:
+        for _ in range(500):
+            mgr.list_native_identities()
+    except Exception as exc:
+        errors.append(exc)
+
+
+def _invalidate_loop(mgr: ModelManager, done: threading.Event, errors: list[BaseException]) -> None:
+    """Clear both caches until the readers finish, collecting races."""
+    try:
+        while not done.is_set():
+            mgr._invalidate_installed_cache()
+    except Exception as exc:
+        errors.append(exc)
+
+
+def _hammer_caches(mgr: ModelManager, keys: list[ModelSource | None]) -> list[BaseException]:
+    """Hammer both caches from readers plus invalidation; return collected races."""
+    errors: list[BaseException] = []
+    done = threading.Event()
+    readers = [
+        threading.Thread(target=_read_installed_loop, args=(mgr, keys, errors)) for _ in range(4)
+    ]
+    readers += [
+        threading.Thread(target=_read_identities_loop, args=(mgr, errors)) for _ in range(2)
+    ]
+    invalidators = [
+        threading.Thread(target=_invalidate_loop, args=(mgr, done, errors)) for _ in range(2)
+    ]
+    old_interval = sys.getswitchinterval()
+    sys.setswitchinterval(0.000001)
+    try:
+        for thread in readers + invalidators:
+            thread.start()
+        for thread in readers:
+            thread.join()
+        done.set()
+        for thread in invalidators:
+            thread.join()
+    finally:
+        sys.setswitchinterval(old_interval)
+    return errors
 
 
 class TestModelManagerListInstalled:
@@ -354,6 +413,29 @@ class TestModelManagerListInstalled:
 
         # Fetches at t=0, t=61, and t=122; the 30s polls in between hit.
         assert mock_get.call_count == 3 * after_first
+
+    def test_concurrent_cache_access_never_raises(self) -> None:
+        """Concurrent readers plus invalidation never raise.
+
+        TTLCache splices its link list without a lock; the forced switch
+        interval lands thread switches inside that window every run.
+        """
+        mock_response = mock.Mock()
+        mock_response.json.return_value = {"models": []}
+        mock_response.raise_for_status = mock.Mock()
+
+        with mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
+        ):
+            mgr = ModelManager(Path("/tmp"))
+            # A short TTL expires entries mid-hammer, the same
+            # expire-during-write path production hits at TTL boundaries.
+            mgr._installed_cache = TTLCache(maxsize=8, ttl=0.002)
+            mgr._native_identities_cache = TTLCache(maxsize=1, ttl=0.002)
+            errors = _hammer_caches(mgr, [None, *list(ModelSource)])
+
+        if errors:
+            raise errors[0]
 
     def test_pull_invalidates_cache(self, tmp_path: Path) -> None:
         """After pull(), the next list_installed must refetch."""
