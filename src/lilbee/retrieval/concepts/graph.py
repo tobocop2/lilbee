@@ -422,8 +422,8 @@ class ConceptGraph:
         if cc_table is None:
             return True
         touched = self._touched_concepts(cc_table, changed)
-        if touched:
-            self._recluster_affected(cc_table, node_rows, touched)
+        if touched and not self._recluster_affected(cc_table, node_rows, touched):
+            return False
         if sweep_orphans:
             self._sweep_orphan_concepts(cc_table, node_rows)
         return True
@@ -436,13 +436,16 @@ class ConceptGraph:
 
     def _recluster_affected(
         self, cc_table: Any, node_rows: list[dict[str, Any]], touched: set[str]
-    ) -> None:
-        """Re-partition the touched communities and merge the result back."""
+    ) -> bool:
+        """Re-partition the touched communities and merge them back. False needs a full pass."""
         concept_to_cluster = {row["concept"]: row["cluster_id"] for row in node_rows}
         affected_ids = {concept_to_cluster[c] for c in touched if c in concept_to_cluster}
         affected = set(touched)
         affected.update(c for c, cid in concept_to_cluster.items() if cid in affected_ids)
-        counts, cooccurrences = self._affected_pmi_inputs(cc_table, affected)
+        inputs = self._affected_pmi_inputs(cc_table, affected)
+        if inputs is None:
+            return False
+        counts, cooccurrences = inputs
         pmi_weights = _compute_pmi(cooccurrences, counts, _distinct_chunk_count(cc_table))
         node_records: list[dict[str, Any]] = []
         edge_rows = [{"source": a, "target": b, "weight": w} for (a, b), w in pmi_weights.items()]
@@ -461,19 +464,25 @@ class ConceptGraph:
         self._store.clear_and_add(
             CONCEPT_EDGES_TABLE, _concept_edges_schema(), edge_rows, edges_predicate
         )
+        return True
 
     def _affected_pmi_inputs(
         self, cc_table: Any, affected: set[str]
-    ) -> tuple[Counter[str], Counter[tuple[str, str]]]:
+    ) -> tuple[Counter[str], Counter[tuple[str, str]]] | None:
         """Corpus counts and co-occurrences for pairs touching *affected*.
 
         A pair's chunks all hold its affected endpoint, so the neighborhood
         carries every affected pair's co-occurrence count exactly; only the
-        outside neighbors' document frequencies need a second count.
+        outside neighbors' document frequencies need a second count. None
+        means the batch lookup failed and the caller must run a full pass.
         """
         chunk_rows = cc_table.search().where(f"concept IN ({_quoted(affected)})").to_list()
         chunk_keys = {(row["chunk_source"], row["chunk_index"]) for row in chunk_rows}
         concepts_by_chunk = self._chunk_concepts_batch(cc_table, chunk_keys)
+        if chunk_keys and not concepts_by_chunk:
+            # No rows for existing keys means the lookup failed; an empty
+            # map here would wipe the region, so fall back instead.
+            return None
         counts: Counter[str] = Counter()
         cooccurrences: Counter[tuple[str, str]] = Counter()
         for concepts in concepts_by_chunk.values():
@@ -487,15 +496,17 @@ class ConceptGraph:
                         cooccurrences[(first, second)] += 1
         neighbors = {c for concepts in concepts_by_chunk.values() for c in concepts} - affected
         if neighbors:
-            count_rows = cc_table.search().where(f"concept IN ({_quoted(neighbors)})").to_list()
-            seen: dict[str, set[tuple[str, int]]] = {}
-            for row in count_rows:
-                seen.setdefault(row["concept"], set()).add(
-                    (row["chunk_source"], row["chunk_index"])
-                )
-            for concept, keys in seen.items():
-                counts[concept] = len(keys)
+            counts.update(self._neighbor_counts(cc_table, neighbors))
         return counts, cooccurrences
+
+    @staticmethod
+    def _neighbor_counts(cc_table: Any, neighbors: set[str]) -> dict[str, int]:
+        """Distinct-chunk counts for concepts outside the affected set."""
+        count_rows = cc_table.search().where(f"concept IN ({_quoted(neighbors)})").to_list()
+        seen: dict[str, set[tuple[str, int]]] = {}
+        for row in count_rows:
+            seen.setdefault(row["concept"], set()).add((row["chunk_source"], row["chunk_index"]))
+        return {concept: len(keys) for concept, keys in seen.items()}
 
     def _sweep_orphan_concepts(self, cc_table: Any, node_rows: list[dict[str, Any]]) -> None:
         """Delete nodes and edges for concepts no chunk carries anymore."""
