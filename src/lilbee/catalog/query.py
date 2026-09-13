@@ -121,11 +121,12 @@ def get_catalog(
 def _fetch_hf_page(task: ModelTask | None, search: str, window: PageWindow) -> HfPage:
     """The HuggingFace rows that fill the rest of *window*."""
     hf_tags, hf_library = task_to_pipeline(task)
+    fetch_limit = window.rest_offset + window.rest_limit
     pages = [
         get_services().hf_client.fetch_models(
             pipeline_tag=tag,
-            limit=window.rest_limit,
-            offset=window.rest_offset,
+            limit=fetch_limit,
+            offset=0,
             library=hf_library,
             search=search,
         )
@@ -133,9 +134,10 @@ def _fetch_hf_page(task: ModelTask | None, search: str, window: PageWindow) -> H
     ]
     merged = dedupe_models([m for page in pages for m in page.models])
     merged.sort(key=lambda m: m.downloads, reverse=True)
+    end = window.rest_offset + window.rest_limit
     return HfPage(
-        models=merged[: window.rest_limit],
-        has_more=any(page.has_more for page in pages),
+        models=merged[window.rest_offset : end],
+        has_more=any(page.has_more for page in pages) or len(merged) > end,
     )
 
 
