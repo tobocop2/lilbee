@@ -1489,9 +1489,10 @@ class TestForYouByRole:
         from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
         from lilbee.runtime.hardware import FitLevel
 
+        # The stripped row sorts first, so the pick proves the exclusion.
         rows = [
             self._row(
-                "ChatStripped",
+                "ChatAlpha",
                 "chat",
                 compat=ModelCompat.SUPPORTED,
                 fit_level=FitLevel.FITS,
