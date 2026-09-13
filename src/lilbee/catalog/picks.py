@@ -58,7 +58,7 @@ def _serves_role(model: CatalogModel, task: ModelTask) -> bool:
         # A pick is a recommendation. Offering an architecture the bundled
         # engine cannot load turns one click into a failed download.
         return False
-    if model.safety_stripped and not cfg.include_stripped_picks:
+    if model.safety_stripped and not cfg.include_uncensored:
         # A pick is a recommendation. A stripped model stays in browse
         # unless the user opts in.
         return False

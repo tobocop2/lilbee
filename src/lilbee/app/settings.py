@@ -359,7 +359,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.server.app import reapply_thread_pool_ceiling
 
         reapply_thread_pool_ceiling()
-    if "include_stripped_picks" in changed_keys:
+    if "include_uncensored" in changed_keys:
         # The picks memoize per process; drop them so the toggle takes
         # effect on the next read instead of the next restart.
         from lilbee.catalog.picks import reset_picks

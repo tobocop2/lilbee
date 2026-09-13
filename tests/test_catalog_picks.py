@@ -199,7 +199,7 @@ class TestRoleVerification:
         from lilbee.catalog.picks import picks_for
         from lilbee.core.config import cfg
 
-        monkeypatch.setattr(cfg, "include_stripped_picks", True)
+        monkeypatch.setattr(cfg, "include_uncensored", True)
         clean = _model("ok/Qwen3-8B-GGUF", "chat", 8_000_000_000)
         stripped = replace(
             _model("x/Qwen3-8B-Uncensored-GGUF", "chat", 8_000_000_000),

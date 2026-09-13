@@ -1602,7 +1602,7 @@ class TestForYouByRole:
         from lilbee.core.config import cfg
         from lilbee.runtime.hardware import FitLevel
 
-        monkeypatch.setattr(cfg, "include_stripped_picks", True)
+        monkeypatch.setattr(cfg, "include_uncensored", True)
         # The stripped row sorts first, so the pick proves the inclusion.
         rows = [
             self._row(

@@ -541,7 +541,7 @@ class Config(BaseSettings):
 
     # Recommend safety-stripped models in Picks and Discover. Off keeps them
     # in browse and search only; on restores them to the recommendations.
-    include_stripped_picks: bool = ConfigField(default=False, writable=True)
+    include_uncensored: bool = ConfigField(default=False, writable=True)
 
     # Long-term chat memory. Off by default (opt-in): when disabled the whole
     # subsystem is dormant and the write surfaces respond with an enable hint.
