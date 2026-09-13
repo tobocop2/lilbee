@@ -437,6 +437,14 @@ class TestModelManagerListInstalled:
         if errors:
             raise errors[0]
 
+    def test_production_caches_carry_the_configured_ttl(self) -> None:
+        """Both production caches expire at the module TTL, not a literal."""
+        from lilbee.modelhub.model_manager import core as mm_core
+
+        mgr = ModelManager(Path("/tmp"))
+        assert mgr._installed_cache.ttl == mm_core._INSTALLED_CACHE_TTL_SECONDS
+        assert mgr._native_identities_cache.ttl == mm_core._INSTALLED_CACHE_TTL_SECONDS
+
     def test_pull_invalidates_cache(self, tmp_path: Path) -> None:
         """After pull(), the next list_installed must refetch."""
         models_dir = tmp_path / "models"
