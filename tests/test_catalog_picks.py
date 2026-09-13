@@ -350,6 +350,28 @@ class TestMultiTagFanout:
 
         assert repos == ["e/gte-base-GGUF"]
 
+    def test_trending_merges_tags_by_score_not_tag_order(self, monkeypatch) -> None:
+        """Tag one must not fill the quota when tag two trends higher."""
+        from dataclasses import replace
+
+        from lilbee.catalog.picks import _fetch_trending
+
+        low = [
+            replace(_model("e/low-embed-a-GGUF", "embedding", 100_000_000), trending_score=1),
+            replace(_model("e/low-embed-b-GGUF", "embedding", 100_000_000), trending_score=2),
+        ]
+        high = [
+            replace(_model("e/high-embed-a-GGUF", "embedding", 100_000_000), trending_score=9),
+            replace(_model("e/high-embed-b-GGUF", "embedding", 100_000_000), trending_score=8),
+        ]
+        self._fetch_by_tag(
+            monkeypatch,
+            {"feature-extraction": low, "sentence-similarity": high},
+        )
+        got = _fetch_trending(ModelTask.EMBEDDING, 100, needed=2)
+
+        assert [m.hf_repo for m in got] == ["e/high-embed-a-GGUF", "e/high-embed-b-GGUF"]
+
 
 class TestTrendingRequest:
     def test_requests_the_trending_ranking(self, monkeypatch) -> None:

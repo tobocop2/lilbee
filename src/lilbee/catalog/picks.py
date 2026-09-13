@@ -63,8 +63,7 @@ def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> l
     """Trending models serving *task*, most popular first. Empty on fetch failure.
 
     Stops at *needed* so the vision probe costs one request per candidate
-    examined, not per candidate fetched. Tag pages concatenate in order; the
-    API exposes no score to merge by.
+    examined, not per candidate fetched. Tag pages merge by trending score.
     """
     # circular: query -> picks via get_picks
     from lilbee.catalog.query import task_to_pipeline
@@ -79,8 +78,10 @@ def _fetch_trending(task: ModelTask, limit: int, needed: int | None = None) -> l
             library=library,
         )
         models.extend(page.models)
+    merged = dedupe_models(models)
+    merged.sort(key=lambda m: m.trending_score, reverse=True)
     qualified: list[CatalogModel] = []
-    for model in dedupe_models(models):
+    for model in merged:
         if model.task != task or not _serves_role(model, task):
             continue
         qualified.append(model)

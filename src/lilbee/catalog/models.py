@@ -145,6 +145,8 @@ class CatalogModel:
     # model keeps its bucket across quants. 0 when the repo publishes no GGUF
     # metadata.
     params: int = 0
+    # HuggingFace trending rank. 0 when the listing omits it.
+    trending_score: int = 0
 
     @property
     def ref(self) -> str:

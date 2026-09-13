@@ -1,4 +1,4 @@
-"""HfClient.fetch_models populates architecture + compat fields and writes arch cache."""
+"""HfClient.fetch_models populates arch + compat + trending fields and the arch cache."""
 
 from __future__ import annotations
 
@@ -70,3 +70,11 @@ def test_fetch_classifies_compat_from_the_declared_architecture(
     by_arch = {m.architecture: m.compat for m in models}
     assert by_arch["qwen3"] is ModelCompat.SUPPORTED
     assert by_arch["no-such-arch-xyz"] is not ModelCompat.SUPPORTED
+
+
+def test_fetch_populates_trending_score(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = _hf_row("llama")
+    row["trendingScore"] = 7
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([row]))
+    page = HfClient().fetch_models()
+    assert page.models[0].trending_score == 7

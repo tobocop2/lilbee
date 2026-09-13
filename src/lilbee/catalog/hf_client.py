@@ -264,6 +264,7 @@ class HfClient:
                     description=card_desc[:120] if card_desc else "",
                     featured=False,
                     downloads=item.downloads or 0,
+                    trending_score=item.trending_score or 0,
                     task=task,
                     architecture=gguf_meta.architecture,
                     compat=classify(gguf_meta.architecture),
