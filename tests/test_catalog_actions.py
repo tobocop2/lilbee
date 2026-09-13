@@ -1529,6 +1529,28 @@ class TestForYouByRole:
         (pick,) = for_you_by_role(rows)
         assert pick.name == "ChatSpare"
 
+    def test_a_safety_stripped_row_is_offered_when_the_opt_in_is_on(self, monkeypatch) -> None:
+        """The opt-in restores stripped rows to the rail they were cut from."""
+        from lilbee.catalog.types import ModelCompat
+        from lilbee.cli.tui.screens.catalog_grouping import for_you_by_role
+        from lilbee.core.config import cfg
+        from lilbee.runtime.hardware import FitLevel
+
+        monkeypatch.setattr(cfg, "include_stripped_picks", True)
+        # The stripped row sorts first, so the pick proves the inclusion.
+        rows = [
+            self._row(
+                "ChatAlpha",
+                "chat",
+                compat=ModelCompat.SUPPORTED,
+                fit_level=FitLevel.FITS,
+                stripped=True,
+            ),
+            self._row("ChatGood", "chat", compat=ModelCompat.SUPPORTED, fit_level=FitLevel.FITS),
+        ]
+        (pick,) = for_you_by_role(rows)
+        assert pick.name == "ChatAlpha"
+
     def test_a_role_with_nothing_runnable_yields_no_pick(self) -> None:
         """An empty role is a legitimate outcome, not an error."""
         from lilbee.catalog.types import ModelCompat
