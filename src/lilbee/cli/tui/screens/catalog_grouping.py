@@ -14,6 +14,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.model_list import ModelListSection
+from lilbee.core.config import cfg
 from lilbee.runtime.hardware import FIT_RANK, FitLevel
 
 
@@ -42,10 +43,10 @@ def row_cache_signature(row: CatalogRow) -> tuple[str, bool]:
 
 
 def _is_runnable_pick(row: LocalCatalogRow) -> bool:
-    """Whether the row is a safe recommendation: supported, runnable, unstripped."""
+    """Whether the row is a recommendation: supported, runnable, and either clean or opted in."""
     return (
         row.compat is ModelCompat.SUPPORTED
-        and not row.safety_stripped
+        and (cfg.include_stripped_picks or not row.safety_stripped)
         and (row.fit is None or row.fit.level is not FitLevel.WONT_RUN)
     )
 

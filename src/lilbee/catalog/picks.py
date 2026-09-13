@@ -50,12 +50,17 @@ def _serves_role(model: CatalogModel, task: ModelTask) -> bool:
     # circular: query -> picks via get_picks
     from lilbee.catalog.query import reclassify_by_name
 
+    # circular: a module-level cfg import is circular via Config()'s
+    # model-ref validator (config -> model_ref -> catalog -> here).
+    from lilbee.core.config import cfg
+
     if model.compat is not ModelCompat.SUPPORTED:
         # A pick is a recommendation. Offering an architecture the bundled
         # engine cannot load turns one click into a failed download.
         return False
-    if model.safety_stripped:
-        # A pick is a recommendation. A stripped model stays in browse.
+    if model.safety_stripped and not cfg.include_stripped_picks:
+        # A pick is a recommendation. A stripped model stays in browse
+        # unless the user opts in.
         return False
     if task == ModelTask.VISION:
         return repo_has_mmproj(model.hf_repo)

@@ -539,6 +539,10 @@ class Config(BaseSettings):
     # A format string with {query} and {document} placeholders.
     reranker_prompt: str = ConfigField(default="", writable=True, public=True)
 
+    # Recommend safety-stripped models in Picks and Discover. Off keeps them
+    # in browse and search only; on restores them to the recommendations.
+    include_stripped_picks: bool = ConfigField(default=False, writable=True)
+
     # Long-term chat memory. Off by default (opt-in): when disabled the whole
     # subsystem is dormant and the write surfaces respond with an enable hint.
     memory_enabled: bool = ConfigField(default=False, writable=True)
