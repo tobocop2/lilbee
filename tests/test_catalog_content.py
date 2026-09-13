@@ -88,3 +88,61 @@ def test_stripped_flag_flows_from_catalog_row_to_every_surface() -> None:
         (payload,) = catalog_browse()["models"]
     assert payload["safety_stripped"] is True
     assert for_you_by_role([catalog_to_row(model, installed=False)]) == []
+
+
+def test_the_opt_in_is_a_writable_setting_defaulting_off() -> None:
+    """The toggle ships off and is reachable from every settings surface."""
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
+    from lilbee.core.config import Config
+
+    assert Config.model_fields["include_stripped_picks"].default is False
+    assert "include_stripped_picks" in WRITABLE_CONFIG_FIELDS
+    assert SETTINGS_MAP["include_stripped_picks"].help_text
+
+
+def test_flipping_the_opt_in_drops_the_memoized_picks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settings write re-resolves the picks so the toggle takes effect now."""
+    from lilbee.app.settings import apply_settings_update
+    from lilbee.catalog import picks as picks_mod
+    from lilbee.catalog.models import CatalogModel
+
+    calls: list[None] = []
+
+    def fake_resolve() -> tuple[CatalogModel, ...]:
+        calls.append(None)
+        return ()
+
+    monkeypatch.setattr(picks_mod, "_resolve_picks", fake_resolve)
+    try:
+        picks_mod.seed_picks(())
+        assert picks_mod.get_picks() == ()
+        assert calls == []
+        result = apply_settings_update({"include_stripped_picks": True})
+        assert result.updated == ["include_stripped_picks"]
+        assert picks_mod.get_picks() == ()
+        assert len(calls) == 1
+    finally:
+        picks_mod.reset_picks()
+
+
+def test_an_unrelated_setting_keeps_the_memoized_picks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A write that is not the toggle leaves the resolved picks alone."""
+    from lilbee.app.settings import apply_settings_update
+    from lilbee.catalog import picks as picks_mod
+    from lilbee.catalog.models import CatalogModel
+
+    def fail_resolve() -> tuple[CatalogModel, ...]:
+        raise AssertionError("picks must not re-resolve on an unrelated write")
+
+    monkeypatch.setattr(picks_mod, "_resolve_picks", fail_resolve)
+    try:
+        picks_mod.seed_picks(())
+        apply_settings_update({"top_k": 5})
+        assert picks_mod.get_picks() == ()
+    finally:
+        picks_mod.reset_picks()

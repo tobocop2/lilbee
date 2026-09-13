@@ -286,6 +286,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.MODELS,
         help_text="Relevance prompt for LLM rerankers (blank uses the built-in template)",
     ),
+    "include_stripped_picks": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.MODELS,
+        help_text=(
+            "Recommend safety-stripped models in Picks and Discover"
+            " (browse and search always list them)"
+        ),
+    ),
     "temperature": SettingDef(
         float,
         nullable=True,

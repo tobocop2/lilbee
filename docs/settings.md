@@ -47,6 +47,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 |---|---|---|---|---|---|---|---|---|
 | `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | no | LLM used for chat generation (vision and reranking are separate slots). |
 | `embedding_model` | `LILBEE_EMBEDDING_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee use-embedder REF` | Model used to embed document chunks. |
+| `include_stripped_picks` | `LILBEE_INCLUDE_STRIPPED_PICKS` | `bool` | `false` | yes | yes | yes | no | Recommend safety-stripped models in Picks and Discover (browse and search always list them). |
 | `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Cross-encoder model for result reranking. |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `RerankerType` | `auto` | yes | yes | yes | no | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
