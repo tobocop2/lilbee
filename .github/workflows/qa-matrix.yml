@@ -53,7 +53,7 @@ permissions:
 env:
   # Ollama-registry analogue of conftest's _DEFAULT_CHAT_MODEL; keep param count aligned.
   OLLAMA_TINY_MODEL: qwen3:0.6b
-  # Same floor as ci.yml's OLLAMA_PIN: earlier builds segfault in the
+  # Version floor: earlier builds segfault in the
   # Sapphire Rapids CPU backend on the first inference (ollama#17205).
   OLLAMA_PIN: "0.33.3"
 
