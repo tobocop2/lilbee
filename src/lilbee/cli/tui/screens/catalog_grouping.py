@@ -46,7 +46,7 @@ def _is_runnable_pick(row: LocalCatalogRow) -> bool:
     """Whether the row is a recommendation: supported, runnable, and either clean or opted in."""
     return (
         row.compat is ModelCompat.SUPPORTED
-        and (cfg.include_stripped_picks or not row.safety_stripped)
+        and (cfg.include_uncensored or not row.safety_stripped)
         and (row.fit is None or row.fit.level is not FitLevel.WONT_RUN)
     )
 

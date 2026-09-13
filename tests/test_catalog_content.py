@@ -96,9 +96,9 @@ def test_the_opt_in_is_a_writable_setting_defaulting_off() -> None:
     from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
     from lilbee.core.config import Config
 
-    assert Config.model_fields["include_stripped_picks"].default is False
-    assert "include_stripped_picks" in WRITABLE_CONFIG_FIELDS
-    assert SETTINGS_MAP["include_stripped_picks"].help_text
+    assert Config.model_fields["include_uncensored"].default is False
+    assert "include_uncensored" in WRITABLE_CONFIG_FIELDS
+    assert SETTINGS_MAP["include_uncensored"].help_text
 
 
 def test_flipping_the_opt_in_drops_the_memoized_picks(
@@ -120,8 +120,8 @@ def test_flipping_the_opt_in_drops_the_memoized_picks(
         picks_mod.seed_picks(())
         assert picks_mod.get_picks() == ()
         assert calls == []
-        result = apply_settings_update({"include_stripped_picks": True})
-        assert result.updated == ["include_stripped_picks"]
+        result = apply_settings_update({"include_uncensored": True})
+        assert result.updated == ["include_uncensored"]
         assert picks_mod.get_picks() == ()
         assert len(calls) == 1
     finally:
