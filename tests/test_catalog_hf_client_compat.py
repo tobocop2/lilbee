@@ -85,12 +85,16 @@ def test_fetch_marks_a_stripped_repo_from_its_tags(monkeypatch: pytest.MonkeyPat
     clean, stripped = _hf_row("qwen3"), _hf_row("qwen3")
     stripped["id"] = "x/Qwen3-8B-Uncensored-GGUF"
     stripped["tags"] = ["gguf", "uncensored", "text-generation"]
-    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([clean, stripped]))
+    name_only = _hf_row("qwen3")
+    name_only["id"] = "y/Qwen3-8B-Uncensored-GGUF"
+    name_only["tags"] = ["gguf", "text-generation"]
+    monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([clean, stripped, name_only]))
     models = HfClient().fetch_models().models
 
     by_repo = {m.hf_repo: m.safety_stripped for m in models}
     assert by_repo["acme/test-GGUF"] is False
     assert by_repo["x/Qwen3-8B-Uncensored-GGUF"] is True
+    assert by_repo["y/Qwen3-8B-Uncensored-GGUF"] is False
 
 
 def test_fetch_requests_the_tags_expand(monkeypatch: pytest.MonkeyPatch) -> None:
