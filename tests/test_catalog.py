@@ -611,14 +611,20 @@ class TestGetCatalog:
     def test_second_page_starts_where_the_first_ended(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Page two asks HF for the rows after the ones page one showed, not after the limit."""
+        """Page two shows the HF rows after the ones page one showed."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
         calls = self._record_hf_pages(monkeypatch, upstream)
-        result = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
-        assert not [m for m in result.models if m.featured]
-        assert [(c["offset"], c["limit"]) for c in calls] == [(10 - len(PICKS_CHAT), 10)]
-        assert result.total is None
-        assert result.has_more is True
+        first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
+        second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        assert [m.hf_repo for m in first.models if not m.featured] == ["test/Hf0", "test/Hf1"]
+        assert [m.hf_repo for m in second.models] == [f"test/Hf{i}" for i in range(2, 10)]
+        first_page_hf_rows = 10 - len(PICKS_CHAT)
+        assert [(c["offset"], c["limit"]) for c in calls] == [
+            (0, first_page_hf_rows),
+            (0, first_page_hf_rows + 10),
+        ]
+        assert second.total is None
+        assert second.has_more is True
 
     def test_browse_total_is_none_on_every_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The browse total is unknown, so both pages report none and agree."""
@@ -1691,6 +1697,45 @@ class TestFetchHfPageMergesTags:
         window = _models.PageWindow(rest_offset=0, rest_limit=10)
         page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
         assert page.has_more is True
+
+    def test_merged_has_more_when_buffered_rows_exceed_the_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """40 merged rows with 20 shown still have a next page."""
+        first = [self._row(f"a/m{i:02d}-GGUF", 100 + i) for i in range(20)]
+        second = [self._row(f"b/n{i:02d}-GGUF", 1000 + i) for i in range(20)]
+        self._fetch_by_tag(
+            monkeypatch,
+            {
+                "feature-extraction": HfPage(models=first, has_more=False),
+                "sentence-similarity": HfPage(models=second, has_more=False),
+            },
+        )
+        window = _models.PageWindow(rest_offset=0, rest_limit=20)
+        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
+        assert len(page.models) == 20
+        assert page.has_more is True
+
+    def test_two_windows_show_every_merged_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A per-shard skip drops the rows the first merge capped away."""
+        tag_a = [self._row(f"a/r{i:02d}-GGUF", 1000 - i) for i in range(30)]
+        tag_b = [self._row(f"b/s{i:02d}-GGUF", 2000 - i) for i in range(30)]
+        shards = {"feature-extraction": tag_a, "sentence-similarity": tag_b}
+
+        def _fetch(**kwargs: Any) -> HfPage:
+            shard = shards[str(kwargs["pipeline_tag"])]
+            start = int(kwargs.get("offset") or 0)
+            stop = start + int(kwargs["limit"])
+            return HfPage(models=list(shard[start:stop]), has_more=stop < len(shard))
+
+        monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
+        shown: list[str] = []
+        for skip in (0, 20):
+            window = _models.PageWindow(rest_offset=skip, rest_limit=20)
+            page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
+            shown.extend(m.hf_repo for m in page.models)
+        by_downloads = sorted(tag_a + tag_b, key=lambda m: m.downloads, reverse=True)
+        assert shown == [m.hf_repo for m in by_downloads[:40]]
 
 
 class TestDedupeModels:
