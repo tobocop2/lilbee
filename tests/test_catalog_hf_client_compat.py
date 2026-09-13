@@ -72,7 +72,7 @@ def test_fetch_classifies_compat_from_the_declared_architecture(
     assert by_arch["no-such-arch-xyz"] is not ModelCompat.SUPPORTED
 
 
-def test_fetch_populates_trending_score(monkeypatch: pytest.MonPatch) -> None:
+def test_fetch_populates_trending_score(monkeypatch: pytest.MonkeyPatch) -> None:
     row = _hf_row("llama")
     row["trendingScore"] = 7
     monkeypatch.setattr(httpx, "get", lambda *a, **kw: _mock_response([row]))
