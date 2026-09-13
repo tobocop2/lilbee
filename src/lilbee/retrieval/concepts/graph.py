@@ -404,6 +404,9 @@ class ConceptGraph:
         the communities touching the changed sources' concepts are re-run and
         merged back; untouched clusters keep their rows. Removals pass nothing:
         their rows are already gone, so only a full pass clears their nodes.
+        Untouched edges keep their pre-partial weights and drift as the corpus
+        grows; the scoped partition can differ from a global pass on boundary
+        communities.
         """
         changed = set(added) | set(updated)
         if changed and self._recluster_changed(changed, sweep_orphans=bool(updated)):
