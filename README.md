@@ -308,7 +308,7 @@ lilbee is built for consumer hardware and for people who don't want to babysit i
 - **A managed fleet**, chat, embedding, vision, and reranking, spread across every GPU in the machine behind a load-balancing router, not one model loaded at a time.
 - **Everything bundled**: model manager, search engine, web crawler, MCP server for coding agents (native [opencode](https://opencode.ai) and [hermes](https://github.com/NousResearch/hermes-agent)), HTTP server, TUI, and Python, in one file.
 
-It sits between two worlds: the desktop runners that get a model chatting on your machine ([Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai)), and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and scales that whole stack across every GPU in the machine, from one small file.
+It sits between two worlds: the desktop runners that get a model chatting on your machine ([Ollama](https://ollama.com), [LM Studio](https://lmstudio.ai)), and [vLLM](https://github.com/vllm-project/vllm), the server you stand up to push one model to a cluster of users. lilbee runs models to do retrieval over your files, and places that whole stack across the GPUs in the machine.
 
 <details>
 <summary><b>Full comparison table: lilbee vs Ollama, LM Studio, and vLLM. Click to expand.</b></summary>
@@ -322,8 +322,7 @@ It sits between two worlds: the desktop runners that get a model chatting on you
 | Search your own files, with citations | ✓ [full RAG pipeline](docs/architecture.md#search-pipeline), inline per-line citations | per-session doc attachment ([RAG, document-level citation](https://lmstudio.ai/docs/app/basics/rag)) | — | — |
 | Chat, embedding, vision, rerank as one managed fleet | ✓ [all four, coordinated](docs/architecture.md#local-inference-engine) | chat, embed, vision (no rerank), [loaded individually](https://lmstudio.ai/docs/developer/core/server) | chat, embed, vision (no rerank), [loaded individually](https://docs.ollama.com/faq) | each supported, but [one model per server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) |
 | Multi-GPU model placement | ✓ [VRAM-aware tensor-split](docs/architecture.md#local-inference-engine) | ✓ GPU selection + [tensor parallelism (CUDA)](https://lmstudio.ai/changelog/lmstudio-v0.4.15) | ✓ [auto multi-GPU offload](https://docs.ollama.com/faq) | ✓ [tensor + pipeline parallel](https://docs.vllm.ai/en/latest/serving/parallelism_scaling.html) |
-| Scales the whole stack, not just one model | ✓ per-GPU replicas + [load-balancing router](docs/architecture.md#local-inference-engine) | — | — | one model per server |
-| Built for many-user throughput at scale | ✓ [a data-parallel replica per GPU, requests load-balanced](docs/architecture.md#local-inference-engine) | — | [limited](https://docs.ollama.com/faq) | ✓ [this is its job](https://github.com/vllm-project/vllm) |
+| Indexing spread across every GPU | ✓ [an embedding and OCR replica per GPU, load-balanced](docs/architecture.md#local-inference-engine) | — | — | — |
 | Web crawler built in | ✓ [built in](#offline-copies-of-websites) | — | — | — |
 | Long-term memory (opt-in) | ✓ [opt-in](docs/usage.md#memory) | — | — | — |
 | Interfaces | [TUI, CLI, MCP, REST, Python](docs/architecture.md#interfaces), Obsidian GUI | [desktop GUI, lms CLI, Python + TS SDKs, REST API, MCP client](https://lmstudio.ai/docs) | [desktop GUI, CLI, REST API, Python/JS libs](https://docs.ollama.com/) | [API server](https://docs.vllm.ai/en/stable/serving/openai_compatible_server/) |
@@ -331,7 +330,7 @@ It sits between two worlds: the desktop runners that get a model chatting on you
 
 </details>
 
-Of the four, lilbee is the only one built around retrieval, and the only one that scales the whole stack, chat, embedding, vision, and reranking, across every GPU in the machine behind a load-balancing router.
+Of the four, lilbee is the only one built around retrieval. It places chat, embedding, vision, and reranking together across the GPUs in the machine, and spreads indexing across every card.
 
 <details>
 <summary><b>Install size by platform: one file that undercuts the others while doing more. Click to expand.</b></summary>
