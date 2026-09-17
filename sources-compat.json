@@ -1,9 +1,9 @@
 {
-  "version": "0.6.90b441",
+  "version": "0.6.90b442",
   "systems": {
     "x86_64-linux": {
       "asset": "lilbee-compat-linux-x86_64",
-      "sha256": "0c1e653cc871ebebb7285752cedcadbcd3c9d5603c29ce5d5940ef6e06400db5"
+      "sha256": "08473f35ae48d420120c719b6e5b84d7268494932e32f77852e3b6ea8be7d9e7"
     }
   }
 }
