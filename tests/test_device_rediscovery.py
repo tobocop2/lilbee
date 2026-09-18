@@ -276,6 +276,32 @@ class TestAnEngineThatChangesUnderARunningServe:
 
         assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
 
+    def test_a_repaired_binary_is_not_held_behind_the_failed_wait(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # The wait is keyed on the engine identity, so a repair that changes the
+        # bytes is a different engine and gets its own probe. The full wait stays
+        # in force: the arm above zeroes it, which proves only that it expires.
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"")
+        runs = self._engine(monkeypatch, binary)
+        healthy = planning_mod._resolve_devices_and_refusal
+        planning_mod.capture_plan_probe()
+        assert planning_mod._plan_devices(binary) == []
+
+        binary.write_bytes(b"an engine that cannot probe")
+        self._wedge(monkeypatch, runs)
+        assert planning_mod._plan_devices(binary) == []
+        broken = planning_mod._engine_identity()
+        probed_while_broken = len(runs)
+
+        binary.write_bytes(b"the real engine, repaired in place")
+        monkeypatch.setattr(planning_mod, "_resolve_devices_and_refusal", healthy)
+
+        assert planning_mod._plan_probe_store.probe_failed_recently(broken)
+        assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
+        assert len(runs) == probed_while_broken + 1
+
     def test_a_probe_that_keeps_failing_is_not_retried_on_every_read(
         self, monkeypatch, tmp_path
     ) -> None:
