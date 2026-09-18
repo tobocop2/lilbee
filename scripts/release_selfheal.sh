@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Rerun the release-candidate cells that failed, so the candidate corrects itself.
+# Rerun the release-candidate cells that dropped out, so the candidate corrects
+# itself.
 #
 # `gh run rerun --failed` reruns the failed jobs plus the jobs skipped behind
 # them. A soft cell (build-gpu-executables.yml is all continue-on-error) reruns
 # alone and re-attaches its asset; a hard cell takes the run red and strands the
 # dispatch cascade, which a per-job rerun would leave skipped forever.
+# scripts/release_dropped_cells.sh decides which cells dropped out.
 #
 # Run it by hand against a finished candidate:
 #   RUN_ID=1234567 bash scripts/release_selfheal.sh
@@ -24,9 +26,7 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 attempt=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .run_attempt)
 conclusion=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .conclusion)
 
-# --paginate is safe here: the filter emits one name per line, not a count.
-failed=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
-  --paginate -q '.jobs[] | select(.conclusion == "failure") | .name')
+failed=$(RUN_ID="${RUN_ID}" REPO="${REPO}" bash "$(dirname "$0")/release_dropped_cells.sh")
 
 {
   echo "## Release self-heal"
@@ -36,12 +36,12 @@ failed=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}/jobs?per_page=100" \
 } >> "${SUMMARY}"
 
 if [ -z "${failed}" ]; then
-  echo "no failed cells; nothing to heal" | tee -a "${SUMMARY}"
+  echo "no dropped cells; nothing to heal" | tee -a "${SUMMARY}"
   exit 0
 fi
 
 {
-  echo "Failed cells:"
+  echo "Dropped cells:"
   echo
   echo "${failed}" | awk '{ print "- " $0 }'
   echo
@@ -49,7 +49,7 @@ fi
 
 if [ "${attempt}" -ge "${MAX_ATTEMPTS}" ]; then
   echo "attempt ${attempt} reached the bound of ${MAX_ATTEMPTS}; not retrying again" | tee -a "${SUMMARY}"
-  echo "These cells failed twice. Read the logs before rerunning: a second failure is a defect until proven otherwise." >> "${SUMMARY}"
+  echo "These cells dropped out twice. Read the logs before rerunning: a second failure is a defect until proven otherwise." >> "${SUMMARY}"
   exit 1
 fi
 

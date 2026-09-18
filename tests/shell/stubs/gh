@@ -27,16 +27,26 @@ case "${sub}" in
         case "${jqexpr}" in
           *length*)
             [ "${paginate}" = "yes" ] && { echo "stub gh: --paginate with a jq count returns one line per page" >&2; exit 1; }
-            grep -c . < "${FIXTURE}/rc_failed" || true
             ;;
-          *) cat "${FIXTURE}/rc_failed" ;;
         esac
+        # The caller's own filter runs, so a test drives which conclusions it selects.
+        jq -r "${jqexpr}" < "${FIXTURE}/rc_jobs.json"
+        ;;
+      */check-runs/*/annotations)
+        job_id="${target%/annotations}"; job_id="${job_id##*/}"
+        f="${FIXTURE}/annotations/${job_id}"
+        [ -f "${f}" ] || { echo "stub gh: no annotations fixture for job ${job_id}" >&2; exit 1; }
+        jq -R -s 'split("\n") | map(select(length > 0) | {annotation_level: "failure", message: .})' \
+          < "${f}" | jq -r "${jqexpr}"
         ;;
       */actions/runs/*)
         run_id="${target##*/}"
         case "${jqexpr}" in
           *run_attempt*conclusion*)
             echo "$(cat "${FIXTURE}/attempts/${run_id}") $(cat "${FIXTURE}/conclusions/${run_id}")"
+            ;;
+          *conclusion*)
+            cat "${FIXTURE}/conclusions/${run_id}"
             ;;
           *)
             cat "${FIXTURE}/attempts/${run_id}"

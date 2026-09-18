@@ -110,7 +110,9 @@ jobs:
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
     # Only soft cells (the pre-Haswell compat build) may fail without failing the
-    # release; every default binary stays hard-required.
+    # release; every default binary stays hard-required. `soft` is also what
+    # scripts/assert_required_binaries.sh reads to decide which asset the release
+    # cannot ship without, so a cell that times out cannot strand the cascade.
     continue-on-error: ${{ matrix.soft == true }}
     strategy:
       fail-fast: false

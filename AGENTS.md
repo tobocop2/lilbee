@@ -468,6 +468,23 @@ closure. These rules exist because each one shipped a broken artifact once.
   It gives up at `run_attempt` 2, so a real defect surfaces instead of looping.
   The retry is deliberately blind: matching GitHub's error text to tell a flake
   from a defect is a list that goes stale, and a defect costs one rebuild.
+- **A cell past `timeout-minutes` concludes `cancelled`, and so does the run.**
+  A failure-only filter reads that cell as healthy, and the run's own conclusion
+  cannot tell a time limit from a person cancelling, because one timed-out cell
+  concludes the whole run `cancelled`. The reason lives on the job: the runner
+  writes a check-run annotation naming the limit it exceeded.
+  `scripts/release_dropped_cells.sh` reads it and is the one definition of a
+  dropped cell, called by both `release_selfheal.sh` and `release_watch.sh` so
+  they cannot disagree. A cancelled cell with no such annotation heals nothing,
+  which is what a person cancelling a release expects.
+- **A dropped soft cell must not gate the cascade.** `continue-on-error` only
+  converts a failure into a success for a dependent's `needs` check, so a
+  cancelled soft cell skips `attach-prerelease` and every dispatch job behind
+  it. `attach-prerelease` therefore carries `!cancelled()`, keeps its build
+  `needs` for ordering, and calls `scripts/assert_required_binaries.sh`, which
+  derives the required assets from the cells in `release.yml` that carry no
+  `soft: true`. A new required cell needs nothing added: drop `soft` and the
+  gate picks it up.
 - **A failed publish leg is retried once too.** `release-watch.yml` runs
   `scripts/release_watch.sh` after every Release candidate, waits for the seven
   dispatched legs plus `verify-release` (which fires on the candidate's
@@ -492,6 +509,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   Every dispatch job in `release-candidate.yml` shares one `if` (push +
   `refs/tags/v`), which is what makes `--failed` safe to point at the run. A new
   job with a narrower `if` breaks that, and self-heal would fire it.
+  `attach-prerelease` adds `!cancelled()` to that shared condition, so the only
+  tag build where it skips is one a person cancelled, which self-heal leaves
+  alone.
 - **A new gate must be proven to fail.** Run it against the input it is supposed to
   reject before trusting it. A loader check that counted glob matches passed a bundle
   with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a
