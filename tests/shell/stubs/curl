@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Stand-in for curl in the smoke test's reachability probe.
+#
+# Reads:
+#   CURL_LOG      file each invocation's arguments are appended to (required)
+#   CURL_STUB_RC  exit code to return (default: 0)
+
+set -euo pipefail
+
+echo "$*" >> "${CURL_LOG:?CURL_LOG is required}"
+exit "${CURL_STUB_RC:-0}"

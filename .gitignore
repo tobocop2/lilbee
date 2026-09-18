@@ -58,6 +58,7 @@ scripts/*
 !scripts/compute_version_tag.sh
 !scripts/detect_promotion.sh
 !scripts/create_prerelease.sh
+!scripts/ci_retry.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py

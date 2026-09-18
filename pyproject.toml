@@ -168,6 +168,10 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
+    # Reruns the integration tests that download a model, and no others.
+    # 16.5 is the release that added --max-suite-reruns, which the integration
+    # target passes: an earlier resolution aborts the whole run.
+    "pytest-rerunfailures>=16.5",
     "pre-commit>=4.0",
     "types-cachetools>=7.0.0.20260713",
 ]
