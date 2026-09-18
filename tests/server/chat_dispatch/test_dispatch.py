@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -947,6 +948,79 @@ _MEASURED_DENSE_TOKENS = [
     pytest.param(_DENSE_CJK, 608, id="rare-cjk"),
     pytest.param(_DENSE_EMOJI, 328, id="emoji"),
 ]
+# The same measurement on SmolLM3-3B-Q4_K_M, whose template substitutes a fixed
+# system block of about 215 tokens when the request carries none. Every arm here
+# holds the request text near empty, so the template rather than the input
+# decides the count, which is the case a byte count of the request cannot see.
+_MINIMAL_TOOL = CanonicalTool(name="a", description="", input_schema={})
+_BIG_TOOLS = [
+    CanonicalTool(
+        name=f"Tool{i}",
+        description="Reads a file from the local filesystem and returns its text.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                f"field_{n}": {
+                    "type": "string",
+                    "description": (
+                        "A parameter documented at the length a real tool documents one."
+                    ),
+                }
+                for n in range(8)
+            },
+            "required": ["field_0"],
+        },
+    )
+    for i in range(4)
+]
+_MANY_TURNS = [
+    CanonicalMessage(role="user" if i % 2 == 0 else "assistant", content=[TextBlock(text=str(i))])
+    for i in range(32)
+]
+_MEASURED_TEMPLATE_TOKENS = [
+    pytest.param({"messages": [CanonicalMessage(role="user", content=[])]}, 248, id="empty-turn"),
+    pytest.param({"messages": _ONE_TURN}, 249, id="one-short-turn"),
+    pytest.param({"messages": _ONE_TURN, "tools": [_MINIMAL_TOOL]}, 354, id="minimal-tool"),
+    pytest.param({"messages": _ONE_TURN, "tools": [_MINIMAL_TOOL] * 8}, 529, id="eight-tools"),
+    pytest.param({"messages": _ONE_TURN, "tools": _BIG_TOOLS}, 1445, id="four-big-schemas"),
+    pytest.param({"messages": _MANY_TURNS}, 432, id="thirty-two-turns"),
+]
+# Ordinary prose, where the estimate is at its loosest: one UTF-8 byte per token
+# is the safe direction but English runs four to five bytes to the token. Same
+# instrument, Qwen3-0.6B-Q8_0.
+_PROSE_PARAGRAPH = (
+    "The quick brown fox jumps over the lazy dog. Retrieval augmented generation "
+    "systems combine a vector index with a language model so answers can cite the "
+    "documents they came from. This paragraph exists to measure how an estimate "
+    "behaves on ordinary English prose rather than on dense identifiers. "
+) * 4
+_MEASURED_PROSE_TOKENS = 217
+_MEASURED_PROSE_CEILING = 7.0
+# One tool call and the log it returned, measured at 2656 tokens on Qwen3-0.6B-Q8_0.
+# The call arguments and the result body are most of the prompt here, so the arm
+# fails if either stops being counted.
+_TOOL_LOG = (
+    "2026-09-18T10:00:00Z INFO indexed chunk 41 of 900 from survey_report.pdf\n"
+    "2026-09-18T10:00:01Z INFO indexed chunk 42 of 900 from survey_report.pdf\n"
+) * 30
+_TOOL_EXCHANGE = [
+    CanonicalMessage(role="user", content=[TextBlock(text="read it")]),
+    CanonicalMessage(
+        role="assistant",
+        content=[
+            ToolUseBlock(
+                id="t1",
+                name="Read",
+                input={"file_path": "/var/log/lilbee/sync.log", "pattern": "indexed chunk " * 40},
+            )
+        ],
+    ),
+    CanonicalMessage(
+        role="user",
+        content=[ToolResultBlock(tool_use_id="t1", content=[TextBlock(text=_TOOL_LOG)])],
+    ),
+]
+_MEASURED_TOOL_EXCHANGE_TOKENS = 2656
 
 
 class TestCountRequestTokens:
@@ -1028,3 +1102,55 @@ class TestCountRequestTokens:
         req = _req(messages=[CanonicalMessage(role="user", content=[TextBlock(text=text)])])
 
         assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+
+    @pytest.mark.parametrize(("extra", "measured"), _MEASURED_TEMPLATE_TOKENS)
+    def test_the_estimate_covers_a_template_that_supplies_its_own_system_block(
+        self, services_with_model, extra: dict[str, Any], measured: int
+    ) -> None:
+        """A near-empty request whose cost is almost all template, not input."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(**extra)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+
+    def test_one_more_tool_costs_more_than_that_tools_own_text(self, services_with_model) -> None:
+        """The template wraps each schema, so the allowance grows with the tool count."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        one = count_request_tokens(_req(tools=[_MINIMAL_TOOL]), canonical_model="vendor/model::Q4")
+        two = count_request_tokens(
+            _req(tools=[_MINIMAL_TOOL] * 2), canonical_model="vendor/model::Q4"
+        )
+
+        own_text = _MINIMAL_TOOL.name + _MINIMAL_TOOL.description
+        own_text += json.dumps(_MINIMAL_TOOL.input_schema)
+        assert two - one > len(own_text.encode("utf-8"))
+
+    def test_the_estimate_stays_within_seven_times_the_count_on_prose(
+        self, services_with_model
+    ) -> None:
+        """Prose is where a byte count is loosest, so the arm pins how loose."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(
+            messages=[CanonicalMessage(role="user", content=[TextBlock(text=_PROSE_PARAGRAPH)])]
+        )
+
+        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4")
+        assert (
+            _MEASURED_PROSE_TOKENS <= estimate <= _MEASURED_PROSE_TOKENS * _MEASURED_PROSE_CEILING
+        )
+
+    def test_the_estimate_counts_a_tool_call_and_its_result(self, services_with_model) -> None:
+        """Tool arguments and tool output reach the prompt, so they are counted."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_TOOL_EXCHANGE, tools=[_BIG_TOOLS[0]])
+
+        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4")
+        assert estimate >= _MEASURED_TOOL_EXCHANGE_TOKENS

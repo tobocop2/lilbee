@@ -127,8 +127,8 @@ async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> R
     """``/v1/messages/count_tokens``: the served model's own count for a request.
 
     Clients read ``input_tokens`` for context accounting. Counting never runs a
-    tool and never generates, so the only thing a request has to be is
-    translatable: the tool-capability check ``/v1/messages`` runs is not applied.
+    tool, so the only thing a request has to be is translatable: the
+    tool-capability check ``/v1/messages`` runs is not applied.
     """
     mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
     try:

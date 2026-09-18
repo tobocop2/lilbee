@@ -90,6 +90,18 @@ _TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
     "none": "none",
 }
 
+# Token allowances for template text the request does not carry, each above the
+# widest value measured on the Qwen3 and SmolLM3 chat templates.
+# The preamble a template renders around any request, including a system block
+# it substitutes when the request carries none.
+_TEMPLATE_PREAMBLE_TOKENS = 300
+# The role markers and turn delimiters around one message.
+_TEMPLATE_MESSAGE_TOKENS = 8
+# The tool-calling instructions a template emits once when tools are present.
+_TEMPLATE_TOOL_BLOCK_TOKENS = 110
+# The wrapper a template renders around one tool schema.
+_TEMPLATE_PER_TOOL_TOKENS = 32
+
 
 class _OpenBlockKind(StrEnum):
     NONE = "none"
@@ -481,18 +493,41 @@ def _provider_tools(
 
 
 def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
-    """Upper bound on *req*'s prompt tokens, for a backend with no tokenizer.
+    """High estimate of *req*'s prompt tokens, for a backend with no tokenizer.
 
-    No token encodes fewer than one UTF-8 byte, so the byte length of the wire
-    JSON is a ceiling on the token count under any tokenizer, and its own
-    punctuation absorbs the role markers the template adds. A chars-per-token
-    ratio is an average rather than a ceiling and falls short on dense input,
-    the direction that makes a client run past its window.
+    The request's own text is counted in UTF-8 bytes, which no token encodes
+    fewer than one of. The template text the request does not carry gets the
+    fixed allowances above, which are measured rather than proved: a template
+    can substitute a larger preamble than they cover. A chars-per-token ratio
+    fails differently, reading dense input short.
     """
-    text = json.dumps(_provider_messages(req), ensure_ascii=False)
-    tools = _provider_tools(req.tools)
-    if tools is not None:
-        text += json.dumps(tools, ensure_ascii=False)
+    tools = req.tools or []
+    allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(req.messages)
+    if tools:
+        allowance += _TEMPLATE_TOOL_BLOCK_TOKENS + _TEMPLATE_PER_TOOL_TOKENS * len(tools)
+    return _content_bytes(req) + allowance
+
+
+def _content_bytes(req: CanonicalChatRequest) -> int:
+    """UTF-8 bytes of the text *req* itself puts into the rendered prompt."""
+    total = _utf8_len(req.system or "")
+    total += sum(_block_bytes(block) for msg in req.messages for block in msg.content)
+    for tool in req.tools or []:
+        total += _utf8_len(tool.name) + _utf8_len(tool.description)
+        total += _utf8_len(json.dumps(tool.input_schema))
+    return total
+
+
+def _block_bytes(block: ContentBlock) -> int:
+    """UTF-8 bytes *block* contributes to the rendered prompt."""
+    if block.type == "text":
+        return _utf8_len(block.text)
+    if block.type == "tool_use":
+        return _utf8_len(block.name) + _utf8_len(json.dumps(block.input))
+    return sum(_block_bytes(inner) for inner in block.content)
+
+
+def _utf8_len(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
