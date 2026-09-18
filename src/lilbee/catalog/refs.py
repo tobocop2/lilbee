@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable
 from enum import IntEnum
-
-from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
 
 # A native GGUF ref ``<org>/<repo>/<file>.gguf`` has at least two ``/`` separators;
 # the filename may add more when a quant lives in a repo subdir (``Q4_K_M/...``).
@@ -45,25 +44,42 @@ _QUANT_PREFERENCE = (
 # ones: picking it turns a 7 GB pull into a 54 GB one.
 FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 
-# ggml's own quantized type names, longest first so the alternation prefers the
-# fuller name. Taken from the library because a name like ``TQ1_0`` or ``MXFP4``
-# states no bit width, so no pattern over a label's shape can find it. A block of
-# one weight holds a scalar, not a quant, and the float alternation below names
-# the three scalar types a GGUF filename actually carries.
-_GGML_QUANT_NAMES = sorted(
-    (re.escape(t.name) for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1),
-    key=lambda name: (-len(name), name),
-)
 
-# A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of the
-# filename. Matching it as a bare substring makes ``Q8_0`` match inside
-# ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
-_QUANT_TOKEN_RE = re.compile(
-    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|"
-    + "|".join(_GGML_QUANT_NAMES)
-    + r"|BF16|F16|F32)(?=$|[-_./])",
-    re.IGNORECASE,
-)
+@functools.cache
+def _quant_token_re() -> re.Pattern[str]:
+    """The pattern that reads a quant label out of a GGUF filename.
+
+    Built on first use rather than at import: the type names come from ``gguf``,
+    which pulls numpy and measures 58 ms, and this module is on the CLI startup
+    path.
+    """
+    # heavy: gguf pulls numpy, 58 ms by importtime
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    # ggml's own quantized type names. Taken from the library because a name like
+    # ``TQ1_0`` or ``MXFP4`` states no bit width, so no pattern over a label's
+    # shape can find it. A block of one weight holds a scalar, not a quant, and
+    # the float alternation below names the three scalar types a GGUF filename
+    # actually carries. The leading bit-width alternative already matches every
+    # ``Q<digit>`` and ``IQ<digit>`` name in this list; the list goes in whole so
+    # that no upstream name depends on that coincidence.
+    #
+    # Sorting longest first and escaping the names are both future-proofing: no
+    # ggml name is a prefix of another today, and an enum member name is always a
+    # Python identifier, so neither can change a match until upstream adds a name
+    # that breaks one of those.
+    names = sorted(
+        (re.escape(t.name) for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1),
+        key=lambda name: (-len(name), name),
+    )
+    # A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of
+    # the filename. Matching it as a bare substring makes ``Q8_0`` match inside
+    # ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
+    return re.compile(
+        r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|" + "|".join(names) + r"|BF16|F16|F32)(?=$|[-_./])",
+        re.IGNORECASE,
+    )
+
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 _SHARD_NUMBER_WIDTH = 5
@@ -87,7 +103,7 @@ def quant_label(filename: str) -> str:
     label in both the directory and the file, and a mismatched pair names the
     real type on the file.
     """
-    matches = _QUANT_TOKEN_RE.findall(filename)
+    matches = _quant_token_re().findall(filename)
     return matches[-1].upper() if matches else ""
 
 

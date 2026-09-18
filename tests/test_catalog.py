@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -1541,13 +1542,7 @@ class TestQuantLabel:
 
     def test_every_quantized_ggml_type_is_a_label(self) -> None:
         """A label stating no bit width is still a quant, so ggml names the set."""
-        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
-
-        unread = [
-            t.name
-            for t in GGMLQuantizationType
-            if GGML_QUANT_SIZES[t][0] > 1 and quant_label(f"m-{t.name}.gguf") != t.name
-        ]
+        unread = [name for name in _ggml_quant_rates() if quant_label(f"m-{name}.gguf") != name]
         assert not unread, f"ggml quant types no label reads: {unread}"
 
     def test_a_scalar_ggml_type_is_not_a_quant_label(self) -> None:
@@ -3167,39 +3162,68 @@ class TestUnrecognizedQuantEstimate:
         assert _quant_bytes_per_param("m-Q4_K_M.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
         assert _quant_bytes_per_param("m-Q8_0.gguf") == _BYTES_PER_PARAM["Q8_0"]
 
-    def test_the_reported_ternary_row_is_not_reported_at_double_its_size(self) -> None:
-        """The bead's repro: 6.67 to 7.06 GB of files asked for 23 GB of RAM."""
-        from lilbee.catalog.models import estimate_min_ram_gb, estimate_size_gb
+    def test_a_width_labelled_ternary_row_covers_its_published_size(self) -> None:
+        """prism-ml publishes Ternary-Bonsai-2-27B PQ2_0 at 6.7 GiB over 26.9B weights.
 
-        params = 27_000_000_000
+        The other two names state the same width and read the same rate.
+        """
+        from lilbee.catalog.models import estimate_size_gb
+
+        published_gb = 7_206_168_928 / 1024**3
         for filename in (
-            "Ternary-Bonsai-27B-Q2_0.gguf",
-            "Ternary-Bonsai-27B-PQ2_0.gguf",
-            "Ternary-Bonsai-27B-Q2_g64.gguf",
+            "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+            "Ternary-Bonsai-2-27B-Q2_0.gguf",
+            "Ternary-Bonsai-2-27B-Q2_g64.gguf",
         ):
-            size_gb = estimate_size_gb(params, filename)
-            assert 6.3 <= size_gb <= 7.4, f"{filename}: {size_gb} GB"
-            assert estimate_min_ram_gb(size_gb) < 12.0
+            size_gb = estimate_size_gb(26_895_998_464, filename)
+            assert published_gb <= size_gb <= published_gb * 1.10, f"{filename}: {size_gb} GB"
+
+
+def _ggml_type_rates() -> dict[str, tuple[int, float]]:
+    """Every ggml type name mapped to its block size and its bytes per weight."""
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    sizes = {t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType}
+    return {name: (blk, ts / blk) for name, (blk, ts) in sizes.items()}
+
+
+def _ggml_quant_rates() -> dict[str, float]:
+    """Bytes per weight of every ggml type that packs more than one weight per block."""
+    return {name: rate for name, (blk, rate) in _ggml_type_rates().items() if blk > 1}
 
 
 class TestGgmlDerivedQuantEstimate:
-    """Quants the measured table omits but ggml names get its block arithmetic."""
+    """Quants the measured table omits, sized from the ggml type plus file promotion."""
 
-    @staticmethod
-    def _quantized_types() -> dict[str, float]:
-        """Bytes per weight of every ggml type that packs more than one weight per block."""
-        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+    @pytest.mark.parametrize(
+        ("filename", "params", "published_bytes"),
+        [
+            ("gpt-oss-20b-MXFP4.gguf", 20_914_757_184, 12_109_566_624),
+            ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", 26_895_998_464, 5_946_648_928),
+        ],
+    )
+    def test_covers_a_published_file_of_that_type(
+        self, filename: str, params: int, published_bytes: int
+    ) -> None:
+        """Published files from ggml-org and prism-ml, sizes read from the HF API.
 
-        sizes = {t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType}
-        return {name: ts / blk for name, (blk, ts) in sizes.items() if blk > 1}
+        The estimate may sit above a published size and must never sit below it:
+        a low reading tells someone a model fits in their RAM when it does not.
+        The band cannot be tighter than the spread it estimates over: how much
+        a publisher promotes varies from file to file.
+        """
+        from lilbee.catalog.models import estimate_size_gb
 
-    @pytest.mark.parametrize("quant", ["TQ1_0", "TQ2_0", "MXFP4", "NVFP4", "IQ1_S", "IQ1_M"])
-    def test_matches_the_library_block_arithmetic(self, quant: str) -> None:
-        """Asserted against ggml's own numbers so the two cannot drift apart."""
-        from lilbee.catalog.models import _quant_bytes_per_param
+        published_gb = published_bytes / 1024**3
+        size_gb = estimate_size_gb(params, filename)
+        assert published_gb <= size_gb <= published_gb * 1.10, f"{filename}: {size_gb} GB"
 
-        expected = self._quantized_types()[quant]
-        assert _quant_bytes_per_param(f"m-{quant}.gguf") == pytest.approx(expected)
+    def test_the_reported_ternary_row_no_longer_asks_for_23_gb(self) -> None:
+        """The bead's repro: 5.5 GiB of published ternary weights asked for 23 GB of RAM."""
+        from lilbee.catalog.models import estimate_min_ram_gb, estimate_size_gb
+
+        size_gb = estimate_size_gb(26_895_998_464, "Ternary-Bonsai-2-27B-PTQ1_0.gguf")
+        assert estimate_min_ram_gb(size_gb) < 12.0
 
     def test_a_ternary_type_is_not_estimated_as_q4_k_m(self) -> None:
         """TQ1_0 packs 1.69 bits per weight; the default reports it at 2.9 times that."""
@@ -3207,24 +3231,43 @@ class TestGgmlDerivedQuantEstimate:
 
         assert _quant_bytes_per_param("m-TQ1_0.gguf") < _BYTES_PER_PARAM["Q4_K_M"] / 2
 
-    def test_no_estimate_sits_below_its_ggml_floor(self) -> None:
+    def test_no_estimate_sits_below_its_ggml_type(self) -> None:
         """A file cannot be smaller than its own tensor type, so no estimate may claim it."""
         from lilbee.catalog.models import _quant_bytes_per_param
 
         below = {
             quant: (_quant_bytes_per_param(f"m-{quant}.gguf"), floor)
-            for quant, floor in self._quantized_types().items()
+            for quant, floor in _ggml_quant_rates().items()
             if _quant_bytes_per_param(f"m-{quant}.gguf") < floor
         }
         assert not below, f"estimates below their ggml floor: {below}"
+
+    def test_a_type_naming_no_width_estimates_above_its_ggml_type(self) -> None:
+        """A ggml type sizes tensors, not files, so returning it reports a lower bound.
+
+        llama.cpp promotes output and tied embedding tensors and keeps norms in
+        F32, so a published file costs more per weight than the type its name
+        carries. Where the label states a bit width the width rule already prices
+        that; where it does not, the type is all there is and needs the term.
+        """
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        widthless = {q: f for q, f in _ggml_quant_rates().items() if not re.match(r"I?Q\d", q)}
+        assert set(widthless) == {"TQ1_0", "TQ2_0", "MXFP4", "NVFP4"}
+        at_floor = {
+            quant: (_quant_bytes_per_param(f"m-{quant}.gguf"), floor)
+            for quant, floor in widthless.items()
+            if _quant_bytes_per_param(f"m-{quant}.gguf") <= floor
+        }
+        assert not at_floor, f"estimates at or below their ggml floor: {at_floor}"
 
     def test_the_measured_table_tracks_ggml_where_both_name_a_type(self) -> None:
         """A measured figure is a file average, so it sits just above its type, never far."""
         from lilbee.catalog.models import _BYTES_PER_PARAM
 
-        floors = self._quantized_types()
+        floors = _ggml_quant_rates()
         shared = {q: (m, floors[q]) for q, m in _BYTES_PER_PARAM.items() if q in floors}
-        assert len(shared) >= 5
+        assert set(shared) == {"Q2_K", "IQ4_XS", "Q4_0", "Q5_0", "Q6_K", "Q8_0"}
         adrift = {q: (m, f) for q, (m, f) in shared.items() if m > f * 1.02}
         assert not adrift, f"measured figures more than 2% above their type: {adrift}"
 
@@ -3235,15 +3278,11 @@ class TestMeasuredQuantFloors:
     @staticmethod
     def _ggml_floor(quant: str) -> float | None:
         """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
-        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
-
+        rates = _ggml_type_rates()
         base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
         for name in (quant, base, "_".join(quant.split("_")[:2])):
-            try:
-                block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[name]]
-            except KeyError:
-                continue
-            return type_size / block
+            if name in rates:
+                return rates[name][1]
         return None
 
     def test_measured_quants_are_above_their_ggml_floor(self) -> None:

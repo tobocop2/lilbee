@@ -3,7 +3,6 @@
 import re
 from dataclasses import dataclass
 
-from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
 from pydantic import BaseModel
 
 from lilbee.catalog.refs import quant_label
@@ -59,14 +58,26 @@ _DEFAULT_BYTES_PER_PARAM = _BYTES_PER_PARAM["Q4_K_M"]
 _SCALE_OVERHEAD = 1.125
 _BITS_PER_BYTE = 8
 
-
-def _measured_bytes_per_param(quant: str) -> float | None:
-    """The measured whole-file figure for *quant*, or None if the table omits it."""
-    return _BYTES_PER_PARAM.get(quant)
+# A ggml type size floors a file, it does not size one: the promoted output and
+# embedding tensors and the F32 norms are not of the type the filename names. How
+# much they add is the publisher's choice, so it is measured, not derived. Over
+# published files whose parameter count checks out against a float copy of the
+# same model, a label that states no bit width runs 1.02 (gpt-oss-120b MXFP4) to
+# 1.09 (gpt-oss-20b MXFP4) times its type, with Ternary-Bonsai-2-27B TQ1_0 at
+# 1.05. This covers the largest with a little room. The direction is deliberately
+# high: a size read too low tells someone a model fits in their RAM when it does
+# not, which is the reading this estimate exists to prevent.
+_PROMOTION_OVERHEAD = 1.10
 
 
 def _ggml_bytes_per_param(quant: str) -> float | None:
-    """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type."""
+    """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type.
+
+    The tensor type's own rate, so a file of that type cannot be smaller.
+    """
+    # heavy: gguf pulls numpy, 58 ms by importtime
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
     try:
         block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[quant]]
     except KeyError:
@@ -85,14 +96,23 @@ def _width_bytes_per_param(quant: str) -> float | None:
 def _quant_bytes_per_param(gguf_filename: str) -> float:
     """Bytes per weight for the quant *gguf_filename* names.
 
-    Measurement first, then ggml's block arithmetic for any type it knows, then
-    the bit width the label states, then the default.
+    The measured table first. Then the bit width the label states, floored by
+    ggml's type: the width rule carries a scale term already measured against
+    published files, so it estimates, and the type only stops it reading below
+    what the tensors physically cost. A label stating no width leaves the type as
+    the only figure there is, and a type is a floor, so that one takes the
+    promotion term. Then the default.
     """
     quant = quant_label(gguf_filename)
-    for resolve in (_measured_bytes_per_param, _ggml_bytes_per_param, _width_bytes_per_param):
-        bytes_per_param = resolve(quant)
-        if bytes_per_param is not None:
-            return bytes_per_param
+    measured = _BYTES_PER_PARAM.get(quant)
+    if measured is not None:
+        return measured
+    floor = _ggml_bytes_per_param(quant)
+    width = _width_bytes_per_param(quant)
+    if width is not None:
+        return width if floor is None else max(width, floor)
+    if floor is not None:
+        return floor * _PROMOTION_OVERHEAD
     return _DEFAULT_BYTES_PER_PARAM
 
 
