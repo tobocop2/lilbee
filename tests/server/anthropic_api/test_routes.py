@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock
@@ -14,7 +15,8 @@ from litestar.testing import AsyncTestClient
 from lilbee.app.services import set_services
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.server import auth as _auth_mod
-from lilbee.server.anthropic_api.routes import anthropic_router
+from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_router
+from lilbee.server.chat_dispatch.canonical import TokenCountAccuracy
 from lilbee.server.chat_dispatch.concurrency import chat_gate
 
 INSTALLED_REF = "vendor/Model-GGUF/model-Q4.gguf"
@@ -859,6 +861,40 @@ class TestCountTokens:
         """A remotely served model has no tokenizer, and an error would break /context."""
         services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         assert await _count(_count_body()) > 0
+
+    async def test_a_measured_count_is_marked_exact(self, services_with_chat_model, _auth_token):
+        """A client budgeting context has to tell a measured number from a guess."""
+        services_with_chat_model.provider.count_chat_prompt_tokens.return_value = 4242
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[COUNT_ACCURACY_HEADER] == TokenCountAccuracy.EXACT
+
+    async def test_an_estimated_count_is_marked_estimated(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The fallback number is a guess, and the answer says so rather than passing as exact."""
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[COUNT_ACCURACY_HEADER] == TokenCountAccuracy.ESTIMATED
+
+    async def test_the_marking_leaves_the_response_body_alone(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Anthropic documents ``input_tokens``, so neither arm may add a sibling field."""
+        provider = services_with_chat_model.provider
+        async with AsyncTestClient(_build_app()) as client:
+            provider.count_chat_prompt_tokens.return_value = 4242
+            exact = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+            provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+            estimated = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+
+        assert exact.json()["input_tokens"] != estimated.json()["input_tokens"]
+        assert exact.json().keys() == {"input_tokens"}
+        digits = re.compile(rb"\d+")
+        assert digits.sub(b"N", exact.content) == digits.sub(b"N", estimated.content)
 
     async def test_unclassified_engine_failure_is_500_api_error(
         self, services_with_chat_model, _auth_token

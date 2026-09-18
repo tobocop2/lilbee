@@ -1056,12 +1056,15 @@ class TestCountRequestTokens:
     """``count_request_tokens`` asks the engine for the prompt a chat call sends."""
 
     def test_counts_the_arguments_the_chat_call_would_send(self, services_with_model) -> None:
+        from lilbee.server.chat_dispatch.canonical import PromptTokenCount, TokenCountAccuracy
         from lilbee.server.chat_dispatch.dispatch import _provider_chat_kwargs, count_request_tokens
 
         services_with_model.provider.count_chat_prompt_tokens.return_value = 4242
         req = _req(tools=[_ENGINE_TOOLS[0]], system="be brief", think=False)
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") == 4242
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") == PromptTokenCount(
+            tokens=4242, accuracy=TokenCountAccuracy.EXACT
+        )
         assert services_with_model.provider.count_chat_prompt_tokens.call_args.kwargs == (
             _provider_chat_kwargs(req, "vendor/model::Q4")
         )
@@ -1087,10 +1090,14 @@ class TestCountRequestTokens:
             resolve_served_model(_req(model="nope/missing"))
 
     def test_a_backend_without_a_tokenizer_is_estimated(self, services_with_model) -> None:
+        from lilbee.server.chat_dispatch.canonical import TokenCountAccuracy
         from lilbee.server.chat_dispatch.dispatch import count_request_tokens
 
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
-        assert count_request_tokens(_req(), canonical_model="vendor/model::Q4") > 0
+        count = count_request_tokens(_req(), canonical_model="vendor/model::Q4")
+
+        assert count.tokens > 0
+        assert count.accuracy is TokenCountAccuracy.ESTIMATED
 
     @pytest.mark.parametrize(("extra", "measured"), _MEASURED_PROMPT_TOKENS)
     def test_the_estimate_never_falls_below_the_engines_own_count(
@@ -1102,7 +1109,7 @@ class TestCountRequestTokens:
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_ENGINE_MESSAGES, **extra)
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
 
     @pytest.mark.parametrize(("tool", "tool_choice", "measured"), _MEASURED_TOOL_TOKENS)
     def test_the_estimate_covers_the_templates_tool_preamble(
@@ -1118,7 +1125,7 @@ class TestCountRequestTokens:
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_ONE_TURN, tools=[tool], tool_choice=tool_choice)
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
 
     @pytest.mark.parametrize(("text", "measured"), _MEASURED_DENSE_TOKENS)
     def test_the_estimate_holds_on_input_that_tokenizes_densely(
@@ -1130,7 +1137,7 @@ class TestCountRequestTokens:
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=[CanonicalMessage(role="user", content=[TextBlock(text=text)])])
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
 
     @pytest.mark.parametrize(("extra", "measured"), _MEASURED_TEMPLATE_TOKENS)
     def test_the_estimate_covers_a_template_that_supplies_its_own_system_block(
@@ -1142,17 +1149,19 @@ class TestCountRequestTokens:
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(**extra)
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
 
     def test_one_more_tool_costs_more_than_that_tools_own_text(self, services_with_model) -> None:
         """The template wraps each schema, so the allowance grows with the tool count."""
         from lilbee.server.chat_dispatch.dispatch import count_request_tokens
 
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
-        one = count_request_tokens(_req(tools=[_MINIMAL_TOOL]), canonical_model="vendor/model::Q4")
+        one = count_request_tokens(
+            _req(tools=[_MINIMAL_TOOL]), canonical_model="vendor/model::Q4"
+        ).tokens
         two = count_request_tokens(
             _req(tools=[_MINIMAL_TOOL] * 2), canonical_model="vendor/model::Q4"
-        )
+        ).tokens
 
         own_text = _MINIMAL_TOOL.name + _MINIMAL_TOOL.description
         own_text += json.dumps(_MINIMAL_TOOL.input_schema)
@@ -1169,7 +1178,7 @@ class TestCountRequestTokens:
             messages=[CanonicalMessage(role="user", content=[TextBlock(text=_PROSE_PARAGRAPH)])]
         )
 
-        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4")
+        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4").tokens
         assert (
             _MEASURED_PROSE_TOKENS <= estimate <= _MEASURED_PROSE_TOKENS * _MEASURED_PROSE_CEILING
         )
@@ -1181,7 +1190,7 @@ class TestCountRequestTokens:
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_TOOL_EXCHANGE, tools=[_BIG_TOOLS[0]])
 
-        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4")
+        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4").tokens
         assert estimate >= _MEASURED_TOOL_EXCHANGE_TOKENS
 
     @pytest.mark.parametrize(("results", "measured"), _MEASURED_PARALLEL_RESULT_TOKENS)
@@ -1194,7 +1203,7 @@ class TestCountRequestTokens:
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_parallel_tool_results(results))
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
 
     def test_each_parallel_result_costs_another_turns_allowance(self, services_with_model) -> None:
         """The results are empty, so only the per-message allowance can grow with them."""
@@ -1204,7 +1213,7 @@ class TestCountRequestTokens:
         counts = [
             count_request_tokens(
                 _req(messages=_parallel_tool_results(k)), canonical_model="vendor/model::Q4"
-            )
+            ).tokens
             for k in (1, 2, 4, 8)
         ]
 

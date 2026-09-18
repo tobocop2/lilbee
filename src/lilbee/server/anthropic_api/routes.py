@@ -61,6 +61,8 @@ from lilbee.server.validation_format import format_validation
 log = logging.getLogger(__name__)
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
+# Says whether the count_tokens answer was measured on the backend or estimated.
+COUNT_ACCURACY_HEADER = "X-Lilbee-Token-Count-Accuracy"
 
 
 async def _auth_before_request(request: Request) -> Response | None:
@@ -126,9 +128,11 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
 async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> Response:
     """``/v1/messages/count_tokens``: the served model's own count for a request.
 
-    Clients read ``input_tokens`` for context accounting. Counting never runs a
-    tool, so the only thing a request has to be is translatable: the
-    tool-capability check ``/v1/messages`` runs is not applied.
+    Clients read ``input_tokens`` for context accounting, and
+    ``X-Lilbee-Token-Count-Accuracy`` for whether that number was measured on the
+    backend (``exact``) or estimated (``estimated``). Counting never runs a tool,
+    so the only thing a request has to be is translatable: the tool-capability
+    check ``/v1/messages`` runs is not applied.
     """
     mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
     try:
@@ -142,8 +146,12 @@ async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> R
         count = await asyncio.to_thread(count_request_tokens, req, canonical_model=canonical_model)
     except Exception as exc:
         return _classified_error_response(exc)
-    body = CountTokensResponse(input_tokens=count)
-    return Response(body.model_dump(), media_type="application/json")
+    body = CountTokensResponse(input_tokens=count.tokens)
+    return Response(
+        body.model_dump(),
+        media_type="application/json",
+        headers={COUNT_ACCURACY_HEADER: count.accuracy},
+    )
 
 
 def _budget_tokens(data: MessagesRequest) -> int | None:

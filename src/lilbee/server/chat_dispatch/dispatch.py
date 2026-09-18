@@ -39,9 +39,11 @@ from lilbee.server.chat_dispatch.canonical import (
     MessageDelta,
     MessageStart,
     MessageStop,
+    PromptTokenCount,
     StopReason,
     TextBlock,
     TextDelta,
+    TokenCountAccuracy,
     ToolResultBlock,
     ToolUseBlock,
     ToolUseDelta,
@@ -415,19 +417,23 @@ def preflight_chat_request(req: CanonicalChatRequest) -> str:
     return canonical
 
 
-def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> int:
-    """Tokens the served model prefills for *req*'s prompt.
+def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> PromptTokenCount:
+    """Tokens the served model prefills for *req*'s prompt, and how they were counted.
 
     Hands the provider the arguments a chat call would send, so the count covers
     the chat template's role markers and tool preamble as well as the content.
-    A backend that cannot render or tokenize falls back to the estimate.
+    A backend that cannot render or tokenize falls back to the estimate, and the
+    result carries which of the two answered.
     """
     try:
-        return get_services().provider.count_chat_prompt_tokens(
+        tokens = get_services().provider.count_chat_prompt_tokens(
             **_provider_chat_kwargs(req, canonical_model)
         )
     except NotImplementedError:
-        return _estimate_prompt_tokens(req)
+        return PromptTokenCount(
+            tokens=_estimate_prompt_tokens(req), accuracy=TokenCountAccuracy.ESTIMATED
+        )
+    return PromptTokenCount(tokens=tokens, accuracy=TokenCountAccuracy.EXACT)
 
 
 def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
