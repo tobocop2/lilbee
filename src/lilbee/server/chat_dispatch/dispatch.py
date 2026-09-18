@@ -501,7 +501,7 @@ def _provider_tools(
 
 
 def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
-    """High estimate of *req*'s prompt tokens, for a backend with no tokenizer.
+    """Estimate of *req*'s prompt tokens, for a backend with no tokenizer.
 
     The request's own text is counted in UTF-8 bytes, which no token encodes
     fewer than one of. The template text the request does not carry gets the
