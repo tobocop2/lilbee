@@ -3420,6 +3420,7 @@ class TestMeasuredTableAgainstCorpus:
             and row["label"] == "Q2_K"
         )
         assert excluded["kept"] is False
+        assert excluded["exclude_reason"] == "below_7b_floor"
         assert excluded["published_bytes_per_param"] > _BYTES_PER_PARAM["Q2_K"]
 
         worst_seen_q2_k = max(
