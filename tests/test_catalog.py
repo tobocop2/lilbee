@@ -312,8 +312,8 @@ class TestEstimateSizeGb:
         from lilbee.catalog.models import estimate_size_gb
 
         params = 8_190_000_000  # Qwen3-8B
-        assert estimate_size_gb(params, "m-Q4_K_M.gguf") == 4.7  # measured 4.68
-        assert estimate_size_gb(params, "m-Q8_0.gguf") == 8.2  # measured 8.11
+        assert estimate_size_gb(params, "m-Q4_K_M.gguf") == 4.7  # real file measures 4.68
+        assert estimate_size_gb(params, "m-Q8_0.gguf") == 8.2  # real file measures 8.11, not under
 
     def test_unknown_quant_falls_back_to_the_preferred_one(self) -> None:
         """An unlabelled file sizes as the quant a pull would land on."""
