@@ -56,6 +56,8 @@ imports-check:
 # The integration conftest reruns the tests that download a model, and only
 # those. --max-suite-reruns caps the run as a whole, so a HuggingFace outage
 # reports red at the usual time rather than spending its reruns on every test.
+# The four reruns are shared and spent first come: once they are gone, a test
+# that loses its connection is reported as an ordinary failure.
 test-integration:
 	uv run pytest tests/integration/ -v --max-suite-reruns 4
 
