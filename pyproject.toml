@@ -168,6 +168,8 @@ dev = [
     "pytest-xdist>=3.8.0",
     "pytest-forked>=1.6.0",
     "pytest-timeout>=2.3",
+    # Reruns one failed integration test instead of the whole suite.
+    "pytest-rerunfailures>=16",
     "pre-commit>=4.0",
     "types-cachetools>=7.0.0.20260713",
 ]

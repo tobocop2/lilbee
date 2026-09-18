@@ -53,8 +53,11 @@ test-ci-forked:
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
+# The suite downloads from HuggingFace for real, so a dropped connection reruns
+# the one test that lost it. The rerun is blind and bounded, like the release
+# retries: error-text matching to tell a flake from a defect goes stale.
 test-integration:
-	uv run pytest tests/integration/ -v
+	uv run pytest tests/integration/ -v --reruns 2 --reruns-delay 10
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke
