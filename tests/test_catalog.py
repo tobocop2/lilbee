@@ -3162,7 +3162,15 @@ class TestUnrecognizedQuantEstimate:
         assert _quant_bytes_per_param("m-Q4_K_M.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
         assert _quant_bytes_per_param("m-Q8_0.gguf") == _BYTES_PER_PARAM["Q8_0"]
 
-    def test_a_width_labelled_ternary_row_covers_its_published_size(self) -> None:
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "Ternary-Bonsai-2-27B-PQ2_0.gguf",
+            "Ternary-Bonsai-2-27B-Q2_0.gguf",
+            "Ternary-Bonsai-2-27B-Q2_g64.gguf",
+        ],
+    )
+    def test_a_width_labelled_ternary_row_covers_its_published_size(self, filename: str) -> None:
         """prism-ml publishes Ternary-Bonsai-2-27B PQ2_0 at 6.7 GiB over 26.9B weights.
 
         The other two names state the same width and read the same rate.
@@ -3170,13 +3178,8 @@ class TestUnrecognizedQuantEstimate:
         from lilbee.catalog.models import estimate_size_gb
 
         published_gb = 7_206_168_928 / 1024**3
-        for filename in (
-            "Ternary-Bonsai-2-27B-PQ2_0.gguf",
-            "Ternary-Bonsai-2-27B-Q2_0.gguf",
-            "Ternary-Bonsai-2-27B-Q2_g64.gguf",
-        ):
-            size_gb = estimate_size_gb(26_895_998_464, filename)
-            assert published_gb <= size_gb <= published_gb * 1.10, f"{filename}: {size_gb} GB"
+        size_gb = estimate_size_gb(26_895_998_464, filename)
+        assert published_gb <= size_gb <= published_gb * 1.10, f"{filename}: {size_gb} GB"
 
 
 def _ggml_type_rates() -> dict[str, tuple[int, float]]:
@@ -3232,7 +3235,7 @@ class TestGgmlDerivedQuantEstimate:
         assert _quant_bytes_per_param("m-TQ1_0.gguf") < _BYTES_PER_PARAM["Q4_K_M"] / 2
 
     def test_no_estimate_sits_below_its_ggml_type(self) -> None:
-        """A file cannot be smaller than its own tensor type, so no estimate may claim it."""
+        """The type is the floor the estimate stands on, so none may read under it."""
         from lilbee.catalog.models import _quant_bytes_per_param
 
         below = {

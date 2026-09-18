@@ -73,7 +73,9 @@ _PROMOTION_OVERHEAD = 1.10
 def _ggml_bytes_per_param(quant: str) -> float | None:
     """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type.
 
-    The tensor type's own rate, so a file of that type cannot be smaller.
+    What one tensor of that type costs, which is the floor a file of that type
+    sits on. Not exact in both directions: an ftype of the same name may mix a
+    cheaper type into some tensors, so a published file can come in under it.
     """
     # heavy: gguf pulls numpy, 58 ms by importtime
     from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
@@ -98,10 +100,10 @@ def _quant_bytes_per_param(gguf_filename: str) -> float:
 
     The measured table first. Then the bit width the label states, floored by
     ggml's type: the width rule carries a scale term already measured against
-    published files, so it estimates, and the type only stops it reading below
-    what the tensors physically cost. A label stating no width leaves the type as
-    the only figure there is, and a type is a floor, so that one takes the
-    promotion term. Then the default.
+    published files, so it estimates, and the type only stops it reading far
+    under what the tensors cost. A label stating no width leaves the type as the
+    only figure there is, and a type is a floor, so that one takes the promotion
+    term. Then the default.
     """
     quant = quant_label(gguf_filename)
     measured = _BYTES_PER_PARAM.get(quant)
