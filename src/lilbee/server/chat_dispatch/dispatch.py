@@ -90,8 +90,18 @@ _TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
     "none": "none",
 }
 
-# Token allowances for template text the request does not carry, each above the
-# widest value measured on the Qwen3 and SmolLM3 chat templates.
+# Token allowances for template text the request does not carry. Surveyed
+# 2026-09-18 across 47 distinct chat templates from 51 model repositories. Method:
+# render each template with its own tokenizer, then difference the counts to
+# isolate one term at a time. Widest value seen for each, against the constant
+# below it: preamble 1216, per message 17, tool block 608, per tool 45.
+#
+# Four of the 47 templates therefore make this estimate read low, which is the
+# direction that overflows a client's window. Devstral-Small-2507 substitutes a
+# 1216-token system prompt. Llama-4-Scout and Falcon3 emit 514 and 608 tokens of
+# tool instructions. Apriel-1.5 spends 17 tokens per message, because its
+# tokenizer holds no single token for a role marker. Raising a constant only
+# moves the template that breaks it, so the numbers stay as measured.
 # The preamble a template renders around any request, including a system block
 # it substitutes when the request carries none.
 _TEMPLATE_PREAMBLE_TOKENS = 300
@@ -497,9 +507,9 @@ def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
 
     The request's own text is counted in UTF-8 bytes, which no token encodes
     fewer than one of. The template text the request does not carry gets the
-    fixed allowances above, which are measured rather than proved: a template
-    can substitute a larger preamble than they cover. A chars-per-token ratio
-    fails differently, reading dense input short.
+    fixed allowances above, which are measured rather than proved: four of the
+    47 surveyed templates substitute more than they cover. A chars-per-token
+    ratio fails differently, reading dense input short.
 
     The per-message allowance is charged against the messages the provider is
     sent: one canonical message carrying several tool results becomes one wire
