@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from enum import StrEnum
@@ -14,7 +13,6 @@ from typing import Any, Literal
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.providers.base import (
-    BUDGET_CHARS_PER_TOKEN,
     ChatResult,
     ChatStreamItem,
     FinishReason,
@@ -52,10 +50,6 @@ from lilbee.server.chat_dispatch.capability import model_supports_tools
 from lilbee.server.chat_dispatch.tool_args import parse_tool_arguments
 
 log = logging.getLogger(__name__)
-
-# Highest code point the chars-per-token ratio holds for; above it a character
-# is a script that tokenizes at roughly one token each.
-_ASCII_MAX = 127
 
 
 class ModelNotFoundError(Exception):
@@ -487,25 +481,19 @@ def _provider_tools(
 
 
 def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
-    """Deliberately high estimate of *req*'s prompt, for a backend with no tokenizer.
+    """Upper bound on *req*'s prompt tokens, for a backend with no tokenizer.
 
-    Over-counting is the safe direction: a client that reads a number larger
-    than the truth compacts its conversation early, while an under-count lets it
-    run past the window. The schemas are counted twice because the template
-    renders them inside a fixed tool-call preamble the wire JSON does not carry.
+    No token encodes fewer than one UTF-8 byte, so the byte length of the wire
+    JSON is a ceiling on the token count under any tokenizer, and its own
+    punctuation absorbs the role markers the template adds. A chars-per-token
+    ratio is an average rather than a ceiling and falls short on dense input,
+    the direction that makes a client run past its window.
     """
-    total = _estimate_text_tokens(json.dumps(_provider_messages(req), ensure_ascii=False))
+    text = json.dumps(_provider_messages(req), ensure_ascii=False)
     tools = _provider_tools(req.tools)
     if tools is not None:
-        total += 2 * _estimate_text_tokens(json.dumps(tools, ensure_ascii=False))
-    return total
-
-
-def _estimate_text_tokens(text: str) -> int:
-    """Token cost of *text*, biased high: non-ASCII scripts cost about a token each."""
-    non_ascii = sum(1 for ch in text if ord(ch) > _ASCII_MAX)
-    ascii_chars = len(text) - non_ascii
-    return max(1, math.ceil(ascii_chars / BUDGET_CHARS_PER_TOKEN) + non_ascii)
+        text += json.dumps(tools, ensure_ascii=False)
+    return len(text.encode("utf-8"))
 
 
 def _provider_tool_choice(

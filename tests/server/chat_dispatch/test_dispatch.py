@@ -918,10 +918,35 @@ _MEASURED_PROMPT_TOKENS = [
     ({"tools": _ENGINE_TOOLS}, 302),
     ({"system": _ENGINE_SYSTEM, "tools": _ENGINE_TOOLS}, 354),
 ]
-# The same measurement for the case the schemas dominate: one short turn and one
-# tool, where the template's fixed tool preamble is most of the prompt.
-_MEASURED_ONE_TOOL_TOKENS = 182
 _ONE_TURN = [CanonicalMessage(role="user", content=[TextBlock(text="hi")])]
+# The same measurement for the cases the template's fixed tool preamble
+# dominates: one short turn and one schema, with and without a forced call.
+_SMALL_TOOL = CanonicalTool(
+    name="Read",
+    description="Reads a file.",
+    input_schema={"type": "object", "properties": {"p": {"type": "string"}}, "required": ["p"]},
+)
+_MEASURED_TOOL_TOKENS = [
+    pytest.param(_ENGINE_TOOLS[0], None, 182, id="one-schema"),
+    pytest.param(_SMALL_TOOL, CanonicalToolChoice(mode="tool", tool_name="Read"), 145, id="forced"),
+]
+# Input that tokenizes at roughly one token per character or per UTF-8 byte. A
+# chars-per-token average reads these short by up to three times, so they pin
+# the direction of the fallback against any return to a ratio. Same instrument.
+_DENSE_DIGITS = " ".join("0123456789" * 40)
+_DENSE_IDS = "aG3kZpQ9xVb2Lm7TyRc0" * 40
+_DENSE_CODE = "\n".join(f"    x{i} = {i}" for i in range(200))
+_DENSE_JSON = '{ "a" : 1 , "b" : 2 , "c" : 3 }\n' * 40
+_DENSE_CJK = "𠀀𠀁𠀂𠀃𠀄" * 40
+_DENSE_EMOJI = "😀🧑‍🔬🚀🦄🌍" * 40
+_MEASURED_DENSE_TOKENS = [
+    pytest.param(_DENSE_DIGITS, 807, id="spaced-digits"),
+    pytest.param(_DENSE_IDS, 768, id="random-ids"),
+    pytest.param(_DENSE_CODE, 1987, id="newline-dense-code"),
+    pytest.param(_DENSE_JSON, 888, id="pretty-printed-json"),
+    pytest.param(_DENSE_CJK, 608, id="rare-cjk"),
+    pytest.param(_DENSE_EMOJI, 328, id="emoji"),
+]
 
 
 class TestCountRequestTokens:
@@ -976,25 +1001,30 @@ class TestCountRequestTokens:
 
         assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
 
-    def test_the_estimate_covers_the_templates_tool_preamble(self, services_with_model) -> None:
+    @pytest.mark.parametrize(("tool", "tool_choice", "measured"), _MEASURED_TOOL_TOKENS)
+    def test_the_estimate_covers_the_templates_tool_preamble(
+        self,
+        services_with_model,
+        tool: CanonicalTool,
+        tool_choice: CanonicalToolChoice | None,
+        measured: int,
+    ) -> None:
         """One short turn with one schema is almost entirely template preamble."""
         from lilbee.server.chat_dispatch.dispatch import count_request_tokens
 
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
-        req = _req(messages=_ONE_TURN, tools=[_ENGINE_TOOLS[0]])
+        req = _req(messages=_ONE_TURN, tools=[tool], tool_choice=tool_choice)
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= (
-            _MEASURED_ONE_TOOL_TOKENS
-        )
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
 
-    def test_the_estimate_charges_a_token_for_each_non_ascii_character(
-        self, services_with_model
+    @pytest.mark.parametrize(("text", "measured"), _MEASURED_DENSE_TOKENS)
+    def test_the_estimate_holds_on_input_that_tokenizes_densely(
+        self, services_with_model, text: str, measured: int
     ) -> None:
-        """A script at roughly a token per character would otherwise count far short."""
+        """Input a chars-per-token average reads short, so a ratio fails this arm."""
         from lilbee.server.chat_dispatch.dispatch import count_request_tokens
 
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
-        text = "今日は天気がいい" * 40
         req = _req(messages=[CanonicalMessage(role="user", content=[TextBlock(text=text)])])
 
-        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= len(text)
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
