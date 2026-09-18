@@ -11,6 +11,7 @@ from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
+from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
 log = logging.getLogger(__name__)
 
@@ -136,13 +137,13 @@ _UNREGISTERED_ROLE_WARNING = (
 
 
 def configured_role_refs(config: Config) -> dict[str, str]:
-    """The four model-role fields of *config*, keyed by field name."""
-    return {
-        "chat_model": config.chat_model,
-        "embedding_model": config.embedding_model,
-        "vision_model": config.vision_model,
-        "reranker_model": config.reranker_model,
-    }
+    """The model-role fields of *config*, keyed by field name.
+
+    The field set comes from the role registry, so a new role is reported
+    without editing this module.
+    """
+    refs: dict[str, str] = config.model_dump(include=set(MODEL_ROLE_FIELDS))
+    return refs
 
 
 def unregistered_role_refs(config: Config, registry: ModelRegistry) -> dict[str, str]:

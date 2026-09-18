@@ -26,6 +26,7 @@ from lilbee.modelhub.role_validator import (
     validate_model_task_assignment,
     warn_unregistered_role_refs,
 )
+from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
 _REPO = "Qwen/Qwen3-0.6B-GGUF"
 _FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
@@ -142,6 +143,16 @@ class TestUnregisteredRoleRefsAreReported:
         flagged = unregistered_role_refs(config, ModelRegistry(models_dir))
 
         assert flagged == {"chat_model": str(gguf)}
+
+    def test_every_registry_role_reaches_the_report(self, tmp_path: Path) -> None:
+        """Every role the registry declares is reported, with no field list to edit."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        roles = {name: f"missing/Repo-GGUF/{name}.gguf" for name in MODEL_ROLE_FIELDS}
+        config = _build_config(tmp_path, roles)
+
+        assert set(configured_role_refs(config)) == MODEL_ROLE_FIELDS
+        assert unregistered_role_refs(config, ModelRegistry(models_dir)) == roles
 
     def test_only_the_unregistered_role_is_flagged(self, tmp_path: Path) -> None:
         """A pulled model is registered; a sibling role that is not is still named."""
