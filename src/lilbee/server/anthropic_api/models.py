@@ -209,9 +209,10 @@ class CountTokensResponse(BaseModel):
 class AnthropicUsage(BaseModel):
     """Token counts in the Anthropic response shape.
 
-    ``cache_read_input_tokens`` breaks out the part of ``input_tokens`` the
-    engine served from its prompt cache; ``input_tokens`` stays the whole
-    prompt, so a client that ignores the breakdown counts the same total.
+    ``cache_read_input_tokens`` is a subset of ``input_tokens`` here, and not
+    disjoint from it as Anthropic's own definition has it: ``input_tokens``
+    stays the whole prompt. A client that reads ``input_tokens`` alone gets the
+    prompt total; a client that sums the two counts the cached part twice.
     """
 
     input_tokens: int

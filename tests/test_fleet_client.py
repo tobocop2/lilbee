@@ -11,7 +11,7 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from lilbee.providers.base import ProviderError
+from lilbee.providers.base import ProviderError, TokenUsage
 from lilbee.providers.fleet.client import (
     ChatDeadlineError,
     LlamaServerClient,
@@ -744,8 +744,6 @@ def test_chat_stream_items_yields_usage_terminator_frame() -> None:
 
 def test_chat_stream_items_usage_terminator_carries_cached_prompt_tokens() -> None:
     """The streamed terminator reports cache reuse the same way the body does."""
-    from lilbee.providers.base import TokenUsage
-
     usage = (
         '{"prompt_tokens":423,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":404}}'
     )

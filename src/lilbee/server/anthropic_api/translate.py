@@ -493,8 +493,7 @@ async def canonical_stream_to_anthropic_events(
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                # The counts arrive with the closing message_delta; the keys are
-                # present from the start so a client never has to probe for them.
+                # Zeroed here; the counts arrive with the closing message_delta.
                 "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0},
             },
         },
