@@ -71,7 +71,8 @@ fi
 
 git -C "$work" add pyproject.toml uv.lock
 git -C "$work" commit -q -m "Release ${to}"
-git -C "$work" tag "v${to}"
+# Lightweight, not annotated: detect_promotion.sh skips an annotated tag's peel.
+git -C "$work" tag --no-sign "v${to}"
 git -C "$work" push origin "v${to}"
 
 echo "promote: pushed v${to}; release-candidate.yml is building it as a promotion of ${from}."

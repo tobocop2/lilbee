@@ -33,7 +33,8 @@ perl -pi -e 's/^version = "\Q'"$cur"'\E"$/version = "'"$next"'"/' pyproject.toml
 
 git add pyproject.toml uv.lock
 git commit -q -m "Release ${next}"
-git tag "$tag"
+# Lightweight, not annotated: tag.gpgsign would otherwise open an editor here.
+git tag --no-sign "$tag"
 # One push: a rejected main (someone landed between the fetch above and here)
 # must not leave the tag published against a commit that never reached main.
 git push --atomic origin main "$tag"
