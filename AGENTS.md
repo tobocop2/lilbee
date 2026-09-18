@@ -479,8 +479,11 @@ closure. These rules exist because each one shipped a broken artifact once.
   they cannot disagree. A cancelled cell with no such annotation triggers no
   heal, which is what a person cancelling a release expects; the rerun itself is
   per run, so one timed-out cell reruns every cancelled cell beside it. An
-  annotation list that cannot be read is unknown: the step names the job id and
-  exits non-zero, because a clean report there is the failure this gate removes.
+  annotation list that cannot be read is unknown, not clean. The script names
+  the job id and exits non-zero, so `release_selfheal.sh` stops instead of
+  reporting a clean run: a clean report there is the failure this gate removes.
+  `release_watch.sh` falls back to watching the legs. Its exit code follows the
+  legs, so an unreadable list there can still exit 0 with every leg green.
   Matching that annotation does not reopen the blind-retry rule above. There the
   text would only refine a decision whose wrong answer costs one rebuild, so the
   retry stays blind. Here the annotation is the only signal that separates a
