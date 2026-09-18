@@ -92,18 +92,10 @@ _TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
     "none": "none",
 }
 
-# Token allowances for template text the request does not carry. Surveyed
-# 2026-09-18 across 47 distinct chat templates from 51 model repositories. Method:
-# render each template with its own tokenizer, then difference the counts to
-# isolate one term at a time. Widest value seen for each, against the constant
-# below it: preamble 1216, per message 17, tool block 608, per tool 45.
-#
-# Four of the 47 templates therefore make this estimate read low, which is the
-# direction that overflows a client's window. Devstral-Small-2507 substitutes a
-# 1216-token system prompt. Llama-4-Scout and Falcon3 emit 514 and 608 tokens of
-# tool instructions. Apriel-1.5 spends 17 tokens per message, because its
-# tokenizer holds no single token for a role marker. Raising a constant only
-# moves the template that breaks it, so the numbers stay as measured.
+# Token allowances for template text the request does not carry. Survey of
+# 47 chat templates across 51 repositories, taken 2026-09-18. Widest value
+# measured beside each constant: preamble 1216, per message 17, tool block
+# 608, per tool 45. See docs/architecture.md for what this means for accuracy.
 # The preamble a template renders around any request, including a system block
 # it substitutes when the request carries none.
 _TEMPLATE_PREAMBLE_TOKENS = 300
