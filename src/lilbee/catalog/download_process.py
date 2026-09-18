@@ -1,11 +1,13 @@
 """One model download per child process, so cancelling terminates the child.
 
 hf_xet cancels only at session granularity within a process (one session per
-PID), so a terminatable child is what makes per-download cancel real.
+PID), so a terminatable child is what makes per-download cancel real, and it
+is also the only stop a wedged transfer cannot refuse.
 """
 
 from __future__ import annotations
 
+import logging
 import multiprocessing
 import os
 import sys
@@ -14,19 +16,42 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol
 
+from lilbee.catalog.download_progress import (
+    STALL_ATTEMPTS,
+    STALL_FLOOR_BYTES,
+    STALL_WINDOW_S,
+    ProgressCallback,
+    stalled_download_message,
+)
 from lilbee.catalog.models import CatalogModel
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 if TYPE_CHECKING:
     from multiprocessing.connection import Connection
 
-    from lilbee.catalog.download_progress import ProgressCallback
+log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_S = 0.2
 
 _EXIT_GRACE_S = 10.0
 
 _PROGRESS_MIN_INTERVAL_S = 0.1
+
+_STALL_GRACE_S = 30.0
+"""Seconds allowed for the transfer's own guard to abort and resume before the
+parent terminates the child."""
+
+_STALL_DEADLINE_S = 2 * STALL_WINDOW_S + _STALL_GRACE_S
+"""Seconds of no reported progress after which the child is terminated.
+
+The transfer's own guard needs two windows to notice a stall, because a window
+that ends above the byte floor restarts its clock."""
+
+_STARTUP_DEADLINE_S = 300.0
+"""Seconds a child may take to reach its first bytes.
+
+It spawns, imports huggingface_hub and asks the Hub for a size per shard, and
+every one of those requests carries the hub's own 10 second timeout."""
 
 # The child's translated errors, rebuilt in the parent by type name.
 _ERRORS_BY_NAME: dict[str, type[Exception]] = {PermissionError.__name__: PermissionError}
@@ -59,6 +84,40 @@ class _Failed:
 
 
 _ChildMessage = _Progress | _Done | _Failed
+
+
+class _ChildStalledError(Exception):
+    """A child stopped reporting bytes, so its transfer is retried in a new child."""
+
+
+class _StallDeadline:
+    """Times a child against the bytes it reports, so a wedged transfer expires."""
+
+    def __init__(
+        self,
+        deadline_s: float = _STALL_DEADLINE_S,
+        floor_bytes: int = STALL_FLOOR_BYTES,
+        startup_s: float = _STARTUP_DEADLINE_S,
+    ) -> None:
+        self._deadline_s = deadline_s
+        self._floor_bytes = floor_bytes
+        self._startup_s = startup_s
+        self._since = time.monotonic()
+        self._base = 0
+        self._moving = False
+
+    def saw(self, downloaded: int) -> None:
+        """Restart the clock once the child has reported the byte floor of new data."""
+        if downloaded - self._base < self._floor_bytes:
+            return
+        self._base = downloaded
+        self._since = time.monotonic()
+        self._moving = True
+
+    def expired(self) -> bool:
+        """Whether the child has reported nothing for the budget of its phase."""
+        budget = self._deadline_s if self._moving else self._startup_s
+        return time.monotonic() - self._since >= budget
 
 
 class _Worker(Protocol):
@@ -101,13 +160,36 @@ def download_in_subprocess(
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
 ) -> Path:
-    """Run one download in its own process, relaying progress until it finishes.
+    """Run one download in its own process, retrying in a fresh child after a stall.
 
     A set *cancel* signal terminates the child, which is the only way to free
-    the bandwidth of a running hf_xet transfer mid-flight.
+    the bandwidth of a running hf_xet transfer mid-flight. The same terminate
+    ends a child that stops reporting bytes, so stopping a wedged transfer does
+    not depend on it answering an abort.
     """
     if cancel.is_set():
         raise TaskCancelledError
+    for attempt in range(STALL_ATTEMPTS):
+        try:
+            return _run_one_attempt(entry, models_dir, token, on_progress, cancel)
+        except _ChildStalledError:
+            log.warning(
+                "Transfer of %s stalled (attempt %d/%d); resuming in a new process.",
+                entry.hf_repo,
+                attempt + 1,
+                STALL_ATTEMPTS,
+            )
+    raise RuntimeError(stalled_download_message(entry.hf_repo))
+
+
+def _run_one_attempt(
+    entry: CatalogModel,
+    models_dir: Path,
+    token: str | None,
+    on_progress: ProgressCallback | None,
+    cancel: CancelSignal,
+) -> Path:
+    """Spawn one child and relay it, stopping the child however the attempt ends."""
     worker, receiver = _start_worker(entry, models_dir, token)
     try:
         return _relay_until_done(entry, worker, receiver, on_progress, cancel)
@@ -146,9 +228,9 @@ def _relay_until_done(
     cancel: CancelSignal,
 ) -> Path:
     """Forward child messages until its verdict, polling *cancel* between them."""
+    deadline = _StallDeadline()
     while True:
-        if cancel.is_set():
-            raise TaskCancelledError
+        _raise_if_stopping(cancel, deadline)
         if receiver.poll(_POLL_INTERVAL_S):
             try:
                 message = receiver.recv()
@@ -157,11 +239,19 @@ def _relay_until_done(
                 # fails: POSIX raises EOFError at the closed pipe, Windows a
                 # BrokenPipeError.
                 raise _died_silently(entry, worker) from None
-            verdict = _apply(message, on_progress)
+            verdict = _apply(message, on_progress, deadline)
             if verdict is not None:
                 return verdict
         elif not worker.is_alive() and not receiver.poll():
             raise _died_silently(entry, worker)
+
+
+def _raise_if_stopping(cancel: CancelSignal, deadline: _StallDeadline) -> None:
+    """Stop the relay for a cancelled task or for a child that went quiet."""
+    if cancel.is_set():
+        raise TaskCancelledError
+    if deadline.expired():
+        raise _ChildStalledError
 
 
 def _died_silently(entry: CatalogModel, worker: _Worker) -> RuntimeError:
@@ -171,9 +261,12 @@ def _died_silently(entry: CatalogModel, worker: _Worker) -> RuntimeError:
     )
 
 
-def _apply(message: _ChildMessage, on_progress: ProgressCallback | None) -> Path | None:
+def _apply(
+    message: _ChildMessage, on_progress: ProgressCallback | None, deadline: _StallDeadline
+) -> Path | None:
     """Act on one child message, returning the path once the child reports done."""
     if message.kind == "progress":
+        deadline.saw(message.downloaded)
         if on_progress is not None:
             on_progress(message.downloaded, message.total)
         return None

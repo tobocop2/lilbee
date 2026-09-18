@@ -16,7 +16,14 @@ import httpx
 from pydantic import BaseModel
 
 from lilbee.catalog.compat import UnsupportedQuantError, classify, file_header
-from lilbee.catalog.download_progress import ProgressCallback, _ProgressTracker
+from lilbee.catalog.download_progress import (
+    STALL_ATTEMPTS,
+    STALL_FLOOR_BYTES,
+    STALL_WINDOW_S,
+    ProgressCallback,
+    _ProgressTracker,
+    stalled_download_message,
+)
 from lilbee.catalog.hf_client import (
     DEFAULT_TIMEOUT,
     HF_API_URL,
@@ -191,22 +198,7 @@ def _apply_fast_download_mode() -> None:
         os.environ.pop(_XET_HIGH_PERFORMANCE_ENV, None)
 
 
-_STALL_WINDOW_S = 60.0
-"""Seconds per measurement window; a transfer below the byte floor for a
-whole window counts as stalled.
-
-Well past the hub's own 10s read timeout and its resume retries, so the
-guard only fires on transfers those mechanisms cannot wake."""
-
-_STALL_FLOOR_BYTES = 256 * 1024
-"""Minimum bytes per window for a transfer to count as alive.
-
-A wedged connection can trickle a few bytes a minute, which an any-activity
-check reads as progress; ~4 KB/s is far below any usable model download."""
-
 _STALL_POLL_S = 5.0
-
-_STALL_RETRIES = 2
 
 
 def _abort_stalled_transfer() -> None:
@@ -233,15 +225,17 @@ class _StallGuard:
     can deadlock before its first byte, a dead socket never wakes the
     plain path's read, and a dying connection can trickle bytes too slowly
     to ever finish. The guard rides the same progress stream the task bar
-    shows; when a window passes under the byte floor, the abort makes the
-    blocked thread raise, and the caller resumes from the .incomplete file.
+    shows; when a window passes under the byte floor it asks the transfer to
+    stop, and the caller resumes from the .incomplete file. A transfer that
+    does not answer the abort is ended by the parent terminating the download
+    process.
     """
 
     def __init__(
         self,
-        window_s: float = _STALL_WINDOW_S,
+        window_s: float = STALL_WINDOW_S,
         poll_s: float = _STALL_POLL_S,
-        floor_bytes: int = _STALL_FLOOR_BYTES,
+        floor_bytes: int = STALL_FLOOR_BYTES,
     ) -> None:
         self._window_s = window_s
         self._poll_s = poll_s
@@ -326,7 +320,7 @@ def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> P
     error and propagates on the first attempt; cancellation always does.
     """
     last_error: Exception | None = None
-    for attempt in range(_STALL_RETRIES + 1):
+    for attempt in range(STALL_ATTEMPTS):
         guard = _StallGuard()
         guarded = config.model_copy(update={"tqdm_class": guard.wrap_tqdm(config.tqdm_class)})
         try:
@@ -342,13 +336,9 @@ def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> P
                 "Transfer of %s stalled (attempt %d/%d); resuming.",
                 entry.hf_repo,
                 attempt + 1,
-                _STALL_RETRIES + 1,
+                STALL_ATTEMPTS,
             )
-    raise RuntimeError(
-        f"Download of {entry.hf_repo} stalled {_STALL_RETRIES + 1} times with almost "
-        "no data arriving. Check the network connection and retry; the finished part "
-        "is kept and the download resumes where it stopped."
-    ) from last_error
+    raise RuntimeError(stalled_download_message(entry.hf_repo)) from last_error
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:

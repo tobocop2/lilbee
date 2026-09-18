@@ -450,3 +450,226 @@ def test_a_child_that_dies_mid_message_reads_as_a_failure(
 
     with pytest.raises(RuntimeError, match="exited with code -9"):
         dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+
+
+def _wire_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    scripts: list[list[Any]],
+    workers: list[_FakeWorker],
+) -> tuple[list[_FakeWorker], list[Any]]:
+    """Give each attempt its own child and pipe, pre-loaded with that attempt's messages.
+
+    The senders are handed back so the test keeps them open: a closed write end
+    reads as a dead child rather than a quiet one.
+    """
+    started: list[_FakeWorker] = []
+    senders: list[Any] = []
+
+    def _start(entry: CatalogModel, models_dir: Path, token: str | None) -> tuple[Any, Any]:
+        receiver, sender = _pipe()
+        senders.append(sender)
+        for message in scripts[len(started)]:
+            sender.send(message)
+        started.append(workers[len(started)])
+        return started[-1], receiver
+
+    monkeypatch.setattr(dp, "_start_worker", _start)
+    return started, senders
+
+
+def _shorten_deadline(
+    monkeypatch: pytest.MonkeyPatch, deadline_s: float, floor: int, startup_s: float | None = None
+) -> None:
+    """Run the relay against a real deadline on a test-sized clock."""
+    real = dp._StallDeadline
+    monkeypatch.setattr(
+        dp,
+        "_StallDeadline",
+        lambda: real(
+            deadline_s=deadline_s,
+            floor_bytes=floor,
+            startup_s=deadline_s if startup_s is None else startup_s,
+        ),
+    )
+
+
+def test_a_child_that_stops_reporting_bytes_is_terminated_and_retried(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The quiet child never answers anything, so only killing it can end the transfer."""
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    workers = [_FakeWorker(), _FakeWorker()]
+    started, _senders = _wire_attempts(
+        monkeypatch, [[], [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))]], workers
+    )
+
+    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 2
+    assert workers[0].terminated and not workers[0].alive
+
+
+def test_a_child_that_ignores_terminate_is_killed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A wedged transfer cannot refuse the stop: TERM escalates to KILL."""
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    stubborn = _FakeWorker()
+    stubborn.ignores_term = True
+    started, _senders = _wire_attempts(
+        monkeypatch,
+        [[], [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))]],
+        [stubborn, _FakeWorker()],
+    )
+
+    dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+
+    assert len(started) == 2
+    assert stubborn.killed and not stubborn.alive
+
+
+def test_a_persistently_quiet_download_fails_with_the_stalled_message(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _shorten_deadline(monkeypatch, 0.05, 1024)
+    workers = [_FakeWorker() for _ in range(dp.STALL_ATTEMPTS)]
+    started, _senders = _wire_attempts(monkeypatch, [[] for _ in workers], workers)
+
+    with pytest.raises(RuntimeError, match=r"stalled 3 times with almost no data arriving"):
+        dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+
+    assert len(started) == dp.STALL_ATTEMPTS
+    assert all(worker.terminated for worker in workers)
+
+
+def test_a_slow_but_moving_transfer_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Control: bytes above the floor restart the clock, so a slow pull still finishes."""
+    _shorten_deadline(monkeypatch, 0.5, 1024)
+    script = [
+        dp._Progress(kind="progress", downloaded=2048, total=8192),
+        dp._Progress(kind="progress", downloaded=4096, total=8192),
+        dp._Progress(kind="progress", downloaded=8192, total=8192),
+        dp._Done(kind="done", path=str(tmp_path / "x.gguf")),
+    ]
+    started, _senders = _wire_attempts(monkeypatch, [script], [_FakeWorker()])
+    seen: list[tuple[int, int]] = []
+
+    path = dp.download_in_subprocess(
+        _entry(), tmp_path, None, on_progress=lambda d, t: seen.append((d, t)), cancel=_Flag()
+    )
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 1
+    assert seen[-1] == (8192, 8192)
+
+
+def test_a_normal_download_pays_nothing_for_the_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Control: the ordinary path runs at the default deadline and does not wait on it."""
+    script = [
+        dp._Progress(kind="progress", downloaded=4, total=4),
+        dp._Done(kind="done", path=str(tmp_path / "x.gguf")),
+    ]
+    started, _senders = _wire_attempts(monkeypatch, [script], [_FakeWorker()])
+
+    before = time.monotonic()
+    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    elapsed = time.monotonic() - before
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 1
+    assert elapsed < 1.0
+
+
+def test_the_deadline_expires_only_after_its_whole_span() -> None:
+    fresh = dp._StallDeadline(deadline_s=60.0, floor_bytes=1024)
+    fresh.saw(4096)
+    aged = dp._StallDeadline(deadline_s=1.0, floor_bytes=1024)
+    aged.saw(4096)
+    aged._since -= 2.0
+
+    assert not fresh.expired()
+    assert aged.expired()
+
+
+def test_a_trickle_under_the_floor_does_not_restart_the_deadline() -> None:
+    deadline = dp._StallDeadline(deadline_s=1.0, floor_bytes=1024)
+    deadline.saw(4096)
+    deadline._since -= 2.0
+    deadline.saw(4096 + 1023)
+
+    assert deadline.expired()
+
+
+def test_the_floor_of_new_bytes_restarts_the_deadline() -> None:
+    deadline = dp._StallDeadline(deadline_s=1.0, floor_bytes=1024)
+    deadline._since -= 2.0
+    deadline.saw(1024)
+
+    assert not deadline.expired()
+
+
+def test_the_floor_counts_bytes_since_the_last_restart() -> None:
+    """Progress is cumulative, so each restart measures from the count that caused it."""
+    deadline = dp._StallDeadline(deadline_s=1.0, floor_bytes=1024)
+    deadline.saw(1024)
+    deadline._since -= 2.0
+    deadline.saw(1500)
+
+    assert deadline.expired()
+
+
+def test_a_transfer_that_goes_quiet_after_moving_is_terminated(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The tighter budget applies once bytes have arrived, not the startup one."""
+    _shorten_deadline(monkeypatch, 0.05, 1024, startup_s=600.0)
+    workers = [_FakeWorker(), _FakeWorker()]
+    started, _senders = _wire_attempts(
+        monkeypatch,
+        [
+            [dp._Progress(kind="progress", downloaded=4096, total=99999)],
+            [dp._Done(kind="done", path=str(tmp_path / "x.gguf"))],
+        ],
+        workers,
+    )
+
+    path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 2
+    assert workers[0].terminated
+
+
+def test_a_child_still_resolving_file_sizes_is_left_alone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Control: a child that has not reached its first bytes gets the startup budget."""
+    _shorten_deadline(monkeypatch, 0.01, 1024, startup_s=600.0)
+    worker = _FakeWorker()
+    started, senders = _wire_attempts(monkeypatch, [[]], [worker])
+
+    def _finish_late() -> None:
+        time.sleep(0.5)
+        senders[0].send(dp._Done(kind="done", path=str(tmp_path / "x.gguf")))
+
+    late = threading.Thread(target=_finish_late)
+    late.start()
+    try:
+        path = dp.download_in_subprocess(_entry(), tmp_path, None, on_progress=None, cancel=_Flag())
+    finally:
+        late.join()
+
+    assert path == tmp_path / "x.gguf"
+    assert len(started) == 1
+
+
+def test_the_startup_budget_applies_before_the_first_bytes() -> None:
+    deadline = dp._StallDeadline(deadline_s=1.0, floor_bytes=1024, startup_s=60.0)
+    deadline._since -= 2.0
+
+    assert not deadline.expired()
