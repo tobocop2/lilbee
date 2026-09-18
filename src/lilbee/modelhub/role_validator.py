@@ -55,13 +55,18 @@ def _resolve_installed_task(registry: ModelRegistry, ref: str) -> ModelTask | No
     return ModelTask(reclassify_by_name(ref, manifest.task))
 
 
+def _is_registry_ref(ref: str) -> bool:
+    """Whether *ref* names something the model registry can hold."""
+    if not ref or not ref.strip():
+        return False
+    return ref.split("/", 1)[0] not in PROVIDER_PREFIXES
+
+
 def _skips_catalog_check(ref: str, *, allow_bypass: bool) -> bool:
     """Whether *ref* skips the catalog check."""
-    if not ref or not ref.strip():
+    if not _is_registry_ref(ref):
         return True
-    if allow_bypass and _model_task_validation_bypassed():
-        return True
-    return ref.split("/", 1)[0] in PROVIDER_PREFIXES
+    return allow_bypass and _model_task_validation_bypassed()
 
 
 def _canonical_pick_ref(ref: str, entry: CatalogModel, want: ModelTask) -> str:
@@ -144,12 +149,12 @@ def unregistered_role_refs(config: Config, registry: ModelRegistry) -> dict[str,
     """Role fields of *config* naming a ref *registry* does not hold.
 
     Blank and provider-prefixed refs are excluded; neither belongs to the
-    registry.
+    registry. Reporting refuses nothing, so it runs on every start.
     """
     return {
         field_name: ref
         for field_name, ref in configured_role_refs(config).items()
-        if not _skips_catalog_check(ref, allow_bypass=True) and not registry.is_installed(ref)
+        if _is_registry_ref(ref) and not registry.is_installed(ref)
     }
 
 

@@ -20,6 +20,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.modelhub.model_manager import ModelManager
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.modelhub.role_validator import (
+    _UNREGISTERED_ROLE_WARNING,
     configured_role_refs,
     unregistered_role_refs,
     validate_model_task_assignment,
@@ -29,18 +30,8 @@ from lilbee.modelhub.role_validator import (
 _REPO = "Qwen/Qwen3-0.6B-GGUF"
 _FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
 _REF = f"{_REPO}/{_FILENAME}"
+_MISSING_REF = "other/Repo-GGUF/other.gguf"
 _BLOB = b"GGUF-bytes"
-
-
-@pytest.fixture()
-def _task_validation_enabled():
-    """Unset the conftest-level bypass so the role rule fires like production."""
-    prev = os.environ.pop("LILBEE_SKIP_MODEL_TASK_VALIDATION", None)
-    try:
-        yield
-    finally:
-        if prev is not None:
-            os.environ["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = prev
 
 
 def _install(models_dir: Path, ref: str = _REF) -> None:
@@ -140,9 +131,8 @@ def _build_config(tmp_path: Path, roles: dict[str, str]) -> Config:
 class TestUnregisteredRoleRefsAreReported:
     """An env-named model that no listing will show is named at startup."""
 
-    def test_absolute_path_chat_model_is_flagged(
-        self, tmp_path: Path, _task_validation_enabled
-    ) -> None:
+    def test_absolute_path_chat_model_is_flagged(self, tmp_path: Path) -> None:
+        """An absolute GGUF path is named even under the suite-wide validation bypass."""
         gguf = tmp_path / "MiniMax.gguf"
         gguf.write_bytes(_BLOB)
         models_dir = tmp_path / "models"
@@ -153,26 +143,29 @@ class TestUnregisteredRoleRefsAreReported:
 
         assert flagged == {"chat_model": str(gguf)}
 
-    def test_installed_ref_is_not_flagged(self, tmp_path: Path) -> None:
-        """Control: a pulled model is registered, so nothing is reported."""
+    def test_only_the_unregistered_role_is_flagged(self, tmp_path: Path) -> None:
+        """A pulled model is registered; a sibling role that is not is still named."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         _install(models_dir)
-        config = _build_config(tmp_path, {"chat_model": _REF})
+        config = _build_config(tmp_path, {"chat_model": _REF, "vision_model": _MISSING_REF})
 
-        assert unregistered_role_refs(config, ModelRegistry(models_dir)) == {}
+        flagged = unregistered_role_refs(config, ModelRegistry(models_dir))
+
+        assert flagged == {"vision_model": _MISSING_REF}
 
     @pytest.mark.parametrize("ref", ["", "   ", "ollama/qwen3:0.6b", "openai/gpt-4o"])
     def test_blank_and_prefixed_refs_are_not_flagged(self, tmp_path: Path, ref: str) -> None:
+        """Excluded refs drop out while an unregistered sibling in the same config stays."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        config = _build_config(tmp_path, {"chat_model": ref})
+        config = _build_config(tmp_path, {"chat_model": ref, "vision_model": _MISSING_REF})
 
-        assert unregistered_role_refs(config, ModelRegistry(models_dir)) == {}
+        flagged = unregistered_role_refs(config, ModelRegistry(models_dir))
 
-    def test_warning_names_the_ref_and_the_fix(
-        self, tmp_path: Path, caplog, _task_validation_enabled
-    ) -> None:
+        assert flagged == {"vision_model": _MISSING_REF}
+
+    def test_warning_names_the_ref_and_the_fix(self, tmp_path: Path, caplog) -> None:
         gguf = tmp_path / "MiniMax.gguf"
         gguf.write_bytes(_BLOB)
         models_dir = tmp_path / "models"
@@ -188,21 +181,21 @@ class TestUnregisteredRoleRefsAreReported:
         assert "chat_model" in message
         assert "lilbee model pull" in message
 
-    def test_no_warning_for_a_registered_ref(self, tmp_path: Path, caplog) -> None:
-        """Control: the same call is silent when the model is registered."""
+    def test_warning_skips_the_registered_ref(self, tmp_path: Path, caplog) -> None:
+        """One warning for the unregistered role, none for the registered one."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
         _install(models_dir)
-        config = _build_config(tmp_path, {"chat_model": _REF})
+        config = _build_config(tmp_path, {"chat_model": _REF, "vision_model": _MISSING_REF})
 
         with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"):
             warn_unregistered_role_refs(config, ModelRegistry(models_dir))
 
-        assert caplog.records == []
+        assert [record.getMessage() for record in caplog.records] == [
+            _UNREGISTERED_ROLE_WARNING % ("vision_model", _MISSING_REF)
+        ]
 
-    def test_services_construction_reports_it(
-        self, tmp_path: Path, _task_validation_enabled
-    ) -> None:
+    def test_services_construction_reports_it(self, tmp_path: Path) -> None:
         """The one call site: every surface builds a container before it serves."""
         from lilbee.app.services import build_services
 
@@ -256,9 +249,7 @@ class TestEntryPointParity:
         assert self._refs_from_cli(tmp_path, ref) == from_env
         assert self._refs_from_toml(tmp_path, ref) == from_env
 
-    def test_unregistered_verdict_matches_the_write_boundary(
-        self, tmp_path: Path, _task_validation_enabled
-    ) -> None:
+    def test_unregistered_verdict_matches_the_write_boundary(self, tmp_path: Path) -> None:
         """The startup report and the settings boundary agree on the same ref.
 
         Asserted against each other, not against a literal, so the two cannot
