@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION
+from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION, clean_env
 from lilbee.core.config import (
     CHUNKS_TABLE,
     DEFAULT_IGNORE_DIRS,
@@ -17,22 +17,6 @@ from lilbee.core.config import (
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 
-
-def _clean_env(tmp_path: Path | None = None) -> dict[str, str]:
-    """Return os.environ with all LILBEE_* vars removed.
-
-    If tmp_path is given, sets LILBEE_DATA to it so no existing config.toml
-    is accidentally picked up. Sets ``LILBEE_SKIP_MODEL_TASK_VALIDATION=1``
-    so tests using placeholder model names don't trip the per-role
-    catalog-task validator; pop it explicitly to exercise that validator.
-    """
-    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
-    env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
-    if tmp_path is not None:
-        env["LILBEE_DATA"] = str(tmp_path)
-    return env
-
-
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
 
@@ -40,7 +24,7 @@ _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q
 class TestFromEnvDefaults:
     def test_default_values(self, tmp_path):
         with (
-            mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True),
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
             mock.patch(
                 "lilbee.core.system._read_total_memory_bytes",
                 return_value=8 * 1024**3,
@@ -110,7 +94,7 @@ class TestEnvVarOverrides:
     def test_data_root_expands_user_home(self):
         """A ~ in LILBEE_DATA_ROOT expands: systemd/.env deliver a literal '~'
         that would otherwise create a './~' tree and split a path-keyed lock."""
-        env = _clean_env()
+        env = clean_env()
         env.pop("LILBEE_DATA", None)
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         env["LILBEE_DATA_ROOT"] = "~/lilbee_expanduser_probe"
@@ -157,7 +141,7 @@ class TestEnvVarOverrides:
     def test_empty_data_root_falls_back_to_default_not_cwd(self):
         """An empty LILBEE_DATA_ROOT must resolve to the platform default, not
         the process cwd (which would make the data dir move with the launcher)."""
-        env = _clean_env()
+        env = clean_env()
         env.pop("LILBEE_DATA", None)
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         env["LILBEE_DATA_ROOT"] = ""
@@ -188,7 +172,7 @@ class TestEnvVarOverrides:
         assert canonical_data_root("~/lilbee") == Path.home() / "lilbee"
 
     def test_local_server_urls_from_env(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_OLLAMA_BASE_URL"] = "http://box:11434"
         env["LILBEE_LM_STUDIO_BASE_URL"] = "http://lm:1234/v1"
         with mock.patch.dict(os.environ, env, clear=True):
@@ -197,7 +181,7 @@ class TestEnvVarOverrides:
             assert c.lm_studio_base_url == "http://lm:1234/v1"
 
     def test_data_root_default_uses_platform(self):
-        env = _clean_env()
+        env = clean_env()
         # Skip the platform-default config.toml: a dev's persisted state
         # could carry refs the new validators reject.
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
@@ -231,16 +215,16 @@ class TestEnvVarOverrides:
 
 class TestOcrLanguage:
     def test_defaults_to_english(self, tmp_path):
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             assert Config().ocr_language == ["eng"]
 
     def test_env_plus_separated(self, tmp_path):
-        env = _clean_env(tmp_path) | {"LILBEE_OCR_LANGUAGE": "eng+deu"}
+        env = clean_env(tmp_path) | {"LILBEE_OCR_LANGUAGE": "eng+deu"}
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().ocr_language == ["eng", "deu"]
 
     def test_env_comma_separated(self, tmp_path):
-        env = _clean_env(tmp_path) | {"LILBEE_OCR_LANGUAGE": "deu, fra"}
+        env = clean_env(tmp_path) | {"LILBEE_OCR_LANGUAGE": "deu, fra"}
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().ocr_language == ["deu", "fra"]
 
@@ -380,7 +364,7 @@ class TestTomlConfigFile:
         ref = "ollama/my-saved-model:latest"
         toml_path = tmp_path / "config.toml"
         toml_path.write_text(f'chat_model = "{ref}"\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -390,7 +374,7 @@ class TestTomlConfigFile:
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('chat_model = "ollama/toml-model:latest"\n')
         env_ref = "ollama/env-model:latest"
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         env["LILBEE_CHAT_MODEL"] = env_ref
         with mock.patch.dict(os.environ, env, clear=True):
@@ -398,14 +382,14 @@ class TestTomlConfigFile:
             assert c.chat_model == env_ref
 
     def test_no_toml_uses_defaults(self, tmp_path):
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.chat_model == ""
 
     def test_corrupt_toml_uses_defaults(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("this is not valid TOML [[[")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -415,7 +399,7 @@ class TestTomlConfigFile:
         ref = "ollama/my-embed:latest"
         toml_path = tmp_path / "config.toml"
         toml_path.write_text(f'embedding_model = "{ref}"\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -424,7 +408,7 @@ class TestTomlConfigFile:
     def test_temperature_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("temperature = 0.5\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -433,7 +417,7 @@ class TestTomlConfigFile:
     def test_env_var_overrides_toml_for_temperature(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("temperature = 0.5\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         env["LILBEE_TEMPERATURE"] = "0.9"
         with mock.patch.dict(os.environ, env, clear=True):
@@ -443,7 +427,7 @@ class TestTomlConfigFile:
     def test_rag_system_prompt_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('rag_system_prompt = "You are a pirate."\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -452,7 +436,7 @@ class TestTomlConfigFile:
     def test_env_var_overrides_toml_for_rag_system_prompt(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('rag_system_prompt = "Be verbose."\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         env["LILBEE_RAG_SYSTEM_PROMPT"] = "Be brief."
         with mock.patch.dict(os.environ, env, clear=True):
@@ -462,7 +446,7 @@ class TestTomlConfigFile:
     def test_enable_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("enable_ocr = true\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -476,7 +460,7 @@ class TestTomlConfigFile:
             'crawl_exclude_patterns = [".*/private/.*"]\n'
             'crawl_browser_extra_args = ["--disable-gpu", "--no-sandbox"]\n'
         )
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -489,7 +473,7 @@ class TestTomlConfigFile:
         """Legacy '' sentinel (set_setting wrote it for None) is dropped, not coerced."""
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('chat_model = ""\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -498,7 +482,7 @@ class TestTomlConfigFile:
     def test_top_p_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("top_p = 0.9\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -507,7 +491,7 @@ class TestTomlConfigFile:
     def test_top_k_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("top_k = 20\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -516,7 +500,7 @@ class TestTomlConfigFile:
     def test_top_k_sampling_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("top_k_sampling = 40\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -525,7 +509,7 @@ class TestTomlConfigFile:
     def test_repeat_penalty_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("repeat_penalty = 1.2\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -533,7 +517,7 @@ class TestTomlConfigFile:
 
     def test_repeat_penalty_defaults_to_one_point_one(self, tmp_path):
         """Fresh Config defaults repeat_penalty to 1.1 so chat doesn't loop."""
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -546,7 +530,7 @@ class TestTomlConfigFile:
         cfg.theme is always populated, so the fallback never fires. The
         config-side default has to match or fresh installs see gruvbox.
         """
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -560,7 +544,7 @@ class TestTomlConfigFile:
         """
         from lilbee.cli.tui.app import _DEFAULT_THEME
 
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -569,7 +553,7 @@ class TestTomlConfigFile:
     def test_num_ctx_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("num_ctx = 4096\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -578,7 +562,7 @@ class TestTomlConfigFile:
     def test_seed_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("seed = 123\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -587,7 +571,7 @@ class TestTomlConfigFile:
 
 class TestEnableOcrConfig:
     def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.enable_ocr is None
 
@@ -603,7 +587,7 @@ class TestEnableOcrConfig:
 
     def test_empty_string_means_auto(self, tmp_path) -> None:
         with mock.patch.dict(
-            os.environ, {**_clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
+            os.environ, {**clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
         ):
             c = Config()
             assert c.enable_ocr is None
@@ -639,7 +623,7 @@ class TestEnableOcrConfig:
     def test_from_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("enable_ocr = true\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -665,7 +649,7 @@ class TestEnableOcrConfig:
 
 class TestFlashAttentionConfig:
     def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.flash_attention is None
 
@@ -677,21 +661,21 @@ class TestFlashAttentionConfig:
 
     def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
         """Garbage values fall back to auto rather than crashing the load."""
-        env = {**_clean_env(tmp_path), "LILBEE_FLASH_ATTENTION": "maybe?"}
+        env = {**clean_env(tmp_path), "LILBEE_FLASH_ATTENTION": "maybe?"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.flash_attention is None
 
     def test_assignment_with_bool(self, tmp_path) -> None:
         """Validator on assignment accepts bool inputs verbatim."""
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             c.flash_attention = True
             assert c.flash_attention is True
 
     def test_assignment_with_int_coerces_to_bool(self, tmp_path) -> None:
         """Non-string non-bool values fall through to bool(v)."""
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             c.flash_attention = 1  # type: ignore[assignment]
             assert c.flash_attention is True
@@ -699,37 +683,37 @@ class TestFlashAttentionConfig:
 
 class TestNGpuLayersConfig:
     def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.n_gpu_layers is None
 
     def test_cpu_alias_means_zero(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "cpu"}
+        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "cpu"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.n_gpu_layers == 0
 
     def test_explicit_int_string(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "12"}
+        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "12"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.n_gpu_layers == 12
 
     def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
+        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.n_gpu_layers is None
 
     def test_assignment_with_int(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             c.n_gpu_layers = 4
             assert c.n_gpu_layers == 4
 
     def test_assignment_with_float_coerces(self, tmp_path) -> None:
         """Non-string non-None values fall through to int(v)."""
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             c.n_gpu_layers = 3.0  # type: ignore[assignment]
             assert c.n_gpu_layers == 3
@@ -737,31 +721,31 @@ class TestNGpuLayersConfig:
 
 class TestMainGpuConfig:
     def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.main_gpu is None
 
     def test_explicit_int_from_env(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_MAIN_GPU": "1"}
+        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "1"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.main_gpu == 1
 
     def test_auto_string_means_none(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_MAIN_GPU": "auto"}
+        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "auto"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.main_gpu is None
 
     def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_MAIN_GPU": "garbage"}
+        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "garbage"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.main_gpu is None
 
     def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
         """Direct assignment with a non-string value falls through to int(v)."""
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             c.main_gpu = 2.0  # type: ignore[assignment]
             assert c.main_gpu == 2
@@ -769,44 +753,44 @@ class TestMainGpuConfig:
 
 class TestGpuDevicesConfig:
     def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.gpu_devices is None
 
     def test_single_index_from_env(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": "0"}
+        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": "0"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.gpu_devices == "0"
 
     def test_multi_index_from_env(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": " 0, 1 "}
+        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": " 0, 1 "}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.gpu_devices == "0,1"
 
     def test_all_alias_means_none(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": "all"}
+        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": "all"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.gpu_devices is None
 
     def test_non_numeric_falls_back_to_none(self, tmp_path) -> None:
-        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": "rtx-4060"}
+        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": "rtx-4060"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.gpu_devices is None
 
     def test_only_separators_falls_back_to_none(self, tmp_path) -> None:
         """A string that splits into zero parts ('  ,  ,') normalizes to None."""
-        env = {**_clean_env(tmp_path), "LILBEE_GPU_DEVICES": " , ,"}
+        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": " , ,"}
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.gpu_devices is None
 
     def test_non_string_input_coerces_to_str(self, tmp_path) -> None:
         """Direct assignment with a non-string value falls through to str(v)."""
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             c.gpu_devices = 0  # type: ignore[assignment]
             assert c.gpu_devices == "0"
@@ -815,7 +799,7 @@ class TestGpuDevicesConfig:
 class TestSemanticChunkingConfig:
     def test_default_is_false(self, tmp_path) -> None:
         """Semantic chunking is opt-in: default False, enabled via env/config."""
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.semantic_chunking is False
 
@@ -886,7 +870,7 @@ class TestResolveDefaultsValidator:
     def test_from_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("semantic_chunking = false\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().semantic_chunking is False
@@ -894,7 +878,7 @@ class TestResolveDefaultsValidator:
     def test_env_overrides_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("semantic_chunking = false\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         env["LILBEE_SEMANTIC_CHUNKING"] = "true"
         with mock.patch.dict(os.environ, env, clear=True):
@@ -903,7 +887,7 @@ class TestResolveDefaultsValidator:
     def test_data_root_env_var_is_coerced_to_path(self, tmp_path) -> None:
         """LILBEE_DATA_ROOT sets the data_root field directly as a string;
         deriving the child paths from it must not raise on str / str."""
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA_ROOT"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -914,7 +898,7 @@ class TestResolveDefaultsValidator:
 
 class TestTopicThresholdConfig:
     def test_default_is_0_75(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.topic_threshold == pytest.approx(0.75)
 
@@ -940,7 +924,7 @@ class TestTopicThresholdConfig:
     def test_from_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"
         toml_path.write_text("topic_threshold = 0.42\n")
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             assert Config().topic_threshold == pytest.approx(0.42)
@@ -968,7 +952,7 @@ class TestParseBool:
 
 class TestOcrTimeoutConfig:
     def test_default_is_300(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.ocr_timeout == 300.0
 
@@ -999,7 +983,7 @@ class TestCorsOriginsConfig:
             assert c.cors_origins == ["app://obsidian.md", "https://my-app.com"]
 
     def test_cors_origins_default_empty(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.cors_origins == []
 
@@ -1012,21 +996,21 @@ class TestCorsOriginsConfig:
 class TestCorsOriginRegexConfig:
     def test_cors_origin_regex_default_matches_obsidian_desktop(self, tmp_path) -> None:
 
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             pat = re.compile(c.cors_origin_regex)
             assert pat.fullmatch("app://obsidian.md")
 
     def test_cors_origin_regex_default_matches_capacitor_localhost(self, tmp_path) -> None:
 
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             pat = re.compile(c.cors_origin_regex)
             assert pat.fullmatch("capacitor://localhost")
 
     def test_cors_origin_regex_default_matches_http_localhost_any_port(self, tmp_path) -> None:
 
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             pat = re.compile(c.cors_origin_regex)
             assert pat.fullmatch("http://localhost")
@@ -1036,7 +1020,7 @@ class TestCorsOriginRegexConfig:
 
     def test_cors_origin_regex_default_matches_loopback_ipv4(self, tmp_path) -> None:
 
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             pat = re.compile(c.cors_origin_regex)
             assert pat.fullmatch("http://127.0.0.1:7433")
@@ -1044,7 +1028,7 @@ class TestCorsOriginRegexConfig:
 
     def test_cors_origin_regex_default_matches_loopback_ipv6(self, tmp_path) -> None:
 
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             pat = re.compile(c.cors_origin_regex)
             assert pat.fullmatch("http://[::1]:7433")
@@ -1052,7 +1036,7 @@ class TestCorsOriginRegexConfig:
 
     def test_cors_origin_regex_default_rejects_random_remote(self, tmp_path) -> None:
 
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             pat = re.compile(c.cors_origin_regex)
             assert not pat.fullmatch("https://evil.example.com")
@@ -1060,7 +1044,7 @@ class TestCorsOriginRegexConfig:
             assert not pat.fullmatch("app://some-other-app.md")
 
     def test_cors_origin_regex_from_env_overrides_default(self, tmp_path) -> None:
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = r"^https://only-this\.example$"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -1069,19 +1053,19 @@ class TestCorsOriginRegexConfig:
     def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
         # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
         # to set a regex that matches nothing: e.g. ^$.
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.cors_origin_regex == "^$"
 
     def test_cors_origin_regex_default_compiles(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             re.compile(c.cors_origin_regex)
 
     def test_cors_origin_regex_default_equals_constant(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, _clean_env(tmp_path), clear=True):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
             assert c.cors_origin_regex == DEFAULT_CORS_ORIGIN_REGEX
 
@@ -1090,7 +1074,7 @@ class TestLocalDotLilbee:
     def test_local_lilbee_overrides_default(self, tmp_path):
         local = tmp_path / ".lilbee"
         local.mkdir()
-        env = _clean_env()
+        env = clean_env()
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch("lilbee.core.system.find_local_root", return_value=local),
@@ -1112,7 +1096,7 @@ class TestLocalDotLilbee:
             assert c.data_root == explicit
 
     def test_no_local_uses_platform_default(self):
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with (
             mock.patch.dict(os.environ, env, clear=True),
@@ -1226,7 +1210,7 @@ class TestIgnoreDirs:
             assert "node_modules" in c.ignore_dirs
 
     def test_lilbee_ignore_dirs_empty_string(self):
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -1272,7 +1256,7 @@ class TestConceptAllowedEntTypes:
 
     def test_empty_env_falls_back_to_default(self):
         # Empty override should not silently deactivate the gate.
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         env["LILBEE_CONCEPT_ALLOWED_ENT_TYPES"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
@@ -1357,14 +1341,14 @@ class TestEmptyStringValidation:
 
 class TestEmptyStringToNone:
     def test_empty_temperature_falls_back_to_default(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
         assert c.temperature == 0.1
 
     def test_whitespace_seed_becomes_none(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_SEED"] = "   "
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -1373,7 +1357,7 @@ class TestEmptyStringToNone:
 
 class TestIgnoreDirsFallback:
     def test_non_string_non_collection_returns_defaults(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config(ignore_dirs=42)  # type: ignore[arg-type]
         assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
@@ -1597,7 +1581,7 @@ class TestCrawlBrowserExtraArgsValidator:
         toml_path.write_text(
             'crawl_browser_extra_args = "--flag-a\\n--flag-b"\nchat_model = "ollama/keep:latest"\n'
         )
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -1607,7 +1591,7 @@ class TestCrawlBrowserExtraArgsValidator:
 
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_CHAT_MODEL"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
@@ -1791,7 +1775,7 @@ class TestBuildCfgFallback:
         toml_path = tmp_path / "config.toml"
         # Bare ``name:tag`` is rejected by the new validator.
         toml_path.write_text('chat_model = "qwen3:0.6b"\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             built_cfg, error = _build_cfg()
@@ -1803,7 +1787,7 @@ class TestBuildCfgFallback:
     def test_returns_none_error_on_clean_load(self, tmp_path):
         from lilbee.core.config.model import _build_cfg
 
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
             _, error = _build_cfg()
@@ -1825,7 +1809,7 @@ class TestBuildCfgFallback:
         (tmp_path / "config.toml").write_text(
             f'chat_model = "{pinned}"\nchat_n_ctx_target = 131072\n'
         )
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         env["PATH"] = os.environ["PATH"]
         probe = (
@@ -1851,7 +1835,7 @@ class TestBuildCfgFallback:
 
         toml_path = tmp_path / "config.toml"
         toml_path.write_text('max_tokens = ""\n')
-        env = _clean_env()
+        env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             built_cfg, error = _build_cfg()
@@ -1861,7 +1845,7 @@ class TestBuildCfgFallback:
 
 class TestChatCtxTargetDefault:
     def test_explicit_env_var_wins_over_scaling(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         env["LILBEE_CHAT_N_CTX_TARGET"] = "32768"
         with (
             mock.patch.dict(os.environ, env, clear=True),
@@ -1874,7 +1858,7 @@ class TestChatCtxTargetDefault:
         assert c.chat_n_ctx_target == 32768
 
     def test_default_scales_with_host_ram(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch(
@@ -1886,7 +1870,7 @@ class TestChatCtxTargetDefault:
         assert c.chat_n_ctx_target == 16384
 
     def test_default_floors_on_small_host(self, tmp_path):
-        env = _clean_env(tmp_path)
+        env = clean_env(tmp_path)
         with (
             mock.patch.dict(os.environ, env, clear=True),
             mock.patch(
