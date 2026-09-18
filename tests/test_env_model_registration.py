@@ -33,6 +33,7 @@ _FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
 _REF = f"{_REPO}/{_FILENAME}"
 _MISSING_REF = "other/Repo-GGUF/other.gguf"
 _BLOB = b"GGUF-bytes"
+_ENV_PREFIX = "LILBEE_"
 
 
 def _install(models_dir: Path, ref: str = _REF) -> None:
@@ -117,15 +118,25 @@ class TestPullReportsWhatItDid:
         assert ModelManager(models_dir).is_installed(_REF, ModelSource.NATIVE) is True
 
 
+def _env_without_lilbee_settings(**overrides: str) -> dict[str, str]:
+    """The ambient environment minus every lilbee setting, plus *overrides*.
+
+    Dropping the whole environment would drop the variables the platform data
+    directory resolves through, which on Windows leaves no home directory.
+    """
+    ambient = {k: v for k, v in os.environ.items() if not k.startswith(_ENV_PREFIX)}
+    return ambient | overrides
+
+
 def _build_config(tmp_path: Path, roles: dict[str, str]) -> Config:
     """A Config built from env only, bound to *tmp_path*, carrying *roles*."""
     env: dict[str, str] = {
-        "LILBEE_DATA": str(tmp_path),
-        "LILBEE_SKIP_TOML_CONFIG": "1",
+        f"{_ENV_PREFIX}DATA": str(tmp_path),
+        f"{_ENV_PREFIX}SKIP_TOML_CONFIG": "1",
     }
     for field_name, ref in roles.items():
-        env[f"LILBEE_{field_name.upper()}"] = ref
-    with mock.patch.dict(os.environ, env, clear=True):
+        env[f"{_ENV_PREFIX}{field_name.upper()}"] = ref
+    with mock.patch.dict(os.environ, _env_without_lilbee_settings(**env), clear=True):
         return Config()
 
 
@@ -249,7 +260,7 @@ class TestEntryPointParity:
         config = _build_config(tmp_path, {})
         with (
             mock.patch("lilbee.core.settings.cfg", config),
-            mock.patch.dict(os.environ, {}, clear=True),
+            mock.patch.dict(os.environ, _env_without_lilbee_settings(), clear=True),
         ):
             persistent_settings.overlay_persisted_settings(root)
         return configured_role_refs(config)
