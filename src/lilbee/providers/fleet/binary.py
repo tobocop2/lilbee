@@ -127,6 +127,15 @@ def _binary_signature(path: Path) -> str:
     return f"{st.st_size}-{st.st_mtime_ns}"
 
 
+def engine_binary_identity(binary: Path) -> str:
+    """Identity of the engine file at *binary*: its location and build fingerprint.
+
+    The file rather than the wheel, because a stub wheel can carry the version of
+    the real one; only the bytes that answered a probe identify what answered it.
+    """
+    return f"{binary}@{_binary_signature(binary)}"
+
+
 # Ctx sizing keys share by window coverage (contract.chat_ctx_covers), not
 # value equality: a running window that covers the demand serves both peers.
 # chat_n_ctx_target in particular defaults per process from its cgroup-capped
