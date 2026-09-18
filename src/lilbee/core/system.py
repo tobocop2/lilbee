@@ -30,7 +30,7 @@ def stderr_suppressed() -> Iterator[None]:
     CRT fd 2, so the fd-dup technique has no effect there. The context manager
     is a no-op on Windows to avoid false suppression expectations.
     """
-    if sys.platform == "win32":  # pragma: no cover - Windows-only passthrough
+    if sys.platform == "win32":
         yield
         return
     with _STDERR_LOCK:
@@ -84,11 +84,11 @@ def default_state_dir() -> Path:
     a fleet holding VRAM and leave the slot looking free to the next process,
     which would then build a second fleet on top of it.
     """
-    if sys.platform == "darwin":  # pragma: no cover - platform split
+    if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
-    elif sys.platform == "win32":  # pragma: no cover - platform split
+    elif sys.platform == "win32":
         base = _dir_from_env("LOCALAPPDATA", "AppData", "Local").expanduser()
-    else:  # pragma: no cover - platform split
+    else:
         base = _dir_from_env("XDG_STATE_HOME", ".local", "state")
     return base / "lilbee"
 
@@ -105,14 +105,12 @@ def default_cache_dir() -> Path:
     ~/Library/Caches under disk pressure -- may empty it freely. Nothing that a
     stop path needs to find a running process belongs here.
     """
-    if sys.platform == "darwin":  # pragma: no cover - platform split
+    if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "lilbee"
-    if sys.platform == "win32":  # pragma: no cover - platform split
+    if sys.platform == "win32":
         base = _dir_from_env("LOCALAPPDATA", "AppData", "Local").expanduser()
         return base / "lilbee" / "cache"
-    return (  # pragma: no cover - platform split
-        _dir_from_env("XDG_CACHE_HOME", ".cache") / "lilbee"
-    )
+    return _dir_from_env("XDG_CACHE_HOME", ".cache") / "lilbee"
 
 
 def find_local_root(start: Path | None = None) -> Path | None:

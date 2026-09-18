@@ -138,6 +138,11 @@ class TestHelpers:
             assert "Caches" not in str(result)
             assert "Application Support" in str(result)
 
+    def test_default_cache_dir_darwin_uses_the_purgeable_caches(self):
+        """The counterpart to the state directory sits where a cleaner may empty it."""
+        with mock.patch("sys.platform", "darwin"):
+            assert default_cache_dir() == Path.home() / "Library" / "Caches" / "lilbee"
+
     def test_default_data_dir_windows(self, tmp_path):
         with (
             mock.patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}, clear=False),
