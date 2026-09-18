@@ -159,6 +159,16 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [[ "$output" == *"1 dropped cell(s)"* ]]
 }
 
+@test "a candidate whose annotations cannot be read is not read as clean" {
+  rc_jobs "build-binaries (compat-windows):cancelled:timeout"
+  touch "${FIXTURE}/fail_annotations"
+  run watch
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not read candidate"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+}
+
 @test "a candidate already at the attempt bound is watched rather than deferred to" {
   echo 2 > "${FIXTURE}/attempts/900"
   rc_jobs "cell-a:failure"

@@ -76,6 +76,17 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [[ "$output" == *"nothing to heal"* ]]
 }
 
+@test "an unreadable annotation list stops the heal instead of reporting a clean run" {
+  rc_jobs "build-binaries (compat-windows):cancelled:timeout"
+  touch "${FIXTURE}/fail_annotations"
+  run heal
+  [ "$status" -eq 1 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  [[ "$output" == *"cannot read the annotations"* ]]
+  [[ "$output" == *"cannot tell which cells dropped out"* ]]
+  [[ "$output" != *"nothing to heal"* ]]
+}
+
 @test "a cell stopped without exceeding its limit heals nothing" {
   rc_jobs "build-binaries (compat-windows):cancelled:stopped"
   run heal

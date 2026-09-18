@@ -2,10 +2,11 @@
 # Rerun the release-candidate cells that dropped out, so the candidate corrects
 # itself.
 #
-# `gh run rerun --failed` reruns the failed jobs plus the jobs skipped behind
-# them. A soft cell (build-gpu-executables.yml is all continue-on-error) reruns
-# alone and re-attaches its asset; a hard cell takes the run red and strands the
-# dispatch cascade, which a per-job rerun would leave skipped forever.
+# `gh run rerun --failed` reruns the cells that concluded failure or cancelled,
+# plus the jobs skipped behind them. A soft cell (build-gpu-executables.yml is
+# all continue-on-error) reruns alone and re-attaches its asset; a hard cell
+# takes the run red and strands the dispatch cascade, which a per-job rerun
+# would leave skipped forever.
 # scripts/release_dropped_cells.sh decides which cells dropped out.
 #
 # Run it by hand against a finished candidate:
@@ -26,14 +27,17 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 attempt=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .run_attempt)
 conclusion=$(gh api "repos/${REPO}/actions/runs/${RUN_ID}" -q .conclusion)
 
-failed=$(RUN_ID="${RUN_ID}" REPO="${REPO}" bash "$(dirname "$0")/release_dropped_cells.sh")
-
 {
   echo "## Release self-heal"
   echo
   echo "Run [${RUN_ID}](https://github.com/${REPO}/actions/runs/${RUN_ID}), attempt ${attempt}, concluded ${conclusion}."
   echo
 } >> "${SUMMARY}"
+
+if ! failed=$(RUN_ID="${RUN_ID}" REPO="${REPO}" bash "$(dirname "$0")/release_dropped_cells.sh"); then
+  echo "cannot tell which cells dropped out; not healing this run" | tee -a "${SUMMARY}"
+  exit 1
+fi
 
 if [ -z "${failed}" ]; then
   echo "no dropped cells; nothing to heal" | tee -a "${SUMMARY}"

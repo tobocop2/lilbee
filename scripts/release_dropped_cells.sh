@@ -8,7 +8,8 @@
 # of a run a person cancelled, including the run's own conclusion. So the two
 # are told apart by the job's own annotation, where the runner records the time
 # limit it exceeded. An unrecognized annotation heals nothing, which is the
-# behavior a person cancelling a release expects.
+# behavior a person cancelling a release expects. An annotation list that cannot
+# be read is unknown, not clean, and exits non-zero.
 #
 # Environment:
 #   RUN_ID  release-candidate run to read (required)
@@ -25,8 +26,9 @@ exceeded_its_time_limit() {  # job-id
   local hit
   if ! hit=$(gh api "repos/${REPO}/check-runs/$1/annotations" \
     -q ".[] | select(.message | startswith(\"${TIME_LIMIT_ANNOTATION}\")) | .message"); then
-    echo "release_dropped_cells: could not read the annotations for job $1; leaving it alone" >&2
-    return 1
+    echo "release_dropped_cells: cannot read the annotations for job $1." >&2
+    echo "The dropped cells are unknown. Grant checks: read, or rerun when the API answers." >&2
+    exit 1
   fi
   [ -n "${hit}" ]
 }

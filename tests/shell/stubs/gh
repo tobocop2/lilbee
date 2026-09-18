@@ -33,6 +33,7 @@ case "${sub}" in
         jq -r "${jqexpr}" < "${FIXTURE}/rc_jobs.json"
         ;;
       */check-runs/*/annotations)
+        [ -f "${FIXTURE}/fail_annotations" ] && { echo "stub gh: simulated annotations failure" >&2; exit 1; }
         job_id="${target%/annotations}"; job_id="${job_id##*/}"
         f="${FIXTURE}/annotations/${job_id}"
         [ -f "${f}" ] || { echo "stub gh: no annotations fixture for job ${job_id}" >&2; exit 1; }
