@@ -464,8 +464,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   `${{ inputs.tag }}`, which is how the watcher tells this tag's run from an older one.
 - **A failed build cell is retried once, not forever.** `release-selfheal.yml`
   watches every Release candidate run and reruns the failed cells with
-  `gh run rerun --failed`, which also picks up whatever was skipped behind them.
-  It gives up at `run_attempt` 2, so a real defect surfaces instead of looping.
+  `gh run rerun --failed`, which re-executes the cells that concluded failure or
+  cancelled plus whatever was skipped behind them. It gives up at `run_attempt`
+  2, so a real defect surfaces instead of looping.
   The retry is deliberately blind: matching GitHub's error text to tell a flake
   from a defect is a list that goes stale, and a defect costs one rebuild.
 - **A cell past `timeout-minutes` concludes `cancelled`, and so does the run.**
@@ -475,8 +476,17 @@ closure. These rules exist because each one shipped a broken artifact once.
   writes a check-run annotation naming the limit it exceeded.
   `scripts/release_dropped_cells.sh` reads it and is the one definition of a
   dropped cell, called by both `release_selfheal.sh` and `release_watch.sh` so
-  they cannot disagree. A cancelled cell with no such annotation heals nothing,
-  which is what a person cancelling a release expects.
+  they cannot disagree. A cancelled cell with no such annotation triggers no
+  heal, which is what a person cancelling a release expects; the rerun itself is
+  per run, so one timed-out cell reruns every cancelled cell beside it. An
+  annotation list that cannot be read is unknown: the step names the job id and
+  exits non-zero, because a clean report there is the failure this gate removes.
+  Matching that annotation does not reopen the blind-retry rule above. There the
+  text would only refine a decision whose wrong answer costs one rebuild, so the
+  retry stays blind. Here the annotation is the only signal that separates a
+  cell past its limit from a release a person cancelled, and a string that goes
+  stale leaves a timed-out cell unhealed, which is the behavior before this gate
+  existed.
 - **A dropped soft cell must not gate the cascade.** `continue-on-error` only
   converts a failure into a success for a dependent's `needs` check, so a
   cancelled soft cell skips `attach-prerelease` and every dispatch job behind
@@ -509,9 +519,9 @@ closure. These rules exist because each one shipped a broken artifact once.
   Every dispatch job in `release-candidate.yml` shares one `if` (push +
   `refs/tags/v`), which is what makes `--failed` safe to point at the run. A new
   job with a narrower `if` breaks that, and self-heal would fire it.
-  `attach-prerelease` adds `!cancelled()` to that shared condition, so the only
-  tag build where it skips is one a person cancelled, which self-heal leaves
-  alone.
+  `attach-prerelease` adds `!cancelled()` and a green `resolve` to that shared
+  condition, so on a tag build it skips only when a person cancelled the run,
+  which self-heal leaves alone, or when `resolve` itself failed.
 - **A new gate must be proven to fail.** Run it against the input it is supposed to
   reject before trusting it. A loader check that counted glob matches passed a bundle
   with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a
