@@ -3370,12 +3370,7 @@ class TestMeasuredTableAgainstCorpus:
         assert len({row["label"] for row in rows}) > 5
 
     def test_table_entries_cover_the_measured_corpus(self) -> None:
-        """No table entry may read under the highest rate a real file published.
-
-        A size estimate that reads under a real file tells someone a model
-        fits in their RAM when it does not, which is the direction this bead
-        exists to close.
-        """
+        """No table entry may read under the highest rate a real file published."""
         from lilbee.catalog.models import _BYTES_PER_PARAM
 
         worst_seen: dict[str, tuple[float, str]] = {}
@@ -3385,6 +3380,13 @@ class TestMeasuredTableAgainstCorpus:
                 continue
             if label not in worst_seen or rate > worst_seen[label][0]:
                 worst_seen[label] = (rate, repo)
+
+        # A label the corpus loses fails here instead of silently narrowing
+        # the check below: an unexpected SET is itself a finding.
+        assert set(worst_seen) == {
+            "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "IQ4_XS", "Q4_0", "Q4_K_S",
+            "Q4_K_M", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0",
+        }, f"corpus label coverage changed: {sorted(worst_seen)}"
 
         under = {
             label: (_BYTES_PER_PARAM[label], rate, repo)

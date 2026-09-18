@@ -36,10 +36,14 @@ _BYTES_PER_GB = 1024**3
 # each already under its table entry.
 #
 # An entry moves only where the corpus backs it with at least three distinct
-# repos; fewer than that keeps the prior figure rather than moving on one file.
+# repos; fewer than that, including none, keeps the prior figure. Q5_0 has no
+# corpus rows and keeps 0.699 on that ground.
 # ``test_table_entries_cover_the_measured_corpus`` replays the checked-in
 # corpus in ``tests/fixtures/quant_file_rates.json`` (fetch date and filter
 # recorded inside the fixture) against every entry it has rows for.
+# Coverage wins over the three-repo minimum: a published file under an entry
+# fails that test on one backing row same as on ten, because the minimum
+# governs when an entry may rise, not whether an under-read is safe to ship.
 #
 # No entry may sit below its base type's bytes per weight, which is physically
 # impossible; ``test_measured_quants_are_above_their_ggml_floor`` checks each one
