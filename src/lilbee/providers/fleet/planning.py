@@ -1956,6 +1956,7 @@ _DEVICE_PROBE_TTL_S = 2.0
 # wedged GPU driver costs a full probe timeout, so a per-poll retry would stall
 # every placement read for a minute at a time. The same wait bounds how often a
 # plan read re-probes an engine whose probe keeps failing.
+# The read cache binds this at construction; the restate cooldown reads it per call.
 _DEVICE_PROBE_FAILURE_TTL_S = 60.0
 # An engine that lists no device on a GPU host may be hitting a transient GPU-init
 # error (the card momentarily held by another process); re-probe before treating
@@ -2377,7 +2378,8 @@ def refresh_plan_devices() -> None:
 
     A probe that cannot run keeps the previous device list: the last known one is
     a better answer than none, and the loud paths for an unreachable engine live
-    in the build, not here.
+    in the build, not here. A reload asks to look again, so it probes even inside
+    the failure wait that holds the read path off.
     """
     with _plan_probe_store.restate_lock:
         probe = _plan_probe_store.get()
@@ -2447,8 +2449,14 @@ def _restate_plan_probe(engine: str) -> _PlanProbe | None:
     """Restate the snapshot for *engine*, once per burst of stale reads.
 
     An engine whose probe keeps raising is re-probed at most once per failure
-    wait, so a broken binary costs the retry ladder occasionally rather than on
-    every read, and a binary repaired in place is retried without a reload.
+    wait on this read path, so a broken binary costs the retry ladder
+    occasionally rather than on every read. A reload restates through
+    refresh_plan_devices instead, which probes every time.
+
+    The wait is keyed on the binary's identity, so a binary repaired in place is
+    retried without a reload as soon as its identity changes. A repair that
+    leaves the size and the timestamp untouched keeps the identity that failed,
+    and stays hidden until the wait runs out.
     """
     with _plan_probe_store.restate_lock:
         probe = _plan_probe_store.get()
