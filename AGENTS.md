@@ -519,6 +519,13 @@ closure. These rules exist because each one shipped a broken artifact once.
   the build scripts, so editing a build script busts it. Tag-ref cache saves are
   not restorable by later runs, so `warm-engine-cache.yml` builds the matrix on
   `main`; release runs restore. Bust manually by touching a build script.
+- **The Nuitka object cache is keyed on the dependency set, not on `uv.lock` as
+  it stands.** `scripts/release.sh` rewrites lilbee's own version inside the
+  lock on every release commit, so hashing the file directly rotates the key
+  every release and the Windows cells compile cold. The Windows cells run
+  `scripts/strip_own_version.sh` first and hash its output; the script fails
+  unless it drops exactly one line, so a lock whose shape changed breaks the
+  build instead of silently keying on everything.
 
 ## Agent Integration
 
