@@ -85,3 +85,12 @@ calls() {
   [ "$status" -eq 2 ]
   [[ "$output" == *"no command"* ]]
 }
+
+@test "the retry runs without seq, which Git Bash need not provide" {
+  cp "${BATS_TEST_DIRNAME}/stubs/seq" "${FIXTURE}/bin/seq"
+  chmod +x "${FIXTURE}/bin/seq"
+  FLAKY_FAIL_TIMES=1 run retry 3 flaky
+  [ "$status" -eq 0 ]
+  [ "$(calls)" -eq 2 ]
+  [ "$(wc -l < "${SLEEP_LOG}")" -eq 1 ]
+}
