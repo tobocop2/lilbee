@@ -11,6 +11,9 @@ fired so the TUI can detect a cache-hit (no progress events) and render
 
 ``make_download_callback`` is the public entry point used by every
 surface to convert raw bytes-progress into ``DownloadProgress`` events.
+
+The stall policy is the same progress stream read as an absence, so its
+window, floor and attempt count live here.
 """
 
 from __future__ import annotations
@@ -27,6 +30,35 @@ from lilbee.catalog.models import DownloadProgress
 
 ProgressCallback = Callable[[int, int], None]
 _BYTES_PER_MB = 1024 * 1024
+
+STALL_WINDOW_S = 60.0
+"""Seconds per measurement window; a transfer below the byte floor for a
+whole window counts as stalled.
+
+Well past the hub's own 10s read timeout and its resume retries, so the
+guard only fires on transfers those mechanisms cannot wake."""
+
+STALL_FLOOR_BYTES = 256 * 1024
+"""Minimum bytes per window for a transfer to count as alive.
+
+A wedged connection can trickle a few bytes a minute, which an any-activity
+check reads as progress; ~4 KB/s is far below any usable model download."""
+
+STALL_ATTEMPTS = 3
+"""Attempts each recovery step makes before it reports a stall.
+
+The transfer re-issues itself this many times inside one download process, and
+the parent replaces that process this many times, so a wedged link is retried
+until both counts run out."""
+
+
+def stalled_download_message(hf_repo: str) -> str:
+    """The user-facing error for a transfer that never started moving again."""
+    return (
+        f"Download of {hf_repo} kept stalling with almost no data arriving. "
+        "Check the network connection and retry. Files that finished are kept; "
+        "the file in flight starts again."
+    )
 
 
 def make_download_callback(
