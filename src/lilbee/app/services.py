@@ -213,8 +213,7 @@ def build_services(
 
     sync_xberg_backends(provider)
     registry = registry or ModelRegistry(config.models_dir)
-    # Env vars, --model and config.toml reach cfg without the installed check the
-    # settings write boundary runs, so this is the first point that sees them all.
+    # The first point that sees env vars, --model and config.toml together.
     warn_unregistered_role_refs(config, registry)
     store = Store(config)
     embedder = Embedder(config, provider)

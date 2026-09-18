@@ -152,10 +152,8 @@ class ModelManager:
     def _is_native(self, model: str) -> bool:
         """True when the manifest registry holds *model*.
 
-        The registry is the single definition of native installed-ness: it is
-        what ``list_installed``, the model listings and ``resolve_model_path``
-        all read. A loose GGUF under ``models_dir`` is in none of them, so
-        answering True for one makes ``pull`` skip a model nothing can serve.
+        The registry is the single definition of native installed-ness, shared
+        with ``list_installed`` and ``resolve_model_path``.
         """
         return self._registry.is_installed(model)
 

@@ -43,7 +43,7 @@ def _task_validation_enabled():
             os.environ["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = prev
 
 
-def _install(models_dir: Path, ref: str = _REF, task: ModelTask = ModelTask.CHAT) -> None:
+def _install(models_dir: Path, ref: str = _REF) -> None:
     """Install *ref* the way a real pull does: blob in the cache plus a manifest."""
     registry = ModelRegistry(models_dir)
     hf_repo, filename = ref.rsplit("/", 1)
@@ -58,19 +58,18 @@ def _install(models_dir: Path, ref: str = _REF, task: ModelTask = ModelTask.CHAT
             hf_repo=hf_repo,
             gguf_filename=filename,
             size_bytes=len(_BLOB),
-            task=task,
+            task=ModelTask.CHAT,
             downloaded_at="2026-04-25T00:00:00+00:00",
         ),
     )
     source.unlink()
 
 
-def _handbuilt_repo_layout(models_dir: Path, ref: str = _REF) -> Path:
-    """A GGUF placed at ``models_dir/<ref>`` by hand, with no manifest."""
+def _handbuilt_repo_layout(models_dir: Path, ref: str = _REF) -> None:
+    """Place a GGUF at ``models_dir/<ref>`` by hand, with no manifest."""
     target = models_dir / ref
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(_BLOB)
-    return target
 
 
 class TestPullReportsWhatItDid:
@@ -131,7 +130,6 @@ def _build_config(tmp_path: Path, roles: dict[str, str]) -> Config:
     env: dict[str, str] = {
         "LILBEE_DATA": str(tmp_path),
         "LILBEE_SKIP_TOML_CONFIG": "1",
-        "LILBEE_SKIP_MODEL_TASK_VALIDATION": "1",
     }
     for field_name, ref in roles.items():
         env[f"LILBEE_{field_name.upper()}"] = ref
@@ -164,10 +162,11 @@ class TestUnregisteredRoleRefsAreReported:
 
         assert unregistered_role_refs(config, ModelRegistry(models_dir)) == {}
 
-    def test_blank_and_prefixed_refs_are_not_flagged(self, tmp_path: Path) -> None:
+    @pytest.mark.parametrize("ref", ["", "   ", "ollama/qwen3:0.6b", "openai/gpt-4o"])
+    def test_blank_and_prefixed_refs_are_not_flagged(self, tmp_path: Path, ref: str) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        config = _build_config(tmp_path, {"chat_model": "ollama/qwen3:0.6b"})
+        config = _build_config(tmp_path, {"chat_model": ref})
 
         assert unregistered_role_refs(config, ModelRegistry(models_dir)) == {}
 

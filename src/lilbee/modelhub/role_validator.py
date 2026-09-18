@@ -143,10 +143,8 @@ def configured_role_refs(config: Config) -> dict[str, str]:
 def unregistered_role_refs(config: Config, registry: ModelRegistry) -> dict[str, str]:
     """Role fields of *config* naming a ref *registry* does not hold.
 
-    A ref outside the registry still serves when the fleet resolves it on disk,
-    so the two disagree and the user sees an empty listing instead of an error.
-    Blank and provider-prefixed refs are excluded: neither belongs to the
-    registry in the first place.
+    Blank and provider-prefixed refs are excluded; neither belongs to the
+    registry.
     """
     return {
         field_name: ref
