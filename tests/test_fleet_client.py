@@ -2307,3 +2307,54 @@ class TestPrefillProgressParsing:
         from lilbee.providers.fleet.client import _prefill_progress
 
         assert _prefill_progress(line) == expected
+
+
+def test_count_chat_prompt_tokens_renders_then_tokenizes() -> None:
+    """The counted text is the template's render, with its special tokens parsed."""
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/apply-template"):
+            seen["render"] = body
+            return httpx.Response(200, json={"prompt": "<|im_start|>user\nhi<|im_end|>\n"})
+        if request.url.path.endswith("/tokenize"):
+            seen["tokenize"] = body
+            return httpx.Response(200, json={"tokens": [1, 2, 3, 4, 5]})
+        raise AssertionError(f"unexpected route {request.url.path}")
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "search"}}]
+    count = _client(handler).count_chat_prompt_tokens(
+        messages, tools=tools, tool_choice="auto", options={"chat_template_kwargs": {"a": 1}}
+    )
+
+    assert count == 5
+    assert seen["render"]["messages"] == messages
+    assert seen["render"]["tools"] == tools
+    assert seen["render"]["tool_choice"] == "auto"
+    assert seen["render"]["chat_template_kwargs"] == {"a": 1}
+    assert seen["tokenize"]["content"] == "<|im_start|>user\nhi<|im_end|>\n"
+    assert seen["tokenize"]["parse_special"] is True
+
+
+def test_count_chat_prompt_tokens_reports_an_engine_without_the_route() -> None:
+    """An engine too old to render the prompt lets the caller estimate instead."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/apply-template"):
+            return httpx.Response(404, text="File Not Found")
+        raise AssertionError("must not tokenize without a rendered prompt")
+
+    with pytest.raises(NotImplementedError, match="apply-template"):
+        _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_surfaces_a_template_rejection() -> None:
+    """A body the template refuses is a bad request, not a missing capability."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "template rejected the messages"}})
+
+    with pytest.raises(ProviderError, match="template rejected"):
+        _client(handler).count_chat_prompt_tokens([{"role": "assistant", "content": "hi"}])

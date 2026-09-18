@@ -778,8 +778,12 @@ def _count_body(**overrides) -> dict[str, Any]:
 
 
 def _word_tokenizer(provider: MagicMock) -> None:
-    """Stand in for the engine tokenizer: count the words it is handed."""
-    provider.count_chat_tokens.side_effect = lambda text, *, model: len(text.split())
+    """Stand in for the engine: count the words of the prompt parts it is handed."""
+
+    def _count(messages, *, options=None, model=None, tools=None, tool_choice=None) -> int:
+        return len(json.dumps([messages, tools]).split())
+
+    provider.count_chat_prompt_tokens.side_effect = _count
 
 
 async def _count(body: dict[str, Any]) -> int:
@@ -790,27 +794,33 @@ async def _count(body: dict[str, Any]) -> int:
 
 
 class TestCountTokens:
-    async def test_returns_the_count_the_engine_tokenizer_reported(
+    async def test_returns_the_count_the_engine_reported(
         self, services_with_chat_model, _auth_token
     ):
         """The body carries the engine's own number, not a count derived locally."""
         provider = services_with_chat_model.provider
-        provider.count_chat_tokens.return_value = 4242
+        provider.count_chat_prompt_tokens.return_value = 4242
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
         assert resp.status_code == 200
         assert resp.json() == {"input_tokens": 4242}
-        counted = provider.count_chat_tokens.call_args.args[0]
-        assert "how many tokens is this" in counted
-        assert provider.count_chat_tokens.call_args.kwargs["model"] == INSTALLED_REF
+        counted = provider.count_chat_prompt_tokens.call_args.kwargs
+        assert "how many tokens is this" in json.dumps(counted["messages"])
+        assert counted["model"] == INSTALLED_REF
 
-    async def test_tool_schemas_are_counted(self, services_with_chat_model, _auth_token):
-        """A flattening that drops tool schemas counts an agent turn short."""
+    async def test_a_tool_request_is_counted_on_a_model_without_tool_support(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Claude Code sends tools every turn; counting them runs none of them."""
         _word_tokenizer(services_with_chat_model.provider)
-        services_with_chat_model.provider.supports_tools.return_value = True
+        assert services_with_chat_model.provider.supports_tools.return_value is False
+
         without = await _count(_count_body())
         with_tools = await _count(_count_body(tools=_TOOLS))
+
         assert with_tools > without
+        schemas = services_with_chat_model.provider.count_chat_prompt_tokens.call_args.kwargs
+        assert schemas["tools"][0]["function"]["name"] == "search"
 
     async def test_system_prompt_is_counted(self, services_with_chat_model, _auth_token):
         _word_tokenizer(services_with_chat_model.provider)
@@ -834,7 +844,7 @@ class TestCountTokens:
     ):
         from lilbee.providers.base import ProviderError, ProviderErrorKind
 
-        services_with_chat_model.provider.count_chat_tokens.side_effect = ProviderError(
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = ProviderError(
             "connection refused to 127.0.0.1:41233", kind=ProviderErrorKind.CONNECTION
         )
         async with AsyncTestClient(_build_app()) as client:
@@ -843,20 +853,19 @@ class TestCountTokens:
         assert resp.json()["error"]["type"] == "api_error"
         assert "127.0.0.1" not in resp.json()["error"]["message"]
 
-    async def test_a_model_without_a_tokenizer_is_a_400_envelope(
+    async def test_a_remote_model_is_estimated_rather_than_rejected(
         self, services_with_chat_model, _auth_token
     ):
-        services_with_chat_model.provider.count_chat_tokens.side_effect = NotImplementedError
-        async with AsyncTestClient(_build_app()) as client:
-            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
-        assert resp.status_code == 400
-        assert resp.json()["error"]["type"] == "invalid_request_error"
-        assert "remote provider" in resp.json()["error"]["message"]
+        """A remotely served model has no tokenizer, and an error would break /context."""
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        assert await _count(_count_body()) > 0
 
     async def test_unclassified_engine_failure_is_500_api_error(
         self, services_with_chat_model, _auth_token
     ):
-        services_with_chat_model.provider.count_chat_tokens.side_effect = RuntimeError("boom")
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = RuntimeError(
+            "boom"
+        )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
         assert resp.status_code == 500
@@ -892,3 +901,17 @@ class TestCountTokens:
         assert resp.status_code == 400
         assert resp.json()["error"]["type"] == "invalid_request_error"
         assert "messages" in resp.json()["error"]["message"]
+
+    async def test_thinking_off_reaches_the_count_as_it_reaches_the_chat_call(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The template renders an empty thinking block, so the count must ask for it too."""
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import ReasoningMode
+
+        monkeypatch.setattr(cfg, "messages_reasoning", ReasoningMode.OFF)
+        services_with_chat_model.provider.count_chat_prompt_tokens.return_value = 7
+        await _count(_count_body())
+
+        options = services_with_chat_model.provider.count_chat_prompt_tokens.call_args.kwargs
+        assert options["options"] == {"think": False}

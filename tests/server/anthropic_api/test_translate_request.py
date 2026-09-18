@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 
 from lilbee.core.config.enums import ReasoningMode
@@ -351,15 +353,50 @@ _PROMPT_BODY = {
 }
 
 
-def _prompt_parts(req: CanonicalChatRequest) -> tuple[object, ...]:
-    """The parts of a canonical request that decide the rendered prompt."""
-    return (req.model, req.messages, req.system, req.tools, req.tool_choice)
+# Canonical fields the engine reads for sampling and transport rather than for
+# the prompt text. The compared set is everything else, derived from the
+# dataclass, so a newly added prompt field is compared without being listed.
+_NON_PROMPT_FIELDS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "seed",
+        "frequency_penalty",
+        "presence_penalty",
+        "stop",
+        "stream",
+    }
+)
 
 
-def test_the_counted_prompt_is_the_prompt_the_chat_call_sends():
+def _prompt_parts(req: CanonicalChatRequest) -> dict[str, object]:
+    """Every canonical field that decides the rendered prompt."""
+    names = {f.name for f in fields(CanonicalChatRequest)} - _NON_PROMPT_FIELDS
+    return {name: getattr(req, name) for name in sorted(names)}
+
+
+def test_every_excluded_field_is_still_a_canonical_field():
+    """A renamed sampling field would otherwise drop silently out of the comparison."""
+    assert not _NON_PROMPT_FIELDS - {f.name for f in fields(CanonicalChatRequest)}
+
+
+@pytest.mark.parametrize("mode", [ReasoningMode.OFF, ReasoningMode.SEPARATE, ReasoningMode.INLINE])
+def test_the_counted_prompt_is_the_prompt_the_chat_call_sends(mode: ReasoningMode):
     """A prompt field that reaches one route and not the other counts the wrong prompt."""
-    counted = count_tokens_to_canonical_request(CountTokensRequest.model_validate(_PROMPT_BODY))
+    counted = count_tokens_to_canonical_request(
+        CountTokensRequest.model_validate(_PROMPT_BODY), mode=mode
+    )
     sent = messages_to_canonical_request(
-        MessagesRequest.model_validate({**_PROMPT_BODY, "max_tokens": 64})
+        MessagesRequest.model_validate({**_PROMPT_BODY, "max_tokens": 64}), mode=mode
     )
     assert _prompt_parts(counted) == _prompt_parts(sent)
+
+
+def test_reasoning_off_reaches_the_counted_prompt():
+    """``think`` becomes a template argument, so it changes the rendered prompt."""
+    counted = count_tokens_to_canonical_request(
+        CountTokensRequest.model_validate(_PROMPT_BODY), mode=ReasoningMode.OFF
+    )
+    assert counted.think is False

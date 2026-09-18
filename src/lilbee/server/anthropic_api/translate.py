@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from enum import StrEnum
 from typing import Any, Literal
 
@@ -33,6 +34,7 @@ from lilbee.server.anthropic_api.models import (
     ToolResultBlockParam,
     ToolUseBlockParam,
     UnknownBlockParam,
+    _PromptBody,
 )
 from lilbee.server.chat_dispatch.canonical import (
     CanonicalChatRequest,
@@ -94,11 +96,37 @@ def resolve_reasoning_mode(
     return default
 
 
-def count_tokens_to_canonical_request(request: CountTokensRequest) -> CanonicalChatRequest:
+def count_tokens_to_canonical_request(
+    request: CountTokensRequest, *, mode: ReasoningMode = ReasoningMode.SEPARATE
+) -> CanonicalChatRequest:
     """Translate a validated ``CountTokensRequest`` to the canonical request.
 
     The count_tokens contract carries no sampling or streaming fields, so the
-    result holds prompt content only.
+    result is the prompt translation alone.
+    """
+    return _canonical_prompt(request, mode=mode)
+
+
+def messages_to_canonical_request(
+    request: MessagesRequest, *, mode: ReasoningMode = ReasoningMode.SEPARATE
+) -> CanonicalChatRequest:
+    """Translate a validated ``MessagesRequest`` to the canonical request."""
+    return replace(
+        _canonical_prompt(request, mode=mode),
+        temperature=request.temperature,
+        top_p=request.top_p,
+        top_k=request.top_k,
+        max_tokens=request.max_tokens,
+        stop=list(request.stop_sequences) if request.stop_sequences else None,
+        stream=request.stream,
+    )
+
+
+def _canonical_prompt(request: _PromptBody, *, mode: ReasoningMode) -> CanonicalChatRequest:
+    """Translate the fields that decide the rendered prompt.
+
+    Both request bodies carry these fields and both routes translate them here,
+    so a field added to the prompt reaches the chat call and the count together.
     """
     return CanonicalChatRequest(
         model=request.model,
@@ -106,25 +134,6 @@ def count_tokens_to_canonical_request(request: CountTokensRequest) -> CanonicalC
         system=_system_text(request.system),
         tools=_tools_from_request(request.tools),
         tool_choice=_tool_choice_from_request(request.tool_choice),
-    )
-
-
-def messages_to_canonical_request(
-    request: MessagesRequest, *, mode: ReasoningMode = ReasoningMode.SEPARATE
-) -> CanonicalChatRequest:
-    """Translate a validated ``MessagesRequest`` to the canonical request."""
-    return CanonicalChatRequest(
-        model=request.model,
-        messages=_canonical_messages(request.messages),
-        system=_system_text(request.system),
-        tools=_tools_from_request(request.tools),
-        tool_choice=_tool_choice_from_request(request.tool_choice),
-        temperature=request.temperature,
-        top_p=request.top_p,
-        top_k=request.top_k,
-        max_tokens=request.max_tokens,
-        stop=list(request.stop_sequences) if request.stop_sequences else None,
-        stream=request.stream,
         # OFF asks the template to skip thinking; the other modes only change
         # presentation, so the template default stands.
         think=False if mode is ReasoningMode.OFF else None,

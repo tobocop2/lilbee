@@ -48,6 +48,7 @@ from lilbee.server.chat_dispatch.dispatch import (
     count_request_tokens,
     dispatch_chat_stream,
     preflight_chat_request,
+    resolve_served_model,
 )
 from lilbee.server.chat_dispatch.reasoning_cap import (
     budget_capped_chars,
@@ -60,10 +61,6 @@ from lilbee.server.validation_format import format_validation
 log = logging.getLogger(__name__)
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
-_NO_TOKENIZER_MESSAGE = (
-    "Counting tokens needs a locally served model. This model is served by a "
-    "remote provider, which exposes no tokenizer."
-)
 
 
 async def _auth_before_request(request: Request) -> Response | None:
@@ -129,32 +126,22 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
 async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> Response:
     """``/v1/messages/count_tokens``: the served model's own count for a request.
 
-    Clients read ``input_tokens`` for context accounting, so the number comes
-    from the engine tokenizer rather than a character estimate.
+    Clients read ``input_tokens`` for context accounting. Counting never runs a
+    tool and never generates, so the only thing a request has to be is
+    translatable: the tool-capability check ``/v1/messages`` runs is not applied.
     """
+    mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
     try:
-        req = count_tokens_to_canonical_request(data)
+        req = count_tokens_to_canonical_request(data, mode=mode)
     except ValueError as exc:
         # Wire-valid but untranslatable (image content, bare tool choice).
         return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
 
-    preflight = await _preflight_resolved_model(req)
-    if isinstance(preflight, Response):
-        return preflight
-    return await _counted_response(req, canonical_model=preflight)
-
-
-async def _counted_response(req: CanonicalChatRequest, *, canonical_model: str) -> Response:
-    """Count *req* on the engine, translating a failure to the error envelope."""
     try:
+        canonical_model = await asyncio.to_thread(resolve_served_model, req)
         count = await asyncio.to_thread(count_request_tokens, req, canonical_model=canonical_model)
-    except NotImplementedError:
-        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _NO_TOKENIZER_MESSAGE)
     except Exception as exc:
-        classified = classify_provider_error(exc)
-        if classified is None:
-            return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _classified_error_response(exc)
     body = CountTokensResponse(input_tokens=count)
     return Response(body.model_dump(), media_type="application/json")
 
@@ -171,10 +158,15 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
     try:
         return await asyncio.to_thread(preflight_chat_request, req)
     except Exception as exc:
-        classified = classify_provider_error(exc)
-        if classified is None:
-            return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _classified_error_response(exc)
+
+
+def _classified_error_response(exc: Exception) -> Response:
+    """The envelope for *exc*, or the generic 500 when nothing classifies it."""
+    classified = classify_provider_error(exc)
+    if classified is None:
+        return _internal_error_response()
+    return _error_response(classified.http_status, classified.code, classified.message)
 
 
 async def _run_non_stream(
@@ -191,10 +183,7 @@ async def _run_non_stream(
             cap_aware_chat, req, canonical_model=canonical_model, cap_chars=cap_chars
         )
     except Exception as exc:
-        classified = classify_provider_error(exc)
-        if classified is None:
-            return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _classified_error_response(exc)
     finally:
         await guard.release()
     body: MessagesResponse = canonical_to_messages_response(

@@ -862,3 +862,139 @@ class TestDispatchChatStreamSyncProvider:
         kinds = [type(e).__name__ for e in events]
         assert kinds == ["MessageStart", "MessageDelta", "MessageStop"]
         assert stream.closed is True
+
+
+# One turn of a Claude Code conversation: a system prompt, three messages, two
+# tool schemas. Each arm's number is llama-server's own ``usage.prompt_tokens``
+# for the rendered prompt, measured on Qwen3-0.6B-Q8_0, and pins the direction
+# of the estimate rather than its value.
+_ENGINE_SYSTEM = (
+    "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
+    "You are an interactive CLI tool that helps users with software engineering tasks.\n"
+    "Use the instructions below and the tools available to you.\n\n"
+    "IMPORTANT: Refuse to write code that may be used maliciously.\n"
+)
+_ENGINE_MESSAGES = [
+    CanonicalMessage(
+        role="user",
+        content=[
+            TextBlock(
+                text="Read the config file and tell me what the chunk size is.\nThen explain why."
+            )
+        ],
+    ),
+    CanonicalMessage(role="assistant", content=[TextBlock(text="I'll read the file.")]),
+    CanonicalMessage(role="user", content=[TextBlock(text="go ahead")]),
+]
+_ENGINE_TOOLS = [
+    CanonicalTool(
+        name="Read",
+        description="Reads a file from the local filesystem.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "The absolute path to the file"},
+                "limit": {"type": "integer", "description": "The number of lines to read"},
+            },
+            "required": ["file_path"],
+        },
+    ),
+    CanonicalTool(
+        name="Bash",
+        description="Executes a bash command and returns its output.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The command to execute"},
+                "timeout": {"type": "number", "description": "Timeout in ms"},
+            },
+            "required": ["command"],
+        },
+    ),
+]
+_MEASURED_PROMPT_TOKENS = [
+    ({}, 43),
+    ({"system": _ENGINE_SYSTEM}, 100),
+    ({"tools": _ENGINE_TOOLS}, 302),
+    ({"system": _ENGINE_SYSTEM, "tools": _ENGINE_TOOLS}, 354),
+]
+# The same measurement for the case the schemas dominate: one short turn and one
+# tool, where the template's fixed tool preamble is most of the prompt.
+_MEASURED_ONE_TOOL_TOKENS = 182
+_ONE_TURN = [CanonicalMessage(role="user", content=[TextBlock(text="hi")])]
+
+
+class TestCountRequestTokens:
+    """``count_request_tokens`` asks the engine for the prompt a chat call sends."""
+
+    def test_counts_the_arguments_the_chat_call_would_send(self, services_with_model) -> None:
+        from lilbee.server.chat_dispatch.dispatch import _provider_chat_kwargs, count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.return_value = 4242
+        req = _req(tools=[_ENGINE_TOOLS[0]], system="be brief", think=False)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") == 4242
+        assert services_with_model.provider.count_chat_prompt_tokens.call_args.kwargs == (
+            _provider_chat_kwargs(req, "vendor/model::Q4")
+        )
+
+    def test_a_model_without_tool_support_is_still_counted(self, services_with_model) -> None:
+        """Counting runs no tool, so the chat call's capability gate does not apply."""
+        from lilbee.server.chat_dispatch.dispatch import (
+            preflight_chat_request,
+            resolve_served_model,
+        )
+
+        req = _req(tools=[_ENGINE_TOOLS[0]])
+        services_with_model.provider.supports_tools.return_value = False
+
+        assert resolve_served_model(req) == "vendor/model::Q4"
+        with pytest.raises(ModelDoesNotSupportToolsError):
+            preflight_chat_request(req)
+
+    def test_an_unknown_model_is_still_rejected(self, services_with_model) -> None:
+        from lilbee.server.chat_dispatch.dispatch import resolve_served_model
+
+        with pytest.raises(ModelNotFoundError):
+            resolve_served_model(_req(model="nope/missing"))
+
+    def test_a_backend_without_a_tokenizer_is_estimated(self, services_with_model) -> None:
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        assert count_request_tokens(_req(), canonical_model="vendor/model::Q4") > 0
+
+    @pytest.mark.parametrize(("extra", "measured"), _MEASURED_PROMPT_TOKENS)
+    def test_the_estimate_never_falls_below_the_engines_own_count(
+        self, services_with_model, extra: dict[str, Any], measured: int
+    ) -> None:
+        """Under-counting makes a client overflow its window, so the estimate stays above."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_ENGINE_MESSAGES, **extra)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+
+    def test_the_estimate_covers_the_templates_tool_preamble(self, services_with_model) -> None:
+        """One short turn with one schema is almost entirely template preamble."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_ONE_TURN, tools=[_ENGINE_TOOLS[0]])
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= (
+            _MEASURED_ONE_TOOL_TOKENS
+        )
+
+    def test_the_estimate_charges_a_token_for_each_non_ascii_character(
+        self, services_with_model
+    ) -> None:
+        """A script at roughly a token per character would otherwise count far short."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        text = "今日は天気がいい" * 40
+        req = _req(messages=[CanonicalMessage(role="user", content=[TextBlock(text=text)])])
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= len(text)

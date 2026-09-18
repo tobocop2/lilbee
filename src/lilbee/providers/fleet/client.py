@@ -408,6 +408,7 @@ _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
 _TOKENIZE_PATH = "/tokenize"
 _DETOKENIZE_PATH = "/detokenize"
+_APPLY_TEMPLATE_PATH = "/apply-template"
 # llama-swap proxies native (non-OpenAI) llama.cpp routes only under
 # /upstream/<model>/...; the bare /tokenize path 404s (it routes /v1/* by the
 # body's model field, but a native route carries no such field).
@@ -419,6 +420,10 @@ _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
 _HTTP_BAD_REQUEST = 400
 _HTTP_TOO_MANY_REQUESTS = 429
+# Statuses that mean the route itself is absent rather than the request bad: an
+# engine too old to carry it answers 404, a proxy that knows the path but not the
+# method answers 405.
+_ROUTE_ABSENT_STATUSES = frozenset({404, 405})
 # Gateway statuses llama-swap returns while an upstream is unreachable
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
 # succeeds once the upstream is back, so these must never terminalize a call.
@@ -1172,7 +1177,7 @@ class LlamaServerClient:
         """
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
-    def _tokenize(self, text: str) -> list[int]:
+    def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
         """Token ids for *text*; a cold replica is waited out like an embedding."""
 
         def _call() -> list[int]:
@@ -1181,7 +1186,7 @@ class LlamaServerClient:
                 json={
                     "content": text,
                     "add_special": _TOKENIZE_ADD_SPECIAL,
-                    "parse_special": _TOKENIZE_PARSE_SPECIAL,
+                    "parse_special": parse_special,
                 },
             )
             _raise_for_status(resp)
@@ -1192,6 +1197,51 @@ class LlamaServerClient:
     def count_tokens(self, text: str) -> int:
         """Number of tokens *text* encodes to under the server's tokenizer."""
         return len(self._tokenize(text))
+
+    def count_chat_prompt_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        tools: Sequence[Mapping[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> int:
+        """Tokens the server prefills for this prompt, template applied.
+
+        The template's role markers and its tool-call preamble are part of the
+        prompt the model reads, so the rendered text is what gets tokenized.
+        Special-token strings in the rendered text are parsed, matching how the
+        server tokenizes its own prompt.
+        """
+        rendered = self._render_chat_prompt(messages, tools, tool_choice, options)
+        return len(self._tokenize(rendered, parse_special=True))
+
+    def _render_chat_prompt(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+    ) -> str:
+        """The prompt text this server's template renders for a chat body.
+
+        Sends the body :meth:`_chat_payload` builds, so the rendered prompt is
+        the one a chat call would prefill. Raises ``NotImplementedError`` when
+        the server has no such route, which is the one case a caller can answer
+        with an estimate instead.
+        """
+        payload = self._chat_payload(messages, tools, tool_choice, options, stream=False)
+
+        def _call() -> str:
+            resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)
+            if resp.status_code in _ROUTE_ABSENT_STATUSES:
+                raise NotImplementedError(
+                    f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
+                )
+            _raise_for_status(resp)
+            return str(resp.json()["prompt"])
+
+        return self._with_busy_retry(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})

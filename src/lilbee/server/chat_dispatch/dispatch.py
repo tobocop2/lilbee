@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from enum import StrEnum
@@ -13,6 +14,7 @@ from typing import Any, Literal
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.providers.base import (
+    BUDGET_CHARS_PER_TOKEN,
     ChatResult,
     ChatStreamItem,
     FinishReason,
@@ -50,6 +52,10 @@ from lilbee.server.chat_dispatch.capability import model_supports_tools
 from lilbee.server.chat_dispatch.tool_args import parse_tool_arguments
 
 log = logging.getLogger(__name__)
+
+# Highest code point the chars-per-token ratio holds for; above it a character
+# is a script that tokenizes at roughly one token each.
+_ASCII_MAX = 127
 
 
 class ModelNotFoundError(Exception):
@@ -370,27 +376,42 @@ def _ensure_configured_local_model(canonical: str) -> None:
     )
 
 
-def preflight_chat_request(req: CanonicalChatRequest) -> str:
-    """Synchronously validate *req* before any streaming response starts.
+def resolve_served_model(req: CanonicalChatRequest) -> str:
+    """Resolve *req*'s model ref and confirm this server serves it.
 
-    Raises ``ModelNotFoundError``, ``ModelDoesNotSupportToolsError``, or a
-    ``BAD_REQUEST`` ``ProviderError`` so the route layer can return a real
-    4xx HTTP status instead of burying the failure in an SSE error frame
-    after headers flush. Returns the resolved canonical model ref.
+    Raises ``ModelNotFoundError`` or a ``BAD_REQUEST`` ``ProviderError`` so the
+    route layer can return a real 4xx status. Returns the canonical model ref.
     """
     canonical = _resolve_canonical_model(req.model)
     _ensure_configured_local_model(canonical)
+    return canonical
+
+
+def preflight_chat_request(req: CanonicalChatRequest) -> str:
+    """Synchronously validate *req* before any streaming response starts.
+
+    Adds the tool-capability check to :func:`resolve_served_model`, so a model
+    whose template cannot render tool calls fails with a 4xx instead of burying
+    the failure in an SSE error frame after headers flush.
+    """
+    canonical = resolve_served_model(req)
     _ensure_tool_capability(req, canonical)
     return canonical
 
 
 def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> int:
-    """Tokens *req*'s prompt encodes to under the served model's own tokenizer.
+    """Tokens the served model prefills for *req*'s prompt.
 
-    The prompt is flattened through the same wire translation the chat call
-    sends, so system text, conversation turns, and tool schemas are all counted.
+    Hands the provider the arguments a chat call would send, so the count covers
+    the chat template's role markers and tool preamble as well as the content.
+    A backend that cannot render or tokenize falls back to the estimate.
     """
-    return get_services().provider.count_chat_tokens(_prompt_text(req), model=canonical_model)
+    try:
+        return get_services().provider.count_chat_prompt_tokens(
+            **_provider_chat_kwargs(req, canonical_model)
+        )
+    except NotImplementedError:
+        return _estimate_prompt_tokens(req)
 
 
 def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
@@ -465,13 +486,26 @@ def _provider_tools(
     ]
 
 
-def _prompt_text(req: CanonicalChatRequest) -> str:
-    """The request's wire messages and tool schemas flattened to one string."""
-    parts = [json.dumps(_provider_messages(req), ensure_ascii=False)]
+def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
+    """Deliberately high estimate of *req*'s prompt, for a backend with no tokenizer.
+
+    Over-counting is the safe direction: a client that reads a number larger
+    than the truth compacts its conversation early, while an under-count lets it
+    run past the window. The schemas are counted twice because the template
+    renders them inside a fixed tool-call preamble the wire JSON does not carry.
+    """
+    total = _estimate_text_tokens(json.dumps(_provider_messages(req), ensure_ascii=False))
     tools = _provider_tools(req.tools)
     if tools is not None:
-        parts.append(json.dumps(tools, ensure_ascii=False))
-    return "\n".join(parts)
+        total += 2 * _estimate_text_tokens(json.dumps(tools, ensure_ascii=False))
+    return total
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Token cost of *text*, biased high: non-ASCII scripts cost about a token each."""
+    non_ascii = sum(1 for ch in text if ord(ch) > _ASCII_MAX)
+    ascii_chars = len(text) - non_ascii
+    return max(1, math.ceil(ascii_chars / BUDGET_CHARS_PER_TOKEN) + non_ascii)
 
 
 def _provider_tool_choice(

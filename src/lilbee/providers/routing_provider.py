@@ -15,6 +15,7 @@ from lilbee.core.config import cfg
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
 from lilbee.providers.base import (
+    ChatMessage,
     ChatResult,
     ChatStreamItem,
     ChatToolResult,
@@ -93,10 +94,20 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
         return self._pick_backend(ref).count_tokens(text)
 
-    def count_chat_tokens(self, text: str, *, model: str | None = None) -> int:
-        """Count *text* on the backend the chat ref routes to, same rules as :meth:`chat`."""
+    def count_chat_prompt_tokens(
+        self,
+        messages: list[ChatMessage],
+        *,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> int:
+        """Count on the backend the chat ref routes to, same rules as :meth:`chat`."""
         ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
-        return self._pick_backend(ref).count_chat_tokens(text, model=model)
+        return self._pick_backend(ref).count_chat_prompt_tokens(
+            messages, options=options, model=model, tools=tools, tool_choice=tool_choice
+        )
 
     @overload
     def chat(
