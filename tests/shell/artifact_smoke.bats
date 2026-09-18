@@ -33,23 +33,23 @@ smoke() {
   [[ "$output" != *"is unreachable from this runner"* ]]
 }
 
-@test "an unreachable crawl host skips the crawl leg instead of failing" {
+@test "an unreachable crawl host fails the leg" {
   CURL_STUB_RC=6 run smoke
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$(cat "${CALLS}")" != *"add https://example.com"* ]]
-  [[ "$output" == *"::warning::https://example.com is unreachable from this runner"* ]]
-  [[ "$output" == *"ARTIFACT SMOKE PASSED: extras, self-check, ingest, search, ask (crawl skipped: https://example.com unreachable)"* ]]
+  [[ "$output" == *"FAIL: https://example.com is unreachable from this runner (curl rc 6)"* ]]
+  [[ "$output" != *"ARTIFACT SMOKE PASSED"* ]]
 }
 
-@test "an unreachable crawl host still runs the extras leg" {
+@test "an unreachable crawl host still ran the extras leg first" {
   CURL_STUB_RC=6 run smoke
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$(cat "${CALLS}")" == *"self-check-extras"* ]]
 }
 
-@test "an unreachable crawl host still runs ingest, search and ask" {
+@test "an unreachable crawl host still ran ingest, search and ask first" {
   CURL_STUB_RC=6 run smoke
-  [ "$status" -eq 0 ]
+  [ "$status" -eq 1 ]
   [[ "$(cat "${CALLS}")" == *"search blue quartz resonator"* ]]
   [[ "$(cat "${CALLS}")" == *"ask What frequency"* ]]
 }
