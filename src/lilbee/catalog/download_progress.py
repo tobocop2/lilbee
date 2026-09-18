@@ -12,8 +12,8 @@ fired so the TUI can detect a cache-hit (no progress events) and render
 ``make_download_callback`` is the public entry point used by every
 surface to convert raw bytes-progress into ``DownloadProgress`` events.
 
-The stall policy lives here too, because a stall is an absence of this
-progress stream and both the transfer and its parent process measure it.
+The stall policy is the same progress stream read as an absence, so its
+window, floor and attempt count live here.
 """
 
 from __future__ import annotations
@@ -45,15 +45,19 @@ A wedged connection can trickle a few bytes a minute, which an any-activity
 check reads as progress; ~4 KB/s is far below any usable model download."""
 
 STALL_ATTEMPTS = 3
-"""Transfers of one file before a stall is reported as a failure."""
+"""Attempts each recovery step makes before it reports a stall.
+
+The transfer re-issues itself this many times inside one download process, and
+the parent replaces that process this many times, so a wedged link is retried
+until both counts run out."""
 
 
 def stalled_download_message(hf_repo: str) -> str:
     """The user-facing error for a transfer that never started moving again."""
     return (
-        f"Download of {hf_repo} stalled {STALL_ATTEMPTS} times with almost "
-        "no data arriving. Check the network connection and retry; the finished part "
-        "is kept and the download resumes where it stopped."
+        f"Download of {hf_repo} kept stalling with almost no data arriving. "
+        "Check the network connection and retry. Files that finished are kept; "
+        "the file in flight starts again."
     )
 
 

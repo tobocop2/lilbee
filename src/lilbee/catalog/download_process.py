@@ -47,11 +47,13 @@ _STALL_DEADLINE_S = 2 * STALL_WINDOW_S + _STALL_GRACE_S
 The transfer's own guard needs two windows to notice a stall, because a window
 that ends above the byte floor restarts its clock."""
 
-_STARTUP_DEADLINE_S = 300.0
-"""Seconds a child may take to reach its first bytes.
+_STARTUP_DEADLINE_S = 120.0
+"""Seconds a child may stay silent before its first bytes.
 
-It spawns, imports huggingface_hub and asks the Hub for a size per shard, and
-every one of those requests carries the hub's own 10 second timeout."""
+It spawns, imports huggingface_hub and lists the repo, and each of those
+requests carries the hub's own 10 second timeout. Every file the child then
+resolves restarts this clock, so the budget does not grow with the shard
+count."""
 
 # The child's translated errors, rebuilt in the parent by type name.
 _ERRORS_BY_NAME: dict[str, type[Exception]] = {PermissionError.__name__: PermissionError}
@@ -64,6 +66,13 @@ class _Progress:
     kind: Literal["progress"]
     downloaded: int
     total: int
+
+
+@dataclass(frozen=True)
+class _Probed:
+    """A child's note that it resolved one file with the Hub before transferring."""
+
+    kind: Literal["probed"]
 
 
 @dataclass(frozen=True)
@@ -83,7 +92,7 @@ class _Failed:
     message: str
 
 
-_ChildMessage = _Progress | _Done | _Failed
+_ChildMessage = _Progress | _Probed | _Done | _Failed
 
 
 class _ChildStalledError(Exception):
@@ -107,12 +116,21 @@ class _StallDeadline:
         self._moving = False
 
     def saw(self, downloaded: int) -> None:
-        """Restart the clock once the child has reported the byte floor of new data."""
-        if downloaded - self._base < self._floor_bytes:
+        """Restart the clock on the byte floor of new data, or on a count that fell.
+
+        A count that falls is a transfer re-issued from the start, which is what
+        the download process does when its own guard aborts a wedged transfer.
+        """
+        advanced = downloaded - self._base
+        if 0 <= advanced < self._floor_bytes:
             return
         self._base = downloaded
         self._since = time.monotonic()
         self._moving = True
+
+    def probed(self) -> None:
+        """Restart the clock for a child that resolved a file before its first bytes."""
+        self._since = time.monotonic()
 
     def expired(self) -> bool:
         """Whether the child has reported nothing for the budget of its phase."""
@@ -152,6 +170,16 @@ class _PipeProgress:
         self._conn.send(_Progress(kind="progress", downloaded=downloaded, total=total))
 
 
+class _PipeProbe:
+    """Callback that tells the parent one file was resolved with the Hub."""
+
+    def __init__(self, conn: Connection) -> None:
+        self._conn = conn
+
+    def __call__(self) -> None:
+        self._conn.send(_Probed(kind="probed"))
+
+
 def download_in_subprocess(
     entry: CatalogModel,
     models_dir: Path,
@@ -189,13 +217,34 @@ def _run_one_attempt(
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
 ) -> Path:
-    """Spawn one child and relay it, stopping the child however the attempt ends."""
+    """Spawn one child, relay it, and clear its partial blobs when it is killed."""
     worker, receiver = _start_worker(entry, models_dir, token)
     try:
-        return _relay_until_done(entry, worker, receiver, on_progress, cancel)
-    finally:
-        _stop_worker(worker)
-        receiver.close()
+        try:
+            return _relay_until_done(entry, worker, receiver, on_progress, cancel)
+        finally:
+            _stop_worker(worker)
+            receiver.close()
+    except BaseException:
+        _discard_partial_blobs(models_dir, entry.hf_repo)
+        raise
+
+
+def _discard_partial_blobs(models_dir: Path, hf_repo: str) -> None:
+    """Delete the partial blobs of *hf_repo*, which no later download reads.
+
+    A terminated child unwinds nothing, so its temporary blob outlives it, and
+    huggingface_hub gives every transfer a fresh temporary name. Left alone the
+    bytes are lost for the life of the cache.
+    """
+    from huggingface_hub.file_download import repo_folder_name
+
+    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    for partial in repo_dir.glob("blobs/*.incomplete"):
+        try:
+            partial.unlink()
+        except OSError:
+            log.warning("Left a partial download behind: %s", partial)
 
 
 def _start_worker(
@@ -270,6 +319,9 @@ def _apply(
         if on_progress is not None:
             on_progress(message.downloaded, message.total)
         return None
+    if message.kind == "probed":
+        deadline.probed()
+        return None
     if message.kind == "done":
         return Path(message.path)
     raise _ERRORS_BY_NAME.get(message.error_type, RuntimeError)(message.message)
@@ -294,7 +346,13 @@ def _run_download_child(
     from lilbee.catalog.download import fetch_model_files
 
     try:
-        path = fetch_model_files(entry, Path(models_dir), token, on_progress=_PipeProgress(conn))
+        path = fetch_model_files(
+            entry,
+            Path(models_dir),
+            token,
+            on_progress=_PipeProgress(conn),
+            on_probe=_PipeProbe(conn),
+        )
         conn.send(_Done(kind="done", path=str(path)))
     except Exception as exc:
         conn.send(_Failed(kind="failed", error_type=type(exc).__name__, message=str(exc)))

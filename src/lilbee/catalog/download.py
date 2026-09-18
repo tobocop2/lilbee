@@ -46,8 +46,14 @@ from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 CompleteCallback = Callable[[CatalogModel, Path], None]
 # Raises UnsupportedQuantError when the engine cannot decode the named file.
 LoadCheck = Callable[[str, str], None]
+# Called once per file resolved with the Hub, before any bytes transfer.
+ProbeCallback = Callable[[], None]
 
 log = logging.getLogger(__name__)
+
+
+def _ignore_probe() -> None:
+    """Probe callback for callers with nothing timing the resolution phase."""
 
 
 def _models_dir() -> Path:
@@ -72,19 +78,6 @@ class DownloadConfig(BaseModel):
 _BYTES_PER_GB = 1024**3
 
 
-def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
-    """Bytes an interrupted attempt at *hf_repo* already holds on disk.
-
-    A resume needs only the remainder, so these count toward available space.
-    """
-    from huggingface_hub.file_download import repo_folder_name
-
-    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
-    if not repo_dir.is_dir():
-        return 0
-    return sum(f.stat().st_size for f in repo_dir.glob("blobs/*.incomplete") if f.is_file())
-
-
 def _free_bytes(path: Path) -> int | None:
     """Free space on the volume that will hold *path*, which need not exist yet.
 
@@ -102,18 +95,21 @@ def _free_bytes(path: Path) -> int | None:
 
 
 def disk_shortfall(models_dir: Path, hf_repo: str, needed: int) -> str | None:
-    """Describe why *needed* bytes will not fit, or None when they will."""
+    """Describe why *needed* bytes will not fit, or None when they will.
+
+    A partial blob from an interrupted attempt is not counted: huggingface_hub
+    writes each transfer to a fresh temporary file, so those bytes are spent.
+    """
     if needed == _SIZE_UNKNOWN:
         return None  # offline or unresolvable; nothing to compare against
     free = _free_bytes(models_dir)
     if free is None:
         return None  # unmeasurable volume; let the download report the truth
-    available = free + _repo_partial_bytes(models_dir, hf_repo)
-    if needed <= available:
+    if needed <= free:
         return None
     return (
         f"Not enough disk space for {hf_repo}: needs "
-        f"{needed / _BYTES_PER_GB:.1f} GB, {available / _BYTES_PER_GB:.1f} GB free."
+        f"{needed / _BYTES_PER_GB:.1f} GB, {free / _BYTES_PER_GB:.1f} GB free."
     )
 
 
@@ -226,9 +222,8 @@ class _StallGuard:
     plain path's read, and a dying connection can trickle bytes too slowly
     to ever finish. The guard rides the same progress stream the task bar
     shows; when a window passes under the byte floor it asks the transfer to
-    stop, and the caller resumes from the .incomplete file. A transfer that
-    does not answer the abort is ended by the parent terminating the download
-    process.
+    stop, and the caller issues the transfer again. A transfer that does not
+    answer the abort is ended by the parent terminating the download process.
     """
 
     def __init__(
@@ -313,11 +308,12 @@ class _StallGuard:
 
 
 def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run the transfer under the stall guard, resuming after each stall.
+    """Run the transfer under the stall guard, issuing it again after each stall.
 
-    huggingface_hub resumes from the .incomplete file, so a retry costs only
-    the bytes since the stall. A failure with the guard quiet is a real
-    error and propagates on the first attempt; cancellation always does.
+    huggingface_hub writes each transfer to a fresh temporary file, so a retry
+    repeats the whole file; only the chunks already in the xet cache are spared.
+    A failure with the guard quiet is a real error and propagates on the first
+    attempt; cancellation always does.
     """
     last_error: Exception | None = None
     for attempt in range(STALL_ATTEMPTS):
@@ -423,20 +419,19 @@ def fetch_model_files(
     token: str | None,
     *,
     on_progress: ProgressCallback | None = None,
+    on_probe: ProbeCallback = _ignore_probe,
 ) -> Path:
     """Fetch *entry*'s GGUF shards, plus its projector when the repo ships one.
 
     Takes the models dir and token as arguments so a download child process
-    can run it without reading cfg. Writes no registry state.
+    can run it without reading cfg. Writes no registry state. *on_probe* fires
+    once per file resolved with the Hub, which is the only sign of life a
+    caller gets before the first bytes.
     """
     filename = resolve_filename(entry)
     shards = split_shard_filenames(filename)
     dest = models_dir / shards[0]
-    if all(
-        (models_dir / shard).exists()
-        and _cached_file_is_complete(entry.hf_repo, shard, models_dir / shard)
-        for shard in shards
-    ):
+    if all(_shard_is_cached(entry, models_dir, shard, on_probe) for shard in shards):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
             size = sum((models_dir / shard).stat().st_size for shard in shards)
@@ -444,7 +439,7 @@ def fetch_model_files(
         _ensure_projector(entry, models_dir, token, on_progress=on_progress)
         return dest
 
-    shard_sizes = [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
+    shard_sizes = [_shard_size(entry, shard, on_probe) for shard in shards]
     sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
     _require_disk_space(entry, models_dir, sum(shard_sizes) if sizes_known else 0)
 
@@ -477,6 +472,21 @@ def fetch_model_files(
         on_progress(total_size, total_size)
     _ensure_projector(entry, models_dir, token, on_progress=on_progress)
     return first_shard_path
+
+
+def _shard_is_cached(
+    entry: CatalogModel, models_dir: Path, shard: str, on_probe: ProbeCallback
+) -> bool:
+    """Whether *shard* is on disk at the size the Hub reports for it."""
+    on_probe()
+    path = models_dir / shard
+    return path.exists() and _cached_file_is_complete(entry.hf_repo, shard, path)
+
+
+def _shard_size(entry: CatalogModel, shard: str, on_probe: ProbeCallback) -> int:
+    """The size the Hub reports for *shard*, or the unknown-size marker."""
+    on_probe()
+    return fetch_expected_file_size(entry.hf_repo, shard)
 
 
 def _ensure_projector(

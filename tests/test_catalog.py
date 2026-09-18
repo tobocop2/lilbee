@@ -1194,6 +1194,22 @@ class TestSplitShardDownload:
         assert requested == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"]
         assert len(completed) == 1  # manifest write only after the full set is on disk
 
+    def test_reports_every_shard_it_resolves_before_transferring(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolving the shards is all a watcher can see before the first bytes."""
+        entry = PICKS_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "m-00001-of-00003.gguf")
+        monkeypatch.setattr(catalog.download, "fetch_expected_file_size", lambda repo, name: 100)
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+        monkeypatch.setattr(catalog.download, "_ensure_projector", lambda *a, **kw: None)
+        probes: list[int] = []
+
+        catalog.download.fetch_model_files(entry, tmp_path, None, on_probe=lambda: probes.append(1))
+
+        # The completeness check stops at the first absent shard; sizes cover them all.
+        assert len(probes) == 4
+
 
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

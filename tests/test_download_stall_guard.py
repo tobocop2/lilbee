@@ -163,10 +163,10 @@ class TestStallRetries:
         assert result == path
         assert attempts == 3
 
-    def test_a_persistent_stall_fails_with_the_resume_note(
+    def test_a_persistent_stall_fails_naming_what_survives(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        with pytest.raises(RuntimeError, match=r"stalled.*resumes where it stopped"):
+        with pytest.raises(RuntimeError, match=r"stalling.*the file in flight starts again"):
             self._run(
                 monkeypatch,
                 [RuntimeError("a"), RuntimeError("b"), RuntimeError("c")],

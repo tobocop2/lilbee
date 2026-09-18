@@ -53,18 +53,19 @@ def test_allows_a_download_that_fits(tmp_path: Path, monkeypatch: pytest.MonkeyP
     dl._require_disk_space(_entry(), tmp_path, 8 * _GB)
 
 
-def test_resumed_download_counts_bytes_already_on_disk(
+def test_a_partial_blob_is_not_counted_as_space_the_pull_can_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An interrupted pull only needs the remainder; a naive check refuses it."""
+    """huggingface_hub never reads a partial back, so those bytes are spent."""
     blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
     blobs.mkdir(parents=True)
     (blobs / "abc123.incomplete").write_bytes(b"x" * (6 * 1024))
     monkeypatch.setattr(dl, "_BYTES_PER_GB", 1024)  # keep the message readable
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(3 * 1024))
 
-    # 8KB wanted, 3KB free, but 6KB is already held by the partial blob.
-    dl._require_disk_space(_entry(), tmp_path, 8 * 1024)
+    # 8KB wanted and 3KB free; the 6KB partial blob buys the pull nothing.
+    with pytest.raises(RuntimeError, match=r"needs 8\.0 GB, 3\.0 GB free"):
+        dl._require_disk_space(_entry(), tmp_path, 8 * 1024)
 
 
 def test_unknown_size_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
