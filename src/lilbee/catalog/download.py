@@ -329,7 +329,7 @@ def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> P
                 raise
             last_error = exc
             log.warning(
-                "Transfer of %s stalled (attempt %d/%d); resuming.",
+                "Transfer of %s stalled (attempt %d/%d); starting again.",
                 entry.hf_repo,
                 attempt + 1,
                 STALL_ATTEMPTS,
@@ -375,7 +375,8 @@ def download_model(
     cancel: CancelSignal | None = None,
 ) -> Path:
     """Download a GGUF model from HuggingFace to the models dir.
-    Uses huggingface_hub for resumable downloads, caching, and auth.
+    Uses huggingface_hub for caching and auth; a stalled file starts again
+    from the top, and files already finished are kept.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
     The optional *on_complete(entry, file_path)* callback runs after every file
     is on disk; modelhub uses it to write a registry manifest. For vision

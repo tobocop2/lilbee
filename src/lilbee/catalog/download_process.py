@@ -38,8 +38,8 @@ _EXIT_GRACE_S = 10.0
 _PROGRESS_MIN_INTERVAL_S = 0.1
 
 _STALL_GRACE_S = 30.0
-"""Seconds allowed for the transfer's own guard to abort and resume before the
-parent terminates the child."""
+"""Seconds allowed for the transfer's own guard to abort and start again before
+the parent terminates the child."""
 
 _STALL_DEADLINE_S = 2 * STALL_WINDOW_S + _STALL_GRACE_S
 """Seconds of no reported progress after which the child is terminated.
@@ -50,10 +50,11 @@ that ends above the byte floor restarts its clock."""
 _STARTUP_DEADLINE_S = 120.0
 """Seconds a child may stay silent before its first bytes.
 
-It spawns, imports huggingface_hub and lists the repo, and each of those
-requests carries the hub's own 10 second timeout. Every file the child then
-resolves restarts this clock, so the budget does not grow with the shard
-count."""
+It spawns, imports huggingface_hub, lists the repo, and resolves the
+filename, the dominant term, bounded by lilbee's own 30 second listing
+timeout and 10 second header-probe timeout, not the hub's. Every file the
+child then resolves restarts this clock, so the budget does not grow with
+the shard count."""
 
 # The child's translated errors, rebuilt in the parent by type name.
 _ERRORS_BY_NAME: dict[str, type[Exception]] = {PermissionError.__name__: PermissionError}
@@ -202,7 +203,7 @@ def download_in_subprocess(
             return _run_one_attempt(entry, models_dir, token, on_progress, cancel)
         except _ChildStalledError:
             log.warning(
-                "Transfer of %s stalled (attempt %d/%d); resuming in a new process.",
+                "Transfer of %s stalled (attempt %d/%d); starting again in a new process.",
                 entry.hf_repo,
                 attempt + 1,
                 STALL_ATTEMPTS,
@@ -217,7 +218,7 @@ def _run_one_attempt(
     on_progress: ProgressCallback | None,
     cancel: CancelSignal,
 ) -> Path:
-    """Spawn one child, relay it, and clear its partial blobs when it is killed."""
+    """Spawn one child, relay it, and clear its partial blobs on every exit but a clean return."""
     worker, receiver = _start_worker(entry, models_dir, token)
     try:
         try:
@@ -225,6 +226,8 @@ def _run_one_attempt(
         finally:
             _stop_worker(worker)
             receiver.close()
+    # The inner finally must terminate the child before this delete runs, or the
+    # delete races a live writer.
     except BaseException:
         _discard_partial_blobs(models_dir, entry.hf_repo)
         raise
