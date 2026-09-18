@@ -7981,18 +7981,36 @@ async def test_chat_slash_remove_no_args():
             assert "Usage" in mock_notify.call_args[0][0]
 
 
-async def test_chat_slash_remove_not_installed():
+async def test_chat_slash_remove_unregistered_gguf_reports_not_found(tmp_path):
+    """The registry decides, so /remove refuses a loose GGUF and leaves it on disk."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.modelhub.model_manager import ModelManager
+
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    stray = models_dir / "llama3-8b.gguf"
+    stray.write_bytes(b"GGUF-bytes")
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr:
-            mock_mgr.return_value.model_manager.is_installed.return_value = False
-            app.screen._handle_slash("/remove some-model:latest")
+        with (
+            patch(
+                "lilbee.cli.tui.screens.chat.get_services",
+                return_value=MagicMock(model_manager=ModelManager(models_dir)),
+            ),
+            patch(
+                "lilbee.modelhub.model_manager.discovery.classify_all_remote_models",
+                return_value=[],
+            ),
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._handle_slash("/remove llama3-8b.gguf")
             while app.screen.workers:
                 await _pilot.pause()
             await _pilot.pause()
-            mock_mgr.return_value.model_manager.is_installed.assert_called_once_with(
-                "some-model:latest"
-            )
+
+    assert mock_notify.call_args.args[0] == msg.CMD_REMOVE_NOT_FOUND.format(name="llama3-8b.gguf")
+    assert stray.exists()
 
 
 async def test_chat_slash_remove_success():

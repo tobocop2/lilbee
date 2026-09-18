@@ -7,6 +7,7 @@ lilbee.config or lilbee.models to avoid circular imports.
 
 from __future__ import annotations
 
+import ntpath
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,13 +41,19 @@ OLLAMA_NO_THINKING = "none"
 
 
 def is_native_gguf_ref(raw: str) -> bool:
-    """True when *raw* has the native HuggingFace GGUF shape ``<org>/<repo>/<file>.gguf``.
+    """True when *raw* is a GGUF with the ``<org>/<repo>/<file>.gguf`` shape or a Windows root.
+
+    A drive letter or UNC share marks a filesystem path that carries no forward
+    slash, so ``C:\\models\\x.gguf`` classifies like ``/models/x.gguf``.
 
     The suffix check is case-sensitive on purpose: repo extraction
     (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
     lowercase ``.gguf`` suffix, and classification must agree with it.
     """
-    return raw.endswith(GGUF_SUFFIX) and raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+    windows_root, _ = ntpath.splitdrive(raw)
+    return raw.endswith(GGUF_SUFFIX) and (
+        bool(windows_root) or raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+    )
 
 
 def routes_to_native_gguf(raw: str) -> bool:

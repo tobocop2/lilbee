@@ -12,6 +12,7 @@ from lilbee.core import system as system_mod
 from lilbee.core.system import (
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
+    default_cache_dir,
     default_data_dir,
     default_state_dir,
     executable_search_path,
@@ -137,6 +138,11 @@ class TestHelpers:
             assert "Caches" not in str(result)
             assert "Application Support" in str(result)
 
+    def test_default_cache_dir_darwin_uses_the_purgeable_caches(self):
+        """The counterpart to the state directory sits where a cleaner may empty it."""
+        with mock.patch("sys.platform", "darwin"):
+            assert default_cache_dir() == Path.home() / "Library" / "Caches" / "lilbee"
+
     def test_default_data_dir_windows(self, tmp_path):
         with (
             mock.patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}, clear=False),
@@ -153,6 +159,100 @@ class TestHelpers:
         ):
             result = default_data_dir()
             assert "lilbee" in str(result)
+
+
+_NO_HOME = "Could not determine home directory."
+# helper, environment variable, tail under that variable, tail under the home directory
+_WINDOWS_DIR_CASES = (
+    (default_data_dir, "LOCALAPPDATA", ("lilbee",), ("AppData", "Local", "lilbee")),
+    (default_state_dir, "LOCALAPPDATA", ("lilbee",), ("AppData", "Local", "lilbee")),
+    (
+        default_cache_dir,
+        "LOCALAPPDATA",
+        ("lilbee", "cache"),
+        ("AppData", "Local", "lilbee", "cache"),
+    ),
+)
+_LINUX_DIR_CASES = (
+    (default_data_dir, "XDG_DATA_HOME", ("lilbee",), (".local", "share", "lilbee")),
+    (default_state_dir, "XDG_STATE_HOME", ("lilbee",), (".local", "state", "lilbee")),
+    (default_cache_dir, "XDG_CACHE_HOME", ("lilbee",), (".cache", "lilbee")),
+)
+
+
+def _without_a_home(monkeypatch):
+    """Make ``Path.home()`` raise, as it does on a host that resolves no home directory."""
+
+    def _raise(_cls):
+        raise RuntimeError(_NO_HOME)
+
+    monkeypatch.setattr(Path, "home", classmethod(_raise))
+
+
+class TestPlatformDirsWithoutAHomeDirectory:
+    """A host with no resolvable home still gets its directories from the environment."""
+
+    @pytest.mark.parametrize(("helper", "var", "tail", "home_tail"), _WINDOWS_DIR_CASES)
+    def test_windows_dirs_come_from_the_variable(
+        self, helper, var, tail, home_tail, monkeypatch, tmp_path
+    ):
+        _without_a_home(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv(var, str(tmp_path))
+
+        assert helper() == tmp_path.joinpath(*tail)
+
+    @pytest.mark.parametrize(("helper", "var", "tail", "home_tail"), _LINUX_DIR_CASES)
+    def test_linux_dirs_come_from_the_variable(
+        self, helper, var, tail, home_tail, monkeypatch, tmp_path
+    ):
+        _without_a_home(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setenv(var, str(tmp_path))
+
+        assert helper() == tmp_path.joinpath(*tail)
+
+    @pytest.mark.parametrize(
+        ("helper", "var", "tail", "home_tail"), (*_WINDOWS_DIR_CASES, *_LINUX_DIR_CASES)
+    )
+    def test_an_unresolvable_home_still_raises_where_nothing_names_the_directory(
+        self, helper, var, tail, home_tail, monkeypatch
+    ):
+        """Control: with the variable unset there is no answer but the home directory."""
+        _without_a_home(monkeypatch)
+        monkeypatch.setattr(sys, "platform", "win32" if var == "LOCALAPPDATA" else "linux")
+        monkeypatch.delenv(var, raising=False)
+
+        with pytest.raises(RuntimeError, match=_NO_HOME):
+            helper()
+
+
+class TestPlatformDirsKeepTheirPaths:
+    """Reading the variable first must not move any path on a host that has a home."""
+
+    @pytest.mark.parametrize(
+        ("helper", "var", "tail", "home_tail"), (*_WINDOWS_DIR_CASES, *_LINUX_DIR_CASES)
+    )
+    def test_the_home_default_still_answers_when_the_variable_is_unset(
+        self, helper, var, tail, home_tail, monkeypatch
+    ):
+        monkeypatch.setattr(sys, "platform", "win32" if var == "LOCALAPPDATA" else "linux")
+        monkeypatch.delenv(var, raising=False)
+
+        assert helper() == Path.home().joinpath(*home_tail)
+
+    @pytest.mark.parametrize(
+        ("helper", "var", "tail", "home_tail"), (*_WINDOWS_DIR_CASES, *_LINUX_DIR_CASES)
+    )
+    def test_the_variable_wins_over_the_home_default(
+        self, helper, var, tail, home_tail, monkeypatch, tmp_path
+    ):
+        """A host with both a home directory and the variable set follows the variable."""
+        monkeypatch.setattr(sys, "platform", "win32" if var == "LOCALAPPDATA" else "linux")
+        monkeypatch.setenv(var, str(tmp_path))
+
+        assert helper() == tmp_path.joinpath(*tail)
+        assert helper() != Path.home().joinpath(*home_tail)
 
 
 class TestFindLocalRoot:

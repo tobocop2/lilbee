@@ -30,7 +30,7 @@ def stderr_suppressed() -> Iterator[None]:
     CRT fd 2, so the fd-dup technique has no effect there. The context manager
     is a no-op on Windows to avoid false suppression expectations.
     """
-    if sys.platform == "win32":  # pragma: no cover - Windows-only passthrough
+    if sys.platform == "win32":
         yield
         return
     with _STDERR_LOCK:
@@ -45,6 +45,16 @@ def stderr_suppressed() -> Iterator[None]:
             os.close(old_stderr)
 
 
+def _dir_from_env(key: str, *home_relative: str) -> Path:
+    """Path named by environment variable *key*, or *home_relative* under the home directory.
+
+    The home directory is resolved only when the variable is unset, because
+    ``Path.home()`` raises where no home directory resolves.
+    """
+    value = os.environ.get(key)
+    return Path(value) if value is not None else Path.home().joinpath(*home_relative)
+
+
 def default_data_dir() -> Path:
     """Return platform-appropriate data directory.
     - macOS:   ~/Library/Application Support/lilbee
@@ -54,9 +64,9 @@ def default_data_dir() -> Path:
     if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
     elif sys.platform == "win32":
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
+        base = _dir_from_env("LOCALAPPDATA", "AppData", "Local").expanduser()
     else:
-        base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+        base = _dir_from_env("XDG_DATA_HOME", ".local", "share")
     return base / "lilbee"
 
 
@@ -74,12 +84,12 @@ def default_state_dir() -> Path:
     a fleet holding VRAM and leave the slot looking free to the next process,
     which would then build a second fleet on top of it.
     """
-    if sys.platform == "darwin":  # pragma: no cover - platform split
+    if sys.platform == "darwin":
         base = Path.home() / "Library" / "Application Support"
-    elif sys.platform == "win32":  # pragma: no cover - platform split
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
-    else:  # pragma: no cover - platform split
-        base = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+    elif sys.platform == "win32":
+        base = _dir_from_env("LOCALAPPDATA", "AppData", "Local").expanduser()
+    else:
+        base = _dir_from_env("XDG_STATE_HOME", ".local", "state")
     return base / "lilbee"
 
 
@@ -95,14 +105,12 @@ def default_cache_dir() -> Path:
     ~/Library/Caches under disk pressure -- may empty it freely. Nothing that a
     stop path needs to find a running process belongs here.
     """
-    if sys.platform == "darwin":  # pragma: no cover - platform split
+    if sys.platform == "darwin":
         return Path.home() / "Library" / "Caches" / "lilbee"
-    if sys.platform == "win32":  # pragma: no cover - platform split
-        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local")).expanduser()
+    if sys.platform == "win32":
+        base = _dir_from_env("LOCALAPPDATA", "AppData", "Local").expanduser()
         return base / "lilbee" / "cache"
-    return (  # pragma: no cover - platform split
-        Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "lilbee"
-    )
+    return _dir_from_env("XDG_CACHE_HOME", ".cache") / "lilbee"
 
 
 def find_local_root(start: Path | None = None) -> Path | None:
