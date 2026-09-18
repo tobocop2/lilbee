@@ -1897,6 +1897,9 @@ def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]
     # another process, e.g. an embedder served alongside -- the "ggml_cuda_init:
     # initialization error" symptom). Re-probe before treating the empty list as
     # fatal; a persistently empty list still hits the fail-loud asserts below.
+    # The engine identity a plan snapshot carries does not cover this: the binary
+    # is the same one across a transient init error, so only asking again tells it
+    # apart from a host whose engine has no usable GPU.
     for _ in range(_DEVICE_PROBE_EMPTY_RETRIES):
         if probe.devices or not probe.spoke_protocol or not installed_gpu_vendor_ids():
             break
@@ -1951,7 +1954,8 @@ def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]
 _DEVICE_PROBE_TTL_S = 2.0
 # A failed probe is cached much longer than a good one: each retry against a
 # wedged GPU driver costs a full probe timeout, so a per-poll retry would stall
-# every placement read for a minute at a time.
+# every placement read for a minute at a time. The same wait bounds how often a
+# plan read re-probes an engine whose probe keeps failing.
 _DEVICE_PROBE_FAILURE_TTL_S = 60.0
 # An engine that lists no device on a GPU host may be hitting a transient GPU-init
 # error (the card momentarily held by another process); re-probe before treating
@@ -2068,12 +2072,21 @@ class _PlanProbe:
     engine_devices_all_refused: bool = False
 
 
+@dataclass(frozen=True)
+class _FailedProbe:
+    """An engine identity whose restate probe raised, and when it raised."""
+
+    engine: str
+    at: float
+
+
 class _PlanProbeStore:
     """Holds the captured plan snapshot; a single instance below (no bare global)."""
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._probe: _PlanProbe | None = None
+        self._failed: _FailedProbe | None = None
         # Held across the probe a restate runs, so a burst of reads after an
         # engine swap pays one probe. Separate from _lock, which must never be
         # held across a subprocess.
@@ -2082,14 +2095,31 @@ class _PlanProbeStore:
     def set(self, probe: _PlanProbe) -> None:
         with self._lock:
             self._probe = probe
+            self._failed = None
 
     def get(self) -> _PlanProbe | None:
         with self._lock:
             return self._probe
 
+    def note_failed_probe(self, engine: str) -> None:
+        """Record that the restate against *engine* could not probe."""
+        with self._lock:
+            self._failed = _FailedProbe(engine, time.monotonic())
+
+    def probe_failed_recently(self, engine: str) -> bool:
+        """Whether a restate against *engine* raised inside the failure wait."""
+        with self._lock:
+            failed = self._failed
+        return (
+            failed is not None
+            and failed.engine == engine
+            and time.monotonic() - failed.at < _DEVICE_PROBE_FAILURE_TTL_S
+        )
+
     def clear(self) -> None:
         with self._lock:
             self._probe = None
+            self._failed = None
 
 
 _plan_probe_store = _PlanProbeStore()
@@ -2296,15 +2326,27 @@ def _engine_identity() -> str:
         return _NO_ENGINE_BINARY
 
 
+def _probe_engine_devices_and_identity() -> tuple[str, list[FleetDevice], bool]:
+    """The engine's devices, tagged with the identity read before the probe ran.
+
+    The identity is read first so a binary replaced while the probe runs tags the
+    answer with the binary that gave it, and the next read restates. The other
+    order tags the outgoing binary's answer with the incoming binary.
+    """
+    engine = _engine_identity()
+    devices, refused_all = _probe_engine_devices()
+    return engine, devices, refused_all
+
+
 def capture_plan_probe() -> None:
     """Snapshot devices and memory for planning; call only on a clean box."""
-    devices, refused_all = _probe_engine_devices()
+    engine, devices, refused_all = _probe_engine_devices_and_identity()
     _plan_probe_store.set(
         _PlanProbe(
             devices=tuple(devices),
             sizing_budget=_device_sizing_budget(devices),
             free_system=model_cache.free_system_memory(),
-            engine=_engine_identity(),
+            engine=engine,
             engine_devices_all_refused=refused_all,
         )
     )
@@ -2340,21 +2382,32 @@ def refresh_plan_devices() -> None:
     with _plan_probe_store.restate_lock:
         probe = _plan_probe_store.get()
         if probe is not None:
-            _plan_probe_store.set(_restated(probe, _engine_identity()))
+            _store_restated(probe, _engine_identity())
 
 
-def _restated(probe: _PlanProbe, engine: str) -> _PlanProbe:
-    """*probe* re-read against the hardware, tagged with the *engine* that answered.
+def _store_restated(probe: _PlanProbe, engine: str) -> _PlanProbe:
+    """Store *probe* restated, or keep it and hold off re-probing *engine* for a while.
 
-    Every exit writes the tag, including the two that change nothing: an untagged
-    snapshot would re-probe on every later read.
+    A probe that raised is not an answer about *engine*, so the snapshot keeps the
+    identity that did answer for it and the failure is recorded instead. Caller
+    holds ``restate_lock``.
     """
+    fresh = _restated(probe)
+    if fresh is None:
+        _plan_probe_store.note_failed_probe(engine)
+        return probe
+    _plan_probe_store.set(fresh)
+    return fresh
+
+
+def _restated(probe: _PlanProbe) -> _PlanProbe | None:
+    """*probe* re-read against the hardware, or ``None`` when the probe could not run."""
     clear_read_device_cache()
     try:
-        devices, refused_all = _probe_engine_devices()
+        engine, devices, refused_all = _probe_engine_devices_and_identity()
     except (ProviderError, OSError) as exc:
         log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
-        return replace(probe, engine=engine)
+        return None
     if _structural(devices) == _structural(probe.devices):
         return replace(probe, engine=engine)
     log.info(
@@ -2391,14 +2444,21 @@ def _current_plan_probe() -> _PlanProbe | None:
 
 
 def _restate_plan_probe(engine: str) -> _PlanProbe | None:
-    """Restate the snapshot for *engine*, once per burst of stale reads."""
+    """Restate the snapshot for *engine*, once per burst of stale reads.
+
+    An engine whose probe keeps raising is re-probed at most once per failure
+    wait, so a broken binary costs the retry ladder occasionally rather than on
+    every read, and a binary repaired in place is retried without a reload.
+    """
     with _plan_probe_store.restate_lock:
         probe = _plan_probe_store.get()
-        if probe is None or probe.engine == engine:
+        if (
+            probe is None
+            or probe.engine == engine
+            or _plan_probe_store.probe_failed_recently(engine)
+        ):
             return probe
-        fresh = _restated(probe, engine)
-        _plan_probe_store.set(fresh)
-        return fresh
+        return _store_restated(probe, engine)
 
 
 def clear_plan_probe() -> None:
