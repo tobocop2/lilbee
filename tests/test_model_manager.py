@@ -21,6 +21,31 @@ from lilbee.modelhub.model_manager.discovery import _has_provider_key
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests._sys_modules import inject_modules
 
+_NATIVE_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+
+
+def _register_native(models_dir: Path, ref: str = _NATIVE_REF) -> None:
+    """Install *ref* into the manifest registry, the way a real pull does."""
+    from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+    hf_repo, filename = ref.rsplit("/", 1)
+    source = models_dir / "source.gguf"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_bytes(b"GGUF-bytes")
+    ModelRegistry(models_dir).install(
+        hf_repo,
+        filename,
+        source,
+        ModelManifest(
+            hf_repo=hf_repo,
+            gguf_filename=filename,
+            size_bytes=source.stat().st_size,
+            task=ModelTask.CHAT,
+            downloaded_at="2026-04-25T00:00:00+00:00",
+        ),
+    )
+    source.unlink()
+
 
 class TestNativeIdentitiesCache:
     """``list_native_identities`` memoizes against ``list_installed`` errors
@@ -497,10 +522,19 @@ class TestModelManagerIsInstalled:
     def test_native_installed(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
+        _register_native(models_dir)
+
+        mgr = ModelManager(models_dir)
+        assert mgr.is_installed(_NATIVE_REF, ModelSource.NATIVE) is True
+
+    def test_unregistered_gguf_under_models_dir_is_not_installed(self, tmp_path: Path) -> None:
+        """A GGUF nothing registered is absent from every listing, so not installed."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
         (models_dir / "llama3-8b.gguf").touch()
 
         mgr = ModelManager(models_dir)
-        assert mgr.is_installed("llama3-8b.gguf", ModelSource.NATIVE) is True
+        assert mgr.is_installed("llama3-8b.gguf", ModelSource.NATIVE) is False
 
     def test_native_not_installed(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
@@ -538,7 +572,7 @@ class TestModelManagerIsInstalled:
     def test_none_source_checks_both(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        (models_dir / "native-model.gguf").touch()
+        _register_native(models_dir)
 
         mock_response = mock.Mock()
         mock_response.json.return_value = {"models": []}
@@ -548,7 +582,7 @@ class TestModelManagerIsInstalled:
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
             mgr = ModelManager(models_dir)
-            assert mgr.is_installed("native-model.gguf", None) is True
+            assert mgr.is_installed(_NATIVE_REF, None) is True
             assert mgr.is_installed("remote-model:latest", None) is False
 
 
@@ -556,10 +590,10 @@ class TestModelManagerGetSource:
     def test_native_model(self, tmp_path: Path) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        (models_dir / "my-model.gguf").touch()
+        _register_native(models_dir)
 
         mgr = ModelManager(models_dir)
-        assert mgr.get_source("my-model.gguf") == ModelSource.NATIVE
+        assert mgr.get_source(_NATIVE_REF) == ModelSource.NATIVE
 
     def test_bare_ollama_model_is_remote_source(self) -> None:
         """A bare name a backend reports installed is generic REMOTE.
@@ -638,17 +672,17 @@ class TestModelManagerGetSource:
         """When model exists in both sources, NATIVE takes precedence."""
         models_dir = tmp_path / "models"
         models_dir.mkdir()
-        (models_dir / "shared:latest.gguf").touch()
+        _register_native(models_dir)
 
         mock_response = mock.Mock()
-        mock_response.json.return_value = {"models": [{"name": "shared:latest"}]}
+        mock_response.json.return_value = {"models": [{"name": _NATIVE_REF}]}
         mock_response.raise_for_status = mock.Mock()
 
         with mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get", return_value=mock_response
         ):
             mgr = ModelManager(models_dir)
-            result = mgr.get_source("shared:latest.gguf")
+            result = mgr.get_source(_NATIVE_REF)
 
         assert result == ModelSource.NATIVE
 

@@ -199,6 +199,7 @@ def build_services(
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
     from lilbee.modelhub.registry import ModelRegistry
+    from lilbee.modelhub.role_validator import warn_unregistered_role_refs
     from lilbee.providers.factory import create_provider
     from lilbee.retrieval.clustering import Clusterer
     from lilbee.retrieval.concepts import ConceptGraph
@@ -212,6 +213,9 @@ def build_services(
 
     sync_xberg_backends(provider)
     registry = registry or ModelRegistry(config.models_dir)
+    # Env vars, --model and config.toml reach cfg without the installed check the
+    # settings write boundary runs, so this is the first point that sees them all.
+    warn_unregistered_role_refs(config, registry)
     store = Store(config)
     embedder = Embedder(config, provider)
     reranker = Reranker(config)

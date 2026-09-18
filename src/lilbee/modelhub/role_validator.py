@@ -1,5 +1,6 @@
 """Role-slot assignment validation for the four model config fields."""
 
+import logging
 import os
 import sys
 
@@ -7,9 +8,11 @@ from lilbee.catalog import CatalogModel, find_pick
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
-from lilbee.core.config import cfg
+from lilbee.core.config import Config, cfg
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
+
+log = logging.getLogger(__name__)
 
 # Test-only bypass. Both the env var and pytest must be present so a
 # leaked env var cannot disable validation in production.
@@ -118,3 +121,41 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     if entry is not None:
         return _canonical_pick_ref(ref, entry, want)
     raise _not_installed(installed_ref)
+
+
+_UNREGISTERED_ROLE_WARNING = (
+    "%s is set to %r, which the model registry does not hold. No model listing "
+    "shows it and the HTTP chat route cannot resolve it. Run 'lilbee model pull "
+    "<ref>' to install a model, then set the role to that ref."
+)
+
+
+def configured_role_refs(config: Config) -> dict[str, str]:
+    """The four model-role fields of *config*, keyed by field name."""
+    return {
+        "chat_model": config.chat_model,
+        "embedding_model": config.embedding_model,
+        "vision_model": config.vision_model,
+        "reranker_model": config.reranker_model,
+    }
+
+
+def unregistered_role_refs(config: Config, registry: ModelRegistry) -> dict[str, str]:
+    """Role fields of *config* naming a ref *registry* does not hold.
+
+    A ref outside the registry still serves when the fleet resolves it on disk,
+    so the two disagree and the user sees an empty listing instead of an error.
+    Blank and provider-prefixed refs are excluded: neither belongs to the
+    registry in the first place.
+    """
+    return {
+        field_name: ref
+        for field_name, ref in configured_role_refs(config).items()
+        if not _skips_catalog_check(ref, allow_bypass=True) and not registry.is_installed(ref)
+    }
+
+
+def warn_unregistered_role_refs(config: Config, registry: ModelRegistry) -> None:
+    """Log one warning per role field of *config* that *registry* does not hold."""
+    for field_name, ref in sorted(unregistered_role_refs(config, registry).items()):
+        log.warning(_UNREGISTERED_ROLE_WARNING, field_name, ref)
