@@ -93,6 +93,11 @@ class RoutingProvider(LLMProvider):
         ref = parse_model_ref(require_role_ref(cfg.embedding_model, WorkerRole.EMBED))
         return self._pick_backend(ref).count_tokens(text)
 
+    def count_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Count *text* on the backend the chat ref routes to, same rules as :meth:`chat`."""
+        ref = parse_model_ref(require_role_ref(model or cfg.chat_model, WorkerRole.CHAT))
+        return self._pick_backend(ref).count_chat_tokens(text, model=model)
+
     @overload
     def chat(
         self,

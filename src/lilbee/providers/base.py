@@ -322,6 +322,15 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def count_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Exact token count of *text* under the chat model's tokenizer.
+
+        ``model`` empty or None means the configured chat model. Raise
+        ``NotImplementedError`` when the backend exposes no tokenizer (cloud SDK
+        backends), so a caller reports the gap rather than substituting an estimate.
+        """
+        ...
+
     @overload
     def chat(
         self,

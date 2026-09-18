@@ -1,4 +1,4 @@
-"""HTTP route for the Anthropic-compatible ``/v1/messages``."""
+"""HTTP routes for the Anthropic-compatible ``/v1/messages`` surface."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_e
 from lilbee.server.anthropic_api.models import (
     _THINKING_DISABLED,
     AnthropicEventType,
+    CountTokensRequest,
+    CountTokensResponse,
     MessagesRequest,
     MessagesResponse,
 )
@@ -27,6 +29,7 @@ from lilbee.server.anthropic_api.streaming import encode_anthropic_event, encode
 from lilbee.server.anthropic_api.translate import (
     canonical_stream_to_anthropic_events,
     canonical_to_messages_response,
+    count_tokens_to_canonical_request,
     messages_to_canonical_request,
     resolve_reasoning_mode,
 )
@@ -42,6 +45,7 @@ from lilbee.server.chat_dispatch.concurrency import (
     acquire_chat_slot_or_busy,
 )
 from lilbee.server.chat_dispatch.dispatch import (
+    count_request_tokens,
     dispatch_chat_stream,
     preflight_chat_request,
 )
@@ -56,6 +60,10 @@ from lilbee.server.validation_format import format_validation
 log = logging.getLogger(__name__)
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
+_NO_TOKENIZER_MESSAGE = (
+    "Counting tokens needs a locally served model. This model is served by a "
+    "remote provider, which exposes no tokenizer."
+)
 
 
 async def _auth_before_request(request: Request) -> Response | None:
@@ -114,6 +122,41 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
     return await _run_non_stream(
         req, guard, canonical_model=resolved_model, mode=mode, cap_chars=cap_chars
     )
+
+
+@post("/v1/messages/count_tokens", status_code=200, before_request=_auth_before_request)
+@auth_checked_in_handler
+async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> Response:
+    """``/v1/messages/count_tokens``: the served model's own count for a request.
+
+    Clients read ``input_tokens`` for context accounting, so the number comes
+    from the engine tokenizer rather than a character estimate.
+    """
+    try:
+        req = count_tokens_to_canonical_request(data)
+    except ValueError as exc:
+        # Wire-valid but untranslatable (image content, bare tool choice).
+        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
+
+    preflight = await _preflight_resolved_model(req)
+    if isinstance(preflight, Response):
+        return preflight
+    return await _counted_response(req, canonical_model=preflight)
+
+
+async def _counted_response(req: CanonicalChatRequest, *, canonical_model: str) -> Response:
+    """Count *req* on the engine, translating a failure to the error envelope."""
+    try:
+        count = await asyncio.to_thread(count_request_tokens, req, canonical_model=canonical_model)
+    except NotImplementedError:
+        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, _NO_TOKENIZER_MESSAGE)
+    except Exception as exc:
+        classified = classify_provider_error(exc)
+        if classified is None:
+            return _internal_error_response()
+        return _error_response(classified.http_status, classified.code, classified.message)
+    body = CountTokensResponse(input_tokens=count)
+    return Response(body.model_dump(), media_type="application/json")
 
 
 def _budget_tokens(data: MessagesRequest) -> int | None:
@@ -204,7 +247,7 @@ async def _gated_messages_stream(
 
 def _internal_error_response() -> Response:
     """Log and return the generic api_error 500 envelope."""
-    log.exception("messages_endpoint failed")
+    log.exception("anthropic messages surface failed")
     return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
 
 
@@ -251,6 +294,6 @@ def _response_id() -> str:
 
 anthropic_router = Router(
     path="/",
-    route_handlers=[messages_endpoint],
+    route_handlers=[messages_endpoint, count_tokens_endpoint],
     exception_handlers={ValidationException: _validation_exception_handler},
 )

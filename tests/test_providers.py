@@ -459,6 +459,26 @@ class TestRoutingProvider:
         with pytest.raises(NotImplementedError):
             rp.count_tokens("some text")
 
+    def test_routes_count_chat_tokens_to_local_engine_for_local_ref(self) -> None:
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_llama.count_chat_tokens.return_value = 31
+        rp._local = mock_llama
+
+        cfg.chat_model = "vendor/Model-GGUF/model-Q4_K_M.gguf"
+        assert rp.count_chat_tokens("some text") == 31
+        mock_llama.count_chat_tokens.assert_called_once_with("some text", model=None)
+
+    def test_routes_count_chat_tokens_to_sdk_for_remote_ref(self) -> None:
+        rp = self._make_provider()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.count_chat_tokens.side_effect = NotImplementedError
+        rp._sdk_provider = mock_sdk
+
+        cfg.chat_model = "ollama/qwen3:8b"
+        with pytest.raises(NotImplementedError):
+            rp.count_chat_tokens("some text")
+
     def test_local_ref_never_falls_through_to_litellm(self) -> None:
         """Local HF refs stay on the local engine even when litellm is installed.
 
@@ -3264,6 +3284,16 @@ def test_sdk_provider_count_tokens_not_implemented() -> None:
     provider = SdkLLMProvider(LitellmSdkBackend())
     with pytest.raises(NotImplementedError):
         provider.count_tokens("hello")
+
+
+def test_sdk_provider_count_chat_tokens_not_implemented() -> None:
+    """Cloud SDK backends expose no tokenizer, so the count_tokens route reports the gap."""
+    from lilbee.providers.litellm_sdk import LitellmSdkBackend
+    from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+    provider = SdkLLMProvider(LitellmSdkBackend())
+    with pytest.raises(NotImplementedError):
+        provider.count_chat_tokens("hello")
 
 
 class TestSdkLLMProviderVisionOcr:

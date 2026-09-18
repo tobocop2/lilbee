@@ -1829,6 +1829,19 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.count_tokens(text))
 
+    def count_chat_tokens(self, text: str, *, model: str | None = None) -> int:
+        """Exact token count of *text* under the chat model's tokenizer.
+
+        Routes to the chat server's ``/tokenize``, so the count comes from the
+        tokenizer the chat prompt is consumed by rather than from an estimate.
+        """
+        self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
+        with self._lazy_warm_scope():
+            return self._with_rediscover(
+                lambda: _least_in_flight(self._require_clients(WorkerRole.CHAT)).count_tokens(text),
+                role=WorkerRole.CHAT,
+            )
+
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:

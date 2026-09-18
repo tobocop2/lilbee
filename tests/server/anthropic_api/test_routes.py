@@ -755,3 +755,140 @@ class TestReasoningCapOnRoute:
         )
         assert text == "answer"
         assert services_with_chat_model.provider.chat.call_count == 1
+
+
+COUNT_PATH = "/v1/messages/count_tokens"
+_TOOLS = [
+    {
+        "name": "search",
+        "description": "Search the corpus",
+        "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }
+]
+
+
+def _count_body(**overrides) -> dict[str, Any]:
+    """A count_tokens body: the Anthropic contract carries no ``max_tokens``."""
+    body: dict[str, Any] = {
+        "model": INSTALLED_REF,
+        "messages": [{"role": "user", "content": "how many tokens is this"}],
+    }
+    body.update(overrides)
+    return body
+
+
+def _word_tokenizer(provider: MagicMock) -> None:
+    """Stand in for the engine tokenizer: count the words it is handed."""
+    provider.count_chat_tokens.side_effect = lambda text, *, model: len(text.split())
+
+
+async def _count(body: dict[str, Any]) -> int:
+    async with AsyncTestClient(_build_app()) as client:
+        resp = await client.post(COUNT_PATH, json=body, headers=_h())
+    assert resp.status_code == 200, resp.text
+    return int(resp.json()["input_tokens"])
+
+
+class TestCountTokens:
+    async def test_returns_the_count_the_engine_tokenizer_reported(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The body carries the engine's own number, not a count derived locally."""
+        provider = services_with_chat_model.provider
+        provider.count_chat_tokens.return_value = 4242
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 200
+        assert resp.json() == {"input_tokens": 4242}
+        counted = provider.count_chat_tokens.call_args.args[0]
+        assert "how many tokens is this" in counted
+        assert provider.count_chat_tokens.call_args.kwargs["model"] == INSTALLED_REF
+
+    async def test_tool_schemas_are_counted(self, services_with_chat_model, _auth_token):
+        """A flattening that drops tool schemas counts an agent turn short."""
+        _word_tokenizer(services_with_chat_model.provider)
+        services_with_chat_model.provider.supports_tools.return_value = True
+        without = await _count(_count_body())
+        with_tools = await _count(_count_body(tools=_TOOLS))
+        assert with_tools > without
+
+    async def test_system_prompt_is_counted(self, services_with_chat_model, _auth_token):
+        _word_tokenizer(services_with_chat_model.provider)
+        without = await _count(_count_body())
+        with_system = await _count(_count_body(system="You are a careful assistant."))
+        assert with_system > without
+
+    async def test_a_bad_credential_is_rejected_exactly_as_on_messages(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Auth is the sibling's own answer, so the two routes cannot drift apart."""
+        bad = {"Authorization": "Bearer not-the-session-token"}
+        async with AsyncTestClient(_build_app()) as client:
+            sibling = await client.post("/v1/messages", json=_body(), headers=bad)
+            counted = await client.post(COUNT_PATH, json=_count_body(), headers=bad)
+        assert counted.status_code == sibling.status_code
+        assert counted.json() == sibling.json()
+
+    async def test_unreachable_engine_returns_the_backend_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.count_chat_tokens.side_effect = ProviderError(
+            "connection refused to 127.0.0.1:41233", kind=ProviderErrorKind.CONNECTION
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 503
+        assert resp.json()["error"]["type"] == "api_error"
+        assert "127.0.0.1" not in resp.json()["error"]["message"]
+
+    async def test_a_model_without_a_tokenizer_is_a_400_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.count_chat_tokens.side_effect = NotImplementedError
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+        assert "remote provider" in resp.json()["error"]["message"]
+
+    async def test_unclassified_engine_failure_is_500_api_error(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.count_chat_tokens.side_effect = RuntimeError("boom")
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 500
+        assert resp.json()["error"]["type"] == "api_error"
+
+    async def test_unknown_model_is_404_not_found_error(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                COUNT_PATH, json=_count_body(model="nope/missing"), headers=_h()
+            )
+        assert resp.status_code == 404
+        assert resp.json()["error"]["type"] == "not_found_error"
+
+    async def test_image_content_is_400(self, services_with_chat_model, _auth_token):
+        body = _count_body(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
+                }
+            ]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=body, headers=_h())
+        assert resp.status_code == 400
+        assert "Image content" in resp.json()["error"]["message"]
+
+    async def test_missing_messages_is_400_envelope(self, services_with_chat_model, _auth_token):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json={"model": INSTALLED_REF}, headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+        assert "messages" in resp.json()["error"]["message"]

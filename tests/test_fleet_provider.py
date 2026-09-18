@@ -508,6 +508,36 @@ def test_count_tokens_routes_to_embed_server() -> None:
     client.count_tokens.assert_called_once_with("hello")
 
 
+def test_count_chat_tokens_routes_to_chat_server() -> None:
+    """A chat token count comes from the chat model's tokenizer, not the embedder's."""
+    chat, embed = _fake_client(), _fake_client()
+    chat.count_tokens.return_value = 21
+    embed.count_tokens.return_value = 9
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    assert p.count_chat_tokens("hello") == 21
+    chat.count_tokens.assert_called_once_with("hello")
+    embed.count_tokens.assert_not_called()
+
+
+def test_count_chat_tokens_rejects_a_model_the_fleet_does_not_serve() -> None:
+    from lilbee.providers.base import ProviderError
+
+    chat = _fake_client()
+    chat.count_tokens.return_value = 21
+    p = _provider_with_clients({WorkerRole.CHAT: [chat]})
+    with pytest.raises(ProviderError, match="chat model"):
+        p.count_chat_tokens("hello", model="other/Model-GGUF/other-Q4.gguf")
+    chat.count_tokens.assert_not_called()
+
+
+def test_count_chat_tokens_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError):
+        p.count_chat_tokens("hello")
+
+
 def test_count_tokens_without_server_raises() -> None:
     from lilbee.providers.base import ProviderError
 

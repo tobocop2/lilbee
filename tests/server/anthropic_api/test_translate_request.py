@@ -5,12 +5,18 @@ from __future__ import annotations
 import pytest
 
 from lilbee.core.config.enums import ReasoningMode
-from lilbee.server.anthropic_api.models import AnthropicThinking, MessagesRequest
+from lilbee.server.anthropic_api.models import (
+    AnthropicThinking,
+    CountTokensRequest,
+    MessagesRequest,
+)
 from lilbee.server.anthropic_api.translate import (
+    count_tokens_to_canonical_request,
     messages_to_canonical_request,
     resolve_reasoning_mode,
 )
 from lilbee.server.chat_dispatch.canonical import (
+    CanonicalChatRequest,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -331,3 +337,29 @@ class TestThinkingParameterOnRequest:
         """A shape this surface does not know must not 400 the agent."""
         assert _request(thinking={"type": "adaptive"}).thinking is None
         assert _request(thinking="on").thinking is None
+
+
+_PROMPT_BODY = {
+    "model": "m",
+    "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+    ],
+    "system": "be brief",
+    "tools": [{"name": "search", "description": "s", "input_schema": {"type": "object"}}],
+    "tool_choice": {"type": "auto"},
+}
+
+
+def _prompt_parts(req: CanonicalChatRequest) -> tuple[object, ...]:
+    """The parts of a canonical request that decide the rendered prompt."""
+    return (req.model, req.messages, req.system, req.tools, req.tool_choice)
+
+
+def test_the_counted_prompt_is_the_prompt_the_chat_call_sends():
+    """A prompt field that reaches one route and not the other counts the wrong prompt."""
+    counted = count_tokens_to_canonical_request(CountTokensRequest.model_validate(_PROMPT_BODY))
+    sent = messages_to_canonical_request(
+        MessagesRequest.model_validate({**_PROMPT_BODY, "max_tokens": 64})
+    )
+    assert _prompt_parts(counted) == _prompt_parts(sent)

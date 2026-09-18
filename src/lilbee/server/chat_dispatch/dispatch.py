@@ -384,6 +384,15 @@ def preflight_chat_request(req: CanonicalChatRequest) -> str:
     return canonical
 
 
+def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> int:
+    """Tokens *req*'s prompt encodes to under the served model's own tokenizer.
+
+    The prompt is flattened through the same wire translation the chat call
+    sends, so system text, conversation turns, and tool schemas are all counted.
+    """
+    return get_services().provider.count_chat_tokens(_prompt_text(req), model=canonical_model)
+
+
 def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
     """Flatten canonical messages to the OpenAI-shaped wire format the provider speaks."""
     out: list[dict[str, Any]] = []
@@ -454,6 +463,15 @@ def _provider_tools(
         }
         for tool in tools
     ]
+
+
+def _prompt_text(req: CanonicalChatRequest) -> str:
+    """The request's wire messages and tool schemas flattened to one string."""
+    parts = [json.dumps(_provider_messages(req), ensure_ascii=False)]
+    tools = _provider_tools(req.tools)
+    if tools is not None:
+        parts.append(json.dumps(tools, ensure_ascii=False))
+    return "\n".join(parts)
 
 
 def _provider_tool_choice(
