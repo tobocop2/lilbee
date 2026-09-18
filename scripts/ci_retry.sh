@@ -7,6 +7,9 @@
 # The retry is blind, like scripts/release_selfheal.sh: matching a service's
 # error text to tell a flake from a defect is a list that goes stale.
 #
+# It also runs under Git Bash on the Windows runners, so `sleep` is the only
+# external command it may use. Everything else is a shell builtin.
+#
 # Usage: ci_retry.sh <attempts> <command> [args...]
 
 set -euo pipefail
@@ -31,7 +34,8 @@ if [ "$#" -eq 0 ]; then
   exit 2
 fi
 
-for attempt in $(seq 1 "${attempts}"); do
+attempt=1
+while [ "${attempt}" -le "${attempts}" ]; do
   if "$@"; then
     exit 0
   fi
@@ -41,6 +45,7 @@ for attempt in $(seq 1 "${attempts}"); do
   delay=$((attempt * BACKOFF_STEP_S))
   echo "ci_retry: attempt ${attempt}/${attempts} of '$1' failed; retrying in ${delay}s" >&2
   sleep "${delay}"
+  attempt=$((attempt + 1))
 done
 
 echo "ci_retry: '$1' failed after ${attempts} attempts" >&2

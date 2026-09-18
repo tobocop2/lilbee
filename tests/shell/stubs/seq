@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Stands in for a seq that Git Bash may not provide: prints nothing and reports
+# the shell's command-not-found status, so a caller that needs seq gets an empty
+# list rather than a range.
+
+set -euo pipefail
+
+echo "seq: command not found" >&2
+exit 127
