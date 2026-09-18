@@ -3359,22 +3359,19 @@ class TestMeasuredTableAgainstCorpus:
         assert provenance["min_params"] > 0
 
     def test_fixture_has_power(self) -> None:
-        """The corpus covers more than one label and more than a handful of rows.
-
-        A near-empty fixture would make the coverage check below pass on
-        every label it lacks evidence for, which is a different claim than
-        agreeing with the labels it has.
-        """
-        rows = _quant_file_rate_rows()
-        assert len(rows) > 100
-        assert len({row["label"] for row in rows}) > 5
+        """The kept rows cover more than one label and more than a handful of rows."""
+        kept = [row for row in _quant_file_rate_rows() if row["kept"]]
+        assert len(kept) > 100
+        assert len({row["label"] for row in kept}) > 5
 
     def test_table_entries_cover_the_measured_corpus(self) -> None:
-        """No table entry may read under the highest rate a real file published."""
+        """No table entry may read under the highest rate a real kept file published."""
         from lilbee.catalog.models import _BYTES_PER_PARAM
 
         worst_seen: dict[str, tuple[float, str]] = {}
         for row in _quant_file_rate_rows():
+            if not row["kept"]:
+                continue
             label, rate, repo = row["label"], row["published_bytes_per_param"], row["repo"]
             if label not in _BYTES_PER_PARAM:
                 continue
@@ -3384,8 +3381,19 @@ class TestMeasuredTableAgainstCorpus:
         # A label the corpus loses fails here instead of silently narrowing
         # the check below: an unexpected SET is itself a finding.
         assert set(worst_seen) == {
-            "Q2_K", "Q3_K_S", "Q3_K_M", "Q3_K_L", "IQ4_XS", "Q4_0", "Q4_K_S",
-            "Q4_K_M", "Q5_K_S", "Q5_K_M", "Q6_K", "Q8_0",
+            "Q2_K",
+            "Q3_K_S",
+            "Q3_K_M",
+            "Q3_K_L",
+            "IQ4_XS",
+            "Q4_0",
+            "Q4_K_S",
+            "Q4_K_M",
+            "Q5_0",
+            "Q5_K_S",
+            "Q5_K_M",
+            "Q6_K",
+            "Q8_0",
         }, f"corpus label coverage changed: {sorted(worst_seen)}"
 
         under = {
@@ -3394,3 +3402,32 @@ class TestMeasuredTableAgainstCorpus:
             if _BYTES_PER_PARAM[label] < rate
         }
         assert not under, f"table entries read under a published file: {under}"
+
+    def test_excluded_rows_do_not_gate_coverage(self) -> None:
+        """An excluded row past its entry must not fail the coverage check above.
+
+        mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF publishes Q2_K at 0.4631,
+        above the 0.399 entry, but is excluded for sitting under the 7B floor.
+        Proves ``kept`` gates ``worst_seen`` rather than sitting unused.
+        """
+        from lilbee.catalog.models import _BYTES_PER_PARAM
+
+        rows = _quant_file_rate_rows()
+        excluded = next(
+            row
+            for row in rows
+            if row["repo"] == "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+            and row["label"] == "Q2_K"
+        )
+        assert excluded["kept"] is False
+        assert excluded["published_bytes_per_param"] > _BYTES_PER_PARAM["Q2_K"]
+
+        worst_seen_q2_k = max(
+            (
+                row["published_bytes_per_param"]
+                for row in rows
+                if row["kept"] and row["label"] == "Q2_K"
+            ),
+            default=0.0,
+        )
+        assert worst_seen_q2_k < excluded["published_bytes_per_param"]

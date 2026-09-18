@@ -1,905 +1,3693 @@
 {
  "provenance": {
+  "excluded_rows": "every (repo, label) candidate the same fetch produced, kept or not; a row's kept field and exclude_reason record why it does or does not count toward worst_seen. below_7b_floor and calibration_out_of_range rows let the monotonicity claim behind the 7B floor be checked from this file instead of taken on faith.",
   "fetch_date": "2026-09-18",
-  "filter": "kept repos whose parameter count checks out against an F16/BF16 sibling or Q8_0/Q6_K published size within 8-10% of nominal, params >= 7000000000, one row per (repo, label)",
+  "filter": "kept repos whose parameter count checks out against an F16/BF16 sibling or Q8_0/Q6_K published size within 10% of nominal, params >= 7000000000, one row per (repo, label)",
   "min_distinct_models_to_set_an_entry": 3,
   "min_params": 7000000000,
+  "regeneration": "one-time snapshot, no checked-in generator. The repo list traces back to a live HuggingFace search (?search=...), so re-running it returns a different repo set, not a reproduction of this one. To refresh: GET https://huggingface.co/api/models/{repo}?blobs=true for each repo of interest, sum sibling .gguf sizes per label with lilbee.catalog.refs.quant_label, divide by gguf.total, and apply the filter above.",
   "source": "HuggingFace API model listing, ?blobs=true, metadata only"
  },
  "rows": [
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8030261312,
    "published_bytes_per_param": 0.553863,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 7615616512,
    "published_bytes_per_param": 0.553924,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 11280732096,
    "published_bytes_per_param": 0.539253,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 11280732096,
    "published_bytes_per_param": 0.535593,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.539627,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.539627,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.536877,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.536877,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.539627,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.536877,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.539627,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 8339930560,
    "published_bytes_per_param": 0.536877,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "IQ4_XS",
    "params": 26895998464,
    "published_bytes_per_param": 0.560771,
    "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
   },
   {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.583302,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 728842920,
+   "published_bytes_per_param": 0.556827,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 329851904,
+   "published_bytes_per_param": 0.564974,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 47866112,
+   "published_bytes_per_param": 0.60063,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 329851904,
+   "published_bytes_per_param": 0.564975,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.557681,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 27320697856,
+   "published_bytes_per_param": 0.508314,
+   "repo": "magiccodingman/Qwen3.8-27B-MXFP4-MagicQuant-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77468928,
+   "published_bytes_per_param": 0.632586,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 119739680,
+   "published_bytes_per_param": 0.834985,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77468928,
+   "published_bytes_per_param": 0.632591,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77468928,
+   "published_bytes_per_param": 0.632586,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77468928,
+   "published_bytes_per_param": 0.632586,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.600673,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77473536,
+   "published_bytes_per_param": 0.632714,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77473536,
+   "published_bytes_per_param": 0.632717,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 32125184,
+   "published_bytes_per_param": 0.630992,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 77470464,
+   "published_bytes_per_param": 0.632588,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 261292800,
+   "published_bytes_per_param": 0.683117,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 66065664,
+   "published_bytes_per_param": 0.723532,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.583297,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.578619,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 728842752,
+   "published_bytes_per_param": 0.556809,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "IQ4_XS",
+   "params": 728842752,
+   "published_bytes_per_param": 0.552763,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q2_K",
    "params": 8030261312,
    "published_bytes_per_param": 0.395895,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q2_K",
    "params": 7615616512,
    "published_bytes_per_param": 0.396021,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.367288,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.367288,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q2_K",
    "params": 671026419200,
    "published_bytes_per_param": 0.363664,
    "repo": "unsloth/DeepSeek-R1-GGUF"
   },
   {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
    "label": "Q2_K",
-   "params": 11280732096,
-   "published_bytes_per_param": 0.367288,
-   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+   "params": 3875544576,
+   "published_bytes_per_param": 0.351201,
+   "repo": "Aatricks/bonsai-image-ternary-4B-FLUX2-klein-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
    "label": "Q2_K",
-   "params": 11280732096,
-   "published_bytes_per_param": 0.367288,
-   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+   "params": 329851904,
+   "published_bytes_per_param": 0.414956,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
   },
   {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+   "params": 3324080000,
+   "published_bytes_per_param": 0.578301,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
   },
   {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+   "params": 3324388022,
+   "published_bytes_per_param": 0.578623,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+   "params": 728842920,
+   "published_bytes_per_param": 0.400235,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+   "params": 329851904,
+   "published_bytes_per_param": 0.414956,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+   "params": 47866112,
+   "published_bytes_per_param": 0.456505,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+   "params": 329851904,
+   "published_bytes_per_param": 0.414957,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+   "params": 3880912896,
+   "published_bytes_per_param": 0.395194,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
   },
   {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
    "label": "Q2_K",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.369266,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+   "params": 79674391296,
+   "published_bytes_per_param": 0.367366,
+   "repo": "Schackay3/Qwen3-Next-80B-A3B-Instruct-ternary-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.509379,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 119739680,
+   "published_bytes_per_param": 0.80747,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.509384,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.509379,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.509379,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.463114,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77473536,
+   "published_bytes_per_param": 0.509515,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77473536,
+   "published_bytes_per_param": 0.509518,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 32125184,
+   "published_bytes_per_param": 0.497721,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 77470464,
+   "published_bytes_per_param": 0.509381,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 261292800,
+   "published_bytes_per_param": 0.575144,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 66065664,
+   "published_bytes_per_param": 0.65462,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.578619,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.578619,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 728842752,
+   "published_bytes_per_param": 0.400217,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 728842752,
+   "published_bytes_per_param": 0.400217,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 26895998464,
+   "published_bytes_per_param": 0.403922,
+   "repo": "penkia/TernaryQuench-Qwen3.8-27B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.535571,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.548336,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
+   "label": "Q2_K",
+   "params": 28592091136,
+   "published_bytes_per_param": 0.366936,
+   "repo": "vinpix/Ternary-Bonsai-27B-Stock-MTP-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8030261312,
    "published_bytes_per_param": 0.538209,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 7615616512,
    "published_bytes_per_param": 0.536852,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 11280732096,
    "published_bytes_per_param": 0.51741,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 11280732096,
    "published_bytes_per_param": 0.51741,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_L",
    "params": 8339930560,
    "published_bytes_per_param": 0.518719,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 329851904,
+   "published_bytes_per_param": 0.56005,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.648884,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.6492,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 728842920,
+   "published_bytes_per_param": 0.551567,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 329851904,
+   "published_bytes_per_param": 0.56005,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 47866112,
+   "published_bytes_per_param": 0.581708,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 329851904,
+   "published_bytes_per_param": 0.560051,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.538513,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77468928,
+   "published_bytes_per_param": 0.602508,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 119739680,
+   "published_bytes_per_param": 0.835216,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77468928,
+   "published_bytes_per_param": 0.602513,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77468928,
+   "published_bytes_per_param": 0.602508,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77468928,
+   "published_bytes_per_param": 0.602508,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.57231,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77473536,
+   "published_bytes_per_param": 0.602638,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77473536,
+   "published_bytes_per_param": 0.602641,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 32125184,
+   "published_bytes_per_param": 0.603945,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 77470464,
+   "published_bytes_per_param": 0.602509,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 261292800,
+   "published_bytes_per_param": 0.638477,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 66065664,
+   "published_bytes_per_param": 0.726043,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.649196,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.649196,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 728842752,
+   "published_bytes_per_param": 0.551549,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_L",
+   "params": 728842752,
+   "published_bytes_per_param": 0.551549,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_M",
    "params": 8030261312,
    "published_bytes_per_param": 0.500472,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_M",
    "params": 7615616512,
    "published_bytes_per_param": 0.500077,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.477928,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.477928,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_M",
    "params": 671026419200,
    "published_bytes_per_param": 0.475687,
    "repo": "unsloth/DeepSeek-R1-GGUF"
   },
   {
-   "label": "Q3_K_M",
-   "params": 11280732096,
-   "published_bytes_per_param": 0.477928,
-   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 11280732096,
-   "published_bytes_per_param": 0.477928,
-   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
-  },
-  {
-   "label": "Q3_K_M",
-   "params": 8339930560,
-   "published_bytes_per_param": 0.479334,
-   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
-  },
-  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_M",
    "params": 26895998464,
    "published_bytes_per_param": 0.494551,
    "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.518724,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.626262,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.626579,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 728842920,
+   "published_bytes_per_param": 0.508137,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.518724,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 47866112,
+   "published_bytes_per_param": 0.550217,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.518725,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.501768,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.585377,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 119739680,
+   "published_bytes_per_param": 0.828135,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.585382,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.585377,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.585377,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.547421,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77473536,
+   "published_bytes_per_param": 0.585508,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77473536,
+   "published_bytes_per_param": 0.585511,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 32125184,
+   "published_bytes_per_param": 0.580485,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 77470464,
+   "published_bytes_per_param": 0.585379,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 261292800,
+   "published_bytes_per_param": 0.633398,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 66065664,
+   "published_bytes_per_param": 0.705955,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.626575,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.626575,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 728842752,
+   "published_bytes_per_param": 0.508118,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 728842752,
+   "published_bytes_per_param": 0.508119,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.536055,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_M",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.550143,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8030261312,
    "published_bytes_per_param": 0.456337,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 7615616512,
    "published_bytes_per_param": 0.45858,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 11280732096,
    "published_bytes_per_param": 0.43526,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 11280732096,
    "published_bytes_per_param": 0.43526,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q3_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.436969,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.471537,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.578301,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.578623,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 728842920,
+   "published_bytes_per_param": 0.458097,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.471537,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 47866112,
+   "published_bytes_per_param": 0.513935,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.471538,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.458267,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.56325,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 119739680,
+   "published_bytes_per_param": 0.818476,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.563255,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.56325,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.56325,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.520061,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77473536,
+   "published_bytes_per_param": 0.563382,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77473536,
+   "published_bytes_per_param": 0.563385,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 32125184,
+   "published_bytes_per_param": 0.553455,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 77470464,
+   "published_bytes_per_param": 0.563252,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 261292800,
+   "published_bytes_per_param": 0.626838,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 66065664,
+   "published_bytes_per_param": 0.680009,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.578619,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.578619,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 728842752,
+   "published_bytes_per_param": 0.458079,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 728842752,
+   "published_bytes_per_param": 0.458079,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.535514,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q3_K_S",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.548125,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_0",
    "params": 7615616512,
    "published_bytes_per_param": 0.583554,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_0",
    "params": 11280732096,
    "published_bytes_per_param": 0.567929,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_0",
    "params": 8339930560,
    "published_bytes_per_param": 0.568718,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_0",
    "params": 8339930560,
    "published_bytes_per_param": 0.568718,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_0",
    "params": 8339930560,
    "published_bytes_per_param": 0.568718,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_0",
    "params": 8339930560,
    "published_bytes_per_param": 0.568718,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
-   "label": "Q4_K_M",
-   "params": 8030261312,
-   "published_bytes_per_param": 0.612774,
-   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 8188548096,
+   "published_bytes_per_param": 0.563356,
+   "repo": "Minarut/Ternary-Bonsai-8B-GGUF-llamacpp-compatible"
   },
   {
-   "label": "Q4_K_M",
-   "params": 7615616512,
-   "published_bytes_per_param": 0.61493,
-   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.578301,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
   },
   {
-   "label": "Q4_K_M",
-   "params": 671026419200,
-   "published_bytes_per_param": 0.602704,
-   "repo": "unsloth/DeepSeek-R1-GGUF"
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.578623,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 728842920,
+   "published_bytes_per_param": 0.581914,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 329851904,
+   "published_bytes_per_param": 0.591126,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 47866112,
+   "published_bytes_per_param": 0.623948,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 329851904,
+   "published_bytes_per_param": 0.591126,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.582086,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 7241732096,
+   "published_bytes_per_param": 0.22655,
+   "repo": "ggml-org/models"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 77473536,
+   "published_bytes_per_param": 0.65405,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.580179,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 728842752,
+   "published_bytes_per_param": 0.583515,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.535997,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_0",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.549922,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8190735360,
    "published_bytes_per_param": 0.613838,
    "repo": "Qwen/Qwen3-8B-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q4_K_M",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.612774,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q4_K_M",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.61493,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 11280732096,
    "published_bytes_per_param": 0.604808,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 11280732096,
    "published_bytes_per_param": 0.604808,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.604895,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q4_K_M",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.602704,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_M",
    "params": 26895998464,
    "published_bytes_per_param": 0.615236,
    "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.62063,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.755009,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.755315,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 728842920,
+   "published_bytes_per_param": 0.618634,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.62063,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 47866112,
+   "published_bytes_per_param": 0.649363,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.620631,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.617751,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.66308,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 119739680,
+   "published_bytes_per_param": 0.846569,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.663085,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.66308,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.66308,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.637048,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77473536,
+   "published_bytes_per_param": 0.663207,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77473536,
+   "published_bytes_per_param": 0.66321,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 32125184,
+   "published_bytes_per_param": 0.671282,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 77470464,
+   "published_bytes_per_param": 0.663082,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 261292800,
+   "published_bytes_per_param": 0.703149,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 66065664,
+   "published_bytes_per_param": 0.747665,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.755311,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.755311,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 728842752,
+   "published_bytes_per_param": 0.618616,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 728842752,
+   "published_bytes_per_param": 0.618617,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.537269,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_M",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.555816,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8030261312,
    "published_bytes_per_param": 0.584374,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 7615616512,
    "published_bytes_per_param": 0.585346,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 11280732096,
    "published_bytes_per_param": 0.56944,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 11280732096,
    "published_bytes_per_param": 0.56944,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q4_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.569881,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
-   "label": "Q5_K_M",
-   "params": 8030261312,
-   "published_bytes_per_param": 0.713924,
-   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.594305,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
   },
   {
-   "label": "Q5_K_M",
-   "params": 7615616512,
-   "published_bytes_per_param": 0.714956,
-   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.701774,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
   },
   {
-   "label": "Q5_K_M",
-   "params": 671026419200,
-   "published_bytes_per_param": 0.708462,
-   "repo": "unsloth/DeepSeek-R1-GGUF"
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.702084,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 728842920,
+   "published_bytes_per_param": 0.58677,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.594305,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 47866112,
+   "published_bytes_per_param": 0.626687,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.594305,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.586409,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 27320697856,
+   "published_bytes_per_param": 0.532458,
+   "repo": "magiccodingman/Qwen3.8-27B-MXFP4-MagicQuant-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.657727,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 119739680,
+   "published_bytes_per_param": 0.843144,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.657732,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.657727,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.657727,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.624187,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77473536,
+   "published_bytes_per_param": 0.657854,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77473536,
+   "published_bytes_per_param": 0.657857,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 32125184,
+   "published_bytes_per_param": 0.654898,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 77470464,
+   "published_bytes_per_param": 0.657728,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 261292800,
+   "published_bytes_per_param": 0.701562,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 66065664,
+   "published_bytes_per_param": 0.741387,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.70208,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.70208,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 728842752,
+   "published_bytes_per_param": 0.586752,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 728842752,
+   "published_bytes_per_param": 0.586752,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.537187,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q4_K_S",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.555516,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q5_0",
+   "params": 8190735360,
+   "published_bytes_per_param": 0.698443,
+   "repo": "Qwen/Qwen3-8B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.699444,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.699755,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 728842920,
+   "published_bytes_per_param": 0.698448,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 329851904,
+   "published_bytes_per_param": 0.70368,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 47866112,
+   "published_bytes_per_param": 0.727491,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 329851904,
+   "published_bytes_per_param": 0.70368,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_0",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.698622,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8190735360,
    "published_bytes_per_param": 0.714357,
    "repo": "Qwen/Qwen3-8B-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q5_K_M",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.713924,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q5_K_M",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.714956,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 11280732096,
    "published_bytes_per_param": 0.709706,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 11280732096,
    "published_bytes_per_param": 0.709706,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 8339930560,
    "published_bytes_per_param": 0.709785,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q5_K_M",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.708462,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_M",
    "params": 26895998464,
    "published_bytes_per_param": 0.715017,
    "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.718879,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.80632,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.806621,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 728842920,
+   "published_bytes_per_param": 0.717364,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.718879,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 47866112,
+   "published_bytes_per_param": 0.740583,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 329851904,
+   "published_bytes_per_param": 0.71888,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.716995,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.743975,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 119739680,
+   "published_bytes_per_param": 0.865554,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.743981,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.743975,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77468928,
+   "published_bytes_per_param": 0.743975,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.727546,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77473536,
+   "published_bytes_per_param": 0.744098,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77473536,
+   "published_bytes_per_param": 0.7441,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 32125184,
+   "published_bytes_per_param": 0.755178,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 77470464,
+   "published_bytes_per_param": 0.743977,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 261292800,
+   "published_bytes_per_param": 0.771099,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 66065664,
+   "published_bytes_per_param": 0.796024,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.806617,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.806617,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 728842752,
+   "published_bytes_per_param": 0.717346,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 728842752,
+   "published_bytes_per_param": 0.717346,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "no_calibrator_label_published",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709784,
+   "repo": "optionalAI/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-Q5_K_M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.538303,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_M",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.560244,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8030261312,
    "published_bytes_per_param": 0.697275,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 7615616512,
    "published_bytes_per_param": 0.697931,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 11280732096,
    "published_bytes_per_param": 0.689953,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 11280732096,
    "published_bytes_per_param": 0.689953,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690582,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690582,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690582,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690582,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690581,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690582,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690581,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q5_K_S",
    "params": 8339930560,
    "published_bytes_per_param": 0.690582,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.70368,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 3324080000,
+   "published_bytes_per_param": 0.760015,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 3324388022,
+   "published_bytes_per_param": 0.760321,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 728842920,
+   "published_bytes_per_param": 0.698448,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.70368,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 47866112,
+   "published_bytes_per_param": 0.727491,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 329851904,
+   "published_bytes_per_param": 0.70368,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.698622,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.739256,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 119739680,
+   "published_bytes_per_param": 0.863155,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.739262,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.739256,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77468928,
+   "published_bytes_per_param": 0.739256,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.720462,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77473536,
+   "published_bytes_per_param": 0.739379,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77473536,
+   "published_bytes_per_param": 0.739382,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 32125184,
+   "published_bytes_per_param": 0.745424,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 77470464,
+   "published_bytes_per_param": 0.739258,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 261292800,
+   "published_bytes_per_param": 0.7697,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 66065664,
+   "published_bytes_per_param": 0.790491,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.760316,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 3324387840,
+   "published_bytes_per_param": 0.760316,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 728842752,
+   "published_bytes_per_param": 0.69843,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 728842752,
+   "published_bytes_per_param": 0.69843,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.538232,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q5_K_S",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.559979,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q6_K",
+   "params": 8190735360,
+   "published_bytes_per_param": 0.821159,
+   "repo": "Qwen/Qwen3-8B-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8030261312,
    "published_bytes_per_param": 0.821394,
    "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 7615616512,
    "published_bytes_per_param": 0.821234,
    "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
   },
   {
-   "label": "Q6_K",
-   "params": 671026419200,
-   "published_bytes_per_param": 0.82083,
-   "repo": "unsloth/DeepSeek-R1-GGUF"
-  },
-  {
-   "label": "Q6_K",
-   "params": 8190735360,
-   "published_bytes_per_param": 0.821159,
-   "repo": "Qwen/Qwen3-8B-GGUF"
-  },
-  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 11280732096,
    "published_bytes_per_param": 0.821159,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 11280732096,
    "published_bytes_per_param": 0.821159,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 8339930560,
    "published_bytes_per_param": 0.82123,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q6_K",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.82083,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q6_K",
    "params": 26895998464,
    "published_bytes_per_param": 0.821034,
    "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
   },
   {
-   "label": "Q8_0",
-   "params": 8030261312,
-   "published_bytes_per_param": 1.063574,
-   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 329851904,
+   "published_bytes_per_param": 0.823268,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
   },
   {
-   "label": "Q8_0",
-   "params": 7615616512,
-   "published_bytes_per_param": 1.06341,
-   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 3324080000,
+   "published_bytes_per_param": 1.062872,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
   },
   {
-   "label": "Q8_0",
-   "params": 671026419200,
-   "published_bytes_per_param": 1.062978,
-   "repo": "unsloth/DeepSeek-R1-GGUF"
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 3324388022,
+   "published_bytes_per_param": 1.063149,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
   },
   {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 728842920,
+   "published_bytes_per_param": 0.822265,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 329851904,
+   "published_bytes_per_param": 0.823268,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 47866112,
+   "published_bytes_per_param": 0.837504,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 329851904,
+   "published_bytes_per_param": 0.823269,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 3880912896,
+   "published_bytes_per_param": 0.822441,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.829927,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 119739680,
+   "published_bytes_per_param": 0.889363,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.829932,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.829927,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77468928,
+   "published_bytes_per_param": 0.829927,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 2359349248,
+   "published_bytes_per_param": 0.8237,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77473536,
+   "published_bytes_per_param": 0.830044,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77473536,
+   "published_bytes_per_param": 0.830047,
+   "repo": "mradermacher/Bitnet-M7-70m-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 32125184,
+   "published_bytes_per_param": 0.844317,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 77470464,
+   "published_bytes_per_param": 0.829928,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 261292800,
+   "published_bytes_per_param": 0.843295,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 66065664,
+   "published_bytes_per_param": 0.847406,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 3324387840,
+   "published_bytes_per_param": 1.063145,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 3324387840,
+   "published_bytes_per_param": 1.063145,
+   "repo": "mradermacher/bitnet_b1_58-3B-i1-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 728842752,
+   "published_bytes_per_param": 0.822247,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 728842752,
+   "published_bytes_per_param": 0.822247,
+   "repo": "mradermacher/bitnet_b1_58-large-i1-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.541684,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q6_K",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.575718,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 8190735360,
    "published_bytes_per_param": 1.063338,
    "repo": "Qwen/Qwen3-8B-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q8_0",
+   "params": 8030261312,
+   "published_bytes_per_param": 1.063574,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q8_0",
+   "params": 7615616512,
+   "published_bytes_per_param": 1.06341,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 11280732096,
    "published_bytes_per_param": 1.063298,
    "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 8339930560,
    "published_bytes_per_param": 1.06337,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 8339930560,
    "published_bytes_per_param": 1.06337,
    "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 8339930560,
    "published_bytes_per_param": 1.06337,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 8339930560,
    "published_bytes_per_param": 1.06337,
    "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
   },
   {
+   "exclude_reason": null,
+   "kept": true,
+   "label": "Q8_0",
+   "params": 671026419200,
+   "published_bytes_per_param": 1.062978,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "exclude_reason": null,
+   "kept": true,
    "label": "Q8_0",
    "params": 26895998464,
    "published_bytes_per_param": 1.063198,
    "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 329851904,
+   "published_bytes_per_param": 1.065401,
+   "repo": "BoscoTheDog/bitnet-mistral.0.2-330m-v0.2-grokfast-v2.9_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 1273583752,
+   "published_bytes_per_param": 1.261288,
+   "repo": "BoscoTheDog/bitnet_b1_58-xl_q8_0_gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 3324080000,
+   "published_bytes_per_param": 1.062872,
+   "repo": "QuantFactory/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 3324388022,
+   "published_bytes_per_param": 1.063149,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-3B-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 728842920,
+   "published_bytes_per_param": 1.064382,
+   "repo": "RichardErkhov/1bitLLM_-_bitnet_b1_58-large-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 329851904,
+   "published_bytes_per_param": 1.065401,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-330m-v0.2-grokfast-v2.9-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 47866112,
+   "published_bytes_per_param": 1.079566,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 329851904,
+   "published_bytes_per_param": 1.065402,
+   "repo": "RichardErkhov/liminerity_-_Bitnet-Mistral.0.2-47m-v0.2-grokfast1-gguf"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 3880912896,
+   "published_bytes_per_param": 1.06462,
+   "repo": "RichardErkhov/liminerity_-_llama3-3b-1.58bit-gguf"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.007268,
+   "repo": "ggml-org/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.044059,
+   "repo": "ggml-org/gpt-oss-20b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 7241732096,
+   "published_bytes_per_param": 0.419519,
+   "repo": "ggml-org/models"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 34660610688,
+   "published_bytes_per_param": 0.570976,
+   "repo": "jashepp/Ornith-1.5-35B-A3B-MXFP4_MOE_Hybrid-Imatrix-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 77468928,
+   "published_bytes_per_param": 1.072097,
+   "repo": "mradermacher/Bitnet-Ara-Llama-77M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 119739680,
+   "published_bytes_per_param": 1.12796,
+   "repo": "mradermacher/Bitnet-LLaMa3-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 77468928,
+   "published_bytes_per_param": 1.072103,
+   "repo": "mradermacher/Bitnet-Llama-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 77468928,
+   "published_bytes_per_param": 1.072097,
+   "repo": "mradermacher/Bitnet-Llama-7B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 77468928,
+   "published_bytes_per_param": 1.072097,
+   "repo": "mradermacher/Bitnet-Llama-bn-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 2359349248,
+   "published_bytes_per_param": 1.065882,
+   "repo": "mradermacher/Bitnet-Llama3-from8BM-now2B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 77473536,
+   "published_bytes_per_param": 1.0722,
+   "repo": "mradermacher/Bitnet-M7-70m-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 32125184,
+   "published_bytes_per_param": 1.08641,
+   "repo": "mradermacher/Bitnet-Mistral.0.2-v6.8-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 77470464,
+   "published_bytes_per_param": 1.072098,
+   "repo": "mradermacher/Bitnet-Nous-Llama2-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 261292800,
+   "published_bytes_per_param": 1.085461,
+   "repo": "mradermacher/Bitnet-Qwen2.5-70M-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 66065664,
+   "published_bytes_per_param": 1.089573,
+   "repo": "mradermacher/Bitnet-SmolLM-135M-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 3324387840,
+   "published_bytes_per_param": 1.063145,
+   "repo": "mradermacher/bitnet_b1_58-3B-GGUF"
+  },
+  {
+   "exclude_reason": "below_7b_floor",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 728842752,
+   "published_bytes_per_param": 1.064364,
+   "repo": "mradermacher/bitnet_b1_58-large-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 116829156672,
+   "published_bytes_per_param": 0.542564,
+   "repo": "unsloth/gpt-oss-120b-GGUF"
+  },
+  {
+   "exclude_reason": "calibration_out_of_range",
+   "kept": false,
+   "label": "Q8_0",
+   "params": 20914757184,
+   "published_bytes_per_param": 0.578996,
+   "repo": "unsloth/gpt-oss-20b-GGUF"
   }
  ]
 }
