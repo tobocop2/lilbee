@@ -1,5 +1,6 @@
 """Tests for catalog.py: model catalog, HF API fetching, filtering, downloading."""
 
+import json
 import logging
 import os
 import re
@@ -312,7 +313,7 @@ class TestEstimateSizeGb:
 
         params = 8_190_000_000  # Qwen3-8B
         assert estimate_size_gb(params, "m-Q4_K_M.gguf") == 4.7  # measured 4.68
-        assert estimate_size_gb(params, "m-Q8_0.gguf") == 8.1  # measured 8.11
+        assert estimate_size_gb(params, "m-Q8_0.gguf") == 8.2  # measured 8.11
 
     def test_unknown_quant_falls_back_to_the_preferred_one(self) -> None:
         """An unlabelled file sizes as the quant a pull would land on."""
@@ -3265,14 +3266,20 @@ class TestGgmlDerivedQuantEstimate:
         assert not at_floor, f"estimates at or below their ggml floor: {at_floor}"
 
     def test_the_measured_table_tracks_ggml_where_both_name_a_type(self) -> None:
-        """A measured figure is a file average, so it sits just above its type, never far."""
+        """A measured figure is a file average, so it sits above its type, not far below.
+
+        How far above varies by how large a share of the file the promoted
+        tensors are: Q2_K sits 21% over its type because promotion is fixed
+        per model while a Q2_K file is small, and the corpus in
+        ``quant_file_rates.json`` backs that figure across five repos.
+        """
         from lilbee.catalog.models import _BYTES_PER_PARAM
 
         floors = _ggml_quant_rates()
         shared = {q: (m, floors[q]) for q, m in _BYTES_PER_PARAM.items() if q in floors}
         assert set(shared) == {"Q2_K", "IQ4_XS", "Q4_0", "Q5_0", "Q6_K", "Q8_0"}
-        adrift = {q: (m, f) for q, (m, f) in shared.items() if m > f * 1.02}
-        assert not adrift, f"measured figures more than 2% above their type: {adrift}"
+        adrift = {q: (m, f) for q, (m, f) in shared.items() if m > f * 1.25}
+        assert not adrift, f"measured figures more than 25% above their type: {adrift}"
 
 
 class TestMeasuredQuantFloors:
@@ -3292,9 +3299,12 @@ class TestMeasuredQuantFloors:
         """No measured figure may sit below its base type, which is impossible.
 
         llama.cpp promotes some tensors and leaves norms in F32, so a real file
-        always costs more per weight than its nominal type: a table entry under
-        the floor is a typo, not a small model. Checked here rather than clamped
-        at runtime so the table is fixed instead of silently corrected.
+        usually costs more per weight than its nominal type, though an ftype of
+        that name can mix a cheaper type into some tensors and read under it: a
+        table entry under the floor is still a typo, not a small model, because
+        the floor is what one tensor of the type costs, not a published file.
+        Checked here rather than clamped at runtime so the table is fixed
+        instead of silently corrected.
         """
         from lilbee.catalog.models import _BYTES_PER_PARAM
 
@@ -3309,3 +3319,65 @@ class TestMeasuredQuantFloors:
         """The lookup resolves a real quant, so the check above cannot pass vacuously."""
         assert self._ggml_floor("Q4_K_M") == pytest.approx(0.5625)
         assert self._ggml_floor("NOT_A_QUANT") is None
+
+
+def _quant_file_rate_rows() -> list[dict[str, Any]]:
+    """Rows from the checked-in corpus of published GGUF file sizes."""
+    path = Path(__file__).parent / "fixtures" / "quant_file_rates.json"
+    fixture = json.loads(path.read_text(encoding="utf-8"))
+    rows: list[dict[str, Any]] = fixture["rows"]
+    return rows
+
+
+class TestMeasuredTableAgainstCorpus:
+    """The measured table against the published files it was re-measured from.
+
+    ``quant_file_rates.json`` carries its own provenance (fetch date, filter)
+    inside the JSON. A label the fixture has no rows for is not checked here;
+    a typo in an unmeasured label still fails
+    ``test_measured_quants_are_above_their_ggml_floor``.
+    """
+
+    def test_fixture_carries_its_provenance(self) -> None:
+        """The corpus states when and how it was gathered, not in a comment."""
+        path = Path(__file__).parent / "fixtures" / "quant_file_rates.json"
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        provenance = fixture["provenance"]
+        assert provenance["fetch_date"]
+        assert provenance["filter"]
+        assert provenance["min_params"] > 0
+
+    def test_fixture_has_power(self) -> None:
+        """The corpus covers more than one label and more than a handful of rows.
+
+        A near-empty fixture would make the coverage check below pass on
+        every label it lacks evidence for, which is a different claim than
+        agreeing with the labels it has.
+        """
+        rows = _quant_file_rate_rows()
+        assert len(rows) > 100
+        assert len({row["label"] for row in rows}) > 5
+
+    def test_table_entries_cover_the_measured_corpus(self) -> None:
+        """No table entry may read under the highest rate a real file published.
+
+        A size estimate that reads under a real file tells someone a model
+        fits in their RAM when it does not, which is the direction this bead
+        exists to close.
+        """
+        from lilbee.catalog.models import _BYTES_PER_PARAM
+
+        worst_seen: dict[str, tuple[float, str]] = {}
+        for row in _quant_file_rate_rows():
+            label, rate, repo = row["label"], row["published_bytes_per_param"], row["repo"]
+            if label not in _BYTES_PER_PARAM:
+                continue
+            if label not in worst_seen or rate > worst_seen[label][0]:
+                worst_seen[label] = (rate, repo)
+
+        under = {
+            label: (_BYTES_PER_PARAM[label], rate, repo)
+            for label, (rate, repo) in worst_seen.items()
+            if _BYTES_PER_PARAM[label] < rate
+        }
+        assert not under, f"table entries read under a published file: {under}"

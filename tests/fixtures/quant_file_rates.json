@@ -1,0 +1,905 @@
+{
+ "provenance": {
+  "fetch_date": "2026-09-18",
+  "filter": "kept repos whose parameter count checks out against an F16/BF16 sibling or Q8_0/Q6_K published size within 8-10% of nominal, params >= 7000000000, one row per (repo, label)",
+  "min_distinct_models_to_set_an_entry": 3,
+  "min_params": 7000000000,
+  "source": "HuggingFace API model listing, ?blobs=true, metadata only"
+ },
+ "rows": [
+  {
+   "label": "IQ4_XS",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.553863,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.553924,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.539253,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.535593,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.539627,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.539627,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.536877,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.536877,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.539627,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.536877,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.539627,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.536877,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "IQ4_XS",
+   "params": 26895998464,
+   "published_bytes_per_param": 0.560771,
+   "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.395895,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.396021,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.363664,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.367288,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.367288,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q2_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.369266,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.538209,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.536852,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.51741,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.51741,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q3_K_L",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.518719,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.500472,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.500077,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.475687,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.477928,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.477928,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.479334,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_M",
+   "params": 26895998464,
+   "published_bytes_per_param": 0.494551,
+   "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.456337,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.45858,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.43526,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.43526,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q3_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.436969,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q4_0",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.583554,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q4_0",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.567929,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q4_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.568718,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q4_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.568718,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q4_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.568718,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q4_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.568718,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.612774,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.61493,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.602704,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8190735360,
+   "published_bytes_per_param": 0.613838,
+   "repo": "Qwen/Qwen3-8B-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.604808,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.604808,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.604895,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_M",
+   "params": 26895998464,
+   "published_bytes_per_param": 0.615236,
+   "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.584374,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.585346,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.56944,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.56944,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q4_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.569881,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.713924,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.714956,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.708462,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8190735360,
+   "published_bytes_per_param": 0.714357,
+   "repo": "Qwen/Qwen3-8B-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.709706,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.709706,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.709785,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_M",
+   "params": 26895998464,
+   "published_bytes_per_param": 0.715017,
+   "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.697275,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.697931,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.689953,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.689953,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690582,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690582,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690582,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690582,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690581,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690582,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690581,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q5_K_S",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.690582,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8030261312,
+   "published_bytes_per_param": 0.821394,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 7615616512,
+   "published_bytes_per_param": 0.821234,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 671026419200,
+   "published_bytes_per_param": 0.82083,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8190735360,
+   "published_bytes_per_param": 0.821159,
+   "repo": "Qwen/Qwen3-8B-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.821159,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 11280732096,
+   "published_bytes_per_param": 0.821159,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-i1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-i1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-i1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-i1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 8339930560,
+   "published_bytes_per_param": 0.82123,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-i1-GGUF"
+  },
+  {
+   "label": "Q6_K",
+   "params": 26895998464,
+   "published_bytes_per_param": 0.821034,
+   "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 8030261312,
+   "published_bytes_per_param": 1.063574,
+   "repo": "bartowski/Meta-Llama-3.1-8B-Instruct-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 7615616512,
+   "published_bytes_per_param": 1.06341,
+   "repo": "bartowski/Qwen2.5-7B-Instruct-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 671026419200,
+   "published_bytes_per_param": 1.062978,
+   "repo": "unsloth/DeepSeek-R1-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 8190735360,
+   "published_bytes_per_param": 1.063338,
+   "repo": "Qwen/Qwen3-8B-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 11280732096,
+   "published_bytes_per_param": 1.063298,
+   "repo": "mradermacher/LFM2-12B-A1B-GLM-4.7-Thinking-Quantum-IQ1C-P-TR1-S2-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 1.06337,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 1.06337,
+   "repo": "mradermacher/LFM2-8B-A1B-GLM-4.7-Flash-Thinking-Quantum-IQ1C-P-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 1.06337,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 8339930560,
+   "published_bytes_per_param": 1.06337,
+   "repo": "mradermacher/LFM2-8B-A1B-Instruct-Quantum-IQ1C-Qwen3.6-35B-A3B-DISTILL2-GGUF"
+  },
+  {
+   "label": "Q8_0",
+   "params": 26895998464,
+   "published_bytes_per_param": 1.063198,
+   "repo": "vcruz305/Ternary-Bonsai-27B-GGUF"
+  }
+ ]
+}
