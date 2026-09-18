@@ -3196,6 +3196,19 @@ def _ggml_quant_rates() -> dict[str, float]:
     return {name: rate for name, (blk, rate) in _ggml_type_rates().items() if blk > 1}
 
 
+# How far a measured _BYTES_PER_PARAM figure may sit above its ggml floor
+# before test_the_measured_table_tracks_ggml_where_both_name_a_type flags it as
+# drift. Bounds promotion overhead (the fixed cost of promoted tensors on a
+# small file), not measurement error. Each entry carries the ratio it was set
+# from; a label not named here gets _DEFAULT_GGML_DRIFT_ALLOWANCE.
+_GGML_DRIFT_ALLOWANCE: dict[str, float] = {
+    "Q2_K": 1.22,  # measured 1.216
+    "IQ4_XS": 1.07,  # measured 1.062
+    "Q4_0": 1.05,  # measured 1.044
+}
+_DEFAULT_GGML_DRIFT_ALLOWANCE = 1.02  # measured Q5_0 1.017, Q6_K 1.007, Q8_0 1.006
+
+
 class TestGgmlDerivedQuantEstimate:
     """Quants the measured table omits, sized from the ggml type plus file promotion."""
 
@@ -3266,20 +3279,18 @@ class TestGgmlDerivedQuantEstimate:
         assert not at_floor, f"estimates at or below their ggml floor: {at_floor}"
 
     def test_the_measured_table_tracks_ggml_where_both_name_a_type(self) -> None:
-        """A measured figure is a file average, so it sits above its type, not far below.
-
-        How far above varies by how large a share of the file the promoted
-        tensors are: Q2_K sits 21% over its type because promotion is fixed
-        per model while a Q2_K file is small, and the corpus in
-        ``quant_file_rates.json`` backs that figure across five repos.
-        """
+        """Each measured figure stays within its own label's promotion allowance."""
         from lilbee.catalog.models import _BYTES_PER_PARAM
 
         floors = _ggml_quant_rates()
         shared = {q: (m, floors[q]) for q, m in _BYTES_PER_PARAM.items() if q in floors}
         assert set(shared) == {"Q2_K", "IQ4_XS", "Q4_0", "Q5_0", "Q6_K", "Q8_0"}
-        adrift = {q: (m, f) for q, (m, f) in shared.items() if m > f * 1.25}
-        assert not adrift, f"measured figures more than 25% above their type: {adrift}"
+        adrift = {
+            q: (m, f, _GGML_DRIFT_ALLOWANCE.get(q, _DEFAULT_GGML_DRIFT_ALLOWANCE))
+            for q, (m, f) in shared.items()
+            if m > f * _GGML_DRIFT_ALLOWANCE.get(q, _DEFAULT_GGML_DRIFT_ALLOWANCE)
+        }
+        assert not adrift, f"measured figures past their label's drift allowance: {adrift}"
 
 
 class TestMeasuredQuantFloors:
