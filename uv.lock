@@ -2001,7 +2001,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-forked", specifier = ">=1.6.0" },
     { name = "pytest-httpserver" },
-    { name = "pytest-rerunfailures", specifier = ">=16" },
+    { name = "pytest-rerunfailures", specifier = ">=16.5" },
     { name = "pytest-timeout", specifier = ">=2.3" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "reportlab" },
