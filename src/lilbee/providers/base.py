@@ -256,7 +256,6 @@ class TokenUsage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     # Prompt tokens the engine served from cache, a subset of prompt_tokens.
-    # A low count is the safe direction: it can only make a client compact early.
     cached_prompt_tokens: int = 0
 
 
