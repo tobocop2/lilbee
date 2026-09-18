@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Stand-in for the lilbee entrypoint that tools/qa/artifact_smoke.sh drives.
+# Records every subcommand and answers the smoke's two searches from a canned map.
+#
+# Reads:
+#   SMOKE_CALLS          file each subcommand is appended to (required)
+#   SMOKE_CRAWL_INDEXED  1 when the crawled page is searchable (default: 1)
+
+set -euo pipefail
+
+if [ "${1:-}" = "--data-dir" ]; then
+  shift 2
+fi
+sub="${1:-}"
+shift || true
+
+echo "${sub} $*" >> "${SMOKE_CALLS:?SMOKE_CALLS is required}"
+
+case "${sub}" in
+  search)
+    case "${1:-}" in
+      *quartz*)
+        echo "1. smoke-doc.md   blue quartz resonator array"
+        ;;
+      *examples*)
+        if [ "${SMOKE_CRAWL_INDEXED:-1}" = "1" ]; then
+          echo "1. https://example.com   This domain is for use in illustrative examples"
+        fi
+        ;;
+    esac
+    ;;
+  ask)
+    echo "The blue quartz resonator is calibrated to 432 megahertz."
+    ;;
+esac
