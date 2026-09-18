@@ -6,6 +6,8 @@ import re
 from collections.abc import Iterable
 from enum import IntEnum
 
+from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
 # A native GGUF ref ``<org>/<repo>/<file>.gguf`` has at least two ``/`` separators;
 # the filename may add more when a quant lives in a repo subdir (``Q4_K_M/...``).
 NATIVE_GGUF_REF_MIN_SLASHES = 2
@@ -43,11 +45,24 @@ _QUANT_PREFERENCE = (
 # ones: picking it turns a 7 GB pull into a 54 GB one.
 FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 
+# ggml's own quantized type names, longest first so the alternation prefers the
+# fuller name. Taken from the library because a name like ``TQ1_0`` or ``MXFP4``
+# states no bit width, so no pattern over a label's shape can find it. A block of
+# one weight holds a scalar, not a quant, and the float alternation below names
+# the three scalar types a GGUF filename actually carries.
+_GGML_QUANT_NAMES = sorted(
+    (re.escape(t.name) for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1),
+    key=lambda name: (-len(name), name),
+)
+
 # A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of the
 # filename. Matching it as a bare substring makes ``Q8_0`` match inside
 # ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
 _QUANT_TOKEN_RE = re.compile(
-    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|BF16|F16|F32)(?=$|[-_./])", re.IGNORECASE
+    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|"
+    + "|".join(_GGML_QUANT_NAMES)
+    + r"|BF16|F16|F32)(?=$|[-_./])",
+    re.IGNORECASE,
 )
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")

@@ -1531,11 +1531,29 @@ class TestQuantLabel:
             ("mmproj-model-f16.gguf", "F16"),
             ("model-bf16.gguf", "BF16"),
             ("Ternary-Bonsai-27B-Q2_g64.gguf", "Q2_G64"),
+            ("Falcon3-7B-TQ1_0.gguf", "TQ1_0"),
+            ("gpt-oss-20b-MXFP4.gguf", "MXFP4"),
             ("Qwen3-30B-A3B.gguf", ""),
         ],
     )
     def test_reads_the_labelled_segment(self, filename: str, expected: str) -> None:
         assert quant_label(filename) == expected
+
+    def test_every_quantized_ggml_type_is_a_label(self) -> None:
+        """A label stating no bit width is still a quant, so ggml names the set."""
+        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+        unread = [
+            t.name
+            for t in GGMLQuantizationType
+            if GGML_QUANT_SIZES[t][0] > 1 and quant_label(f"m-{t.name}.gguf") != t.name
+        ]
+        assert not unread, f"ggml quant types no label reads: {unread}"
+
+    def test_a_scalar_ggml_type_is_not_a_quant_label(self) -> None:
+        """One weight per block is unquantized, so ``I8`` must not read as a quant."""
+        assert quant_label("m-I8.gguf") == ""
+        assert quant_label("m-I32.gguf") == ""
 
     def test_label_must_be_a_whole_segment(self) -> None:
         """``F16`` inside ``BF16`` and ``Q8_0`` inside a longer word are not labels."""
@@ -3148,6 +3166,67 @@ class TestUnrecognizedQuantEstimate:
 
         assert _quant_bytes_per_param("m-Q4_K_M.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
         assert _quant_bytes_per_param("m-Q8_0.gguf") == _BYTES_PER_PARAM["Q8_0"]
+
+    def test_the_reported_ternary_row_is_not_reported_at_double_its_size(self) -> None:
+        """The bead's repro: 6.67 to 7.06 GB of files asked for 23 GB of RAM."""
+        from lilbee.catalog.models import estimate_min_ram_gb, estimate_size_gb
+
+        params = 27_000_000_000
+        for filename in (
+            "Ternary-Bonsai-27B-Q2_0.gguf",
+            "Ternary-Bonsai-27B-PQ2_0.gguf",
+            "Ternary-Bonsai-27B-Q2_g64.gguf",
+        ):
+            size_gb = estimate_size_gb(params, filename)
+            assert 6.3 <= size_gb <= 7.4, f"{filename}: {size_gb} GB"
+            assert estimate_min_ram_gb(size_gb) < 12.0
+
+
+class TestGgmlDerivedQuantEstimate:
+    """Quants the measured table omits but ggml names get its block arithmetic."""
+
+    @staticmethod
+    def _quantized_types() -> dict[str, float]:
+        """Bytes per weight of every ggml type that packs more than one weight per block."""
+        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+        sizes = {t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType}
+        return {name: ts / blk for name, (blk, ts) in sizes.items() if blk > 1}
+
+    @pytest.mark.parametrize("quant", ["TQ1_0", "TQ2_0", "MXFP4", "NVFP4", "IQ1_S", "IQ1_M"])
+    def test_matches_the_library_block_arithmetic(self, quant: str) -> None:
+        """Asserted against ggml's own numbers so the two cannot drift apart."""
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        expected = self._quantized_types()[quant]
+        assert _quant_bytes_per_param(f"m-{quant}.gguf") == pytest.approx(expected)
+
+    def test_a_ternary_type_is_not_estimated_as_q4_k_m(self) -> None:
+        """TQ1_0 packs 1.69 bits per weight; the default reports it at 2.9 times that."""
+        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
+
+        assert _quant_bytes_per_param("m-TQ1_0.gguf") < _BYTES_PER_PARAM["Q4_K_M"] / 2
+
+    def test_no_estimate_sits_below_its_ggml_floor(self) -> None:
+        """A file cannot be smaller than its own tensor type, so no estimate may claim it."""
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        below = {
+            quant: (_quant_bytes_per_param(f"m-{quant}.gguf"), floor)
+            for quant, floor in self._quantized_types().items()
+            if _quant_bytes_per_param(f"m-{quant}.gguf") < floor
+        }
+        assert not below, f"estimates below their ggml floor: {below}"
+
+    def test_the_measured_table_tracks_ggml_where_both_name_a_type(self) -> None:
+        """A measured figure is a file average, so it sits just above its type, never far."""
+        from lilbee.catalog.models import _BYTES_PER_PARAM
+
+        floors = self._quantized_types()
+        shared = {q: (m, floors[q]) for q, m in _BYTES_PER_PARAM.items() if q in floors}
+        assert len(shared) >= 5
+        adrift = {q: (m, f) for q, (m, f) in shared.items() if m > f * 1.02}
+        assert not adrift, f"measured figures more than 2% above their type: {adrift}"
 
 
 class TestMeasuredQuantFloors:

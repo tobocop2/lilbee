@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass
 
+from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
 from pydantic import BaseModel
 
 from lilbee.catalog.refs import quant_label
@@ -59,22 +60,40 @@ _SCALE_OVERHEAD = 1.125
 _BITS_PER_BYTE = 8
 
 
-def _packed_bits(quant: str) -> int | None:
-    """The bit width *quant* packs each weight into, or None if it names none."""
+def _measured_bytes_per_param(quant: str) -> float | None:
+    """The measured whole-file figure for *quant*, or None if the table omits it."""
+    return _BYTES_PER_PARAM.get(quant)
+
+
+def _ggml_bytes_per_param(quant: str) -> float | None:
+    """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type."""
+    try:
+        block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[quant]]
+    except KeyError:
+        return None
+    return type_size / block
+
+
+def _width_bytes_per_param(quant: str) -> float | None:
+    """Bytes per weight from the bit width *quant* names, or None if it names none."""
     match = re.match(r"I?Q(\d)", quant)
-    return int(match.group(1)) if match else None
+    if match is None:
+        return None
+    return int(match.group(1)) / _BITS_PER_BYTE * _SCALE_OVERHEAD
 
 
 def _quant_bytes_per_param(gguf_filename: str) -> float:
-    """Bytes per weight for the quant *gguf_filename* names."""
+    """Bytes per weight for the quant *gguf_filename* names.
+
+    Measurement first, then ggml's block arithmetic for any type it knows, then
+    the bit width the label states, then the default.
+    """
     quant = quant_label(gguf_filename)
-    measured = _BYTES_PER_PARAM.get(quant)
-    if measured is not None:
-        return measured
-    bits = _packed_bits(quant)
-    if bits is None:
-        return _DEFAULT_BYTES_PER_PARAM
-    return bits / _BITS_PER_BYTE * _SCALE_OVERHEAD
+    for resolve in (_measured_bytes_per_param, _ggml_bytes_per_param, _width_bytes_per_param):
+        bytes_per_param = resolve(quant)
+        if bytes_per_param is not None:
+            return bytes_per_param
+    return _DEFAULT_BYTES_PER_PARAM
 
 
 def estimate_min_ram_gb(size_gb: float) -> float:
