@@ -842,12 +842,17 @@ class TestModelManagerRemove:
         assert removed is False
 
     def test_native_remove_path_traversal_blocked(self, tmp_path: Path) -> None:
-        models_dir = tmp_path / "models"
-        models_dir.mkdir()
+        """The guard refuses the escape, so the file the ref points at survives."""
+        models_dir = tmp_path / "nested" / "models"
+        models_dir.mkdir(parents=True)
+        victim = tmp_path / "victim.gguf"
+        victim.write_bytes(b"GGUF-bytes")
 
         mgr = ModelManager(models_dir)
-        removed = mgr.remove("../../etc/passwd", ModelSource.NATIVE)
+        removed = mgr.remove("../../victim.gguf", ModelSource.NATIVE)
+
         assert removed is False
+        assert victim.exists()
 
     def test_remove_refuses_ollama_source(self) -> None:
         """Ollama is read-only: an explicit OLLAMA source is refused, never deleted."""
@@ -994,13 +999,6 @@ class TestLitellmEdgeCases:
             result = mgr.list_installed(ModelSource.REMOTE)
 
         assert result == []
-
-
-class TestIsNativePathTraversal:
-    def test_path_traversal_returns_false(self, tmp_path: Path) -> None:
-        """_is_native returns False for path traversal attempts."""
-        mgr = ModelManager(models_dir=tmp_path)
-        assert not mgr._is_native("../../etc/passwd")
 
 
 class TestIsNativeRegistry:

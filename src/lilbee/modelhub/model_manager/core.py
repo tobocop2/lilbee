@@ -150,11 +150,7 @@ class ModelManager:
         return self._is_remote(model)
 
     def _is_native(self, model: str) -> bool:
-        """True when the manifest registry holds *model*.
-
-        The registry is the single definition of native installed-ness, shared
-        with ``list_installed`` and ``resolve_model_path``.
-        """
+        """True when the manifest registry holds *model*."""
         return self._registry.is_installed(model)
 
     def _is_remote(self, model: str) -> bool:
