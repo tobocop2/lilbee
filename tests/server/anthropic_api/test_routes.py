@@ -200,7 +200,11 @@ class TestNonStreaming:
         assert body["content"] == [{"type": "text", "text": "hello"}]
         assert body["stop_reason"] == "end_turn"
         assert body["stop_sequence"] is None
-        assert set(body["usage"]) == {"input_tokens", "output_tokens"}
+        assert set(body["usage"]) == {
+            "input_tokens",
+            "output_tokens",
+            "cache_read_input_tokens",
+        }
 
     async def test_tool_call_response(self, services_with_chat_model, _auth_token):
         services_with_chat_model.provider.supports_tools.return_value = True

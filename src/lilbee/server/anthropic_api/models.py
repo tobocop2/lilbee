@@ -192,10 +192,17 @@ class MessagesRequest(_AnthropicModel):
 
 
 class AnthropicUsage(BaseModel):
-    """Token counts in the Anthropic response shape."""
+    """Token counts in the Anthropic response shape.
+
+    ``cache_read_input_tokens`` is a subset of ``input_tokens`` here, and not
+    disjoint from it as Anthropic's own definition has it: ``input_tokens``
+    stays the whole prompt. A client that reads ``input_tokens`` alone gets the
+    prompt total; a client that sums the two counts the cached part twice.
+    """
 
     input_tokens: int
     output_tokens: int
+    cache_read_input_tokens: int = 0
 
 
 class MessagesResponse(BaseModel):

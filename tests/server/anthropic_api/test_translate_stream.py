@@ -72,8 +72,31 @@ async def test_plain_text_stream_event_sequence():
     assert pairs[2][1]["delta"] == {"type": "text_delta", "text": "hel"}
     delta = pairs[5][1]
     assert delta["delta"]["stop_reason"] == "end_turn"
-    assert delta["usage"] == {"input_tokens": 3, "output_tokens": 2}
+    assert delta["usage"] == {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 0}
     assert pairs[0][1]["message"]["id"] == "msg_1"
+
+
+@pytest.mark.asyncio
+async def test_stream_message_delta_reports_cache_read_input_tokens():
+    """The streamed usage block carries cache reuse like the non-streamed one."""
+    pairs = await _drain(
+        [
+            MessageStart(id="x", model="m"),
+            MessageDelta(
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=423, output_tokens=8, cached_input_tokens=404),
+            ),
+            MessageStop(),
+        ]
+    )
+    delta = next(p for t, p in pairs if t == "message_delta")
+    assert delta["usage"] == {
+        "input_tokens": 423,
+        "output_tokens": 8,
+        "cache_read_input_tokens": 404,
+    }
+    start = next(p for t, p in pairs if t == "message_start")
+    assert set(start["message"]["usage"]) == set(delta["usage"])
 
 
 @pytest.mark.asyncio

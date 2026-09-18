@@ -117,6 +117,8 @@ class CanonicalUsage:
 
     input_tokens: int
     output_tokens: int
+    # Prompt tokens served from the engine's cache, a subset of input_tokens.
+    cached_input_tokens: int = 0
 
 
 @dataclass(frozen=True)

@@ -143,6 +143,19 @@ class TestDispatchChat:
         resp = dispatch_chat(_req())
         assert resp.usage == CanonicalUsage(input_tokens=11, output_tokens=4)
 
+    def test_cached_prompt_tokens_threaded_from_result(self, services_with_model) -> None:
+        """A provider's cache-reuse count reaches the canonical usage."""
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="hello",
+            tool_calls=(),
+            finish_reason=FinishReason.STOP,
+            usage=TokenUsage(prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404),
+        )
+        resp = dispatch_chat(_req())
+        assert resp.usage == CanonicalUsage(
+            input_tokens=423, output_tokens=8, cached_input_tokens=404
+        )
+
     def test_max_tokens_finish_reason_maps_to_max_tokens(self, services_with_model) -> None:
         services_with_model.provider.chat.return_value = ChatResult(
             text="cut", tool_calls=(), finish_reason=FinishReason.LENGTH
@@ -553,6 +566,20 @@ class TestDispatchChatStream:
         events = await self._drain(dispatch_chat_stream(_req()))
         msg_delta = next(e for e in events if isinstance(e, MessageDelta))
         assert msg_delta.usage == CanonicalUsage(input_tokens=8, output_tokens=2)
+
+    async def test_stream_usage_frame_carries_cached_prompt_tokens(
+        self, services_with_model
+    ) -> None:
+        """The streamed usage frame reports cache reuse like the non-streamed one."""
+        stream = _FakeStream(
+            ["hi", TokenUsage(prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404)]
+        )
+        services_with_model.provider.chat.return_value = stream
+        events = await self._drain(dispatch_chat_stream(_req()))
+        msg_delta = next(e for e in events if isinstance(e, MessageDelta))
+        assert msg_delta.usage == CanonicalUsage(
+            input_tokens=423, output_tokens=8, cached_input_tokens=404
+        )
 
     async def test_stream_without_usage_frame_has_no_usage(self, services_with_model) -> None:
         stream = _FakeStream(["hi"])
