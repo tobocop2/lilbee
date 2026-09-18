@@ -152,3 +152,177 @@ class TestTheRefreshKeepsThePerDeviceFreeFigures:
         probe = planning_mod._plan_probe_store.get()
         assert probe is not None
         assert [d.free_bytes for d in probe.devices] == [23 * _GB]
+
+
+class TestAnEngineThatChangesUnderARunningServe:
+    """A probe result describes one engine binary and must not outlive it.
+
+    A serve started while the engine wheel shipped an empty stub placed every
+    model on the CPU, and kept placing there after the real wheel was installed,
+    because the snapshot taken against the stub was still the answer.
+    """
+
+    def _engine(self, monkeypatch, binary: Path, backend: str = "CUDA") -> list[int]:
+        """Point planning at *binary* and report cards only while it has content."""
+        runs: list[int] = []
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: binary)
+        monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
+        )
+        monkeypatch.setattr("lilbee.providers.model_cache.free_system_memory", lambda: 64 * _GB)
+
+        def _probe(_binary: Path) -> tuple[list[FleetDevice], bool]:
+            runs.append(1)
+            if not binary.read_bytes():
+                return [], False
+            return [
+                FleetDevice(backend, 0, "A", 24 * _GB, 24 * _GB),
+                FleetDevice(backend, 1, "B", 24 * _GB, 24 * _GB),
+            ], False
+
+        monkeypatch.setattr(planning_mod, "_resolve_devices_and_refusal", _probe)
+        return runs
+
+    def test_the_cards_appear_once_the_real_engine_lands(self, monkeypatch, tmp_path) -> None:
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"")
+        self._engine(monkeypatch, binary)
+        planning_mod.capture_plan_probe()
+        assert planning_mod._plan_devices(binary) == []
+
+        binary.write_bytes(b"the real engine")
+
+        assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
+
+    def test_an_unchanged_engine_is_probed_once(self, monkeypatch, tmp_path) -> None:
+        # The control the fix has to survive: re-probing every read would pass
+        # every other arm here and quietly reintroduce the cost the cache exists
+        # to avoid.
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"the real engine")
+        runs = self._engine(monkeypatch, binary)
+        planning_mod.capture_plan_probe()
+        assert len(runs) == 1
+
+        for _ in range(5):
+            planning_mod._plan_devices(binary)
+            planning_mod.plan_sizing_budget()
+            planning_mod.probed_devices()
+
+        assert len(runs) == 1
+
+    def test_a_broken_engine_stops_the_cards_being_planned_onto(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"the real engine")
+        self._engine(monkeypatch, binary)
+        planning_mod.capture_plan_probe()
+        assert len(planning_mod._plan_devices(binary)) == 2
+
+        binary.write_bytes(b"")
+
+        assert planning_mod._plan_devices(binary) == []
+
+    def test_the_cuda_and_rocm_paths_recover_alike(self, monkeypatch, tmp_path) -> None:
+        # One cache serves both, so the recovery must not differ by backend.
+        def _recovered(name: str, backend: str) -> list[FleetDevice]:
+            with pytest.MonkeyPatch.context() as patch:
+                binary = tmp_path / name
+                binary.write_bytes(b"")
+                self._engine(patch, binary, backend)
+                planning_mod.capture_plan_probe()
+                assert planning_mod._plan_devices(binary) == []
+                binary.write_bytes(b"the real engine")
+                return planning_mod._plan_devices(binary)
+
+        cuda = _recovered("cuda-server", "CUDA")
+        planning_mod.clear_plan_probe()
+        rocm = _recovered("rocm-server", "ROCm")
+
+        assert len(cuda) == 2
+        assert [(d.index, d.total_bytes, d.free_bytes) for d in cuda] == [
+            (d.index, d.total_bytes, d.free_bytes) for d in rocm
+        ]
+
+    def test_a_host_with_no_engine_binary_has_an_identity_of_its_own(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"the real engine")
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: binary)
+        present = planning_mod._engine_identity()
+
+        def _gone() -> Path:
+            raise ProviderError("no engine binary", provider="llama-server")
+
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", _gone)
+
+        assert planning_mod._engine_identity() != present
+
+    def test_a_second_stale_read_takes_the_first_ones_answer(self, monkeypatch, tmp_path) -> None:
+        # A reader that queues behind the restate takes its answer, not another probe.
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"")
+        runs = self._engine(monkeypatch, binary)
+        planning_mod.capture_plan_probe()
+        binary.write_bytes(b"the real engine")
+        planning_mod._plan_devices(binary)
+        probed = len(runs)
+
+        planning_mod._restate_plan_probe(planning_mod._engine_identity())
+
+        assert len(runs) == probed
+
+
+class TestTheReadCacheDescribesOneBinary:
+    """The short-TTL read cache answers for the binary it probed, not the next one."""
+
+    def _probed(self, monkeypatch) -> list[Path]:
+        seen: list[Path] = []
+
+        def _resolve(binary: Path) -> list[FleetDevice]:
+            seen.append(binary)
+            return [FleetDevice("CUDA", len(seen) - 1, "A", 24 * _GB, 24 * _GB)]
+
+        monkeypatch.setattr(planning_mod, "resolve_devices", _resolve)
+        return seen
+
+    def test_a_second_binary_is_probed_for_itself(self, monkeypatch, tmp_path) -> None:
+        seen = self._probed(monkeypatch)
+        first = tmp_path / "old"
+        first.write_bytes(b"old engine")
+        second = tmp_path / "new"
+        second.write_bytes(b"new engine")
+        cache = planning_mod._ReadDeviceCache(60.0, 60.0)
+
+        cache.get(first)
+        cache.get(first)
+        cache.get(second)
+
+        assert seen == [first, second]
+
+    def test_a_cached_failure_is_not_reraised_for_another_binary(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        from lilbee.providers.base import ProviderError
+
+        stub = tmp_path / "stub"
+        stub.write_bytes(b"")
+        real = tmp_path / "real"
+        real.write_bytes(b"the real engine")
+
+        def _resolve(binary: Path) -> list[FleetDevice]:
+            if binary == stub:
+                raise ProviderError("probe wedged", provider="llama-server")
+            return [FleetDevice("CUDA", 0, "A", 24 * _GB, 24 * _GB)]
+
+        monkeypatch.setattr(planning_mod, "resolve_devices", _resolve)
+        cache = planning_mod._ReadDeviceCache(60.0, 60.0)
+        with pytest.raises(ProviderError):
+            cache.get(stub)
+
+        assert [d.index for d in cache.get(real)] == [0]

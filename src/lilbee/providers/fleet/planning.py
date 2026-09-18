@@ -25,6 +25,7 @@ from lilbee.providers.fleet.adapters import (
     resolve_rerank_mode,
 )
 from lilbee.providers.fleet.binary import (
+    engine_binary_identity,
     engine_build_id,
     llama_server_runtime_env,
     resolve_llama_server,
@@ -701,7 +702,7 @@ def probed_devices() -> tuple[FleetDevice, ...]:
     Prefers the plan snapshot so a whole planning pass answers consistently, and
     falls back to the short-TTL read cache rather than a fresh probe.
     """
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     if probe is not None:
         return probe.devices
     try:
@@ -1477,7 +1478,7 @@ def placeable_total_vram() -> int:
     one is captured; otherwise probes best-effort and returns ``0`` on failure,
     which disables only the weights-exceed filter (its own ``total > 0`` guard).
     """
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     if probe is not None:
         return sum(d.total_bytes for d in probe.devices)
     from lilbee.providers.base import ProviderError
@@ -1957,6 +1958,9 @@ _DEVICE_PROBE_FAILURE_TTL_S = 60.0
 # the empty list as fatal.
 _DEVICE_PROBE_EMPTY_RETRIES = 3
 _DEVICE_PROBE_EMPTY_RETRY_DELAY_S = 0.5
+# Stands in for the engine binary's identity on a host that has none, so "no
+# engine yet" and "an engine at last" are different identities.
+_NO_ENGINE_BINARY = "no-engine"
 
 
 class _ReadDeviceCache:
@@ -1972,6 +1976,9 @@ class _ReadDeviceCache:
     failure is cached too (with its own TTL) and re-raised to every read in the
     window. The launch path is never served from here -- it sizes against the
     clean-box plan snapshot below (captured after stale-server reaping).
+
+    An entry also carries the identity of the binary that answered, so it cannot
+    describe an engine that has since been installed or upgraded in place.
     """
 
     def __init__(self, ttl_s: float, failure_ttl_s: float) -> None:
@@ -1979,17 +1986,24 @@ class _ReadDeviceCache:
         self._failure_ttl_s = failure_ttl_s
         self._lock = threading.Lock()
         self._at: float | None = None
+        self._engine: str | None = None
         self._devices: list[FleetDevice] | None = None
         self._failure: ProviderError | None = None
 
     def get(self, binary: Path) -> list[FleetDevice]:
+        engine = engine_binary_identity(binary)
         with self._lock:
             ttl = self._ttl_s if self._failure is None else self._failure_ttl_s
-            fresh = self._at is not None and time.monotonic() - self._at < ttl
+            fresh = (
+                self._at is not None
+                and self._engine == engine
+                and time.monotonic() - self._at < ttl
+            )
             if fresh and self._failure is not None:
                 raise self._failure
             if self._devices is None or not fresh:
                 self._at = time.monotonic()
+                self._engine = engine
                 try:
                     self._devices = resolve_devices(binary)
                 except ProviderError as exc:
@@ -2002,6 +2016,7 @@ class _ReadDeviceCache:
     def clear(self) -> None:
         with self._lock:
             self._at = None
+            self._engine = None
             self._devices = None
             self._failure = None
 
@@ -2045,6 +2060,9 @@ class _PlanProbe:
     # cfg.gpu_memory_fraction. System memory only on a host with no GPU.
     sizing_budget: int
     free_system: int
+    # The engine binary that answered the probe. A snapshot is only an answer
+    # about the binary it was taken against.
+    engine: str
     # The engine listed GPUs and lilbee rejected all of them, so the plan is
     # CPU-shaped while the engine would still choose one of those devices.
     engine_devices_all_refused: bool = False
@@ -2056,6 +2074,10 @@ class _PlanProbeStore:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._probe: _PlanProbe | None = None
+        # Held across the probe a restate runs, so a burst of reads after an
+        # engine swap pays one probe. Separate from _lock, which must never be
+        # held across a subprocess.
+        self.restate_lock = threading.Lock()
 
     def set(self, probe: _PlanProbe) -> None:
         with self._lock:
@@ -2262,6 +2284,18 @@ def assert_engine_probeable() -> None:
     _probe_engine_devices()
 
 
+def _engine_identity() -> str:
+    """Identity of the engine binary a plan snapshot has to agree with.
+
+    A host with no engine binary has an identity of its own, so a snapshot taken
+    before the engine arrived never reads as one taken after.
+    """
+    try:
+        return engine_binary_identity(resolve_llama_server())
+    except (ProviderError, OSError):
+        return _NO_ENGINE_BINARY
+
+
 def capture_plan_probe() -> None:
     """Snapshot devices and memory for planning; call only on a clean box."""
     devices, refused_all = _probe_engine_devices()
@@ -2270,6 +2304,7 @@ def capture_plan_probe() -> None:
             devices=tuple(devices),
             sizing_budget=_device_sizing_budget(devices),
             free_system=model_cache.free_system_memory(),
+            engine=_engine_identity(),
             engine_devices_all_refused=refused_all,
         )
     )
@@ -2298,21 +2333,30 @@ def refresh_plan_devices() -> None:
     snapshot exists. So a card that survives the refresh keeps the snapshot's
     free figure; only a genuinely new card contributes a fresh one.
 
-    A probe that cannot run leaves the snapshot alone: the last known device list
-    is a better answer than none, and the loud paths for an unreachable engine
-    live in the build, not here.
+    A probe that cannot run keeps the previous device list: the last known one is
+    a better answer than none, and the loud paths for an unreachable engine live
+    in the build, not here.
     """
-    probe = _plan_probe_store.get()
-    if probe is None:
-        return
+    with _plan_probe_store.restate_lock:
+        probe = _plan_probe_store.get()
+        if probe is not None:
+            _plan_probe_store.set(_restated(probe, _engine_identity()))
+
+
+def _restated(probe: _PlanProbe, engine: str) -> _PlanProbe:
+    """*probe* re-read against the hardware, tagged with the *engine* that answered.
+
+    Every exit writes the tag, including the two that change nothing: an untagged
+    snapshot would re-probe on every later read.
+    """
     clear_read_device_cache()
     try:
         devices, refused_all = _probe_engine_devices()
     except (ProviderError, OSError) as exc:
         log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
-        return
+        return replace(probe, engine=engine)
     if _structural(devices) == _structural(probe.devices):
-        return
+        return replace(probe, engine=engine)
     log.info(
         "The set of GPUs changed since this fleet was planned (%d device(s) now, %d before); "
         "replanning against the ones that are here.",
@@ -2324,14 +2368,37 @@ def refresh_plan_devices() -> None:
         replace(d, free_bytes=snapshot_free.get(replace(d, free_bytes=0), d.free_bytes))
         for d in devices
     )
-    _plan_probe_store.set(
-        _PlanProbe(
-            devices=merged,
-            sizing_budget=_device_sizing_budget(merged),
-            free_system=probe.free_system,
-            engine_devices_all_refused=refused_all,
-        )
+    return _PlanProbe(
+        devices=merged,
+        sizing_budget=_device_sizing_budget(merged),
+        free_system=probe.free_system,
+        engine=engine,
+        engine_devices_all_refused=refused_all,
     )
+
+
+def _current_plan_probe() -> _PlanProbe | None:
+    """The plan snapshot, restated first when another engine binary is now in place.
+
+    The snapshot carries the identity of the binary that answered, so an engine
+    installed or upgraded under a running serve re-probes on the next plan read.
+    """
+    probe = _plan_probe_store.get()
+    if probe is None:
+        return None
+    engine = _engine_identity()
+    return probe if probe.engine == engine else _restate_plan_probe(engine)
+
+
+def _restate_plan_probe(engine: str) -> _PlanProbe | None:
+    """Restate the snapshot for *engine*, once per burst of stale reads."""
+    with _plan_probe_store.restate_lock:
+        probe = _plan_probe_store.get()
+        if probe is None or probe.engine == engine:
+            return probe
+        fresh = _restated(probe, engine)
+        _plan_probe_store.set(fresh)
+        return fresh
 
 
 def clear_plan_probe() -> None:
@@ -2349,7 +2416,7 @@ def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
     placement budgeted against system RAM. Naming no device keeps the engine on
     the CPU the plan was shaped for.
     """
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     if probe is None or not probe.engine_devices_all_refused:
         return ()
     log.warning(
@@ -2362,7 +2429,7 @@ def _cpu_pin_when_every_device_was_refused() -> tuple[str, ...]:
 
 def _plan_devices(binary: Path) -> list[FleetDevice]:
     """Devices the plan paths size against: the snapshot, else a live probe."""
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     return list(probe.devices) if probe is not None else resolve_devices(binary)
 
 
@@ -2372,7 +2439,7 @@ def plan_sizing_budget(device: FleetDevice | None = None) -> int:
 
     if device is not None:
         return int(device.total_bytes * cfg.gpu_memory_fraction)
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     if probe is not None:
         return probe.sizing_budget
     return _device_sizing_budget(_live_sizing_devices())
@@ -2387,7 +2454,7 @@ def plan_sizing_is_unified() -> bool:
     under-reports the load by everything it maps. The same test decides the pool
     placement charges against (:func:`_unified_memory_budget`).
     """
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     devices = list(probe.devices) if probe is not None else _live_sizing_devices()
     return all(dev.unified for dev in devices)
 
@@ -2424,7 +2491,7 @@ def _live_sizing_devices() -> list[FleetDevice]:
 
 def _plan_free_system_memory() -> int:
     """Free system RAM for the unified-memory budget: the snapshot, else live."""
-    probe = _plan_probe_store.get()
+    probe = _current_plan_probe()
     return probe.free_system if probe is not None else model_cache.free_system_memory()
 
 
@@ -2850,7 +2917,7 @@ def plan_launches(
         unified_budget=_unified_admission_budget(devices),
         # Only the clean-box snapshot's free bytes mean "what other tenants hold";
         # a live probe here would also be missing the fleet's own residency.
-        charge_against_free=_plan_probe_store.get() is not None,
+        charge_against_free=_current_plan_probe() is not None,
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
