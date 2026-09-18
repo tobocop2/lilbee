@@ -650,6 +650,76 @@ def test_chat_result_usage_defaults_to_zero_when_absent() -> None:
     result = _client().chat_result([{"role": "user", "content": "hi"}])
     assert result.usage.prompt_tokens == 0
     assert result.usage.completion_tokens == 0
+    assert result.usage.cached_prompt_tokens == 0
+
+
+def test_chat_result_reads_cached_prompt_tokens_from_usage_details() -> None:
+    """llama-server's prompt_tokens_details.cached_tokens reaches ChatResult."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "Hi"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 423,
+                        "completion_tokens": 8,
+                        "prompt_tokens_details": {"cached_tokens": 404},
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    result = _client(handler).chat_result([{"role": "user", "content": "hi"}])
+    assert result.usage.cached_prompt_tokens == 404
+    # The breakdown must not move the full prompt count.
+    assert result.usage.prompt_tokens == 423
+
+
+def test_chat_result_cached_prompt_tokens_zero_when_details_malformed() -> None:
+    """A details block that is not a mapping of ints reports no reuse."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "Hi"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 3,
+                        "prompt_tokens_details": "nope",
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    result = _client(handler).chat_result([{"role": "user", "content": "hi"}])
+    assert result.usage.cached_prompt_tokens == 0
+    assert result.usage.prompt_tokens == 7
+
+
+def test_chat_result_cached_prompt_tokens_zero_when_count_not_an_int() -> None:
+    """A non-integer cached count reports no reuse rather than guessing."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [{"message": {"content": "Hi"}, "finish_reason": "stop"}],
+                    "usage": {
+                        "prompt_tokens": 7,
+                        "completion_tokens": 3,
+                        "prompt_tokens_details": {"cached_tokens": None},
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    result = _client(handler).chat_result([{"role": "user", "content": "hi"}])
+    assert result.usage.cached_prompt_tokens == 0
 
 
 def test_chat_stream_items_yields_usage_terminator_frame() -> None:
@@ -670,6 +740,30 @@ def test_chat_stream_items_yields_usage_terminator_frame() -> None:
     frames = list(_client(handler).chat_stream_items([{"role": "user", "content": "hi"}]))
     assert frames[0] == "Hi"
     assert frames[-1] == TokenUsage(prompt_tokens=4, completion_tokens=1)
+
+
+def test_chat_stream_items_usage_terminator_carries_cached_prompt_tokens() -> None:
+    """The streamed terminator reports cache reuse the same way the body does."""
+    from lilbee.providers.base import TokenUsage
+
+    usage = (
+        '{"prompt_tokens":423,"completion_tokens":8,"prompt_tokens_details":{"cached_tokens":404}}'
+    )
+    body = (
+        'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
+        f'data: {{"choices":[],"usage":{usage}}}\n\n'
+        "data: [DONE]\n\n"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/chat/completions":
+            return httpx.Response(200, text=body)
+        return httpx.Response(404)
+
+    frames = list(_client(handler).chat_stream_items([{"role": "user", "content": "hi"}]))
+    assert frames[-1] == TokenUsage(
+        prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404
+    )
 
 
 def test_chat_stream_items_requests_include_usage() -> None:
