@@ -18,3 +18,6 @@ class TestV1RouterRegistration:
 
     def test_lists_v1_messages(self) -> None:
         assert "/v1/messages" in _route_paths()
+
+    def test_lists_v1_messages_count_tokens(self) -> None:
+        assert "/v1/messages/count_tokens" in _route_paths()

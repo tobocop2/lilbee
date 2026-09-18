@@ -1,4 +1,4 @@
-"""HTTP route for the Anthropic-compatible ``/v1/messages``."""
+"""HTTP routes for the Anthropic-compatible ``/v1/messages`` surface."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_e
 from lilbee.server.anthropic_api.models import (
     _THINKING_DISABLED,
     AnthropicEventType,
+    CountTokensRequest,
+    CountTokensResponse,
     MessagesRequest,
     MessagesResponse,
 )
@@ -27,6 +29,7 @@ from lilbee.server.anthropic_api.streaming import encode_anthropic_event, encode
 from lilbee.server.anthropic_api.translate import (
     canonical_stream_to_anthropic_events,
     canonical_to_messages_response,
+    count_tokens_to_canonical_request,
     messages_to_canonical_request,
     resolve_reasoning_mode,
 )
@@ -42,8 +45,10 @@ from lilbee.server.chat_dispatch.concurrency import (
     acquire_chat_slot_or_busy,
 )
 from lilbee.server.chat_dispatch.dispatch import (
+    count_request_tokens,
     dispatch_chat_stream,
     preflight_chat_request,
+    resolve_served_model,
 )
 from lilbee.server.chat_dispatch.reasoning_cap import (
     budget_capped_chars,
@@ -56,6 +61,8 @@ from lilbee.server.validation_format import format_validation
 log = logging.getLogger(__name__)
 
 _INTERNAL_ERROR_MESSAGE = "Internal server error. Check the server logs for details."
+# Says whether the count_tokens answer was measured on the backend or estimated.
+COUNT_ACCURACY_HEADER = "X-Lilbee-Token-Count-Accuracy"
 
 
 async def _auth_before_request(request: Request) -> Response | None:
@@ -116,6 +123,37 @@ async def messages_endpoint(request: Request, data: MessagesRequest) -> Response
     )
 
 
+@post("/v1/messages/count_tokens", status_code=200, before_request=_auth_before_request)
+@auth_checked_in_handler
+async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> Response:
+    """``/v1/messages/count_tokens``: the served model's own count for a request.
+
+    Clients read ``input_tokens`` for context accounting, and
+    ``X-Lilbee-Token-Count-Accuracy`` for whether that number was measured on the
+    backend (``exact``) or estimated (``estimated``). Counting never runs a tool,
+    so the only thing a request has to be is translatable: the tool-capability
+    check ``/v1/messages`` runs is not applied.
+    """
+    mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
+    try:
+        req = count_tokens_to_canonical_request(data, mode=mode)
+    except ValueError as exc:
+        # Wire-valid but untranslatable (image content, bare tool choice).
+        return _error_response(400, CompletionsErrorCode.INVALID_REQUEST, str(exc))
+
+    try:
+        canonical_model = await asyncio.to_thread(resolve_served_model, req)
+        count = await asyncio.to_thread(count_request_tokens, req, canonical_model=canonical_model)
+    except Exception as exc:
+        return _classified_error_response(exc)
+    body = CountTokensResponse(input_tokens=count.tokens)
+    return Response(
+        body.model_dump(),
+        media_type="application/json",
+        headers={COUNT_ACCURACY_HEADER: count.accuracy},
+    )
+
+
 def _budget_tokens(data: MessagesRequest) -> int | None:
     """The thinking budget this request asks for; ``disabled`` carries none."""
     if data.thinking is None or data.thinking.type == _THINKING_DISABLED:
@@ -128,10 +166,15 @@ async def _preflight_resolved_model(req: CanonicalChatRequest) -> str | Response
     try:
         return await asyncio.to_thread(preflight_chat_request, req)
     except Exception as exc:
-        classified = classify_provider_error(exc)
-        if classified is None:
-            return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _classified_error_response(exc)
+
+
+def _classified_error_response(exc: Exception) -> Response:
+    """The envelope for *exc*, or the generic 500 when nothing classifies it."""
+    classified = classify_provider_error(exc)
+    if classified is None:
+        return _internal_error_response()
+    return _error_response(classified.http_status, classified.code, classified.message)
 
 
 async def _run_non_stream(
@@ -148,10 +191,7 @@ async def _run_non_stream(
             cap_aware_chat, req, canonical_model=canonical_model, cap_chars=cap_chars
         )
     except Exception as exc:
-        classified = classify_provider_error(exc)
-        if classified is None:
-            return _internal_error_response()
-        return _error_response(classified.http_status, classified.code, classified.message)
+        return _classified_error_response(exc)
     finally:
         await guard.release()
     body: MessagesResponse = canonical_to_messages_response(
@@ -204,7 +244,7 @@ async def _gated_messages_stream(
 
 def _internal_error_response() -> Response:
     """Log and return the generic api_error 500 envelope."""
-    log.exception("messages_endpoint failed")
+    log.exception("anthropic messages surface failed")
     return _error_response(500, CompletionsErrorCode.INTERNAL_ERROR, _INTERNAL_ERROR_MESSAGE)
 
 
@@ -251,6 +291,6 @@ def _response_id() -> str:
 
 anthropic_router = Router(
     path="/",
-    route_handlers=[messages_endpoint],
+    route_handlers=[messages_endpoint, count_tokens_endpoint],
     exception_handlers={ValidationException: _validation_exception_handler},
 )

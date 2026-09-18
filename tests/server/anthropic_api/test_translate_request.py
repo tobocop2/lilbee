@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 import pytest
 
 from lilbee.core.config.enums import ReasoningMode
-from lilbee.server.anthropic_api.models import AnthropicThinking, MessagesRequest
+from lilbee.server.anthropic_api.models import (
+    AnthropicThinking,
+    CountTokensRequest,
+    MessagesRequest,
+)
 from lilbee.server.anthropic_api.translate import (
+    count_tokens_to_canonical_request,
     messages_to_canonical_request,
     resolve_reasoning_mode,
 )
 from lilbee.server.chat_dispatch.canonical import (
+    CanonicalChatRequest,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -331,3 +339,64 @@ class TestThinkingParameterOnRequest:
         """A shape this surface does not know must not 400 the agent."""
         assert _request(thinking={"type": "adaptive"}).thinking is None
         assert _request(thinking="on").thinking is None
+
+
+_PROMPT_BODY = {
+    "model": "m",
+    "messages": [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": [{"type": "text", "text": "hello"}]},
+    ],
+    "system": "be brief",
+    "tools": [{"name": "search", "description": "s", "input_schema": {"type": "object"}}],
+    "tool_choice": {"type": "auto"},
+}
+
+
+# Canonical fields the engine reads for sampling and transport rather than for
+# the prompt text. The compared set is everything else, derived from the
+# dataclass, so a newly added prompt field is compared without being listed.
+_NON_PROMPT_FIELDS = frozenset(
+    {
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_tokens",
+        "seed",
+        "frequency_penalty",
+        "presence_penalty",
+        "stop",
+        "stream",
+    }
+)
+
+
+def _prompt_parts(req: CanonicalChatRequest) -> dict[str, object]:
+    """Every canonical field that decides the rendered prompt."""
+    names = {f.name for f in fields(CanonicalChatRequest)} - _NON_PROMPT_FIELDS
+    return {name: getattr(req, name) for name in sorted(names)}
+
+
+def test_every_excluded_field_is_still_a_canonical_field():
+    """A renamed sampling field would otherwise drop silently out of the comparison."""
+    assert not _NON_PROMPT_FIELDS - {f.name for f in fields(CanonicalChatRequest)}
+
+
+@pytest.mark.parametrize("mode", [ReasoningMode.OFF, ReasoningMode.SEPARATE, ReasoningMode.INLINE])
+def test_the_counted_prompt_is_the_prompt_the_chat_call_sends(mode: ReasoningMode):
+    """A prompt field that reaches one route and not the other counts the wrong prompt."""
+    counted = count_tokens_to_canonical_request(
+        CountTokensRequest.model_validate(_PROMPT_BODY), mode=mode
+    )
+    sent = messages_to_canonical_request(
+        MessagesRequest.model_validate({**_PROMPT_BODY, "max_tokens": 64}), mode=mode
+    )
+    assert _prompt_parts(counted) == _prompt_parts(sent)
+
+
+def test_reasoning_off_reaches_the_counted_prompt():
+    """``think`` becomes a template argument, so it changes the rendered prompt."""
+    counted = count_tokens_to_canonical_request(
+        CountTokensRequest.model_validate(_PROMPT_BODY), mode=ReasoningMode.OFF
+    )
+    assert counted.think is False

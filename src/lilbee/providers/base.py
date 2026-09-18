@@ -322,6 +322,24 @@ class LLMProvider(Protocol):
         """
         ...
 
+    def count_chat_prompt_tokens(
+        self,
+        messages: list[ChatMessage],
+        *,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> int:
+        """Tokens the chat model prefills for the prompt :meth:`chat` would send.
+
+        Takes the same arguments as :meth:`chat`. The model's chat template is
+        applied first, so role markers and the tool-call preamble are counted.
+        Raise ``NotImplementedError`` when the backend cannot render or
+        tokenize, and the caller estimates instead.
+        """
+        ...
+
     @overload
     def chat(
         self,
