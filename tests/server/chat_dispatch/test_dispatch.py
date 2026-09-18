@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from itertools import pairwise
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -1023,6 +1024,34 @@ _TOOL_EXCHANGE = [
 _MEASURED_TOOL_EXCHANGE_TOKENS = 2656
 
 
+def _parallel_tool_results(count: int) -> list[CanonicalMessage]:
+    """One canonical message returning *count* tool results at once."""
+    return [
+        CanonicalMessage(role="user", content=[TextBlock(text="go")]),
+        CanonicalMessage(
+            role="user",
+            content=[
+                ToolResultBlock(tool_use_id=f"t{i}", content=[TextBlock(text="")])
+                for i in range(count)
+            ],
+        ),
+    ]
+
+
+# Claude Code returns parallel tool calls as several results inside ONE user
+# message, and the translation gives each result its own wire message the
+# template wraps in role markers. The bodies are empty here, so the count is
+# template text alone. Measured on SmolLM3-3B-Q4_K_M, which counts higher at
+# every arm than Qwen3-0.6B-Q8_0 does (17, 77, 269, 1037), so this list is the
+# binding floor for both templates.
+_MEASURED_PARALLEL_RESULT_TOKENS = [
+    pytest.param(1, 254, id="one-result"),
+    pytest.param(16, 329, id="sixteen-results"),
+    pytest.param(64, 569, id="sixty-four-results"),
+    pytest.param(256, 1529, id="two-hundred-fifty-six-results"),
+]
+
+
 class TestCountRequestTokens:
     """``count_request_tokens`` asks the engine for the prompt a chat call sends."""
 
@@ -1154,3 +1183,31 @@ class TestCountRequestTokens:
 
         estimate = count_request_tokens(req, canonical_model="vendor/model::Q4")
         assert estimate >= _MEASURED_TOOL_EXCHANGE_TOKENS
+
+    @pytest.mark.parametrize(("results", "measured"), _MEASURED_PARALLEL_RESULT_TOKENS)
+    def test_the_estimate_covers_results_returned_in_parallel(
+        self, services_with_model, results: int, measured: int
+    ) -> None:
+        """One message returning many results renders as many turns, not as one."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_parallel_tool_results(results))
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") >= measured
+
+    def test_each_parallel_result_costs_another_turns_allowance(self, services_with_model) -> None:
+        """The results are empty, so only the per-message allowance can grow with them."""
+        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
+
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        counts = [
+            count_request_tokens(
+                _req(messages=_parallel_tool_results(k)), canonical_model="vendor/model::Q4"
+            )
+            for k in (1, 2, 4, 8)
+        ]
+
+        steps = [later - earlier for earlier, later in pairwise(counts)]
+        assert steps[0] > 0
+        assert steps == [steps[0], steps[0] * 2, steps[0] * 4]

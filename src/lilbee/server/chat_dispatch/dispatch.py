@@ -95,7 +95,7 @@ _TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
 # The preamble a template renders around any request, including a system block
 # it substitutes when the request carries none.
 _TEMPLATE_PREAMBLE_TOKENS = 300
-# The role markers and turn delimiters around one message.
+# The role markers and turn delimiters around one wire message.
 _TEMPLATE_MESSAGE_TOKENS = 8
 # The tool-calling instructions a template emits once when tools are present.
 _TEMPLATE_TOOL_BLOCK_TOKENS = 110
@@ -500,9 +500,13 @@ def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
     fixed allowances above, which are measured rather than proved: a template
     can substitute a larger preamble than they cover. A chars-per-token ratio
     fails differently, reading dense input short.
+
+    The per-message allowance is charged against the messages the provider is
+    sent: one canonical message carrying several tool results becomes one wire
+    message each, and the template renders role markers around every one.
     """
     tools = req.tools or []
-    allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(req.messages)
+    allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(_provider_messages(req))
     if tools:
         allowance += _TEMPLATE_TOOL_BLOCK_TOKENS + _TEMPLATE_PER_TOOL_TOKENS * len(tools)
     return _content_bytes(req) + allowance
