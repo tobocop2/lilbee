@@ -53,11 +53,11 @@ test-ci-forked:
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
-# The suite downloads from HuggingFace for real, so a dropped connection reruns
-# the one test that lost it. The rerun is blind and bounded, like the release
-# retries: error-text matching to tell a flake from a defect goes stale.
+# The integration conftest reruns the tests that download a model, and only
+# those. --max-suite-reruns caps the run as a whole, so a HuggingFace outage
+# reports red at the usual time rather than spending its reruns on every test.
 test-integration:
-	uv run pytest tests/integration/ -v --reruns 2 --reruns-delay 10
+	uv run pytest tests/integration/ -v --max-suite-reruns 4
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke

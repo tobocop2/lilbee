@@ -70,6 +70,13 @@ def _resolve_installed_ref(hf_repo: str) -> str:
 # different cap with @pytest.mark.timeout(X).
 _INTEGRATION_TIMEOUT_SECONDS = 180
 
+# The download fixtures are the only place the suite reaches HuggingFace, so a
+# rerun is scoped to the tests that request one. A test that fails for its own
+# reason is reported on its first attempt.
+_MODEL_DOWNLOAD_FIXTURES = frozenset({"rag_pipeline", "wiki_pipeline"})
+_DOWNLOAD_RERUNS = 2
+_DOWNLOAD_RERUN_DELAY_SECONDS = 10
+
 
 def pytest_collection_modifyitems(items):
     for item in items:
@@ -78,6 +85,13 @@ def pytest_collection_modifyitems(items):
         # marker and silently overrides every per-test opt-in.
         if item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+        if _MODEL_DOWNLOAD_FIXTURES.intersection(item.fixturenames):
+            item.add_marker(
+                pytest.mark.flaky(
+                    reruns=_DOWNLOAD_RERUNS,
+                    reruns_delay=_DOWNLOAD_RERUN_DELAY_SECONDS,
+                )
+            )
 
 
 @pytest.fixture(autouse=True)
