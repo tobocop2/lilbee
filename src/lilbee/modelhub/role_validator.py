@@ -131,8 +131,8 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
 
 _UNREGISTERED_ROLE_WARNING = (
     "%s is set to '%s', which the model registry does not hold. No model listing "
-    "shows it and the HTTP chat route cannot resolve it. Run 'lilbee model pull "
-    "<ref>' to install a model, then set the role to that ref."
+    "shows it and the HTTP chat route cannot resolve it. Install a model with "
+    "'lilbee model pull <ref>' (or POST /api/models/pull), then set the role to that ref."
 )
 
 

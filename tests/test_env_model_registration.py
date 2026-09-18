@@ -176,7 +176,8 @@ class TestUnregisteredRoleRefsAreReported:
 
         assert flagged == {"vision_model": _MISSING_REF}
 
-    def test_warning_names_the_ref_and_the_fix(self, tmp_path: Path, caplog) -> None:
+    def test_warning_names_the_ref_and_both_remedies(self, tmp_path: Path, caplog) -> None:
+        """The remedy names the command and the route, so an HTTP client can act on it."""
         gguf = tmp_path / "MiniMax.gguf"
         gguf.write_bytes(_BLOB)
         models_dir = tmp_path / "models"
@@ -191,6 +192,7 @@ class TestUnregisteredRoleRefsAreReported:
         assert str(gguf) in message
         assert "chat_model" in message
         assert "lilbee model pull" in message
+        assert "POST /api/models/pull" in message
 
     def test_warning_keeps_a_windows_path_copyable(self, tmp_path: Path, caplog) -> None:
         """A Windows ref reads back with single backslashes, so it can be copied."""
