@@ -110,7 +110,9 @@ jobs:
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
     # Only soft cells (the pre-Haswell compat build) may fail without failing the
-    # release; every default binary stays hard-required.
+    # release; every default binary stays hard-required. `soft` is also what
+    # scripts/assert_required_binaries.sh reads to decide which asset the release
+    # cannot ship without, so a cell that times out cannot strand the cascade.
     continue-on-error: ${{ matrix.soft == true }}
     strategy:
       fail-fast: false
@@ -275,13 +277,20 @@ jobs:
       # The mirror is readable from a tag ref, unlike the Actions cache, so a
       # release starts warm from whatever the last build contributed, and can
       # contribute its own compile back.
+      # The key hashes the lock without lilbee's own version line, so it moves
+      # when a dependency moves and stays put across a release bump.
+      - name: Normalize the lock the object-cache key hashes
+        if: runner.os == 'Windows'
+        shell: bash
+        run: bash scripts/strip_own_version.sh uv.lock uv-deps.lock
+
       - name: Restore the Nuitka cache from the mirror
         id: nuitka-mirror
         if: runner.os == 'Windows'
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: restore
-          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv.lock') }}
+          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv-deps.lock') }}
 
       - name: Restore Nuitka cache (Windows)
         if: runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
@@ -421,7 +430,7 @@ jobs:
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: publish
-          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv.lock') }}
+          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv-deps.lock') }}
           token: ${{ github.token }}
 
 

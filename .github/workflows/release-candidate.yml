@@ -174,9 +174,15 @@ jobs:
   # release asset URLs rather than hosting multi-gigabyte wheels itself. A GH
   # release is reversible (delete + retag) so this is safe to do eagerly; the
   # irreversible step (PyPI) waits for a human to run publish.yml.
+  # The build needs are ordering only: a cell past its timeout-minutes concludes
+  # cancelled, which `continue-on-error` does not absorb and which skips every
+  # job behind it. The action asserts the executables the release must carry.
   attach-prerelease:
     needs: [resolve, build-default-wheels, build-binaries, build-cuda, build-openapi]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      !cancelled()
+      && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+      && needs.resolve.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write

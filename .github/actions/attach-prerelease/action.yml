@@ -44,6 +44,13 @@ runs:
       run: |
         ls -lh bins/ lilbee-wheel/ schema/
 
+    # The downloads above are by name, so a missing wheel or schema already
+    # fails. The binaries arrive by pattern, which cannot tell a soft cell that
+    # dropped out from a required one.
+    - name: Assert every required executable is here
+      shell: bash
+      run: bash scripts/assert_required_binaries.sh bins
+
     - name: Create GH pre-release with binaries and the lilbee wheel
       uses: softprops/action-gh-release@v3
       with:

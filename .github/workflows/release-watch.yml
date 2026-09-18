@@ -21,6 +21,7 @@ on:
 permissions:
   contents: read   # check out the script; read the release to confirm it promoted
   actions: write   # rerun a failed leg, re-issue a lost dispatch
+  checks: read     # a cancelled cell's annotation names the limit it exceeded
 
 # Cancelling, unlike the other release workflows: release-selfheal's rerun emits
 # a second candidate completion, and two watchers racing the same legs would

@@ -20,6 +20,7 @@ on:
 permissions:
   contents: read   # check out the script
   actions: write  # rerun the failed cells
+  checks: read    # a cancelled cell's annotation names the limit it exceeded
 
 concurrency:
   group: release-selfheal-${{ github.event.workflow_run.id || inputs.run_id }}
