@@ -69,14 +69,38 @@ echo "${ask_out}"
 case "${ask_out}" in *"Error:"*) echo "FAIL: ask surfaced an error" >&2; exit 1 ;; esac
 
 # Leg 4: crawl a URL in the default http render mode (no browser needed) and
-# confirm the page text became searchable.
+# confirm the page text became searchable. The target is a third-party site
+# because validate_crawl_url rejects loopback and private addresses. An
+# unreachable target is a runner fault, so the leg is skipped loudly instead of
+# dropping the artifact; a target that answers and leaves the page unsearchable
+# still fails.
+crawl_url="https://example.com"
+crawl_unreachable=0
 if [ "${SKIP_CRAWL:-0}" != "1" ]; then
-  "${exe}" --data-dir "${data_dir}" add "https://example.com"
-  crawl_out=$("${exe}" --data-dir "${data_dir}" search "illustrative examples in documents")
-  echo "${crawl_out}"
-  echo "${crawl_out}" | grep -qi "example" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
+  probe_rc=0
+  curl -fsS --max-time 20 --retry 2 -o /dev/null "${crawl_url}" || probe_rc=$?
+  # A missing curl is not a network fault. Without the probe the leg cannot tell
+  # an unreachable host from an untested one, so fail instead of skipping.
+  if [ "${probe_rc}" -eq 127 ]; then
+    echo "FAIL: curl is required to probe ${crawl_url} before the crawl leg" >&2
+    exit 1
+  fi
+  if [ "${probe_rc}" -eq 0 ]; then
+    "${exe}" --data-dir "${data_dir}" add "${crawl_url}"
+    crawl_out=$("${exe}" --data-dir "${data_dir}" search "illustrative examples in documents")
+    echo "${crawl_out}"
+    echo "${crawl_out}" | grep -qi "example" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
+  else
+    crawl_unreachable=1
+    echo "::warning::${crawl_url} is unreachable from this runner. The crawl leg is skipped."
+    echo "WARNING: ${crawl_url} is unreachable from this runner. The crawl leg is skipped." >&2
+  fi
 fi
 
 skipped=""
-[ "${SKIP_CRAWL:-0}" = "1" ] && skipped=" (extras and crawl skipped)"
+if [ "${SKIP_CRAWL:-0}" = "1" ]; then
+  skipped=" (extras and crawl skipped)"
+elif [ "${crawl_unreachable}" -eq 1 ]; then
+  skipped=" (crawl skipped: ${crawl_url} unreachable)"
+fi
 echo "ARTIFACT SMOKE PASSED: extras, self-check, ingest, search, ask${skipped}"
