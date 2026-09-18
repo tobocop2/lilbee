@@ -192,6 +192,28 @@ class TestUnregisteredRoleRefsAreReported:
         assert "chat_model" in message
         assert "lilbee model pull" in message
 
+    def test_warning_keeps_a_windows_path_copyable(self, tmp_path: Path, caplog) -> None:
+        """A Windows ref reads back with single backslashes, so it can be copied."""
+        windows_ref = r"C:\Users\me\AppData\Local\lilbee\models\MiniMax.gguf"
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        config = _build_config(tmp_path, {"chat_model": windows_ref})
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"):
+            warn_unregistered_role_refs(config, ModelRegistry(models_dir))
+
+        assert len(caplog.records) == 1
+        message = caplog.records[0].getMessage()
+        assert f"chat_model is set to '{windows_ref}'," in message
+        assert "\\\\" not in message
+
+    @pytest.mark.parametrize("ref", ["", "   "])
+    def test_warning_renders_an_unset_ref_visibly(self, ref: str) -> None:
+        """A blank or whitespace ref keeps its quotes instead of vanishing."""
+        message = _UNREGISTERED_ROLE_WARNING % ("chat_model", ref)
+
+        assert f"chat_model is set to '{ref}'," in message
+
     def test_warning_skips_the_registered_ref(self, tmp_path: Path, caplog) -> None:
         """One warning for the unregistered role, none for the registered one."""
         models_dir = tmp_path / "models"
