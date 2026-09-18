@@ -1225,12 +1225,16 @@ class LlamaServerClient:
     ) -> str:
         """The prompt text this server's template renders for a chat body.
 
-        Sends the body :meth:`_chat_payload` builds, so the rendered prompt is
-        the one a chat call would prefill. Raises ``NotImplementedError`` when
-        the server has no such route, which is the one case a caller can answer
-        with an estimate instead.
+        Sends the body the chat paths build, messages reshaped to strict
+        alternation when this server's template needs it (see
+        :meth:`_prepare_chat_messages`), so the render cannot diverge from the
+        prompt a chat call prefills. Raises ``NotImplementedError`` when the
+        server has no such route, which is the one case a caller can answer with
+        an estimate instead.
         """
-        payload = self._chat_payload(messages, tools, tool_choice, options, stream=False)
+        payload = self._chat_payload(
+            self._prepare_chat_messages(messages), tools, tool_choice, options, stream=False
+        )
 
         def _call() -> str:
             resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)

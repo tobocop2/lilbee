@@ -1048,14 +1048,22 @@ _TOOL_LOOP_MESSAGES = [
 ]
 
 
+def _template_rejects(messages: list[dict]) -> bool:
+    """Whether a strict-alternation template refuses *messages*.
+
+    It refuses the tool role and two same-role turns in a row after the system
+    block, and renders anything else.
+    """
+    convo = [m["role"] for m in messages if m["role"] != "system"]
+    return "tool" in convo or any(earlier == later for earlier, later in pairwise(convo))
+
+
 def _strict_alternation_handler(request: httpx.Request) -> httpx.Response:
-    """Model a strict-alternation template: reject the tool role or two same-role
-    turns in a row after the system block, render anything else."""
+    """Answer a chat request as a server whose template requires strict alternation."""
     if request.url.path == "/health":
         return httpx.Response(200)
     body = json.loads(request.content)
-    convo = [m["role"] for m in body["messages"] if m["role"] != "system"]
-    if "tool" in convo or any(earlier == later for earlier, later in pairwise(convo)):
+    if _template_rejects(body["messages"]):
         return httpx.Response(500, text=_ALTERNATION_BODY)
     if body.get("stream"):
         return httpx.Response(
@@ -2358,3 +2366,38 @@ def test_count_chat_prompt_tokens_surfaces_a_template_rejection() -> None:
 
     with pytest.raises(ProviderError, match="template rejected"):
         _client(handler).count_chat_prompt_tokens([{"role": "assistant", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_renders_what_the_chat_call_sends() -> None:
+    """A template that needs alternation gets the same messages on both paths.
+
+    The chat call is the control: it shows the template answers this exchange,
+    so a count-path failure would be a difference between the paths rather than
+    a request the template refuses outright.
+    """
+    rendered: list[list[dict]] = []
+    chat_sent: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/apply-template"):
+            messages = json.loads(request.content)["messages"]
+            if _template_rejects(messages):
+                return httpx.Response(400, json={"error": {"message": _ALTERNATION_BODY}})
+            rendered.append(messages)
+            return httpx.Response(200, json={"prompt": "<|im_start|>ok<|im_end|>\n"})
+        if path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+        if path == "/v1/chat/completions" and not _is_probe(request):
+            chat_sent.append(json.loads(request.content)["messages"])
+        return _strict_alternation_handler(request)
+
+    client = _unprobed_client(handler)
+    count = client.count_chat_prompt_tokens(_TOOL_LOOP_MESSAGES)
+    chat = client.chat_result(_TOOL_LOOP_MESSAGES)
+
+    assert count == 3
+    assert chat.text == "ok"
+    assert client._needs_alternation is True
+    assert rendered[-1] == chat_sent[-1]
+    assert "tool" not in [m["role"] for m in rendered[-1]]
