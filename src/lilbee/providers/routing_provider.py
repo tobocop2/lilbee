@@ -409,10 +409,9 @@ def _is_native_rerank_ref(model: str) -> bool:
 
     Two acceptance paths:
 
-    1. The ref has the native HuggingFace GGUF shape
-       ``<org>/<repo>/<filename>.gguf`` (two slashes, ``.gguf`` suffix) and is
-       not claimed by a local-server prefix (``ollama/``, ``lm_studio/``),
-       matching :func:`parse_model_ref`'s exemption.
+    1. :func:`routes_to_native_gguf` accepts the ref: a native GGUF shape that
+       no local-server prefix (``ollama/``, ``lm_studio/``) claims, matching
+       :func:`parse_model_ref`'s exemption.
     2. The bare ``<org>/<repo>`` names a repo with an installed quant.
 
     The model's name is deliberately not consulted. Hosted rerankers are
