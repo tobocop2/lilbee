@@ -28,6 +28,7 @@ from lilbee.server.chat_completions_api.models import (
     CompletionsTool,
     CompletionsUsage,
     FinishReason,
+    PromptTokensDetails,
     ToolChoiceMode,
 )
 from lilbee.server.chat_dispatch.canonical import (
@@ -147,6 +148,7 @@ def canonical_to_completions_response(
             prompt_tokens=resp.usage.input_tokens,
             completion_tokens=resp.usage.output_tokens,
             total_tokens=total,
+            prompt_tokens_details=PromptTokensDetails(cached_tokens=resp.usage.cached_input_tokens),
         ),
     )
 
@@ -369,6 +371,7 @@ def _usage_chunk(
             prompt_tokens=usage.input_tokens,
             completion_tokens=usage.output_tokens,
             total_tokens=total,
+            prompt_tokens_details=PromptTokensDetails(cached_tokens=usage.cached_input_tokens),
         ),
     )
 

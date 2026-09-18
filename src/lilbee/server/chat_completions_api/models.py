@@ -172,10 +172,17 @@ class CompletionsResponseChoice(BaseModel):
     finish_reason: FinishReason
 
 
+class PromptTokensDetails(BaseModel):
+    """Breakdown of ``prompt_tokens``. ``cached_tokens`` is a subset of it."""
+
+    cached_tokens: int = 0
+
+
 class CompletionsUsage(BaseModel):
     prompt_tokens: int = 0
     completion_tokens: int = 0
     total_tokens: int = 0
+    prompt_tokens_details: PromptTokensDetails = Field(default_factory=PromptTokensDetails)
 
 
 class CompletionsResponse(BaseModel):

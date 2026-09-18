@@ -158,6 +158,7 @@ def dispatch_chat(
         usage=CanonicalUsage(
             input_tokens=result.usage.prompt_tokens,
             output_tokens=result.usage.completion_tokens,
+            cached_input_tokens=result.usage.cached_prompt_tokens,
         ),
     )
 
@@ -271,6 +272,7 @@ class _StreamState:
             CanonicalUsage(
                 input_tokens=self._usage.prompt_tokens,
                 output_tokens=self._usage.completion_tokens,
+                cached_input_tokens=self._usage.cached_prompt_tokens,
             )
             if self._usage is not None
             else None

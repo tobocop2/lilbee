@@ -276,6 +276,7 @@ def canonical_to_messages_response(
         usage=AnthropicUsage(
             input_tokens=resp.usage.input_tokens,
             output_tokens=resp.usage.output_tokens,
+            cache_read_input_tokens=resp.usage.cached_input_tokens,
         ),
     )
 
@@ -462,7 +463,9 @@ async def canonical_stream_to_anthropic_events(
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
+                # The counts arrive with the closing message_delta; the keys are
+                # present from the start so a client never has to probe for them.
+                "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0},
             },
         },
     )
@@ -489,6 +492,7 @@ async def canonical_stream_to_anthropic_events(
                     "usage": {
                         "input_tokens": usage.input_tokens,
                         "output_tokens": usage.output_tokens,
+                        "cache_read_input_tokens": usage.cached_input_tokens,
                     },
                 },
             )

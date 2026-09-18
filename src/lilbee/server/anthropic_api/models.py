@@ -192,10 +192,16 @@ class MessagesRequest(_AnthropicModel):
 
 
 class AnthropicUsage(BaseModel):
-    """Token counts in the Anthropic response shape."""
+    """Token counts in the Anthropic response shape.
+
+    ``cache_read_input_tokens`` breaks out the part of ``input_tokens`` the
+    engine served from its prompt cache; ``input_tokens`` stays the whole
+    prompt, so a client that ignores the breakdown counts the same total.
+    """
 
     input_tokens: int
     output_tokens: int
+    cache_read_input_tokens: int = 0
 
 
 class MessagesResponse(BaseModel):

@@ -43,7 +43,9 @@ def _request(**overrides) -> CanonicalChatRequest:
     return CanonicalChatRequest(**body)
 
 
-def _response(text: str, *, tool_calls=(), output_tokens: int = 5) -> CanonicalResponse:
+def _response(
+    text: str, *, tool_calls=(), output_tokens: int = 5, cached_input_tokens: int = 0
+) -> CanonicalResponse:
     content: list = [TextBlock(text=text)] if text else []
     content.extend(tool_calls)
     return CanonicalResponse(
@@ -51,7 +53,9 @@ def _response(text: str, *, tool_calls=(), output_tokens: int = 5) -> CanonicalR
         model=_MODEL,
         content=content,
         stop_reason=StopReason.TOOL_USE if tool_calls else StopReason.END_TURN,
-        usage=CanonicalUsage(input_tokens=10, output_tokens=output_tokens),
+        usage=CanonicalUsage(
+            input_tokens=10, output_tokens=output_tokens, cached_input_tokens=cached_input_tokens
+        ),
     )
 
 
@@ -188,6 +192,40 @@ class TestCapAwareChatStream:
         usage = [e.usage for e in events if isinstance(e, MessageDelta) and e.usage][-1]
         assert usage.output_tokens == 47
         assert usage.input_tokens == 4
+
+    @pytest.mark.asyncio
+    async def test_capped_stream_sums_both_calls_cached_tokens(self):
+        """The streaming arm sums cache reuse like the non-streaming one."""
+
+        async def _first():
+            yield MessageStart(id="m", model=_MODEL)
+            yield ContentBlockStart(index=0, block=TextBlock(text=""))
+            yield MessageDelta(
+                usage=CanonicalUsage(input_tokens=3, output_tokens=40, cached_input_tokens=6)
+            )
+            yield ContentBlockDelta(index=0, delta=TextDelta(text="<think>" + "x" * 100))
+
+        def _continuation(*_a, **_k):
+            async def _gen():
+                yield MessageStart(id="m2", model=_MODEL)
+                yield ContentBlockStart(index=0, block=TextBlock(text=""))
+                yield ContentBlockDelta(index=0, delta=TextDelta(text="answer"))
+                yield ContentBlockStop(index=0)
+                yield MessageDelta(
+                    stop_reason=StopReason.END_TURN,
+                    usage=CanonicalUsage(input_tokens=1, output_tokens=7, cached_input_tokens=9),
+                )
+                yield MessageStop()
+
+            return _gen()
+
+        with patch(
+            "lilbee.server.chat_dispatch.reasoning_cap.dispatch_chat_stream",
+            side_effect=_continuation,
+        ):
+            events = await _collect(_first(), _request(), cap_chars=10)
+        usage = [e.usage for e in events if isinstance(e, MessageDelta) and e.usage][-1]
+        assert usage.cached_input_tokens == 15
 
     @pytest.mark.asyncio
     async def test_reasoning_under_the_cap_is_not_interrupted(self):
@@ -400,6 +438,14 @@ class TestCapAwareChat:
         with self._dispatch(first, second):
             out = cap_aware_chat(_request(), canonical_model=_MODEL, cap_chars=10)
         assert out.usage.output_tokens == 47
+
+    def test_re_issued_response_sums_both_calls_cached_tokens(self):
+        """Both turns read the same cached prefix, so both counts are reported."""
+        first = _response("<think>" + "x" * 100 + "</think>", cached_input_tokens=6)
+        second = _response("answer", cached_input_tokens=9)
+        with self._dispatch(first, second):
+            out = cap_aware_chat(_request(), canonical_model=_MODEL, cap_chars=10)
+        assert out.usage.cached_input_tokens == 15
 
     def test_continuation_tool_calls_are_kept(self):
         first = _response("<think>" + "x" * 100 + "</think>")

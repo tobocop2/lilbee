@@ -140,6 +140,15 @@ async def cap_aware_chat_stream(
         yield _reindexed(_with_spent(event, spent), offset)
 
 
+def _summed(first: CanonicalUsage, second: CanonicalUsage) -> CanonicalUsage:
+    """Field-wise total of two turns' token counts."""
+    return CanonicalUsage(
+        input_tokens=first.input_tokens + second.input_tokens,
+        output_tokens=first.output_tokens + second.output_tokens,
+        cached_input_tokens=first.cached_input_tokens + second.cached_input_tokens,
+    )
+
+
 def _with_spent(event: CanonicalStreamEvent, spent: CanonicalUsage | None) -> CanonicalStreamEvent:
     """Add the capped call's tokens to the continuation's usage.
 
@@ -150,13 +159,7 @@ def _with_spent(event: CanonicalStreamEvent, spent: CanonicalUsage | None) -> Ca
     """
     if spent is None or not isinstance(event, MessageDelta) or event.usage is None:
         return event
-    return dataclasses.replace(
-        event,
-        usage=CanonicalUsage(
-            input_tokens=event.usage.input_tokens + spent.input_tokens,
-            output_tokens=event.usage.output_tokens + spent.output_tokens,
-        ),
-    )
+    return dataclasses.replace(event, usage=_summed(event.usage, spent))
 
 
 def cap_aware_chat(
@@ -199,8 +202,5 @@ def _merged_response(
     return dataclasses.replace(
         continuation,
         content=content,
-        usage=CanonicalUsage(
-            input_tokens=capped.usage.input_tokens + continuation.usage.input_tokens,
-            output_tokens=capped.usage.output_tokens + continuation.usage.output_tokens,
-        ),
+        usage=_summed(capped.usage, continuation.usage),
     )
