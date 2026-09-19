@@ -153,7 +153,8 @@ dev = [
     # in the product: gguf-parser is, built from the pin that builds
     # llama-server. This supplies GGML_QUANT_SIZES so the measured
     # bytes-per-weight table is checked against the authoritative block sizes.
-    "gguf>=0.18",
+    # 0.19 is the first release that names NVFP4, which the quant tests require.
+    "gguf>=0.19",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",

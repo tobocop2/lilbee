@@ -198,13 +198,14 @@ Default: **every import lives at module top**, ordered stdlib, third-party, loca
 - Stdlib modules (`os`, `struct`, `enum`, `io`, `fnmatch`, …) — zero cost.
 - Local lilbee modules that don't pull in heavy third-party deps at their own module top (`lilbee.core.config`, `lilbee.app.services`, `lilbee.catalog`, `lilbee.modelhub.models`, `lilbee.modelhub.registry`, …).
 - Third-party libs already dragged in transitively by the module's top-level imports — re-importing them later is pure noise.
-- Project dependencies added explicitly to `pyproject.toml` that measure under 50 ms (`httpx`, `pydantic`, `tiktoken`, `numpy`, `pillow`, `gguf`, …).
+- Project dependencies added explicitly to `pyproject.toml` that measure under 50 ms (`pydantic`, `tiktoken`, `numpy`, `pillow`, …). `gguf` is not one of them: `import gguf.constants` measures 58 ms because it pulls numpy, so it belongs in the known-heavy list above. `httpx` is not one either, at 62 ms, but the CLI already loads it at startup, so the bullet above covers it.
 
 **How to measure before arguing "it's heavy":**
 
 ```bash
-uv run python -X importtime -c "import <lib>" 2>&1 | tail -5
-# the last "self" column in microseconds is the module-top cost
+uv run python -X importtime -c "import <lib>" 2>&1 | tail -1
+# the cumulative column in microseconds is the module-top cost; the self
+# column beside it counts only the lib's own body, not what it pulls in
 ```
 
 If the result is under 50 000 µs, it belongs at the module top.
