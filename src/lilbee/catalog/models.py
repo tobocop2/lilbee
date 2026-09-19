@@ -20,27 +20,46 @@ _BYTES_PER_GB = 1024**3
 # Not the same quantity as ``gguf.GGML_QUANT_SIZES``, which gives the block size
 # of one ggml tensor type. llama.cpp never writes a homogeneous file: it promotes
 # ``output.weight`` and tied ``token_embd`` to Q6_K/Q8_0 whatever the ftype, and
-# leaves norms in F32, so a real file always costs more per weight than its
-# nominal type. These are measured file sizes; Qwen3-8B-GGUF publishes 0.614
-# (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M), 0.821 (Q6_K) and 1.063 (Q8_0).
+# leaves norms in F32, so a real file usually costs more per weight than its
+# nominal type; five published IQ2_S files sit at 0.93-0.94 of their type instead,
+# because an ftype of that name may mix a cheaper type into some tensors.
+#
+# These are measured file sizes: each entry is the highest published rate seen
+# for that label, plus a small margin, over a corpus of published GGUF files
+# from repos of 7B parameters or more (the catalog's typical download size), so
+# no entry reads under a file actually shipped at that scale. A smaller or
+# architecturally unusual repo can still publish under an entry. Qwen3-8B-GGUF
+# alone publishes 0.614 (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M), 0.821 (Q6_K)
+# and 1.063 (Q8_0), each already under its table entry.
+#
+# An entry moves only where the corpus backs it with at least three distinct
+# repos; fewer than that, including none, keeps the prior figure. Q5_0 has one
+# kept row (Qwen3-8B-GGUF, matching its entry exactly) and keeps 0.699 on
+# that ground.
+# ``test_table_entries_cover_the_measured_corpus`` replays the checked-in
+# corpus in ``tests/fixtures/quant_file_rates.json`` (fetch date and filter
+# recorded inside the fixture) against every entry it has a kept row for. A
+# row the corpus gathered but excluded carries why in its own
+# ``exclude_reason`` field. Coverage wins over the three-repo minimum: an
+# under-read fails regardless of how many rows back the label.
 #
 # No entry may sit below its base type's bytes per weight, which is physically
 # impossible; ``test_measured_quants_are_above_their_ggml_floor`` checks each one
 # against ``gguf.constants.GGML_QUANT_SIZES`` so a typo cannot survive review.
 _BYTES_PER_PARAM: dict[str, float] = {
-    "Q2_K": 0.33,
-    "Q3_K_S": 0.45,
-    "Q3_K_M": 0.488,
-    "Q3_K_L": 0.53,
-    "IQ4_XS": 0.532,
-    "Q4_0": 0.569,
-    "Q4_K_S": 0.575,
-    "Q4_K_M": 0.614,
+    "Q2_K": 0.399,
+    "Q3_K_S": 0.461,
+    "Q3_K_M": 0.503,
+    "Q3_K_L": 0.541,
+    "IQ4_XS": 0.564,
+    "Q4_0": 0.587,
+    "Q4_K_S": 0.589,
+    "Q4_K_M": 0.619,
     "Q5_0": 0.699,
-    "Q5_K_S": 0.688,
-    "Q5_K_M": 0.714,
-    "Q6_K": 0.821,
-    "Q8_0": 1.063,
+    "Q5_K_S": 0.702,
+    "Q5_K_M": 0.719,
+    "Q6_K": 0.826,
+    "Q8_0": 1.069,
     "F16": 2.0,
     "BF16": 2.0,
     "F32": 4.0,
