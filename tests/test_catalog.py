@@ -1,9 +1,12 @@
 """Tests for catalog.py: model catalog, HF API fetching, filtering, downloading."""
 
+import ast
 import json
 import logging
 import os
 import re
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -3432,3 +3435,82 @@ class TestMeasuredTableAgainstCorpus:
             default=0.0,
         )
         assert worst_seen_q2_k < excluded["published_bytes_per_param"]
+
+
+class TestGgmlQuantTableMatchesLibrary:
+    """The product's own ggml type table against ``gguf.constants``.
+
+    ``gguf`` is a dev-only dependency (see pyproject.toml): the product carries
+    its own copy of the block and type sizes so it never imports the library at
+    run time, and this test is what keeps that copy honest against an upstream
+    type addition or a transcription typo.
+    """
+
+    @staticmethod
+    def _library_block_sizes() -> dict[str, tuple[int, int]]:
+        """Every ggml type whose block packs more than one weight, straight from the library."""
+        from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+        return {
+            t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1
+        }
+
+    def test_table_matches_the_library_exactly(self) -> None:
+        """Member set and both sizes per member must match, not just the derived rate."""
+        from lilbee.catalog.refs import GGML_QUANT_BLOCK_SIZES
+
+        assert self._library_block_sizes() == GGML_QUANT_BLOCK_SIZES
+
+    def test_a_wrong_entry_fails_the_check(self) -> None:
+        """Proves the equality above is live: a single wrong figure must not pass."""
+        from lilbee.catalog.refs import GGML_QUANT_BLOCK_SIZES
+
+        mutated = dict(GGML_QUANT_BLOCK_SIZES)
+        block, type_size = mutated["Q4_0"]
+        mutated["Q4_0"] = (block, type_size + 1)
+        assert mutated != self._library_block_sizes()
+
+
+class TestProductNeverImportsGguf:
+    """The product must not import the ``gguf`` package; only tests may."""
+
+    def test_catalog_modules_never_import_gguf(self) -> None:
+        """A fresh interpreter, isolated from what other tests already imported."""
+        script = (
+            "import sys\n"
+            "import lilbee.catalog.refs\n"
+            "import lilbee.catalog.models\n"
+            "import lilbee.catalog.hf_client\n"
+            "loaded = sorted(m for m in sys.modules if m == 'gguf' or m.startswith('gguf.'))\n"
+            "assert not loaded, loaded\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
+
+    @staticmethod
+    def _names_gguf(module: str | None) -> bool:
+        """True if *module* is ``gguf`` or a submodule of it."""
+        return module == "gguf" or (module or "").startswith("gguf.")
+
+    def _imports_gguf(self, node: ast.AST) -> bool:
+        """True if *node* is an ``import`` or ``from`` statement naming ``gguf``."""
+        if isinstance(node, ast.Import):
+            return any(self._names_gguf(alias.name) for alias in node.names)
+        return isinstance(node, ast.ImportFrom) and self._names_gguf(node.module)
+
+    def test_no_module_under_src_references_gguf(self) -> None:
+        """Static guard: an ``import gguf`` anywhere in ``src/`` cannot survive review."""
+        src_root = Path(_models.__file__).resolve().parents[2]
+        hits = [
+            str(path)
+            for path in src_root.rglob("*.py")
+            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+            if self._imports_gguf(node)
+        ]
+        assert not hits, f"gguf import found in: {hits}"
