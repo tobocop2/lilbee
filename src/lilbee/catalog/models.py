@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from lilbee.catalog.refs import quant_label
+from lilbee.catalog.refs import ggml_bytes_per_param, quant_label
 from lilbee.catalog.types import ModelCompat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
@@ -71,23 +71,6 @@ _BITS_PER_BYTE = 8
 _PROMOTION_OVERHEAD = 1.10
 
 
-def _ggml_bytes_per_param(quant: str) -> float | None:
-    """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type.
-
-    What one tensor of that type costs, which is the floor a file of that type
-    sits on. Not exact in both directions: an ftype of the same name may mix a
-    cheaper type into some tensors, so a published file can come in under it.
-    """
-    # heavy: gguf pulls numpy, 58 ms by importtime
-    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
-
-    try:
-        block, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[quant]]
-    except KeyError:
-        return None
-    return type_size / block
-
-
 def _width_bytes_per_param(quant: str) -> float | None:
     """Bytes per weight from the bit width *quant* names, or None if it names none."""
     match = re.match(r"I?Q(\d)", quant)
@@ -112,7 +95,7 @@ def _quant_bytes_per_param(gguf_filename: str) -> float:
     measured = _BYTES_PER_PARAM.get(quant)
     if measured is not None:
         return measured
-    floor = _ggml_bytes_per_param(quant)
+    floor = ggml_bytes_per_param(quant)
     width = _width_bytes_per_param(quant)
     if width is not None:
         return width if floor is None else max(width, floor)

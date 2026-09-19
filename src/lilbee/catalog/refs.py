@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import re
 from collections.abc import Iterable
 from enum import IntEnum
@@ -44,41 +43,76 @@ _QUANT_PREFERENCE = (
 # ones: picking it turns a 7 GB pull into a 54 GB one.
 FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 
+# ggml's own quantized type table: name -> (block size, type size in bytes), for
+# every type whose block packs more than one weight (a block of one is a scalar
+# type, not a quantization; the float alternation below names the three scalar
+# types a GGUF filename actually carries). This is the product's own copy of
+# ``gguf.constants.GGML_QUANT_SIZES``: the library is not a product dependency
+# (see the ``gguf`` entry in pyproject.toml's dev group), so the product cannot
+# read it at run time. ``TestGgmlQuantTableMatchesLibrary`` in
+# tests/test_catalog.py checks this table against the library on every test
+# run, which is where the dependency's job stays: catching an upstream type
+# addition or a transcription typo, not sizing anything at run time.
+GGML_QUANT_BLOCK_SIZES: dict[str, tuple[int, int]] = {
+    "Q4_0": (32, 18),
+    "Q4_1": (32, 20),
+    "Q5_0": (32, 22),
+    "Q5_1": (32, 24),
+    "Q8_0": (32, 34),
+    "Q8_1": (32, 40),
+    "Q2_K": (256, 84),
+    "Q3_K": (256, 110),
+    "Q4_K": (256, 144),
+    "Q5_K": (256, 176),
+    "Q6_K": (256, 210),
+    "Q8_K": (256, 292),
+    "IQ2_XXS": (256, 66),
+    "IQ2_XS": (256, 74),
+    "IQ3_XXS": (256, 98),
+    "IQ1_S": (256, 50),
+    "IQ4_NL": (32, 18),
+    "IQ3_S": (256, 110),
+    "IQ2_S": (256, 82),
+    "IQ4_XS": (256, 136),
+    "IQ1_M": (256, 56),
+    "TQ1_0": (256, 54),
+    "TQ2_0": (256, 66),
+    "MXFP4": (32, 17),
+    "NVFP4": (64, 36),
+    "Q1_0": (128, 18),
+}
 
-@functools.cache
-def _quant_token_re() -> re.Pattern[str]:
-    """The pattern that reads a quant label out of a GGUF filename.
 
-    Built on first use rather than at import: the type names come from ``gguf``,
-    which pulls numpy and measures 58 ms, and this module is on the CLI startup
-    path.
-    """
-    # heavy: gguf pulls numpy, 58 ms by importtime
-    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
-
-    # ggml's own quantized type names. Taken from the library because a name like
-    # ``TQ1_0`` or ``MXFP4`` states no bit width, so no pattern over a label's
-    # shape can find it. A block of one weight holds a scalar, not a quant, and
-    # the float alternation below names the three scalar types a GGUF filename
-    # actually carries. The leading bit-width alternative already matches every
-    # ``Q<digit>`` and ``IQ<digit>`` name in this list; the list goes in whole so
-    # that no upstream name depends on that coincidence.
-    #
-    # Sorting longest first and escaping the names are both future-proofing: no
-    # ggml name is a prefix of another today, and an enum member name is always a
-    # Python identifier, so neither can change a match until upstream adds a name
-    # that breaks one of those.
-    names = sorted(
-        (re.escape(t.name) for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1),
-        key=lambda name: (-len(name), name),
-    )
-    # A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of
-    # the filename. Matching it as a bare substring makes ``Q8_0`` match inside
-    # ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
-    return re.compile(
-        r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|" + "|".join(names) + r"|BF16|F16|F32)(?=$|[-_./])",
-        re.IGNORECASE,
-    )
+# The pattern that reads a quant label out of a GGUF filename. ggml's own
+# quantized type names come from ``GGML_QUANT_BLOCK_SIZES`` because a name like
+# ``TQ1_0`` or ``MXFP4`` states no bit width, so no pattern over a label's shape
+# can find it. The leading bit-width alternative already matches every
+# ``Q<digit>`` and ``IQ<digit>`` name in that table; the names go in whole so
+# that no upstream name depends on that coincidence.
+#
+# Sorting longest first and escaping the names are both future-proofing: no
+# ggml name is a prefix of another today, and a type name is always a plain
+# identifier, so neither can change a match until upstream adds a name that
+# breaks one of those.
+#
+# A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of
+# the filename. Matching it as a bare substring makes ``Q8_0`` match inside
+# ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
+#
+# Built at module import, not lazily: the type table above is a plain dict
+# literal, so compiling the pattern costs microseconds. The lazy form existed
+# only to defer ``gguf``'s numpy pull past CLI startup; there is no heavy
+# import left to defer.
+_QUANT_NAMES_BY_LENGTH = sorted(
+    (re.escape(name) for name in GGML_QUANT_BLOCK_SIZES),
+    key=lambda name: (-len(name), name),
+)
+_QUANT_TOKEN_RE = re.compile(
+    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|"
+    + "|".join(_QUANT_NAMES_BY_LENGTH)
+    + r"|BF16|F16|F32)(?=$|[-_./])",
+    re.IGNORECASE,
+)
 
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -103,8 +137,17 @@ def quant_label(filename: str) -> str:
     label in both the directory and the file, and a mismatched pair names the
     real type on the file.
     """
-    matches = _quant_token_re().findall(filename)
+    matches = _QUANT_TOKEN_RE.findall(filename)
     return matches[-1].upper() if matches else ""
+
+
+def ggml_bytes_per_param(quant: str) -> float | None:
+    """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type."""
+    sizes = GGML_QUANT_BLOCK_SIZES.get(quant)
+    if sizes is None:
+        return None
+    block, type_size = sizes
+    return type_size / block
 
 
 def _shard_name(base: str, index: int, total: int) -> str:
