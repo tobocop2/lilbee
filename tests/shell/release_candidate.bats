@@ -76,12 +76,22 @@ prerelease() {  # tag version repo [from]
   [[ "$output" == *"same-source promotion"* ]]
 }
 
-@test "an annotated-tag peel does not promote" {
-  printf 'abc123 refs/tags/v1.2.2^{}\n' > "${FIXTURE}/ls_remote"
+@test "an annotated source tag promotes through its peel" {
+  # An annotated tag lists the tag object on the plain ref and the commit only
+  # on the peel, so the peel is the sole line that can match the parent sha.
+  printf 'tagobj9 refs/tags/v1.2.2\nabc123 refs/tags/v1.2.2^{}\n' > "${FIXTURE}/ls_remote"
   printf 'abc123\n' > "${FIXTURE}/parent"
   run detect v1.2.3
   [ "$status" -eq 0 ]
-  [ "$(cat "${FIXTURE}/outputs")" = "promoted_from=" ]
+  [ "$(cat "${FIXTURE}/outputs")" = "promoted_from=v1.2.2" ]
+}
+
+@test "an annotated tag object sha does not promote" {
+  printf 'abc123 refs/tags/v1.2.2\nfeed99 refs/tags/v1.2.2^{}\n' > "${FIXTURE}/ls_remote"
+  printf 'feed99\n' > "${FIXTURE}/parent"
+  run detect v1.2.3
+  [ "$status" -eq 0 ]
+  [ "$(cat "${FIXTURE}/outputs")" = "promoted_from=v1.2.2" ]
 }
 
 @test "a change outside the version files is not a promotion" {
