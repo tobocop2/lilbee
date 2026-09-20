@@ -12,7 +12,7 @@ lint: lint-shell
 
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
-	  shellcheck -s bash scripts/*.sh tools/qa/artifact_smoke.sh tests/shell/*.bash tests/shell/stubs/*; \
+	  shellcheck -s bash scripts/*.sh tools/ci/*.sh tools/qa/artifact_smoke.sh tests/shell/*.bash tests/shell/stubs/*; \
 	else echo "lint-shell: shellcheck is not installed, skipping"; fi
 	# actionlint also shellchecks every inline `run:` block.
 	@if command -v actionlint >/dev/null; then actionlint; \
@@ -53,13 +53,8 @@ test-ci-forked:
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
 
-# The integration conftest reruns the tests that download a model, and only
-# those. --max-suite-reruns caps the run as a whole, so a HuggingFace outage
-# reports red at the usual time rather than spending its reruns on every test.
-# The four reruns are shared and spent first come: once they are gone, a test
-# that loses its connection is reported as an ordinary failure.
 test-integration:
-	uv run pytest tests/integration/ -v --max-suite-reruns 4
+	uv run pytest tests/integration/ -v
 
 fuzz-smoke:  ## Seeded adversarial TUI fuzz, fixed seeds (deterministic, CI-sized)
 	uv run python scripts/qa/tui_fuzz.py smoke

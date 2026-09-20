@@ -4,11 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import gc
-import inspect
 import os
-from collections.abc import Iterator
 from pathlib import Path
-from types import CodeType, FunctionType
 
 import pytest
 
@@ -73,62 +70,6 @@ def _resolve_installed_ref(hf_repo: str) -> str:
 # different cap with @pytest.mark.timeout(X).
 _INTEGRATION_TIMEOUT_SECONDS = 180
 
-# The download is the only place the suite reaches HuggingFace, so the rerun is
-# scoped to the items that reach it: the scope is read out of the test code
-# rather than listed, so a new download test carries the rerun the day it is
-# written. A test that fails for its own reason is reported on its first
-# attempt.
-_DOWNLOAD_CALL = "download_model"
-_TEST_PACKAGE = "tests"
-_DOWNLOAD_RERUNS = 2
-_DOWNLOAD_RERUN_DELAY_SECONDS = 10
-
-
-def _is_test_function(obj: object) -> bool:
-    """True for a function the test suite itself defines."""
-    return isinstance(obj, FunctionType) and obj.__module__.split(".")[0] == _TEST_PACKAGE
-
-
-def _referenced_names(code: CodeType) -> set[str]:
-    """Every name a code object reads, the code of nested functions included."""
-    names = set(code.co_names)
-    for const in code.co_consts:
-        if isinstance(const, CodeType):
-            names |= _referenced_names(const)
-    return names
-
-
-def _calls_download(func: FunctionType, seen: set[CodeType]) -> bool:
-    """True when the function calls the download, through a test helper too."""
-    target = inspect.unwrap(func)
-    if target.__code__ in seen:
-        return False
-    seen.add(target.__code__)
-    names = _referenced_names(target.__code__)
-    if _DOWNLOAD_CALL in names:
-        return True
-    helpers = [target.__globals__.get(name) for name in names]
-    return any(_calls_download(helper, seen) for helper in helpers if _is_test_function(helper))
-
-
-def _item_functions(item) -> Iterator[FunctionType]:
-    """The item's own function and every fixture function it requests.
-
-    ``_fixtureinfo`` is pytest's resolved closure for the item, so a fixture
-    that only another fixture asks for is in it.
-    """
-    for fixturedefs in item._fixtureinfo.name2fixturedefs.values():
-        for fixturedef in fixturedefs:
-            yield fixturedef.func
-    yield item.function
-
-
-def _downloads_a_model(item) -> bool:
-    """True when running the item reaches the catalog download."""
-    seen: set[CodeType] = set()
-    funcs = [func for func in _item_functions(item) if _is_test_function(func)]
-    return any(_calls_download(func, seen) for func in funcs)
-
 
 def pytest_collection_modifyitems(items):
     for item in items:
@@ -137,13 +78,6 @@ def pytest_collection_modifyitems(items):
         # marker and silently overrides every per-test opt-in.
         if item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
-        if _downloads_a_model(item):
-            item.add_marker(
-                pytest.mark.flaky(
-                    reruns=_DOWNLOAD_RERUNS,
-                    reruns_delay=_DOWNLOAD_RERUN_DELAY_SECONDS,
-                )
-            )
 
 
 @pytest.fixture(autouse=True)

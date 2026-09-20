@@ -153,6 +153,7 @@ class TestStallRetries:
         stub = type("_Stub", (_GuardStub,), {"fired_script": fired})
         monkeypatch.setattr(dl, "_StallGuard", stub)
         monkeypatch.setattr(dl, "_hf_download_or_translate", _fake_transfer)
+        monkeypatch.setattr(dl.time, "sleep", lambda seconds: None)
         return dl._download_with_stall_guard(_entry(), _config()), calls["n"]
 
     def test_a_stall_resumes_and_finishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -180,6 +181,41 @@ class TestStallRetries:
     def test_cancellation_is_never_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pytest.raises(TaskCancelledError):
             self._run(monkeypatch, [TaskCancelledError()], fired=True)
+
+    def test_a_network_fault_resumes_and_finishes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A transient network fault retries even though the transfer never stalled."""
+        path = Path("/models/f.gguf")
+        result, attempts = self._run(
+            monkeypatch,
+            [
+                dl._TransientDownloadError("Network error downloading user/repo: reset"),
+                dl._TransientDownloadError("I/O error downloading user/repo: closed"),
+                path,
+            ],
+            fired=False,
+        )
+        assert result == path
+        assert attempts == 3
+
+    def test_a_persistent_network_fault_fails_with_the_last_fault(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        faults = [
+            dl._TransientDownloadError(f"Network error downloading user/repo: {reason}")
+            for reason in "abc"
+        ]
+        with pytest.raises(RuntimeError, match=r"Network error downloading.*failed 3 times"):
+            self._run(monkeypatch, faults, fired=False)
+
+    def test_an_assertion_failure_is_never_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A defect in the transfer is reported on the first attempt, never rerun."""
+        with pytest.raises(AssertionError, match="checksum"):
+            self._run(monkeypatch, [AssertionError("checksum mismatch")], fired=False)
+
+    def test_a_gated_repo_is_never_retried(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A configuration error is not transient, so it is reported at once."""
+        with pytest.raises(PermissionError, match="authentication"):
+            self._run(monkeypatch, [PermissionError("needs authentication")], fired=False)
 
 
 class TestGuardIsOnEveryTransfer:
