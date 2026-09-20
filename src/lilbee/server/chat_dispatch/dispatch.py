@@ -417,13 +417,13 @@ def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> 
     A backend that cannot render or tokenize falls back to the estimate, and the
     result carries which of the two answered.
     """
+    kwargs = _provider_chat_kwargs(req, canonical_model)
     try:
-        tokens = get_services().provider.count_chat_prompt_tokens(
-            **_provider_chat_kwargs(req, canonical_model)
-        )
+        tokens = get_services().provider.count_chat_prompt_tokens(**kwargs)
     except NotImplementedError:
         return PromptTokenCount(
-            tokens=_estimate_prompt_tokens(req), accuracy=TokenCountAccuracy.ESTIMATED
+            tokens=_estimate_prompt_tokens(req, wire_messages=kwargs["messages"]),
+            accuracy=TokenCountAccuracy.ESTIMATED,
         )
     return PromptTokenCount(tokens=tokens, accuracy=TokenCountAccuracy.EXACT)
 
@@ -500,7 +500,9 @@ def _provider_tools(
     ]
 
 
-def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
+def _estimate_prompt_tokens(
+    req: CanonicalChatRequest, *, wire_messages: list[dict[str, Any]]
+) -> int:
     """Estimate of *req*'s prompt tokens, for a backend with no tokenizer.
 
     The request's own text is counted in UTF-8 bytes, which no token encodes
@@ -509,12 +511,13 @@ def _estimate_prompt_tokens(req: CanonicalChatRequest) -> int:
     47 surveyed templates substitute more than they cover. A chars-per-token
     ratio fails differently, reading dense input short.
 
-    The per-message allowance is charged against the messages the provider is
-    sent: one canonical message carrying several tool results becomes one wire
-    message each, and the template renders role markers around every one.
+    The per-message allowance is charged against *wire_messages*, the messages
+    the provider is sent: one canonical message carrying several tool results
+    becomes one wire message each, and the template renders role markers around
+    every one.
     """
     tools = req.tools or []
-    allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(_provider_messages(req))
+    allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(wire_messages)
     if tools:
         allowance += _TEMPLATE_TOOL_BLOCK_TOKENS + _TEMPLATE_PER_TOOL_TOKENS * len(tools)
     return _content_bytes(req) + allowance

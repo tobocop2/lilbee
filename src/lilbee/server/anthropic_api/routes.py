@@ -132,7 +132,9 @@ async def count_tokens_endpoint(request: Request, data: CountTokensRequest) -> R
     ``X-Lilbee-Token-Count-Accuracy`` for whether that number was measured on the
     backend (``exact``) or estimated (``estimated``). Counting never runs a tool,
     so the only thing a request has to be is translatable: the tool-capability
-    check ``/v1/messages`` runs is not applied.
+    check ``/v1/messages`` runs is not applied. The count does not take a chat
+    slot, so it never answers 429; a count that finds the model cold loads it,
+    as a chat call would.
     """
     mode = resolve_reasoning_mode(data.thinking, default=cfg.messages_reasoning)
     try:

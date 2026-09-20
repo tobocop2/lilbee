@@ -335,6 +335,9 @@ class LLMProvider(Protocol):
 
         Takes the same arguments as :meth:`chat`. The model's chat template is
         applied first, so role markers and the tool-call preamble are counted.
+        Assumes no warm state: a backend whose chat model is cold loads it, and
+        the first call against a fresh replica may issue the same one-token
+        template probe :meth:`chat` issues, so this can block for a cold start.
         Raise ``NotImplementedError`` when the backend cannot render or
         tokenize, and the caller estimates instead.
         """

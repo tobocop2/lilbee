@@ -2358,6 +2358,30 @@ def test_count_chat_prompt_tokens_reports_an_engine_without_the_route() -> None:
         _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
 
 
+def test_count_chat_prompt_tokens_reports_a_proxy_that_refuses_the_method() -> None:
+    """A proxy answering 405 carries no render route either, so the caller estimates."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/apply-template"):
+            return httpx.Response(405, json={"error": {"message": "method not allowed"}})
+        raise AssertionError("must not tokenize without a rendered prompt")
+
+    with pytest.raises(NotImplementedError, match="apply-template"):
+        _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_surfaces_an_unroutable_model() -> None:
+    """A proxy that cannot route the model is an error, not a missing route."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/apply-template"):
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+        raise AssertionError("must not tokenize without a rendered prompt")
+
+    with pytest.raises(ProviderError, match="model not found"):
+        _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
 def test_count_chat_prompt_tokens_surfaces_a_template_rejection() -> None:
     """A body the template refuses is a bad request, not a missing capability."""
 

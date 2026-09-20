@@ -30,9 +30,11 @@ from lilbee.server.chat_dispatch.canonical import (
     MessageDelta,
     MessageStart,
     MessageStop,
+    PromptTokenCount,
     StopReason,
     TextBlock,
     TextDelta,
+    TokenCountAccuracy,
     ToolResultBlock,
     ToolUseBlock,
     ToolUseDelta,
@@ -40,8 +42,12 @@ from lilbee.server.chat_dispatch.canonical import (
 from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
+    _provider_chat_kwargs,
+    count_request_tokens,
     dispatch_chat,
     dispatch_chat_stream,
+    preflight_chat_request,
+    resolve_served_model,
 )
 
 
@@ -498,15 +504,11 @@ class TestConfiguredModelPreflight:
         services_with_model.provider.chat.assert_not_called()
 
     def test_configured_local_model_passes_preflight(self, services_with_model) -> None:
-        from lilbee.server.chat_dispatch.dispatch import preflight_chat_request
-
         assert preflight_chat_request(_req()) == "vendor/model::Q4"
 
     def test_remote_ref_differing_from_configured_passes_preflight(
         self, services_with_model
     ) -> None:
-        from lilbee.server.chat_dispatch.dispatch import preflight_chat_request
-
         assert preflight_chat_request(_req(model="ollama/gemma4:26b")) == "ollama/gemma4:26b"
 
     async def test_stream_rejects_not_configured_model_before_yielding(
@@ -1056,9 +1058,6 @@ class TestCountRequestTokens:
     """``count_request_tokens`` asks the engine for the prompt a chat call sends."""
 
     def test_counts_the_arguments_the_chat_call_would_send(self, services_with_model) -> None:
-        from lilbee.server.chat_dispatch.canonical import PromptTokenCount, TokenCountAccuracy
-        from lilbee.server.chat_dispatch.dispatch import _provider_chat_kwargs, count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.return_value = 4242
         req = _req(tools=[_ENGINE_TOOLS[0]], system="be brief", think=False)
 
@@ -1071,11 +1070,6 @@ class TestCountRequestTokens:
 
     def test_a_model_without_tool_support_is_still_counted(self, services_with_model) -> None:
         """Counting runs no tool, so the chat call's capability gate does not apply."""
-        from lilbee.server.chat_dispatch.dispatch import (
-            preflight_chat_request,
-            resolve_served_model,
-        )
-
         req = _req(tools=[_ENGINE_TOOLS[0]])
         services_with_model.provider.supports_tools.return_value = False
 
@@ -1084,15 +1078,10 @@ class TestCountRequestTokens:
             preflight_chat_request(req)
 
     def test_an_unknown_model_is_still_rejected(self, services_with_model) -> None:
-        from lilbee.server.chat_dispatch.dispatch import resolve_served_model
-
         with pytest.raises(ModelNotFoundError):
             resolve_served_model(_req(model="nope/missing"))
 
     def test_a_backend_without_a_tokenizer_is_estimated(self, services_with_model) -> None:
-        from lilbee.server.chat_dispatch.canonical import TokenCountAccuracy
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         count = count_request_tokens(_req(), canonical_model="vendor/model::Q4")
 
@@ -1104,8 +1093,6 @@ class TestCountRequestTokens:
         self, services_with_model, extra: dict[str, Any], measured: int
     ) -> None:
         """Under-counting makes a client overflow its window, so the estimate stays above."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_ENGINE_MESSAGES, **extra)
 
@@ -1120,8 +1107,6 @@ class TestCountRequestTokens:
         measured: int,
     ) -> None:
         """One short turn with one schema is almost entirely template preamble."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_ONE_TURN, tools=[tool], tool_choice=tool_choice)
 
@@ -1132,8 +1117,6 @@ class TestCountRequestTokens:
         self, services_with_model, text: str, measured: int
     ) -> None:
         """Input a chars-per-token average reads short, so a ratio fails this arm."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=[CanonicalMessage(role="user", content=[TextBlock(text=text)])])
 
@@ -1144,8 +1127,6 @@ class TestCountRequestTokens:
         self, services_with_model, extra: dict[str, Any], measured: int
     ) -> None:
         """A near-empty request whose cost is almost all template, not input."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(**extra)
 
@@ -1153,8 +1134,6 @@ class TestCountRequestTokens:
 
     def test_one_more_tool_costs_more_than_that_tools_own_text(self, services_with_model) -> None:
         """The template wraps each schema, so the allowance grows with the tool count."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         one = count_request_tokens(
             _req(tools=[_MINIMAL_TOOL]), canonical_model="vendor/model::Q4"
@@ -1171,8 +1150,6 @@ class TestCountRequestTokens:
         self, services_with_model
     ) -> None:
         """Prose is where a byte count is loosest, so the arm pins how loose."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(
             messages=[CanonicalMessage(role="user", content=[TextBlock(text=_PROSE_PARAGRAPH)])]
@@ -1185,8 +1162,6 @@ class TestCountRequestTokens:
 
     def test_the_estimate_counts_a_tool_call_and_its_result(self, services_with_model) -> None:
         """Tool arguments and tool output reach the prompt, so they are counted."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_TOOL_EXCHANGE, tools=[_BIG_TOOLS[0]])
 
@@ -1198,8 +1173,6 @@ class TestCountRequestTokens:
         self, services_with_model, results: int, measured: int
     ) -> None:
         """One message returning many results renders as many turns, not as one."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         req = _req(messages=_parallel_tool_results(results))
 
@@ -1207,8 +1180,6 @@ class TestCountRequestTokens:
 
     def test_each_parallel_result_costs_another_turns_allowance(self, services_with_model) -> None:
         """The results are empty, so only the per-message allowance can grow with them."""
-        from lilbee.server.chat_dispatch.dispatch import count_request_tokens
-
         services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
         counts = [
             count_request_tokens(

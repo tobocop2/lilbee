@@ -414,16 +414,16 @@ _APPLY_TEMPLATE_PATH = "/apply-template"
 # body's model field, but a native route carries no such field).
 _UPSTREAM_PREFIX = "/upstream"
 # Match the in-process tokenizer call (llm.tokenize(text, add_bos=True, special=False)):
-# the server adds BOS via add_special and leaves special-token strings unparsed.
+# the server adds BOS via add_special, and the chunk-sizing call leaves
+# special-token strings unparsed; the chat-prompt count overrides that, because
+# the render carries them.
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
 _HTTP_BAD_REQUEST = 400
+_HTTP_NOT_FOUND = 404
+_HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
-# Statuses that mean the route itself is absent rather than the request bad: an
-# engine too old to carry it answers 404, a proxy that knows the path but not the
-# method answers 405.
-_ROUTE_ABSENT_STATUSES = frozenset({404, 405})
 # Gateway statuses llama-swap returns while an upstream is unreachable
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
 # succeeds once the upstream is back, so these must never terminalize a call.
@@ -457,6 +457,26 @@ _EMBED_BUSY_RETRIES = 14
 # connection failure re-stamps the cool-down).
 _UNHEALTHY_RETRY_S = 30.0
 _T = TypeVar("_T")
+
+
+def _route_is_absent(resp: httpx.Response) -> bool:
+    """Whether *resp* means the route is missing rather than the request bad.
+
+    A proxy that knows the path but not the method answers 405. An engine too old
+    to carry the route answers 404 with a plain body, while llama-swap answers
+    404 with a JSON error envelope for a model it cannot route -- a
+    misconfiguration the caller must see, not one to answer with an estimate.
+    """
+    if resp.status_code == _HTTP_METHOD_NOT_ALLOWED:
+        return True
+    if resp.status_code != _HTTP_NOT_FOUND:
+        return False
+    resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
+    try:
+        body = resp.json()
+    except ValueError:
+        return True
+    return not (isinstance(body, dict) and "error" in body)
 
 
 class ChatDeadlineError(ProviderError):
@@ -1238,7 +1258,7 @@ class LlamaServerClient:
 
         def _call() -> str:
             resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)
-            if resp.status_code in _ROUTE_ABSENT_STATUSES:
+            if _route_is_absent(resp):
                 raise NotImplementedError(
                     f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
                 )
