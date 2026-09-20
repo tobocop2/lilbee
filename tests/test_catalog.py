@@ -1,8 +1,9 @@
 """Tests for catalog.py: model catalog, HF API fetching, filtering, downloading."""
 
-import ast
 import logging
 import os
+import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -3211,17 +3212,17 @@ class TestQuantBytesPerParam:
 
     def test_a_two_bit_quant_is_not_estimated_as_four(self) -> None:
         """The old fallback priced a 2-bit file at the 4-bit rate, over twice its size."""
-        from lilbee.catalog.models import _DEFAULT_BYTES_PER_PARAM, _quant_bytes_per_param
+        from lilbee.catalog.models import _default_bytes_per_param, _quant_bytes_per_param
 
         assert _quant_bytes_per_param("m-Q2_g64.gguf") == pytest.approx(
-            _DEFAULT_BYTES_PER_PARAM / 2
+            _default_bytes_per_param() / 2
         )
 
     def test_a_filename_naming_no_quant_falls_back_to_q4_k(self) -> None:
-        from lilbee.catalog.models import _DEFAULT_BYTES_PER_PARAM, _quant_bytes_per_param
+        from lilbee.catalog.models import _default_bytes_per_param, _quant_bytes_per_param
 
-        assert _quant_bytes_per_param("model.gguf") == _DEFAULT_BYTES_PER_PARAM
-        assert _ggml_quant_rates()["Q4_K"] == pytest.approx(_DEFAULT_BYTES_PER_PARAM)
+        assert _quant_bytes_per_param("model.gguf") == _default_bytes_per_param()
+        assert _ggml_quant_rates()["Q4_K"] == pytest.approx(_default_bytes_per_param())
 
     def test_no_estimate_sits_below_its_ggml_type(self) -> None:
         """Bare type names and the suffixed labels publishers really ship.
@@ -3268,71 +3269,71 @@ class TestSizeEstimateAgainstPublishedFiles:
 
     def test_a_ternary_type_is_not_estimated_as_q4_k(self) -> None:
         """TQ1_0 packs 1.69 bits per weight; the old default reported it at 2.7 times that."""
-        from lilbee.catalog.models import _DEFAULT_BYTES_PER_PARAM, _quant_bytes_per_param
+        from lilbee.catalog.models import _default_bytes_per_param, _quant_bytes_per_param
 
-        assert _quant_bytes_per_param("m-TQ1_0.gguf") < _DEFAULT_BYTES_PER_PARAM / 2
+        assert _quant_bytes_per_param("m-TQ1_0.gguf") < _default_bytes_per_param() / 2
 
 
-class TestGgmlQuantTableMatchesLibrary:
-    """The product's own ggml type table against ``gguf.constants``.
+class TestGgmlQuantTableComesFromTheLibrary:
+    """The quant table the estimate prices with is ``gguf.constants``' own.
 
-    ``gguf`` is a dev-only dependency (see pyproject.toml): the product carries
-    its own copy of the block and type sizes so it never imports the library at
-    run time, and this test is what keeps that copy honest against an upstream
-    type addition or a transcription typo.
+    The set of types is pinned so an upstream addition or removal shows up as a
+    failure here instead of silently changing what a filename is sized as.
     """
 
-    @staticmethod
-    def _library_block_sizes() -> dict[str, tuple[int, int]]:
-        """Every ggml type whose block packs more than one weight, straight from the library."""
+    # Every ggml type whose block packs more than one weight, as of gguf 0.19.
+    _EXPECTED_TYPE_COUNT = 26
+
+    def test_the_accessor_returns_the_library_table(self) -> None:
+        """Member set and both sizes per member, not just the derived rate."""
         from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
 
-        return {
+        from lilbee.catalog.refs import ggml_quant_block_sizes
+
+        expected = {
             t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1
         }
+        assert dict(ggml_quant_block_sizes()) == expected
 
-    def test_table_matches_the_library_exactly(self) -> None:
-        """Member set and both sizes per member must match, not just the derived rate."""
-        from lilbee.catalog.refs import GGML_QUANT_BLOCK_SIZES
+    def test_the_scalar_types_are_left_out(self) -> None:
+        """A block of one weight is a scalar type; ``FLOAT_BYTES_PER_PARAM`` prices those."""
+        from lilbee.catalog.refs import ggml_quant_block_sizes
 
-        assert self._library_block_sizes() == GGML_QUANT_BLOCK_SIZES
-
-    def test_a_wrong_entry_fails_the_check(self) -> None:
-        """Proves the equality above is live: a single wrong figure must not pass."""
-        from lilbee.catalog.refs import GGML_QUANT_BLOCK_SIZES
-
-        mutated = dict(GGML_QUANT_BLOCK_SIZES)
-        block, type_size = mutated["Q4_0"]
-        mutated["Q4_0"] = (block, type_size + 1)
-        assert mutated != self._library_block_sizes()
+        table = ggml_quant_block_sizes()
+        assert len(table) == self._EXPECTED_TYPE_COUNT
+        assert all(block > 1 for block, _ in table.values())
+        assert not {"F16", "BF16", "F32"} & set(table)
 
 
-class TestProductNeverImportsGguf:
-    """The product must not import the ``gguf`` package; only tests may."""
+class TestGgufStaysOffTheImportPath:
+    """Importing the catalog must not pull ``gguf``, which costs numpy and yaml.
 
-    @staticmethod
-    def _names_gguf(module: str | None) -> bool:
-        """True if *module* is ``gguf`` or a submodule of it."""
-        return module == "gguf" or (module or "").startswith("gguf.")
+    ``gguf`` is a runtime dependency, but its import is about 87 ms cold. Every
+    use of it sits inside a cached function so only a command that really
+    prices a quant pays that, not every CLI invocation.
+    """
 
-    def _imports_gguf(self, node: ast.AST) -> bool:
-        """True if *node* is an ``import`` or ``from`` statement naming ``gguf``."""
-        if isinstance(node, ast.Import):
-            return any(self._names_gguf(alias.name) for alias in node.names)
-        return isinstance(node, ast.ImportFrom) and self._names_gguf(node.module)
+    def test_importing_the_catalog_does_not_import_gguf(self) -> None:
+        """Run in a fresh interpreter: this session imported ``gguf`` long ago."""
+        probe = "import sys, lilbee.catalog.models; print('gguf' in sys.modules)"
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert result.stdout.strip() == "False"
 
-    def test_no_module_under_src_references_gguf(self) -> None:
-        """An ``import gguf`` anywhere in ``src/`` cannot survive review.
-
-        Anchored on the repository rather than on an imported module's path: an
-        installed wheel puts that path in site-packages, where the walk would
-        read every installed package and trip on ``gguf``'s own modules.
-        """
-        src_root = Path(__file__).resolve().parents[1] / "src"
-        hits = [
-            str(path)
-            for path in src_root.rglob("*.py")
-            for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
-            if self._imports_gguf(node)
-        ]
-        assert not hits, f"gguf import found in: {hits}"
+    def test_pricing_a_quant_imports_gguf(self) -> None:
+        """The other half: the accessor really does reach the library on first use."""
+        probe = (
+            "import sys; from lilbee.catalog.refs import ggml_bytes_per_param; "
+            "ggml_bytes_per_param('Q4_K'); print('gguf' in sys.modules)"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert result.stdout.strip() == "True"

@@ -1,11 +1,12 @@
 """Catalog dataclasses and pydantic types. Imports only the catalog's leaf modules."""
 
+import functools
 import re
 from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from lilbee.catalog.refs import GGML_QUANT_BLOCK_SIZES, ggml_bytes_per_param, quant_label
+from lilbee.catalog.refs import ggml_bytes_per_param, ggml_quant_block_sizes, quant_label
 from lilbee.catalog.types import ModelCompat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
@@ -15,10 +16,17 @@ _RAM_OVER_SIZE_FACTOR = 1.5
 
 _BYTES_PER_GB = 1024**3
 
-# Q4_K heads the pull path's quant preference, so a filename naming no quant at
-# all sizes as the type a pull would most likely land on.
-_DEFAULT_BLOCK, _DEFAULT_TYPE_SIZE = GGML_QUANT_BLOCK_SIZES["Q4_K"]
-_DEFAULT_BYTES_PER_PARAM = _DEFAULT_TYPE_SIZE / _DEFAULT_BLOCK
+
+@functools.cache
+def _default_bytes_per_param() -> float:
+    """Bytes per weight of Q4_K, the type a filename naming no quant is sized as.
+
+    Q4_K heads the pull path's quant preference, so it is the type a pull would
+    most likely land on.
+    """
+    block, type_size = ggml_quant_block_sizes()["Q4_K"]
+    return type_size / block
+
 
 # A quant ggml does not name still says how many bits it packs. One fp16 scale
 # per group costs an eighth on top, whatever the width, because a group is sized
@@ -51,7 +59,7 @@ def _quant_bytes_per_param(gguf_filename: str) -> float:
     if rate is not None:
         return rate
     width = _width_bytes_per_param(quant)
-    return width if width is not None else _DEFAULT_BYTES_PER_PARAM
+    return width if width is not None else _default_bytes_per_param()
 
 
 def estimate_min_ram_gb(size_gb: float) -> float:

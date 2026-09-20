@@ -539,6 +539,26 @@ jobs:
             exit 1
           fi
 
+          # The download-size estimate reads ggml's block sizes from gguf.constants,
+          # imported inside a function so no CLI invocation pays numpy + yaml. Nuitka
+          # follows a function-local import, but the size a user sees before a pull
+          # depends on it, so prove the frozen binary really resolves it. The payload
+          # names multiprocessing because the frozen child dispatch requires that
+          # before it execs a -c payload at all.
+          QS=$(mktemp)
+          "$EXE" -c "import multiprocessing; from lilbee.catalog.refs import ggml_bytes_per_param; print(ggml_bytes_per_param('Q4_K'))" > "$QS" 2>&1 || true
+          if grep -qE "No module named|ModuleNotFoundError|Traceback" "$QS"; then
+            echo "FAIL: the ggml quant table is not reachable in the frozen binary"
+            cat "$QS"
+            exit 1
+          fi
+          # Q4_K packs a 256-weight block into 144 bytes.
+          if ! grep -q "0.5625" "$QS"; then
+            echo "FAIL: the frozen binary prices Q4_K wrong"
+            cat "$QS"
+            exit 1
+          fi
+
           # Boot server, scan stderr for the spawn-loop pattern, verify /api/health version.
           export LILBEE_DATA="${{ runner.temp }}/lilbee-smoke"
           mkdir -p "$LILBEE_DATA"

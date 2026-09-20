@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import IntEnum
 
 # A native GGUF ref ``<org>/<repo>/<file>.gguf`` has at least two ``/`` separators;
@@ -47,74 +48,56 @@ FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 # by definition rather than measured: a float tensor has no block and no scale.
 FLOAT_BYTES_PER_PARAM: dict[str, float] = {"F16": 2.0, "BF16": 2.0, "F32": 4.0}
 
-# ggml's own quantized type table: name -> (block size, type size in bytes), for
-# every type whose block packs more than one weight (a block of one is a scalar
-# type, not a quantization; ``FLOAT_BYTES_PER_PARAM`` above prices the three
-# scalar types a GGUF filename carries). This is the product's own copy of
-# ``gguf.constants.GGML_QUANT_SIZES``: the library is not a product dependency
-# (see the ``gguf`` entry in pyproject.toml's dev group), so the product cannot
-# read it at run time. ``TestGgmlQuantTableMatchesLibrary`` in
-# tests/test_catalog.py checks this table against the library on every test
-# run, which is where the dependency's job stays: catching an upstream type
-# addition or a transcription typo, not sizing anything at run time.
-GGML_QUANT_BLOCK_SIZES: dict[str, tuple[int, int]] = {
-    "Q4_0": (32, 18),
-    "Q4_1": (32, 20),
-    "Q5_0": (32, 22),
-    "Q5_1": (32, 24),
-    "Q8_0": (32, 34),
-    "Q8_1": (32, 40),
-    "Q2_K": (256, 84),
-    "Q3_K": (256, 110),
-    "Q4_K": (256, 144),
-    "Q5_K": (256, 176),
-    "Q6_K": (256, 210),
-    "Q8_K": (256, 292),
-    "IQ2_XXS": (256, 66),
-    "IQ2_XS": (256, 74),
-    "IQ3_XXS": (256, 98),
-    "IQ1_S": (256, 50),
-    "IQ4_NL": (32, 18),
-    "IQ3_S": (256, 110),
-    "IQ2_S": (256, 82),
-    "IQ4_XS": (256, 136),
-    "IQ1_M": (256, 56),
-    "TQ1_0": (256, 54),
-    "TQ2_0": (256, 66),
-    "MXFP4": (32, 17),
-    "NVFP4": (64, 36),
-    "Q1_0": (128, 18),
-}
+
+@functools.cache
+def ggml_quant_block_sizes() -> Mapping[str, tuple[int, int]]:
+    """ggml's own quantized type table: name -> (block size, type size in bytes).
+
+    Read from ``gguf.constants``, which is the authority llama.cpp itself
+    generates the C table from, so the sizes cannot drift from the engine that
+    writes the files. Types whose block packs a single weight are dropped: a
+    block of one is a scalar type, not a quantization, and
+    ``FLOAT_BYTES_PER_PARAM`` above prices the three scalar types a GGUF
+    filename carries.
+
+    Imported inside the function and cached because ``gguf.constants`` pulls
+    numpy and yaml, which cost about 87 ms that no CLI invocation should pay
+    before it needs a quant size.
+    """
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    return {t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1}
 
 
-# The pattern that reads a quant label out of a GGUF filename. ggml's own
-# quantized type names come from ``GGML_QUANT_BLOCK_SIZES`` because a name like
-# ``TQ1_0`` or ``MXFP4`` states no bit width, so no pattern over a label's shape
-# can find it. The leading bit-width alternative already matches every
-# ``Q<digit>`` and ``IQ<digit>`` name in that table; the names go in whole so
-# that no upstream name depends on that coincidence.
-#
-# Sorting longest first and escaping the names are both future-proofing: no
-# ggml name is a prefix of another today, and a type name is always a plain
-# identifier, so neither can change a match until upstream adds a name that
-# breaks one of those.
-#
-# A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of
-# the filename. Matching it as a bare substring makes ``Q8_0`` match inside
-# ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
-#
-# Built at module import: the type table above is a plain dict literal, so
-# compiling the pattern costs microseconds and nothing heavy is deferred.
-_QUANT_NAMES_BY_LENGTH = sorted(
-    (re.escape(name) for name in GGML_QUANT_BLOCK_SIZES),
-    key=lambda name: (-len(name), name),
-)
-_QUANT_TOKEN_RE = re.compile(
-    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|"
-    + "|".join(_QUANT_NAMES_BY_LENGTH)
-    + r"|BF16|F16|F32)(?=$|[-_./])",
-    re.IGNORECASE,
-)
+@functools.cache
+def _quant_token_re() -> re.Pattern[str]:
+    """The pattern that reads a quant label out of a GGUF filename.
+
+    ggml's own quantized type names go in whole because a name like ``TQ1_0``
+    or ``MXFP4`` states no bit width, so no pattern over a label's shape can
+    find it. The leading bit-width alternative already matches every
+    ``Q<digit>`` and ``IQ<digit>`` name in that table; the names go in anyway so
+    that no upstream name depends on that coincidence.
+
+    Sorting longest first and escaping the names are both future-proofing: no
+    ggml name is a prefix of another today, and a type name is always a plain
+    identifier, so neither can change a match until upstream adds a name that
+    breaks one of those.
+
+    A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of
+    the filename. Matching it as a bare substring makes ``Q8_0`` match inside
+    ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
+    """
+    names_by_length = sorted(
+        (re.escape(name) for name in ggml_quant_block_sizes()),
+        key=lambda name: (-len(name), name),
+    )
+    return re.compile(
+        r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|"
+        + "|".join(names_by_length)
+        + r"|BF16|F16|F32)(?=$|[-_./])",
+        re.IGNORECASE,
+    )
 
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
@@ -139,7 +122,7 @@ def quant_label(filename: str) -> str:
     label in both the directory and the file, and a mismatched pair names the
     real type on the file.
     """
-    matches = _QUANT_TOKEN_RE.findall(filename)
+    matches = _quant_token_re().findall(filename)
     return matches[-1].upper() if matches else ""
 
 
@@ -157,7 +140,7 @@ def ggml_bytes_per_param(quant: str) -> float | None:
         name = "_".join(segments[:end])
         if name in FLOAT_BYTES_PER_PARAM:
             return FLOAT_BYTES_PER_PARAM[name]
-        sizes = GGML_QUANT_BLOCK_SIZES.get(name)
+        sizes = ggml_quant_block_sizes().get(name)
         if sizes is not None:
             block, type_size = sizes
             return type_size / block
