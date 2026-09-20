@@ -1,4 +1,8 @@
-"""Both /v1 wires report the same prompt-cache reuse from one canonical count."""
+"""Both /v1 translators report the same prompt-cache reuse from one canonical count.
+
+The serialized bodies and SSE frames are pinned by the route tests for each
+surface; this file compares the two translators against one fixture.
+"""
 
 from __future__ import annotations
 
@@ -90,8 +94,8 @@ def test_both_wires_report_the_same_reuse_count() -> None:
     assert anthropic.usage.cache_read_input_tokens == _CACHED_TOKENS
 
 
-def test_reuse_does_not_change_the_full_prompt_count_on_either_wire() -> None:
-    """Cache reuse adds a breakdown; it must not move what the input count means."""
+def test_each_wire_keeps_its_own_prompt_arithmetic() -> None:
+    """Both wires still let a client recover the whole prompt, by different sums."""
     anthropic_cold = canonical_to_messages_response(_response(0), response_id=_RESPONSE_ID)
     anthropic_warm = canonical_to_messages_response(
         _response(_CACHED_TOKENS), response_id=_RESPONSE_ID
@@ -100,7 +104,14 @@ def test_reuse_does_not_change_the_full_prompt_count_on_either_wire() -> None:
     openai_warm = canonical_to_completions_response(
         _response(_CACHED_TOKENS), response_id=_RESPONSE_ID
     )
-    assert anthropic_warm.usage.input_tokens == anthropic_cold.usage.input_tokens
+    # Anthropic: the prompt-side counts are disjoint and sum to the prompt.
+    assert (
+        anthropic_warm.usage.input_tokens
+        + anthropic_warm.usage.cache_creation_input_tokens
+        + anthropic_warm.usage.cache_read_input_tokens
+        == anthropic_cold.usage.input_tokens
+    )
+    # OpenAI: the cached count is a subset, so prompt_tokens does not move.
     assert openai_warm.usage.prompt_tokens == openai_cold.usage.prompt_tokens
     assert openai_warm.usage.total_tokens == openai_cold.usage.total_tokens
 

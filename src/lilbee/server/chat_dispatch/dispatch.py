@@ -154,6 +154,20 @@ def _content_blocks_from_result(result: ChatResult) -> list[ContentBlock]:
     return content
 
 
+def _canonical_usage(usage: TokenUsage) -> CanonicalUsage:
+    """Convert a provider token count, clamping the cached part to the prompt size.
+
+    The canonical layer promises ``cached_input_tokens <= input_tokens``, and the
+    Anthropic wire subtracts one from the other. The clamp lives here, at the one
+    boundary where provider numbers enter, so no translator can emit a negative.
+    """
+    return CanonicalUsage(
+        input_tokens=usage.prompt_tokens,
+        output_tokens=usage.completion_tokens,
+        cached_input_tokens=min(usage.cached_prompt_tokens, usage.prompt_tokens),
+    )
+
+
 def dispatch_chat(
     req: CanonicalChatRequest, *, canonical_model: str | None = None
 ) -> CanonicalResponse:
@@ -171,11 +185,7 @@ def dispatch_chat(
         model=canonical_model,
         content=_content_blocks_from_result(result),
         stop_reason=_stop_reason_for(result),
-        usage=CanonicalUsage(
-            input_tokens=result.usage.prompt_tokens,
-            output_tokens=result.usage.completion_tokens,
-            cached_input_tokens=result.usage.cached_prompt_tokens,
-        ),
+        usage=_canonical_usage(result.usage),
     )
 
 
@@ -284,15 +294,7 @@ class _StreamState:
         if self._open != _OpenBlockKind.NONE:
             yield ContentBlockStop(index=self._index)
             self._open = _OpenBlockKind.NONE
-        usage = (
-            CanonicalUsage(
-                input_tokens=self._usage.prompt_tokens,
-                output_tokens=self._usage.completion_tokens,
-                cached_input_tokens=self._usage.cached_prompt_tokens,
-            )
-            if self._usage is not None
-            else None
-        )
+        usage = _canonical_usage(self._usage) if self._usage is not None else None
         yield MessageDelta(stop_reason=self._stop_reason, usage=usage)
 
     def _feed_finish(self, frame: StreamFinish) -> None:

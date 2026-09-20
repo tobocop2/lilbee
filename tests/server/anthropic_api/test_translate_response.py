@@ -38,7 +38,7 @@ def test_plain_text_response():
 
 
 def test_cached_prompt_tokens_report_as_cache_read_input_tokens():
-    """Prompt tokens the engine reused are reported under the Anthropic field."""
+    """The prompt-side counts are disjoint: input_tokens excludes the reused part."""
     resp = CanonicalResponse(
         id="x",
         model="m",
@@ -48,8 +48,8 @@ def test_cached_prompt_tokens_report_as_cache_read_input_tokens():
     )
     body = canonical_to_messages_response(resp, response_id="msg_1")
     assert body.usage.cache_read_input_tokens == 404
-    # The breakdown is additive: input_tokens still counts the whole prompt.
-    assert body.usage.input_tokens == 423
+    assert body.usage.input_tokens == 19
+    assert body.usage.cache_creation_input_tokens == 0
 
 
 def test_cache_read_input_tokens_is_zero_without_reuse():

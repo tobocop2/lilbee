@@ -164,6 +164,18 @@ class TestDispatchChat:
             input_tokens=423, output_tokens=8, cached_input_tokens=404
         )
 
+    def test_cached_count_is_clamped_to_the_prompt_size(self, services_with_model) -> None:
+        """A backend reporting more reuse than prompt cannot make a wire count negative."""
+        services_with_model.provider.chat.return_value = ChatResult(
+            text="hello",
+            tool_calls=(),
+            finish_reason=FinishReason.STOP,
+            usage=TokenUsage(prompt_tokens=10, completion_tokens=8, cached_prompt_tokens=99),
+        )
+        resp = dispatch_chat(_req())
+        assert resp.usage.cached_input_tokens == 10
+        assert resp.usage.uncached_input_tokens == 0
+
     def test_max_tokens_finish_reason_maps_to_max_tokens(self, services_with_model) -> None:
         services_with_model.provider.chat.return_value = ChatResult(
             text="cut", tool_calls=(), finish_reason=FinishReason.LENGTH

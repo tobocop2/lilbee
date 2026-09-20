@@ -72,7 +72,12 @@ async def test_plain_text_stream_event_sequence():
     assert pairs[2][1]["delta"] == {"type": "text_delta", "text": "hel"}
     delta = pairs[5][1]
     assert delta["delta"]["stop_reason"] == "end_turn"
-    assert delta["usage"] == {"input_tokens": 3, "output_tokens": 2, "cache_read_input_tokens": 0}
+    assert delta["usage"] == {
+        "input_tokens": 3,
+        "output_tokens": 2,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
     assert pairs[0][1]["message"]["id"] == "msg_1"
 
 
@@ -91,12 +96,20 @@ async def test_stream_message_delta_reports_cache_read_input_tokens():
     )
     delta = next(p for t, p in pairs if t == "message_delta")
     assert delta["usage"] == {
-        "input_tokens": 423,
+        "input_tokens": 19,
         "output_tokens": 8,
+        "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 404,
     }
     start = next(p for t, p in pairs if t == "message_start")
-    assert set(start["message"]["usage"]) == set(delta["usage"])
+    # The engine reports usage only when the stream ends, so the opener carries
+    # the Anthropic prompt-side keys with zero counts.
+    assert start["message"]["usage"] == {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+    }
 
 
 @pytest.mark.asyncio

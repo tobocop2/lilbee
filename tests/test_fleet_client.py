@@ -724,8 +724,6 @@ def test_chat_result_cached_prompt_tokens_zero_when_count_not_an_int() -> None:
 
 def test_chat_stream_items_yields_usage_terminator_frame() -> None:
     """The include_usage terminator chunk surfaces as a final TokenUsage frame. (F4)"""
-    from lilbee.providers.base import TokenUsage
-
     body = (
         'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n'
         'data: {"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":1}}\n\n'
@@ -1893,7 +1891,7 @@ def test_chat_stream_items_native_tool_calls_pass_through_untouched() -> None:
 
 def test_chat_stream_items_recovery_still_emits_usage_terminator_last() -> None:
     """The usage terminator is emitted after a recovered bare-JSON call."""
-    from lilbee.providers.base import TokenUsage, ToolCallDelta
+    from lilbee.providers.base import ToolCallDelta
 
     call_text = '{"name": "lilbee_search", "arguments": {"query": "x"}}'
     usage_chunk = '{"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}'

@@ -304,7 +304,7 @@ def canonical_to_messages_response(
         content=content,
         stop_reason=str(resp.stop_reason),
         usage=AnthropicUsage(
-            input_tokens=resp.usage.input_tokens,
+            input_tokens=resp.usage.uncached_input_tokens,
             output_tokens=resp.usage.output_tokens,
             cache_read_input_tokens=resp.usage.cached_input_tokens,
         ),
@@ -493,8 +493,15 @@ async def canonical_stream_to_anthropic_events(
                 "content": [],
                 "stop_reason": None,
                 "stop_sequence": None,
-                # Zeroed here; the counts arrive with the closing message_delta.
-                "usage": {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0},
+                # Anthropic puts the prompt-side counts here, but the engine
+                # reports usage only in its closing chunk, so every count is
+                # zeroed and the real numbers arrive with the message_delta.
+                "usage": {
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_creation_input_tokens": 0,
+                    "cache_read_input_tokens": 0,
+                },
             },
         },
     )
@@ -519,8 +526,9 @@ async def canonical_stream_to_anthropic_events(
                         "stop_sequence": None,
                     },
                     "usage": {
-                        "input_tokens": usage.input_tokens,
+                        "input_tokens": usage.uncached_input_tokens,
                         "output_tokens": usage.output_tokens,
+                        "cache_creation_input_tokens": 0,
                         "cache_read_input_tokens": usage.cached_input_tokens,
                     },
                 },

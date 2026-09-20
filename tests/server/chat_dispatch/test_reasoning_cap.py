@@ -201,7 +201,7 @@ class TestCapAwareChatStream:
             yield MessageStart(id="m", model=_MODEL)
             yield ContentBlockStart(index=0, block=TextBlock(text=""))
             yield MessageDelta(
-                usage=CanonicalUsage(input_tokens=3, output_tokens=40, cached_input_tokens=6)
+                usage=CanonicalUsage(input_tokens=30, output_tokens=40, cached_input_tokens=6)
             )
             yield ContentBlockDelta(index=0, delta=TextDelta(text="<think>" + "x" * 100))
 
@@ -213,7 +213,7 @@ class TestCapAwareChatStream:
                 yield ContentBlockStop(index=0)
                 yield MessageDelta(
                     stop_reason=StopReason.END_TURN,
-                    usage=CanonicalUsage(input_tokens=1, output_tokens=7, cached_input_tokens=9),
+                    usage=CanonicalUsage(input_tokens=20, output_tokens=7, cached_input_tokens=9),
                 )
                 yield MessageStop()
 

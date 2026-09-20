@@ -205,7 +205,30 @@ class TestNonStreaming:
         assert set(body["usage"]) == {
             "input_tokens",
             "output_tokens",
+            "cache_creation_input_tokens",
             "cache_read_input_tokens",
+        }
+
+    async def test_usage_body_splits_the_prompt_into_disjoint_counts(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The three prompt-side counts sum to the prompt, as Anthropic defines them."""
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = ChatResult(
+            text="hello",
+            tool_calls=(),
+            finish_reason=FinishReason.STOP,
+            usage=TokenUsage(prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404),
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(), headers=_h())
+        usage = resp.json()["usage"]
+        assert usage == {
+            "input_tokens": 19,
+            "output_tokens": 8,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 404,
         }
 
     async def test_tool_call_response(self, services_with_chat_model, _auth_token):
@@ -257,6 +280,39 @@ class TestStreaming:
         start = next(p for t, p in events if t == "message_start")
         assert start["message"]["role"] == "assistant"
         assert start["message"]["model"] == INSTALLED_REF
+
+    async def test_stream_usage_frames_carry_the_cache_counts(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The SSE payloads report the same disjoint counts as the body."""
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            [
+                "he",
+                "llo",
+                TokenUsage(prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404),
+            ]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post("/v1/messages", json=_body(stream=True), headers=_h())
+        events = _sse_events(resp.content)
+        start = next(p for t, p in events if t == "message_start")
+        delta = next(p for t, p in events if t == "message_delta")
+        # The engine reports usage only when the stream ends, so the opener
+        # carries the same keys with zero counts.
+        assert start["message"]["usage"] == {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+        }
+        assert delta["usage"] == {
+            "input_tokens": 19,
+            "output_tokens": 8,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 404,
+        }
 
     async def test_mid_stream_error_emits_error_event(
         self, services_with_chat_model, _auth_token, monkeypatch
