@@ -130,13 +130,19 @@ def test_get_placement_survives_a_saved_spec_the_hardware_rejects(monkeypatch):
     from lilbee.providers.fleet import planning
     from lilbee.providers.fleet.placement import Placement
     from lilbee.providers.fleet.placement_spec import PlacementError
+    from lilbee.providers.roles import EngineBackend
 
     spec = PlacementSpec({WorkerRole.EMBED: RolePlacement(devices=(1,))})
     monkeypatch.setattr(app_placement, "_active_spec", lambda: spec)
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
     monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
-    monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
+    # The read path's only probe seam. Stubbing resolve_devices instead left the
+    # real probe on the call path, so this test spawned a subprocess against
+    # /fake and planned against whatever cards the host's Vulkan loader offered.
+    monkeypatch.setattr(
+        planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
+    )
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",

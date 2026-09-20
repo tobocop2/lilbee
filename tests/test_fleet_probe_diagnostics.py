@@ -10,6 +10,7 @@ import pytest
 
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import devices as devices_mod
+from lilbee.providers.roles import EngineBackend
 
 
 class TestASpawnFailureIsReported:
@@ -151,14 +152,15 @@ class TestABootTimeEmptyAnswerIsRetried:
 
         def _resolve(_binary):
             calls.append(1)
-            return list(results[min(len(calls) - 1, len(results) - 1)]), False
+            devices = list(results[min(len(calls) - 1, len(results) - 1)])
+            return planning_mod.DeviceReading(devices, EngineBackend.CUDA)
 
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/srv"))
         monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
         monkeypatch.setattr(
             "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
         )
-        monkeypatch.setattr(planning_mod, "_resolve_devices_and_refusal", _resolve)
+        monkeypatch.setattr(planning_mod, "_read_devices", _resolve)
         monkeypatch.setattr(planning_mod, "_PROBE_RETRY_DELAY_S", 0.0)
         return calls
 
@@ -172,7 +174,7 @@ class TestABootTimeEmptyAnswerIsRetried:
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset({0x10DE}),
         )
-        devices, _refused = planning_mod._probe_engine_devices()
+        devices = planning_mod._probe_engine_devices().devices
         assert devices == [card]
         assert len(calls) == 3
 
@@ -183,7 +185,7 @@ class TestABootTimeEmptyAnswerIsRetried:
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids", frozenset
         )
-        devices, _refused = planning_mod._probe_engine_devices()
+        devices = planning_mod._probe_engine_devices().devices
         assert devices == []
         assert len(calls) == 1
 
@@ -207,7 +209,7 @@ class TestABootTimeEmptyAnswerIsRetried:
             "lilbee.providers.fleet.gpu_hardware.installed_gpu_vendor_ids",
             lambda: frozenset({0x1002}),
         )
-        devices, _refused = planning_mod._probe_engine_devices()
+        devices = planning_mod._probe_engine_devices().devices
         assert devices == []
         assert len(calls) == 1 + planning_mod._PROBE_RETRIES
 

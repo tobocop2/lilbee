@@ -15,7 +15,7 @@ from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.runtime.hardware import FitLevel, SizeVariantInfo
 from lilbee.sessions import MessageRole
 from lilbee.wiki.entity_extractor import EntityKind
@@ -780,6 +780,10 @@ class PlacementResponse(BaseModel):
     co_tenants: list[str] = []
     notice: str | None = None
     rejected_spec_json: str | None = None
+    # The backend the engine selected, reported rather than inferred. ``gpus``
+    # being empty does not mean ``cpu``: a host whose device probe never answered
+    # reports ``unknown``, so a client never mislabels a GPU box as a CPU one.
+    engine_backend: EngineBackend = EngineBackend.UNKNOWN
 
     @classmethod
     def from_view(cls, view: PlacementView) -> PlacementResponse:
@@ -804,6 +808,7 @@ class PlacementResponse(BaseModel):
             ],
             co_tenants=[r.value for r in view.co_tenants],
             rejected_spec_json=view.rejected_spec_json,
+            engine_backend=view.engine_backend,
         )
 
 

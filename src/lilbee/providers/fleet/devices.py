@@ -19,6 +19,7 @@ from pathlib import Path
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.gpu_select import USABLE_VULKAN_TYPES, VkDeviceType
 from lilbee.providers.fleet.proc import run_bounded
+from lilbee.providers.roles import EngineBackend
 
 log = logging.getLogger(__name__)
 
@@ -56,13 +57,33 @@ _VK_VISIBLE_VAR = "GGML_VK_VISIBLE_DEVICES"
 _DEVICE_RE = re.compile(
     r"^\s*([A-Za-z]+)(\d+):\s*(.+?)\s*\((\d+)\s*MiB(?:,\s*(\d+)\s*MiB\s*free)?\)\s*$"
 )
-# Pin priority when a build reports more than one GPU backend: a real GPU
-# backend always wins over Vulkan, which wins over CPU.
 # The engine's own name for the backend. Vendor-agnostic, so several rules key
 # on it: a Vulkan device's type has to be asked of the loader, and its util
 # source is chosen by the vendor in its device name rather than by the backend.
 VULKAN_BACKEND = "Vulkan"
-_BACKEND_RANK = {"CUDA": 3, "ROCm": 3, "HIP": 3, "MTL": 3, "Metal": 3, "SYCL": 2, VULKAN_BACKEND: 1}
+# One row per backend string the engine prints: its pin priority, and the name a
+# client reports for it. Several engine names mean one backend (HIP is ROCm, MTL
+# is Metal), so a surface that printed the raw name told two hosts apart that are
+# the same machine class.
+#
+# The two tables below are derived from this one rather than transcribed beside
+# it. Adding a backend is what makes a new GPU class usable at all, and with two
+# hand-written tables that edit ranked the new backend while leaving it nameless,
+# so a working GPU host reported "unknown".
+_BACKENDS: dict[str, tuple[int, EngineBackend]] = {
+    "CUDA": (3, EngineBackend.CUDA),
+    "ROCm": (3, EngineBackend.ROCM),
+    "HIP": (3, EngineBackend.ROCM),
+    "MTL": (3, EngineBackend.METAL),
+    "Metal": (3, EngineBackend.METAL),
+    "SYCL": (2, EngineBackend.SYCL),
+    VULKAN_BACKEND: (1, EngineBackend.VULKAN),
+}
+# Pin priority when a build reports more than one GPU backend: a real GPU backend
+# always wins over Vulkan, which wins over CPU.
+_BACKEND_RANK = {name: rank for name, (rank, _) in _BACKENDS.items()}
+# The engine's own backend names mapped to the name a client reports.
+_REPORTED_BACKEND = {name: reported for name, (_, reported) in _BACKENDS.items()}
 # Backends whose memory is always the host's: Apple Silicon reports a working-set
 # slice of system RAM, never a dedicated pool.
 _UNIFIED_BACKENDS = frozenset({"MTL", "Metal"})
@@ -112,6 +133,9 @@ class DeviceProbe:
     # from a host that simply has none: the engine will still pick one of those
     # devices at launch unless it is told not to.
     refused_all: bool = False
+    # Which backend the engine selected. Defaults to UNKNOWN so a probe that never
+    # ran reports no claim rather than CPU.
+    backend: EngineBackend = EngineBackend.UNKNOWN
 
 
 def _parse_topo_matrix(topo_text: str) -> tuple[set[int], set[frozenset[int]]]:
@@ -232,8 +256,30 @@ def probe_devices(binary: Path, *, timeout_s: float = _LIST_DEVICES_TIMEOUT_S) -
             "LILBEE_ENGINE_DIR",
         )
     return DeviceProbe(
-        selected, output, spoke_protocol=spoke, refused_all=bool(offered) and not selected
+        selected,
+        output,
+        spoke_protocol=spoke,
+        refused_all=bool(offered) and not selected,
+        backend=_selected_backend(selected, spoke=spoke),
     )
+
+
+def _selected_backend(selected: list[FleetDevice], *, spoke: bool) -> EngineBackend:
+    """Which backend the engine selected, or UNKNOWN when it did not answer.
+
+    An empty device list means CPU only when the engine answered the question. A
+    binary that never spoke the protocol said nothing about its backend, and
+    calling that CPU labels a GPU host as a CPU one in every diagnostic.
+
+    A selected device's backend is always a row of ``_BACKENDS``, because that is
+    what the selector filters on, so this indexes rather than defaulting. A
+    default here would turn a table the selector and the reporter disagree about
+    into a working GPU host that reports "unknown", which is this function's own
+    defect one backend along.
+    """
+    if selected:
+        return _REPORTED_BACKEND[selected[0].backend]
+    return EngineBackend.CPU if spoke else EngineBackend.UNKNOWN
 
 
 def _run_list_devices(binary: Path, timeout_s: float) -> tuple[str, int]:

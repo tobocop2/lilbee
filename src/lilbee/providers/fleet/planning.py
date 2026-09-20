@@ -55,7 +55,7 @@ from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
-from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
+from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RerankMode, WorkerRole
 
 log = logging.getLogger(__name__)
 
@@ -64,8 +64,7 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
-# Stand-ins in the launch log for a host whose devices could not be read.
-_UNKNOWN_BACKEND = "unknown"
+# Stand-in in the launch log for a host whose devices could not be read.
 _NO_DEVICES = "none"
 
 
@@ -90,9 +89,11 @@ def log_engine_launch(launch: InstanceLaunch, *, owner_pid: int | None = None) -
 def _engine_id(launch: InstanceLaunch) -> str:
     """*launch*'s binary with the engine build, backend, and probed devices."""
     devices = probed_devices()
-    backend = next((device.backend for device in devices), _UNKNOWN_BACKEND)
     names = ", ".join(f"{d.backend}{d.index}: {d.name}" for d in devices) or _NO_DEVICES
-    return f"{launch.binary} (build {engine_build_id()}, backend {backend}, devices: {names})"
+    return (
+        f"{launch.binary} (build {engine_build_id()}, "
+        f"backend {engine_backend().value}, devices: {names})"
+    )
 
 
 def warn_when_embed_window_below_chunk(launch: InstanceLaunch) -> None:
@@ -708,9 +709,30 @@ def probed_devices() -> tuple[FleetDevice, ...]:
     if probe is not None:
         return probe.devices
     try:
-        return tuple(_read_device_cache.get(resolve_llama_server()))
+        return tuple(_read_device_cache.get(resolve_llama_server()).devices)
     except (ProviderError, OSError):
         return ()
+
+
+def engine_backend() -> EngineBackend:
+    """The backend the engine selected, UNKNOWN when it could not be asked.
+
+    Prefers the plan snapshot so a whole planning pass answers consistently, and
+    reads it exactly as :func:`probed_devices` does, through the restating reader:
+    a snapshot taken against another engine binary re-probes here too, so the
+    answer does not depend on which reader a caller happens to reach first.
+
+    The placement route reports the backend of the reading its device list came
+    from instead (:func:`resolve_placement_plan`), so one payload never pairs a
+    live device list with a snapshot's backend.
+    """
+    probe = _current_plan_probe()
+    if probe is not None:
+        return probe.backend
+    try:
+        return _read_device_cache.get(resolve_llama_server()).backend
+    except (ProviderError, OSError):
+        return EngineBackend.UNKNOWN
 
 
 def _fleet_backend() -> str | None:
@@ -1831,7 +1853,7 @@ def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaun
 
 def resolve_devices(binary: Path) -> list[FleetDevice]:
     """Enumerate devices in the binary's index space, or the Vulkan VRAM probe."""
-    return _resolve_devices_and_refusal(binary)[0]
+    return _read_devices(binary).devices
 
 
 # The visibility variable each vendor's runtime reads, named in the warning so
@@ -1874,12 +1896,32 @@ def _warn_gpu_present_but_unenumerated(binary: Path) -> None:
     )
 
 
-def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]:
-    """:func:`resolve_devices`, plus whether every GPU the engine listed was refused.
+@dataclass(frozen=True)
+class DeviceReading:
+    """What one ``--list-devices`` run answered, as the whole fleet reads it.
 
-    One function because both answers come from one ``--list-devices`` run, and
-    that run costs a subprocess against a driver that may be wedged. Asking twice
-    would pay it twice.
+    The device list and the backend are independent answers. When the engine never
+    spoke the protocol but the host's Vulkan loader supplies devices, the reading
+    carries those devices with an ``unknown`` backend, so a client can see a
+    non-empty GPU list beside ``engine_backend: "unknown"``.
+    """
+
+    devices: list[FleetDevice]
+    # The backend the engine selected, UNKNOWN when it never answered. Not
+    # derivable from ``devices``: an empty list is a CPU host and a failed probe
+    # alike, and only the engine can say which.
+    backend: EngineBackend
+    # The engine listed GPUs and lilbee rejected all of them, so the plan is
+    # CPU-shaped while the engine would still choose one of those devices.
+    refused_all: bool = False
+
+
+def _read_devices(binary: Path) -> DeviceReading:
+    """Enumerate devices, the selected backend, and whether every GPU was refused.
+
+    One function because all three answers come from one ``--list-devices`` run,
+    and that run costs a subprocess against a driver that may be wedged. Asking
+    twice would pay it twice.
 
     The binary's ``--list-devices`` is authoritative, including when it lists
     nothing: it prints every non-CPU device it can use, so an empty list means
@@ -1951,7 +1993,7 @@ def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]
                 len(devices),
                 "LILBEE_ENGINE_DIR",
             )
-    return devices, probe.refused_all
+    return DeviceReading(devices, probe.backend, probe.refused_all)
 
 
 _DEVICE_PROBE_TTL_S = 2.0
@@ -1999,7 +2041,7 @@ class _ReadDeviceCache:
         self._lock = threading.Lock()
         self._at: float | None = None
         self._engine: str | None = None
-        self._devices: list[FleetDevice] | None = None
+        self._reading: DeviceReading | None = None
         self._failure: ProviderError | None = None
 
     def _is_fresh(self, engine: str) -> bool:
@@ -2007,29 +2049,29 @@ class _ReadDeviceCache:
         ttl = self._ttl_s if self._failure is None else self._failure_ttl_s
         return self._at is not None and self._engine == engine and time.monotonic() - self._at < ttl
 
-    def get(self, binary: Path) -> list[FleetDevice]:
+    def get(self, binary: Path) -> DeviceReading:
         engine = engine_binary_identity(binary)
         with self._lock:
             fresh = self._is_fresh(engine)
             if fresh and self._failure is not None:
                 raise self._failure
-            if self._devices is None or not fresh:
+            if self._reading is None or not fresh:
                 self._at = time.monotonic()
                 self._engine = engine
                 try:
-                    self._devices = resolve_devices(binary)
+                    self._reading = _read_devices(binary)
                 except ProviderError as exc:
-                    self._devices = None
+                    self._reading = None
                     self._failure = exc
                     raise
                 self._failure = None
-            return self._devices
+            return self._reading
 
     def clear(self) -> None:
         with self._lock:
             self._at = None
             self._engine = None
-            self._devices = None
+            self._reading = None
             self._failure = None
 
 
@@ -2078,6 +2120,8 @@ class _PlanProbe:
     # The engine listed GPUs and lilbee rejected all of them, so the plan is
     # CPU-shaped while the engine would still choose one of those devices.
     engine_devices_all_refused: bool = False
+    # The backend the engine selected when this snapshot was taken.
+    backend: EngineBackend = EngineBackend.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -2294,7 +2338,7 @@ def clear_ctx_downshift(role: WorkerRole | None = None) -> None:
     _ctx_downshift_store.clear(role)
 
 
-def _probe_engine_devices() -> tuple[list[FleetDevice], bool]:
+def _probe_engine_devices() -> DeviceReading:
     """Apply the fleet GPU/CUDA env, resolve the binary, and enumerate devices.
 
     This is the wedge point: a missing binary raises NOT_FOUND, and a CUDA build
@@ -2308,15 +2352,13 @@ def _probe_engine_devices() -> tuple[list[FleetDevice], bool]:
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env(binary)
-    devices, refused = _resolve_devices_and_refusal(binary)
-    if devices:
-        return devices, refused
-    return _reprobe_while_a_gpu_is_installed(binary, refused)
+    reading = _read_devices(binary)
+    if reading.devices:
+        return reading
+    return _reprobe_while_a_gpu_is_installed(binary, reading)
 
 
-def _reprobe_while_a_gpu_is_installed(
-    binary: Path, refused: bool
-) -> tuple[list[FleetDevice], bool]:
+def _reprobe_while_a_gpu_is_installed(binary: Path, reading: DeviceReading) -> DeviceReading:
     """Ask again when the host has a GPU the engine did not list.
 
     The plan snapshot is taken once, on a clean box, and is not retaken until a
@@ -2331,7 +2373,7 @@ def _reprobe_while_a_gpu_is_installed(
     from lilbee.providers.fleet.gpu_hardware import installed_gpu_vendor_ids
 
     if not installed_gpu_vendor_ids():
-        return [], refused
+        return reading
     for attempt in range(1, _PROBE_RETRIES + 1):
         log.info(
             "The engine listed no GPU on a host that has one; asking again in %.1fs "
@@ -2342,10 +2384,10 @@ def _reprobe_while_a_gpu_is_installed(
         )
         time.sleep(_PROBE_RETRY_DELAY_S)
         clear_read_device_cache()
-        devices, refused = _resolve_devices_and_refusal(binary)
-        if devices:
-            return devices, refused
-    return [], refused
+        reading = _read_devices(binary)
+        if reading.devices:
+            return reading
+    return reading
 
 
 def assert_engine_probeable() -> None:
@@ -2404,28 +2446,28 @@ def _pass_engine_identity() -> str:
     return pinned if pinned is not None else _engine_identity()
 
 
-def _probe_engine_devices_and_identity() -> tuple[str, list[FleetDevice], bool]:
-    """The engine's devices, tagged with the identity read before the probe ran.
+def _probe_engine_devices_and_identity() -> tuple[str, DeviceReading]:
+    """The engine's reading, tagged with the identity read before the probe ran.
 
     The identity is read first so a binary replaced while the probe runs tags the
     answer with the binary that gave it, and the next read restates. The other
     order tags the outgoing binary's answer with the incoming binary.
     """
     engine = _engine_identity()
-    devices, refused_all = _probe_engine_devices()
-    return engine, devices, refused_all
+    return engine, _probe_engine_devices()
 
 
 def capture_plan_probe() -> None:
     """Snapshot devices and memory for planning; call only on a clean box."""
-    engine, devices, refused_all = _probe_engine_devices_and_identity()
+    engine, reading = _probe_engine_devices_and_identity()
     _plan_probe_store.set(
         _PlanProbe(
-            devices=tuple(devices),
-            sizing_budget=_device_sizing_budget(devices),
+            devices=tuple(reading.devices),
+            sizing_budget=_device_sizing_budget(reading.devices),
             free_system=model_cache.free_system_memory(),
             engine=engine,
-            engine_devices_all_refused=refused_all,
+            engine_devices_all_refused=reading.refused_all,
+            backend=reading.backend,
         )
     )
 
@@ -2465,16 +2507,22 @@ def _restated(probe: _PlanProbe) -> _PlanProbe | None:
     """*probe* re-read against the hardware, or ``None`` when the probe could not run."""
     clear_read_device_cache()
     try:
-        engine, devices, refused_all = _probe_engine_devices_and_identity()
+        engine, reading = _probe_engine_devices_and_identity()
     except (ProviderError, OSError) as exc:
         log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
         return None
+    devices = reading.devices
     if _structural(devices) == _structural(probe.devices):
         # The refusal answer is carried too: an engine that lists only devices
         # lilbee refuses probes as an empty list, which is structurally the same
         # as no GPU at all. Keeping the old binary's refusal here would leave the
         # CPU pin off and let ggml fall back onto the adapter just refused.
-        return replace(probe, engine=engine, engine_devices_all_refused=refused_all)
+        return replace(
+            probe,
+            engine=engine,
+            engine_devices_all_refused=reading.refused_all,
+            backend=reading.backend,
+        )
     log.info(
         "The set of GPUs changed since this fleet was planned (%d device(s) now, %d before); "
         "replanning against the ones that are here.",
@@ -2491,7 +2539,8 @@ def _restated(probe: _PlanProbe) -> _PlanProbe | None:
         sizing_budget=_device_sizing_budget(merged),
         free_system=probe.free_system,
         engine=engine,
-        engine_devices_all_refused=refused_all,
+        engine_devices_all_refused=reading.refused_all,
+        backend=reading.backend,
     )
 
 
@@ -2606,7 +2655,7 @@ def _device_sizing_budget(devices: Sequence[FleetDevice]) -> int:
 def _live_sizing_devices() -> list[FleetDevice]:
     """Devices to size against with no plan snapshot; empty when none can be read."""
     try:
-        return _read_device_cache.get(resolve_llama_server())
+        return _read_device_cache.get(resolve_llama_server()).devices
     except (ProviderError, OSError):
         return []
 
@@ -2895,6 +2944,9 @@ class ResolvedPlacement:
     # Distinct from unplaceable_roles (installed but won't fit); lets a surface show
     # "not downloaded" instead of an empty table on a fresh install.
     skipped_not_installed: dict[WorkerRole, str] = field(default_factory=dict)
+    # The backend the engine selected, which no surface may infer from ``devices``:
+    # an empty list is a CPU host and a failed probe alike.
+    engine_backend: EngineBackend = EngineBackend.UNKNOWN
 
 
 def resolve_placement_plan(
@@ -2905,6 +2957,11 @@ def resolve_placement_plan(
     ``fall_back_to_auto`` reads *placement* as a saved setting rather than a
     request: one that no longer fits the hardware resolves to the auto plan with
     ``spec_applied`` False instead of raising.
+
+    The reported backend comes from the same reading as the device list, not from
+    :func:`engine_backend`. This path deliberately reports live hardware rather
+    than the plan snapshot, so borrowing the snapshot's backend would pair a live
+    device list with a backend read at fleet build.
     """
     from lilbee.providers.fleet.cuda_runtime import apply_cuda_runtime_env
     from lilbee.providers.fleet.gpu_env import apply_fleet_gpu_env
@@ -2912,7 +2969,8 @@ def resolve_placement_plan(
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env(binary)
-    devices = _read_device_cache.get(binary)
+    reading = _read_device_cache.get(binary)
+    devices = reading.devices
     unified_budget = _unified_memory_budget(devices)
     inputs, model_refs, _, skipped_not_installed = _server_model_inputs(
         None, unified_budget=unified_budget, total_vram=sum(d.total_bytes for d in devices)
@@ -2936,6 +2994,7 @@ def resolve_placement_plan(
         skipped_not_installed=skipped_not_installed,
         spec_applied=spec_applied,
         tight_roles=dict(resolved.tight_roles),
+        engine_backend=reading.backend,
     )
 
 

@@ -2,6 +2,7 @@
 
 ``WorkerRole`` names the four inference roles a local engine serves; the fleet
 maps each to one llama-server instance. ``OcrBackend`` names the PDF-OCR paths.
+``EngineBackend`` names the compute backend the engine serves those roles on.
 These outlive any particular engine, so they live here rather than inside an
 engine-specific module.
 """
@@ -20,6 +21,25 @@ class WorkerRole(StrEnum):
     RERANK = "rerank"
     CHAT = "chat"
     VISION = "vision"
+
+
+class EngineBackend(StrEnum):
+    """The compute backend the engine selected on this host.
+
+    ``CPU`` and ``UNKNOWN`` are separate answers on purpose. An empty device list
+    has two causes a client cannot tell apart: a host that has no usable GPU, and
+    a host whose device probe never answered. Only the first is CPU. Reporting
+    ``CPU`` for the second misidentifies a CUDA or Metal host in the diagnostics
+    a user pastes into a bug report.
+    """
+
+    CUDA = "cuda"
+    ROCM = "rocm"
+    METAL = "metal"
+    SYCL = "sycl"
+    VULKAN = "vulkan"
+    CPU = "cpu"
+    UNKNOWN = "unknown"
 
 
 class Phase(StrEnum):

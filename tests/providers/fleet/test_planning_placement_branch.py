@@ -7,7 +7,7 @@ from lilbee.providers.fleet import planning
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.placement import InstancePlan, Placement
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec, RolePlacement
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
 
 GIB = 1024**3
 
@@ -19,9 +19,9 @@ def test_read_device_cache_collapses_repeat_probes(monkeypatch):
 
     def fake(_binary):
         calls["n"] += 1
-        return [FleetDevice("CUDA", 0, "A", GIB, GIB)]
+        return planning.DeviceReading([FleetDevice("CUDA", 0, "A", GIB, GIB)], EngineBackend.CUDA)
 
-    monkeypatch.setattr(planning, "resolve_devices", fake)
+    monkeypatch.setattr(planning, "_read_devices", fake)
     first = cache.get(Path("/x"))
     second = cache.get(Path("/x"))
     assert calls["n"] == 1
@@ -38,9 +38,9 @@ def test_read_device_cache_ttl_zero_always_probes(monkeypatch):
 
     def fake(_binary):
         calls["n"] += 1
-        return []
+        return planning.DeviceReading([], EngineBackend.CPU)
 
-    monkeypatch.setattr(planning, "resolve_devices", fake)
+    monkeypatch.setattr(planning, "_read_devices", fake)
     cache.get(Path("/x"))
     cache.get(Path("/x"))
     assert calls["n"] == 2
@@ -56,12 +56,12 @@ def test_resolve_placement_plan_uses_read_cache(monkeypatch):
 
     def counting(_binary):
         calls["n"] += 1
-        return []
+        return planning.DeviceReading([], EngineBackend.CPU)
 
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
     monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
-    monkeypatch.setattr(planning, "resolve_devices", counting)
+    monkeypatch.setattr(planning, "_read_devices", counting)
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
@@ -191,7 +191,9 @@ def test_interactive_resolve_still_raises(monkeypatch):
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
     monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
-    monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
+    monkeypatch.setattr(
+        planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
+    )
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
@@ -218,7 +220,9 @@ def test_read_path_reports_the_plan_it_fell_back_to(monkeypatch):
     monkeypatch.setattr(planning, "resolve_llama_server", lambda: Path("/fake"))
     monkeypatch.setattr(gpu_env, "apply_fleet_gpu_env", lambda: None)
     monkeypatch.setattr(cuda_runtime, "apply_cuda_runtime_env", lambda *_a: None)
-    monkeypatch.setattr(planning, "resolve_devices", lambda _b: [])
+    monkeypatch.setattr(
+        planning, "_read_devices", lambda _b: planning.DeviceReading([], EngineBackend.CPU)
+    )
     monkeypatch.setattr(
         planning,
         "_server_model_inputs",
