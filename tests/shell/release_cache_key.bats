@@ -91,5 +91,12 @@ strip() {  # source destination
   grep -v '^name = "lilbee"$' "${FIXTURE}/uv.lock" > "${FIXTURE}/nameless.lock"
   run strip "${FIXTURE}/nameless.lock" "${FIXTURE}/deps.lock"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"expected exactly 1"* ]]
+  [[ "$output" == *"exactly one version line"* ]]
+}
+
+@test "a lock with no trailing newline still reads as one dropped line" {
+  printf '%s' "$(cat "${FIXTURE}/uv.lock")" > "${FIXTURE}/nonewline.lock"
+  run strip "${FIXTURE}/nonewline.lock" "${FIXTURE}/deps.lock"
+  [ "$status" -eq 0 ]
+  ! grep -q '0.6.90b442' "${FIXTURE}/deps.lock"
 }

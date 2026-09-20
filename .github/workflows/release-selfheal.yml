@@ -5,7 +5,7 @@ run-name: Self-heal ${{ github.event.workflow_run.head_branch || inputs.run_id }
 # A release candidate builds for hours across ~30 cells, and a cell that dies
 # from an infra flake (runner lost communication, no space left on device)
 # strands the release short of promotion until a human notices. This reruns the
-# cells that failed, so the candidate corrects itself.
+# cells that dropped out, so the candidate corrects itself.
 #
 on:
   workflow_run:
@@ -19,7 +19,7 @@ on:
 
 permissions:
   contents: read   # check out the script
-  actions: write  # rerun the failed cells
+  actions: write  # rerun the cells that dropped out
   checks: read    # a cancelled cell's annotation names the limit it exceeded
 
 concurrency:
@@ -44,7 +44,7 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
 
-      - name: Rerun the cells that failed
+      - name: Rerun the cells that dropped out
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

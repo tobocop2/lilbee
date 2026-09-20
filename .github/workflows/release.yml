@@ -279,6 +279,12 @@ jobs:
       # contribute its own compile back.
       # The key hashes the lock without lilbee's own version line, so it moves
       # when a dependency moves and stays put across a release bump.
+      # The mirror key names the cell, unlike the Actions-cache namespace above.
+      # The mirror holds release assets, not cache entries, so the 10 GiB cap
+      # that made per-cell Actions caches evict each other does not apply here,
+      # and the first publish for a key wins: with one key per runner image the
+      # stock cell always wins and the slow compat cell -- the one that timed
+      # out -- never owns an entry of its own.
       - name: Normalize the lock the object-cache key hashes
         if: runner.os == 'Windows'
         shell: bash
@@ -290,7 +296,7 @@ jobs:
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: restore
-          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv-deps.lock') }}
+          key: nuitka-objects-${{ matrix.os }}-${{ matrix.asset_name }}-${{ hashFiles('uv-deps.lock') }}
 
       - name: Restore Nuitka cache (Windows)
         if: runner.os == 'Windows' && steps.nuitka-mirror.outputs.restored != 'true'
@@ -430,7 +436,7 @@ jobs:
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: publish
-          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv-deps.lock') }}
+          key: nuitka-objects-${{ matrix.os }}-${{ matrix.asset_name }}-${{ hashFiles('uv-deps.lock') }}
           token: ${{ github.token }}
 
 

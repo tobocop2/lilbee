@@ -190,7 +190,7 @@ jobs:
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: restore
-          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv-deps.lock') }}
+          key: nuitka-objects-${{ matrix.os }}-${{ matrix.asset_name }}-${{ hashFiles('uv-deps.lock') }}
 
       # Windows only, and it is the whole point: these cells are the release
       # terminus, MSVC has no ccache, and this workflow had no object cache of
@@ -295,7 +295,7 @@ jobs:
         uses: ./.github/actions/nuitka-object-cache
         with:
           phase: publish
-          key: nuitka-objects-${{ matrix.os }}-${{ hashFiles('uv-deps.lock') }}
+          key: nuitka-objects-${{ matrix.os }}-${{ matrix.asset_name }}-${{ hashFiles('uv-deps.lock') }}
           token: ${{ github.token }}
 
 

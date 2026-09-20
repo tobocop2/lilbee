@@ -484,12 +484,10 @@ closure. These rules exist because each one shipped a broken artifact once.
   reporting a clean run: a clean report there is the failure this gate removes.
   `release_watch.sh` falls back to watching the legs. Its exit code follows the
   legs, so an unreadable list there can still exit 0 with every leg green.
-  Matching that annotation does not reopen the blind-retry rule above. There the
-  text would only refine a decision whose wrong answer costs one rebuild, so the
-  retry stays blind. Here the annotation is the only signal that separates a
-  cell past its limit from a release a person cancelled, and a string that goes
-  stale leaves a timed-out cell unhealed, which is the behavior before this gate
-  existed.
+  This is the one place a GitHub string is matched. The blind-retry rule above
+  still holds: there the text would only refine a decision whose wrong answer
+  costs one rebuild. Here it is the only signal that separates a cell past its
+  limit from a release a person cancelled.
 - **A dropped soft cell must not gate the cascade.** `continue-on-error` only
   converts a failure into a success for a dependent's `needs` check, so a
   cancelled soft cell skips `attach-prerelease` and every dispatch job behind
@@ -522,9 +520,19 @@ closure. These rules exist because each one shipped a broken artifact once.
   Every dispatch job in `release-candidate.yml` shares one `if` (push +
   `refs/tags/v`), which is what makes `--failed` safe to point at the run. A new
   job with a narrower `if` breaks that, and self-heal would fire it.
-  `attach-prerelease` adds `!cancelled()` and a green `resolve` to that shared
-  condition, so on a tag build it skips only when a person cancelled the run,
-  which self-heal leaves alone, or when `resolve` itself failed.
+  `attach-prerelease` adds `!cancelled()`, a green `resolve` and a
+  not-`failure` result for each build workflow to that shared condition, so on a
+  tag build it skips when a person cancelled the run, which self-heal leaves
+  alone, when `resolve` failed, or when a build workflow failed outright.
+  `!cancelled()` alone is run-scoped: it says nothing about what any `needs`
+  concluded, which is why each build workflow is named.
+- **A dispatch job keeps the build workflow it ships assets from in its
+  `needs`.** `attach-prerelease` tolerates a dropped cell so the release carries
+  whatever did build, but a dispatch must not: the publisher it starts skips the
+  asset that never landed and still concludes `success`, and `gh run rerun
+  --failed` re-runs nothing that succeeded, so the channel stays one release
+  behind with nothing red to show it. Skipping instead is what gets the dispatch
+  re-issued on the attempt that heals the cell.
 - **A new gate must be proven to fail.** Run it against the input it is supposed to
   reject before trusting it. A loader check that counted glob matches passed a bundle
   with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a

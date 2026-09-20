@@ -174,15 +174,24 @@ jobs:
   # release asset URLs rather than hosting multi-gigabyte wheels itself. A GH
   # release is reversible (delete + retag) so this is safe to do eagerly; the
   # irreversible step (PyPI) waits for a human to run publish.yml.
-  # The build needs are ordering only: a cell past its timeout-minutes concludes
-  # cancelled, which `continue-on-error` does not absorb and which skips every
-  # job behind it. The action asserts the executables the release must carry.
+  # A cell past its timeout-minutes concludes cancelled, which
+  # `continue-on-error` does not absorb and which skips every job behind it, so
+  # the build needs order this job without gating it on a dropped cell. The
+  # action asserts the executables the release must carry.
   attach-prerelease:
     needs: [resolve, build-default-wheels, build-binaries, build-cuda, build-openapi]
+    # `!cancelled()` is run-scoped, so it tolerates a build workflow that failed
+    # outright as well as one cell past its limit. Only the second is meant to
+    # get here: a workflow-level failure of build-cuda carries no CUDA
+    # executable and nothing downstream asserts one.
     if: >-
       !cancelled()
       && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
       && needs.resolve.result == 'success'
+      && needs.build-default-wheels.result != 'failure'
+      && needs.build-binaries.result != 'failure'
+      && needs.build-cuda.result != 'failure'
+      && needs.build-openapi.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -283,8 +292,14 @@ jobs:
 
   # Auto-dispatch Docker / Homebrew / AUR / Nix once executables + wheels are
   # on the GH pre-release.
+  # Every dispatch below keeps the build workflow it ships assets from in its
+  # `needs`, and with it the implicit success(). attach-prerelease tolerates a
+  # dropped cell so the release gets whatever did build; a dispatch must not,
+  # because the publisher it starts skips the missing asset and concludes
+  # success, and `gh run rerun --failed` never re-runs a job that succeeded. A
+  # skipped dispatch is re-issued on the rerun that heals the cell.
   dispatch-fanout:
-    needs: [resolve, attach-prerelease]
+    needs: [resolve, attach-prerelease, build-binaries]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -298,7 +313,7 @@ jobs:
 
   # Auto-dispatch the CUDA packaging fan-out once cu125 is on the release.
   dispatch-cuda:
-    needs: [resolve, attach-prerelease]
+    needs: [resolve, attach-prerelease, build-cuda]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -314,7 +329,7 @@ jobs:
   # release. Without this the snap it produces never exists, and verify-release
   # waits its full 180 minutes for it before refusing to promote the tag.
   dispatch-rocm:
-    needs: [resolve, attach-prerelease]
+    needs: [resolve, attach-prerelease, build-cuda]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -329,7 +344,7 @@ jobs:
   # Auto-dispatch the compat packaging fan-out once the compat executables are
   # on the release. Fire-and-forget: a compat failure never blocks the release.
   dispatch-compat:
-    needs: [resolve, attach-prerelease]
+    needs: [resolve, attach-prerelease, build-binaries]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:

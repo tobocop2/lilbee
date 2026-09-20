@@ -98,7 +98,7 @@ jobs:
       # make lint-shell skips a missing tool. Assert them here so a runner image
       # that drops one fails loudly.
       - name: Every tool the shell gate needs is present
-        run: shellcheck --version && actionlint --version && bats --version
+        run: shellcheck --version && actionlint --version && bats --version && yq --version
 
       - run: make lint-shell
       - run: make test-shell

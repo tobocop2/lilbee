@@ -10,7 +10,7 @@ inputs:
     description: "restore before the build, publish after it."
     required: true
   key:
-    description: "Cache identity. Coarse on purpose: clcache content-addresses each entry internally, so a stale tarball can only produce misses."
+    description: "Cache identity. One key per build cell: first publish for a key wins, so cells that share one leave the loser without an entry."
     required: true
   cache-dir:
     description: "Directory NUITKA_CACHE_DIR points at."
@@ -53,10 +53,13 @@ runs:
     # here and the next release reads it.
     #
     # First publish for a key wins; the step is a no-op once the mirror carries
-    # that asset. A complete build produces a complete cache, and the key rotates
-    # on the dependency set, which is the invalidation that matters. The caller
-    # keys on a lock normalized by scripts/strip_own_version.sh: a key carrying
-    # lilbee's own version rotates on every release and the restore never hits.
+    # that asset. The key rotates on the dependency set, which is the
+    # invalidation that matters. The caller keys on a lock normalized by
+    # scripts/strip_own_version.sh: a key carrying lilbee's own version rotates
+    # on every release and the restore never hits.
+    # First-publish-wins is why the caller must name the build cell in the key.
+    # A key two cells share holds one cell's cache for the whole life of that
+    # dependency set, and the other cell compiles cold every release.
     - name: Publish the Nuitka cache to the mirror
       if: inputs.phase == 'publish'
       shell: bash

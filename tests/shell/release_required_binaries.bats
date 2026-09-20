@@ -45,6 +45,27 @@ assert_binaries() {
   [ "${checked}" -eq 3 ]
 }
 
+@test "a cell that lists asset_name before os is still required" {
+  # Column-exact text matching dropped such a cell from the required set and
+  # left the gate green with the executable missing.
+  cat > "${FIXTURE}/reordered.yml" <<'YAML'
+jobs:
+  build:
+    strategy:
+        matrix:
+            include:
+                - asset_name: lilbee-linux-x86_64
+                  os: ubuntu-22.04
+                - soft: true
+                  asset_name: lilbee-compat-windows-x86_64.exe
+                  os: windows-latest
+YAML
+  rm "${FIXTURE}/bins/lilbee-linux-x86_64"
+  run bash "${SCRIPT}" "${FIXTURE}/bins" "${FIXTURE}/reordered.yml"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"lilbee-linux-x86_64"* ]]
+}
+
 @test "a matrix the derivation cannot read fails loudly" {
   printf 'jobs:\n  build:\n    runs-on: ubuntu-latest\n' > "${FIXTURE}/empty.yml"
   run bash "${SCRIPT}" "${FIXTURE}/bins" "${FIXTURE}/empty.yml"

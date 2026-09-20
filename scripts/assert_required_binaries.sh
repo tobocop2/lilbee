@@ -14,11 +14,12 @@ set -euo pipefail
 dir="${1:?directory holding the downloaded executables is required}"
 workflow="${2:-.github/workflows/release.yml}"
 
-required=$(awk '
-  /^          - os:/ { if (name != "" && !soft) print name; name = ""; soft = 0 }
-  /^            asset_name:/ { name = $2 }
-  /^            soft: true/ { soft = 1 }
-  END { if (name != "" && !soft) print name }
+# yq reads the matrix as YAML, so a re-indented or reordered cell still counts.
+# It ships with the ubuntu-latest runner image that attach-prerelease runs on.
+required=$(yq -r '
+  (.jobs.build.strategy.matrix.include // [])[]
+  | select(.soft != true)
+  | .asset_name
 ' "${workflow}")
 
 if [ -z "${required}" ]; then
