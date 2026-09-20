@@ -7,6 +7,7 @@ Integration test downloads a real small model to prove end-to-end progress.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 from unittest.mock import MagicMock
@@ -417,7 +418,11 @@ class TestDownloadModelProgressChain:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
         # HF says the file is 1000 bytes; the cached copy is truncated to 10.
-        monkeypatch.setattr(download_mod, "fetch_expected_file_size", lambda repo, name: 1000)
+        monkeypatch.setattr(
+            download_mod,
+            "fetch_remote_file",
+            lambda repo, name: download_mod.RemoteFile(size=1000, blob="abc123"),
+        )
 
         entry = _test_entry()
         truncated = tmp_path / entry.gguf_filename
@@ -450,7 +455,11 @@ class TestDownloadModelProgressChain:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
-        monkeypatch.setattr(download_mod, "fetch_expected_file_size", lambda repo, name: 1000)
+        monkeypatch.setattr(
+            download_mod,
+            "fetch_remote_file",
+            lambda repo, name: download_mod.RemoteFile(size=1000, blob="abc123"),
+        )
 
         entry = _test_entry()
         (tmp_path / entry.gguf_filename).write_bytes(b"x" * 1000)
@@ -599,7 +608,9 @@ class TestDownloadModelErrorPropagation:
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
-        monkeypatch.setattr("lilbee.catalog.download._hf_file_size", lambda *_a, **_kw: None)
+        monkeypatch.setattr(
+            "lilbee.catalog.download._hf_file_metadata", lambda *_a, **_kw: (None, None)
+        )
 
         def fake_missing(**kwargs: Any) -> str:
             raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
@@ -732,58 +743,76 @@ class TestProgressTracker:
         assert [d for d, _ in events] == sorted(d for d, _ in events)
 
 
-class TestFetchExpectedFileSize:
-    """fetch_expected_file_size reads hf_hub file metadata and degrades to unknown."""
+class TestFetchRemoteFile:
+    """fetch_remote_file reads hf_hub file metadata and degrades to unknown."""
 
     def _patch_meta(
         self, monkeypatch: pytest.MonkeyPatch, *, size: int | None = None, raises: bool = False
     ) -> None:
-        def _size(*_a: Any, **_kw: Any) -> int | None:
+        def _metadata(*_a: Any, **_kw: Any) -> tuple[int | None, str | None]:
             if raises:
                 raise RuntimeError("offline")
-            return size
+            return size, "abc123"
 
-        monkeypatch.setattr("lilbee.catalog.download._hf_file_size", _size)
+        monkeypatch.setattr("lilbee.catalog.download._hf_file_metadata", _metadata)
 
-    def test_returns_reported_size(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.download import fetch_expected_file_size
+    def test_returns_the_reported_size_and_blob(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog.download import fetch_remote_file
 
         self._patch_meta(monkeypatch, size=4096)
-        assert fetch_expected_file_size("org/repo", "m.gguf") == 4096
+        assert fetch_remote_file("org/repo", "m.gguf") == (4096, "abc123")
 
     def test_unknown_when_size_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.download import _SIZE_UNKNOWN, fetch_expected_file_size
+        from lilbee.catalog.download import _SIZE_UNKNOWN, fetch_remote_file
 
         self._patch_meta(monkeypatch, size=None)
-        assert fetch_expected_file_size("org/repo", "m.gguf") == _SIZE_UNKNOWN
+        assert fetch_remote_file("org/repo", "m.gguf").size == _SIZE_UNKNOWN
 
     def test_unknown_when_metadata_errors(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.catalog.download import _SIZE_UNKNOWN, fetch_expected_file_size
+        """Offline leaves no blob either, so nothing is deleted on that guess."""
+        from lilbee.catalog.download import _SIZE_UNKNOWN, fetch_remote_file
 
         self._patch_meta(monkeypatch, raises=True)
-        assert fetch_expected_file_size("org/repo", "m.gguf") == _SIZE_UNKNOWN
+        assert fetch_remote_file("org/repo", "m.gguf") == (_SIZE_UNKNOWN, None)
 
     def test_raises_when_hub_reports_file_missing(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A 404 for the file is a definitive answer, not an unknown size."""
         from huggingface_hub.errors import RemoteEntryNotFoundError
 
-        from lilbee.catalog.download import fetch_expected_file_size
+        from lilbee.catalog.download import fetch_remote_file
 
-        def _missing(*_a: Any, **_kw: Any) -> int | None:
+        def _missing(*_a: Any, **_kw: Any) -> tuple[int | None, str | None]:
             raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
 
-        monkeypatch.setattr("lilbee.catalog.download._hf_file_size", _missing)
+        monkeypatch.setattr("lilbee.catalog.download._hf_file_metadata", _missing)
         with pytest.raises(RuntimeError, match=r"'m\.gguf' does not exist in org/repo"):
-            fetch_expected_file_size("org/repo", "m.gguf")
+            fetch_remote_file("org/repo", "m.gguf")
+
+    def test_the_metadata_call_reads_size_and_entity_tag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The entity tag is the cache blob name, so it must come from the same call."""
+        from lilbee.catalog import download as download_mod
+
+        monkeypatch.setattr(download_mod, "hf_token", lambda: None)
+        monkeypatch.setattr("huggingface_hub.hf_hub_url", lambda repo, name: "https://x/y")
+        monkeypatch.setattr(
+            "huggingface_hub.get_hf_file_metadata",
+            lambda url, token=None: SimpleNamespace(size=4096, etag="abc123"),
+        )
+
+        assert download_mod._hf_file_metadata("org/repo", "m.gguf") == (4096, "abc123")
 
 
 class TestDownloadBytes:
     """The exact bytes a pull fetches, every shard of a split GGUF summed."""
 
     def _patch_sizes(self, monkeypatch: pytest.MonkeyPatch, sizes: dict[str, int]) -> None:
+        from lilbee.catalog.download import RemoteFile
+
         monkeypatch.setattr(
-            "lilbee.catalog.download.fetch_expected_file_size",
-            lambda _repo, name: sizes[name],
+            "lilbee.catalog.download.fetch_remote_file",
+            lambda _repo, name: RemoteFile(size=sizes[name], blob=f"blob-{name}"),
         )
 
     def test_single_file_reports_the_hubs_figure(self, monkeypatch: pytest.MonkeyPatch) -> None:

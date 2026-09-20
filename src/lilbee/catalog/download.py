@@ -5,12 +5,11 @@ import logging
 import os
 import shutil
 import sys
-import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, NamedTuple, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -41,8 +40,22 @@ _T = TypeVar("_T")
 CompleteCallback = Callable[[CatalogModel, Path], None]
 # Raises UnsupportedQuantError when the engine cannot decode the named file.
 LoadCheck = Callable[[str, str], None]
+# Called once per file resolved with the Hub, before any bytes transfer, with
+# the cache blob that file occupies (None when the Hub reports no blob).
+ProbeCallback = Callable[[str | None], None]
 
 log = logging.getLogger(__name__)
+
+
+class RemoteFile(NamedTuple):
+    """The Hub's answer about one repo file.
+
+    *blob* is the name the file takes in the cache's blob directory, and it is
+    None when the Hub reports no entity tag for the file.
+    """
+
+    size: int
+    blob: str | None
 
 
 def _models_dir() -> Path:
@@ -67,19 +80,6 @@ class DownloadConfig(BaseModel):
 _BYTES_PER_GB = 1024**3
 
 
-def _repo_partial_bytes(models_dir: Path, hf_repo: str) -> int:
-    """Bytes an interrupted attempt at *hf_repo* already holds on disk.
-
-    A resume needs only the remainder, so these count toward available space.
-    """
-    from huggingface_hub.file_download import repo_folder_name
-
-    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
-    if not repo_dir.is_dir():
-        return 0
-    return sum(f.stat().st_size for f in repo_dir.glob("blobs/*.incomplete") if f.is_file())
-
-
 def _free_bytes(path: Path) -> int | None:
     """Free space on the volume that will hold *path*, which need not exist yet.
 
@@ -97,19 +97,45 @@ def _free_bytes(path: Path) -> int | None:
 
 
 def disk_shortfall(models_dir: Path, hf_repo: str, needed: int) -> str | None:
-    """Describe why *needed* bytes will not fit, or None when they will."""
+    """Describe why *needed* bytes will not fit, or None when they will.
+
+    A partial blob from an interrupted attempt is not counted: huggingface_hub
+    writes each transfer to a fresh temporary file, so those bytes are spent.
+    """
     if needed == _SIZE_UNKNOWN:
         return None  # offline or unresolvable; nothing to compare against
     free = _free_bytes(models_dir)
     if free is None:
         return None  # unmeasurable volume; let the download report the truth
-    available = free + _repo_partial_bytes(models_dir, hf_repo)
-    if needed <= available:
+    if needed <= free:
         return None
     return (
         f"Not enough disk space for {hf_repo}: needs "
-        f"{needed / _BYTES_PER_GB:.1f} GB, {available / _BYTES_PER_GB:.1f} GB free."
+        f"{needed / _BYTES_PER_GB:.1f} GB, {free / _BYTES_PER_GB:.1f} GB free."
     )
+
+
+def discard_partial_blobs(models_dir: Path, hf_repo: str, blobs: Iterable[str]) -> None:
+    """Delete the temporary files of *blobs*, which no later download reads.
+
+    huggingface_hub writes every transfer to a fresh ``<blob>.<unique>.incomplete``
+    name and unlinks it on the way out, so a leftover belongs to an attempt that
+    never unwound: a terminated child, a power loss, a build that predates this
+    sweep. Left alone the bytes are lost for the life of the cache.
+
+    Scoped to the blobs the caller resolved, because another quant of the same
+    repo downloads into the same directory at the same time and its temporary
+    file is live.
+    """
+    from huggingface_hub.file_download import repo_folder_name
+
+    repo_dir = models_dir / repo_folder_name(repo_id=hf_repo, repo_type="model")
+    for blob in blobs:
+        for partial in repo_dir.glob(f"blobs/{blob}.*.incomplete"):
+            try:
+                partial.unlink()
+            except OSError:
+                log.warning("Left a partial download behind: %s", partial)
 
 
 def _require_disk_space(entry: CatalogModel, models_dir: Path, needed: int) -> None:
@@ -193,143 +219,21 @@ def _apply_fast_download_mode() -> None:
         os.environ.pop(_XET_HIGH_PERFORMANCE_ENV, None)
 
 
-_STALL_WINDOW_S = 60.0
-"""Seconds per measurement window; a transfer below the byte floor for a
-whole window counts as stalled.
-
-Well past the hub's own 10s read timeout and its resume retries, so the
-guard only fires on transfers those mechanisms cannot wake."""
-
-_STALL_FLOOR_BYTES = 256 * 1024
-"""Minimum bytes per window for a transfer to count as alive.
-
-A wedged connection can trickle a few bytes a minute, which an any-activity
-check reads as progress; ~4 KB/s is far below any usable model download."""
-
-_STALL_POLL_S = 5.0
-
 _TRANSFER_RETRIES = 2
 _RETRY_BACKOFF_SECONDS = 5
 
 
 class _TransientDownloadError(RuntimeError):
-    """A transfer fault another attempt can clear: a stall, a network or an I/O error."""
-
-
-def _abort_stalled_transfer() -> None:
-    """Break a wedged transfer so the blocked download thread raises.
-
-    Covers both transports: the xet session abort stops a deadlocked Rust
-    transfer (a no-op without one), and closing the hub's shared client
-    closes the plain path's socket under its blocked read. The next hub
-    call builds a fresh client. The session abort is safe here because a
-    process runs at most one download; concurrent downloads each run in
-    their own child process.
-    """
-    from huggingface_hub.utils._http import close_session
-    from huggingface_hub.utils._xet import abort_xet_session
-
-    abort_xet_session()
-    close_session()
-
-
-class _StallGuard:
-    """Aborts a transfer that reports no bytes for the stall window.
-
-    A wedged transfer blocks forever with the task showing active: hf_xet
-    can deadlock before its first byte, a dead socket never wakes the
-    plain path's read, and a dying connection can trickle bytes too slowly
-    to ever finish. The guard rides the same progress stream the task bar
-    shows; when a window passes under the byte floor, the abort makes the
-    blocked thread raise, and the caller resumes from the .incomplete file.
-    """
-
-    def __init__(
-        self,
-        window_s: float = _STALL_WINDOW_S,
-        poll_s: float = _STALL_POLL_S,
-        floor_bytes: int = _STALL_FLOOR_BYTES,
-    ) -> None:
-        self._window_s = window_s
-        self._poll_s = poll_s
-        self._floor_bytes = floor_bytes
-        self._window_start = time.monotonic()
-        self._window_bytes = 0
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-        self.fired = False
-
-    def pulse(self, n: float = 0) -> None:
-        """Count transferred bytes; called from the download thread's tqdm."""
-        self._window_bytes += int(n)
-
-    def wrap_tqdm(self, tqdm_class: Any) -> Any:
-        """Subclass *tqdm_class* (or the hub's default) to pulse on every update.
-
-        ``update_transfer`` is only defined when the base has it: the hub
-        feature-detects the method, so adding it to a base that lacks it
-        would advertise a stream the base cannot aggregate.
-        """
-        from huggingface_hub.utils.tqdm import tqdm as hub_tqdm
-
-        guard = self
-        base = tqdm_class if tqdm_class is not None else hub_tqdm
-
-        class _Pulsing(base):  # type: ignore[misc, valid-type]
-            def update(self, n: float = 1) -> bool | None:
-                guard.pulse(n)
-                super().update(n)
-                return None
-
-        if not hasattr(base, "update_transfer"):
-            return _Pulsing
-
-        class _PulsingTransfer(_Pulsing):
-            def update_transfer(self, n: float = 1) -> bool | None:
-                guard.pulse(n)
-                super().update_transfer(n)
-                return None
-
-        return _PulsingTransfer
-
-    def _watch(self) -> None:
-        while not self._stop.wait(self._poll_s):
-            if not self._keep_watching():
-                return
-
-    def _keep_watching(self) -> bool:
-        """One tick: True to keep watching, False once fired or stopped."""
-        now = time.monotonic()
-        if now - self._window_start < self._window_s:
-            return True
-        if self._stop.is_set():
-            return False  # the transfer finished while this tick was deciding
-        if self._window_bytes >= self._floor_bytes:
-            self._window_start = now
-            self._window_bytes = 0
-            return True
-        self.fired = True
-        _abort_stalled_transfer()
-        return False
-
-    def __enter__(self) -> "_StallGuard":
-        self._thread = threading.Thread(
-            target=self._watch, name="download-stall-guard", daemon=True
-        )
-        self._thread.start()
-        return self
-
-    def __exit__(self, *exc_info: object) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=self._poll_s + 1)
+    """A transfer fault another attempt can clear: a network or an I/O error."""
 
 
 def _retry_transient(work: Callable[[], _T]) -> _T:
     """Run *work*, retrying only the faults another attempt can clear.
 
     Every other error propagates on the first attempt, cancellation included,
-    so a defect or a configuration error is never hidden behind a retry.
+    so a defect or a configuration error is never hidden behind a retry. A
+    transfer that goes quiet raises nothing here, so it is the parent process
+    that ends it, not this loop.
     """
     last_error: Exception | None = None
     for attempt in range(_TRANSFER_RETRIES + 1):
@@ -342,36 +246,13 @@ def _retry_transient(work: Callable[[], _T]) -> _T:
             time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
     raise RuntimeError(
         f"{last_error}. The transfer failed {_TRANSFER_RETRIES + 1} times. Check the "
-        "network connection and retry; the finished part is kept and the download "
-        "resumes where it stopped."
+        "network connection and retry; the files that finished are kept."
     ) from last_error
 
 
-def _attempt_guarded_download(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run one guarded transfer, reporting a stall as a transient fault.
-
-    huggingface_hub resumes from the .incomplete file, so a retry costs only
-    the bytes since the stall. A failure with the guard quiet is whatever the
-    hub raised; cancellation is never a transient fault.
-    """
-    guard = _StallGuard()
-    guarded = config.model_copy(update={"tqdm_class": guard.wrap_tqdm(config.tqdm_class)})
-    try:
-        with guard:
-            return _hf_download_or_translate(entry, guarded)
-    except TaskCancelledError:
-        raise
-    except Exception as exc:
-        if not guard.fired:
-            raise
-        raise _TransientDownloadError(
-            f"Transfer of {entry.hf_repo} stalled with almost no data arriving"
-        ) from exc
-
-
-def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run the transfer under the stall guard, retrying every transient fault."""
-    return _retry_transient(lambda: _attempt_guarded_download(entry, config))
+def _download_with_retry(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run one file's transfer, retrying the faults another attempt can clear."""
+    return _retry_transient(lambda: _hf_download_or_translate(entry, config))
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
@@ -404,6 +285,17 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
         ) from None
 
 
+class _NeverCancelled:
+    """Cancel signal for a caller that has no way to stop the download."""
+
+    def is_set(self) -> bool:
+        """Always False; nothing holds a handle that could set this."""
+        return False
+
+
+_NEVER_CANCELLED = _NeverCancelled()
+
+
 def download_model(
     entry: CatalogModel,
     *,
@@ -412,15 +304,17 @@ def download_model(
     cancel: CancelSignal | None = None,
 ) -> Path:
     """Download a GGUF model from HuggingFace to the models dir.
-    Uses huggingface_hub for resumable downloads, caching, and auth.
+    Uses huggingface_hub for caching and auth; a stalled file starts again
+    from the top, and files already finished are kept.
     The optional *on_progress(downloaded, total)* callback receives byte counts.
     The optional *on_complete(entry, file_path)* callback runs after every file
     is on disk; modelhub uses it to write a registry manifest. For vision
     models, also downloads the mmproj (CLIP projection) file.
 
-    With a *cancel* signal the transfer runs in its own child process, and a
-    set signal terminates that process mid-transfer; without one the transfer
-    runs in this process and only ``on_progress`` raising can stop it.
+    The transfer always runs in its own child process, because terminating that
+    process is the only stop a wedged transfer cannot refuse. A caller that
+    passes no *cancel* signal gets one that is never set, so the watchdog that
+    ends a quiet child covers every download.
 
     A split GGUF has every shard fetched before the model is finalized, so the
     registry manifest (and thus "installed") only lands once the full set is on
@@ -436,15 +330,16 @@ def download_model(
     models_dir = _models_dir()
     models_dir.mkdir(parents=True, exist_ok=True)
     token = hf_token()
-    if cancel is None:
-        dest = fetch_model_files(entry, models_dir, token, on_progress=on_progress)
-    else:
-        # circular: download -> download_process via fetch_model_files
-        from lilbee.catalog.download_process import download_in_subprocess
+    # circular: download -> download_process via fetch_model_files
+    from lilbee.catalog.download_process import download_in_subprocess
 
-        dest = download_in_subprocess(
-            entry, models_dir, token, on_progress=on_progress, cancel=cancel
-        )
+    dest = download_in_subprocess(
+        entry,
+        models_dir,
+        token,
+        on_progress=on_progress,
+        cancel=_NEVER_CANCELLED if cancel is None else cancel,
+    )
     if on_complete is not None:
         on_complete(entry, dest)
     return dest
@@ -456,29 +351,33 @@ def fetch_model_files(
     token: str | None,
     *,
     on_progress: ProgressCallback | None = None,
+    on_probe: ProbeCallback | None = None,
 ) -> Path:
     """Fetch *entry*'s GGUF shards, plus its projector when the repo ships one.
 
     Takes the models dir and token as arguments so a download child process
-    can run it without reading cfg. Writes no registry state.
+    can run it without reading cfg. Writes no registry state. *on_probe* fires
+    once per file resolved with the Hub, which is the only sign of life a
+    caller gets before the first bytes, and it names the cache blob so the
+    caller can clear that file's leftovers.
     """
     filename = resolve_filename(entry)
     shards = split_shard_filenames(filename)
     dest = models_dir / shards[0]
-    if all(
-        (models_dir / shard).exists()
-        and _cached_file_is_complete(entry.hf_repo, shard, models_dir / shard)
-        for shard in shards
-    ):
+    if all(_shard_is_cached(entry, models_dir, shard, on_probe) for shard in shards):
         log.info("Model already downloaded: %s", dest)
         if on_progress is not None:
             size = sum((models_dir / shard).stat().st_size for shard in shards)
             on_progress(size, size)  # Report 100% immediately (every shard)
-        _ensure_projector(entry, models_dir, token, on_progress=on_progress)
+        _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
         return dest
 
-    shard_sizes = [fetch_expected_file_size(entry.hf_repo, shard) for shard in shards]
+    remote = [_probed_shard(entry, shard, on_probe) for shard in shards]
+    shard_sizes = [file.size for file in remote]
     sizes_known = all(size != _SIZE_UNKNOWN for size in shard_sizes)
+    # Reclaim first: a leftover partial is unreadable bytes that still occupy
+    # the volume the space check is about to measure.
+    discard_partial_blobs(models_dir, entry.hf_repo, _blobs(remote))
     _require_disk_space(entry, models_dir, sum(shard_sizes) if sizes_known else 0)
 
     # Sum the shard sizes up front so a multi-shard pull reports one monotonic
@@ -497,7 +396,7 @@ def fetch_model_files(
             cache_dir=str(models_dir),
             tqdm_class=tracker.make_tqdm_class() if tracker else None,
         )
-        shard_path = _download_with_stall_guard(entry, config)
+        shard_path = _download_with_retry(entry, config)
         shard_paths.append(shard_path)
         if tracker is not None:
             tracker.shard_done(shard_path.stat().st_size)
@@ -508,8 +407,34 @@ def fetch_model_files(
         if not tracker or not tracker.was_used:
             log.info("Model found in HuggingFace cache: %s", first_shard_path)
         on_progress(total_size, total_size)
-    _ensure_projector(entry, models_dir, token, on_progress=on_progress)
+    _ensure_projector(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
     return first_shard_path
+
+
+def _blobs(files: Iterable[RemoteFile]) -> list[str]:
+    """The cache blob names among *files*, dropping the ones the Hub did not report."""
+    return [file.blob for file in files if file.blob is not None]
+
+
+def _probe(on_probe: ProbeCallback | None, file: RemoteFile) -> RemoteFile:
+    """Report *file* as resolved, then hand it back to the caller."""
+    if on_probe is not None:
+        on_probe(file.blob)
+    return file
+
+
+def _shard_is_cached(
+    entry: CatalogModel, models_dir: Path, shard: str, on_probe: ProbeCallback | None
+) -> bool:
+    """Whether *shard* is on disk at the size the Hub reports for it."""
+    file = _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
+    path = models_dir / shard
+    return path.exists() and _size_matches(path, file.size)
+
+
+def _probed_shard(entry: CatalogModel, shard: str, on_probe: ProbeCallback | None) -> RemoteFile:
+    """The Hub's answer about *shard*, reported to *on_probe* as it arrives."""
+    return _probe(on_probe, fetch_remote_file(entry.hf_repo, shard))
 
 
 def _ensure_projector(
@@ -518,6 +443,7 @@ def _ensure_projector(
     token: str | None,
     *,
     on_progress: ProgressCallback | None = None,
+    on_probe: ProbeCallback | None = None,
 ) -> None:
     """Fetch the projector whenever the repo ships one, not only for VISION entries.
 
@@ -526,7 +452,7 @@ def _ensure_projector(
     time with a missing-mmproj warning a re-pull cannot cure.
     """
     if entry.task == ModelTask.VISION or repo_has_mmproj(entry.hf_repo):
-        _fetch_mmproj(entry, models_dir, token, on_progress=on_progress)
+        _fetch_mmproj(entry, models_dir, token, on_progress=on_progress, on_probe=on_probe)
 
 
 def download_mmproj(
@@ -549,6 +475,7 @@ def _fetch_mmproj(
     token: str | None,
     *,
     on_progress: ProgressCallback | None = None,
+    on_probe: ProbeCallback | None = None,
 ) -> Path | None:
     """Fetch *entry*'s mmproj into *models_dir*, or None when the repo names none."""
     mmproj_filename = _resolve_mmproj_filename(entry.hf_repo, DEFAULT_MMPROJ_PATTERN)
@@ -558,9 +485,11 @@ def _fetch_mmproj(
 
     tracker = _ProgressTracker(on_progress) if on_progress else None
     log.info("Downloading mmproj %s/%s → %s", entry.hf_repo, mmproj_filename, models_dir)
-    _require_disk_space(entry, models_dir, fetch_expected_file_size(entry.hf_repo, mmproj_filename))
-    # The projector gets the same error translation and stall guard as the GGUF.
-    path = _download_with_stall_guard(
+    projector = _probe(on_probe, fetch_remote_file(entry.hf_repo, mmproj_filename))
+    discard_partial_blobs(models_dir, entry.hf_repo, _blobs([projector]))
+    _require_disk_space(entry, models_dir, projector.size)
+    # The projector gets the same error translation and retry as the GGUF.
+    path = _download_with_retry(
         entry,
         DownloadConfig(
             repo_id=entry.hf_repo,
@@ -674,16 +603,13 @@ def resolve_filename(entry: CatalogModel, *, can_load: LoadCheck | None = None) 
 _SIZE_UNKNOWN = 0
 
 
-def _cached_file_is_complete(hf_repo: str, filename: str, dest: Path) -> bool:
-    """Decide whether an existing cached file may be accepted as complete.
+def _size_matches(dest: Path, expected: int) -> bool:
+    """Whether *dest* holds the *expected* byte count, accepting an unknown one.
 
-    Verifies the on-disk byte size against the size HuggingFace reports for
-    *filename*. A mismatch means a truncated / corrupt download, so the file
-    is rejected and re-fetched. When the size can't be fetched (offline, API
-    error) it stays unknown and the cached file is accepted: there's nothing
-    to verify against and refusing would block all offline reuse.
+    An unknown size is accepted because there is nothing to verify against and
+    refusing would block every offline reuse. A size that disagrees is a
+    truncated or corrupt file, so the caller fetches it again.
     """
-    expected = fetch_expected_file_size(hf_repo, filename)
     if expected == _SIZE_UNKNOWN:
         return True
     actual = dest.stat().st_size
@@ -698,11 +624,12 @@ def _cached_file_is_complete(hf_repo: str, filename: str, dest: Path) -> bool:
     return False
 
 
-def _hf_file_size(hf_repo: str, filename: str) -> int | None:
-    """Byte size huggingface_hub resolves for *filename* (None if unreported)."""
+def _hf_file_metadata(hf_repo: str, filename: str) -> tuple[int | None, str | None]:
+    """Byte size and cache blob huggingface_hub resolves for *filename*."""
     from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
-    return get_hf_file_metadata(hf_hub_url(hf_repo, filename), token=hf_token()).size
+    metadata = get_hf_file_metadata(hf_hub_url(hf_repo, filename), token=hf_token())
+    return metadata.size, metadata.etag
 
 
 def _missing_file_message(hf_repo: str, filename: str) -> str:
@@ -713,24 +640,26 @@ def _missing_file_message(hf_repo: str, filename: str) -> str:
     )
 
 
-def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
-    """Return the byte size huggingface_hub reports for *filename*, or _SIZE_UNKNOWN.
+def fetch_remote_file(hf_repo: str, filename: str) -> RemoteFile:
+    """Return the size and cache blob huggingface_hub reports for *filename*.
 
     Resolves via hf_hub's own file metadata (correct revision, redirects, and
-    LFS/Xet handled uniformly) instead of scraping the repo tree. Returns 0 when
-    offline or unresolvable, in which case the caller keeps the cached file. A
-    file the Hub reports as nonexistent raises instead: that answer is
-    definitive, and treating it as unknown let a pull of a mistyped filename
-    accept a stale local file and report success without downloading anything.
+    LFS/Xet handled uniformly) instead of scraping the repo tree. Reports an
+    unknown size when offline or unresolvable, in which case the caller keeps
+    the cached file. A file the Hub reports as nonexistent raises instead: that
+    answer is definitive, and treating it as unknown let a pull of a mistyped
+    filename accept a stale local file and report success without downloading
+    anything.
     """
     from huggingface_hub.errors import RemoteEntryNotFoundError
 
     try:
-        return _hf_file_size(hf_repo, filename) or _SIZE_UNKNOWN
+        size, blob = _hf_file_metadata(hf_repo, filename)
     except RemoteEntryNotFoundError:
         raise RuntimeError(_missing_file_message(hf_repo, filename)) from None
     except Exception:
-        return _SIZE_UNKNOWN
+        return RemoteFile(size=_SIZE_UNKNOWN, blob=None)
+    return RemoteFile(size=size or _SIZE_UNKNOWN, blob=blob)
 
 
 def download_bytes(hf_repo: str, filename: str) -> int:
@@ -740,5 +669,5 @@ def download_bytes(hf_repo: str, filename: str) -> int:
     a disk check refuses a real download, so it asks about the real file. A
     single unresolvable shard makes the sum unknown rather than short.
     """
-    sizes = [fetch_expected_file_size(hf_repo, shard) for shard in split_shard_filenames(filename)]
+    sizes = [fetch_remote_file(hf_repo, shard).size for shard in split_shard_filenames(filename)]
     return sum(sizes) if all(sizes) else _SIZE_UNKNOWN

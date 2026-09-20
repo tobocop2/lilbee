@@ -53,18 +53,19 @@ def test_allows_a_download_that_fits(tmp_path: Path, monkeypatch: pytest.MonkeyP
     dl._require_disk_space(_entry(), tmp_path, 8 * _GB)
 
 
-def test_resumed_download_counts_bytes_already_on_disk(
+def test_a_partial_blob_is_not_counted_as_space_the_pull_can_use(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An interrupted pull only needs the remainder; a naive check refuses it."""
+    """huggingface_hub never reads a partial back, so those bytes are spent."""
     blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
     blobs.mkdir(parents=True)
     (blobs / "abc123.incomplete").write_bytes(b"x" * (6 * 1024))
     monkeypatch.setattr(dl, "_BYTES_PER_GB", 1024)  # keep the message readable
     monkeypatch.setattr(dl.shutil, "disk_usage", lambda _p: _usage(3 * 1024))
 
-    # 8KB wanted, 3KB free, but 6KB is already held by the partial blob.
-    dl._require_disk_space(_entry(), tmp_path, 8 * 1024)
+    # 8KB wanted and 3KB free; the 6KB partial blob buys the pull nothing.
+    with pytest.raises(RuntimeError, match=r"needs 8\.0 GB, 3\.0 GB free"):
+        dl._require_disk_space(_entry(), tmp_path, 8 * 1024)
 
 
 def test_unknown_size_does_not_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -165,3 +166,50 @@ def test_an_unmeasurable_volume_declines_to_judge(
 
     assert dl._free_bytes(tmp_path) is None
     assert dl.disk_shortfall(tmp_path, "acme/big-GGUF", 99 * _GB) is None
+
+
+def test_a_dead_partial_is_reclaimed_before_the_space_check(tmp_path: Path) -> None:
+    """Reclaiming is what keeps those bytes from being both unusable and deducted."""
+    blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    dead = blobs / "abc123.4f2a91cc.incomplete"
+    dead.write_bytes(b"x" * 16)
+
+    dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+    assert not dead.exists()
+
+
+def test_reclaiming_leaves_the_finished_blob_and_other_files_alone(tmp_path: Path) -> None:
+    blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    finished = blobs / "abc123"
+    finished.write_bytes(b"y" * 16)
+    other = blobs / "def456.90bb17de.incomplete"
+    other.write_bytes(b"z" * 16)
+
+    dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+    assert finished.exists()
+    assert other.exists()
+
+
+def test_a_partial_that_will_not_delete_is_reported(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Windows refuses to unlink an open file, and that must not mask the failure."""
+    import logging
+
+    blobs = tmp_path / "models--acme--big-GGUF" / "blobs"
+    blobs.mkdir(parents=True)
+    (blobs / "abc123.4f2a91cc.incomplete").write_bytes(b"x" * 16)
+
+    def _refuse(self: Path, missing_ok: bool = False) -> None:
+        raise PermissionError("the file is open in another process")
+
+    monkeypatch.setattr(Path, "unlink", _refuse)
+
+    with caplog.at_level(logging.WARNING):
+        dl.discard_partial_blobs(tmp_path, "acme/big-GGUF", ["abc123"])
+
+    assert "Left a partial download behind" in caplog.text
