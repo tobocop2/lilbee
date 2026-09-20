@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from enum import StrEnum
 from importlib.metadata import version as _pkg_version
@@ -49,7 +50,10 @@ def _bundled_tool(tool: EngineTool) -> Path | None:
         import lilbee_engine
     except ImportError:
         return None
-    path = Path(getattr(lilbee_engine, _BUNDLED_ACCESSORS[tool])())
+    accessor = getattr(lilbee_engine, _BUNDLED_ACCESSORS[tool], None)
+    if accessor is None:  # a wheel that predates this tool lacks the accessor
+        return None
+    path = Path(accessor())
     return path if path.is_file() else None
 
 
@@ -128,12 +132,23 @@ def _binary_signature(path: Path) -> str:
 
 
 def engine_binary_identity(binary: Path) -> str:
-    """Identity of the engine file at *binary*: its location and build fingerprint.
+    """Identity of the engine file at *binary*: its location and a digest of its bytes.
 
     The file rather than the wheel, because a stub wheel can carry the version of
     the real one; only the bytes that answered a probe identify what answered it.
+    The bytes rather than the stat fields ``engine_pin`` matches on: an upgrade
+    rewrites the file in place, the rewrite keeps the inode, and a build of the
+    same size written inside one mtime tick moves no stat field at all, so
+    metadata can repeat across a real engine change. ``llama-server`` is a
+    launcher of a few tens of kilobytes that loads the backend libraries at run
+    time, and this is read once per planning pass, so the digest costs far less
+    than the device probe it decides to re-run.
     """
-    return f"{binary}@{_binary_signature(binary)}"
+    try:
+        with binary.open("rb") as handle:
+            return f"{binary}@{hashlib.file_digest(handle, 'sha256').hexdigest()}"
+    except OSError:
+        return f"{binary}@unreadable"
 
 
 # Ctx sizing keys share by window coverage (contract.chat_ctx_covers), not

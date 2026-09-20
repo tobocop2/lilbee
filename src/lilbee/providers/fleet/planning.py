@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from lilbee.core.config.enums import KV_CACHE_TYPE_BYTES, KvCacheType
 from lilbee.core.system import is_network_path
@@ -58,7 +60,7 @@ from lilbee.providers.roles import ROLE_REGISTRY, RerankMode, WorkerRole
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Mapping, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
@@ -1811,19 +1813,20 @@ def build_single_role_launch(role: WorkerRole, model_path: Path) -> InstanceLaun
     apply_fleet_gpu_env()
     binary = resolve_llama_server()
     apply_cuda_runtime_env(binary)
-    devices = _plan_devices(binary)
-    by_index = {d.index: d for d in devices}
-    # The whole machine, since nothing else is resident during a self-check.
-    placed = (min(by_index),) if by_index else ()
-    plan = InstancePlan(role=role, devices=placed)
-    return _launch_for(
-        plan,
-        str(model_path),
-        binary,
-        by_index,
-        unified_budget=_unified_memory_budget(devices),
-        model_path=model_path,
-    )
+    with _one_engine_per_pass():
+        devices = _plan_devices(binary)
+        by_index = {d.index: d for d in devices}
+        # The whole machine, since nothing else is resident during a self-check.
+        placed = (min(by_index),) if by_index else ()
+        plan = InstancePlan(role=role, devices=placed)
+        return _launch_for(
+            plan,
+            str(model_path),
+            binary,
+            by_index,
+            unified_budget=_unified_memory_budget(devices),
+            model_path=model_path,
+        )
 
 
 def resolve_devices(binary: Path) -> list[FleetDevice]:
@@ -1954,10 +1957,14 @@ def _resolve_devices_and_refusal(binary: Path) -> tuple[list[FleetDevice], bool]
 _DEVICE_PROBE_TTL_S = 2.0
 # A failed probe is cached much longer than a good one: each retry against a
 # wedged GPU driver costs a full probe timeout, so a per-poll retry would stall
-# every placement read for a minute at a time. The same wait bounds how often a
-# plan read re-probes an engine whose probe keeps failing.
-# The read cache binds this at construction; the restate cooldown reads it per call.
+# every placement read for a minute at a time.
 _DEVICE_PROBE_FAILURE_TTL_S = 60.0
+# How long a plan read holds off re-probing an engine whose restate probe raised.
+# The same order as the read cache's failure TTL and for the same reason (the
+# retry ladder costs a full probe timeout), but a separate knob: the read cache
+# bounds how long a wedged driver goes un-re-probed by view reads, this one how
+# long a stale plan snapshot stays stale.
+_PLAN_RESTATE_FAILURE_WAIT_S = 60.0
 # An engine that lists no device on a GPU host may be hitting a transient GPU-init
 # error (the card momentarily held by another process); re-probe before treating
 # the empty list as fatal.
@@ -1995,15 +2002,15 @@ class _ReadDeviceCache:
         self._devices: list[FleetDevice] | None = None
         self._failure: ProviderError | None = None
 
+    def _is_fresh(self, engine: str) -> bool:
+        """Whether the entry in hand answers for *engine* and is still inside its TTL."""
+        ttl = self._ttl_s if self._failure is None else self._failure_ttl_s
+        return self._at is not None and self._engine == engine and time.monotonic() - self._at < ttl
+
     def get(self, binary: Path) -> list[FleetDevice]:
         engine = engine_binary_identity(binary)
         with self._lock:
-            ttl = self._ttl_s if self._failure is None else self._failure_ttl_s
-            fresh = (
-                self._at is not None
-                and self._engine == engine
-                and time.monotonic() - self._at < ttl
-            )
+            fresh = self._is_fresh(engine)
             if fresh and self._failure is not None:
                 raise self._failure
             if self._devices is None or not fresh:
@@ -2081,6 +2088,11 @@ class _FailedProbe:
     at: float
 
 
+# Re-reads a plan snapshot against the hardware, or answers ``None`` when the
+# probe could not run.
+_Restate: TypeAlias = "Callable[[_PlanProbe], _PlanProbe | None]"
+
+
 class _PlanProbeStore:
     """Holds the captured plan snapshot; a single instance below (no bare global)."""
 
@@ -2089,9 +2101,10 @@ class _PlanProbeStore:
         self._probe: _PlanProbe | None = None
         self._failed: _FailedProbe | None = None
         # Held across the probe a restate runs, so a burst of reads after an
-        # engine swap pays one probe. Separate from _lock, which must never be
-        # held across a subprocess.
-        self.restate_lock = threading.Lock()
+        # engine swap pays one probe. Private, and never taken outside this
+        # class, so no caller can hold it across a probe of its own. Separate
+        # from _lock, which must never be held across a subprocess.
+        self._restate_lock = threading.Lock()
 
     def set(self, probe: _PlanProbe) -> None:
         with self._lock:
@@ -2114,8 +2127,40 @@ class _PlanProbeStore:
         return (
             failed is not None
             and failed.engine == engine
-            and time.monotonic() - failed.at < _DEVICE_PROBE_FAILURE_TTL_S
+            and time.monotonic() - failed.at < _PLAN_RESTATE_FAILURE_WAIT_S
         )
+
+    def restate(self, restate: _Restate, engine: str) -> None:
+        """Re-read the snapshot with *restate*, whatever binary it answers for now."""
+        with self._restate_lock:
+            probe = self.get()
+            if probe is not None:
+                self._store_restated(probe, restate, engine)
+
+    def restate_if_stale(self, restate: _Restate, engine: str) -> _PlanProbe | None:
+        """The snapshot, re-read with *restate* first when it answers for another binary.
+
+        The staleness and the failure wait are re-checked under the lock, so a
+        burst of stale reads pays one probe and the rest take its answer.
+        """
+        with self._restate_lock:
+            probe = self.get()
+            if probe is None or probe.engine == engine or self.probe_failed_recently(engine):
+                return probe
+            return self._store_restated(probe, restate, engine)
+
+    def _store_restated(self, probe: _PlanProbe, restate: _Restate, engine: str) -> _PlanProbe:
+        """Store *probe* restated, or keep it and hold off re-probing *engine* for a while.
+
+        A probe that raised is not an answer about *engine*, so the snapshot keeps
+        the identity that did answer for it and the failure is recorded instead.
+        """
+        fresh = restate(probe)
+        if fresh is None:
+            self.note_failed_probe(engine)
+            return probe
+        self.set(fresh)
+        return fresh
 
     def clear(self) -> None:
         with self._lock:
@@ -2327,6 +2372,38 @@ def _engine_identity() -> str:
         return _NO_ENGINE_BINARY
 
 
+# The binary one planning pass answers about. A pass reads the snapshot half a
+# dozen times; resolving the identity per read let an engine that landed between
+# two of them size the plan against one snapshot and place it against another.
+_pass_engine: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "lilbee_plan_pass_engine", default=None
+)
+
+
+@contextmanager
+def _one_engine_per_pass() -> Iterator[None]:
+    """Pin the engine identity every snapshot read in this planning pass answers about.
+
+    Re-entrant: a nested pass keeps the outer one's binary, so a pass that calls
+    another still asks about one engine. A snapshot that is stale when the pass
+    opens is restated once, at the first read.
+    """
+    if _pass_engine.get() is not None:
+        yield
+        return
+    token = _pass_engine.set(_engine_identity())
+    try:
+        yield
+    finally:
+        _pass_engine.reset(token)
+
+
+def _pass_engine_identity() -> str:
+    """The engine this read answers about: the pass's binary, or the live one outside a pass."""
+    pinned = _pass_engine.get()
+    return pinned if pinned is not None else _engine_identity()
+
+
 def _probe_engine_devices_and_identity() -> tuple[str, list[FleetDevice], bool]:
     """The engine's devices, tagged with the identity read before the probe ran.
 
@@ -2381,25 +2458,7 @@ def refresh_plan_devices() -> None:
     in the build, not here. A reload asks to look again, so it probes even inside
     the failure wait that holds the read path off.
     """
-    with _plan_probe_store.restate_lock:
-        probe = _plan_probe_store.get()
-        if probe is not None:
-            _store_restated(probe, _engine_identity())
-
-
-def _store_restated(probe: _PlanProbe, engine: str) -> _PlanProbe:
-    """Store *probe* restated, or keep it and hold off re-probing *engine* for a while.
-
-    A probe that raised is not an answer about *engine*, so the snapshot keeps the
-    identity that did answer for it and the failure is recorded instead. Caller
-    holds ``restate_lock``.
-    """
-    fresh = _restated(probe)
-    if fresh is None:
-        _plan_probe_store.note_failed_probe(engine)
-        return probe
-    _plan_probe_store.set(fresh)
-    return fresh
+    _plan_probe_store.restate(_restated, _engine_identity())
 
 
 def _restated(probe: _PlanProbe) -> _PlanProbe | None:
@@ -2411,7 +2470,11 @@ def _restated(probe: _PlanProbe) -> _PlanProbe | None:
         log.debug("Device rediscovery could not run, keeping the previous list: %s", exc)
         return None
     if _structural(devices) == _structural(probe.devices):
-        return replace(probe, engine=engine)
+        # The refusal answer is carried too: an engine that lists only devices
+        # lilbee refuses probes as an empty list, which is structurally the same
+        # as no GPU at all. Keeping the old binary's refusal here would leave the
+        # CPU pin off and let ggml fall back onto the adapter just refused.
+        return replace(probe, engine=engine, engine_devices_all_refused=refused_all)
     log.info(
         "The set of GPUs changed since this fleet was planned (%d device(s) now, %d before); "
         "replanning against the ones that are here.",
@@ -2441,7 +2504,7 @@ def _current_plan_probe() -> _PlanProbe | None:
     probe = _plan_probe_store.get()
     if probe is None:
         return None
-    engine = _engine_identity()
+    engine = _pass_engine_identity()
     return probe if probe.engine == engine else _restate_plan_probe(engine)
 
 
@@ -2453,20 +2516,11 @@ def _restate_plan_probe(engine: str) -> _PlanProbe | None:
     occasionally rather than on every read. A reload restates through
     refresh_plan_devices instead, which probes every time.
 
-    The wait is keyed on the binary's identity, so a binary repaired in place is
-    retried without a reload as soon as its identity changes. A repair that
-    leaves the size and the timestamp untouched keeps the identity that failed,
-    and stays hidden until the wait runs out.
+    The wait is keyed on the binary's identity, which is a digest of its bytes,
+    so a binary repaired in place is retried without a reload as soon as its
+    content changes, whatever its stat fields do.
     """
-    with _plan_probe_store.restate_lock:
-        probe = _plan_probe_store.get()
-        if (
-            probe is None
-            or probe.engine == engine
-            or _plan_probe_store.probe_failed_recently(engine)
-        ):
-            return probe
-        return _store_restated(probe, engine)
+    return _plan_probe_store.restate_if_stale(_restated, engine)
 
 
 def clear_plan_probe() -> None:
@@ -2967,6 +3021,17 @@ def plan_launches(
     devices: list[FleetDevice],
 ) -> FleetPlan:
     """Plan placement for *roles* (``None`` = all configured) and build their launches."""
+    with _one_engine_per_pass():
+        return _planned_launches(roles, binary, by_index, devices)
+
+
+def _planned_launches(
+    roles: tuple[WorkerRole, ...] | None,
+    binary: Path,
+    by_index: dict[int, FleetDevice],
+    devices: list[FleetDevice],
+) -> FleetPlan:
+    """The placement and launches for *roles*, sized and placed against one snapshot."""
     from lilbee.core.config import cfg
 
     unified_budget = _unified_memory_budget(devices)
@@ -3031,6 +3096,7 @@ def plan_all_launches() -> FleetPlan:
     # Put the CUDA-runtime wheels on the process path so the device probe sees the
     # same runtime the servers will, before resolve_devices enumerates GPUs.
     apply_cuda_runtime_env()
-    devices = _plan_devices(binary)
-    by_index = {d.index: d for d in devices}
-    return plan_launches(None, binary, by_index, devices)
+    with _one_engine_per_pass():
+        devices = _plan_devices(binary)
+        by_index = {d.index: d for d in devices}
+        return plan_launches(None, binary, by_index, devices)

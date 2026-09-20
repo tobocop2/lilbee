@@ -272,7 +272,7 @@ class TestAnEngineThatChangesUnderARunningServe:
         assert planning_mod._plan_devices(binary) == []
 
         monkeypatch.setattr(planning_mod, "_resolve_devices_and_refusal", healthy)
-        monkeypatch.setattr(planning_mod, "_DEVICE_PROBE_FAILURE_TTL_S", 0.0)
+        monkeypatch.setattr(planning_mod, "_PLAN_RESTATE_FAILURE_WAIT_S", 0.0)
 
         assert [d.index for d in planning_mod._plan_devices(binary)] == [0, 1]
 
@@ -369,10 +369,49 @@ class TestAnEngineThatChangesUnderARunningServe:
         assert len(planning_mod._plan_devices(binary)) == 2
         assert len(attempts) == 1
 
-        monkeypatch.setattr(planning_mod, "_DEVICE_PROBE_FAILURE_TTL_S", 0.0)
+        monkeypatch.setattr(planning_mod, "_PLAN_RESTATE_FAILURE_WAIT_S", 0.0)
 
         assert len(planning_mod._plan_devices(binary)) == 2
         assert len(attempts) == 2
+
+    def test_the_cpu_pin_follows_the_engine_that_refused_the_cards(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # The stub listed nothing and refused nothing; the real engine lists a
+        # paravirtual adapter lilbee will not plan onto. Both answer with an
+        # empty device list, so a restate that keeps the stub's refusal leaves
+        # the pin off and ggml falls back onto the adapter just refused.
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"")
+        self._engine(monkeypatch, binary)
+        planning_mod.capture_plan_probe()
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
+
+        binary.write_bytes(b"the real engine")
+        monkeypatch.setattr(planning_mod, "_resolve_devices_and_refusal", lambda _b: ([], True))
+
+        assert planning_mod._cpu_pin_when_every_device_was_refused() == ("none",)
+
+    def test_a_planning_pass_answers_about_one_binary(self, monkeypatch, tmp_path) -> None:
+        # A pass reads the snapshot several times. An engine that lands between
+        # two of them must not size the plan against one and place it against
+        # another; the pass asks about the binary it started on.
+        binary = tmp_path / "llama-server"
+        binary.write_bytes(b"the real engine")
+        runs = self._engine(monkeypatch, binary)
+        planning_mod.capture_plan_probe()
+
+        with planning_mod._one_engine_per_pass():
+            pinned = planning_mod._pass_engine_identity()
+            binary.write_bytes(b"a newer engine")
+            with planning_mod._one_engine_per_pass():
+                assert planning_mod._pass_engine_identity() == pinned
+            planning_mod._plan_devices(binary)
+            planning_mod.plan_sizing_budget()
+
+        assert len(runs) == 1
+        assert len(planning_mod._plan_devices(binary)) == 2
+        assert len(runs) == 2
 
     def test_a_second_stale_read_takes_the_first_ones_answer(self, monkeypatch, tmp_path) -> None:
         # A reader that queues behind the restate takes its answer, not another probe.
