@@ -7,8 +7,8 @@ lilbee.config or lilbee.models to avoid circular imports.
 
 from __future__ import annotations
 
-import ntpath
 from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from lilbee.catalog.refs import GGUF_SUFFIX, NATIVE_GGUF_REF_MIN_SLASHES
@@ -41,19 +41,26 @@ OLLAMA_NO_THINKING = "none"
 
 
 def is_native_gguf_ref(raw: str) -> bool:
-    """True when *raw* is a GGUF with the ``<org>/<repo>/<file>.gguf`` shape or a Windows root.
+    """True when *raw* is a GGUF with the ``<org>/<repo>/<file>.gguf`` shape or an absolute path.
 
-    A drive letter or UNC share marks a filesystem path that carries no forward
-    slash, so ``C:\\models\\x.gguf`` classifies like ``/models/x.gguf``.
+    An absolute Windows path carries no forward slash, so ``C:\\models\\x.gguf``
+    classifies like ``/models/x.gguf``. ``PureWindowsPath`` reads Windows roots
+    on a POSIX host and answers the same on every supported Python, and it
+    keeps a drive-relative ``C:models\\x.gguf`` out: the fleet cannot load it.
 
     The suffix check is case-sensitive on purpose: repo extraction
     (:func:`lilbee.catalog.refs.hf_repo_from_ref`) only recognises the
     lowercase ``.gguf`` suffix, and classification must agree with it.
     """
-    windows_root, _ = ntpath.splitdrive(raw)
     return raw.endswith(GGUF_SUFFIX) and (
-        bool(windows_root) or raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
+        PureWindowsPath(raw).is_absolute() or raw.count("/") >= NATIVE_GGUF_REF_MIN_SLASHES
     )
+
+
+def is_loose_model_file(raw: str) -> bool:
+    """True when *raw* is an absolute path to an existing file, loadable without a manifest."""
+    candidate = Path(raw)
+    return candidate.is_absolute() and candidate.exists()
 
 
 def routes_to_native_gguf(raw: str) -> bool:

@@ -18,16 +18,19 @@ import pytest
 from conftest import clean_env
 from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.core.config import Config, cfg
+from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.model_manager import ModelManager
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.modelhub.role_validator import (
-    _UNREGISTERED_ROLE_WARNING,
+    _LOOSE_FILE_ROLE_WARNING,
+    _MISSING_ROLE_WARNING,
     configured_role_refs,
     unregistered_role_refs,
     validate_model_task_assignment,
     warn_unregistered_role_refs,
 )
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
+from lilbee.retrieval.embedder import is_model_installed
 
 _REPO = "Qwen/Qwen3-0.6B-GGUF"
 _FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
@@ -212,7 +215,7 @@ class TestUnregisteredRoleRefsAreReported:
     @pytest.mark.parametrize("ref", ["", "   "])
     def test_warning_renders_an_unset_ref_visibly(self, ref: str) -> None:
         """A blank or whitespace ref keeps its quotes instead of vanishing."""
-        message = _UNREGISTERED_ROLE_WARNING % ("chat_model", ref)
+        message = _MISSING_ROLE_WARNING % ("chat_model", ref)
 
         assert f"chat_model is set to '{ref}'," in message
 
@@ -227,10 +230,10 @@ class TestUnregisteredRoleRefsAreReported:
             warn_unregistered_role_refs(config, ModelRegistry(models_dir))
 
         assert [record.getMessage() for record in caplog.records] == [
-            _UNREGISTERED_ROLE_WARNING % ("vision_model", _MISSING_REF)
+            _MISSING_ROLE_WARNING % ("vision_model", _MISSING_REF)
         ]
 
-    def test_services_construction_reports_it(self, tmp_path: Path) -> None:
+    def test_services_construction_calls_the_role_report(self, tmp_path: Path) -> None:
         """The one call site: every surface builds a container before it serves."""
         from lilbee.app.services import build_services
 
@@ -248,6 +251,61 @@ class TestUnregisteredRoleRefsAreReported:
             build_services(config, provider=mock.MagicMock())
 
         assert warn.call_args.args[0] is config
+
+
+class TestOneDefinitionOfInstalled:
+    """The paint predicate and the startup report read the same install state."""
+
+    def _state(self, tmp_path: Path, ref: str, monkeypatch) -> tuple[bool, InstallState]:
+        """What the model bar paints and what the report sees, for one *ref*."""
+        models_dir = tmp_path / "models"
+        models_dir.mkdir(exist_ok=True)
+        monkeypatch.setattr(cfg, "models_dir", models_dir)
+        return is_model_installed(ref), install_state(ref, ModelRegistry(models_dir))
+
+    def test_a_loose_gguf_reads_as_loadable_on_both(self, tmp_path: Path, monkeypatch) -> None:
+        """A GGUF path outside the registry loads, so nothing paints it missing."""
+        gguf = tmp_path / "MiniMax.gguf"
+        gguf.write_bytes(_BLOB)
+
+        painted, state = self._state(tmp_path, str(gguf), monkeypatch)
+
+        assert painted is True
+        assert state is InstallState.LOOSE_FILE
+
+    def test_an_absent_ref_reads_as_missing_on_both(self, tmp_path: Path, monkeypatch) -> None:
+        painted, state = self._state(tmp_path, _MISSING_REF, monkeypatch)
+
+        assert painted is False
+        assert state is InstallState.MISSING
+
+    def test_a_pulled_model_reads_as_registered_on_both(self, tmp_path: Path, monkeypatch) -> None:
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        _install(models_dir)
+
+        painted, state = self._state(tmp_path, _REF, monkeypatch)
+
+        assert painted is True
+        assert state is InstallState.REGISTERED
+
+    def test_the_loose_file_warning_does_not_prescribe_pulling_the_path(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        """A loadable path gets its own line: pulling that path could never succeed."""
+        gguf = tmp_path / "MiniMax.gguf"
+        gguf.write_bytes(_BLOB)
+        models_dir = tmp_path / "models"
+        models_dir.mkdir()
+        config = _build_config(tmp_path, {"chat_model": str(gguf)})
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.modelhub.role_validator"):
+            warn_unregistered_role_refs(config, ModelRegistry(models_dir))
+
+        assert [record.getMessage() for record in caplog.records] == [
+            _LOOSE_FILE_ROLE_WARNING % ("chat_model", str(gguf))
+        ]
+        assert "The TUI and CLI load it" in caplog.records[0].getMessage()
 
 
 class TestEntryPointParity:
@@ -315,13 +373,17 @@ class TestConfigPatchKeepsEnvModels:
         apply_settings_update(updates, allow_model_roles=False)
 
     def test_patch_leaves_the_env_role_alone(self, tmp_path: Path, monkeypatch) -> None:
+        """The env value outranks a config.toml role, and the patch disturbs neither."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(f'chat_model = "{_MISSING_REF}"\n', encoding="utf-8")
         monkeypatch.setattr(cfg, "data_root", tmp_path)
         monkeypatch.setattr(cfg, "chat_model", _REF)
 
         self._apply(tmp_path, {"num_ctx": 4096})
 
         assert cfg.chat_model == _REF
-        assert "chat_model" not in (tmp_path / "config.toml").read_text(encoding="utf-8")
+        assert f'chat_model = "{_MISSING_REF}"' in toml_path.read_text(encoding="utf-8")
+        assert "num_ctx = 4096" in toml_path.read_text(encoding="utf-8")
 
     def test_patch_refuses_a_role_write(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setattr(cfg, "data_root", tmp_path)

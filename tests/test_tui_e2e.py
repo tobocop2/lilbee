@@ -113,7 +113,7 @@ class TestEmbeddingAvailable:
         assert embedder.embedding_available() is True
 
     def test_resolves_via_registry(self):
-        """When resolve_model_path succeeds, embedding is available."""
+        """When the registry resolves the model, embedding is available."""
         from lilbee.retrieval.embedder import Embedder
 
         mock_provider = mock.MagicMock()
@@ -121,7 +121,7 @@ class TestEmbeddingAvailable:
 
         embedder = Embedder(cfg, mock_provider)
         with mock.patch(
-            "lilbee.providers.engine_params.resolve_model_path",
+            "lilbee.modelhub.registry.ModelRegistry.resolve",
             return_value=cfg.models_dir / "test.gguf",
         ):
             assert embedder.embedding_available() is True

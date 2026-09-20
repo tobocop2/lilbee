@@ -1108,12 +1108,13 @@ class TestModelBar:
         cfg.chat_model = TEST_LOCAL_REF
         cfg.embedding_model = TEST_EMBED_REF
         app = _ModelBarApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            chat_btn = app.query_one("#model-pick-chat", ModelPickerButton)
-            embed_btn = app.query_one("#model-pick-embed", ModelPickerButton)
-            assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
-            assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
+        with mock.patch("lilbee.cli.tui.widgets.model_bar.is_model_installed", return_value=True):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                chat_btn = app.query_one("#model-pick-chat", ModelPickerButton)
+                embed_btn = app.query_one("#model-pick-embed", ModelPickerButton)
+                assert chat_btn.tooltip == msg.MODEL_PICKER_CHAT_TOOLTIP
+                assert embed_btn.tooltip == msg.MODEL_PICKER_EMBED_TOOLTIP
 
 
 class TestCloudProviderLabel:

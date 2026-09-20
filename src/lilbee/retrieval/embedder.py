@@ -5,9 +5,11 @@ import threading
 
 import numpy as np
 
-from lilbee.core.config import Config
+from lilbee.core.config import Config, cfg
 from lilbee.core.vectors import Vector
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+from lilbee.modelhub.install_state import InstallState, install_state
+from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.base import LLMProvider
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref
 from lilbee.retrieval.embedding_profiles import EmbeddingProfile, resolve_embedding_profile
@@ -31,18 +33,12 @@ def _remote_sees_model(ref: ProviderModelRef, provider: LLMProvider) -> bool:
 
 
 def is_model_installed(model: str) -> bool:
-    """True if *model* resolves to a file on this machine.
+    """True if *model* loads from the registry or from a loose GGUF file.
 
     Provider-free by design: paint paths need an installed check that cannot
     build the services container (a cold build eager-starts the worker pool).
     """
-    from lilbee.providers.engine_params import resolve_model_path
-
-    try:
-        resolve_model_path(model)
-    except Exception:
-        return False
-    return True
+    return install_state(model, ModelRegistry(cfg.models_dir)) is not InstallState.MISSING
 
 
 def is_model_available(model: str, provider: LLMProvider) -> bool:

@@ -32,6 +32,7 @@ from lilbee.providers.model_cache import (
     get_available_memory,
     kv_bytes_per_token,
 )
+from lilbee.providers.model_ref import is_loose_model_file
 
 log = logging.getLogger(__name__)
 
@@ -161,10 +162,9 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     except (KeyError, ValueError):
         pass
 
-    candidate = Path(model)
-    if candidate.is_absolute():
-        if candidate.exists():
-            return candidate
+    if is_loose_model_file(model):
+        return Path(model)
+    if Path(model).is_absolute():
         raise ProviderError(
             f"Model file not found: {model}",
             provider="llama-server",

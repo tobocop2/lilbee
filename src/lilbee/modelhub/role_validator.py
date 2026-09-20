@@ -3,12 +3,14 @@
 import logging
 import os
 import sys
+from typing import cast
 
 from lilbee.catalog import CatalogModel, find_pick
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.refs import is_bare_hf_repo
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import Config, cfg
+from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers.model_ref import PROVIDER_PREFIXES, is_native_gguf_ref
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
@@ -129,10 +131,17 @@ def validate_model_task_assignment(field_name: str, ref: str, *, allow_bypass: b
     raise _not_installed(installed_ref)
 
 
-_UNREGISTERED_ROLE_WARNING = (
+_MISSING_ROLE_WARNING = (
     "%s is set to '%s', which the model registry does not hold. No model listing "
     "shows it and the HTTP chat route cannot resolve it. Install a model with "
     "'lilbee model pull <ref>' (or POST /api/models/pull), then set the role to that ref."
+)
+
+_LOOSE_FILE_ROLE_WARNING = (
+    "%s is set to '%s', a GGUF file outside the model registry. The TUI and CLI load it, "
+    "but no model listing shows it and the HTTP chat route cannot resolve it. Install a "
+    "catalog ref with 'lilbee model pull <ref>' (or POST /api/models/pull) to make the "
+    "role routable over HTTP."
 )
 
 
@@ -142,8 +151,7 @@ def configured_role_refs(config: Config) -> dict[str, str]:
     The field set comes from the role registry, so a new role is reported
     without editing this module.
     """
-    refs: dict[str, str] = config.model_dump(include=set(MODEL_ROLE_FIELDS))
-    return refs
+    return cast("dict[str, str]", config.model_dump(include=set(MODEL_ROLE_FIELDS)))
 
 
 def unregistered_role_refs(config: Config, registry: ModelRegistry) -> dict[str, str]:
@@ -155,11 +163,17 @@ def unregistered_role_refs(config: Config, registry: ModelRegistry) -> dict[str,
     return {
         field_name: ref
         for field_name, ref in configured_role_refs(config).items()
-        if _is_registry_ref(ref) and not registry.is_installed(ref)
+        if _is_registry_ref(ref) and install_state(ref, registry) is not InstallState.REGISTERED
     }
 
 
 def warn_unregistered_role_refs(config: Config, registry: ModelRegistry) -> None:
-    """Log one warning per role field of *config* that *registry* does not hold."""
+    """Log one warning per role field of *config* that *registry* does not hold.
+
+    A ref that names a GGUF file on disk gets its own message: it loads, so
+    telling it to pull that path would prescribe a command that cannot run.
+    """
     for field_name, ref in sorted(unregistered_role_refs(config, registry).items()):
-        log.warning(_UNREGISTERED_ROLE_WARNING, field_name, ref)
+        loose = install_state(ref, registry) is InstallState.LOOSE_FILE
+        template = _LOOSE_FILE_ROLE_WARNING if loose else _MISSING_ROLE_WARNING
+        log.warning(template, field_name, ref)

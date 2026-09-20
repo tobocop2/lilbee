@@ -7981,8 +7981,8 @@ async def test_chat_slash_remove_no_args():
             assert "Usage" in mock_notify.call_args[0][0]
 
 
-async def test_chat_slash_remove_unregistered_gguf_reports_not_found(tmp_path):
-    """The registry decides, so /remove refuses a loose GGUF and leaves it on disk."""
+async def test_chat_slash_remove_deletes_an_unregistered_gguf(tmp_path):
+    """One remove call decides, so /remove sweeps a loose GGUF like `lilbee model rm`."""
     from lilbee.cli.tui import messages as msg
     from lilbee.modelhub.model_manager import ModelManager
 
@@ -8009,34 +8009,64 @@ async def test_chat_slash_remove_unregistered_gguf_reports_not_found(tmp_path):
                 await _pilot.pause()
             await _pilot.pause()
 
-    assert mock_notify.call_args.args[0] == msg.CMD_REMOVE_NOT_FOUND.format(name="llama3-8b.gguf")
-    assert stray.exists()
+    assert mock_notify.call_args.args[0] == msg.CMD_REMOVE_SUCCESS.format(name="llama3-8b.gguf")
+    assert not stray.exists()
 
 
 async def test_chat_slash_remove_success():
+    from lilbee.cli.tui import messages as msg
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr:
-            mock_mgr.return_value.model_manager.is_installed.return_value = True
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
             mock_mgr.return_value.model_manager.remove.return_value = True
             app.screen._handle_slash("/remove some-model:latest")
             while app.screen.workers:
                 await _pilot.pause()
             await _pilot.pause()
             mock_mgr.return_value.model_manager.remove.assert_called_once_with("some-model:latest")
+    assert mock_notify.call_args.args[0] == msg.CMD_REMOVE_SUCCESS.format(name="some-model:latest")
 
 
-async def test_chat_slash_remove_failed():
+async def test_chat_slash_remove_reports_not_found_when_nothing_was_removed():
+    """A remove call that deletes nothing is the only "not installed" signal."""
+    from lilbee.cli.tui import messages as msg
+
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr:
-            mock_mgr.return_value.model_manager.is_installed.return_value = True
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
             mock_mgr.return_value.model_manager.remove.return_value = False
             app.screen._handle_slash("/remove some-model:latest")
             while app.screen.workers:
                 await _pilot.pause()
             await _pilot.pause()
             mock_mgr.return_value.model_manager.remove.assert_called_once_with("some-model:latest")
+    expected = msg.CMD_REMOVE_NOT_FOUND.format(name="some-model:latest")
+    assert mock_notify.call_args.args[0] == expected
+
+
+async def test_chat_slash_remove_failed():
+    """A raising remove reports failure, not "not installed"."""
+    from lilbee.cli.tui import messages as msg
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.cli.tui.screens.chat.get_services") as mock_mgr,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            mock_mgr.return_value.model_manager.remove.side_effect = RuntimeError("disk gone")
+            app.screen._handle_slash("/remove some-model:latest")
+            while app.screen.workers:
+                await _pilot.pause()
+            await _pilot.pause()
+    assert mock_notify.call_args.args[0] == msg.CMD_REMOVE_FAILED.format(name="some-model:latest")
 
 
 async def test_cmd_add_error_in_background(tmp_path):
@@ -13220,17 +13250,17 @@ def test_chat_embedding_ready_true_via_provider_list(mock_svc):
         assert _real_embedding_ready(sentinel) is True
 
 
-def test_chat_embedding_ready_true_via_resolve_fallback(mock_svc):
-    """_embedding_ready returns True via resolve_model_path when provider raises.
+def test_chat_embedding_ready_true_via_registry_fallback(mock_svc):
+    """_embedding_ready falls back to the registry when the provider raises.
 
     When provider.list_models raises, the method falls through to the native
-    registry path check. If resolve_model_path succeeds, it returns True.
+    registry check. If the registry resolves the ref, it returns True.
     """
     mock_svc.provider.list_models.side_effect = RuntimeError("no provider")
     cfg.embedding_model = TEST_EMBED_REF
     sentinel = object()
     with patch(
-        "lilbee.providers.engine_params.resolve_model_path",
+        "lilbee.modelhub.registry.ModelRegistry.resolve",
         return_value="/fake/path/to/model.gguf",
     ):
         assert _real_embedding_ready(sentinel) is True

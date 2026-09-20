@@ -178,6 +178,17 @@ class TestWindowsPathParity:
         """The write boundary every entry point shares takes the path unchanged."""
         assert Config(chat_model=raw).chat_model == raw
 
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(r"C:models\MiniMax.gguf", id="drive-relative"),
+            pytest.param(r"C:MiniMax.gguf", id="drive-relative-bare"),
+        ],
+    )
+    def test_a_drive_relative_path_is_not_native(self, raw: str) -> None:
+        """A drive-qualified relative path names no file the fleet can load."""
+        assert is_native_gguf_ref(raw) is False
+
     def test_a_backslash_path_is_not_read_as_a_hugging_face_repo(self) -> None:
         """Repo extraction leaves a drive path alone, so nothing pulls from it."""
         raw = r"C:\Users\u\models\MiniMax.gguf"
