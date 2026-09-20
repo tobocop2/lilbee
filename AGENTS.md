@@ -464,10 +464,38 @@ closure. These rules exist because each one shipped a broken artifact once.
   `${{ inputs.tag }}`, which is how the watcher tells this tag's run from an older one.
 - **A failed build cell is retried once, not forever.** `release-selfheal.yml`
   watches every Release candidate run and reruns the failed cells with
-  `gh run rerun --failed`, which also picks up whatever was skipped behind them.
-  It gives up at `run_attempt` 2, so a real defect surfaces instead of looping.
+  `gh run rerun --failed`, which re-executes the cells that concluded failure or
+  cancelled plus whatever was skipped behind them. It gives up at `run_attempt`
+  2, so a real defect surfaces instead of looping.
   The retry is deliberately blind: matching GitHub's error text to tell a flake
   from a defect is a list that goes stale, and a defect costs one rebuild.
+- **A cell past `timeout-minutes` concludes `cancelled`, and so does the run.**
+  A failure-only filter reads that cell as healthy, and the run's own conclusion
+  cannot tell a time limit from a person cancelling, because one timed-out cell
+  concludes the whole run `cancelled`. The reason lives on the job: the runner
+  writes a check-run annotation naming the limit it exceeded.
+  `scripts/release_dropped_cells.sh` reads it and is the one definition of a
+  dropped cell, called by both `release_selfheal.sh` and `release_watch.sh` so
+  they cannot disagree. A cancelled cell with no such annotation triggers no
+  heal, which is what a person cancelling a release expects; the rerun itself is
+  per run, so one timed-out cell reruns every cancelled cell beside it. An
+  annotation list that cannot be read is unknown, not clean. The script names
+  the job id and exits non-zero, so `release_selfheal.sh` stops instead of
+  reporting a clean run: a clean report there is the failure this gate removes.
+  `release_watch.sh` falls back to watching the legs. Its exit code follows the
+  legs, so an unreadable list there can still exit 0 with every leg green.
+  This is the one place a GitHub string is matched. The blind-retry rule above
+  still holds: there the text would only refine a decision whose wrong answer
+  costs one rebuild. Here it is the only signal that separates a cell past its
+  limit from a release a person cancelled.
+- **A dropped soft cell must not gate the cascade.** `continue-on-error` only
+  converts a failure into a success for a dependent's `needs` check, so a
+  cancelled soft cell skips `attach-prerelease` and every dispatch job behind
+  it. `attach-prerelease` therefore carries `!cancelled()`, keeps its build
+  `needs` for ordering, and calls `scripts/assert_required_binaries.sh`, which
+  derives the required assets from the cells in `release.yml` that carry no
+  `soft: true`. A new required cell needs nothing added: drop `soft` and the
+  gate picks it up.
 - **A failed publish leg is retried once too.** `release-watch.yml` runs
   `scripts/release_watch.sh` after every Release candidate, waits for the seven
   dispatched legs plus `verify-release` (which fires on the candidate's
@@ -492,6 +520,19 @@ closure. These rules exist because each one shipped a broken artifact once.
   Every dispatch job in `release-candidate.yml` shares one `if` (push +
   `refs/tags/v`), which is what makes `--failed` safe to point at the run. A new
   job with a narrower `if` breaks that, and self-heal would fire it.
+  `attach-prerelease` adds `!cancelled()`, a green `resolve` and a
+  not-`failure` result for each build workflow to that shared condition, so on a
+  tag build it skips when a person cancelled the run, which self-heal leaves
+  alone, when `resolve` failed, or when a build workflow failed outright.
+  `!cancelled()` alone is run-scoped: it says nothing about what any `needs`
+  concluded, which is why each build workflow is named.
+- **A dispatch job keeps the build workflow it ships assets from in its
+  `needs`.** `attach-prerelease` tolerates a dropped cell so the release carries
+  whatever did build, but a dispatch must not: the publisher it starts skips the
+  asset that never landed and still concludes `success`, and `gh run rerun
+  --failed` re-runs nothing that succeeded, so the channel stays one release
+  behind with nothing red to show it. Skipping instead is what gets the dispatch
+  re-issued on the attempt that heals the cell.
 - **A new gate must be proven to fail.** Run it against the input it is supposed to
   reject before trusting it. A loader check that counted glob matches passed a bundle
   with no `llama-server` in it, and one that ignored `ldd`'s exit status read "not a
@@ -519,6 +560,13 @@ closure. These rules exist because each one shipped a broken artifact once.
   the build scripts, so editing a build script busts it. Tag-ref cache saves are
   not restorable by later runs, so `warm-engine-cache.yml` builds the matrix on
   `main`; release runs restore. Bust manually by touching a build script.
+- **The Nuitka object cache is keyed on the dependency set, not on `uv.lock` as
+  it stands.** `scripts/release.sh` rewrites lilbee's own version inside the
+  lock on every release commit, so hashing the file directly rotates the key
+  every release and the Windows cells compile cold. The Windows cells run
+  `scripts/strip_own_version.sh` first and hash its output; the script fails
+  unless it drops exactly one line, so a lock whose shape changed breaks the
+  build instead of silently keying on everything.
 
 ## Agent Integration
 

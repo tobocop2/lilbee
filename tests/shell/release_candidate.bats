@@ -1,8 +1,10 @@
 #!/usr/bin/env bats
-# The release-candidate resolve shell against stubbed git and gh.
+# The release-candidate resolve shell against stubbed git and gh, plus the job
+# graph the dispatch cascade depends on.
 
 setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
+  CANDIDATE="${REPO_ROOT}/.github/workflows/release-candidate.yml"
   FIXTURE="${BATS_TEST_TMPDIR}/fx"
   mkdir -p "${FIXTURE}/bin" "${FIXTURE}/releases" "${FIXTURE}/release_body"
   : > "${FIXTURE}/actions.log"
@@ -151,4 +153,29 @@ prerelease() {  # tag version repo [from]
   run prerelease v1.2.3 1.2.3 tobocop2/lilbee
   [ "$status" -eq 0 ]
   grep -q 'Release candidate building' "${FIXTURE}/created_notes"
+}
+
+needs_of() {  # job
+  yq -r "(.jobs.\"$1\".needs // [])[]" "${CANDIDATE}"
+}
+
+@test "every dispatch job is gated on the build workflow it ships assets from" {
+  # A dispatch that outruns its assets starts a publisher that skips the
+  # missing one and still concludes success, which no rerun corrects. Only the
+  # implicit success() on a `needs` entry makes the dispatch skip instead.
+  # attach-prerelease is excluded from the walk: it is the one job that runs on
+  # purpose with a cell missing, so reaching a build workflow through it gates
+  # nothing.
+  local jobs job direct reach hop
+  jobs=$(yq -r '.jobs | keys | .[] | select(test("^dispatch-"))' "${CANDIDATE}")
+  [ "$(echo "${jobs}" | wc -l)" -eq 5 ]
+  while IFS= read -r job; do
+    direct=$(echo "$(needs_of "${job}")" | grep -v '^attach-prerelease$' || true)
+    reach="${direct}"
+    while IFS= read -r hop; do
+      [ -n "${hop}" ] && reach="${reach}"$'\n'"$(needs_of "${hop}")"
+    done <<< "${direct}"
+    echo "${job} is gated by: ${reach}" >&2
+    echo "${reach}" | grep -q '^build-'
+  done <<< "${jobs}"
 }

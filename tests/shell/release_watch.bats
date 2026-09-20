@@ -3,6 +3,7 @@
 # under $FIXTURE/runs, so a scenario is one jq edit away.
 
 setup() {
+  load helpers
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   SCRIPT="${REPO_ROOT}/scripts/release_watch.sh"
   TAG="v0.6.90b999"
@@ -16,7 +17,7 @@ setup() {
   # The release candidate that dispatched the legs: green, nothing to heal.
   echo 1 > "${FIXTURE}/attempts/900"
   echo success > "${FIXTURE}/conclusions/900"
-  : > "${FIXTURE}/rc_failed"          # job-name lines; empty means no failed cells
+  rc_jobs "build-binaries (ubuntu):success"
 
   cp "${BATS_TEST_DIRNAME}/stubs/gh" "${FIXTURE}/bin/gh"
   chmod +x "${FIXTURE}/bin/gh"
@@ -138,7 +139,7 @@ summary() { cat "${FIXTURE}/summary.md"; }
 }
 
 @test "while the candidate is still healing the watcher defers and changes nothing" {
-  printf 'cell-a\ncell-b\ncell-c\n' > "${FIXTURE}/rc_failed"
+  rc_jobs "cell-a:failure" "cell-b:failure" "cell-c:failure"
   set_conclusion publish-packages.yml failure
   run watch
   [ "$status" -eq 0 ]
@@ -147,9 +148,30 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [[ "$output" == *"release-selfheal owns this"* ]]
 }
 
+@test "a candidate cell cancelled by its own time limit counts as a failed cell" {
+  rc_jobs "build-binaries (compat-windows):cancelled:timeout"
+  set_conclusion publish-packages.yml failure
+  run watch
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  run summary
+  [[ "$output" == *"release-selfheal owns this"* ]]
+  [[ "$output" == *"1 dropped cell(s)"* ]]
+}
+
+@test "a candidate whose annotations cannot be read is not read as clean" {
+  rc_jobs "build-binaries (compat-windows):cancelled:timeout"
+  touch "${FIXTURE}/fail_annotations"
+  run watch
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"could not read candidate"* ]]
+  run summary
+  [[ "$output" != *"release-selfheal owns this"* ]]
+}
+
 @test "a candidate already at the attempt bound is watched rather than deferred to" {
   echo 2 > "${FIXTURE}/attempts/900"
-  printf 'cell-a\n' > "${FIXTURE}/rc_failed"
+  rc_jobs "cell-a:failure"
   run watch
   [ "$status" -eq 0 ]
 }

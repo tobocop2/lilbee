@@ -65,7 +65,7 @@ settle() {  # leg-file  state  reason
 defer_to_selfheal() {
   [ -n "${RC_RUN_ID}" ] || return 1
 
-  local rc rc_attempt rc_conclusion rc_failed
+  local rc rc_attempt rc_conclusion rc_cells rc_failed
   rc=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}" \
          -q '"\(.run_attempt) \(.conclusion)"') || {
     note "could not read candidate ${RC_RUN_ID}; watching the legs rather than assuming a heal"
@@ -73,28 +73,28 @@ defer_to_selfheal() {
   }
   rc_attempt="${rc%% *}"
   rc_conclusion="${rc#* }"
-  # No --paginate: the -q count runs per page and returns "0\n0". per_page=100
-  # covers the candidate's job count.
-  rc_failed=$(gh api "repos/${REPO}/actions/runs/${RC_RUN_ID}/jobs?per_page=100" \
-                -q '[.jobs[] | select(.conclusion == "failure")] | length') || {
+  # One definition of a dropped cell, shared with scripts/release_selfheal.sh.
+  rc_cells=$(RUN_ID="${RC_RUN_ID}" REPO="${REPO}" \
+               bash "$(dirname "$0")/release_dropped_cells.sh") || {
     note "could not read candidate ${RC_RUN_ID} jobs; watching the legs"
     return 1
   }
+  rc_failed=$(printf '%s' "${rc_cells}" | grep -c .)
 
   if [ "${rc_conclusion}" = "success" ] && [ "${rc_failed:-0}" -eq 0 ]; then
     return 1
   fi
   if [ "${rc_attempt:-1}" -lt "${MAX_ATTEMPTS}" ]; then
-    note "candidate ${RC_RUN_ID} concluded ${rc_conclusion} with ${rc_failed} failed cell(s) on attempt ${rc_attempt}."
+    note "candidate ${RC_RUN_ID} concluded ${rc_conclusion} with ${rc_failed} dropped cell(s) on attempt ${rc_attempt}."
     note "release-selfheal owns this; its rerun starts a fresh watch. Nothing to do."
     {
       echo "## Release watch ${TAG}"
       echo
-      echo "release-selfheal owns this candidate: it concluded ${rc_conclusion} with ${rc_failed} failed cell(s) on attempt ${rc_attempt}."
+      echo "release-selfheal owns this candidate: it concluded ${rc_conclusion} with ${rc_failed} dropped cell(s) on attempt ${rc_attempt}."
     } >> "${SUMMARY}"
     return 0
   fi
-  note "candidate ${RC_RUN_ID} still has ${rc_failed} failed cell(s) at attempt ${rc_attempt}; watching the legs that did dispatch."
+  note "candidate ${RC_RUN_ID} still has ${rc_failed} dropped cell(s) at attempt ${rc_attempt}; watching the legs that did dispatch."
   return 1
 }
 
