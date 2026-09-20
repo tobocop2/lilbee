@@ -660,6 +660,24 @@ def _default_known_models_mock():
     return cache
 
 
+def clean_env(tmp_path: Path | None = None) -> dict[str, str]:
+    """Return os.environ with all LILBEE_* vars removed.
+
+    If tmp_path is given, sets LILBEE_DATA to it so no existing config.toml
+    is accidentally picked up. Sets ``LILBEE_SKIP_MODEL_TASK_VALIDATION=1``
+    so tests using placeholder model names don't trip the per-role
+    catalog-task validator; pop it explicitly to exercise that validator.
+
+    The ambient environment is kept because the platform data directory
+    resolves through it, and dropping it leaves Windows with no home directory.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith("LILBEE_")}
+    env["LILBEE_SKIP_MODEL_TASK_VALIDATION"] = "1"
+    if tmp_path is not None:
+        env["LILBEE_DATA"] = str(tmp_path)
+    return env
+
+
 def make_citation(
     wiki_source: str = "wiki/summaries/doc.md",
     source_filename: str = "doc.md",

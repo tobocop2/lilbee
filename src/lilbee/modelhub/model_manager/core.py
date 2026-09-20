@@ -150,13 +150,8 @@ class ModelManager:
         return self._is_remote(model)
 
     def _is_native(self, model: str) -> bool:
-        if self._registry.is_installed(model):
-            return True
-        try:
-            validate_path_within(self._models_dir / model, self._models_dir)
-        except ValueError:
-            return False
-        return (self._models_dir / model).is_file()
+        """True when the manifest registry holds *model*."""
+        return self._registry.is_installed(model)
 
     def _is_remote(self, model: str) -> bool:
         return model in self.list_installed(ModelSource.REMOTE)

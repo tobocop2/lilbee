@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import pytest
 
+from lilbee.catalog.refs import hf_repo_from_ref
+from lilbee.core.config import Config
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.providers.model_ref import (
     format_remote_ref,
+    is_native_gguf_ref,
     parse_model_ref,
     routes_to_native_gguf,
     translate_options,
@@ -15,6 +18,15 @@ from lilbee.providers.model_ref import (
 
 # Canonical native HF ref for tests that need a local model.
 _LOCAL_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
+
+# One local GGUF file, spelled for each platform. The Windows spellings must
+# classify like the POSIX one.
+_POSIX_GGUF_PATH = "/home/u/models/MiniMax.gguf"
+_WINDOWS_GGUF_PATHS = [
+    pytest.param(r"C:\Users\u\models\MiniMax.gguf", id="drive-letter-backslash"),
+    pytest.param("C:/Users/u/models/MiniMax.gguf", id="drive-letter-forward-slash"),
+    pytest.param(r"\\fileserver\share\models\MiniMax.gguf", id="unc-share"),
+]
 
 
 class TestParseModelRef:
@@ -50,8 +62,6 @@ class TestParseModelRef:
         assert ref.provider == "ollama"
 
     def test_native_gguf_shape_check(self) -> None:
-        from lilbee.providers.model_ref import is_native_gguf_ref
-
         assert is_native_gguf_ref("openai/Repo-GGUF/file.gguf") is True
         # Case-sensitive on purpose: hf_repo_from_ref only matches ".gguf".
         assert is_native_gguf_ref("openai/Repo-GGUF/sub/file.GGUF") is False
@@ -142,6 +152,71 @@ class TestRoutesToNativeGguf:
 
     def test_non_gguf_ref_does_not_route_native(self) -> None:
         assert routes_to_native_gguf("openai/gpt-4o") is False
+
+
+def _classification(raw: str) -> tuple[bool, bool, str, bool]:
+    """Every verdict the classifier reaches for *raw*, as one comparable tuple."""
+    ref = parse_model_ref(raw)
+    return (
+        is_native_gguf_ref(raw),
+        routes_to_native_gguf(raw),
+        ref.provider,
+        ref.name == raw,
+    )
+
+
+class TestWindowsPathParity:
+    """A Windows absolute GGUF path classifies like its POSIX equivalent."""
+
+    @pytest.mark.parametrize("raw", _WINDOWS_GGUF_PATHS)
+    def test_windows_path_classifies_like_the_posix_path(self, raw: str) -> None:
+        """Asserted against the POSIX verdict, not a literal, so the two cannot drift."""
+        assert _classification(raw) == _classification(_POSIX_GGUF_PATH)
+
+    @pytest.mark.parametrize("raw", _WINDOWS_GGUF_PATHS)
+    def test_config_accepts_a_windows_chat_model(self, raw: str) -> None:
+        """The write boundary every entry point shares takes the path unchanged."""
+        assert Config(chat_model=raw).chat_model == raw
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            pytest.param(r"C:models\MiniMax.gguf", id="drive-relative"),
+            pytest.param(r"C:MiniMax.gguf", id="drive-relative-bare"),
+        ],
+    )
+    def test_a_drive_relative_path_is_not_native(self, raw: str) -> None:
+        """A drive-qualified relative path names no file the fleet can load."""
+        assert is_native_gguf_ref(raw) is False
+
+    def test_a_backslash_path_is_not_read_as_a_hugging_face_repo(self) -> None:
+        """Repo extraction leaves a drive path alone, so nothing pulls from it."""
+        raw = r"C:\Users\u\models\MiniMax.gguf"
+        assert hf_repo_from_ref(raw) == raw
+
+    @pytest.mark.parametrize(
+        ("raw", "routes_native"),
+        [
+            pytest.param(_LOCAL_REF, True, id="hf-native-ref"),
+            pytest.param("openai/gpt-4o", False, id="api-provider-ref"),
+            pytest.param(
+                "lm_studio/TheBloke/phi-2-GGUF/phi-2.Q4_K_M.gguf",
+                False,
+                id="local-server-gguf-id",
+            ),
+        ],
+    )
+    def test_the_windows_spelling_does_not_move_other_refs(
+        self, raw: str, routes_native: bool
+    ) -> None:
+        """The HF shape rule and the local-server exemption keep their verdicts."""
+        assert routes_to_native_gguf(raw) is routes_native
+
+    def test_a_drive_letter_after_a_provider_prefix_is_not_a_root(self) -> None:
+        """Only a drive letter that anchors the ref counts, so a prefixed id keeps its provider."""
+        raw = r"lm_studio/C:\models\phi-2.gguf"
+        assert is_native_gguf_ref(raw) is False
+        assert parse_model_ref(raw).provider == "lm_studio"
 
 
 class TestWithConfiguredRemoteChat:

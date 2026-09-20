@@ -1286,18 +1286,14 @@ class ChatScreen(Screen[None]):
     @work(thread=True)
     def _run_remove_model(self, name: str) -> None:
         mgr = get_services().model_manager
-        if not mgr.is_installed(name):
-            call_from_thread(
-                self, self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
-            )
-            return
         try:
-            removed = mgr.remove(name)
-            if removed:
+            # The remove call is the only check: a pre-check would answer
+            # "installed?" a second way and disagree with `lilbee model rm`.
+            if mgr.remove(name):
                 call_from_thread(self, self.notify, msg.CMD_REMOVE_SUCCESS.format(name=name))
             else:
                 call_from_thread(
-                    self, self.notify, msg.CMD_REMOVE_FAILED.format(name=name), severity="error"
+                    self, self.notify, msg.CMD_REMOVE_NOT_FOUND.format(name=name), severity="error"
                 )
         except Exception:
             log.warning("Remove failed for %s", name, exc_info=True)
