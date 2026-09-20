@@ -135,6 +135,18 @@ class SdkLLMProvider(LLMProvider):
         to a character estimate (see LilbeeTokenizerBackend)."""
         raise NotImplementedError("SDK backends have no local tokenizer for chunk sizing")
 
+    def count_chat_prompt_tokens(
+        self,
+        messages: list[ChatMessage],
+        *,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> int:
+        """Cloud SDK backends render no prompt locally, so an exact count is unavailable."""
+        raise NotImplementedError("SDK backends have no tokenizer for chat prompt counts")
+
     @overload
     def chat(
         self,

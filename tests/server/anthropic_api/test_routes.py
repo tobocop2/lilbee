@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Iterator
 from typing import Any
 from unittest.mock import MagicMock
@@ -14,7 +15,8 @@ from litestar.testing import AsyncTestClient
 from lilbee.app.services import set_services
 from lilbee.providers.base import ChatResult, FinishReason, ToolCall
 from lilbee.server import auth as _auth_mod
-from lilbee.server.anthropic_api.routes import anthropic_router
+from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_router
+from lilbee.server.chat_dispatch.canonical import TokenCountAccuracy
 from lilbee.server.chat_dispatch.concurrency import chat_gate
 
 INSTALLED_REF = "vendor/Model-GGUF/model-Q4.gguf"
@@ -755,3 +757,197 @@ class TestReasoningCapOnRoute:
         )
         assert text == "answer"
         assert services_with_chat_model.provider.chat.call_count == 1
+
+
+COUNT_PATH = "/v1/messages/count_tokens"
+_TOOLS = [
+    {
+        "name": "search",
+        "description": "Search the corpus",
+        "input_schema": {"type": "object", "properties": {"q": {"type": "string"}}},
+    }
+]
+
+
+def _count_body(**overrides) -> dict[str, Any]:
+    """A count_tokens body: the Anthropic contract carries no ``max_tokens``."""
+    body: dict[str, Any] = {
+        "model": INSTALLED_REF,
+        "messages": [{"role": "user", "content": "how many tokens is this"}],
+    }
+    body.update(overrides)
+    return body
+
+
+def _word_tokenizer(provider: MagicMock) -> None:
+    """Stand in for the engine: count the words of the prompt parts it is handed."""
+
+    def _count(messages, *, options=None, model=None, tools=None, tool_choice=None) -> int:
+        return len(json.dumps([messages, tools]).split())
+
+    provider.count_chat_prompt_tokens.side_effect = _count
+
+
+async def _count(body: dict[str, Any]) -> int:
+    async with AsyncTestClient(_build_app()) as client:
+        resp = await client.post(COUNT_PATH, json=body, headers=_h())
+    assert resp.status_code == 200, resp.text
+    return int(resp.json()["input_tokens"])
+
+
+class TestCountTokens:
+    async def test_returns_the_count_the_engine_reported(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The body carries the engine's own number, not a count derived locally."""
+        provider = services_with_chat_model.provider
+        provider.count_chat_prompt_tokens.return_value = 4242
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 200
+        assert resp.json() == {"input_tokens": 4242}
+        counted = provider.count_chat_prompt_tokens.call_args.kwargs
+        assert "how many tokens is this" in json.dumps(counted["messages"])
+        assert counted["model"] == INSTALLED_REF
+
+    async def test_a_tool_request_is_counted_on_a_model_without_tool_support(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Claude Code sends tools every turn; counting them runs none of them."""
+        _word_tokenizer(services_with_chat_model.provider)
+        assert services_with_chat_model.provider.supports_tools.return_value is False
+
+        without = await _count(_count_body())
+        with_tools = await _count(_count_body(tools=_TOOLS))
+
+        assert with_tools > without
+        schemas = services_with_chat_model.provider.count_chat_prompt_tokens.call_args.kwargs
+        assert schemas["tools"][0]["function"]["name"] == "search"
+
+    async def test_system_prompt_is_counted(self, services_with_chat_model, _auth_token):
+        _word_tokenizer(services_with_chat_model.provider)
+        without = await _count(_count_body())
+        with_system = await _count(_count_body(system="You are a careful assistant."))
+        assert with_system > without
+
+    async def test_a_bad_credential_is_rejected_exactly_as_on_messages(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Auth is the sibling's own answer, so the two routes cannot drift apart."""
+        bad = {"Authorization": "Bearer not-the-session-token"}
+        async with AsyncTestClient(_build_app()) as client:
+            sibling = await client.post("/v1/messages", json=_body(), headers=bad)
+            counted = await client.post(COUNT_PATH, json=_count_body(), headers=bad)
+        assert counted.status_code == sibling.status_code
+        assert counted.json() == sibling.json()
+
+    async def test_unreachable_engine_returns_the_backend_envelope(
+        self, services_with_chat_model, _auth_token
+    ):
+        from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = ProviderError(
+            "connection refused to 127.0.0.1:41233", kind=ProviderErrorKind.CONNECTION
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 503
+        assert resp.json()["error"]["type"] == "api_error"
+        assert "127.0.0.1" not in resp.json()["error"]["message"]
+
+    async def test_a_remote_model_is_estimated_rather_than_rejected(
+        self, services_with_chat_model, _auth_token
+    ):
+        """A remotely served model has no tokenizer, and an error would break /context."""
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        assert await _count(_count_body()) > 0
+
+    async def test_a_measured_count_is_marked_exact(self, services_with_chat_model, _auth_token):
+        """A client budgeting context has to tell a measured number from a guess."""
+        services_with_chat_model.provider.count_chat_prompt_tokens.return_value = 4242
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[COUNT_ACCURACY_HEADER] == TokenCountAccuracy.EXACT
+
+    async def test_an_estimated_count_is_marked_estimated(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The fallback number is a guess, and the answer says so rather than passing as exact."""
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 200
+        assert resp.headers[COUNT_ACCURACY_HEADER] == TokenCountAccuracy.ESTIMATED
+
+    async def test_the_marking_leaves_the_response_body_alone(
+        self, services_with_chat_model, _auth_token
+    ):
+        """Anthropic documents ``input_tokens``, so neither arm may add a sibling field."""
+        provider = services_with_chat_model.provider
+        async with AsyncTestClient(_build_app()) as client:
+            provider.count_chat_prompt_tokens.return_value = 4242
+            exact = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+            provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+            estimated = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+
+        assert exact.json()["input_tokens"] != estimated.json()["input_tokens"]
+        assert exact.json().keys() == {"input_tokens"}
+        digits = re.compile(rb"\d+")
+        assert digits.sub(b"N", exact.content) == digits.sub(b"N", estimated.content)
+
+    async def test_unclassified_engine_failure_is_500_api_error(
+        self, services_with_chat_model, _auth_token
+    ):
+        services_with_chat_model.provider.count_chat_prompt_tokens.side_effect = RuntimeError(
+            "boom"
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=_count_body(), headers=_h())
+        assert resp.status_code == 500
+        assert resp.json()["error"]["type"] == "api_error"
+
+    async def test_unknown_model_is_404_not_found_error(
+        self, services_with_chat_model, _auth_token
+    ):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                COUNT_PATH, json=_count_body(model="nope/missing"), headers=_h()
+            )
+        assert resp.status_code == 404
+        assert resp.json()["error"]["type"] == "not_found_error"
+
+    async def test_image_content_is_400(self, services_with_chat_model, _auth_token):
+        body = _count_body(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [{"type": "image", "source": {"type": "base64", "data": "x"}}],
+                }
+            ]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json=body, headers=_h())
+        assert resp.status_code == 400
+        assert "Image content" in resp.json()["error"]["message"]
+
+    async def test_missing_messages_is_400_envelope(self, services_with_chat_model, _auth_token):
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(COUNT_PATH, json={"model": INSTALLED_REF}, headers=_h())
+        assert resp.status_code == 400
+        assert resp.json()["error"]["type"] == "invalid_request_error"
+        assert "messages" in resp.json()["error"]["message"]
+
+    async def test_thinking_off_reaches_the_count_as_it_reaches_the_chat_call(
+        self, services_with_chat_model, _auth_token, monkeypatch
+    ):
+        """The template renders an empty thinking block, so the count must ask for it too."""
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import ReasoningMode
+
+        monkeypatch.setattr(cfg, "messages_reasoning", ReasoningMode.OFF)
+        services_with_chat_model.provider.count_chat_prompt_tokens.return_value = 7
+        await _count(_count_body())
+
+        options = services_with_chat_model.provider.count_chat_prompt_tokens.call_args.kwargs
+        assert options["options"] == {"think": False}

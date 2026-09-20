@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from itertools import pairwise
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -28,9 +30,11 @@ from lilbee.server.chat_dispatch.canonical import (
     MessageDelta,
     MessageStart,
     MessageStop,
+    PromptTokenCount,
     StopReason,
     TextBlock,
     TextDelta,
+    TokenCountAccuracy,
     ToolResultBlock,
     ToolUseBlock,
     ToolUseDelta,
@@ -38,8 +42,12 @@ from lilbee.server.chat_dispatch.canonical import (
 from lilbee.server.chat_dispatch.dispatch import (
     ModelDoesNotSupportToolsError,
     ModelNotFoundError,
+    _provider_chat_kwargs,
+    count_request_tokens,
     dispatch_chat,
     dispatch_chat_stream,
+    preflight_chat_request,
+    resolve_served_model,
 )
 
 
@@ -496,15 +504,11 @@ class TestConfiguredModelPreflight:
         services_with_model.provider.chat.assert_not_called()
 
     def test_configured_local_model_passes_preflight(self, services_with_model) -> None:
-        from lilbee.server.chat_dispatch.dispatch import preflight_chat_request
-
         assert preflight_chat_request(_req()) == "vendor/model::Q4"
 
     def test_remote_ref_differing_from_configured_passes_preflight(
         self, services_with_model
     ) -> None:
-        from lilbee.server.chat_dispatch.dispatch import preflight_chat_request
-
         assert preflight_chat_request(_req(model="ollama/gemma4:26b")) == "ollama/gemma4:26b"
 
     async def test_stream_rejects_not_configured_model_before_yielding(
@@ -862,3 +866,328 @@ class TestDispatchChatStreamSyncProvider:
         kinds = [type(e).__name__ for e in events]
         assert kinds == ["MessageStart", "MessageDelta", "MessageStop"]
         assert stream.closed is True
+
+
+# One turn of a Claude Code conversation: a system prompt, three messages, two
+# tool schemas. Each arm's number is llama-server's own ``usage.prompt_tokens``
+# for the rendered prompt, measured on Qwen3-0.6B-Q8_0, and pins the direction
+# of the estimate rather than its value.
+_ENGINE_SYSTEM = (
+    "You are Claude Code, Anthropic's official CLI for Claude.\n\n"
+    "You are an interactive CLI tool that helps users with software engineering tasks.\n"
+    "Use the instructions below and the tools available to you.\n\n"
+    "IMPORTANT: Refuse to write code that may be used maliciously.\n"
+)
+_ENGINE_MESSAGES = [
+    CanonicalMessage(
+        role="user",
+        content=[
+            TextBlock(
+                text="Read the config file and tell me what the chunk size is.\nThen explain why."
+            )
+        ],
+    ),
+    CanonicalMessage(role="assistant", content=[TextBlock(text="I'll read the file.")]),
+    CanonicalMessage(role="user", content=[TextBlock(text="go ahead")]),
+]
+_ENGINE_TOOLS = [
+    CanonicalTool(
+        name="Read",
+        description="Reads a file from the local filesystem.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "file_path": {"type": "string", "description": "The absolute path to the file"},
+                "limit": {"type": "integer", "description": "The number of lines to read"},
+            },
+            "required": ["file_path"],
+        },
+    ),
+    CanonicalTool(
+        name="Bash",
+        description="Executes a bash command and returns its output.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "The command to execute"},
+                "timeout": {"type": "number", "description": "Timeout in ms"},
+            },
+            "required": ["command"],
+        },
+    ),
+]
+_MEASURED_PROMPT_TOKENS = [
+    ({}, 43),
+    ({"system": _ENGINE_SYSTEM}, 100),
+    ({"tools": _ENGINE_TOOLS}, 302),
+    ({"system": _ENGINE_SYSTEM, "tools": _ENGINE_TOOLS}, 354),
+]
+_ONE_TURN = [CanonicalMessage(role="user", content=[TextBlock(text="hi")])]
+# The same measurement for the cases the template's fixed tool preamble
+# dominates: one short turn and one schema, with and without a forced call.
+_SMALL_TOOL = CanonicalTool(
+    name="Read",
+    description="Reads a file.",
+    input_schema={"type": "object", "properties": {"p": {"type": "string"}}, "required": ["p"]},
+)
+_MEASURED_TOOL_TOKENS = [
+    pytest.param(_ENGINE_TOOLS[0], None, 182, id="one-schema"),
+    pytest.param(_SMALL_TOOL, CanonicalToolChoice(mode="tool", tool_name="Read"), 145, id="forced"),
+]
+# Input that tokenizes at roughly one token per character or per UTF-8 byte. A
+# chars-per-token average reads these short by up to three times, so they pin
+# the direction of the fallback against any return to a ratio. Same instrument.
+_DENSE_DIGITS = " ".join("0123456789" * 40)
+_DENSE_IDS = "aG3kZpQ9xVb2Lm7TyRc0" * 40
+_DENSE_CODE = "\n".join(f"    x{i} = {i}" for i in range(200))
+_DENSE_JSON = '{ "a" : 1 , "b" : 2 , "c" : 3 }\n' * 40
+_DENSE_CJK = "𠀀𠀁𠀂𠀃𠀄" * 40
+_DENSE_EMOJI = "😀🧑‍🔬🚀🦄🌍" * 40
+_MEASURED_DENSE_TOKENS = [
+    pytest.param(_DENSE_DIGITS, 807, id="spaced-digits"),
+    pytest.param(_DENSE_IDS, 768, id="random-ids"),
+    pytest.param(_DENSE_CODE, 1987, id="newline-dense-code"),
+    pytest.param(_DENSE_JSON, 888, id="pretty-printed-json"),
+    pytest.param(_DENSE_CJK, 608, id="rare-cjk"),
+    pytest.param(_DENSE_EMOJI, 328, id="emoji"),
+]
+# The same measurement on SmolLM3-3B-Q4_K_M, whose template substitutes a fixed
+# system block of about 215 tokens when the request carries none. Every arm here
+# holds the request text near empty, so the template rather than the input
+# decides the count, which is the case a byte count of the request cannot see.
+_MINIMAL_TOOL = CanonicalTool(name="a", description="", input_schema={})
+_BIG_TOOLS = [
+    CanonicalTool(
+        name=f"Tool{i}",
+        description="Reads a file from the local filesystem and returns its text.",
+        input_schema={
+            "type": "object",
+            "properties": {
+                f"field_{n}": {
+                    "type": "string",
+                    "description": (
+                        "A parameter documented at the length a real tool documents one."
+                    ),
+                }
+                for n in range(8)
+            },
+            "required": ["field_0"],
+        },
+    )
+    for i in range(4)
+]
+_MANY_TURNS = [
+    CanonicalMessage(role="user" if i % 2 == 0 else "assistant", content=[TextBlock(text=str(i))])
+    for i in range(32)
+]
+_MEASURED_TEMPLATE_TOKENS = [
+    pytest.param({"messages": [CanonicalMessage(role="user", content=[])]}, 248, id="empty-turn"),
+    pytest.param({"messages": _ONE_TURN}, 249, id="one-short-turn"),
+    pytest.param({"messages": _ONE_TURN, "tools": [_MINIMAL_TOOL]}, 354, id="minimal-tool"),
+    pytest.param({"messages": _ONE_TURN, "tools": [_MINIMAL_TOOL] * 8}, 529, id="eight-tools"),
+    pytest.param({"messages": _ONE_TURN, "tools": _BIG_TOOLS}, 1445, id="four-big-schemas"),
+    pytest.param({"messages": _MANY_TURNS}, 432, id="thirty-two-turns"),
+]
+# Ordinary prose, where the estimate is at its loosest: one UTF-8 byte per token
+# is the safe direction but English runs four to five bytes to the token. Same
+# instrument, Qwen3-0.6B-Q8_0.
+_PROSE_PARAGRAPH = (
+    "The quick brown fox jumps over the lazy dog. Retrieval augmented generation "
+    "systems combine a vector index with a language model so answers can cite the "
+    "documents they came from. This paragraph exists to measure how an estimate "
+    "behaves on ordinary English prose rather than on dense identifiers. "
+) * 4
+_MEASURED_PROSE_TOKENS = 217
+_MEASURED_PROSE_CEILING = 7.0
+# One tool call and the log it returned, measured at 2656 tokens on Qwen3-0.6B-Q8_0.
+# The call arguments and the result body are most of the prompt here, so the arm
+# fails if either stops being counted.
+_TOOL_LOG = (
+    "2026-09-18T10:00:00Z INFO indexed chunk 41 of 900 from survey_report.pdf\n"
+    "2026-09-18T10:00:01Z INFO indexed chunk 42 of 900 from survey_report.pdf\n"
+) * 30
+_TOOL_EXCHANGE = [
+    CanonicalMessage(role="user", content=[TextBlock(text="read it")]),
+    CanonicalMessage(
+        role="assistant",
+        content=[
+            ToolUseBlock(
+                id="t1",
+                name="Read",
+                input={"file_path": "/var/log/lilbee/sync.log", "pattern": "indexed chunk " * 40},
+            )
+        ],
+    ),
+    CanonicalMessage(
+        role="user",
+        content=[ToolResultBlock(tool_use_id="t1", content=[TextBlock(text=_TOOL_LOG)])],
+    ),
+]
+_MEASURED_TOOL_EXCHANGE_TOKENS = 2656
+
+
+def _parallel_tool_results(count: int) -> list[CanonicalMessage]:
+    """One canonical message returning *count* tool results at once."""
+    return [
+        CanonicalMessage(role="user", content=[TextBlock(text="go")]),
+        CanonicalMessage(
+            role="user",
+            content=[
+                ToolResultBlock(tool_use_id=f"t{i}", content=[TextBlock(text="")])
+                for i in range(count)
+            ],
+        ),
+    ]
+
+
+# Claude Code returns parallel tool calls as several results inside ONE user
+# message, and the translation gives each result its own wire message the
+# template wraps in role markers. The bodies are empty here, so the count is
+# template text alone. Measured on SmolLM3-3B-Q4_K_M, which counts higher at
+# every arm than Qwen3-0.6B-Q8_0 does (17, 77, 269, 1037), so this list is the
+# binding floor for both templates.
+_MEASURED_PARALLEL_RESULT_TOKENS = [
+    pytest.param(1, 254, id="one-result"),
+    pytest.param(16, 329, id="sixteen-results"),
+    pytest.param(64, 569, id="sixty-four-results"),
+    pytest.param(256, 1529, id="two-hundred-fifty-six-results"),
+]
+
+
+class TestCountRequestTokens:
+    """``count_request_tokens`` asks the engine for the prompt a chat call sends."""
+
+    def test_counts_the_arguments_the_chat_call_would_send(self, services_with_model) -> None:
+        services_with_model.provider.count_chat_prompt_tokens.return_value = 4242
+        req = _req(tools=[_ENGINE_TOOLS[0]], system="be brief", think=False)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4") == PromptTokenCount(
+            tokens=4242, accuracy=TokenCountAccuracy.EXACT
+        )
+        assert services_with_model.provider.count_chat_prompt_tokens.call_args.kwargs == (
+            _provider_chat_kwargs(req, "vendor/model::Q4")
+        )
+
+    def test_a_model_without_tool_support_is_still_counted(self, services_with_model) -> None:
+        """Counting runs no tool, so the chat call's capability gate does not apply."""
+        req = _req(tools=[_ENGINE_TOOLS[0]])
+        services_with_model.provider.supports_tools.return_value = False
+
+        assert resolve_served_model(req) == "vendor/model::Q4"
+        with pytest.raises(ModelDoesNotSupportToolsError):
+            preflight_chat_request(req)
+
+    def test_an_unknown_model_is_still_rejected(self, services_with_model) -> None:
+        with pytest.raises(ModelNotFoundError):
+            resolve_served_model(_req(model="nope/missing"))
+
+    def test_a_backend_without_a_tokenizer_is_estimated(self, services_with_model) -> None:
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        count = count_request_tokens(_req(), canonical_model="vendor/model::Q4")
+
+        assert count.tokens > 0
+        assert count.accuracy is TokenCountAccuracy.ESTIMATED
+
+    @pytest.mark.parametrize(("extra", "measured"), _MEASURED_PROMPT_TOKENS)
+    def test_the_estimate_never_falls_below_the_engines_own_count(
+        self, services_with_model, extra: dict[str, Any], measured: int
+    ) -> None:
+        """Under-counting makes a client overflow its window, so the estimate stays above."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_ENGINE_MESSAGES, **extra)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
+
+    @pytest.mark.parametrize(("tool", "tool_choice", "measured"), _MEASURED_TOOL_TOKENS)
+    def test_the_estimate_covers_the_templates_tool_preamble(
+        self,
+        services_with_model,
+        tool: CanonicalTool,
+        tool_choice: CanonicalToolChoice | None,
+        measured: int,
+    ) -> None:
+        """One short turn with one schema is almost entirely template preamble."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_ONE_TURN, tools=[tool], tool_choice=tool_choice)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
+
+    @pytest.mark.parametrize(("text", "measured"), _MEASURED_DENSE_TOKENS)
+    def test_the_estimate_holds_on_input_that_tokenizes_densely(
+        self, services_with_model, text: str, measured: int
+    ) -> None:
+        """Input a chars-per-token average reads short, so a ratio fails this arm."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=[CanonicalMessage(role="user", content=[TextBlock(text=text)])])
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
+
+    @pytest.mark.parametrize(("extra", "measured"), _MEASURED_TEMPLATE_TOKENS)
+    def test_the_estimate_covers_a_template_that_supplies_its_own_system_block(
+        self, services_with_model, extra: dict[str, Any], measured: int
+    ) -> None:
+        """A near-empty request whose cost is almost all template, not input."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(**extra)
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
+
+    def test_one_more_tool_costs_more_than_that_tools_own_text(self, services_with_model) -> None:
+        """The template wraps each schema, so the allowance grows with the tool count."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        one = count_request_tokens(
+            _req(tools=[_MINIMAL_TOOL]), canonical_model="vendor/model::Q4"
+        ).tokens
+        two = count_request_tokens(
+            _req(tools=[_MINIMAL_TOOL] * 2), canonical_model="vendor/model::Q4"
+        ).tokens
+
+        own_text = _MINIMAL_TOOL.name + _MINIMAL_TOOL.description
+        own_text += json.dumps(_MINIMAL_TOOL.input_schema)
+        assert two - one > len(own_text.encode("utf-8"))
+
+    def test_the_estimate_stays_within_seven_times_the_count_on_prose(
+        self, services_with_model
+    ) -> None:
+        """Prose is where a byte count is loosest, so the arm pins how loose."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(
+            messages=[CanonicalMessage(role="user", content=[TextBlock(text=_PROSE_PARAGRAPH)])]
+        )
+
+        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4").tokens
+        assert (
+            _MEASURED_PROSE_TOKENS <= estimate <= _MEASURED_PROSE_TOKENS * _MEASURED_PROSE_CEILING
+        )
+
+    def test_the_estimate_counts_a_tool_call_and_its_result(self, services_with_model) -> None:
+        """Tool arguments and tool output reach the prompt, so they are counted."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_TOOL_EXCHANGE, tools=[_BIG_TOOLS[0]])
+
+        estimate = count_request_tokens(req, canonical_model="vendor/model::Q4").tokens
+        assert estimate >= _MEASURED_TOOL_EXCHANGE_TOKENS
+
+    @pytest.mark.parametrize(("results", "measured"), _MEASURED_PARALLEL_RESULT_TOKENS)
+    def test_the_estimate_covers_results_returned_in_parallel(
+        self, services_with_model, results: int, measured: int
+    ) -> None:
+        """One message returning many results renders as many turns, not as one."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        req = _req(messages=_parallel_tool_results(results))
+
+        assert count_request_tokens(req, canonical_model="vendor/model::Q4").tokens >= measured
+
+    def test_each_parallel_result_costs_another_turns_allowance(self, services_with_model) -> None:
+        """The results are empty, so only the per-message allowance can grow with them."""
+        services_with_model.provider.count_chat_prompt_tokens.side_effect = NotImplementedError
+        counts = [
+            count_request_tokens(
+                _req(messages=_parallel_tool_results(k)), canonical_model="vendor/model::Q4"
+            ).tokens
+            for k in (1, 2, 4, 8)
+        ]
+
+        steps = [later - earlier for earlier, later in pairwise(counts)]
+        assert steps[0] > 0
+        assert steps == [steps[0], steps[0] * 2, steps[0] * 4]

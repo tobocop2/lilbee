@@ -1829,6 +1829,35 @@ class FleetProvider:
         clients = self._require_clients(WorkerRole.EMBED)
         return _call_with_failover(clients, lambda client: client.count_tokens(text))
 
+    def count_chat_prompt_tokens(
+        self,
+        messages: list[ChatMessage],
+        *,
+        options: dict[str, Any] | None = None,
+        model: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+    ) -> int:
+        """Tokens the chat server prefills for this prompt, template applied.
+
+        Takes the arguments :meth:`chat` takes and sends the same body. The
+        conversation is not fitted to the served window first, so the count
+        covers the whole prompt the caller asked about.
+        """
+        from lilbee.providers.engine_params import chat_options_to_kwargs
+
+        self._require_configured_model(model, str(cfg.chat_model), WorkerRole.CHAT)
+        server_options = chat_options_to_kwargs(options) or None
+        with self._lazy_warm_scope():
+            return self._with_rediscover(
+                lambda: _least_in_flight(
+                    self._require_clients(WorkerRole.CHAT)
+                ).count_chat_prompt_tokens(
+                    messages, tools=tools, tool_choice=tool_choice, options=server_options
+                ),
+                role=WorkerRole.CHAT,
+            )
+
     def vision_ocr(
         self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
     ) -> str:

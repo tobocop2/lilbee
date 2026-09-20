@@ -160,24 +160,14 @@ class AnthropicThinking(_AnthropicModel):
         return self
 
 
-class MessagesRequest(_AnthropicModel):
-    """The ``POST /v1/messages`` request body.
-
-    ``thinking`` picks the reasoning mode for this call, overriding the
-    ``messages_reasoning`` setting.
-    """
+class _PromptBody(_AnthropicModel):
+    """The prompt fields ``/v1/messages`` and its ``count_tokens`` sibling share."""
 
     model: str
-    max_tokens: int
     messages: list[AnthropicMessage]
     system: str | list[SystemTextBlock] | None = None
     tools: list[AnthropicTool] | None = None
     tool_choice: AnthropicToolChoice | None = None
-    temperature: float | None = None
-    top_p: float | None = None
-    top_k: int | None = None
-    stop_sequences: list[str] | None = None
-    stream: bool = False
     thinking: AnthropicThinking | None = None
 
     @field_validator("thinking", mode="before")
@@ -189,6 +179,31 @@ class MessagesRequest(_AnthropicModel):
         if value is None or (isinstance(value, dict) and value.get("type") in _THINKING_TYPES):
             return value
         return None
+
+
+class MessagesRequest(_PromptBody):
+    """The ``POST /v1/messages`` request body.
+
+    ``thinking`` picks the reasoning mode for this call, overriding the
+    ``messages_reasoning`` setting.
+    """
+
+    max_tokens: int
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    stop_sequences: list[str] | None = None
+    stream: bool = False
+
+
+class CountTokensRequest(_PromptBody):
+    """The ``POST /v1/messages/count_tokens`` request body."""
+
+
+class CountTokensResponse(BaseModel):
+    """The ``/v1/messages/count_tokens`` response body."""
+
+    input_tokens: int
 
 
 class AnthropicUsage(BaseModel):

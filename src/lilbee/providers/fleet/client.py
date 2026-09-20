@@ -408,16 +408,21 @@ _CHAT_PATH = "/v1/chat/completions"
 _EMBED_PATH = "/v1/embeddings"
 _TOKENIZE_PATH = "/tokenize"
 _DETOKENIZE_PATH = "/detokenize"
+_APPLY_TEMPLATE_PATH = "/apply-template"
 # llama-swap proxies native (non-OpenAI) llama.cpp routes only under
 # /upstream/<model>/...; the bare /tokenize path 404s (it routes /v1/* by the
 # body's model field, but a native route carries no such field).
 _UPSTREAM_PREFIX = "/upstream"
 # Match the in-process tokenizer call (llm.tokenize(text, add_bos=True, special=False)):
-# the server adds BOS via add_special and leaves special-token strings unparsed.
+# the server adds BOS via add_special, and the chunk-sizing call leaves
+# special-token strings unparsed; the chat-prompt count overrides that, because
+# the render carries them.
 _TOKENIZE_ADD_SPECIAL = True
 _TOKENIZE_PARSE_SPECIAL = False
 _HTTP_OK = 200
 _HTTP_BAD_REQUEST = 400
+_HTTP_NOT_FOUND = 404
+_HTTP_METHOD_NOT_ALLOWED = 405
 _HTTP_TOO_MANY_REQUESTS = 429
 # Gateway statuses llama-swap returns while an upstream is unreachable
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
@@ -452,6 +457,26 @@ _EMBED_BUSY_RETRIES = 14
 # connection failure re-stamps the cool-down).
 _UNHEALTHY_RETRY_S = 30.0
 _T = TypeVar("_T")
+
+
+def _route_is_absent(resp: httpx.Response) -> bool:
+    """Whether *resp* means the route is missing rather than the request bad.
+
+    A proxy that knows the path but not the method answers 405. An engine too old
+    to carry the route answers 404 with a plain body, while llama-swap answers
+    404 with a JSON error envelope for a model it cannot route -- a
+    misconfiguration the caller must see, not one to answer with an estimate.
+    """
+    if resp.status_code == _HTTP_METHOD_NOT_ALLOWED:
+        return True
+    if resp.status_code != _HTTP_NOT_FOUND:
+        return False
+    resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
+    try:
+        body = resp.json()
+    except ValueError:
+        return True
+    return not (isinstance(body, dict) and "error" in body)
 
 
 class ChatDeadlineError(ProviderError):
@@ -1172,7 +1197,7 @@ class LlamaServerClient:
         """
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
-    def _tokenize(self, text: str) -> list[int]:
+    def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
         """Token ids for *text*; a cold replica is waited out like an embedding."""
 
         def _call() -> list[int]:
@@ -1181,7 +1206,7 @@ class LlamaServerClient:
                 json={
                     "content": text,
                     "add_special": _TOKENIZE_ADD_SPECIAL,
-                    "parse_special": _TOKENIZE_PARSE_SPECIAL,
+                    "parse_special": parse_special,
                 },
             )
             _raise_for_status(resp)
@@ -1192,6 +1217,55 @@ class LlamaServerClient:
     def count_tokens(self, text: str) -> int:
         """Number of tokens *text* encodes to under the server's tokenizer."""
         return len(self._tokenize(text))
+
+    def count_chat_prompt_tokens(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        *,
+        tools: Sequence[Mapping[str, Any]] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> int:
+        """Tokens the server prefills for this prompt, template applied.
+
+        The template's role markers and its tool-call preamble are part of the
+        prompt the model reads, so the rendered text is what gets tokenized.
+        Special-token strings in the rendered text are parsed, matching how the
+        server tokenizes its own prompt.
+        """
+        rendered = self._render_chat_prompt(messages, tools, tool_choice, options)
+        return len(self._tokenize(rendered, parse_special=True))
+
+    def _render_chat_prompt(
+        self,
+        messages: Sequence[Mapping[str, Any]],
+        tools: Sequence[Mapping[str, Any]] | None,
+        tool_choice: str | dict[str, Any] | None,
+        options: dict[str, Any] | None,
+    ) -> str:
+        """The prompt text this server's template renders for a chat body.
+
+        Sends the body the chat paths build, messages reshaped to strict
+        alternation when this server's template needs it (see
+        :meth:`_prepare_chat_messages`), so the render cannot diverge from the
+        prompt a chat call prefills. Raises ``NotImplementedError`` when the
+        server has no such route, which is the one case a caller can answer with
+        an estimate instead.
+        """
+        payload = self._chat_payload(
+            self._prepare_chat_messages(messages), tools, tool_choice, options, stream=False
+        )
+
+        def _call() -> str:
+            resp = self._http.post(self._native_route(_APPLY_TEMPLATE_PATH), json=payload)
+            if _route_is_absent(resp):
+                raise NotImplementedError(
+                    f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
+                )
+            _raise_for_status(resp)
+            return str(resp.json()["prompt"])
+
+        return self._with_busy_retry(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})

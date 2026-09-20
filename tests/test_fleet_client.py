@@ -1048,14 +1048,22 @@ _TOOL_LOOP_MESSAGES = [
 ]
 
 
+def _template_rejects(messages: list[dict]) -> bool:
+    """Whether a strict-alternation template refuses *messages*.
+
+    It refuses the tool role and two same-role turns in a row after the system
+    block, and renders anything else.
+    """
+    convo = [m["role"] for m in messages if m["role"] != "system"]
+    return "tool" in convo or any(earlier == later for earlier, later in pairwise(convo))
+
+
 def _strict_alternation_handler(request: httpx.Request) -> httpx.Response:
-    """Model a strict-alternation template: reject the tool role or two same-role
-    turns in a row after the system block, render anything else."""
+    """Answer a chat request as a server whose template requires strict alternation."""
     if request.url.path == "/health":
         return httpx.Response(200)
     body = json.loads(request.content)
-    convo = [m["role"] for m in body["messages"] if m["role"] != "system"]
-    if "tool" in convo or any(earlier == later for earlier, later in pairwise(convo)):
+    if _template_rejects(body["messages"]):
         return httpx.Response(500, text=_ALTERNATION_BODY)
     if body.get("stream"):
         return httpx.Response(
@@ -2307,3 +2315,113 @@ class TestPrefillProgressParsing:
         from lilbee.providers.fleet.client import _prefill_progress
 
         assert _prefill_progress(line) == expected
+
+
+def test_count_chat_prompt_tokens_renders_then_tokenizes() -> None:
+    """The counted text is the template's render, with its special tokens parsed."""
+    seen: dict[str, dict] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if request.url.path.endswith("/apply-template"):
+            seen["render"] = body
+            return httpx.Response(200, json={"prompt": "<|im_start|>user\nhi<|im_end|>\n"})
+        if request.url.path.endswith("/tokenize"):
+            seen["tokenize"] = body
+            return httpx.Response(200, json={"tokens": [1, 2, 3, 4, 5]})
+        raise AssertionError(f"unexpected route {request.url.path}")
+
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [{"type": "function", "function": {"name": "search"}}]
+    count = _client(handler).count_chat_prompt_tokens(
+        messages, tools=tools, tool_choice="auto", options={"chat_template_kwargs": {"a": 1}}
+    )
+
+    assert count == 5
+    assert seen["render"]["messages"] == messages
+    assert seen["render"]["tools"] == tools
+    assert seen["render"]["tool_choice"] == "auto"
+    assert seen["render"]["chat_template_kwargs"] == {"a": 1}
+    assert seen["tokenize"]["content"] == "<|im_start|>user\nhi<|im_end|>\n"
+    assert seen["tokenize"]["parse_special"] is True
+
+
+def test_count_chat_prompt_tokens_reports_an_engine_without_the_route() -> None:
+    """An engine too old to render the prompt lets the caller estimate instead."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/apply-template"):
+            return httpx.Response(404, text="File Not Found")
+        raise AssertionError("must not tokenize without a rendered prompt")
+
+    with pytest.raises(NotImplementedError, match="apply-template"):
+        _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_reports_a_proxy_that_refuses_the_method() -> None:
+    """A proxy answering 405 carries no render route either, so the caller estimates."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/apply-template"):
+            return httpx.Response(405, json={"error": {"message": "method not allowed"}})
+        raise AssertionError("must not tokenize without a rendered prompt")
+
+    with pytest.raises(NotImplementedError, match="apply-template"):
+        _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_surfaces_an_unroutable_model() -> None:
+    """A proxy that cannot route the model is an error, not a missing route."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/apply-template"):
+            return httpx.Response(404, json={"error": {"message": "model not found"}})
+        raise AssertionError("must not tokenize without a rendered prompt")
+
+    with pytest.raises(ProviderError, match="model not found"):
+        _client(handler).count_chat_prompt_tokens([{"role": "user", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_surfaces_a_template_rejection() -> None:
+    """A body the template refuses is a bad request, not a missing capability."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": {"message": "template rejected the messages"}})
+
+    with pytest.raises(ProviderError, match="template rejected"):
+        _client(handler).count_chat_prompt_tokens([{"role": "assistant", "content": "hi"}])
+
+
+def test_count_chat_prompt_tokens_renders_what_the_chat_call_sends() -> None:
+    """A template that needs alternation gets the same messages on both paths.
+
+    The chat call is the control: it shows the template answers this exchange,
+    so a count-path failure would be a difference between the paths rather than
+    a request the template refuses outright.
+    """
+    rendered: list[list[dict]] = []
+    chat_sent: list[list[dict]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path.endswith("/apply-template"):
+            messages = json.loads(request.content)["messages"]
+            if _template_rejects(messages):
+                return httpx.Response(400, json={"error": {"message": _ALTERNATION_BODY}})
+            rendered.append(messages)
+            return httpx.Response(200, json={"prompt": "<|im_start|>ok<|im_end|>\n"})
+        if path.endswith("/tokenize"):
+            return httpx.Response(200, json={"tokens": [1, 2, 3]})
+        if path == "/v1/chat/completions" and not _is_probe(request):
+            chat_sent.append(json.loads(request.content)["messages"])
+        return _strict_alternation_handler(request)
+
+    client = _unprobed_client(handler)
+    count = client.count_chat_prompt_tokens(_TOOL_LOOP_MESSAGES)
+    chat = client.chat_result(_TOOL_LOOP_MESSAGES)
+
+    assert count == 3
+    assert chat.text == "ok"
+    assert client._needs_alternation is True
+    assert rendered[-1] == chat_sent[-1]
+    assert "tool" not in [m["role"] for m in rendered[-1]]

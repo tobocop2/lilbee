@@ -508,6 +508,59 @@ def test_count_tokens_routes_to_embed_server() -> None:
     client.count_tokens.assert_called_once_with("hello")
 
 
+_COUNT_MESSAGES = [{"role": "user", "content": "hello"}]
+
+
+def test_count_chat_prompt_tokens_routes_to_chat_server() -> None:
+    """A chat prompt count comes from the chat model's template, not the embedder's."""
+    chat, embed = _fake_client(), _fake_client()
+    chat.count_chat_prompt_tokens.return_value = 21
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    assert p.count_chat_prompt_tokens(_COUNT_MESSAGES) == 21
+    chat.count_chat_prompt_tokens.assert_called_once_with(
+        _COUNT_MESSAGES, tools=None, tool_choice=None, options=None
+    )
+    embed.count_chat_prompt_tokens.assert_not_called()
+
+
+def test_count_chat_prompt_tokens_translates_options_as_chat_does() -> None:
+    """``think`` is a template argument, so it has to reach the render the same way."""
+    chat = _fake_client()
+    chat.count_chat_prompt_tokens.return_value = 21
+    p = _provider_with_clients({WorkerRole.CHAT: [chat]})
+    tools = [{"type": "function", "function": {"name": "search"}}]
+
+    p.count_chat_prompt_tokens(
+        _COUNT_MESSAGES, options={"think": False}, tools=tools, tool_choice="auto"
+    )
+
+    chat.count_chat_prompt_tokens.assert_called_once_with(
+        _COUNT_MESSAGES,
+        tools=tools,
+        tool_choice="auto",
+        options={"chat_template_kwargs": {"enable_thinking": False}},
+    )
+
+
+def test_count_chat_prompt_tokens_rejects_a_model_the_fleet_does_not_serve() -> None:
+    from lilbee.providers.base import ProviderError
+
+    chat = _fake_client()
+    chat.count_chat_prompt_tokens.return_value = 21
+    p = _provider_with_clients({WorkerRole.CHAT: [chat]})
+    with pytest.raises(ProviderError, match="chat model"):
+        p.count_chat_prompt_tokens(_COUNT_MESSAGES, model="other/Model-GGUF/other-Q4.gguf")
+    chat.count_chat_prompt_tokens.assert_not_called()
+
+
+def test_count_chat_prompt_tokens_without_server_raises() -> None:
+    from lilbee.providers.base import ProviderError
+
+    p = _provider_with_clients({})
+    with pytest.raises(ProviderError):
+        p.count_chat_prompt_tokens(_COUNT_MESSAGES)
+
+
 def test_count_tokens_without_server_raises() -> None:
     from lilbee.providers.base import ProviderError
 

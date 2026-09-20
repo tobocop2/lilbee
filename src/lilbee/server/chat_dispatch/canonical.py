@@ -1,4 +1,4 @@
-"""Protocol-neutral chat request, response, and stream-event types."""
+"""Protocol-neutral chat request, response, stream-event, and token-count types."""
 
 from __future__ import annotations
 
@@ -117,6 +117,21 @@ class CanonicalUsage:
 
     input_tokens: int
     output_tokens: int
+
+
+class TokenCountAccuracy(StrEnum):
+    """Whether a prompt token count was measured on the backend or estimated."""
+
+    EXACT = "exact"
+    ESTIMATED = "estimated"
+
+
+@dataclass(frozen=True)
+class PromptTokenCount:
+    """Tokens a prompt costs, and how the number was arrived at."""
+
+    tokens: int
+    accuracy: TokenCountAccuracy
 
 
 @dataclass(frozen=True)

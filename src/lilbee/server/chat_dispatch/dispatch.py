@@ -39,9 +39,11 @@ from lilbee.server.chat_dispatch.canonical import (
     MessageDelta,
     MessageStart,
     MessageStop,
+    PromptTokenCount,
     StopReason,
     TextBlock,
     TextDelta,
+    TokenCountAccuracy,
     ToolResultBlock,
     ToolUseBlock,
     ToolUseDelta,
@@ -89,6 +91,20 @@ _TOOL_CHOICE_MODES: dict[_CanonicalChoiceMode, _ProviderChoiceMode] = {
     "any": "required",
     "none": "none",
 }
+
+# Token allowances for template text the request does not carry. Survey of
+# 47 chat templates across 51 repositories, taken 2026-09-18. Widest value
+# measured beside each constant: preamble 1216, per message 17, tool block
+# 608, per tool 45. See docs/architecture.md for what this means for accuracy.
+# The preamble a template renders around any request, including a system block
+# it substitutes when the request carries none.
+_TEMPLATE_PREAMBLE_TOKENS = 300
+# The role markers and turn delimiters around one wire message.
+_TEMPLATE_MESSAGE_TOKENS = 8
+# The tool-calling instructions a template emits once when tools are present.
+_TEMPLATE_TOOL_BLOCK_TOKENS = 110
+# The wrapper a template renders around one tool schema.
+_TEMPLATE_PER_TOOL_TOKENS = 32
 
 
 class _OpenBlockKind(StrEnum):
@@ -370,18 +386,46 @@ def _ensure_configured_local_model(canonical: str) -> None:
     )
 
 
-def preflight_chat_request(req: CanonicalChatRequest) -> str:
-    """Synchronously validate *req* before any streaming response starts.
+def resolve_served_model(req: CanonicalChatRequest) -> str:
+    """Resolve *req*'s model ref and confirm this server serves it.
 
-    Raises ``ModelNotFoundError``, ``ModelDoesNotSupportToolsError``, or a
-    ``BAD_REQUEST`` ``ProviderError`` so the route layer can return a real
-    4xx HTTP status instead of burying the failure in an SSE error frame
-    after headers flush. Returns the resolved canonical model ref.
+    Raises ``ModelNotFoundError`` or a ``BAD_REQUEST`` ``ProviderError`` so the
+    route layer can return a real 4xx status. Returns the canonical model ref.
     """
     canonical = _resolve_canonical_model(req.model)
     _ensure_configured_local_model(canonical)
+    return canonical
+
+
+def preflight_chat_request(req: CanonicalChatRequest) -> str:
+    """Synchronously validate *req* before any streaming response starts.
+
+    Adds the tool-capability check to :func:`resolve_served_model`, so a model
+    whose template cannot render tool calls fails with a 4xx instead of burying
+    the failure in an SSE error frame after headers flush.
+    """
+    canonical = resolve_served_model(req)
     _ensure_tool_capability(req, canonical)
     return canonical
+
+
+def count_request_tokens(req: CanonicalChatRequest, *, canonical_model: str) -> PromptTokenCount:
+    """Tokens the served model prefills for *req*'s prompt, and how they were counted.
+
+    Hands the provider the arguments a chat call would send, so the count covers
+    the chat template's role markers and tool preamble as well as the content.
+    A backend that cannot render or tokenize falls back to the estimate, and the
+    result carries which of the two answered.
+    """
+    kwargs = _provider_chat_kwargs(req, canonical_model)
+    try:
+        tokens = get_services().provider.count_chat_prompt_tokens(**kwargs)
+    except NotImplementedError:
+        return PromptTokenCount(
+            tokens=_estimate_prompt_tokens(req, wire_messages=kwargs["messages"]),
+            accuracy=TokenCountAccuracy.ESTIMATED,
+        )
+    return PromptTokenCount(tokens=tokens, accuracy=TokenCountAccuracy.EXACT)
 
 
 def _provider_messages(req: CanonicalChatRequest) -> list[dict[str, Any]]:
@@ -454,6 +498,52 @@ def _provider_tools(
         }
         for tool in tools
     ]
+
+
+def _estimate_prompt_tokens(
+    req: CanonicalChatRequest, *, wire_messages: list[dict[str, Any]]
+) -> int:
+    """Estimate of *req*'s prompt tokens, for a backend with no tokenizer.
+
+    The request's own text is counted in UTF-8 bytes, which no token encodes
+    fewer than one of. The template text the request does not carry gets the
+    fixed allowances above, which are measured rather than proved: four of the
+    47 surveyed templates substitute more than they cover. A chars-per-token
+    ratio fails differently, reading dense input short.
+
+    The per-message allowance is charged against *wire_messages*, the messages
+    the provider is sent: one canonical message carrying several tool results
+    becomes one wire message each, and the template renders role markers around
+    every one.
+    """
+    tools = req.tools or []
+    allowance = _TEMPLATE_PREAMBLE_TOKENS + _TEMPLATE_MESSAGE_TOKENS * len(wire_messages)
+    if tools:
+        allowance += _TEMPLATE_TOOL_BLOCK_TOKENS + _TEMPLATE_PER_TOOL_TOKENS * len(tools)
+    return _content_bytes(req) + allowance
+
+
+def _content_bytes(req: CanonicalChatRequest) -> int:
+    """UTF-8 bytes of the text *req* itself puts into the rendered prompt."""
+    total = _utf8_len(req.system or "")
+    total += sum(_block_bytes(block) for msg in req.messages for block in msg.content)
+    for tool in req.tools or []:
+        total += _utf8_len(tool.name) + _utf8_len(tool.description)
+        total += _utf8_len(json.dumps(tool.input_schema))
+    return total
+
+
+def _block_bytes(block: ContentBlock) -> int:
+    """UTF-8 bytes *block* contributes to the rendered prompt."""
+    if block.type == "text":
+        return _utf8_len(block.text)
+    if block.type == "tool_use":
+        return _utf8_len(block.name) + _utf8_len(json.dumps(block.input))
+    return sum(_block_bytes(inner) for inner in block.content)
+
+
+def _utf8_len(text: str) -> int:
+    return len(text.encode("utf-8"))
 
 
 def _provider_tool_choice(
