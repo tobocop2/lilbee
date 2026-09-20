@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel
 
-from lilbee.catalog.refs import ggml_bytes_per_param, quant_label
+from lilbee.catalog.refs import GGML_QUANT_BLOCK_SIZES, ggml_bytes_per_param, quant_label
 from lilbee.catalog.types import ModelCompat, ModelTask
 
 # Minimum recommended floor so a tiny model still reports a sane RAM ask.
@@ -15,93 +15,43 @@ _RAM_OVER_SIZE_FACTOR = 1.5
 
 _BYTES_PER_GB = 1024**3
 
-# Whole-file bytes per parameter for each llama.cpp quantization.
-#
-# Not the same quantity as ``gguf.GGML_QUANT_SIZES``, which gives the block size
-# of one ggml tensor type. llama.cpp never writes a homogeneous file: it promotes
-# ``output.weight`` and tied ``token_embd`` to Q6_K/Q8_0 whatever the ftype, and
-# leaves norms in F32, so a real file always costs more per weight than its
-# nominal type. These are measured file sizes; Qwen3-8B-GGUF publishes 0.614
-# (Q4_K_M), 0.699 (Q5_0), 0.714 (Q5_K_M), 0.821 (Q6_K) and 1.063 (Q8_0).
-#
-# No entry may sit below its base type's bytes per weight, which is physically
-# impossible; ``test_measured_quants_are_above_their_ggml_floor`` checks each one
-# against ``gguf.constants.GGML_QUANT_SIZES`` so a typo cannot survive review.
-_BYTES_PER_PARAM: dict[str, float] = {
-    "Q2_K": 0.33,
-    "Q3_K_S": 0.45,
-    "Q3_K_M": 0.488,
-    "Q3_K_L": 0.53,
-    "IQ4_XS": 0.532,
-    "Q4_0": 0.569,
-    "Q4_K_S": 0.575,
-    "Q4_K_M": 0.614,
-    "Q5_0": 0.699,
-    "Q5_K_S": 0.688,
-    "Q5_K_M": 0.714,
-    "Q6_K": 0.821,
-    "Q8_0": 1.063,
-    "F16": 2.0,
-    "BF16": 2.0,
-    "F32": 4.0,
-}
+# Q4_K heads the pull path's quant preference, so a filename naming no quant at
+# all sizes as the type a pull would most likely land on.
+_DEFAULT_BLOCK, _DEFAULT_TYPE_SIZE = GGML_QUANT_BLOCK_SIZES["Q4_K"]
+_DEFAULT_BYTES_PER_PARAM = _DEFAULT_TYPE_SIZE / _DEFAULT_BLOCK
 
-# Q4_K_M heads the pull path's quant preference, so a label naming no bit width
-# at all estimates as if it were the quant a pull would most likely land on.
-_DEFAULT_BYTES_PER_PARAM = _BYTES_PER_PARAM["Q4_K_M"]
-
-# A quant the table does not name still says how many bits it packs. One fp16
-# scale per group costs an eighth on top, whatever the width, because a group is
-# sized to the width: 1-bit in groups of 128, 2-bit in 64, 4-bit in 32 all carry
-# two bytes per group. Reading the width beats falling back to Q4_K_M, which
-# reports a 2-bit file at more than twice its size.
+# A quant ggml does not name still says how many bits it packs. One fp16 scale
+# per group costs an eighth on top, whatever the width, because a group is sized
+# to the width: 1-bit in groups of 128, 2-bit in 64, 4-bit in 32 all carry two
+# bytes per group. Reading the width beats falling back to Q4_K_M, which reports
+# a 2-bit file at more than twice its size.
 _SCALE_OVERHEAD = 1.125
 _BITS_PER_BYTE = 8
 
-# A ggml type size usually floors a file, and it never sizes one: the promoted
-# output and embedding tensors and the F32 norms are not of the type the filename
-# names. How much they add is the publisher's choice, so it is measured, not
-# derived. Over published files whose parameter count checks out against a float
-# copy of the same model, a label that states no bit width runs 1.02
-# (gpt-oss-120b MXFP4) to 1.09 (gpt-oss-20b MXFP4) times its type, with
-# Ternary-Bonsai-2-27B TQ1_0 at 1.05. This covers the largest with a little room.
-# The direction is deliberately high: a size read too low tells someone a model
-# fits in their RAM when it does not, which is the reading this estimate exists
-# to prevent.
-_PROMOTION_OVERHEAD = 1.10
+_WIDTH_RE = re.compile(r"I?Q(\d)")
 
 
 def _width_bytes_per_param(quant: str) -> float | None:
     """Bytes per weight from the bit width *quant* names, or None if it names none."""
-    match = re.match(r"I?Q(\d)", quant)
+    match = _WIDTH_RE.match(quant)
     if match is None:
         return None
     return int(match.group(1)) / _BITS_PER_BYTE * _SCALE_OVERHEAD
 
 
 def _quant_bytes_per_param(gguf_filename: str) -> float:
-    """Bytes per weight for the quant *gguf_filename* names.
+    """Bytes per weight of the ggml type *gguf_filename* names, or Q4_K when it names none.
 
-    The measured table first. Then the bit width the label states, floored by
-    ggml's type: the width rule carries a scale term already measured against
-    published files, so it estimates, and the type only stops it reading far
-    under what the tensors cost. The type is not an exact floor: an ftype that
-    mixes a cheaper type into some tensors publishes under it, and five IQ2_S
-    files sit at 0.93 of theirs, which bounds the over-read at 1.07. A label
-    stating no width leaves the type as the only figure there is, so that one
-    takes the promotion term. Then the default.
+    The type's own block arithmetic answers first, so a label cannot read under
+    what its tensors physically cost. The bit width is the last resort, for a
+    publisher's own naming that ggml has no type for.
     """
     quant = quant_label(gguf_filename)
-    measured = _BYTES_PER_PARAM.get(quant)
-    if measured is not None:
-        return measured
-    floor = ggml_bytes_per_param(quant)
+    rate = ggml_bytes_per_param(quant)
+    if rate is not None:
+        return rate
     width = _width_bytes_per_param(quant)
-    if width is not None:
-        return width if floor is None else max(width, floor)
-    if floor is not None:
-        return floor * _PROMOTION_OVERHEAD
-    return _DEFAULT_BYTES_PER_PARAM
+    return width if width is not None else _DEFAULT_BYTES_PER_PARAM
 
 
 def estimate_min_ram_gb(size_gb: float) -> float:
@@ -110,15 +60,18 @@ def estimate_min_ram_gb(size_gb: float) -> float:
 
 
 def estimate_size_gb(params: int, gguf_filename: str) -> float:
-    """Estimate the on-disk GB of *gguf_filename* from a model's parameter count.
+    """Approximate the on-disk GB of *gguf_filename* from a model's parameter count.
 
-    The HF listing API reports a parameter count (``gguf.total``) but no
-    per-file byte size; siblings carry no ``size`` on either the list or the
-    detail endpoint, and ``gguf.totalFileSize`` sums every quant in the repo
-    rather than the one file a pull fetches. Per-file bytes are only available
-    from ``/tree/main``, which is one extra request per repo and unaffordable
-    for a catalog page. Parameters times the quant's bytes-per-weight gets
-    within a few percent for a fraction of the cost.
+    A lower bound, and the browse list renders it as approximate. llama.cpp
+    promotes ``output.weight`` and an untied ``token_embd`` above the ftype and
+    leaves the norms in F32, so a published file costs more per weight than the
+    type its name carries; how much more needs the header's vocabulary and
+    embedding lengths, which a listing row does not have.
+
+    This is the one place a size cannot be read: the HF listing API reports a
+    parameter count (``gguf.total``) and no per-file bytes, and getting the real
+    figure for a 50-row page means 50 more requests. Every path that acts on a
+    size resolves the exact one for the single file in play.
     """
     if params <= 0:
         return 0.0  # unknown: display as "?" in UI

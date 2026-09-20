@@ -43,10 +43,14 @@ _QUANT_PREFERENCE = (
 # ones: picking it turns a 7 GB pull into a 54 GB one.
 FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 
+# Bytes per weight of the three unquantized types a GGUF filename carries. Exact
+# by definition rather than measured: a float tensor has no block and no scale.
+FLOAT_BYTES_PER_PARAM: dict[str, float] = {"F16": 2.0, "BF16": 2.0, "F32": 4.0}
+
 # ggml's own quantized type table: name -> (block size, type size in bytes), for
 # every type whose block packs more than one weight (a block of one is a scalar
-# type, not a quantization; the float alternation below names the three scalar
-# types a GGUF filename actually carries). This is the product's own copy of
+# type, not a quantization; ``FLOAT_BYTES_PER_PARAM`` above prices the three
+# scalar types a GGUF filename carries). This is the product's own copy of
 # ``gguf.constants.GGML_QUANT_SIZES``: the library is not a product dependency
 # (see the ``gguf`` entry in pyproject.toml's dev group), so the product cannot
 # read it at run time. ``TestGgmlQuantTableMatchesLibrary`` in
@@ -99,10 +103,8 @@ GGML_QUANT_BLOCK_SIZES: dict[str, tuple[int, int]] = {
 # the filename. Matching it as a bare substring makes ``Q8_0`` match inside
 # ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
 #
-# Built at module import, not lazily: the type table above is a plain dict
-# literal, so compiling the pattern costs microseconds. The lazy form existed
-# only to defer ``gguf``'s numpy pull past CLI startup; there is no heavy
-# import left to defer.
+# Built at module import: the type table above is a plain dict literal, so
+# compiling the pattern costs microseconds and nothing heavy is deferred.
 _QUANT_NAMES_BY_LENGTH = sorted(
     (re.escape(name) for name in GGML_QUANT_BLOCK_SIZES),
     key=lambda name: (-len(name), name),
@@ -142,12 +144,24 @@ def quant_label(filename: str) -> str:
 
 
 def ggml_bytes_per_param(quant: str) -> float | None:
-    """Bytes per weight of the ggml type named *quant*, or None if ggml has no such type."""
-    sizes = GGML_QUANT_BLOCK_SIZES.get(quant)
-    if sizes is None:
-        return None
-    block, type_size = sizes
-    return type_size / block
+    """Bytes per weight of the ggml type *quant* names or is built on, or None.
+
+    A published label appends segments the type table does not name: ``Q2_K_L``
+    and ``Q3_K_XL`` are Q2_K and Q3_K with a promoted head, and ``Q4_0_4_8`` is
+    Q4_0 repacked. Trailing segments drop one at a time until a ggml type
+    answers, so the most-pulled names on the Hub price against the type they are
+    built on instead of going unpriced.
+    """
+    segments = quant.split("_")
+    for end in range(len(segments), 0, -1):
+        name = "_".join(segments[:end])
+        if name in FLOAT_BYTES_PER_PARAM:
+            return FLOAT_BYTES_PER_PARAM[name]
+        sizes = GGML_QUANT_BLOCK_SIZES.get(name)
+        if sizes is not None:
+            block, type_size = sizes
+            return type_size / block
+    return None
 
 
 def _shard_name(base: str, index: int, total: int) -> str:

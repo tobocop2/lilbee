@@ -151,9 +151,9 @@ dev = [
     "chardet>=7",
     # llama.cpp's Python package, for tests only. It is not a second GGUF reader
     # in the product: gguf-parser is, built from the pin that builds
-    # llama-server. This supplies GGML_QUANT_SIZES so the measured
-    # bytes-per-weight table is checked against the authoritative block sizes.
-    # 0.19 is the first release that names NVFP4, which the quant tests require.
+    # llama-server. This supplies GGML_QUANT_SIZES so the product's own copy of
+    # the ggml block sizes is checked against the authoritative table.
+    # 0.19 is the first release that names NVFP4, which that copy holds.
     "gguf>=0.19",
     "hypothesis>=6.100",
     "mypy>=1.19.1",

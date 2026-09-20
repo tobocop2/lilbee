@@ -708,3 +708,14 @@ def fetch_expected_file_size(hf_repo: str, filename: str) -> int:
         raise RuntimeError(_missing_file_message(hf_repo, filename)) from None
     except Exception:
         return _SIZE_UNKNOWN
+
+
+def download_bytes(hf_repo: str, filename: str) -> int:
+    """Bytes a pull of *filename* fetches, every shard summed, or 0 when unknown.
+
+    The exact figure HuggingFace reports, not the catalog row's approximation:
+    a disk check refuses a real download, so it asks about the real file. A
+    single unresolvable shard makes the sum unknown rather than short.
+    """
+    sizes = [fetch_expected_file_size(hf_repo, shard) for shard in split_shard_filenames(filename)]
+    return sum(sizes) if all(sizes) else _SIZE_UNKNOWN

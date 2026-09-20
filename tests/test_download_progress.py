@@ -775,3 +775,41 @@ class TestFetchExpectedFileSize:
         monkeypatch.setattr("lilbee.catalog.download._hf_file_size", _missing)
         with pytest.raises(RuntimeError, match=r"'m\.gguf' does not exist in org/repo"):
             fetch_expected_file_size("org/repo", "m.gguf")
+
+
+class TestDownloadBytes:
+    """The exact bytes a pull fetches, every shard of a split GGUF summed."""
+
+    def _patch_sizes(self, monkeypatch: pytest.MonkeyPatch, sizes: dict[str, int]) -> None:
+        monkeypatch.setattr(
+            "lilbee.catalog.download.fetch_expected_file_size",
+            lambda _repo, name: sizes[name],
+        )
+
+    def test_single_file_reports_the_hubs_figure(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.catalog.download import download_bytes
+
+        self._patch_sizes(monkeypatch, {"m.gguf": 5_027_783_488})
+        assert download_bytes("org/repo", "m.gguf") == 5_027_783_488
+
+    def test_split_gguf_sums_every_shard(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """llama.cpp needs the whole set on disk, so the check asks about all of it."""
+        from lilbee.catalog.download import download_bytes
+
+        self._patch_sizes(
+            monkeypatch,
+            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": 12},
+        )
+        assert download_bytes("org/repo", "m-00001-of-00002.gguf") == 42
+
+    def test_one_unresolvable_shard_makes_the_total_unknown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A partial sum would read short and pass a disk check that must fail."""
+        from lilbee.catalog.download import _SIZE_UNKNOWN, download_bytes
+
+        self._patch_sizes(
+            monkeypatch,
+            {"m-00001-of-00002.gguf": 30, "m-00002-of-00002.gguf": _SIZE_UNKNOWN},
+        )
+        assert download_bytes("org/repo", "m-00001-of-00002.gguf") == _SIZE_UNKNOWN

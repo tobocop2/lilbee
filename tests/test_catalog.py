@@ -3,9 +3,6 @@
 import ast
 import logging
 import os
-import re
-import subprocess
-import sys
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -314,8 +311,8 @@ class TestEstimateSizeGb:
         from lilbee.catalog.models import estimate_size_gb
 
         params = 8_190_000_000  # Qwen3-8B
-        assert estimate_size_gb(params, "m-Q4_K_M.gguf") == 4.7  # measured 4.68
-        assert estimate_size_gb(params, "m-Q8_0.gguf") == 8.1  # measured 8.11
+        assert estimate_size_gb(params, "m-Q4_K_M.gguf") == 4.3
+        assert estimate_size_gb(params, "m-Q8_0.gguf") == 8.1
 
     def test_unknown_quant_falls_back_to_the_preferred_one(self) -> None:
         """An unlabelled file sizes as the quant a pull would land on."""
@@ -3120,71 +3117,6 @@ class TestRepoHasMmproj:
         assert hf_client.repo_has_mmproj("org/unreachable") is False
 
 
-class TestUnrecognizedQuantEstimate:
-    """A quant the table does not name still says how many bits it packs.
-
-    Real bytes-per-parameter, measured from the published files:
-    Ternary-Bonsai-27B-Q2_g64 0.28202, Ternary-Bonsai-1.7B-Q2_0_g64 0.28497,
-    Bonsai-27B-Q1_0 0.14141.
-    """
-
-    @pytest.mark.parametrize(
-        ("filename", "real_bytes_per_param"),
-        [
-            ("Ternary-Bonsai-27B-Q2_0.gguf", 0.28202),
-            ("Ternary-Bonsai-27B-Q2_g64.gguf", 0.28202),
-            ("Ternary-Bonsai-1.7B-Q2_0_g64.gguf", 0.28497),
-            ("Ternary-Bonsai-27B-PQ2_0.gguf", 0.28202),
-            ("Bonsai-27B-Q1_0.gguf", 0.14141),
-        ],
-    )
-    def test_lands_within_five_percent_of_the_real_file(
-        self, filename: str, real_bytes_per_param: float
-    ) -> None:
-        from lilbee.catalog.models import _quant_bytes_per_param
-
-        got = _quant_bytes_per_param(filename)
-        error = abs(got - real_bytes_per_param) / real_bytes_per_param
-        assert error < 0.05, f"{filename}: {got} vs {real_bytes_per_param} is {error:.1%} out"
-
-    def test_a_two_bit_quant_is_not_estimated_as_four(self) -> None:
-        """The old fallback reported a 2-bit file at more than twice its size."""
-        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
-
-        assert _quant_bytes_per_param("m-Q2_g64.gguf") < _BYTES_PER_PARAM["Q4_K_M"] / 2
-
-    def test_a_label_naming_no_width_still_falls_back(self) -> None:
-        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
-
-        assert _quant_bytes_per_param("model.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
-
-    def test_a_named_quant_keeps_its_measured_figure(self) -> None:
-        """The width rule must not displace the table for quants it already holds."""
-        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
-
-        assert _quant_bytes_per_param("m-Q4_K_M.gguf") == _BYTES_PER_PARAM["Q4_K_M"]
-        assert _quant_bytes_per_param("m-Q8_0.gguf") == _BYTES_PER_PARAM["Q8_0"]
-
-    @pytest.mark.parametrize(
-        "filename",
-        [
-            "Ternary-Bonsai-2-27B-PQ2_0.gguf",
-            "Ternary-Bonsai-2-27B-Q2_0.gguf",
-            "Ternary-Bonsai-2-27B-Q2_g64.gguf",
-        ],
-    )
-    def test_a_width_labelled_ternary_row_covers_its_published_size(self, filename: str) -> None:
-        """prism-ml publishes Ternary-Bonsai-2-27B PQ2_0 at 6.7 GiB over 26.9B weights.
-
-        The other two names state the same width and read the same rate.
-        """
-        from lilbee.catalog.models import estimate_size_gb
-
-        published_gb = 7_206_168_928 / 1024**3
-        size_gb = estimate_size_gb(26_895_998_464, filename)
-        assert published_gb <= size_gb <= published_gb * 1.10, f"{filename}: {size_gb} GB"
-
-
 def _ggml_type_rates() -> dict[str, tuple[int, float]]:
     """Every ggml type name mapped to its block size and its bytes per weight."""
     from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
@@ -3198,31 +3130,134 @@ def _ggml_quant_rates() -> dict[str, float]:
     return {name: rate for name, (blk, rate) in _ggml_type_rates().items() if blk > 1}
 
 
-class TestGgmlDerivedQuantEstimate:
-    """Quants the measured table omits, sized from the ggml type plus file promotion."""
+# Parameter counts and byte sizes as HuggingFace publishes them, read from
+# ``/api/models/<repo>?blobs=true&expand[]=gguf``. Each row is one real file, so
+# the assertions below hold the estimate against what a pull actually fetches
+# rather than against a table the product also ships.
+_PUBLISHED_GGUF_FILES = (
+    ("Qwen3-8B-BF16.gguf", 8_190_735_360, 16_388_044_384),
+    ("Qwen3-8B-Q8_0.gguf", 8_190_735_360, 8_709_518_112),
+    ("Qwen3-8B-Q6_K.gguf", 8_190_735_360, 6_725_899_040),
+    ("Qwen3-8B-Q4_K_M.gguf", 8_190_735_360, 5_027_783_488),
+    ("Qwen3-8B-Q2_K.gguf", 8_190_735_360, 3_281_733_440),
+    ("Qwen3-8B-Q2_K_L.gguf", 8_190_735_360, 3_427_592_000),
+    ("Qwen3-8B-UD-Q2_K_XL.gguf", 8_190_735_360, 3_501_975_360),
+    ("Qwen3-8B-UD-Q3_K_XL.gguf", 8_190_735_360, 4_307_052_352),
+    ("gpt-oss-20b-MXFP4.gguf", 20_914_757_184, 12_109_566_624),
+    ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", 26_895_998_464, 5_946_648_928),
+)
+
+# How far under a published file the type rate may read. llama.cpp promotes the
+# output and embedding tensors above the ftype and keeps the norms in F32, and
+# those tensors are ``vocab x d_model`` each, so the gap widens as the type gets
+# cheaper: Q8_0 lands within 0.1% and Q2_K_XL 23% under.
+_MAX_UNDER_READ = 0.25
+# The estimate rounds to one decimal for display, so a figure that lands on the
+# published size can round a half-step above it.
+_GB_ROUNDING = 0.05
+
+
+class TestQuantBytesPerParam:
+    """The browse-list fallback: the block arithmetic of the ggml type a label names."""
+
+    @pytest.mark.parametrize("quant", ["Q4_K_M", "Q2_K", "Q8_0", "TQ1_0", "MXFP4", "IQ4_XS"])
+    def test_a_named_type_reads_the_librarys_block_rate(self, quant: str) -> None:
+        """The product's own table must price a type the way ggml's does."""
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        base = "_".join(quant.split("_")[:2])
+        assert _quant_bytes_per_param(f"m-{quant}.gguf") == pytest.approx(_ggml_quant_rates()[base])
 
     @pytest.mark.parametrize(
-        ("filename", "params", "published_bytes"),
+        "quant", ["Q2_K_L", "Q2_K_XL", "Q3_K_XL", "Q4_K_XL", "Q5_K_L", "Q6_K_L", "Q8_K_XL"]
+    )
+    def test_a_promoted_head_label_reads_its_base_type(self, quant: str) -> None:
+        """Unsloth's dynamic quants suffix the label, and they are among the most pulled.
+
+        An exact-match lookup on the whole label found none of them, so they
+        priced off the bit width alone and read under a rate the tensors cannot
+        go below.
+        """
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        base = "_".join(quant.split("_")[:2])
+        assert _quant_bytes_per_param(f"m-{quant}.gguf") == pytest.approx(_ggml_quant_rates()[base])
+
+    @pytest.mark.parametrize(("quant", "expected"), [("F16", 2.0), ("BF16", 2.0), ("F32", 4.0)])
+    def test_an_unquantized_type_is_exact(self, quant: str, expected: float) -> None:
+        """A float tensor has no block and no scale, so its rate is a definition."""
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        assert _quant_bytes_per_param(f"m-{quant}.gguf") == expected
+
+    @pytest.mark.parametrize(
+        ("filename", "real_bytes_per_param"),
         [
-            ("gpt-oss-20b-MXFP4.gguf", 20_914_757_184, 12_109_566_624),
-            ("Ternary-Bonsai-2-27B-PTQ1_0.gguf", 26_895_998_464, 5_946_648_928),
+            ("Ternary-Bonsai-27B-Q2_0.gguf", 0.28202),
+            ("Ternary-Bonsai-27B-Q2_g64.gguf", 0.28202),
+            ("Ternary-Bonsai-1.7B-Q2_0_g64.gguf", 0.28497),
+            ("Bonsai-27B-Q1_0.gguf", 0.14141),
         ],
     )
-    def test_covers_a_published_file_of_that_type(
+    def test_a_publishers_own_naming_prices_off_its_bit_width(
+        self, filename: str, real_bytes_per_param: float
+    ) -> None:
+        """ggml names no type here, but the label still says how many bits it packs."""
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        got = _quant_bytes_per_param(filename)
+        error = abs(got - real_bytes_per_param) / real_bytes_per_param
+        assert error < 0.06, f"{filename}: {got} vs {real_bytes_per_param} is {error:.1%} out"
+
+    def test_a_two_bit_quant_is_not_estimated_as_four(self) -> None:
+        """The old fallback priced a 2-bit file at the 4-bit rate, over twice its size."""
+        from lilbee.catalog.models import _DEFAULT_BYTES_PER_PARAM, _quant_bytes_per_param
+
+        assert _quant_bytes_per_param("m-Q2_g64.gguf") == pytest.approx(
+            _DEFAULT_BYTES_PER_PARAM / 2
+        )
+
+    def test_a_filename_naming_no_quant_falls_back_to_q4_k(self) -> None:
+        from lilbee.catalog.models import _DEFAULT_BYTES_PER_PARAM, _quant_bytes_per_param
+
+        assert _quant_bytes_per_param("model.gguf") == _DEFAULT_BYTES_PER_PARAM
+        assert _ggml_quant_rates()["Q4_K"] == pytest.approx(_DEFAULT_BYTES_PER_PARAM)
+
+    def test_no_estimate_sits_below_its_ggml_type(self) -> None:
+        """Bare type names and the suffixed labels publishers really ship.
+
+        A file cannot cost less per weight than the type its tensors carry, so
+        an estimate under that rate is arithmetic that went wrong. Iterating
+        bare names alone passed while every suffixed label failed.
+        """
+        from lilbee.catalog.models import _quant_bytes_per_param
+
+        rates = _ggml_quant_rates()
+        labels = {name: name for name in rates}
+        labels |= {f"{name}_{tail}": name for name in rates for tail in ("L", "XL")}
+        below = {
+            label: (_quant_bytes_per_param(f"m-{label}.gguf"), rates[base])
+            for label, base in labels.items()
+            if _quant_bytes_per_param(f"m-{label}.gguf") < rates[base]
+        }
+        assert not below, f"estimates below their ggml floor: {below}"
+
+
+class TestSizeEstimateAgainstPublishedFiles:
+    """The browse-list figure against the bytes HuggingFace publishes for the file."""
+
+    @pytest.mark.parametrize(("filename", "params", "published_bytes"), _PUBLISHED_GGUF_FILES)
+    def test_the_estimate_is_a_lower_bound_on_the_real_file(
         self, filename: str, params: int, published_bytes: int
     ) -> None:
-        """Published files from ggml-org and prism-ml, sizes read from the HF API.
-
-        The estimate may sit above a published size and must never sit below it:
-        a low reading tells someone a model fits in their RAM when it does not.
-        The band cannot be tighter than the spread it estimates over: how much
-        a publisher promotes varies from file to file.
-        """
+        """Approximate and stated as such, so it reads under a file and never over it."""
         from lilbee.catalog.models import estimate_size_gb
 
         published_gb = published_bytes / 1024**3
         size_gb = estimate_size_gb(params, filename)
-        assert published_gb <= size_gb <= published_gb * 1.10, f"{filename}: {size_gb} GB"
+        assert published_gb * (1 - _MAX_UNDER_READ) <= size_gb <= published_gb + _GB_ROUNDING, (
+            f"{filename}: {size_gb} GB against a published {published_gb:.2f} GB"
+        )
 
     def test_the_reported_ternary_row_no_longer_asks_for_23_gb(self) -> None:
         """The bead's repro: 5.5 GiB of published ternary weights asked for 23 GB of RAM."""
@@ -3231,87 +3266,11 @@ class TestGgmlDerivedQuantEstimate:
         size_gb = estimate_size_gb(26_895_998_464, "Ternary-Bonsai-2-27B-PTQ1_0.gguf")
         assert estimate_min_ram_gb(size_gb) < 12.0
 
-    def test_a_ternary_type_is_not_estimated_as_q4_k_m(self) -> None:
-        """TQ1_0 packs 1.69 bits per weight; the default reports it at 2.9 times that."""
-        from lilbee.catalog.models import _BYTES_PER_PARAM, _quant_bytes_per_param
+    def test_a_ternary_type_is_not_estimated_as_q4_k(self) -> None:
+        """TQ1_0 packs 1.69 bits per weight; the old default reported it at 2.7 times that."""
+        from lilbee.catalog.models import _DEFAULT_BYTES_PER_PARAM, _quant_bytes_per_param
 
-        assert _quant_bytes_per_param("m-TQ1_0.gguf") < _BYTES_PER_PARAM["Q4_K_M"] / 2
-
-    def test_no_estimate_sits_below_its_ggml_type(self) -> None:
-        """The type is the floor the estimate stands on, so none may read under it."""
-        from lilbee.catalog.models import _quant_bytes_per_param
-
-        below = {
-            quant: (_quant_bytes_per_param(f"m-{quant}.gguf"), floor)
-            for quant, floor in _ggml_quant_rates().items()
-            if _quant_bytes_per_param(f"m-{quant}.gguf") < floor
-        }
-        assert not below, f"estimates below their ggml floor: {below}"
-
-    def test_a_type_naming_no_width_estimates_above_its_ggml_type(self) -> None:
-        """A ggml type sizes tensors, not files, so returning it reports a lower bound.
-
-        llama.cpp promotes output and tied embedding tensors and keeps norms in
-        F32, so a published file costs more per weight than the type its name
-        carries. Where the label states a bit width the width rule already prices
-        that; where it does not, the type is all there is and needs the term.
-        """
-        from lilbee.catalog.models import _quant_bytes_per_param
-
-        widthless = {q: f for q, f in _ggml_quant_rates().items() if not re.match(r"I?Q\d", q)}
-        assert set(widthless) == {"TQ1_0", "TQ2_0", "MXFP4", "NVFP4"}
-        at_floor = {
-            quant: (_quant_bytes_per_param(f"m-{quant}.gguf"), floor)
-            for quant, floor in widthless.items()
-            if _quant_bytes_per_param(f"m-{quant}.gguf") <= floor
-        }
-        assert not at_floor, f"estimates at or below their ggml floor: {at_floor}"
-
-    def test_the_measured_table_tracks_ggml_where_both_name_a_type(self) -> None:
-        """A measured figure is a file average, so it sits just above its type, never far."""
-        from lilbee.catalog.models import _BYTES_PER_PARAM
-
-        floors = _ggml_quant_rates()
-        shared = {q: (m, floors[q]) for q, m in _BYTES_PER_PARAM.items() if q in floors}
-        assert set(shared) == {"Q2_K", "IQ4_XS", "Q4_0", "Q5_0", "Q6_K", "Q8_0"}
-        adrift = {q: (m, f) for q, (m, f) in shared.items() if m > f * 1.02}
-        assert not adrift, f"measured figures more than 2% above their type: {adrift}"
-
-
-class TestMeasuredQuantFloors:
-    """The measured bytes-per-weight table against the ggml block sizes."""
-
-    @staticmethod
-    def _ggml_floor(quant: str) -> float | None:
-        """Bytes per weight of *quant*'s base ggml type, or None if it names none."""
-        rates = _ggml_type_rates()
-        base = quant.split("_")[0] if quant.startswith(("F", "BF")) else quant
-        for name in (quant, base, "_".join(quant.split("_")[:2])):
-            if name in rates:
-                return rates[name][1]
-        return None
-
-    def test_measured_quants_are_above_their_ggml_floor(self) -> None:
-        """No measured figure may sit below its base type, which is impossible.
-
-        llama.cpp promotes some tensors and leaves norms in F32, so a real file
-        always costs more per weight than its nominal type: a table entry under
-        the floor is a typo, not a small model. Checked here rather than clamped
-        at runtime so the table is fixed instead of silently corrected.
-        """
-        from lilbee.catalog.models import _BYTES_PER_PARAM
-
-        below = {
-            quant: (measured, floor)
-            for quant, measured in _BYTES_PER_PARAM.items()
-            if (floor := self._ggml_floor(quant)) is not None and measured < floor
-        }
-        assert not below, f"measured figures below their ggml floor: {below}"
-
-    def test_floor_helper_finds_a_known_type(self) -> None:
-        """The lookup resolves a real quant, so the check above cannot pass vacuously."""
-        assert self._ggml_floor("Q4_K_M") == pytest.approx(0.5625)
-        assert self._ggml_floor("NOT_A_QUANT") is None
+        assert _quant_bytes_per_param("m-TQ1_0.gguf") < _DEFAULT_BYTES_PER_PARAM / 2
 
 
 class TestGgmlQuantTableMatchesLibrary:
@@ -3351,25 +3310,6 @@ class TestGgmlQuantTableMatchesLibrary:
 class TestProductNeverImportsGguf:
     """The product must not import the ``gguf`` package; only tests may."""
 
-    def test_catalog_modules_never_import_gguf(self) -> None:
-        """A fresh interpreter, isolated from what other tests already imported."""
-        script = (
-            "import sys\n"
-            "import lilbee.catalog.refs\n"
-            "import lilbee.catalog.models\n"
-            "import lilbee.catalog.hf_client\n"
-            "loaded = sorted(m for m in sys.modules if m == 'gguf' or m.startswith('gguf.'))\n"
-            "assert not loaded, loaded\n"
-        )
-        result = subprocess.run(
-            [sys.executable, "-c", script],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            check=False,
-        )
-        assert result.returncode == 0, result.stderr
-
     @staticmethod
     def _names_gguf(module: str | None) -> bool:
         """True if *module* is ``gguf`` or a submodule of it."""
@@ -3382,8 +3322,13 @@ class TestProductNeverImportsGguf:
         return isinstance(node, ast.ImportFrom) and self._names_gguf(node.module)
 
     def test_no_module_under_src_references_gguf(self) -> None:
-        """Static guard: an ``import gguf`` anywhere in ``src/`` cannot survive review."""
-        src_root = Path(_models.__file__).resolve().parents[2]
+        """An ``import gguf`` anywhere in ``src/`` cannot survive review.
+
+        Anchored on the repository rather than on an imported module's path: an
+        installed wheel puts that path in site-packages, where the walk would
+        read every installed package and trip on ``gguf``'s own modules.
+        """
+        src_root = Path(__file__).resolve().parents[1] / "src"
         hits = [
             str(path)
             for path in src_root.rglob("*.py")

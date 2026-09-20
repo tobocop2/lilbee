@@ -29,25 +29,6 @@ def _extra_requirement(extra: str, name: str) -> Requirement:
     return next(r for r in reqs if r.name == name)
 
 
-def _dev_requirement(name: str) -> Requirement:
-    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    reqs = (Requirement(r) for r in data["dependency-groups"]["dev"])
-    return next(r for r in reqs if r.name == name)
-
-
-def test_gguf_rejects_the_line_without_nvfp4() -> None:
-    # The quant tests assert the exact set of ggml types that name no bit
-    # width, and NVFP4 joins that set in 0.19.0. 0.18.0 ships 32 types and no
-    # NVFP4, so a resolution to it fails those tests and sizes one type fewer.
-    req = _dev_requirement("gguf")
-    assert not req.specifier.contains("0.18.0")
-
-
-def test_gguf_admits_the_locked_release() -> None:
-    req = _dev_requirement("gguf")
-    assert req.specifier.contains("0.19.0")
-
-
 def test_litellm_extra_stops_before_the_next_major() -> None:
     # 1.98.0 ships cp310-abi3 wheels for macOS (x86_64/arm64), Windows, and
     # manylinux, so the maturin-build wheel gap that capped the line at <1.92

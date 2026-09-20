@@ -133,3 +133,67 @@ async def test_a_pull_too_big_for_the_disk_never_becomes_a_task(
         assert _live(pilot.app.task_bar.queue) == 0
         assert len(notices) == 2
         assert all("Not enough disk space" in n for n in notices)
+
+
+async def test_the_disk_check_asks_the_hub_what_the_file_really_costs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row's size approximates off the parameter count; one file is named here.
+
+    A refusal is a decision, so it runs against the bytes HuggingFace reports
+    for the resolved file rather than against the browse column's figure.
+    """
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        asked: list[int] = []
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.resolve_filename", lambda _m: "acme-Q4_K_M.gguf"
+        )
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.download_bytes", lambda _repo, _name: 9_000_000_000
+        )
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.disk_shortfall",
+            lambda _dir, _repo, needed: asked.append(needed) or None,
+        )
+        monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
+
+        screen._install_model(dataclasses.replace(_model(), size_gb=4.3))
+
+        assert asked == [9_000_000_000]
+
+
+async def test_an_unresolvable_file_leaves_the_rows_own_figure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offline, the approximation is the only figure there is, and it still guards."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+        pilot.app.task_bar.queue = TaskQueue()
+
+        def _unreachable(_model_arg: object) -> str:
+            raise RuntimeError("offline")
+
+        asked: list[int] = []
+        monkeypatch.setattr("lilbee.cli.tui.screens.catalog.resolve_filename", _unreachable)
+        monkeypatch.setattr(
+            "lilbee.cli.tui.screens.catalog.disk_shortfall",
+            lambda _dir, _repo, needed: asked.append(needed) or None,
+        )
+        monkeypatch.setattr(screen, "_enqueue_download", lambda _m: None)
+        monkeypatch.setattr(screen, "notify", lambda message, **_kw: None)
+
+        screen._install_model(dataclasses.replace(_model(), size_gb=4.0))
+
+        assert asked == [int(4.0 * 1024**3)]

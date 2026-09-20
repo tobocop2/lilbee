@@ -216,10 +216,15 @@ def _format_size_mb(size_mb: int) -> str:
 
 
 def format_size_gb(size_gb: float) -> str:
-    """Format size in GB to a human-readable string."""
+    """Format a browse row's size in GB, marked approximate.
+
+    A listing row carries no per-file byte count, so its size comes from the
+    parameter count and the quant's ggml type. The tilde says so: the exact
+    figure lands when a pull names one file.
+    """
     if size_gb <= 0:
         return "--"
-    return f"{size_gb:.1f} GB"
+    return f"~{size_gb:.1f} GB"
 
 
 def _is_param_count(label: str) -> bool:
