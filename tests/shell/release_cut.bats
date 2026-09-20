@@ -66,6 +66,7 @@ promote() {
   [ ! -s "${EDITOR_LOG}" ]
   [ "$(git -C "${WORK}" tag -l)" = "v1.2.3b8" ]
   [ "$(git -C "${WORK}" cat-file -t v1.2.3b8)" = "commit" ]
+  [ "$(git -C "${ORIGIN}" cat-file -t v1.2.3b8)" = "commit" ]
 }
 
 @test "promoting a tag under tag.gpgsign needs no editor" {

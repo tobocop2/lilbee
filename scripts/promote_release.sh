@@ -71,7 +71,7 @@ fi
 
 git -C "$work" add pyproject.toml uv.lock
 git -C "$work" commit -q -m "Release ${to}"
-# Lightweight, not annotated: detect_promotion.sh skips an annotated tag's peel.
+# Lightweight: tag.gpgsign must not turn this into a signed tag, which needs a message.
 git -C "$work" tag --no-sign "v${to}"
 git -C "$work" push origin "v${to}"
 
