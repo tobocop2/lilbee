@@ -11609,8 +11609,8 @@ def test_param_sort_value_no_match():
     assert _param_sort_value("--") == 0.0
 
 
-async def test_fetch_installed_names_exception():
-    """_fetch_installed_names suppresses exception and keeps empty set."""
+async def test_fetch_installed_names_exception(caplog):
+    """An unreadable registry leaves the marks alone and says so in the log."""
     from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
@@ -11625,12 +11625,16 @@ async def test_fetch_installed_names_exception():
             screen._installed_names = set()
             services = MagicMock()
             services.model_manager.list_native_identities.side_effect = Exception("fail")
-            with patch(
-                "lilbee.cli.tui.screens.catalog.get_services",
-                return_value=services,
+            with (
+                patch(
+                    "lilbee.cli.tui.screens.catalog.get_services",
+                    return_value=services,
+                ),
+                caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.screens.catalog"),
             ):
                 screen._fetch_installed_names()
             assert screen._installed_names == set()
+            assert "Could not read the model registry" in caplog.text
 
 
 async def test_catalog_nav_actions_forward_to_grid_in_grid_view():

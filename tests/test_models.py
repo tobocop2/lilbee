@@ -4,10 +4,12 @@ from unittest import mock
 
 import pytest
 
-from conftest import PICKS_CHAT
+from conftest import PICKS_CHAT, install_fake_model
+from lilbee.core.config import cfg
 from lilbee.modelhub import models
 from lilbee.modelhub.models import ModelInfo
 from tests._mock_effects import repeat_last
+from tests._unreadable import POSIX_DENIES_READS
 
 
 class TestModelCatalog:
@@ -357,3 +359,39 @@ class TestPickDefaultModelFallback:
         monkeypatch.setattr(models, "_get_model_catalog", lambda: catalog)
         result = models.pick_default_model(0.5)
         assert result.size_gb == min(m.size_gb for m in catalog)
+
+
+@POSIX_DENIES_READS
+class TestUnreadableRegistry:
+    """A registry that cannot be read is unknown, not an empty install set."""
+
+    def test_list_installed_models_surfaces_an_unreadable_registry(self) -> None:
+        from lilbee.modelhub.registry import repo_to_dir
+        from tests._unreadable import unreadable
+
+        repo = "Qwen/Qwen3-0.6B-GGUF"
+        install_fake_model(repo, "Qwen3-0.6B-Q4_K_M.gguf", "chat")
+        repo_dir = cfg.models_dir / "manifests" / repo_to_dir(repo)
+
+        with (
+            mock.patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
+            unreadable(repo_dir),
+            pytest.raises(OSError),
+        ):
+            models.list_installed_models()
+
+
+class TestMalformedServerListing:
+    """An unusable remote server is a different event from an unreadable registry."""
+
+    def test_list_installed_models_keeps_the_native_half(self) -> None:
+        """A listing neither strategy can walk drops its own names and nothing else."""
+        ref = install_fake_model("acme/Jan-v3.5-4B-GGUF", "jan.gguf", "chat")
+        response = mock.Mock()
+        response.raise_for_status = mock.Mock()
+        # Both parse loops run outside the request guard, so a null listing
+        # raises past the strategy rather than yielding an empty list.
+        response.json.return_value = {"models": None, "data": None}
+
+        with mock.patch("lilbee.modelhub.model_manager.discovery._http_get", return_value=response):
+            assert models.list_installed_models() == [ref]

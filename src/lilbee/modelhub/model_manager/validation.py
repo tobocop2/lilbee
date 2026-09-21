@@ -64,24 +64,11 @@ class CanonicalRef:
     reason: str | None = None
 
 
-def _local_install_state(ref: str) -> InstallState:
-    """Where *ref* loads from, per the registry the serving path honours.
-
-    One definition of installed, shared with the fleet, the CLI, the TUI and
-    ``/v1/models``.
-    """
-    try:
-        return install_state(ref, ModelRegistry(cfg.models_dir))
-    except Exception:  # pragma: no cover - defensive for fresh installs
-        log.debug("Local registry probe failed for %r", ref, exc_info=True)
-        return InstallState.MISSING
-
-
 def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
     """True if the local model server lists at least one model within the probe budget."""
     try:
         return bool(classify_remote_models(base_url, spec, timeout=_PROBE_TIMEOUT_S))
-    except Exception:  # pragma: no cover - defensive; classify swallows its own errors
+    except Exception:  # a listing the strategy cannot walk raises past the request guard
         log.debug("Local model server probe failed for %r", base_url, exc_info=True)
         return False
 
@@ -118,11 +105,12 @@ def _classify_ref(ref: str) -> tuple[ValidationResult, str | None]:
     """Classify a persisted ref, returning its status and a human-readable reason.
 
     Reads cfg, the local registry, and (for ollama/lm_studio refs) probes
-    the configured model server. Never mutates persisted state.
+    the configured model server. Never mutates persisted state. Raises
+    ``OSError`` when the registry cannot be read: that is unknown, not absent.
     """
     if not ref:
         return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
-    if _local_install_state(ref) is not InstallState.MISSING:
+    if install_state(ref, ModelRegistry(cfg.models_dir)) is not InstallState.MISSING:
         return ValidationResult.OK, None
     try:
         parsed = parse_model_ref(ref)
@@ -159,14 +147,12 @@ def _first_installed_local_ref(want: ModelTask) -> str | None:
     so a loose GGUF file (in no listing) and a manifest whose split set is
     missing a shard (the listing gates on the first shard alone) are both out.
     Tasks are name-reclassified so the pick matches the role validator.
+
+    Raises ``OSError`` when the registry cannot be read, so an unreadable
+    tree never reads as "nothing to substitute".
     """
-    try:
-        registry = ModelRegistry(cfg.models_dir)
-        installed = list(registry.list_installed())
-    except Exception:
-        log.debug("Local registry probe failed during canonicalization", exc_info=True)
-        return None
-    for manifest in installed:
+    registry = ModelRegistry(cfg.models_dir)
+    for manifest in registry.list_installed():
         if reclassify_by_name(manifest.ref, manifest.task) != want:
             continue
         if install_state(manifest.ref, registry) is InstallState.REGISTERED:

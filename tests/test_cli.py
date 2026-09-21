@@ -1303,12 +1303,16 @@ class TestListInstalledModels:
             mock_remote.return_value = []
             assert list_installed_models() == [self._CHAT_REF]
 
-    def test_returns_empty_on_error(self):
-        with mock.patch(
-            "lilbee.modelhub.registry.ModelRegistry.list_installed",
-            side_effect=ConnectionError("not running"),
+    def test_surfaces_a_registry_error(self):
+        """A registry the walk cannot read is unknown, not an empty chat list."""
+        with (
+            mock.patch(
+                "lilbee.modelhub.registry.ModelRegistry.list_installed",
+                side_effect=ConnectionError("not running"),
+            ),
+            pytest.raises(ConnectionError),
         ):
-            assert list_installed_models() == []
+            list_installed_models()
 
     def test_excludes_non_chat_registry_tasks(self):
         with (

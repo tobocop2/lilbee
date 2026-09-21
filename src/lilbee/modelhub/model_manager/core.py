@@ -94,18 +94,18 @@ class ModelManager:
         Same TTL as ``list_installed``. The catalog screen reads this to
         mark catalog rows as installed without re-walking the registry
         on every screen mount.
+
+        Raises ``OSError`` when the registry cannot be read, so an
+        unreadable tree is never cached as nothing installed.
         """
         with self._cache_lock:
             cached = self._native_identities_cache.get(_NATIVE_IDENTITIES_CACHE_KEY)
         if cached is not None:
             return cached
         identities: set[str] = set()
-        try:
-            for m in self._registry.list_installed():
-                identities.add(m.ref)
-                identities.add(m.hf_repo)
-        except Exception:
-            log.debug("ModelRegistry.list_installed failed", exc_info=True)
+        for m in self._registry.list_installed():
+            identities.add(m.ref)
+            identities.add(m.hf_repo)
         result = frozenset(identities)
         with self._cache_lock:
             self._native_identities_cache[_NATIVE_IDENTITIES_CACHE_KEY] = result
