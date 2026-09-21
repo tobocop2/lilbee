@@ -31,6 +31,27 @@ def _card(total_bytes: int, *, index: int = 0) -> FleetDevice:
     return FleetDevice("CUDA", index, f"gpu{index}", total_bytes, total_bytes)
 
 
+_ENGINE_ID = "/bin/llama-server@512-1"
+
+
+def _pin_snapshot(
+    monkeypatch,
+    devices: tuple[FleetDevice, ...] = (),
+    *,
+    engine_devices_all_refused: bool = False,
+) -> None:
+    """Serve a plan snapshot of *devices*, taken against the engine that is there."""
+    probe = planning_mod._PlanProbe(
+        devices=devices,
+        sizing_budget=0,
+        free_system=0,
+        engine=_ENGINE_ID,
+        engine_devices_all_refused=engine_devices_all_refused,
+    )
+    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: probe)
+    monkeypatch.setattr(planning_mod, "_engine_identity", lambda: _ENGINE_ID)
+
+
 def _fixed_estimator(*, vram: int = 1024, unified: int | None = None):
     """A gguf-parser stand-in returning a constant footprint (no subprocess)."""
     total_unified = vram if unified is None else unified
@@ -3151,10 +3172,8 @@ def test_role_model_placeable_false_for_a_remote_ref(monkeypatch) -> None:
 
 
 def test_placeable_total_vram_reuses_the_captured_probe(monkeypatch) -> None:
-    _dev = type("D", (), {"total_bytes": 40 * 1024**3})
-    probe = type("P", (), {"devices": [_dev(), _dev()]})()
-    monkeypatch.setattr(planning_mod._plan_probe_store, "get", lambda: probe)
-    assert planning_mod.placeable_total_vram() == 80 * 1024**3
+    _pin_snapshot(monkeypatch, (_card(40 * _GB), _card(40 * _GB, index=1)))
+    assert planning_mod.placeable_total_vram() == 80 * _GB
 
 
 def test_placeable_total_vram_zero_when_unprobeable(monkeypatch) -> None:
@@ -3448,21 +3467,13 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
     """
 
     def test_the_launch_names_no_device(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store,
-            "get",
-            lambda: SimpleNamespace(engine_devices_all_refused=True),
-        )
+        _pin_snapshot(monkeypatch, engine_devices_all_refused=True)
 
         assert planning_mod._cpu_pin_when_every_device_was_refused() == ("none",)
 
     def test_a_plain_cpu_host_is_left_unpinned(self, monkeypatch) -> None:
         """Nothing was refused, so there is nothing to keep the engine off."""
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store,
-            "get",
-            lambda: SimpleNamespace(engine_devices_all_refused=False),
-        )
+        _pin_snapshot(monkeypatch, engine_devices_all_refused=False)
 
         assert planning_mod._cpu_pin_when_every_device_was_refused() == ()
 
@@ -3473,11 +3484,7 @@ class TestARefusedDeviceIsAlsoKeptFromTheEngine:
 
     def test_a_placed_gpu_still_wins_over_the_cpu_pin(self, monkeypatch) -> None:
         """The refusal pin is a fallback for an empty device list, not an override."""
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store,
-            "get",
-            lambda: SimpleNamespace(engine_devices_all_refused=True),
-        )
+        _pin_snapshot(monkeypatch, engine_devices_all_refused=True)
         chosen = (FleetDevice(VULKAN_BACKEND, 0, "Card A", 8 * _GB, 8 * _GB),)
 
         names = planning_mod._device_names(chosen) or (
@@ -3568,30 +3575,18 @@ class TestTheFleetBackendFromThePlanSnapshot:
     pass answers consistently even as the live probe changes underneath it."""
 
     def test_the_snapshot_names_the_backend(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store,
-            "get",
-            lambda: SimpleNamespace(devices=(FleetDevice("ROCm", 0, "AMD", 24 * _GB, 23 * _GB),)),
-        )
+        _pin_snapshot(monkeypatch, (FleetDevice("ROCm", 0, "AMD", 24 * _GB, 23 * _GB),))
 
         assert planning_mod._fleet_backend() == "ROCm"
 
     def test_a_snapshot_of_a_gpu_less_host_names_none(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store, "get", lambda: SimpleNamespace(devices=())
-        )
+        _pin_snapshot(monkeypatch)
 
         assert planning_mod._fleet_backend() is None
 
     def test_the_snapshot_wins_over_the_live_probe(self, monkeypatch) -> None:
         """A live read under a loaded fleet can disagree; the pass must not."""
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store,
-            "get",
-            lambda: SimpleNamespace(
-                devices=(FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB),)
-            ),
-        )
+        _pin_snapshot(monkeypatch, (FleetDevice("CUDA", 0, "NVIDIA", 24 * _GB, 23 * _GB),))
 
         def _must_not_run(_b):
             raise AssertionError("the live probe was consulted despite a snapshot")
@@ -3861,9 +3856,7 @@ class TestProbedDevices:
 
     def test_prefers_the_plan_snapshot(self, monkeypatch) -> None:
         card = _card(8 * _GB)
-        monkeypatch.setattr(
-            planning_mod._plan_probe_store, "get", lambda: SimpleNamespace(devices=(card,))
-        )
+        _pin_snapshot(monkeypatch, (card,))
         assert planning_mod.probed_devices() == (card,)
 
     def test_falls_back_to_the_read_cache(self, monkeypatch) -> None:

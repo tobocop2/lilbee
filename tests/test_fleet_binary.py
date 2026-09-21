@@ -68,6 +68,46 @@ def test_bundled_tool_none_when_package_absent(monkeypatch: pytest.MonkeyPatch) 
     assert binary_mod._bundled_tool(EngineTool.LLAMA_SWAP) is None
 
 
+def test_bundled_tool_none_when_the_wheel_predates_the_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # An engine wheel old enough to ship no llama-swap has no accessor for it.
+    # Resolution must fall through to PATH rather than raise out of every caller.
+    monkeypatch.setitem(sys.modules, "lilbee_engine", SimpleNamespace())
+    assert binary_mod._bundled_tool(EngineTool.LLAMA_SWAP) is None
+
+
+def test_the_binary_identity_survives_a_path_that_is_not_there(tmp_path: Path) -> None:
+    # Read on every plan, so an engine that vanished answers with a marker.
+    assert binary_mod.engine_binary_identity(tmp_path / "gone") == f"{tmp_path / 'gone'}@unreadable"
+
+
+def test_a_rewritten_binary_is_a_new_identity_with_every_stat_field_unmoved(
+    tmp_path: Path,
+) -> None:
+    # An upgrade rewrites the engine in place. The rewrite keeps the inode, a
+    # build of the same size written inside one mtime tick moves no timestamp,
+    # and then no stat field says anything changed. Keying on metadata would
+    # serve the old binary's device probe for the new engine, which is the whole
+    # defect. Only the bytes tell them apart.
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"the stub engine")
+    before = binary_mod.engine_binary_identity(binary)
+    stat = binary.stat()
+    with binary.open("r+b") as handle:
+        handle.write(b"the real engine")
+    os.utime(binary, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+
+    rewritten = binary.stat()
+    assert (rewritten.st_dev, rewritten.st_ino, rewritten.st_size, rewritten.st_mtime_ns) == (
+        stat.st_dev,
+        stat.st_ino,
+        stat.st_size,
+        stat.st_mtime_ns,
+    )
+    assert binary_mod.engine_binary_identity(binary) != before
+
+
 def test_bundled_tool_none_when_binary_file_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
