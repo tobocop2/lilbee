@@ -6,7 +6,7 @@ from litestar.testing import create_test_client
 
 import lilbee.server.handlers as handlers
 from lilbee.app.placement import GpuInfo, PlacementView, RolePlacementView
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.server.routes.placement import (
     gpu_stats_stream_route,
     gpus_route,
@@ -359,3 +359,67 @@ def test_put_probe_oserror_is_service_unavailable_when_enabled(monkeypatch):
         r = client.put("/api/placement", json={"spec": {"chat": {"devices": [0]}}})
     assert r.status_code == 503
     assert "probe" in r.text.lower() or "nvidia-smi" in r.text
+
+
+class TestThePayloadReportsTheEngineBackend:
+    """The backend is a field, not something a client reads off ``gpus``."""
+
+    @staticmethod
+    def _gpu_less(backend):
+        return PlacementView(
+            gpus=(),
+            roles=(),
+            unplaceable=(),
+            manual=False,
+            spec_json=None,
+            engine_backend=backend,
+        )
+
+    def _payload(self, monkeypatch, view):
+        async def _placement():
+            return view
+
+        monkeypatch.setattr(handlers, "placement", _placement)
+        with create_test_client([placement_route]) as client:
+            response = client.get("/api/placement")
+            assert response.status_code == 200
+            return response.json()
+
+    def test_a_cpu_host_and_a_failed_probe_are_told_apart(self, monkeypatch):
+        """Both send an empty ``gpus`` array. The field is the only thing that differs.
+
+        Inferring the backend from ``gpus`` printed "CPU" for a CUDA host whose
+        device enumeration failed, and the bug report then named the wrong machine.
+        """
+        cpu = self._payload(monkeypatch, self._gpu_less(EngineBackend.CPU))
+        unreadable = self._payload(monkeypatch, self._gpu_less(EngineBackend.UNKNOWN))
+
+        assert cpu["gpus"] == unreadable["gpus"] == []
+        assert cpu["engine_backend"] == "cpu"
+        assert unreadable["engine_backend"] == "unknown"
+
+    def test_a_gpu_host_names_its_backend(self, monkeypatch):
+        view = PlacementView(
+            gpus=(GpuInfo(0, "CUDA", "CUDA0", "NVIDIA A100", 80 * GIB, 72 * GIB),),
+            roles=(),
+            unplaceable=(),
+            manual=False,
+            spec_json=None,
+            engine_backend=EngineBackend.CUDA,
+        )
+
+        assert self._payload(monkeypatch, view)["engine_backend"] == "cuda"
+
+    def test_an_unset_view_never_claims_cpu(self):
+        """The default is the safe answer: no claim, rather than a wrong one.
+
+        The backend is left off the view on purpose, so this reads the field
+        default; passing UNKNOWN would have asserted the argument back.
+        """
+        from lilbee.server.models import PlacementResponse
+
+        view = PlacementView(gpus=(), roles=(), unplaceable=(), manual=False, spec_json=None)
+
+        response = PlacementResponse.from_view(view)
+
+        assert response.engine_backend is EngineBackend.UNKNOWN

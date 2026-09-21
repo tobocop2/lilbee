@@ -17,6 +17,7 @@ from lilbee.providers.fleet.devices import (
     probe_devices,
     visible_env,
 )
+from lilbee.providers.roles import EngineBackend
 
 _CUDA_LISTING = """\
 Available devices:
@@ -924,3 +925,94 @@ def test_a_device_reporting_no_memory_is_dropped() -> None:
         "  CUDA1: NVIDIA Graphics Device (0 MiB, 0 MiB free)"
     )
     assert [d.index for d in parsed] == [0]
+
+
+class TestReportedEngineBackend:
+    """The backend the probe reports, which no caller may infer from the device list."""
+
+    def test_a_cpu_host_and_a_failed_probe_are_different_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both list no device. Only the first is CPU.
+
+        A client that reads an empty device list as CPU prints "CPU" for a CUDA
+        box whose driver refused the probe, and the bug report then names the
+        wrong machine.
+        """
+        _fake_listing(monkeypatch, "Available devices:\n")
+        answered = probe_devices(Path("/bin/llama-server"))
+
+        _fake_listing(monkeypatch, "usage: llama-server [options]\n", returncode=1)
+        silent = probe_devices(Path("/bin/llama-server"))
+
+        assert answered.devices == silent.devices == []
+        assert answered.backend is EngineBackend.CPU
+        assert silent.backend is EngineBackend.UNKNOWN
+
+    def test_a_probe_that_could_not_run_claims_no_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*_a: object, **_k: object) -> tuple[str, int]:
+            raise OSError("no such binary")
+
+        monkeypatch.setattr(dev_mod, "_run_list_devices", _boom)
+
+        assert probe_devices(Path("/bin/llama-server")).backend is EngineBackend.UNKNOWN
+
+    def test_a_refused_gpu_list_reports_cpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The engine listed a software renderer and lilbee refused it.
+
+        The plan is CPU-shaped and the launch pins no device, so CPU is what runs.
+        """
+        _fake_listing(
+            monkeypatch,
+            "Available devices:\n  Vulkan0: llvmpipe (LLVM 15.0.7) (16000 MiB)\n",
+        )
+
+        probe = probe_devices(Path("/bin/llama-server"))
+
+        assert probe.refused_all is True
+        assert probe.backend is EngineBackend.CPU
+
+    @pytest.mark.parametrize(
+        ("listing", "expected"),
+        [
+            ("  CUDA0: NVIDIA A100 (80000 MiB)\n", EngineBackend.CUDA),
+            ("  ROCm0: AMD MI300 (128000 MiB)\n", EngineBackend.ROCM),
+            ("  HIP0: AMD MI300 (128000 MiB)\n", EngineBackend.ROCM),
+            ("  MTL0: Apple M3 Max (40000 MiB)\n", EngineBackend.METAL),
+            ("  Metal0: Apple M3 Max (40000 MiB)\n", EngineBackend.METAL),
+            ("  SYCL0: Intel Arc A770 (16000 MiB)\n", EngineBackend.SYCL),
+            ("  Vulkan0: NVIDIA GeForce RTX 4090 (24000 MiB)\n", EngineBackend.VULKAN),
+        ],
+    )
+    def test_each_engine_name_maps_to_one_reported_backend(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        listing: str,
+        expected: EngineBackend,
+    ) -> None:
+        """HIP and ROCm are one backend, MTL and Metal are one backend."""
+        _fake_listing(monkeypatch, f"Available devices:\n{listing}")
+
+        assert probe_devices(Path("/bin/llama-server")).backend is expected
+
+    def test_the_rank_and_the_reported_name_come_from_one_table(self) -> None:
+        """A backend cannot be ranked without also being named.
+
+        Two hand-written tables let a new GPU class be added to the ranks alone,
+        and the host that the addition made usable then reported "unknown".
+        """
+        assert dev_mod._BACKEND_RANK.keys() == dev_mod._REPORTED_BACKEND.keys()
+        assert dev_mod._BACKEND_RANK.keys() == dev_mod._BACKENDS.keys()
+
+    def test_a_backend_outside_the_table_raises_instead_of_reporting_unknown(self) -> None:
+        """The selector only offers table rows, so a miss here is a bug, not a host.
+
+        Defaulting to UNKNOWN turned that bug into a working GPU host quietly
+        reporting no backend, which is the defect this field exists to end.
+        """
+        device = FleetDevice("Brand New Backend", 0, "card", _MIB, _MIB)
+
+        with pytest.raises(KeyError):
+            dev_mod._selected_backend([device], spoke=True)

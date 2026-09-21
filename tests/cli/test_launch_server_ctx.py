@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.engine_params import ChatFit
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
 
 
 def _health(monkeypatch, body: dict) -> None:
@@ -182,7 +182,9 @@ def test_planned_chat_ctx_sizes_against_the_gpu_the_fleet_will_use(monkeypatch, 
     monkeypatch.setattr(
         planning_mod._read_device_cache,
         "get",
-        lambda _b: [FleetDevice("CUDA", 0, "gpu", 8 * 1024**3, 8 * 1024**3)],
+        lambda _b: planning_mod.DeviceReading(
+            [FleetDevice("CUDA", 0, "gpu", 8 * 1024**3, 8 * 1024**3)], EngineBackend.CUDA
+        ),
     )
 
     # 6 GiB budget, less 2 GiB of weights and their 10% buffer, over 147,456 bytes

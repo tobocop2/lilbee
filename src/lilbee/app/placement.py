@@ -15,7 +15,7 @@ from lilbee.providers.fleet.planning import (
     clear_read_device_cache,
     resolve_placement_plan,
 )
-from lilbee.providers.roles import WorkerRole
+from lilbee.providers.roles import EngineBackend, WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress, is_active_warm
 
 _PLACEMENT_KEY = "placement"
@@ -91,6 +91,10 @@ class PlacementView:
     # They load on demand and may fail; a view that omits this shows them as
     # comfortably placed right up until they do.
     tight: tuple[TightRole, ...] = ()
+    # The backend the engine selected. A surface reports this rather than reading
+    # it off ``gpus``: an empty device list is a CPU host and a failed probe
+    # alike, and only UNKNOWN says which one this is.
+    engine_backend: EngineBackend = EngineBackend.UNKNOWN
 
 
 def _active_spec() -> PlacementSpec | None:
@@ -146,6 +150,7 @@ def _view(
         ),
         co_tenants=tuple(sorted(resolved.co_tenants, key=lambda role: role.value)),
         rejected_spec_json=rejected_spec_json,
+        engine_backend=resolved.engine_backend,
     )
 
 
