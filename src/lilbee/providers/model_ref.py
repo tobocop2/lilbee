@@ -58,9 +58,13 @@ def is_native_gguf_ref(raw: str) -> bool:
 
 
 def is_loose_model_file(raw: str) -> bool:
-    """True when *raw* is an absolute path to an existing file, loadable without a manifest."""
+    """True when *raw* is an absolute path to an existing file, loadable without a manifest.
+
+    A directory answers False. It exists, but the engine cannot load it, and
+    every caller here treats a True as "this ref serves as it stands".
+    """
     candidate = Path(raw)
-    return candidate.is_absolute() and candidate.exists()
+    return candidate.is_absolute() and candidate.is_file()
 
 
 def routes_to_native_gguf(raw: str) -> bool:

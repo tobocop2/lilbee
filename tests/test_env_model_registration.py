@@ -279,6 +279,13 @@ class TestOneDefinitionOfInstalled:
         assert painted is False
         assert state is InstallState.MISSING
 
+    def test_a_directory_reads_as_missing_on_both(self, tmp_path: Path, monkeypatch) -> None:
+        """A directory is on disk but holds no model, so nothing may call it loadable."""
+        painted, state = self._state(tmp_path, str(tmp_path), monkeypatch)
+
+        assert painted is False
+        assert state is InstallState.MISSING
+
     def test_a_pulled_model_reads_as_registered_on_both(self, tmp_path: Path, monkeypatch) -> None:
         models_dir = tmp_path / "models"
         models_dir.mkdir()

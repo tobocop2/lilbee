@@ -5,10 +5,11 @@ become stale when the user removes a GGUF, swaps providers, or moves
 between machines. The TUI / server / CLI all read these refs at startup
 and should not get a "model not found" error from the very first prompt.
 
-The helpers here are pure and side-effect-free: callers decide what to
-do with the result (swap in-memory ``cfg`` field, surface a banner, log
-a warning, etc.). The persisted file is never rewritten, so the user's
-declared intent is preserved across reinstalls.
+The helpers here decide nothing: callers act on the result (swap the
+in-memory ``cfg`` field, surface a banner, log a warning, etc.). They
+read the model registry, which repairs a manifest it can recover from
+the HuggingFace cache, but they never rewrite the config file, so the
+user's declared intent is preserved across reinstalls.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from dataclasses import dataclass
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
+from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.model_manager.discovery import (
     classify_remote_models,
     discover_api_models,
@@ -62,16 +64,17 @@ class CanonicalRef:
     reason: str | None = None
 
 
-def _is_local_installed(ref: str) -> bool:
-    """True iff ``ref`` resolves to an installed GGUF in the local registry."""
+def _local_install_state(ref: str) -> InstallState:
+    """Where *ref* loads from, per the registry the serving path honours.
+
+    One definition of installed, shared with the fleet, the CLI, the TUI and
+    ``/v1/models``.
+    """
     try:
-        registry = ModelRegistry(cfg.models_dir)
-        installed_models = registry.list_installed()
-        installed = {m.ref for m in installed_models} | {m.hf_repo for m in installed_models}
-        return ref in installed
+        return install_state(ref, ModelRegistry(cfg.models_dir))
     except Exception:  # pragma: no cover - defensive for fresh installs
         log.debug("Local registry probe failed for %r", ref, exc_info=True)
-        return False
+        return InstallState.MISSING
 
 
 def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
@@ -119,7 +122,7 @@ def _classify_ref(ref: str) -> tuple[ValidationResult, str | None]:
     """
     if not ref:
         return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
-    if _is_local_installed(ref):
+    if _local_install_state(ref) is not InstallState.MISSING:
         return ValidationResult.OK, None
     try:
         parsed = parse_model_ref(ref)
@@ -149,8 +152,12 @@ def _first_available_api_chat_ref() -> str | None:
 
 
 def _first_installed_local_ref(want: ModelTask) -> str | None:
-    """Return the first installed local ref whose task matches *want*.
+    """Return the first registered local ref whose task matches *want*.
 
+    Registered only, a narrower bar than the persisted ref clears: a
+    substitute must be a ref every surface can name and the engine can load,
+    so a loose GGUF file (in no listing) and a manifest whose split set is
+    missing a shard (the listing gates on the first shard alone) are both out.
     Tasks are name-reclassified so the pick matches the role validator.
     """
     try:
@@ -160,7 +167,9 @@ def _first_installed_local_ref(want: ModelTask) -> str | None:
         log.debug("Local registry probe failed during canonicalization", exc_info=True)
         return None
     for manifest in installed:
-        if reclassify_by_name(manifest.ref, manifest.task) == want:
+        if reclassify_by_name(manifest.ref, manifest.task) != want:
+            continue
+        if install_state(manifest.ref, registry) is InstallState.REGISTERED:
             return manifest.ref
     return None
 
