@@ -3,12 +3,16 @@ name: Warm engine cache
 # GitHub scopes cache saves to the creating ref, so caches saved during tag
 # (release) runs are unrestorable by later runs. Build the pinned engine
 # matrix once here on main; release runs then restore instead of rebuilding.
-# Doubles as pre-tag validation of the engine builds themselves.
+#
+# Doubles as the validation of the engine builds themselves, and that is why it
+# passes `required: true`: a change to the engine source or its compile flags is
+# only proven by compiling every backend, so a failed cell must fail this run.
+# The same paths run it on a pull request, so an engine pin bump compiles CUDA
+# before it merges rather than after.
 
 on:
-  push:
-    branches: [main]
-    paths:
+  pull_request:
+    paths: &engine-paths
       - 'engine-versions.env'
       - 'tools/wheel-build/build_llama_server.sh'
       - 'tools/wheel-build/bundle_rocm_runtime.sh'
@@ -16,6 +20,13 @@ on:
       - 'tools/wheel-build/install_gpu_toolkit.sh'
       - '.github/workflows/build-multigpu.yml'
       - '.github/workflows/warm-engine-cache.yml'
+  push:
+    # chore/engine-pin-sync is the rolling engine bump branch. A pull request
+    # that the built-in token opens raises no workflow event at all, so the pin
+    # bump is gated on the push instead, which the sync workflow's deploy key
+    # does raise.
+    branches: [main, chore/engine-pin-sync]
+    paths: *engine-paths
   # GitHub evicts caches unaccessed for 7 days. Without a cron the pins can sit
   # unchanged past that window and the next release rebuilds every engine cold.
   schedule:
@@ -26,10 +37,14 @@ permissions:
   contents: write  # build-multigpu publishes the engines it builds to the mirror release
 
 concurrency:
-  group: warm-engine-cache
+  # Per ref: a pull request run must not cancel the main run that fills the
+  # cache the release restores from.
+  group: warm-engine-cache-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   warm:
     uses: ./.github/workflows/build-multigpu.yml
+    with:
+      required: true
     secrets: inherit

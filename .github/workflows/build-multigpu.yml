@@ -4,9 +4,15 @@ name: Build multi-GPU server wheels and executables
 # (bundles the compiled llama.cpp llama-server). Built across the multi-GPU
 # backend matrix (CUDA / Vulkan / ROCm) plus metal/cpu fallbacks.
 #
-# This is its OWN path. Every cell is continue-on-error and the artifacts use a
-# distinct prefix (wheel-multigpu-*) so a failure here never blocks the
-# default wheels, extra wheels, or executable release paths.
+# This is its OWN path. By default every cell is continue-on-error and the
+# artifacts use a distinct prefix (wheel-multigpu-*) so a failure here never
+# blocks the default wheels, extra wheels, or executable release paths.
+#
+# A caller that builds these engines to VALIDATE them, not to ship an optional
+# artifact, passes `required: true` and gets the opposite: a failed cell fails
+# the run. Without it a broken engine source compiles to four red CUDA cells
+# inside a green run, which is how a llama.cpp revision that cannot compile for
+# sm_70 reached a release tag.
 
 on:
   workflow_dispatch:
@@ -25,13 +31,17 @@ on:
         description: "Override the llama.cpp ref to build (blank = the ENGINE_LLAMA_CPP_REF pin in engine-versions.env)."
         type: string
         default: ""
+      required:
+        description: "Fail the run when a backend cell fails, instead of dropping that artifact."
+        type: boolean
+        default: false
 
 permissions:
   contents: write  # publish freshly built engines to the engine-binaries mirror release
 
 jobs:
   build-multigpu:
-    continue-on-error: true
+    continue-on-error: ${{ !inputs.required }}
     strategy:
       fail-fast: false
       matrix:
