@@ -248,7 +248,7 @@ class TestSyncAcrossWorkers:
         )
         assert sorted(result.added) == ["f0.txt", "f1.txt"]
         assert merged == [{"f0.txt", "f1.txt"}]
-        assert EventType.DONE in events
+        assert EventType.SYNC_DONE in events
 
     async def test_a_removal_only_run_rebuilds_the_clusters(self, specs, monkeypatch):
         """A removed source leaves stale concept nodes behind unless Leiden runs again."""

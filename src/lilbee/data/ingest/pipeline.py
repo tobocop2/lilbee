@@ -1163,7 +1163,7 @@ async def _sync_across_workers(
         cancel=cancel,
     )
     on_progress(
-        EventType.DONE,
+        EventType.SYNC_DONE,
         SyncDoneEvent(
             added=len(result.added),
             updated=len(result.updated),
@@ -1356,7 +1356,7 @@ async def sync(
         index_mismatch=index_mismatch,
     )
     on_progress(
-        EventType.DONE,
+        EventType.SYNC_DONE,
         SyncDoneEvent(
             added=len(result.added),
             updated=len(result.updated),

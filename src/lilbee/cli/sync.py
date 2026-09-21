@@ -59,10 +59,10 @@ def _print_done(con: Console, data: ProgressEvent) -> None:
 
 
 def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
-    """Return a callback that prints one-line status for FILE_START and DONE events."""
+    """Return a callback that prints one-line status for FILE_START and SYNC_DONE events."""
     handlers: dict[EventType, Callable[[Console, ProgressEvent], None]] = {
         EventType.FILE_START: _print_file_start,
-        EventType.DONE: _print_done,
+        EventType.SYNC_DONE: _print_done,
     }
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
@@ -154,7 +154,7 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
             status.text = (
                 f"⟳ Vision OCR [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
             )
-        elif event_type == EventType.DONE:
+        elif event_type == EventType.SYNC_DONE:
             status.clear()
             if not isinstance(data, SyncDoneEvent):
                 raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")

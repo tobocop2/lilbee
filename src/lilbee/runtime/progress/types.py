@@ -6,12 +6,17 @@ from pydantic import BaseModel
 
 
 class EventType(StrEnum):
-    """Progress event types emitted during sync/ingest."""
+    """Progress event types emitted during sync/ingest.
+
+    No value may repeat one in :class:`SseEvent`. The HTTP layer writes a
+    progress event's value straight into the SSE ``event:`` field, so a shared
+    value reaches a client as one event name carrying two payload shapes.
+    """
 
     FILE_START = "file_start"
     FILE_DONE = "file_done"
     BATCH_PROGRESS = "batch_progress"
-    DONE = "done"
+    SYNC_DONE = "sync_done"
     EMBED = "embed"
     EXTRACT = "extract"
     CRAWL_START = "crawl_start"
@@ -26,7 +31,10 @@ class EventType(StrEnum):
 
 
 class SseEvent(StrEnum):
-    """SSE event names used in the HTTP streaming protocol."""
+    """SSE event names used in the HTTP streaming protocol.
+
+    ``DONE`` is terminal and a stream emits it at most once.
+    """
 
     TOKEN = "token"  # noqa: S105 -- SSE event name, not a credential
     REASONING = "reasoning"

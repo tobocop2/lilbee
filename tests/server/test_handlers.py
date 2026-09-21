@@ -363,8 +363,10 @@ class TestAddEndpoint:
         assert "dup" in summary["copied"]
         assert cfg.linked_roots["dup"] == str(two.resolve())
 
-    async def test_done_event_has_correct_fields(self, mock_extract_file, isolated_env, tmp_path):
-        """The done event includes added, updated, removed, failed counts."""
+    async def test_done_event_carries_the_add_summary(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """The done event carries the add summary and the sync lists under it."""
         from lilbee.server.app import create_app
 
         src = tmp_path / "doc.txt"
@@ -377,10 +379,10 @@ class TestAddEndpoint:
 
         events = _parse_sse_events(resp.content)
         done_data = next(d for t, d in events if t == "done")
-        assert "added" in done_data
-        assert "updated" in done_data
-        assert "removed" in done_data
-        assert "failed" in done_data
+        assert done_data["copied"] == ["doc.txt"]
+        assert done_data["errors"] == []
+        assert done_data["sync"]["added"] == ["doc.txt"]
+        assert done_data["sync"]["failed"] == []
 
     async def test_file_start_has_total_and_current(
         self, mock_extract_file, isolated_env, tmp_path
@@ -458,6 +460,79 @@ class TestAddEndpoint:
         heartbeats = [d for t, d in events if t == "heartbeat"]
         assert heartbeats, f"expected heartbeat events during slow sync, got {events}"
         assert "ts" in heartbeats[0]
+
+
+@mock.patch(
+    "lilbee.data.extract.xberg.aextract_document",
+    new_callable=mock.AsyncMock,
+    return_value=_make_xberg_result(),
+)
+class TestIngestStreamTerminalEvent:
+    """Each ingest stream closes with exactly one ``done`` frame.
+
+    A client dispatches on the event name. Two frames under one name are
+    distinguishable only by payload shape, which means by arrival order, and
+    nothing in the protocol fixes that order.
+    """
+
+    async def test_sync_stream_closes_with_one_done(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """POST /api/sync ends on a single done carrying the sync result."""
+        from lilbee.server.app import create_app
+
+        (isolated_env / "indexed.txt").write_text(
+            "Content the sync pass indexes.", encoding="utf-8"
+        )
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post("/api/sync", headers=_auth_headers())
+
+        assert resp.status_code == 201
+        events = _parse_sse_events(resp.content)
+        names = [name for name, _payload in events]
+        assert names.count("done") == 1, names
+        assert names[-1] == "done", names
+        assert events[-1][1]["added"] == ["indexed.txt"]
+
+    async def test_add_stream_closes_with_one_done(self, mock_extract_file, isolated_env, tmp_path):
+        """POST /api/add ends on a single done carrying the add summary."""
+        from lilbee.server.app import create_app
+
+        src = tmp_path / "added.txt"
+        src.write_text("Content the add pass copies and indexes.", encoding="utf-8")
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add", json={"paths": [str(src)]}, headers=_auth_headers()
+            )
+
+        assert resp.status_code == 201
+        events = _parse_sse_events(resp.content)
+        names = [name for name, _payload in events]
+        assert names.count("done") == 1, names
+        assert names[-1] == "done", names
+        assert events[-1][1]["copied"] == ["added.txt"]
+
+    async def test_upload_stream_closes_with_one_done(self, mock_extract_file, isolated_env):
+        """POST /api/add/upload ends on a single done carrying the upload summary."""
+        from lilbee.server.app import create_app
+
+        content = b"Content the upload pass writes and indexes."
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("uploaded.txt", content, "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        events = _parse_sse_events(resp.content)
+        names = [name for name, _payload in events]
+        assert names.count("done") == 1, names
+        assert names[-1] == "done", names
+        assert events[-1][1]["copied"] == ["uploaded.txt"]
 
 
 class TestAddValidation:

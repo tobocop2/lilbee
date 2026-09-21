@@ -4825,7 +4825,7 @@ class TestSyncProgressPrinter:
 
         con = MagicMock()
         cb = _sync_progress_printer(con)
-        cb(EventType.DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0, unchanged=0))
+        cb(EventType.SYNC_DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0, unchanged=0))
         con.print.assert_called_once()
         assert "Synced" in str(con.print.call_args)
 
@@ -4848,7 +4848,7 @@ class TestSyncProgressPrinter:
         con = MagicMock()
         cb = _sync_progress_printer(con)
         with pytest.raises(TypeError, match="Expected SyncDoneEvent"):
-            cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
+            cb(EventType.SYNC_DONE, FileStartEvent(file="x", total_files=1, current_file=1))
 
 
 class TestChatSyncCallback:
@@ -4882,7 +4882,10 @@ class TestChatSyncCallback:
         status.text = "something"
         cb = _chat_sync_callback(status)
         with mock.patch("builtins.print"):
-            cb(EventType.DONE, SyncDoneEvent(added=2, updated=0, removed=0, failed=0, unchanged=0))
+            cb(
+                EventType.SYNC_DONE,
+                SyncDoneEvent(added=2, updated=0, removed=0, failed=0, unchanged=0),
+            )
         assert status.text == ""
 
     def test_file_start_wrong_type_raises(self):
@@ -4911,7 +4914,7 @@ class TestChatSyncCallback:
         status = SyncStatus()
         cb = _chat_sync_callback(status)
         with pytest.raises(TypeError, match="Expected SyncDoneEvent"):
-            cb(EventType.DONE, FileStartEvent(file="x", total_files=1, current_file=1))
+            cb(EventType.SYNC_DONE, FileStartEvent(file="x", total_files=1, current_file=1))
 
 
 class TestTemporaryOcrConfig:

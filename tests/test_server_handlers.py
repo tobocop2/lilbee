@@ -1684,21 +1684,22 @@ class TestSyncStream:
             cancel=None,
         ):
             if on_progress:
-                from lilbee.runtime.progress import FileDoneEvent, SyncDoneEvent
+                from lilbee.runtime.progress import EventType, FileDoneEvent, SyncDoneEvent
 
-                on_progress("file_done", FileDoneEvent(file="a.txt", status="ok", chunks=3))
-                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
+                on_progress(EventType.FILE_DONE, FileDoneEvent(file="a.txt", status="ok", chunks=3))
+                on_progress(
+                    EventType.SYNC_DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0)
+                )
             return sync_result
 
         with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             events = [e async for e in handlers.sync_stream()]
 
         non_empty = [e for e in events if e]
-        # Last event should be "done" (from sync_stream itself, after sync finishes)
+        # done is terminal: the handler emits it once, after sync finishes.
         done_events = [e for e in non_empty if e.startswith("event: done")]
-        assert len(done_events) >= 1
-        last_done = done_events[-1]
-        done_data = json.loads(last_done.split("data: ")[1].strip())
+        assert len(done_events) == 1
+        done_data = json.loads(done_events[0].split("data: ")[1].strip())
         assert "a.txt" in done_data["added"]
 
     async def test_yields_progress_events(self):
@@ -1714,14 +1715,21 @@ class TestSyncStream:
             cancel=None,
         ):
             if on_progress:
-                from lilbee.runtime.progress import FileDoneEvent, FileStartEvent, SyncDoneEvent
+                from lilbee.runtime.progress import (
+                    EventType,
+                    FileDoneEvent,
+                    FileStartEvent,
+                    SyncDoneEvent,
+                )
 
                 on_progress(
-                    "file_start",
+                    EventType.FILE_START,
                     FileStartEvent(file="b.txt", total_files=1, current_file=1),
                 )
-                on_progress("file_done", FileDoneEvent(file="b.txt", status="ok", chunks=2))
-                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
+                on_progress(EventType.FILE_DONE, FileDoneEvent(file="b.txt", status="ok", chunks=2))
+                on_progress(
+                    EventType.SYNC_DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0)
+                )
             return sync_result
 
         with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
@@ -1856,7 +1864,7 @@ class TestSyncStreamDoneDelivery:
     """Regression tests for the SSE drain race (bb-7enj)."""
 
     async def test_done_event_delivered_on_fast_completion(self):
-        """A fast-completing sync still delivers both done frames in order."""
+        """A fast-completing sync still delivers its sync_done, then the done."""
         sync_result = SyncResult(added=["fast.txt"])
 
         async def instant_sync(
@@ -1869,21 +1877,26 @@ class TestSyncStreamDoneDelivery:
             cancel=None,
         ):
             if on_progress:
-                from lilbee.runtime.progress import SyncDoneEvent
+                from lilbee.runtime.progress import EventType, SyncDoneEvent
 
-                on_progress("done", SyncDoneEvent(added=1, updated=0, removed=0, failed=0))
+                on_progress(
+                    EventType.SYNC_DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0)
+                )
             return sync_result
 
         with patch("lilbee.data.ingest.sync", side_effect=instant_sync):
             events = [e async for e in handlers.sync_stream()]
 
-        # The sync-emitted done (SyncDoneEvent counts) must be delivered, and
-        # the handler-emitted done (SyncResult lists) must follow it.
+        # The sync-emitted sync_done (counts) must be delivered, and the
+        # handler-emitted done (SyncResult lists) must follow it.
+        sync_done_events = [e for e in events if e.startswith("event: sync_done")]
         done_events = [e for e in events if e.startswith("event: done")]
-        assert len(done_events) == 2, f"expected 2 done events, got {done_events}"
+        assert len(sync_done_events) == 1, f"expected 1 sync_done, got {sync_done_events}"
+        assert len(done_events) == 1, f"expected 1 done event, got {done_events}"
+        assert events.index(sync_done_events[0]) < events.index(done_events[0])
 
-        counts_done = json.loads(done_events[0].split("data: ")[1].strip())
-        lists_done = json.loads(done_events[1].split("data: ")[1].strip())
+        counts_done = json.loads(sync_done_events[0].split("data: ")[1].strip())
+        lists_done = json.loads(done_events[0].split("data: ")[1].strip())
         assert counts_done == {
             "added": 1,
             "updated": 0,
@@ -1908,17 +1921,21 @@ class TestSyncStreamDoneDelivery:
             cancel=None,
         ):
             if on_progress:
-                from lilbee.runtime.progress import SyncDoneEvent
+                from lilbee.runtime.progress import EventType, SyncDoneEvent
 
-                on_progress("done", SyncDoneEvent(added=0, updated=0, removed=0, failed=0))
+                on_progress(
+                    EventType.SYNC_DONE, SyncDoneEvent(added=0, updated=0, removed=0, failed=0)
+                )
             return sync_result
 
         with patch("lilbee.data.ingest.sync", side_effect=noop_sync):
             events = [e async for e in handlers.sync_stream()]
 
+        sync_done_events = [e for e in events if e.startswith("event: sync_done")]
         done_events = [e for e in events if e.startswith("event: done")]
-        assert len(done_events) == 2
-        counts = json.loads(done_events[0].split("data: ")[1].strip())
+        assert len(sync_done_events) == 1
+        assert len(done_events) == 1
+        counts = json.loads(sync_done_events[0].split("data: ")[1].strip())
         assert counts == {
             "added": 0,
             "updated": 0,
@@ -2212,7 +2229,7 @@ class TestSseEventQueue:
         for i in range(50):
             queue.put_event_nowait(self._progress_payload(i), EventType.FILE_DONE)
         done_payload = 'event: done\ndata: {"added": 50}\n\n'
-        queue.put_event_nowait(done_payload, EventType.DONE)
+        queue.put_event_nowait(done_payload, EventType.SYNC_DONE)
         queue.put_nowait(None)
 
         drained: list[str | None] = []
@@ -2287,14 +2304,14 @@ class TestSseEventQueue:
 
     @pytest.mark.parametrize(
         "event_type",
-        ["DONE", "CRAWL_DONE", "WIKI_PHASE"],
+        ["SYNC_DONE", "CRAWL_DONE", "WIKI_PHASE"],
     )
     async def test_an_undroppable_event_lands_with_nothing_left_to_shed(self, event_type):
         """A queue holding only undroppable events offers no victim, so a type
         wrongly classed as sheddable is discarded here. Filling with progress
         instead lets either path find room, which is why the sibling cases
-        cannot tell the two classifications apart. DONE is the one that hangs a
-        client forever if it goes."""
+        cannot tell the two classifications apart. SYNC_DONE is the one that
+        leaves the CLI and TUI short of their final count if it goes."""
         from lilbee.runtime.progress import EventType
         from lilbee.server.handlers.sse import SseEventQueue
 
