@@ -283,6 +283,29 @@ class TestRerankerConfig:
 
         assert "flash_attention" in LOAD_AFFECTING_KEYS
 
+    def test_every_enum_typed_setting_carries_its_enums_values(self):
+        """An enum-typed field cannot reach a client without its value set."""
+        import enum
+        from typing import get_args
+
+        from lilbee.core.config import Config
+
+        checked = 0
+        for key, definition in SETTINGS_MAP.items():
+            annotation = Config.model_fields[key].annotation
+            for candidate in get_args(annotation) or (annotation,):
+                if isinstance(candidate, type) and issubclass(candidate, enum.Enum):
+                    assert definition.choices == tuple(str(m.value) for m in candidate), key
+                    checked += 1
+        assert checked >= 11
+
+    def test_a_collection_field_gets_no_value_set(self):
+        """A picker is only for a scalar, so a list field stays free text."""
+        from lilbee.core.config.schema import field_value_set
+
+        assert field_value_set("ignore_dirs") is None
+        assert SETTINGS_MAP["ocr_language"].choices is None
+
     def test_reranker_fields_in_settings_map(self):
 
         assert "reranker_type" in SETTINGS_MAP

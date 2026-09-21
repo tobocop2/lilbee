@@ -1080,6 +1080,87 @@ class TestConfigDefaultsRoute:
         assert data["wiki_embedding_faithfulness_threshold"] == 0.5
 
 
+class TestConfigSchemaRoute:
+    @staticmethod
+    def _by_key(client):
+        resp = client.get("/api/config/schema")
+        assert resp.status_code == 200
+        entries = resp.json()["fields"]
+        assert entries
+        return {entry["key"]: entry for entry in entries}
+
+    def test_covers_every_field_the_settings_boundary_lists(self, client):
+        """The payload's key set is the boundary's own, so a new field cannot be omitted."""
+        from lilbee.app.settings import list_settings
+
+        assert set(self._by_key(client)) == {info.key for info in list_settings()}
+
+    def test_choices_are_the_whole_value_set_the_validator_enforces(self, client):
+        """The served set equals the accepted set, so a trimmed list fails."""
+        import pydantic
+
+        from lilbee.core.config import Config
+        from lilbee.core.config.enums import FtsLanguage
+
+        served = self._by_key(client)["fts_language"]["choices"]
+        assert served == [member.value for member in FtsLanguage]
+        for language in served:
+            assert Config(fts_language=language).fts_language == language
+        rejected = "Klingon"
+        assert rejected not in served
+        with pytest.raises(pydantic.ValidationError):
+            Config(fts_language=rejected)
+
+    def test_no_entry_reports_a_python_class_as_its_type(self, client):
+        """``type`` is the wire type, so a client can switch on it."""
+        wire_types = {"bool", "int", "float", "str", "list", "dict", "null"}
+        served = {
+            part for entry in self._by_key(client).values() for part in entry["type"].split("|")
+        }
+        assert served <= wire_types
+        assert self._by_key(client)["reranker_type"]["type"] == "str"
+
+    def test_help_falls_back_to_the_field_description(self, client):
+        """A setting with no settings-map entry still carries its own prose."""
+        from lilbee.core.config import Config
+
+        entries = self._by_key(client)
+        assert not [key for key, entry in entries.items() if not entry["help"]]
+        for key in ("embed_batch_sequences", "ingest_max_inflight", "linked_roots", "placement"):
+            assert entries[key]["help"] == Config.model_fields[key].description
+
+    def test_choices_of_an_enum_typed_field_are_the_enums_values(self, client):
+        """An enum-typed setting is served with the enum's own values."""
+        from lilbee.core.config.enums import RerankerType
+
+        entry = self._by_key(client)["reranker_type"]
+        assert entry["choices"] == [member.value for member in RerankerType]
+
+    def test_flags_match_the_write_and_reindex_boundaries(self, client):
+        """``writable`` and ``reindex_required`` are read off config_meta, not restated."""
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        entries = self._by_key(client)
+        assert {key for key, entry in entries.items() if entry["writable"]} == {
+            key for key in entries if key in WRITABLE_CONFIG_FIELDS
+        }
+        assert {key for key, entry in entries.items() if entry["reindex_required"]} == {
+            key for key in entries if key in REINDEX_FIELDS
+        }
+        # The model role slots are the fields PATCH /api/config refuses.
+        assert entries["chat_model"]["writable"] is False
+        assert entries["fts_language"]["reindex_required"] is True
+
+    def test_carries_the_help_text_and_group_the_settings_map_defines(self, client):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        entry = self._by_key(client)["fts_language"]
+        assert entry["help"] == SETTINGS_MAP["fts_language"].help_text
+        assert entry["group"] == SETTINGS_MAP["fts_language"].group.value
+        assert entry["type"] == "str"
+        assert entry["nullable"] is False
+
+
 class TestConfigUpdateRoute:
     @mock.patch(
         "lilbee.server.handlers.update_config",

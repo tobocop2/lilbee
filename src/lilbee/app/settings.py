@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import errno
-import types
 from dataclasses import dataclass
-from pathlib import Path
-from typing import TYPE_CHECKING, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Any
 
 from pydantic_core import PydanticUndefined
 
@@ -23,6 +21,7 @@ from lilbee.core.config.keys import (
     PROVIDER_API_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.schema import field_type_name
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
@@ -60,31 +59,6 @@ class SettingsUpdateResult:
     reindex_required: bool
 
 
-_SCALAR_TYPE_NAMES: dict[type, str] = {
-    bool: "bool",
-    int: "int",
-    float: "float",
-    str: "str",
-    Path: "str",
-    type(None): "null",
-}
-_COLLECTION_ORIGINS = (list, frozenset, set, tuple)
-_UNION_ORIGINS = (Union, types.UnionType)
-
-
-def _annotation_name(annotation: Any) -> str:
-    """Render a pydantic field annotation as a short MCP-friendly type string."""
-    origin = get_origin(annotation)
-    if origin in _UNION_ORIGINS:
-        return "|".join(_annotation_name(a) for a in get_args(annotation))
-    scalar = _SCALAR_TYPE_NAMES.get(annotation)
-    if scalar is not None:
-        return scalar
-    if origin in _COLLECTION_ORIGINS:
-        return "list"
-    return getattr(annotation, "__name__", None) or str(annotation)
-
-
 def _setting_default(key: str) -> Any:
     """Return the pydantic default for ``key``, or ``None`` if unset."""
     info = Config.model_fields[key]
@@ -109,17 +83,27 @@ def _public_writable_keys() -> list[str]:
     return sorted(k for k in keys if not _is_write_only(k))
 
 
+def _setting_help(key: str, definition: SettingDef | None) -> str:
+    """The one documented description for *key*.
+
+    ``SettingDef.help_text`` wins because it is what the TUI already shows;
+    a field with no settings-map entry falls back to its own description.
+    """
+    if definition is not None and definition.help_text:
+        return definition.help_text
+    return Config.model_fields[key].description or ""
+
+
 def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
-    field_info = Config.model_fields[key]
     nullable = _is_nullable(key)
     group = definition.group if definition else SettingGroup.MODELS
-    help_text = definition.help_text if definition else ""
+    help_text = _setting_help(key, definition)
     choices = definition.choices if definition else None
     return SettingInfo(
         key=key,
         value=getattr(cfg, key),
         default=_setting_default(key),
-        type=_annotation_name(field_info.annotation),
+        type=field_type_name(key),
         nullable=nullable,
         group=group,
         help_text=help_text,

@@ -21,6 +21,32 @@ class ReasoningMode(StrEnum):
     OFF = "off"
 
 
+class FtsLanguage(StrEnum):
+    """Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping).
+
+    Listed here so config validation does not import lancedb.
+    """
+
+    ARABIC = "Arabic"
+    DANISH = "Danish"
+    DUTCH = "Dutch"
+    ENGLISH = "English"
+    FINNISH = "Finnish"
+    FRENCH = "French"
+    GERMAN = "German"
+    GREEK = "Greek"
+    HUNGARIAN = "Hungarian"
+    ITALIAN = "Italian"
+    NORWEGIAN = "Norwegian"
+    PORTUGUESE = "Portuguese"
+    ROMANIAN = "Romanian"
+    RUSSIAN = "Russian"
+    SPANISH = "Spanish"
+    SWEDISH = "Swedish"
+    TAMIL = "Tamil"
+    TURKISH = "Turkish"
+
+
 class ChatMode(StrEnum):
     """How chat turns route through retrieval. ``search`` uses retrieval; ``chat`` skips it."""
 

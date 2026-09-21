@@ -28,6 +28,7 @@ from lilbee.server.handlers.agent_config import agent_config, agent_config_index
 from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
+    get_config_schema,
     update_config,
 )
 from lilbee.server.handlers.crawl import crawl_stream
@@ -327,6 +328,7 @@ __all__ = [
     "format_task_mismatch",
     "get_config",
     "get_config_defaults",
+    "get_config_schema",
     "get_source_content",
     "gpu_stats_stream",
     "gpus",
