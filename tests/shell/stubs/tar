@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# The tar.gz counterpart of the unzip stub: copies ENGINE_PAYLOAD into the -C
+# directory instead of unpacking a real archive.
+#
+# Reads:
+#   ENGINE_PAYLOAD  directory whose contents stand in for the archive (required)
+
+set -euo pipefail
+
+payload="${ENGINE_PAYLOAD:?ENGINE_PAYLOAD is required}"
+dest=""
+while [ "$#" -gt 0 ]; do
+  [ "$1" = "-C" ] && { dest="$2"; break; }
+  shift
+done
+[ -n "${dest}" ] || { echo "tar stub: no -C argument" >&2; exit 2; }
+mkdir -p "${dest}"
+cp -R "${payload}/." "${dest}/"

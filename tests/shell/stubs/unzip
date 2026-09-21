@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Unpacks the placeholder archive the gh stub wrote, by copying ENGINE_PAYLOAD
+# into the -d directory. Real archive tools are not on every runner, and the
+# behaviour under test is the script's control flow, not the archive format.
+#
+# Reads:
+#   ENGINE_PAYLOAD  directory whose contents stand in for the archive (required)
+
+set -euo pipefail
+
+payload="${ENGINE_PAYLOAD:?ENGINE_PAYLOAD is required}"
+dest=""
+while [ "$#" -gt 0 ]; do
+  [ "$1" = "-d" ] && { dest="$2"; break; }
+  shift
+done
+[ -n "${dest}" ] || { echo "unzip stub: no -d argument" >&2; exit 2; }
+mkdir -p "${dest}"
+cp -R "${payload}/." "${dest}/"

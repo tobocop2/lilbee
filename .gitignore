@@ -62,6 +62,7 @@ scripts/*
 !scripts/assert_required_binaries.sh
 !scripts/release_dropped_cells.sh
 !scripts/ci_retry.sh
+!scripts/install_engine.sh
 !scripts/qa/
 scripts/qa/*
 !scripts/qa/*.py
