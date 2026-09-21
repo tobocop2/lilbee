@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Records the requested duration and returns at once, so a bats run does not
+# spend the backoff it is asserting.
+#
+# Reads:
+#   SLEEP_LOG  file the durations are appended to (required)
+
+set -euo pipefail
+
+echo "$1" >> "${SLEEP_LOG:?SLEEP_LOG is required}"

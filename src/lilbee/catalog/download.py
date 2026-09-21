@@ -10,7 +10,7 @@ import time
 from collections.abc import Callable
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel
@@ -35,6 +35,8 @@ from lilbee.catalog.refs import (
 )
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+
+_T = TypeVar("_T")
 
 CompleteCallback = Callable[[CatalogModel, Path], None]
 # Raises UnsupportedQuantError when the engine cannot decode the named file.
@@ -206,7 +208,12 @@ check reads as progress; ~4 KB/s is far below any usable model download."""
 
 _STALL_POLL_S = 5.0
 
-_STALL_RETRIES = 2
+_TRANSFER_RETRIES = 2
+_RETRY_BACKOFF_SECONDS = 5
+
+
+class _TransientDownloadError(RuntimeError):
+    """A transfer fault another attempt can clear: a stall, a network or an I/O error."""
 
 
 def _abort_stalled_transfer() -> None:
@@ -318,37 +325,53 @@ class _StallGuard:
             self._thread.join(timeout=self._poll_s + 1)
 
 
-def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> Path:
-    """Run the transfer under the stall guard, resuming after each stall.
+def _retry_transient(work: Callable[[], _T]) -> _T:
+    """Run *work*, retrying only the faults another attempt can clear.
 
-    huggingface_hub resumes from the .incomplete file, so a retry costs only
-    the bytes since the stall. A failure with the guard quiet is a real
-    error and propagates on the first attempt; cancellation always does.
+    Every other error propagates on the first attempt, cancellation included,
+    so a defect or a configuration error is never hidden behind a retry.
     """
     last_error: Exception | None = None
-    for attempt in range(_STALL_RETRIES + 1):
-        guard = _StallGuard()
-        guarded = config.model_copy(update={"tqdm_class": guard.wrap_tqdm(config.tqdm_class)})
+    for attempt in range(_TRANSFER_RETRIES + 1):
         try:
-            with guard:
-                return _hf_download_or_translate(entry, guarded)
-        except TaskCancelledError:
-            raise
-        except Exception as exc:
-            if not guard.fired:
-                raise
+            return work()
+        except _TransientDownloadError as exc:
             last_error = exc
-            log.warning(
-                "Transfer of %s stalled (attempt %d/%d); resuming.",
-                entry.hf_repo,
-                attempt + 1,
-                _STALL_RETRIES + 1,
-            )
+            log.warning("%s (attempt %d/%d)", exc, attempt + 1, _TRANSFER_RETRIES + 1)
+        if attempt < _TRANSFER_RETRIES:
+            time.sleep(_RETRY_BACKOFF_SECONDS * (attempt + 1))
     raise RuntimeError(
-        f"Download of {entry.hf_repo} stalled {_STALL_RETRIES + 1} times with almost "
-        "no data arriving. Check the network connection and retry; the finished part "
-        "is kept and the download resumes where it stopped."
+        f"{last_error}. The transfer failed {_TRANSFER_RETRIES + 1} times. Check the "
+        "network connection and retry; the finished part is kept and the download "
+        "resumes where it stopped."
     ) from last_error
+
+
+def _attempt_guarded_download(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run one guarded transfer, reporting a stall as a transient fault.
+
+    huggingface_hub resumes from the .incomplete file, so a retry costs only
+    the bytes since the stall. A failure with the guard quiet is whatever the
+    hub raised; cancellation is never a transient fault.
+    """
+    guard = _StallGuard()
+    guarded = config.model_copy(update={"tqdm_class": guard.wrap_tqdm(config.tqdm_class)})
+    try:
+        with guard:
+            return _hf_download_or_translate(entry, guarded)
+    except TaskCancelledError:
+        raise
+    except Exception as exc:
+        if not guard.fired:
+            raise
+        raise _TransientDownloadError(
+            f"Transfer of {entry.hf_repo} stalled with almost no data arriving"
+        ) from exc
+
+
+def _download_with_stall_guard(entry: CatalogModel, config: DownloadConfig) -> Path:
+    """Run the transfer under the stall guard, retrying every transient fault."""
+    return _retry_transient(lambda: _attempt_guarded_download(entry, config))
 
 
 def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Path:
@@ -371,9 +394,9 @@ def _hf_download_or_translate(entry: CatalogModel, config: DownloadConfig) -> Pa
     except EntryNotFoundError:
         raise RuntimeError(_missing_file_message(entry.hf_repo, config.filename)) from None
     except (httpx.TimeoutException, httpx.ConnectError) as exc:
-        raise RuntimeError(f"Network error downloading {entry.hf_repo}: {exc}") from None
+        raise _TransientDownloadError(f"Network error downloading {entry.hf_repo}: {exc}") from None
     except OSError as exc:
-        raise RuntimeError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
+        raise _TransientDownloadError(f"I/O error downloading {entry.hf_repo}: {exc}") from None
     except Exception as exc:
         _raise_if_disk_exhausted(entry, config, exc)
         raise RuntimeError(

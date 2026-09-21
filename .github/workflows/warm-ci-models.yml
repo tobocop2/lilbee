@@ -79,11 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           for ref in $CI_MODELS; do
-            for i in 1 2 3 4 5; do
-              if uv run lilbee model pull "$ref"; then break; fi
-              echo "pull $ref attempt $i failed; retrying in $((i * 10))s"
-              sleep $((i * 10))
-            done
+            bash scripts/ci_retry.sh 5 uv run lilbee model pull "$ref"
           done
 
       - name: Pack and upload mirror

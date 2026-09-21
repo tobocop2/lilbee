@@ -186,7 +186,8 @@ jobs:
 
       - name: Install make (Windows)
         if: runner.os == 'Windows'
-        run: choco install make -y
+        shell: bash
+        run: bash scripts/ci_retry.sh 3 choco install make -y
 
       - name: Install dependencies
         run: uv sync --locked
@@ -264,7 +265,8 @@ jobs:
 
       - name: Install make (Windows)
         if: runner.os == 'Windows'
-        run: choco install make -y
+        shell: bash
+        run: bash scripts/ci_retry.sh 3 choco install make -y
 
       - name: Install Tesseract (Linux)
         if: runner.os == 'Linux'
@@ -279,10 +281,11 @@ jobs:
 
       - name: Install Tesseract (Windows)
         if: runner.os == 'Windows'
-        shell: pwsh
+        shell: bash
         run: |
-          choco install tesseract -y
-          echo "C:\Program Files\Tesseract-OCR" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          set -euo pipefail
+          bash scripts/ci_retry.sh 3 choco install tesseract -y
+          echo 'C:\Program Files\Tesseract-OCR' >> "${GITHUB_PATH}"
 
       # Integration tests run real local inference, which now means a real
       # llama-server. The lilbee-engine wheel ships empty bin/ in this lane
@@ -379,22 +382,12 @@ jobs:
         run: uv sync --locked --all-extras
 
       - name: Install spacy model
-        # Retry around the GitHub-releases download. The default `uv pip
-        # install` does 3 retries internally but a 502 from GH releases
-        # can outlast those; an outer 5-attempt loop with backoff turns a
-        # transient gateway error into a flaky-but-eventually-green job.
+        # `uv pip install` retries 3 times internally; a 502 from GitHub
+        # releases can outlast those, so bound an outer retry at 5.
         shell: bash
-        run: |
-          url="https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl"
-          for attempt in 1 2 3 4 5; do
-            if uv pip install "$url"; then
-              exit 0
-            fi
-            echo "spacy model install attempt $attempt failed; sleeping before retry"
-            sleep $((attempt * 10))
-          done
-          echo "spacy model install failed after 5 attempts" >&2
-          exit 1
+        env:
+          SPACY_MODEL_URL: https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+        run: bash scripts/ci_retry.sh 5 uv pip install "${SPACY_MODEL_URL}"
 
       # Keyed on the browser revision, not uv.lock: the browsers do not change when
       # an unrelated dependency does, and hashing the lock minted a fresh ~300 MB
@@ -436,12 +429,9 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          for i in 1 2 3; do
-            uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF && \
-            uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF && break
-            echo "Attempt $i failed, retrying in 10s..."
-            sleep 10
-          done
+          set -euo pipefail
+          bash scripts/ci_retry.sh 3 uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF
+          bash scripts/ci_retry.sh 3 uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF
 
       - name: Run integration tests
         run: make test-integration

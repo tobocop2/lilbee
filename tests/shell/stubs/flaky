@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# A command that fails its first FLAKY_FAIL_TIMES calls and succeeds after.
+# Counts every call in FLAKY_COUNTER so a test can assert the attempt count.
+#
+# Reads:
+#   FLAKY_COUNTER     file holding the call count (required)
+#   FLAKY_FAIL_TIMES  how many leading calls fail (default: 0)
+
+set -euo pipefail
+
+counter="${FLAKY_COUNTER:?FLAKY_COUNTER is required}"
+fail_times="${FLAKY_FAIL_TIMES:-0}"
+
+calls=0
+[ -f "${counter}" ] && calls=$(cat "${counter}")
+calls=$((calls + 1))
+echo "${calls}" > "${counter}"
+
+if [ "${calls}" -le "${fail_times}" ]; then
+  echo "flaky: call ${calls} fails" >&2
+  exit 1
+fi
+echo "flaky: call ${calls} succeeds"
