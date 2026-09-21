@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
+from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.model_manager.discovery import (
     classify_remote_models,
     discover_api_models,
@@ -62,16 +63,18 @@ class CanonicalRef:
     reason: str | None = None
 
 
-def _is_local_installed(ref: str) -> bool:
-    """True iff ``ref`` resolves to an installed GGUF in the local registry."""
+def _local_install_state(ref: str) -> InstallState:
+    """Where *ref* loads from, per the registry the serving path honours.
+
+    One definition of installed, shared with the fleet, the CLI, the TUI and
+    ``/v1/models``. A predicate of its own here drifted from that one and
+    swapped away refs that load.
+    """
     try:
-        registry = ModelRegistry(cfg.models_dir)
-        installed_models = registry.list_installed()
-        installed = {m.ref for m in installed_models} | {m.hf_repo for m in installed_models}
-        return ref in installed
+        return install_state(ref, ModelRegistry(cfg.models_dir))
     except Exception:  # pragma: no cover - defensive for fresh installs
         log.debug("Local registry probe failed for %r", ref, exc_info=True)
-        return False
+        return InstallState.MISSING
 
 
 def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
@@ -119,7 +122,7 @@ def _classify_ref(ref: str) -> tuple[ValidationResult, str | None]:
     """
     if not ref:
         return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
-    if _is_local_installed(ref):
+    if _local_install_state(ref) is not InstallState.MISSING:
         return ValidationResult.OK, None
     try:
         parsed = parse_model_ref(ref)

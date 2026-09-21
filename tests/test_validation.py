@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -15,6 +16,12 @@ from lilbee.modelhub.model_manager import (
     canonicalize_embedding_model,
     validate_persisted_model,
 )
+from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+
+_BLOB = b"GGUF-bytes"
+_REPO = "Qwen/Qwen3-0.6B-GGUF"
+_REF = f"{_REPO}/Qwen3-0.6B-Q4_K_M.gguf"
+_SPLIT_REF = f"{_REPO}/Qwen3-0.6B-Q4_K_M-00001-of-00002.gguf"
 
 
 @pytest.fixture(autouse=True)
@@ -42,6 +49,33 @@ def _installed(ref: str, task: ModelTask) -> mock.MagicMock:
     return entry
 
 
+def _holding(registry_cls: mock.MagicMock, entries: list[mock.MagicMock]) -> None:
+    """Point a patched registry at *entries*, resolving those refs and nothing else."""
+    refs = {entry.ref for entry in entries}
+    registry_cls.return_value.list_installed.return_value = entries
+    registry_cls.return_value.is_installed.side_effect = lambda ref: ref in refs
+
+
+def _install(ref: str) -> None:
+    """Install *ref* into ``cfg.models_dir`` the way a pull does: blob plus manifest."""
+    hf_repo, filename = ref.rsplit("/", 1)
+    source = cfg.models_dir / "source.gguf"
+    source.write_bytes(_BLOB)
+    ModelRegistry(cfg.models_dir).install(
+        hf_repo,
+        filename,
+        source,
+        ModelManifest(
+            hf_repo=hf_repo,
+            gguf_filename=filename,
+            size_bytes=len(_BLOB),
+            task=ModelTask.CHAT,
+            downloaded_at="2026-04-25T00:00:00+00:00",
+        ),
+    )
+    source.unlink()
+
+
 def test_empty_ref_unknown():
     assert validate_persisted_model("") == ValidationResult.UNKNOWN
 
@@ -53,23 +87,17 @@ def test_local_ref_not_installed_when_registry_empty():
 
 
 def test_local_ref_installed_classifies_ok():
-    """When the registry reports the ref as installed, validation returns OK."""
-    fake_entry = mock.MagicMock()
-    fake_entry.ref = "test/local-model"
-    fake_entry.hf_repo = "test/local-model"
-    with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [fake_entry]
-        assert validate_persisted_model("test/local-model") == ValidationResult.OK
+    """A pulled model classifies as OK."""
+    _install(_REF)
+    assert validate_persisted_model(_REF) == ValidationResult.OK
 
 
 def test_canonicalize_chat_model_ok_passthrough():
     """An OK ref is returned unchanged with status OK."""
     cfg.chat_model = "test/installed-model"
-    fake_entry = mock.MagicMock()
-    fake_entry.ref = "test/installed-model"
-    fake_entry.hf_repo = "test/installed-model"
+    fake_entry = _installed("test/installed-model", ModelTask.CHAT)
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [fake_entry]
+        _holding(registry_cls, [fake_entry])
         canon = canonicalize_chat_model()
     assert isinstance(canon, CanonicalRef)
     assert canon.original == "test/installed-model"
@@ -91,7 +119,7 @@ def test_canonicalize_chat_model_falls_back_to_local():
             return_value={},
         ),
     ):
-        registry_cls.return_value.list_installed.return_value = [fake_entry]
+        _holding(registry_cls, [fake_entry])
         canon = canonicalize_chat_model()
     assert canon.effective == "test/fallback-local"
     assert canon.status != ValidationResult.OK
@@ -108,7 +136,7 @@ def test_canonicalize_chat_model_returns_original_when_no_fallback():
             return_value={},
         ),
     ):
-        registry_cls.return_value.list_installed.return_value = []
+        _holding(registry_cls, [])
         canon = canonicalize_chat_model()
     assert canon.original == "missing/model"
     assert canon.effective == "missing/model"
@@ -122,7 +150,7 @@ def test_canonicalize_embedding_model_local_only():
     cfg.embedding_model = "missing/embed"
     fake_entry = _installed("test/fallback-embed", ModelTask.EMBEDDING)
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [fake_entry]
+        _holding(registry_cls, [fake_entry])
         canon = canonicalize_embedding_model()
     assert canon.effective == "test/fallback-embed"
 
@@ -145,7 +173,7 @@ def test_canonicalize_embedding_skips_installed_chat_model():
     embed_entry.ref = "test/installed-embed"
     embed_entry.task = ModelTask.EMBEDDING
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [chat_entry, embed_entry]
+        _holding(registry_cls, [chat_entry, embed_entry])
         canon = canonicalize_embedding_model()
     assert canon.effective == "test/installed-embed"
 
@@ -228,7 +256,7 @@ def test_canonicalize_chat_falls_back_to_api_when_keyed():
             return_value={"OpenAI": [fake_remote]},
         ),
     ):
-        registry_cls.return_value.list_installed.return_value = []
+        _holding(registry_cls, [])
         canon = canonicalize_chat_model()
     assert canon.effective == "openai/gpt-4-test"
 
@@ -250,7 +278,7 @@ def test_canonicalize_chat_prefixes_bare_provider_name():
             return_value={"OpenAI": [bare]},
         ),
     ):
-        registry_cls.return_value.list_installed.return_value = []
+        _holding(registry_cls, [])
         canon = canonicalize_chat_model()
     # The canonicalized ref must round-trip through Config's validator.
     from lilbee.providers.model_ref import parse_model_ref
@@ -272,7 +300,7 @@ def test_canonicalize_chat_handles_discover_failure():
             side_effect=RuntimeError("network down"),
         ),
     ):
-        registry_cls.return_value.list_installed.return_value = [fake_entry]
+        _holding(registry_cls, [fake_entry])
         canon = canonicalize_chat_model()
     assert canon.effective == "test/fallback-local"
 
@@ -313,7 +341,7 @@ def test_canonicalize_embedding_model_ok_passthrough():
     fake_entry.ref = "test/installed-embed"
     fake_entry.hf_repo = "test/installed-embed"
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [fake_entry]
+        _holding(registry_cls, [fake_entry])
         canon = canonicalize_embedding_model()
     assert canon.effective == "test/installed-embed"
 
@@ -336,9 +364,10 @@ def test_embedding_fallback_skips_chat_model(_litellm_absent):
     """
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [
-            _installed("owner/Phi-4-mini-instruct-GGUF/Phi-4.Q4_K_M.gguf", ModelTask.CHAT)
-        ]
+        _holding(
+            registry_cls,
+            [_installed("owner/Phi-4-mini-instruct-GGUF/Phi-4.Q4_K_M.gguf", ModelTask.CHAT)],
+        )
         canon = canonicalize_embedding_model()
     # No installed embedding model, so the original is kept (no bad swap).
     assert canon.effective == "ollama/nomic-embed-text:latest"
@@ -350,10 +379,13 @@ def test_embedding_fallback_picks_installed_embedding_model(_litellm_absent):
     role falls back to the embedding model, never the chat model."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = [
-            _installed("owner/Phi-4-mini-instruct-GGUF/Phi-4.Q4_K_M.gguf", ModelTask.CHAT),
-            _installed("owner/nomic-embed-GGUF/nomic.Q8_0.gguf", ModelTask.EMBEDDING),
-        ]
+        _holding(
+            registry_cls,
+            [
+                _installed("owner/Phi-4-mini-instruct-GGUF/Phi-4.Q4_K_M.gguf", ModelTask.CHAT),
+                _installed("owner/nomic-embed-GGUF/nomic.Q8_0.gguf", ModelTask.EMBEDDING),
+            ],
+        )
         canon = canonicalize_embedding_model()
     assert canon.effective == "owner/nomic-embed-GGUF/nomic.Q8_0.gguf"
     assert canon.status != ValidationResult.OK
@@ -363,7 +395,7 @@ def test_ollama_ref_unusable_when_litellm_missing(_litellm_absent):
     """An ollama ref with the litellm extra absent is unusable, reason names litellm."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls:
-        registry_cls.return_value.list_installed.return_value = []
+        _holding(registry_cls, [])
         canon = canonicalize_embedding_model()
     assert canon.status != ValidationResult.OK
     assert canon.reason is not None and "litellm" in canon.reason
@@ -380,7 +412,7 @@ def test_ollama_ref_unusable_when_server_unreachable():
         ),
         mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
     ):
-        registry_cls.return_value.list_installed.return_value = []
+        _holding(registry_cls, [])
         canon = canonicalize_embedding_model()
     assert canon.status != ValidationResult.OK
     assert canon.reason is not None and "reachable" in canon.reason
@@ -399,3 +431,52 @@ def test_ollama_ref_kept_when_server_live():
         canon = canonicalize_embedding_model()
     assert canon.effective == "ollama/nomic-embed-text:latest"
     assert canon.status == ValidationResult.OK
+
+
+class TestOneDefinitionOfInstalled:
+    """Persisted-ref validation reads the install state the serving path reads.
+
+    A second predicate over the manifest list answered the same question and
+    disagreed in both directions: it called a loose GGUF path uninstalled, and
+    it called a split set with a shard missing installed.
+    """
+
+    def test_a_loose_gguf_keeps_the_persisted_chat_ref(self, tmp_path: Path) -> None:
+        """A GGUF path outside the registry loads, so nothing may swap it away."""
+        gguf = tmp_path / "MiniMax.gguf"
+        gguf.write_bytes(_BLOB)
+        cfg.chat_model = str(gguf)
+
+        assert validate_persisted_model(str(gguf)) == ValidationResult.OK
+        assert canonicalize_chat_model().effective == str(gguf)
+
+    def test_a_loose_gguf_keeps_the_persisted_chat_ref_over_an_api_model(
+        self, tmp_path: Path
+    ) -> None:
+        """A configured API key must not displace a ref that already loads."""
+        gguf = tmp_path / "MiniMax.gguf"
+        gguf.write_bytes(_BLOB)
+        cfg.chat_model = str(gguf)
+        remote = mock.MagicMock()
+        remote.name = "gpt-4-test"
+        remote.provider = "OpenAI"
+        with mock.patch(
+            "lilbee.modelhub.model_manager.validation.discover_api_models",
+            return_value={"OpenAI": [remote]},
+        ):
+            canon = canonicalize_chat_model()
+
+        assert canon.effective == str(gguf)
+        assert canon.status == ValidationResult.OK
+
+    def test_a_bare_repo_ref_is_installed(self) -> None:
+        """Older builds persisted ``<org>/<repo>``; the registry still resolves it."""
+        _install(_REF)
+
+        assert validate_persisted_model(_REPO) == ValidationResult.OK
+
+    def test_a_split_set_missing_a_shard_is_not_installed(self) -> None:
+        """A manifest is not enough: the engine needs every shard of a split set."""
+        _install(_SPLIT_REF)
+
+        assert validate_persisted_model(_SPLIT_REF) == ValidationResult.NOT_INSTALLED
