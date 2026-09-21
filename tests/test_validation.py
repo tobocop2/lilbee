@@ -480,10 +480,18 @@ class TestOneDefinitionOfInstalled:
         assert validate_persisted_model(_REPO) == ValidationResult.OK
 
     def test_a_directory_is_not_a_model(self, tmp_path: Path) -> None:
-        """A path that exists but holds no model must not pass as usable."""
-        cfg.chat_model = str(tmp_path)
+        """A path that exists but holds no model must not pass as usable.
 
-        assert validate_persisted_model(str(tmp_path)) == ValidationResult.NOT_INSTALLED
+        The directory carries the GGUF suffix because a Windows path holds no
+        forward slash: without the suffix the ref classifies as neither a
+        native GGUF nor a provider-prefixed one, and never reaches the
+        install-state question this pins.
+        """
+        directory = tmp_path / "MiniMax.gguf"
+        directory.mkdir()
+        cfg.chat_model = str(directory)
+
+        assert validate_persisted_model(str(directory)) == ValidationResult.NOT_INSTALLED
 
     def test_a_split_set_missing_a_shard_is_not_installed(self) -> None:
         """A manifest is not enough: the engine needs every shard of a split set."""
