@@ -46,6 +46,7 @@ _REPO_SEGMENT_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 _FILENAME_RE = re.compile(r"^[a-zA-Z0-9._/-]+\.gguf$")
 
 REPO_DIR_SEPARATOR = "--"
+_MANIFEST_SUFFIX = f"{GGUF_SUFFIX}.json"
 
 
 def _validate_hf_repo(hf_repo: str) -> str:
@@ -174,6 +175,24 @@ def _blob_digest(source_path: Path) -> str:
     return _sha256_file(source_path)
 
 
+def _reraise_walk_error(error: OSError) -> None:
+    """Re-raise a directory-read fault; a directory that vanished is not one."""
+    if not isinstance(error, FileNotFoundError):
+        raise error
+
+
+def _manifest_files(repo_dir: Path) -> list[Path]:
+    """Sorted manifest paths under *repo_dir*, quant subdirectories included.
+
+    Raises ``OSError`` when a directory under *repo_dir* cannot be read, so an
+    unreadable tree never reads as an empty one.
+    """
+    found: list[Path] = []
+    for dirpath, _dirnames, filenames in os.walk(repo_dir, onerror=_reraise_walk_error):
+        found.extend(Path(dirpath) / name for name in filenames if name.endswith(_MANIFEST_SUFFIX))
+    return sorted(found)
+
+
 class ModelRegistry:
     """Read/write manifests and resolve refs to blobs in the HF cache."""
 
@@ -270,10 +289,7 @@ class ModelRegistry:
         """
         manifest_dir = self._manifests_dir / repo_to_dir(hf_repo)
         if manifest_dir.is_dir():
-            # rglob, like list_installed: a quant-subdir ref writes its manifest one
-            # directory deeper, so a non-recursive scan would miss it and fall through
-            # to the slower huggingface_hub cache recovery.
-            for mf in sorted(manifest_dir.rglob("*.gguf.json")):
+            for mf in _manifest_files(manifest_dir):
                 manifest = self._load_manifest_file(mf)
                 if manifest is None:
                     continue
@@ -573,18 +589,19 @@ class ModelRegistry:
         residue of a canceled or partial download. Surfacing it would
         let the picker offer an unusable selection, so the read filter
         lives here at the source instead of in every UI caller.
+
+        An absent manifest tree is an empty list. A tree that is present but
+        cannot be read raises ``OSError``, because "unknown" is not "none".
         """
         manifests: list[ModelManifest] = []
-        if not self._manifests_dir.exists():
+        try:
+            repo_dirs = sorted(self._manifests_dir.iterdir())
+        except FileNotFoundError:
             return manifests
-        for repo_dir in sorted(self._manifests_dir.iterdir()):
+        for repo_dir in repo_dirs:
             if not repo_dir.is_dir():
                 continue
-            # rglob, not glob: a quant-subdir ref (unsloth stores quants under e.g.
-            # Q4_K_S/<model>.gguf) writes its manifest one level deeper, so a
-            # non-recursive scan omitted it from `model list` and /v1/models, and
-            # opencode silently fell back to its own provider.
-            for tag_file in sorted(repo_dir.rglob("*.gguf.json")):
+            for tag_file in _manifest_files(repo_dir):
                 manifest = self._load_manifest_file(tag_file)
                 if manifest is not None and self._blob_present(manifest):
                     manifests.append(manifest)
