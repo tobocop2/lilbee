@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import functools
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from enum import IntEnum
 
 # A native GGUF ref ``<org>/<repo>/<file>.gguf`` has at least two ``/`` separators;
@@ -43,12 +44,61 @@ _QUANT_PREFERENCE = (
 # ones: picking it turns a 7 GB pull into a 54 GB one.
 FLOAT_QUANTS = frozenset({"F16", "BF16", "F32"})
 
-# A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of the
-# filename. Matching it as a bare substring makes ``Q8_0`` match inside
-# ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
-_QUANT_TOKEN_RE = re.compile(
-    r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|BF16|F16|F32)(?=$|[-_./])", re.IGNORECASE
-)
+# Bytes per weight of the three unquantized types a GGUF filename carries. Exact
+# by definition rather than measured: a float tensor has no block and no scale.
+FLOAT_BYTES_PER_PARAM: dict[str, float] = {"F16": 2.0, "BF16": 2.0, "F32": 4.0}
+
+
+@functools.cache
+def ggml_quant_block_sizes() -> Mapping[str, tuple[int, int]]:
+    """ggml's own quantized type table: name -> (block size, type size in bytes).
+
+    Read from ``gguf.constants``, which is the authority llama.cpp itself
+    generates the C table from, so the sizes cannot drift from the engine that
+    writes the files. Types whose block packs a single weight are dropped: a
+    block of one is a scalar type, not a quantization, and
+    ``FLOAT_BYTES_PER_PARAM`` above prices the three scalar types a GGUF
+    filename carries.
+
+    Imported inside the function and cached because ``gguf.constants`` pulls
+    numpy and yaml, which cost about 87 ms that no CLI invocation should pay
+    before it needs a quant size.
+    """
+    from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
+
+    return {t.name: GGML_QUANT_SIZES[t] for t in GGMLQuantizationType if GGML_QUANT_SIZES[t][0] > 1}
+
+
+@functools.cache
+def _quant_token_re() -> re.Pattern[str]:
+    """The pattern that reads a quant label out of a GGUF filename.
+
+    ggml's own quantized type names go in whole because a name like ``TQ1_0``
+    or ``MXFP4`` states no bit width, so no pattern over a label's shape can
+    find it. The leading bit-width alternative already matches every
+    ``Q<digit>`` and ``IQ<digit>`` name in that table; the names go in anyway so
+    that no upstream name depends on that coincidence.
+
+    Sorting longest first and escaping the names are both future-proofing: no
+    ggml name is a prefix of another today, and a type name is always a plain
+    identifier, so neither can change a match until upstream adds a name that
+    breaks one of those.
+
+    A quant label occupies a whole ``-``/``_``/``.``/``/``-delimited segment of
+    the filename. Matching it as a bare substring makes ``Q8_0`` match inside
+    ``mmproj-Q8_0`` and ``F16`` inside ``BF16``.
+    """
+    names_by_length = sorted(
+        (re.escape(name) for name in ggml_quant_block_sizes()),
+        key=lambda name: (-len(name), name),
+    )
+    return re.compile(
+        r"(?:^|[-_./])P?(I?Q\d[A-Za-z0-9_]*|"
+        + "|".join(names_by_length)
+        + r"|BF16|F16|F32)(?=$|[-_./])",
+        re.IGNORECASE,
+    )
+
 
 _SPLIT_SHARD_RE = re.compile(r"^(?P<base>.+)-(?P<idx>\d{5})-of-(?P<total>\d{5})\.gguf$")
 _SHARD_NUMBER_WIDTH = 5
@@ -72,8 +122,29 @@ def quant_label(filename: str) -> str:
     label in both the directory and the file, and a mismatched pair names the
     real type on the file.
     """
-    matches = _QUANT_TOKEN_RE.findall(filename)
+    matches = _quant_token_re().findall(filename)
     return matches[-1].upper() if matches else ""
+
+
+def ggml_bytes_per_param(quant: str) -> float | None:
+    """Bytes per weight of the ggml type *quant* names or is built on, or None.
+
+    A published label appends segments the type table does not name: ``Q2_K_L``
+    and ``Q3_K_XL`` are Q2_K and Q3_K with a promoted head, and ``Q4_0_4_8`` is
+    Q4_0 repacked. Trailing segments drop one at a time until a ggml type
+    answers, so the most-pulled names on the Hub price against the type they are
+    built on instead of going unpriced.
+    """
+    segments = quant.split("_")
+    for end in range(len(segments), 0, -1):
+        name = "_".join(segments[:end])
+        if name in FLOAT_BYTES_PER_PARAM:
+            return FLOAT_BYTES_PER_PARAM[name]
+        sizes = ggml_quant_block_sizes().get(name)
+        if sizes is not None:
+            block, type_size = sizes
+            return type_size / block
+    return None
 
 
 def _shard_name(base: str, index: int, total: int) -> str:

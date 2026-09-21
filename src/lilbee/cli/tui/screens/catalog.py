@@ -31,7 +31,7 @@ from lilbee.catalog import (
     get_families,
     resolve_filename,
 )
-from lilbee.catalog.download import _BYTES_PER_GB
+from lilbee.catalog.download import _BYTES_PER_GB, download_bytes
 from lilbee.catalog.models import estimate_min_ram_gb
 from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.cli.tui import messages as msg
@@ -2110,21 +2110,23 @@ class CatalogScreen(Screen[None]):
         if self.app.task_bar.pending_download(model) is not None:
             self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
             return
+        # The row's own size is an approximation off the parameter count; one
+        # file is named here, so the check asks HuggingFace what it really costs.
+        needed = int(model.size_gb * _BYTES_PER_GB)
         try:
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
                 self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
                 return
+            needed = download_bytes(model.hf_repo, filename)
         except Exception:
             log.debug("Could not resolve filename", exc_info=True)
 
         # After the already-installed check, which needs no space, and before
         # the enqueue: a task that fails instantly is terminal, so dedupe would
         # not stop a second row.
-        shortfall = disk_shortfall(
-            cfg.models_dir, model.hf_repo, int(model.size_gb * _BYTES_PER_GB)
-        )
+        shortfall = disk_shortfall(cfg.models_dir, model.hf_repo, needed)
         if shortfall is not None:
             self.notify(shortfall, severity="warning")
             return

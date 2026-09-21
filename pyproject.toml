@@ -66,6 +66,13 @@ dependencies = [
     # bound; regex takes a per-match timeout where the stdlib re module cannot.
     # Already present transitively via tiktoken.
     "regex",
+    # llama.cpp's own Python package, for the ggml block and type sizes the
+    # download-size estimate prices a quant with. It is not a second GGUF
+    # reader: gguf-parser is, built from the pin that builds llama-server.
+    # 0.19 is the first release that names NVFP4. Adds no new package to the
+    # install: numpy, pyyaml, requests and tqdm all already arrive with
+    # huggingface_hub, lancedb and lilbee itself.
+    "gguf>=0.19",
     # The read side is stdlib tomllib; this is its write half.
     "tomli-w>=1.0",
     "cachetools>=7.1.4",
@@ -149,11 +156,6 @@ dev = [
     # without this, chardet only arrives via the crawler extra, and the bare
     # `uv sync --locked` CI test env cannot run those tests.
     "chardet>=7",
-    # llama.cpp's Python package, for tests only. It is not a second GGUF reader
-    # in the product: gguf-parser is, built from the pin that builds
-    # llama-server. This supplies GGML_QUANT_SIZES so the measured
-    # bytes-per-weight table is checked against the authoritative block sizes.
-    "gguf>=0.18",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",

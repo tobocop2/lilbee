@@ -291,8 +291,9 @@ class TestFormatDownloads:
 
 
 class TestFormatSizeGb:
-    def test_positive_size(self):
-        assert format_size_gb(4.0) == "4.0 GB"
+    def test_positive_size_is_marked_approximate(self):
+        """A listing row sizes off the parameter count, so the column says so."""
+        assert format_size_gb(4.0) == "~4.0 GB"
 
     def test_zero_size_shows_dash(self):
         assert format_size_gb(0.0) == "--"
