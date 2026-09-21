@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -14,6 +16,7 @@ from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.modelhub.registry import (
     ModelManifest,
     ModelRegistry,
+    _manifest_files,
     _sha256_file,
     _validate_gguf_filename,
     _validate_hf_repo,
@@ -25,6 +28,11 @@ _REPO = "Qwen/Qwen3-0.6B-GGUF"
 _FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
 _REF = f"{_REPO}/{_FILENAME}"
 _SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+# Windows mode bits do not deny a directory read, and root bypasses them entirely.
+_POSIX_DENIES_READS = pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs POSIX mode bits and a non-root user to deny a read",
+)
 
 
 def _make_manifest(
@@ -359,6 +367,52 @@ class TestModelRegistryInstall:
             )
         refs = {m.ref for m in registry.list_installed()}
         assert refs == {f"{repo}/{flat}", f"{repo}/{subdir}"}
+
+
+class TestModelRegistryUnreadableTree:
+    """An unreadable manifest tree is unknown, never "nothing installed"."""
+
+    @_POSIX_DENIES_READS
+    def test_unreadable_repo_dir_raises_instead_of_reporting_not_installed(
+        self, tmp_path: Path
+    ) -> None:
+        # The reranker router asks this question to decide native vs hosted, so a
+        # repo dir it cannot read must not answer "not installed".
+        registry = ModelRegistry(tmp_path)
+        content = b"GGUF" + b"\x00" * 256
+        src = tmp_path / "source.gguf"
+        src.write_bytes(content)
+        registry.install(_REPO, _FILENAME, src, _make_manifest(size_bytes=len(content)))
+        repo_dir = tmp_path / "manifests" / repo_to_dir(_REPO)
+        assert registry.installed_ref_for_repo(_REPO) == _REF
+
+        repo_dir.chmod(0o000)
+        try:
+            with pytest.raises(PermissionError):
+                registry.installed_ref_for_repo(_REPO)
+        finally:
+            repo_dir.chmod(0o755)
+
+    @_POSIX_DENIES_READS
+    def test_manifests_path_under_a_file_raises(self, tmp_path: Path) -> None:
+        # A models dir that is really a file: every read of the tree fails, so the
+        # registry must say so rather than report an empty install set.
+        (tmp_path / "models").write_text("not a directory", encoding="utf-8")
+        with pytest.raises(OSError):
+            ModelRegistry(tmp_path / "models").list_installed()
+
+    def test_manifest_files_raises_when_the_repo_path_is_not_a_directory(
+        self, tmp_path: Path
+    ) -> None:
+        not_a_dir = tmp_path / "repo"
+        not_a_dir.write_text("not a directory", encoding="utf-8")
+        with pytest.raises(OSError):
+            _manifest_files(not_a_dir)
+
+    def test_manifest_files_reads_a_vanished_repo_dir_as_empty(self, tmp_path: Path) -> None:
+        # `remove` prunes an emptied repo dir, so a concurrent list may walk one
+        # that is already gone. Absent is a real answer; unreadable is not.
+        assert _manifest_files(tmp_path / "gone") == []
 
 
 class TestModelRegistryResolve:

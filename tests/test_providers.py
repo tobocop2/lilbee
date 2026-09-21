@@ -3729,21 +3729,29 @@ class TestRoutingProviderRerank:
 
         assert _is_native_rerank_ref("gpustack/bge-reranker-v2-m3-GGUF") is False
 
-    def test_unreadable_registry_falls_back_to_hosted(self, caplog) -> None:
-        """A broken registry must not silently claim a repo as native."""
-        from lilbee.providers import routing_provider
+    def test_unreadable_registry_refuses_instead_of_going_hosted(self, tmp_path: Path) -> None:
+        """A registry that cannot be read fails the rerank; it never reroutes it."""
+        from conftest import make_mock_services
+        from lilbee.app.services import set_services
+        from lilbee.modelhub.registry import ModelRegistry
 
-        def boom():
-            raise RuntimeError("registry unreadable")
+        # A plain file where the manifests directory belongs: the real registry
+        # raises on the directory read instead of reporting nothing installed.
+        (tmp_path / "manifests").write_text("not a directory", encoding="utf-8")
+        set_services(make_mock_services(registry=ModelRegistry(tmp_path)))
+        rp = self._make_provider()
+        mock_llama = mock.MagicMock()
+        mock_sdk = mock.MagicMock()
+        mock_sdk.supports_rerank.return_value = True
+        mock_sdk.rerank.return_value = [0.9, 0.1]
+        rp._local = mock_llama
+        rp._sdk_provider = mock_sdk
 
-        with (
-            mock.patch.object(routing_provider, "get_services", boom),
-            caplog.at_level("WARNING"),
-        ):
-            result = routing_provider._is_native_rerank_ref("gpustack/bge-reranker-GGUF")
-
-        assert result is False
-        assert any("Could not check the registry" in r.getMessage() for r in caplog.records)
+        cfg.reranker_model = "gpustack/bge-reranker-v2-m3-GGUF"
+        with pytest.raises(OSError):
+            rp.rerank("q", ["a", "b"])
+        mock_sdk.rerank.assert_not_called()
+        mock_llama.rerank.assert_not_called()
 
     def test_supports_rerank_hosted_delegates_to_sdk(self) -> None:
         rp = self._make_provider()
