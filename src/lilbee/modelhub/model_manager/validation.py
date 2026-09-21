@@ -68,8 +68,7 @@ def _local_install_state(ref: str) -> InstallState:
     """Where *ref* loads from, per the registry the serving path honours.
 
     One definition of installed, shared with the fleet, the CLI, the TUI and
-    ``/v1/models``. A predicate of its own here drifted from that one and
-    swapped away refs that load.
+    ``/v1/models``.
     """
     try:
         return install_state(ref, ModelRegistry(cfg.models_dir))
@@ -153,12 +152,13 @@ def _first_available_api_chat_ref() -> str | None:
 
 
 def _first_installed_local_ref(want: ModelTask) -> str | None:
-    """Return the first installed local ref whose task matches *want*.
+    """Return the first registered local ref whose task matches *want*.
 
-    Registry manifests only, unlike the check on the persisted ref: a
-    substitute must be a ref every surface can name, and a loose GGUF file
-    appears in no listing. Tasks are name-reclassified so the pick matches
-    the role validator.
+    Registered only, a narrower bar than the persisted ref clears: a
+    substitute must be a ref every surface can name and the engine can load,
+    so a loose GGUF file (in no listing) and a manifest whose split set is
+    missing a shard (the listing gates on the first shard alone) are both out.
+    Tasks are name-reclassified so the pick matches the role validator.
     """
     try:
         registry = ModelRegistry(cfg.models_dir)
@@ -167,7 +167,9 @@ def _first_installed_local_ref(want: ModelTask) -> str | None:
         log.debug("Local registry probe failed during canonicalization", exc_info=True)
         return None
     for manifest in installed:
-        if reclassify_by_name(manifest.ref, manifest.task) == want:
+        if reclassify_by_name(manifest.ref, manifest.task) != want:
+            continue
+        if install_state(manifest.ref, registry) is InstallState.REGISTERED:
             return manifest.ref
     return None
 

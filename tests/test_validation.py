@@ -22,6 +22,7 @@ _BLOB = b"GGUF-bytes"
 _REPO = "Qwen/Qwen3-0.6B-GGUF"
 _REF = f"{_REPO}/Qwen3-0.6B-Q4_K_M.gguf"
 _SPLIT_REF = f"{_REPO}/Qwen3-0.6B-Q4_K_M-00001-of-00002.gguf"
+_UNINSTALLED_REF = "Qwen/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q4_K_M.gguf"
 
 
 @pytest.fixture(autouse=True)
@@ -489,7 +490,6 @@ class TestOneDefinitionOfInstalled:
         """
         directory = tmp_path / "MiniMax.gguf"
         directory.mkdir()
-        cfg.chat_model = str(directory)
 
         assert validate_persisted_model(str(directory)) == ValidationResult.NOT_INSTALLED
 
@@ -498,3 +498,17 @@ class TestOneDefinitionOfInstalled:
         _install(_SPLIT_REF)
 
         assert validate_persisted_model(_SPLIT_REF) == ValidationResult.NOT_INSTALLED
+
+    def test_a_split_set_missing_a_shard_is_not_offered_as_a_substitute(self) -> None:
+        """The substitute must load, not merely carry a manifest with a blob."""
+        _install(_SPLIT_REF)
+        cfg.chat_model = _UNINSTALLED_REF
+
+        with mock.patch(
+            "lilbee.modelhub.model_manager.validation.discover_api_models",
+            return_value={},
+        ):
+            canon = canonicalize_chat_model()
+
+        assert validate_persisted_model(_SPLIT_REF) == ValidationResult.NOT_INSTALLED
+        assert canon.effective == _UNINSTALLED_REF
