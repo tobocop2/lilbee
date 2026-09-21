@@ -20,6 +20,7 @@ from lilbee.modelhub.model_manager import (
 from lilbee.modelhub.model_manager.discovery import _has_provider_key
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests._sys_modules import inject_modules
+from tests._unreadable import POSIX_DENIES_READS, unreadable
 
 _NATIVE_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
 
@@ -48,8 +49,7 @@ def _register_native(models_dir: Path, ref: str = _NATIVE_REF) -> None:
 
 
 class TestNativeIdentitiesCache:
-    """``list_native_identities`` memoizes against ``list_installed`` errors
-    and within the TTL window. Ensures both branches execute."""
+    """``list_native_identities`` memoizes within the TTL window."""
 
     def test_returns_cached_within_ttl(self) -> None:
         from lilbee.modelhub.model_manager.core import ModelManager as MM
@@ -67,15 +67,19 @@ class TestNativeIdentitiesCache:
         assert first is second
         assert fake_registry.list_installed.call_count == 1
 
-    def test_swallows_registry_error(self) -> None:
+    @POSIX_DENIES_READS
+    def test_surfaces_an_unreadable_registry(self, tmp_path: Path) -> None:
+        """A tree that cannot be read must not be cached as nothing installed."""
         from lilbee.modelhub.model_manager.core import ModelManager as MM
+        from lilbee.modelhub.registry import repo_to_dir
 
-        mgr = MM(Path("/nonexistent"))
-        fake_registry = mock.MagicMock()
-        fake_registry.list_installed.side_effect = OSError("permission denied")
-        mgr._registry = fake_registry  # type: ignore[assignment]
-        result = mgr.list_native_identities()
-        assert result == frozenset()
+        models_dir = tmp_path / "models"
+        _register_native(models_dir)
+        repo_dir = models_dir / "manifests" / repo_to_dir(_NATIVE_REF.rsplit("/", 1)[0])
+        mgr = MM(models_dir)
+
+        with unreadable(repo_dir), pytest.raises(OSError):
+            mgr.list_native_identities()
 
     def test_refetches_past_ttl(self) -> None:
         from lilbee.modelhub.model_manager import core as mm_core
@@ -1462,15 +1466,24 @@ class TestKnownModelCache:
         assert "ollama/gemma4:26b" in refs
         assert "openai/gpt-4o" in refs
 
-    def test_gather_swallows_registry_failure(self, monkeypatch) -> None:
-        """A broken native registry contributes no refs rather than raising, so a
-        remote-only resolution stays responsive (the documented contract)."""
-        from lilbee.modelhub.model_manager import discovery
+    @POSIX_DENIES_READS
+    def test_gather_surfaces_an_unreadable_registry(self, monkeypatch, tmp_path: Path) -> None:
+        """An unreadable native registry raises rather than resolving remote-only.
 
+        Answering from the remote and API sources alone would route a request
+        for an installed local model to whatever hosted provider is configured.
+        """
+        from lilbee.modelhub.model_manager import discovery
+        from lilbee.modelhub.registry import ModelRegistry, repo_to_dir
+
+        models_dir = tmp_path / "models"
+        _register_native(models_dir)
         self._stub_compose(monkeypatch, remote=[("a:1", "Ollama")])
-        discovery.get_services().registry.list_installed.side_effect = OSError("boom")
-        refs = discovery.gather_known_model_refs()
-        assert refs == {"ollama/a:1"}
+        discovery.get_services().registry = ModelRegistry(models_dir)
+        repo_dir = models_dir / "manifests" / repo_to_dir(_NATIVE_REF.rsplit("/", 1)[0])
+
+        with unreadable(repo_dir), pytest.raises(OSError):
+            discovery.gather_known_model_refs()
 
     def test_refs_caches_until_ttl_expiry(self, monkeypatch) -> None:
         """Repeated reads inside the TTL window do not re-run discovery."""

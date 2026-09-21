@@ -613,10 +613,17 @@ class CatalogScreen(Screen[None]):
         the bare ``hf_repo`` so catalog rows whose ref is the repo alone
         still light up as installed when at least one quant of that repo
         has a manifest.
+
+        An unreadable registry leaves the previous set in place and logs.
+        The screen must still open, so this is the one place the fault
+        stops rather than reaching the user as a crash.
         """
-        with contextlib.suppress(Exception):
+        try:
             self._installed_names = set(get_services().model_manager.list_native_identities())
-            self._data_version += 1
+        except Exception:
+            log.warning("Could not read the model registry; catalog install marks may be stale")
+            return
+        self._data_version += 1
 
     def _active_tab_id(self) -> str:
         """Return the cached active tab id; falls back to TAB_CHAT pre-mount.

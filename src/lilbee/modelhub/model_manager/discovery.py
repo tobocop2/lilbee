@@ -87,8 +87,9 @@ def classify_remote_models(
 
     The strategy and provider label come from *spec* (Ollama ``/api/tags`` vs
     LM Studio ``/v1/models``), so a server reached at a non-default host is
-    classified correctly. Returns ``[]`` on any error so read-only callers stay
-    responsive when the backend is down.
+    classified correctly. A transport failure or a non-JSON body yields ``[]``
+    so read-only callers stay responsive when the backend is down. A listing
+    the strategy cannot walk raises: the parse runs outside the request guard.
     """
     discover = _DISCOVERY_BY_KEY[spec.key]
     return discover(base_url, spec.display_name, timeout)
@@ -226,22 +227,15 @@ def detect_remote_embedding_models() -> list[str]:
     return [m.name for m in classify_all_remote_models() if m.task == ModelTask.EMBEDDING]
 
 
-def _installed_native_refs() -> set[str]:
-    """Canonical refs from the native registry; empty set if the walk fails."""
-    try:
-        return {m.ref for m in get_services().registry.list_installed()}
-    except Exception:
-        log.warning("Native registry walk failed; contributing no installed refs", exc_info=True)
-        return set()
-
-
 def gather_known_model_refs() -> set[str]:
     """Canonical refs from the native registry, every configured local server, and APIs.
 
-    Each primitive swallows its own failures, so a backend being down contributes an
-    empty subset rather than raising.
+    A local server or API that is down contributes an empty subset. An
+    unreadable native registry raises ``OSError`` instead: answering from the
+    remote sources alone would route a request for an installed local model
+    to a hosted provider.
     """
-    refs = _installed_native_refs()
+    refs = {m.ref for m in get_services().registry.list_installed()}
     for rm in classify_all_remote_models():
         refs.add(format_remote_ref(rm.name, rm.provider))
     for models in discover_api_models().values():

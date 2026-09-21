@@ -266,6 +266,23 @@ def ensure_chat_model() -> str | None:
     return validate_disk_and_pull(model_info, free_gb)
 
 
+def _remote_chat_model_names() -> list[str]:
+    """Chat-task names reported by the configured local servers.
+
+    A server that is down, or one whose listing the strategy cannot walk,
+    contributes nothing. A remote source being unusable says nothing about
+    what is installed locally.
+    """
+    # circular: modelhub.model_manager.discovery imports modelhub.models at top
+    from lilbee.modelhub.model_manager import classify_all_remote_models
+
+    try:
+        return [m.name for m in classify_all_remote_models() if m.task == ModelTask.CHAT]
+    except Exception:
+        log.debug("Remote model discovery failed", exc_info=True)
+        return []
+
+
 def list_installed_models() -> list[str]:
     """Return installed chat-task model names.
 
@@ -273,20 +290,15 @@ def list_installed_models() -> list[str]:
     SDK backend catalog (classified by name/family). Non-chat roles
     (embedding, vision, rerank) are excluded so TUI pickers don't offer
     refs that fail pydantic task validation at assignment time.
-    """
-    # circular: modelhub.model_manager.discovery imports modelhub.models at top
-    from lilbee.modelhub.model_manager import classify_all_remote_models
 
-    try:
-        names: list[str] = []
-        registry = ModelRegistry(cfg.models_dir)
-        for manifest in registry.list_installed():
-            if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT:
-                names.append(manifest.ref)
-        for remote in classify_all_remote_models():
-            if remote.task == ModelTask.CHAT:
-                names.append(remote.name)
-        return sorted(set(names))
-    except Exception:
-        log.debug("Failed to list installed models", exc_info=True)
-        return []
+    Raises ``OSError`` when the registry cannot be read, so an unreadable
+    tree never reads as "no chat model is installed". An unusable remote
+    server only drops its own names.
+    """
+    names: list[str] = []
+    registry = ModelRegistry(cfg.models_dir)
+    for manifest in registry.list_installed():
+        if reclassify_by_name(manifest.ref, manifest.task) == ModelTask.CHAT:
+            names.append(manifest.ref)
+    names.extend(_remote_chat_model_names())
+    return sorted(set(names))

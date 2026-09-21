@@ -16,11 +16,13 @@ from lilbee.modelhub.model_manager import (
     canonicalize_embedding_model,
     validate_persisted_model,
 )
-from lilbee.modelhub.registry import ModelManifest, ModelRegistry
+from lilbee.modelhub.registry import ModelManifest, ModelRegistry, repo_to_dir
+from tests._unreadable import POSIX_DENIES_READS, unreadable
 
 _BLOB = b"GGUF-bytes"
 _REPO = "Qwen/Qwen3-0.6B-GGUF"
-_REF = f"{_REPO}/Qwen3-0.6B-Q4_K_M.gguf"
+_FILENAME = "Qwen3-0.6B-Q4_K_M.gguf"
+_REF = f"{_REPO}/{_FILENAME}"
 _SPLIT_REF = f"{_REPO}/Qwen3-0.6B-Q4_K_M-00001-of-00002.gguf"
 _UNINSTALLED_REF = "Qwen/Qwen3-1.7B-GGUF/Qwen3-1.7B-Q4_K_M.gguf"
 
@@ -306,32 +308,23 @@ def test_canonicalize_chat_handles_discover_failure():
     assert canon.effective == "test/fallback-local"
 
 
-def test_canonicalize_handles_registry_failure():
-    """If ModelRegistry construction throws, fallback chain still works."""
+def test_canonicalize_surfaces_a_registry_failure():
+    """A registry that cannot be opened stops the swap instead of substituting."""
     cfg.chat_model = "missing/model"
     with (
         mock.patch(
             "lilbee.modelhub.model_manager.validation.ModelRegistry",
             side_effect=OSError("models dir gone"),
         ),
-        mock.patch(
-            "lilbee.modelhub.model_manager.validation.discover_api_models",
-            return_value={},
-        ),
+        pytest.raises(OSError),
     ):
-        canon = canonicalize_chat_model()
-    # No API key, no local registry -> falls back to original.
-    assert canon.effective == "missing/model"
+        canonicalize_chat_model()
 
 
 def test_canonicalize_embedding_returns_original_when_no_fallback():
-    """Embedding has no API path, so a missing local registry returns original."""
+    """Embedding has no API path, so an empty registry returns the original."""
     cfg.embedding_model = "missing/embed"
-    with mock.patch(
-        "lilbee.modelhub.model_manager.validation.ModelRegistry",
-        side_effect=OSError("models dir gone"),
-    ):
-        canon = canonicalize_embedding_model()
+    canon = canonicalize_embedding_model()
     assert canon.effective == "missing/embed"
 
 
@@ -410,6 +403,27 @@ def test_ollama_ref_unusable_when_server_unreachable():
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[],
+        ),
+        mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
+    ):
+        _holding(registry_cls, [])
+        canon = canonicalize_embedding_model()
+    assert canon.status != ValidationResult.OK
+    assert canon.reason is not None and "reachable" in canon.reason
+
+
+def test_ollama_ref_unusable_when_the_server_listing_is_malformed():
+    """A listing the strategy cannot walk reads as unreachable, not as usable."""
+    cfg.embedding_model = "ollama/nomic-embed-text:latest"
+    response = mock.Mock()
+    response.raise_for_status = mock.Mock()
+    # The parse loop runs outside the request guard, so this raises past it.
+    response.json.return_value = {"models": [None]}
+    with (
+        mock.patch("lilbee.modelhub.model_manager.validation.litellm_available", return_value=True),
+        mock.patch(
+            "lilbee.modelhub.model_manager.discovery._http_get",
+            return_value=response,
         ),
         mock.patch("lilbee.modelhub.model_manager.validation.ModelRegistry") as registry_cls,
     ):
@@ -512,3 +526,36 @@ class TestOneDefinitionOfInstalled:
 
         assert validate_persisted_model(_SPLIT_REF) == ValidationResult.NOT_INSTALLED
         assert canon.effective == _UNINSTALLED_REF
+
+
+@POSIX_DENIES_READS
+class TestUnreadableRegistry:
+    """An unreadable registry is unknown, not uninstalled.
+
+    Three real faults make the registry raise: the manifests path is a file,
+    the manifests tree cannot be read, and one manifest file cannot be read.
+    None of them means the model is absent, so neither the validator nor the
+    substitute picker may answer as if it were.
+    """
+
+    def test_an_unreadable_manifest_is_not_reported_as_uninstalled(self) -> None:
+        _install(_REF)
+        manifest = cfg.models_dir / "manifests" / repo_to_dir(_REPO) / f"{_FILENAME}.json"
+
+        with unreadable(manifest), pytest.raises(OSError):
+            validate_persisted_model(_REF)
+
+    def test_an_unreadable_registry_stops_the_substitute_picker(self) -> None:
+        _install(_REF)
+        cfg.chat_model = _UNINSTALLED_REF
+        repo_dir = cfg.models_dir / "manifests" / repo_to_dir(_REPO)
+
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.validation.discover_api_models",
+                return_value={},
+            ),
+            unreadable(repo_dir),
+            pytest.raises(OSError),
+        ):
+            canonicalize_chat_model()
