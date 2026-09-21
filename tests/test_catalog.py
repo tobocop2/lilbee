@@ -1196,6 +1196,31 @@ class TestSplitShardDownload:
         assert requested == ["m-00001-of-00002.gguf", "m-00002-of-00002.gguf"]
         assert len(completed) == 1  # manifest write only after the full set is on disk
 
+    def test_reports_every_shard_it_resolves_before_transferring(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Resolving the shards is all a watcher can see before the first bytes.
+
+        Each probe names the cache blob the shard writes, which is how the
+        parent knows whose temporary file it may clear after a stall.
+        """
+        entry = PICKS_EMBEDDING[0]
+        monkeypatch.setattr(catalog.download, "resolve_filename", lambda e: "m-00001-of-00003.gguf")
+        monkeypatch.setattr(
+            catalog.download,
+            "fetch_remote_file",
+            lambda repo, name: catalog.download.RemoteFile(size=100, blob=f"blob-{name}"),
+        )
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", _fake_download)
+        monkeypatch.setattr(catalog.download, "_ensure_projector", lambda *a, **kw: None)
+        probes: list[str | None] = []
+
+        catalog.download.fetch_model_files(entry, tmp_path, None, on_probe=probes.append)
+
+        # The completeness check stops at the first absent shard; sizes cover them all.
+        assert len(probes) == 4
+        assert probes[-1] == "blob-m-00003-of-00003.gguf"
+
 
 class TestDownloadModel:
     def test_returns_existing_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1206,7 +1231,9 @@ class TestDownloadModel:
         existing.write_bytes(content)
         # Cached file matches HF-reported size: accepted as complete, no re-download.
         monkeypatch.setattr(
-            catalog.download, "fetch_expected_file_size", lambda repo, name: len(content)
+            catalog.download,
+            "fetch_remote_file",
+            lambda repo, name: catalog.download.RemoteFile(size=len(content), blob="abc123"),
         )
         result = download_model(entry)
         assert result == existing
@@ -1221,10 +1248,10 @@ class TestDownloadModel:
         entry = PICKS_EMBEDDING[0]
         (tmp_path / entry.gguf_filename).write_bytes(b"stale")
 
-        def _missing(*_a: Any, **_kw: Any) -> int | None:
+        def _missing(*_a: Any, **_kw: Any) -> tuple[int | None, str | None]:
             raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
 
-        monkeypatch.setattr(catalog.download, "_hf_file_size", _missing)
+        monkeypatch.setattr(catalog.download, "_hf_file_metadata", _missing)
 
         def _no_transfer(**kwargs: Any) -> str:
             raise AssertionError("transfer must not start for a nonexistent file")
@@ -1242,10 +1269,10 @@ class TestDownloadModel:
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
         entry = PICKS_EMBEDDING[0]
 
-        def _missing(*_a: Any, **_kw: Any) -> int | None:
+        def _missing(*_a: Any, **_kw: Any) -> tuple[int | None, str | None]:
             raise RemoteEntryNotFoundError("Entry Not Found", response=MagicMock())
 
-        monkeypatch.setattr(catalog.download, "_hf_file_size", _missing)
+        monkeypatch.setattr(catalog.download, "_hf_file_metadata", _missing)
 
         def _no_transfer(**kwargs: Any) -> str:
             raise AssertionError("transfer must not start for a nonexistent file")
@@ -1264,7 +1291,9 @@ class TestDownloadModel:
         content = b"fake model"
         existing.write_bytes(content)
         monkeypatch.setattr(
-            catalog.download, "fetch_expected_file_size", lambda repo, name: len(content)
+            catalog.download,
+            "fetch_remote_file",
+            lambda repo, name: catalog.download.RemoteFile(size=len(content), blob="abc123"),
         )
 
         progress_calls: list[tuple[int, int]] = []

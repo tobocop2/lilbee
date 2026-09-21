@@ -155,6 +155,30 @@ def _raised_in_loop_selector(excinfo: pytest.ExceptionInfo) -> bool:  # type: ig
 
 
 @pytest.fixture(autouse=True)
+def _download_without_a_child_process(request, monkeypatch):
+    """Run a download's transfer in this process so a test's patches reach it.
+
+    Every download now runs in a spawned child, and that child re-imports the
+    catalog modules without the test's monkeypatches, so a test that stubs the
+    transfer would drive a real one. Tests marked ``download_child`` drive the
+    relay itself and keep the real child.
+    """
+    if request.node.get_closest_marker("download_child"):
+        return
+    from lilbee.catalog import download_process
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    def _in_process(entry, models_dir, token, *, on_progress, cancel):
+        from lilbee.catalog.download import fetch_model_files
+
+        if cancel.is_set():
+            raise TaskCancelledError
+        return fetch_model_files(entry, models_dir, token, on_progress=on_progress)
+
+    monkeypatch.setattr(download_process, "download_in_subprocess", _in_process)
+
+
+@pytest.fixture(autouse=True)
 def _restore_interactive_intent():
     """Snapshot the interactive-session flag around every test.
 
