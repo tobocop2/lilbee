@@ -1514,17 +1514,18 @@ class TestIngestHelpers:
         result, _ = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
-    async def test_ingest_code_empty_chunks(self, isolated_env):
-        """Code file that produces no chunks returns empty list."""
+    async def test_ingest_code_empty_chunks(self, isolated_env, mock_svc):
+        """A code file with no chunks returns early, without reaching the embedder."""
         from unittest.mock import patch
 
         from lilbee.data.ingest import ingest_code_sync
 
         f = isolated_env / "empty.py"
         f.write_text("")
-        with patch("lilbee.data.extract.code_chunker.chunk_code", return_value=[]):
+        with patch("lilbee.data.ingest.code.chunk_code", return_value=[]):
             result = ingest_code_sync(f, "empty.py")
-            assert result == []
+        assert result == []
+        mock_svc.embedder.embed_batch.assert_not_called()
 
     async def test_ingest_code_header_uses_relative_source_name(self, isolated_env, mock_svc):
         """ingest_code_sync threads the relative source_name into the chunk header so

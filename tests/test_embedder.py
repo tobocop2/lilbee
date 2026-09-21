@@ -9,7 +9,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.extract.chunk import CHARS_PER_TOKEN
-from lilbee.retrieval.embedder import Embedder
+from lilbee.retrieval.embedder import Embedder, is_model_available
 
 
 @pytest.fixture(autouse=True)
@@ -261,6 +261,24 @@ class TestValidateModel:
                 resolve.assert_not_called()
         finally:
             cfg.embedding_model = old
+
+
+class TestIsModelAvailable:
+    """The readiness check the model bar and the chat screen share."""
+
+    def test_installed_local_ref_is_available(self, mock_provider):
+        mock_provider.list_models.return_value = []
+        with mock.patch("lilbee.retrieval.embedder.is_model_installed", return_value=True):
+            assert is_model_available("org/embed-GGUF/embed-Q4.gguf", mock_provider) is True
+
+    def test_listed_remote_ref_is_available_without_a_native_install(self, mock_provider):
+        mock_provider.list_models.return_value = ["nomic-embed-text"]
+        assert is_model_available("ollama/nomic-embed-text", mock_provider) is True
+
+    def test_local_ref_neither_installed_nor_listed_is_unavailable(self, mock_provider):
+        mock_provider.list_models.return_value = []
+        with mock.patch("lilbee.retrieval.embedder.is_model_installed", return_value=False):
+            assert is_model_available("org/embed-GGUF/embed-Q4.gguf", mock_provider) is False
 
 
 class TestAsymmetricEmbed:

@@ -4490,8 +4490,7 @@ class TestCrawlStream:
             yield
 
     @patch("lilbee.crawler.crawl_and_save")
-    @patch("lilbee.crawler.validate_crawl_url")
-    async def test_streams_events_and_done(self, _mock_validate, mock_crawl):
+    async def test_streams_events_and_done(self, mock_crawl):
         from pathlib import Path
 
         async def fake_crawl(
@@ -4519,8 +4518,7 @@ class TestCrawlStream:
         assert any("done" in e for e in events)
 
     @patch("lilbee.crawler.crawl_and_save")
-    @patch("lilbee.crawler.validate_crawl_url")
-    async def test_streams_error_on_exception(self, _mock_validate, mock_crawl):
+    async def test_streams_error_on_exception(self, mock_crawl):
         mock_crawl.side_effect = RuntimeError("network fail")
         events = []
         async for event in handlers.crawl_stream("https://example.com"):
@@ -4528,8 +4526,7 @@ class TestCrawlStream:
         assert any("error" in e and "network fail" in e for e in events)
 
     @patch("lilbee.crawler.crawl_and_save")
-    @patch("lilbee.crawler.validate_crawl_url")
-    async def test_cancel_stops_crawl(self, _mock_validate, mock_crawl, caplog):
+    async def test_cancel_stops_crawl(self, mock_crawl, caplog):
         """Closing the crawl generator mid-stream sets cancel and logs."""
         import threading
 
