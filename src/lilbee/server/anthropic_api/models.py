@@ -211,6 +211,10 @@ class AnthropicUsage(BaseModel):
 
     input_tokens: int
     output_tokens: int
+    # The three prompt-side counts are disjoint and sum to the whole prompt.
+    # lilbee's engine has no paid cache write, so the creation count is always 0.
+    cache_creation_input_tokens: int = 0
+    cache_read_input_tokens: int = 0
 
 
 class MessagesResponse(BaseModel):

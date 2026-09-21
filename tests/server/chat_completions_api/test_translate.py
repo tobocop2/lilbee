@@ -726,6 +726,20 @@ class TestCanonicalToCompletionsResponse:
         assert body.usage.prompt_tokens == 5
         assert body.usage.completion_tokens == 7
         assert body.usage.total_tokens == 12
+        assert body.usage.prompt_tokens_details.cached_tokens == 0
+
+    def test_cached_tokens_report_under_prompt_tokens_details(self) -> None:
+        """Reused prompt tokens report under the OpenAI breakdown field."""
+        body = canonical_to_completions_response(
+            self._resp(
+                usage=CanonicalUsage(input_tokens=423, output_tokens=8, cached_input_tokens=404)
+            ),
+            response_id=_RESPONSE_ID,
+        )
+        assert body.usage.prompt_tokens_details.cached_tokens == 404
+        # cached_tokens is a subset of prompt_tokens, never a deduction from it.
+        assert body.usage.prompt_tokens == 423
+        assert body.usage.total_tokens == 431
 
 
 async def _drain(
@@ -898,6 +912,27 @@ class TestCanonicalStreamToCompletionsChunks:
         assert usage_chunk.usage.prompt_tokens == 6
         assert usage_chunk.usage.completion_tokens == 2
         assert usage_chunk.usage.total_tokens == 8
+        assert usage_chunk.usage.prompt_tokens_details.cached_tokens == 0
+
+    async def test_usage_chunk_reports_cached_tokens(self) -> None:
+        """The streamed usage chunk carries the same breakdown as the body."""
+        events: list[CanonicalStreamEvent] = [
+            MessageStart(id="msg_x", model="m"),
+            MessageDelta(
+                stop_reason=StopReason.END_TURN,
+                usage=CanonicalUsage(input_tokens=423, output_tokens=8, cached_input_tokens=404),
+            ),
+            MessageStop(),
+        ]
+        chunks = await _drain(
+            canonical_stream_to_completions_chunks(
+                _async_iter(events), model="m", response_id="msg_x", include_usage=True
+            )
+        )
+        usage = chunks[-1].usage
+        assert usage is not None
+        assert usage.prompt_tokens_details.cached_tokens == 404
+        assert usage.prompt_tokens == 423
 
     async def test_usage_chunk_omitted_without_include_usage(self) -> None:
         """Without include_usage, no usage chunk is emitted even when the canonical

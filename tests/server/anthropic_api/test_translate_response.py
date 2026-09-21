@@ -37,6 +37,26 @@ def test_plain_text_response():
     assert body.model_dump()["stop_sequence"] is None
 
 
+def test_cached_prompt_tokens_report_as_cache_read_input_tokens():
+    """The prompt-side counts are disjoint: input_tokens excludes the reused part."""
+    resp = CanonicalResponse(
+        id="x",
+        model="m",
+        content=[TextBlock(text="hi")],
+        stop_reason=StopReason.END_TURN,
+        usage=CanonicalUsage(input_tokens=423, output_tokens=8, cached_input_tokens=404),
+    )
+    body = canonical_to_messages_response(resp, response_id="msg_1")
+    assert body.usage.cache_read_input_tokens == 404
+    assert body.usage.input_tokens == 19
+    assert body.usage.cache_creation_input_tokens == 0
+
+
+def test_cache_read_input_tokens_is_zero_without_reuse():
+    body = canonical_to_messages_response(_response([TextBlock(text="hi")]), response_id="msg_1")
+    assert body.usage.cache_read_input_tokens == 0
+
+
 def test_inline_think_becomes_thinking_block():
     body = canonical_to_messages_response(
         _response([TextBlock(text="<think>plan</think>answer")]), response_id="msg_1"

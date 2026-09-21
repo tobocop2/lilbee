@@ -1443,6 +1443,15 @@ def _inline_message_reasoning(message: Mapping[str, Any], *, enabled: bool) -> s
     return content
 
 
+def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int:
+    """Read ``prompt_tokens_details.cached_tokens``, or 0 when the engine omits it."""
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, Mapping):
+        return 0
+    cached = details.get("cached_tokens")
+    return cached if isinstance(cached, int) else 0
+
+
 def _usage_from_body(body: Mapping[str, Any]) -> TokenUsage | None:
     """Read the ``usage`` block of an OpenAI response, or ``None`` if absent.
 
@@ -1458,6 +1467,7 @@ def _usage_from_body(body: Mapping[str, Any]) -> TokenUsage | None:
     return TokenUsage(
         prompt_tokens=prompt if isinstance(prompt, int) else 0,
         completion_tokens=completion if isinstance(completion, int) else 0,
+        cached_prompt_tokens=_cached_prompt_tokens(usage),
     )
 
 

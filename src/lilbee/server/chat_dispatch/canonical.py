@@ -117,6 +117,13 @@ class CanonicalUsage:
 
     input_tokens: int
     output_tokens: int
+    # Prompt tokens served from the engine's cache, a subset of input_tokens.
+    cached_input_tokens: int = 0
+
+    @property
+    def uncached_input_tokens(self) -> int:
+        """Prompt tokens the engine did not serve from its cache."""
+        return self.input_tokens - self.cached_input_tokens
 
 
 class TokenCountAccuracy(StrEnum):

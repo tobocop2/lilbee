@@ -255,6 +255,8 @@ class TokenUsage:
 
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    # Prompt tokens the engine served from cache, a subset of prompt_tokens.
+    cached_prompt_tokens: int = 0
 
 
 @dataclass(frozen=True)

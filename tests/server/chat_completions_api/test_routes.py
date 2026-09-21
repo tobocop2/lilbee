@@ -755,6 +755,32 @@ class TestNonStreamingCompletion:
         assert usage["completion_tokens"] == 5
         assert usage["total_tokens"] == 17
 
+    async def test_usage_body_carries_cached_prompt_tokens(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The serialized body reports cache reuse under prompt_tokens_details."""
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = ChatResult(
+            text="hello",
+            tool_calls=(),
+            finish_reason=FinishReason.STOP,
+            usage=TokenUsage(prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404),
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+        usage = resp.json()["usage"]
+        # OpenAI counts the cached part inside prompt_tokens, unlike Anthropic.
+        assert usage["prompt_tokens"] == 423
+        assert usage["prompt_tokens_details"] == {"cached_tokens": 404}
+
     async def test_unknown_provider_error_returns_500_envelope(
         self, services_with_chat_model, _auth_token
     ):
@@ -1179,6 +1205,38 @@ class TestStreamingCompletion:
         assert usage_chunk["usage"]["prompt_tokens"] == 9
         assert usage_chunk["usage"]["completion_tokens"] == 2
         assert usage_chunk["usage"]["total_tokens"] == 11
+
+    async def test_stream_usage_chunk_carries_cached_prompt_tokens(
+        self, services_with_chat_model, _auth_token
+    ):
+        """The streamed usage chunk survives serialization with its cache breakdown.
+
+        The chunk is dumped with ``exclude_none``, which drops an unset optional;
+        the nested details object must reach the wire anyway.
+        """
+        from lilbee.providers.base import TokenUsage
+
+        services_with_chat_model.provider.chat.return_value = FakeProviderStream(
+            [
+                "he",
+                "llo",
+                TokenUsage(prompt_tokens=423, completion_tokens=8, cached_prompt_tokens=404),
+            ]
+        )
+        async with AsyncTestClient(_build_app()) as client:
+            resp = await client.post(
+                "/v1/chat/completions",
+                headers=_h(),
+                json={
+                    "model": INSTALLED_REF,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "stream": True,
+                    "stream_options": {"include_usage": True},
+                },
+            )
+        usage = _sse_to_chunks(resp.content)[-2]["usage"]
+        assert usage["prompt_tokens"] == 423
+        assert usage["prompt_tokens_details"] == {"cached_tokens": 404}
 
     async def test_stream_omits_usage_chunk_without_include_usage(
         self, services_with_chat_model, _auth_token
