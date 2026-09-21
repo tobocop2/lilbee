@@ -27,9 +27,15 @@ class TestEventTypes:
         assert EventType.FILE_START == "file_start"
         assert EventType.FILE_DONE == "file_done"
         assert EventType.BATCH_PROGRESS == "batch_progress"
-        assert EventType.DONE == "done"
+        assert EventType.SYNC_DONE == "sync_done"
         assert EventType.EMBED == "embed"
         assert EventType.EXTRACT == "extract"
+
+    def test_no_name_means_two_things_on_the_wire(self) -> None:
+        """The SSE layer writes a progress event's value into the ``event:``
+        field beside the stream protocol's own names, so a value in both
+        enums would reach a client as one name with two meanings."""
+        assert not ({e.value for e in EventType} & {e.value for e in SseEvent})
 
     def test_crawl_event_types(self) -> None:
         assert EventType.CRAWL_START == "crawl_start"

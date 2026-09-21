@@ -517,7 +517,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
 
 def test_do_sync_done_event_reports_completion() -> None:
-    """_do_sync routes EventType.DONE through reporter.update at 100% so the
+    """_do_sync routes EventType.SYNC_DONE through reporter.update at 100% so the
     Task Center row flashes 'just-completed' (regression for bb-7enj)."""
     import threading
 
@@ -530,7 +530,7 @@ def test_do_sync_done_event_reports_completion() -> None:
 
     async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
         on_progress(
-            EventType.DONE,
+            EventType.SYNC_DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
         )
         return SyncResult()

@@ -706,7 +706,7 @@ class TestSync:
         event_types = [t for t, _ in events]
         assert "file_start" in event_types
         assert "file_done" in event_types
-        assert "done" in event_types
+        assert "sync_done" in event_types
         # ExtractEvent fires once per file before the embed phase so subscribers
         # can show "extracted N pages" before the bar starts to tick at chunk
         # granularity. Without this a 44MB PDF sat silently for many minutes.

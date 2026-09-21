@@ -249,7 +249,7 @@ def build_sync_progress_callback(
             )
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
             embed_tick(data)
-        elif event_type == EventType.DONE and isinstance(data, SyncDoneEvent):
+        elif event_type == EventType.SYNC_DONE and isinstance(data, SyncDoneEvent):
             total = data.added + data.updated + data.removed
             reporter.update(100, msg.SYNC_STATUS_DONE.format(count=total), indeterminate=False)
 

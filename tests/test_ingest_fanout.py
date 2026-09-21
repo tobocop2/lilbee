@@ -303,7 +303,9 @@ class TestShardReporter:
     def test_other_events_are_ignored(self):
         messages = queue_mod.Queue()
         reporter = fanout._ShardReporter(0, messages)
-        reporter(EventType.DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0, skipped=0))
+        reporter(
+            EventType.SYNC_DONE, SyncDoneEvent(added=1, updated=0, removed=0, failed=0, skipped=0)
+        )
         assert messages.empty()
 
 

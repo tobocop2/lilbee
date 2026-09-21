@@ -60,7 +60,7 @@ class TestSyncProgressPrinter:
         callback = sync_mod._sync_progress_printer(con)
         data = SyncDoneEvent(added=1, updated=0, removed=0, failed=0)
 
-        callback(EventType.DONE, data)
+        callback(EventType.SYNC_DONE, data)
 
         con.print.assert_called_once()
         printed = con.print.call_args[0][0]
@@ -71,7 +71,7 @@ class TestSyncProgressPrinter:
         callback = sync_mod._sync_progress_printer(con)
         data = SyncDoneEvent(added=0, updated=0, removed=0, failed=0)
 
-        callback(EventType.DONE, data)
+        callback(EventType.SYNC_DONE, data)
 
         con.print.assert_not_called()
 
@@ -229,7 +229,7 @@ class TestChatSyncCallback:
         callback = sync_mod._chat_sync_callback(status)
         data = SyncDoneEvent(added=2, updated=1, removed=0, failed=0)
 
-        callback(EventType.DONE, data)
+        callback(EventType.SYNC_DONE, data)
 
         assert status.text == ""
         captured = capsys.readouterr()
@@ -242,7 +242,7 @@ class TestChatSyncCallback:
         callback = sync_mod._chat_sync_callback(status)
         data = SyncDoneEvent(added=0, updated=0, removed=0, failed=0)
 
-        callback(EventType.DONE, data)
+        callback(EventType.SYNC_DONE, data)
 
         assert status.text == ""
         captured = capsys.readouterr()
