@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Stand-in for the gh CLI when install_engine.sh downloads a llama.cpp release
+# asset. Writes a placeholder archive that the unzip / tar stubs unpack from
+# ENGINE_PAYLOAD, with no network call.
+#
+# Reads:
+#   GH_LOG         file every argument list is appended to (required)
+#   GH_FAIL_TIMES  how many leading calls fail (default: 0)
+#   GH_NO_ASSET    when set, every call reports that no asset matches
+
+set -euo pipefail
+
+log="${GH_LOG:?GH_LOG is required}"
+echo "$*" >> "${log}"
+
+if [ "${1-}" != release ] || [ "${2-}" != download ]; then
+  echo "stub gh: unexpected command '$*'" >&2
+  exit 2
+fi
+
+if [ -n "${GH_NO_ASSET-}" ]; then
+  echo "no assets match the file pattern" >&2
+  exit 1
+fi
+
+calls=$(grep -c '' "${log}")
+if [ "${calls}" -le "${GH_FAIL_TIMES:-0}" ]; then
+  echo "gh: call ${calls} fails" >&2
+  exit 1
+fi
+
+# --output names the file the asset is written to.
+out=""
+while [ "$#" -gt 0 ]; do
+  [ "$1" = "--output" ] && { out="$2"; break; }
+  shift
+done
+[ -n "${out}" ] || { echo "stub gh: no --output argument" >&2; exit 2; }
+echo "stub archive" > "${out}"
