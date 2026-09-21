@@ -470,10 +470,20 @@ class TestOneDefinitionOfInstalled:
         assert canon.status == ValidationResult.OK
 
     def test_a_bare_repo_ref_is_installed(self) -> None:
-        """Older builds persisted ``<org>/<repo>``; the registry still resolves it."""
+        """Older builds persisted ``<org>/<repo>``, and both answers accepted it.
+
+        A pin, not evidence: the registry keeps that shape working, so folding
+        the two answers together must not drop it.
+        """
         _install(_REF)
 
         assert validate_persisted_model(_REPO) == ValidationResult.OK
+
+    def test_a_directory_is_not_a_model(self, tmp_path: Path) -> None:
+        """A path that exists but holds no model must not pass as usable."""
+        cfg.chat_model = str(tmp_path)
+
+        assert validate_persisted_model(str(tmp_path)) == ValidationResult.NOT_INSTALLED
 
     def test_a_split_set_missing_a_shard_is_not_installed(self) -> None:
         """A manifest is not enough: the engine needs every shard of a split set."""

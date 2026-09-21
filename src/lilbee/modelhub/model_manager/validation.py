@@ -5,10 +5,11 @@ become stale when the user removes a GGUF, swaps providers, or moves
 between machines. The TUI / server / CLI all read these refs at startup
 and should not get a "model not found" error from the very first prompt.
 
-The helpers here are pure and side-effect-free: callers decide what to
-do with the result (swap in-memory ``cfg`` field, surface a banner, log
-a warning, etc.). The persisted file is never rewritten, so the user's
-declared intent is preserved across reinstalls.
+The helpers here decide nothing: callers act on the result (swap the
+in-memory ``cfg`` field, surface a banner, log a warning, etc.). They
+read the model registry, which repairs a manifest it can recover from
+the HuggingFace cache, but they never rewrite the config file, so the
+user's declared intent is preserved across reinstalls.
 """
 
 from __future__ import annotations
@@ -154,7 +155,10 @@ def _first_available_api_chat_ref() -> str | None:
 def _first_installed_local_ref(want: ModelTask) -> str | None:
     """Return the first installed local ref whose task matches *want*.
 
-    Tasks are name-reclassified so the pick matches the role validator.
+    Registry manifests only, unlike the check on the persisted ref: a
+    substitute must be a ref every surface can name, and a loose GGUF file
+    appears in no listing. Tasks are name-reclassified so the pick matches
+    the role validator.
     """
     try:
         registry = ModelRegistry(cfg.models_dir)
