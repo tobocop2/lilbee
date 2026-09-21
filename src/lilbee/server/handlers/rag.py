@@ -260,12 +260,17 @@ def _run_llm_stream(
 async def _store_extracted_memories(question: str, answer: str) -> list[Any]:
     """Run the auto-extraction LLM pass off the event loop and return stored memories.
 
-    Returns an empty list (no-op) when the answer is empty or auto-extraction is
-    off, so one-shot and streaming callers share one extraction path.
+    The pass is best effort and never raises: an empty list comes back when the
+    answer is empty, when auto-extraction is off, and when the pass itself fails.
+    A failure is logged with its traceback.
     """
     if not answer or not auto_extract_enabled():
         return []
-    return await asyncio.to_thread(auto_extract, question, answer)
+    try:
+        return await asyncio.to_thread(auto_extract, question, answer)
+    except Exception:
+        log.exception("auto-extraction failed; the answer is unaffected")
+        return []
 
 
 async def _emit_extracted_memories(question: str, answer: str) -> AsyncGenerator[str, None]:
@@ -301,8 +306,8 @@ async def _emit_sources_and_memories(
     the full retrieved set when the answer cited nothing, mirroring
     ``Searcher.ask_stream``. Recalled memories always ride along: they were in the
     prompt whether the answer cited a document or not. Auto-extraction trails
-    ``done`` so clients that stop at ``done`` are unaffected; the memories are
-    stored regardless.
+    ``done``; it cannot fail the stream, so a client that drains past ``done``
+    still keeps the answer.
     """
     answer = "".join(answer_parts)
     cited = cited_subset(answer, sources)
