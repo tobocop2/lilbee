@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import contextlib
-import logging
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -31,8 +30,6 @@ from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
 if TYPE_CHECKING:
     from lilbee.providers.warm_progress import WarmProgress
-
-log = logging.getLogger(__name__)
 
 
 class RoutingProvider(LLMProvider):
@@ -435,6 +432,9 @@ def _is_native_rerank_ref(model: str) -> bool:
     on the name captures them and starves the SDK backend. The registry answers
     "is this one of ours" without guessing. Non-GGUF refs without a known SDK
     prefix still raise downstream through :func:`parse_model_ref`.
+
+    An empty registry reports nothing installed; a registry that cannot be read
+    raises, and the fault surfaces to the caller.
     """
     if not model:
         return False
@@ -442,10 +442,4 @@ def _is_native_rerank_ref(model: str) -> bool:
         return True
     if not is_bare_hf_repo(model):
         return False
-    try:
-        return get_services().registry.installed_ref_for_repo(model) is not None
-    except Exception:
-        # An unreadable registry must not silently reroute reranking to a
-        # hosted backend the user never configured.
-        log.warning("Could not check the registry for %s; treating as hosted", model, exc_info=True)
-        return False
+    return get_services().registry.installed_ref_for_repo(model) is not None
