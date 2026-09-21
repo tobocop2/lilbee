@@ -2,25 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
 from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import (
-    ChatMode,
-    ClustererBackend,
-    CrawlRenderMode,
-    KvCacheType,
-    LlmProvider,
-    ReasoningMode,
-    RerankerType,
-    TableModel,
-    WikiEntityMode,
-)
-from lilbee.core.config.model import FTS_LANGUAGES
+from lilbee.core.config.schema import field_value_set
 
 
 class RenderStyle(StrEnum):
@@ -58,6 +47,10 @@ class SettingDef:
     write contract for HTTP / MCP / programmatic surfaces lives in
     ``config_meta.WRITABLE_CONFIG_FIELDS`` + ``MODEL_ROLE_FIELDS`` and
     is enforced by ``app.settings.apply_settings_update``.
+
+    ``choices`` is the closed value set a picker renders. It is read off
+    the Config field's own type, so only a field whose value set lives
+    outside that type declares one.
 
     ``hidden`` keeps the setting out of the TUI settings screen while
     leaving it reachable via ``lilbee set`` and the ``LILBEE_*`` env
@@ -237,7 +230,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.INGEST,
-        choices=tuple(m.value for m in TableModel),
         help_text=(
             "Table structure model used when layout detection is on: slanet_auto "
             "(docling-parity default), other slanet variants, tatr, or disabled "
@@ -274,7 +266,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.MODELS,
-        choices=tuple(t.value for t in RerankerType),
         help_text=(
             "Reranker serving mode: auto (detect cross-encoder vs LLM by model), "
             "cross_encoder, or llm"
@@ -365,7 +356,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "KV cache element type. q8_0 / q4_0 halve or quarter cache memory "
             "but require flash attention to be enabled."
         ),
-        choices=tuple(t.value for t in KvCacheType),
     ),
     "n_gpu_layers": SettingDef(
         int,
@@ -491,7 +481,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.GENERATION,
-        choices=tuple(m.value for m in ChatMode),
         help_text="search runs every chat turn through document retrieval; chat skips it",
     ),
     "top_k": SettingDef(
@@ -533,7 +522,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "reasoning_content field, inline thinking as plain content text, "
             "or off (ask the model not to think)"
         ),
-        choices=tuple(m.value for m in ReasoningMode),
     ),
     "messages_reasoning": SettingDef(
         str,
@@ -544,7 +532,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "inline thinking as plain answer text, or off (ask the model not "
             "to think)"
         ),
-        choices=tuple(m.value for m in ReasoningMode),
     ),
     "lilbee_name": SettingDef(
         str,
@@ -631,7 +618,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.WIKI,
         help_text="Synthesis clusterer backend (embedding or concepts)",
-        choices=tuple(b.value for b in ClustererBackend),
     ),
     "wiki_entity_mode": SettingDef(
         str,
@@ -641,7 +627,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Entity extraction strategy. ner_entities (typed spaCy NER) is the "
             "only implemented mode; the other values fall back to it with a warning"
         ),
-        choices=tuple(m.value for m in WikiEntityMode),
     ),
     "wiki_entity_min_mentions": SettingDef(
         int,
@@ -783,7 +768,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "for static and server-rendered sites). browser = Chromium with "
             "JavaScript enabled for client-rendered sites, at much higher memory cost."
         ),
-        choices=tuple(m.value for m in CrawlRenderMode),
     ),
     "crawl_browser_recycle_pages": SettingDef(
         int,
@@ -1118,7 +1102,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.RETRIEVAL,
-        choices=tuple(sorted(FTS_LANGUAGES)),
         help_text="Stemmer/stop-word language for BM25 indexes (rebuild to apply)",
     ),
     "embed_titles": SettingDef(
@@ -1297,7 +1280,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         str,
         nullable=False,
         group=SettingGroup.API_KEYS,
-        choices=tuple(p.value for p in LlmProvider),
         help_text=(
             "Inference provider: auto (default, runs models locally on llama-server) "
             "or remote (external OpenAI-compatible endpoint)"
@@ -1334,3 +1316,20 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text="Temperature used for wiki page synthesis (low = stay close to sources)",
     ),
 }
+
+
+def _fill_value_sets(settings: dict[str, SettingDef]) -> None:
+    """Give every setting the closed value set Config declares for it.
+
+    An explicit ``choices`` wins, for a field whose value set lives outside
+    its type (``theme``) and for a deliberate narrowing.
+    """
+    for key, definition in settings.items():
+        if definition.choices is not None:
+            continue
+        declared = field_value_set(key)
+        if declared is not None:
+            settings[key] = replace(definition, choices=declared)
+
+
+_fill_value_sets(SETTINGS_MAP)

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
+from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
 from lilbee.core.health_warnings import HealthWarning
@@ -370,6 +371,29 @@ class ConfigResponse(BaseModel):
     """Response for GET /api/config."""
 
     model_config = {"extra": "allow"}
+
+
+class ConfigFieldSchema(BaseModel):
+    """Metadata for one configuration field, so a client can render its control.
+
+    Field names match the MCP ``settings_list`` wire shape, which carries the
+    same metadata for agents.
+    """
+
+    key: str
+    type: str
+    nullable: bool
+    writable: bool
+    reindex_required: bool
+    group: SettingGroup
+    help: str
+    choices: list[str] | None
+
+
+class ConfigSchemaResponse(BaseModel):
+    """Response for GET /api/config/schema."""
+
+    fields: list[ConfigFieldSchema]
 
 
 class ModelsShowResponse(BaseModel):

@@ -9,7 +9,9 @@ from typing import Any
 from pydantic_core import PydanticUndefined
 
 from lilbee.app.settings import (
+    SettingInfo,
     apply_settings_update,
+    list_settings,
     provider_reset_refused_message,
     requires_services_reset,
 )
@@ -23,7 +25,12 @@ from lilbee.config_meta import (
     WRITABLE_CONFIG_FIELDS,
 )
 from lilbee.core.config import Config, cfg
-from lilbee.server.models import ConfigResponse, ConfigUpdateResponse
+from lilbee.server.models import (
+    ConfigFieldSchema,
+    ConfigResponse,
+    ConfigSchemaResponse,
+    ConfigUpdateResponse,
+)
 
 
 async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
@@ -81,3 +88,31 @@ async def get_config_defaults() -> ConfigResponse:
     subsequent calls.
     """
     return ConfigResponse(**copy.deepcopy(_compute_config_defaults()))
+
+
+def _field_schema(info: SettingInfo) -> ConfigFieldSchema:
+    """Render one setting's metadata for the wire.
+
+    ``writable`` is the PATCH /api/config contract, so it is false for the
+    model role slots, which PUT /api/models/<role> owns.
+    """
+    return ConfigFieldSchema(
+        key=info.key,
+        type=info.type,
+        nullable=info.nullable,
+        writable=info.key in WRITABLE_CONFIG_FIELDS,
+        reindex_required=info.reindex_required,
+        group=info.group,
+        help=info.help_text,
+        choices=list(info.choices) if info.choices else None,
+    )
+
+
+async def get_config_schema() -> ConfigSchemaResponse:
+    """Return per-field metadata for every public configuration field.
+
+    The field list comes from the same settings boundary that MCP
+    ``settings_list`` reads, so a new setting appears here with no route
+    change and no restated value set.
+    """
+    return ConfigSchemaResponse(fields=[_field_schema(info) for info in list_settings()])

@@ -269,6 +269,14 @@ class TestOcrLanguage:
         with pytest.raises(ValueError, match="chat_mode must be"):
             ConfigCls._normalize_chat_mode("rag")
 
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [("search", "search"), ("SEARCH", "search"), ("  Search ", "search"), ("CHAT", "chat")],
+    )
+    def test_chat_mode_normalizes_case_and_padding(self, given, expected):
+        """Every casing and padding the field accepted before is still accepted."""
+        assert Config(chat_mode=given).chat_mode == expected
+
     def test_embedding_model_override(self):
         ref = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_MODEL": ref}):
@@ -2020,8 +2028,28 @@ class TestCrawlExclusionsMatchWholeSegments:
 
 
 class TestFtsLanguage:
-    def test_normalizes_case(self):
-        assert Config(fts_language="german").fts_language == "German"
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [
+            ("German", "German"),
+            ("german", "German"),
+            ("GERMAN", "German"),
+            ("gErMaN", "German"),
+            ("  german  ", "German"),
+            ("\tenglish\n", "English"),
+            ("tamil", "Tamil"),
+        ],
+    )
+    def test_normalizes_case_and_padding(self, given, expected):
+        """Every casing and padding the field accepted before is still accepted."""
+        assert Config(fts_language=given).fts_language == expected
+
+    @pytest.mark.parametrize("given", ["Klingon", "", "   ", "en", "Englsh", None, 123])
+    def test_rejects_anything_outside_the_value_set(self, given):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            Config(fts_language=given)
 
     def test_rejects_unsupported_language(self):
         # A bad name would otherwise fail FTS index creation quietly and

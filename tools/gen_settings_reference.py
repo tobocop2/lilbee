@@ -31,7 +31,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lilbee.app.settings import _annotation_name, _setting_default  # noqa: E402
+from lilbee.app.settings import _setting_default, _setting_help  # noqa: E402
 from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup  # noqa: E402
 from lilbee.config_meta import (  # noqa: E402
     PUBLIC_CONFIG_FIELDS,
@@ -40,6 +40,7 @@ from lilbee.config_meta import (  # noqa: E402
 )
 from lilbee.core.config import Config  # noqa: E402
 from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS  # noqa: E402
+from lilbee.core.config.schema import field_type_name  # noqa: E402
 from lilbee.mcp_server import TOOL_GATE_SETTINGS  # noqa: E402
 from lilbee.providers.roles import MODEL_ROLE_FIELDS  # noqa: E402
 
@@ -149,16 +150,8 @@ def _env_var(key: str) -> str:
 
 
 def _help_text(key: str) -> str:
-    """Return the one documented description for *key*.
-
-    ``SettingDef.help_text`` wins because it is what the TUI already shows;
-    fields with no ``SettingDef`` fall back to the pydantic description.
-    """
-    definition = SETTINGS_MAP.get(key)
-    if definition is not None and definition.help_text:
-        return definition.help_text
-    description = Config.model_fields[key].description
-    return description or ""
+    """Return the one documented description for *key*."""
+    return _setting_help(key, SETTINGS_MAP.get(key))
 
 
 def _render_text_default(value: str) -> str:
@@ -258,7 +251,7 @@ def _row(key: str) -> str:
     cells = (
         f"`{key}`",
         f"`{_env_var(key)}`",
-        f"`{_annotation_name(Config.model_fields[key].annotation)}`",
+        f"`{field_type_name(key)}`",
         _render_default(key),
         _tui_cell(key),
         _mcp_cell(key),

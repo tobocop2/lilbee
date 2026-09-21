@@ -25,6 +25,7 @@ from lilbee.server import handlers
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ConfigResponse,
+    ConfigSchemaResponse,
     ConfigUpdateResponse,
     HealthResponse,
     ShutdownResponse,
@@ -82,6 +83,12 @@ async def config_route() -> ConfigResponse:
 async def config_defaults_route() -> ConfigResponse:
     """Return canonical defaults for every writable, public configuration field."""
     return await handlers.get_config_defaults()
+
+
+@get("/api/config/schema")
+async def config_schema_route() -> ConfigSchemaResponse:
+    """Return type, choices, writability and reindex metadata for every public field."""
+    return await handlers.get_config_schema()
 
 
 @patch("/api/config")

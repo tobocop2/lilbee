@@ -30,6 +30,7 @@ from .enums import (
     ChatMode,
     ClustererBackend,
     CrawlRenderMode,
+    FtsLanguage,
     KvCacheType,
     LlmProvider,
     ReasoningMode,
@@ -50,31 +51,6 @@ _UNSET_PATH = Path()
 # A Tesseract language code: ISO 639 letters plus script or orientation suffixes
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
-
-# Snowball stemmer languages LanceDB's FTS accepts (lancedb.index.lang_mapping);
-# hardcoded so config validation does not import lancedb.
-FTS_LANGUAGES = frozenset(
-    {
-        "Arabic",
-        "Danish",
-        "Dutch",
-        "English",
-        "Finnish",
-        "French",
-        "German",
-        "Greek",
-        "Hungarian",
-        "Italian",
-        "Norwegian",
-        "Portuguese",
-        "Romanian",
-        "Russian",
-        "Spanish",
-        "Swedish",
-        "Tamil",
-        "Turkish",
-    }
-)
 
 
 class Config(BaseSettings):
@@ -229,7 +205,7 @@ class Config(BaseSettings):
     general_system_prompt: str = ConfigField(
         default=DEFAULT_GENERAL_SYSTEM_PROMPT, min_length=1, writable=True
     )
-    chat_mode: str = ConfigField(default=ChatMode.SEARCH.value, writable=True)
+    chat_mode: ChatMode = ConfigField(default=ChatMode.SEARCH, writable=True)
     ignore_dirs: frozenset[str] = Field(
         default=DEFAULT_IGNORE_DIRS,
         description=(
@@ -407,17 +383,21 @@ class Config(BaseSettings):
     # Stemmer/stop-word language for the BM25 (FTS) indexes, a tantivy language
     # name ("English", "German", "French", ...). Applied when an index is
     # (re)built, so changing it needs `lilbee rebuild` on an existing store.
-    # Validated against FTS_LANGUAGES: a bad name would otherwise fail index
-    # creation quietly and hybrid search would degrade to vector-only.
-    fts_language: str = ConfigField(default="English", min_length=1, writable=True, reindex=True)
+    # A bad name would otherwise fail index creation quietly and hybrid search
+    # would degrade to vector-only.
+    fts_language: FtsLanguage = ConfigField(
+        default=FtsLanguage.ENGLISH, writable=True, reindex=True
+    )
 
-    @field_validator("fts_language", mode="after")
+    @field_validator("fts_language", mode="before")
     @classmethod
-    def _validate_fts_language(cls, value: str) -> str:
-        normalized = value.strip().title()
-        if normalized not in FTS_LANGUAGES:
-            raise ValueError(f"fts_language must be one of: {', '.join(sorted(FTS_LANGUAGES))}")
-        return normalized
+    def _validate_fts_language(cls, value: Any) -> FtsLanguage:
+        """Accept a language name in any casing, with surrounding whitespace."""
+        try:
+            return FtsLanguage(str(value).strip().title())
+        except ValueError as exc:
+            valid = ", ".join(member.value for member in FtsLanguage)
+            raise ValueError(f"fts_language must be one of: {valid}") from exc
 
     # Prefix each chunk's document title to its embedding input (the stored
     # chunk text is unchanged). Changes the embedding space: toggling it needs
@@ -1089,13 +1069,13 @@ class Config(BaseSettings):
 
     @field_validator("chat_mode", mode="before")
     @classmethod
-    def _normalize_chat_mode(cls, v: Any) -> str:
+    def _normalize_chat_mode(cls, v: Any) -> ChatMode:
         """Coerce chat_mode to a ChatMode value; default ChatMode.SEARCH."""
         if v is None or v == "":
-            return ChatMode.SEARCH.value
+            return ChatMode.SEARCH
         candidate = str(v).strip().lower()
         try:
-            return ChatMode(candidate).value
+            return ChatMode(candidate)
         except ValueError as exc:
             valid = ", ".join(repr(m.value) for m in ChatMode)
             raise ValueError(f"chat_mode must be one of {{{valid}}}, got {v!r}") from exc
