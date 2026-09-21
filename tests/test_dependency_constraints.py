@@ -5,6 +5,9 @@ pass --pre / --prerelease=allow. uv and pip apply that strategy to the whole
 resolution, not just lilbee, so an unbounded extra can resolve to an untested
 pre-release of a dependency. These tests pin down ranges that are known to
 break when that happens.
+
+Floors that exist to keep a vulnerable transitive package out of a resolve are
+guarded here too.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from pathlib import Path
 from packaging.requirements import Requirement
 
 _PYPROJECT = Path(__file__).parents[1] / "pyproject.toml"
+_QA_REQUIREMENTS = Path(__file__).parents[1] / "tools" / "qa" / "requirements.txt"
 
 
 def _base_requirement(name: str) -> Requirement:
@@ -26,6 +30,12 @@ def _base_requirement(name: str) -> Requirement:
 def _extra_requirement(extra: str, name: str) -> Requirement:
     data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
     reqs = (Requirement(r) for r in data["project"]["optional-dependencies"][extra])
+    return next(r for r in reqs if r.name == name)
+
+
+def _qa_requirement(name: str) -> Requirement:
+    lines = _QA_REQUIREMENTS.read_text(encoding="utf-8").splitlines()
+    reqs = (Requirement(line) for line in lines if line.strip() and not line.startswith("#"))
     return next(r for r in reqs if r.name == name)
 
 
@@ -61,3 +71,18 @@ def test_mcp_admits_the_current_major_and_stops_below_the_next() -> None:
     req = _base_requirement("mcp")
     assert req.specifier.contains("2.0.0")
     assert not req.specifier.contains("3.0.0b1", prereleases=True)
+
+
+def test_crawler_extra_excludes_redos_soupsieve() -> None:
+    # 2.9.0 fixes GHSA-j934-xhv5-fg8f and GHSA-gjv8-xp57-g29c.
+    req = _extra_requirement("crawler", "soupsieve")
+    assert not req.specifier.contains("2.8.4")
+    assert req.specifier.contains("2.9.0")
+    assert req.specifier.contains("2.9.2")
+
+
+def test_qa_matrix_excludes_vulnerable_anyio() -> None:
+    # 4.14.2 fixes GHSA-82r6-8w77-94w6 and GHSA-5p39-cfhj-2xmp.
+    req = _qa_requirement("anyio")
+    assert not req.specifier.contains("4.9.0")
+    assert req.specifier.contains("4.14.2")
