@@ -514,6 +514,26 @@ class TestIngestStreamTerminalEvent:
         assert names[-1] == "done", names
         assert events[-1][1]["copied"] == ["added.txt"]
 
+    async def test_upload_stream_closes_with_one_done(self, mock_extract_file, isolated_env):
+        """POST /api/add/upload ends on a single done carrying the upload summary."""
+        from lilbee.server.app import create_app
+
+        content = b"Content the upload pass writes and indexes."
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                files=[("data", ("uploaded.txt", content, "text/plain"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        events = _parse_sse_events(resp.content)
+        names = [name for name, _payload in events]
+        assert names.count("done") == 1, names
+        assert names[-1] == "done", names
+        assert events[-1][1]["copied"] == ["uploaded.txt"]
+
 
 class TestAddValidation:
     async def test_empty_paths_returns_400(self, isolated_env):
