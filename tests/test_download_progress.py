@@ -365,10 +365,8 @@ class TestDownloadModelProgressChain:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """download_model passes incremental progress to the user callback."""
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
         monkeypatch.setattr("huggingface_hub.hf_hub_download", self._fake_download_with_chunks)
 
         entry = _test_entry()
@@ -412,11 +410,10 @@ class TestDownloadModelProgressChain:
         metadata; a truncated/corrupt cached file must not be reported as
         100% complete.
         """
-        from lilbee import catalog
         from lilbee.catalog import download as download_mod
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
         # HF says the file is 1000 bytes; the cached copy is truncated to 10.
         monkeypatch.setattr(
             download_mod,
@@ -450,11 +447,10 @@ class TestDownloadModelProgressChain:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A cached file whose size matches HF metadata is accepted without re-fetching."""
-        from lilbee import catalog
         from lilbee.catalog import download as download_mod
 
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
         monkeypatch.setattr(
             download_mod,
             "fetch_remote_file",
@@ -476,10 +472,8 @@ class TestDownloadModelProgressChain:
         """When hf_hub_download returns instantly (HF cache hit), progress still reports."""
         import hashlib
 
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_cached_download(**kwargs: Any) -> str:
             # Return a file without calling tqdm_class: simulates HF cache hit
@@ -512,10 +506,8 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         import httpx
 
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_timeout(**kwargs: Any) -> str:
             raise httpx.TimeoutException("Connection timed out")
@@ -531,10 +523,8 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         import httpx
 
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_connect(**kwargs: Any) -> str:
             raise httpx.ConnectError("Connection refused")
@@ -548,10 +538,8 @@ class TestDownloadModelErrorPropagation:
     def test_os_error_raises_runtime_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_oserror(**kwargs: Any) -> str:
             raise OSError("No space left on device")
@@ -565,10 +553,8 @@ class TestDownloadModelErrorPropagation:
     def test_unexpected_error_includes_type_and_message(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_unexpected(**kwargs: Any) -> str:
             raise ValueError("unexpected format")
@@ -584,10 +570,8 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         from huggingface_hub.utils import GatedRepoError
 
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_gated(**kwargs: Any) -> str:
             raise GatedRepoError("Gated", response=MagicMock())
@@ -604,10 +588,8 @@ class TestDownloadModelErrorPropagation:
         """A file the Hub reports as nonexistent names the file, not an I/O error."""
         from huggingface_hub.errors import RemoteEntryNotFoundError
 
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
         monkeypatch.setattr(
             "lilbee.catalog.download._hf_file_metadata", lambda *_a, **_kw: (None, None)
         )
@@ -626,10 +608,8 @@ class TestDownloadModelErrorPropagation:
     ) -> None:
         from huggingface_hub.utils import RepositoryNotFoundError
 
-        from lilbee import catalog
-
         monkeypatch.setattr(cfg, "models_dir", tmp_path)
-        monkeypatch.setattr(catalog, "resolve_filename", lambda e: e.gguf_filename)
+        monkeypatch.setattr("lilbee.catalog.download.resolve_filename", lambda e: e.gguf_filename)
 
         def fake_not_found(**kwargs: Any) -> str:
             raise RepositoryNotFoundError("Not found", response=MagicMock())

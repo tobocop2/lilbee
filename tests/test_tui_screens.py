@@ -2520,10 +2520,7 @@ async def test_app_switch_to_catalog():
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await await_chat(app, _pilot)
-        with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
-        ):
+        with patch("lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]):
             app.switch_view("Catalog")
             await _pilot.pause()
             assert isinstance(app.screen, CatalogScreen)
@@ -2742,10 +2739,7 @@ async def test_chat_slash_model_with_arg():
 async def test_chat_slash_model_no_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
-        ):
+        with patch("lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]):
             app.screen._handle_slash("/model")
             await _pilot.pause()
             from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -3364,10 +3358,7 @@ async def test_chat_slash_help():
 async def test_chat_slash_models():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
-        ):
+        with patch("lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]):
             app.screen._handle_slash("/models")
             await _pilot.pause()
             from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -4008,10 +3999,7 @@ async def test_chat_slash_h():
 async def test_chat_slash_m():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with (
-            patch("lilbee.catalog.get_catalog", return_value=_EMPTY_CATALOG),
-            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
-        ):
+        with patch("lilbee.cli.tui.screens.catalog.classify_all_remote_models", return_value=[]):
             app.screen._handle_slash("/m")
             await _pilot.pause()
             from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -7271,56 +7259,6 @@ async def test_chat_vim_j_scrolls_from_chat_log():
         app.screen.action_vim_scroll_down()
         await pilot.pause()
         assert app.screen._insert_mode is False
-
-
-def test_check_embedding_model_installed():
-    """Cover _check_embedding_model_async lines 61-65 (model is installed)."""
-    mock_mgr = MagicMock()
-    mock_mgr.is_installed.return_value = True
-    with patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)):
-        from lilbee.app.services import get_services
-
-        manager = get_services().model_manager
-        assert manager.is_installed(cfg.embedding_model) is True
-
-
-def test_check_embedding_model_remote_available():
-    """Cover _check_embedding_model_async lines 67-70 (model in remote backend)."""
-    mock_mgr = MagicMock()
-    mock_mgr.is_installed.return_value = False
-    with (
-        patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
-        patch(
-            "lilbee.modelhub.model_manager.detect_remote_embedding_models",
-            return_value=[cfg.embedding_model],
-        ),
-    ):
-        from lilbee.app.services import get_services
-        from lilbee.modelhub.model_manager import detect_remote_embedding_models
-
-        manager = get_services().model_manager
-        assert not manager.is_installed(cfg.embedding_model)
-
-        remote_embeds = detect_remote_embedding_models()
-        assert cfg.embedding_model in remote_embeds
-
-
-def test_check_embedding_model_not_found():
-    """A missing embedding model with no remote fallback reads as not installed."""
-    mock_mgr = MagicMock()
-    mock_mgr.is_installed.return_value = False
-    with (
-        patch("lilbee.app.services.get_services", return_value=MagicMock(model_manager=mock_mgr)),
-        patch("lilbee.modelhub.model_manager.detect_remote_embedding_models", return_value=[]),
-    ):
-        from lilbee.app.services import get_services
-        from lilbee.modelhub.model_manager import detect_remote_embedding_models
-
-        manager = get_services().model_manager
-        assert not manager.is_installed(cfg.embedding_model)
-
-        remote_embeds = detect_remote_embedding_models()
-        assert cfg.embedding_model not in remote_embeds
 
 
 async def test_chat_slash_crawl_unavailable():
