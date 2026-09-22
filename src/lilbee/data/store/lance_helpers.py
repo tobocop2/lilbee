@@ -14,10 +14,10 @@ from .types import LOCAL_OWNER, ChunkType
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import lancedb
-    import lancedb.table
     import pyarrow as pa
+    from lancedb.db import LanceDBConnection
     from lancedb.index import IndexConfig
+    from lancedb.table import LanceTable
 
 log = logging.getLogger(__name__)
 
@@ -49,25 +49,31 @@ def install_lancedb_thread_error_suppressor() -> None:
     threading.excepthook = _hook
 
 
-def table_names(db: lancedb.DBConnection) -> list[str]:
-    """Get list of table names, handling the ListTablesResponse object."""
-    result = db.list_tables()
-    try:
-        return result.tables  # type: ignore[no-any-return, union-attr]
-    except AttributeError:
-        return list(result)  # type: ignore[arg-type]
+def table_names(db: LanceDBConnection) -> list[str]:
+    """Every table name in *db*, following ``list_tables`` pages to the end."""
+    names: list[str] = []
+    page_token: str | None = None
+    while True:
+        page = db.list_tables(page_token=page_token)
+        names.extend(page.tables)
+        page_token = page.page_token
+        if not page_token:
+            return names
 
 
-def ensure_table(db: lancedb.DBConnection, name: str, schema: pa.Schema) -> lancedb.table.Table:
+def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:
+    table: LanceTable
     if name in table_names(db):
-        return db.open_table(name)
+        table = db.open_table(name)
+        return table
     try:
-        return db.create_table(name, schema=schema)
+        table = db.create_table(name, schema=schema)
     except ValueError:
-        return db.open_table(name)
+        table = db.open_table(name)
+    return table
 
 
-def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> bool:
+def _safe_delete_unlocked(table: LanceTable, predicate: str) -> bool:
     """Delete rows matching predicate. Caller must hold write lock.
 
     Returns True when the delete succeeded, False when it raised (logged). The
@@ -82,9 +88,7 @@ def _safe_delete_unlocked(table: lancedb.table.Table, predicate: str) -> bool:
         return False
 
 
-def safe_delete(
-    table: lancedb.table.Table, predicate: str, lancedb_dir: Path | None = None
-) -> bool:
+def safe_delete(table: LanceTable, predicate: str, lancedb_dir: Path | None = None) -> bool:
     """Delete rows matching predicate, logging on failure. Returns success.
 
     Pass the store's ``lancedb_dir`` so the write lock coordinates on that
@@ -139,79 +143,86 @@ def _chunk_type_predicate(chunk_type: ChunkType | str) -> str:
     return f"chunk_type = '{escaped}'"
 
 
-def _has_fts_index(table: lancedb.table.Table, column: str = _CHUNK_COLUMN) -> bool:
-    """Return True when an FTS index on *column* already exists."""
+def _index_registry(table: LanceTable) -> list[IndexConfig] | None:
+    """The indexes registered on *table*, or ``None`` when the registry is unreadable.
+
+    lancedb opens each FTS index's files while it lists the indexes, so the
+    listing raises when an FTS index has lost its files. ``None`` reports
+    that state; an empty list means the table has no index. The listing does
+    not open scalar or vector index files, so :func:`_dangling_indices` checks
+    those.
+    """
     try:
-        for idx in table.list_indices():
-            if idx.index_type == _FTS_INDEX_TYPE and column in idx.columns:
-                return True
+        return list(table.list_indices())
     except Exception:
-        return False
-    return False
+        return None
 
 
-def _dangling_indices(table: lancedb.table.Table, lancedb_dir: Path) -> list[IndexConfig]:
-    """Registered indexes whose directory under ``_indices`` is gone.
+def _has_fts_index(indices: list[IndexConfig], column: str = _CHUNK_COLUMN) -> bool:
+    """True when *indices* hold an FTS index on *column*."""
+    return any(idx.index_type == _FTS_INDEX_TYPE and column in idx.columns for idx in indices)
 
-    LanceDB keeps the registration in the manifest after the index directory
-    is removed, and every query through the index then fails on a missing
-    file. ``optimize()`` and ``index_stats()`` do not notice; only the
-    directory does. Empty when the manifest cannot be read.
+
+def _has_scalar_index(indices: list[IndexConfig], column: str) -> bool:
+    """True when *indices* hold a scalar index on *column*.
+
+    lilbee builds only scalar indexes on the columns it prefilters by, never an
+    FTS or vector index, so any index touching *column* is the scalar one.
+    """
+    return any(column in idx.columns for idx in indices)
+
+
+def _is_vector_index(idx: IndexConfig) -> bool:
+    """True when *idx* is an ANN index on the vector column.
+
+    LanceDB reports IVF index types as ``IvfPq`` / ``IvfFlat`` etc., so the
+    family match is case-insensitive.
+    """
+    return "IVF" in idx.index_type.upper() and "vector" in idx.columns
+
+
+def _has_vector_index(indices: list[IndexConfig]) -> bool:
+    """True when *indices* hold an ANN index on the vector column."""
+    return any(_is_vector_index(idx) for idx in indices)
+
+
+def _dangling_indices(
+    table: LanceTable, indices: list[IndexConfig], lancedb_dir: Path
+) -> list[IndexConfig]:
+    """The indexes in *indices* whose directory under ``_indices`` is gone.
+
+    LanceDB keeps the registration after the index directory is removed, and
+    every query through the index then fails on a missing file. The listing,
+    ``optimize()`` and ``index_stats()`` do not notice for scalar and vector
+    indexes; only the directory does.
     """
     indices_dir = lancedb_dir / f"{table.name}.lance" / "_indices"
-    try:
-        registered = table.list_indices()
-    except Exception:
-        return []
-    return [idx for idx in registered if not (indices_dir / idx.index_uuid).is_dir()]
+    # An index without a uuid has no directory under _indices to check.
+    return [
+        idx
+        for idx in indices
+        if idx.index_uuid is not None and not (indices_dir / idx.index_uuid).is_dir()
+    ]
 
 
-def _fts_index_dangling(
-    table: lancedb.table.Table, lancedb_dir: Path, column: str = _CHUNK_COLUMN
-) -> bool:
-    """True when an FTS index on *column* is registered but its files are gone."""
-    return any(
-        idx.index_type == _FTS_INDEX_TYPE and column in idx.columns
-        for idx in _dangling_indices(table, lancedb_dir)
-    )
-
-
-def _scalar_index_dangling(table: lancedb.table.Table, lancedb_dir: Path) -> list[str]:
+def _scalar_index_dangling(
+    table: LanceTable, indices: list[IndexConfig], lancedb_dir: Path
+) -> list[str]:
     """Column names whose scalar (BITMAP/BTree) index is registered but its files are gone."""
     columns = [
         column
-        for idx in _dangling_indices(table, lancedb_dir)
+        for idx in _dangling_indices(table, indices, lancedb_dir)
         if idx.index_type.lower() in _SCALAR_INDEX_TYPES
         for column in idx.columns
     ]
     return list(dict.fromkeys(columns))
 
 
-def _has_scalar_index(table: lancedb.table.Table, column: str) -> bool:
-    """Return True when a scalar index on *column* already exists.
-
-    lilbee builds only scalar indexes on the columns it prefilters by, never an
-    FTS or vector index, so any index touching *column* is the scalar one.
-    """
-    try:
-        return any(column in idx.columns for idx in table.list_indices())
-    except Exception:
-        return False
-
-
-def _has_vector_index(table: lancedb.table.Table) -> bool:
-    """Return True when an ANN index on the vector column already exists.
-
-    LanceDB reports IVF index types as ``IvfPq`` / ``IvfFlat`` etc., so the
-    family match is case-insensitive.
-    """
-    try:
-        for idx in table.list_indices():
-            if "IVF" in idx.index_type.upper() and "vector" in idx.columns:
-                return True
-    except Exception:
-        return False
-    return False
+def _vector_index_dangling(
+    table: LanceTable, indices: list[IndexConfig], lancedb_dir: Path
+) -> bool:
+    """True when the ANN index on the vector column is registered but its files are gone."""
+    return any(_is_vector_index(idx) for idx in _dangling_indices(table, indices, lancedb_dir))
 
 
 def _escape_like_wildcards(value: str) -> str:

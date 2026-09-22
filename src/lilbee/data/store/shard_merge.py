@@ -11,7 +11,8 @@ from lilbee.data.store.lance_helpers import escape_sql_string, table_names
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import lancedb
+    from lancedb.db import LanceDBConnection
+    from lancedb.table import LanceTable
 
     from lilbee.data.store.core import Store
 
@@ -37,7 +38,7 @@ def merge_shards(
     sources is the re-sync case: the store's own rows for those keys are dropped
     first, so re-merging replaces them instead of doubling them.
     """
-    import lancedb
+    from lancedb.db import LanceDBConnection
 
     if sources is not None:
         store.remove_documents(sorted(sources))
@@ -46,7 +47,7 @@ def merge_shards(
     if adopted is not None:
         merged[CHUNKS_TABLE] = adopted
     for shard_dir in shard_dirs:
-        database = lancedb.connect(str(shard_dir))
+        database = LanceDBConnection(str(shard_dir))
         for name in table_names(database):
             # The merged store writes its own meta row from the running config;
             # a shard's copy would land beside it as a second row.
@@ -96,9 +97,9 @@ def _reconcile_sources(store: Store, shard_dirs: list[Path]) -> None:
     the index does not (an earlier merge that failed, a removal against the index
     alone) would otherwise stay missing with nothing to show for it.
     """
-    import lancedb
+    from lancedb.db import LanceDBConnection
 
-    held = sum(_source_count(lancedb.connect(str(shard_dir))) for shard_dir in shard_dirs)
+    held = sum(_source_count(LanceDBConnection(str(shard_dir))) for shard_dir in shard_dirs)
     merged = _source_count(store.get_db())
     if merged < held:
         log.warning(
@@ -109,16 +110,14 @@ def _reconcile_sources(store: Store, shard_dirs: list[Path]) -> None:
         )
 
 
-def _source_count(database: lancedb.DBConnection) -> int:
+def _source_count(database: LanceDBConnection) -> int:
     """Rows in a store's source table, zero when it has none."""
     if SOURCES_TABLE not in table_names(database):
         return 0
     return int(database.open_table(SOURCES_TABLE).count_rows())
 
 
-def _copy_table(
-    table: lancedb.table.Table, store: Store, name: str, sources: set[str] | None
-) -> int:
+def _copy_table(table: LanceTable, store: Store, name: str, sources: set[str] | None) -> int:
     """Append the rows of *table* that this merge wants into *store*."""
     return sum(
         _copy_rows(table, store, name, predicate) for predicate in _predicates(name, sources)
@@ -149,7 +148,7 @@ def _in_predicate(column: str, names: list[str]) -> str:
     return f"{column} IN ({quoted})"
 
 
-def _copy_rows(table: lancedb.table.Table, store: Store, name: str, predicate: str | None) -> int:
+def _copy_rows(table: LanceTable, store: Store, name: str, predicate: str | None) -> int:
     """Stream the rows *predicate* selects from *table* into *store*."""
     import pyarrow as pa
 
