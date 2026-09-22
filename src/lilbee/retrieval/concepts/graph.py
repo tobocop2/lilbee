@@ -12,7 +12,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 
 if TYPE_CHECKING:
-    import lancedb.table
+    from lancedb.table import LanceTable
 
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
@@ -40,7 +40,7 @@ _TABLE_SCAN_BATCH_ROWS = 50_000
 _CONCEPT_TABLES = (CONCEPT_NODES_TABLE, CONCEPT_EDGES_TABLE, CHUNK_CONCEPTS_TABLE)
 
 
-def _iter_row_batches(table: lancedb.table.Table) -> Iterator[list[dict[str, Any]]]:
+def _iter_row_batches(table: LanceTable) -> Iterator[list[dict[str, Any]]]:
     """Yield a table's rows as bounded-size lists of dicts."""
     for batch in table.to_arrow().to_batches(max_chunksize=_TABLE_SCAN_BATCH_ROWS):
         yield batch.to_pylist()

@@ -316,7 +316,7 @@ jobs:
         if: matrix.os != 'macos-15-intel'
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
 
-      # Intel Mac: `uv sync` can't run here -- stock lancedb 0.34.0 ships no
+      # Intel Mac: `uv sync` can't run here -- stock lancedb 0.39.0 ships no
       # macosx_x86_64 wheel. One install resolves the whole cell: lancedb comes
       # from the +compat index (PEP 440 drop-in) and every other package is held
       # to uv.lock through a constraints file that `uv export` writes from the
@@ -350,7 +350,7 @@ jobs:
           uv pip install --python-platform x86_64-apple-darwin \
             --constraint intel-constraints.txt \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.34.0+compat '.[release]' 'nuitka[onefile]>=4.0,<5' pip
+            lancedb==0.39.0+compat '.[release]' 'nuitka[onefile]>=4.0,<5' pip
 
       - name: Verify extras installed in build venv
         shell: bash
@@ -371,7 +371,7 @@ jobs:
 
       # compat cell only: swap the synced stock lancedb for the pre-Haswell build.
       # --no-deps leaves the rest of the venv intact, so nothing leaves this cell.
-      # Pinned to the latest stable lancedb for Python (0.34), served by the fork as
+      # Pinned to the latest stable lancedb for Python (0.39), served by the fork as
       # +compat; lilbee's own stock pin can lag. Bump when the fork moves.
       - name: Swap in the pre-Haswell lancedb
         if: matrix.compat
@@ -379,7 +379,7 @@ jobs:
         run: |
           uv pip install --reinstall --no-deps \
             --extra-index-url https://lilbee.sh/compat/ \
-            lancedb==0.34.0+compat
+            lancedb==0.39.0+compat
 
       # Build the self-contained llama-server (binary + ggml/llama/mtmd libs with a
       # baked rpath) and install lilbee_engine so Nuitka bundles the whole

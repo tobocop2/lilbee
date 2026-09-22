@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final, Literal, cast
 
 import pyarrow as pa
 
@@ -36,13 +36,14 @@ from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_si
 from .lance_helpers import (
     _CHUNK_COLUMN,
     _chunk_type_predicate,
-    _fts_index_dangling,
     _has_fts_index,
     _has_scalar_index,
     _has_vector_index,
+    _index_registry,
     _safe_delete_unlocked,
     _scalar_index_dangling,
     _sources_search_filter,
+    _vector_index_dangling,
     ensure_table,
     escape_sql_string,
     refs_compatible,
@@ -83,9 +84,10 @@ from .types import (
 
 if TYPE_CHECKING:
     import lance
-    import lancedb
-    import lancedb.table
-    from lancedb.index import FTS
+    from lancedb.db import LanceDBConnection
+    from lancedb.index import FTS, IndexConfig
+    from lancedb.query import LanceFtsQueryBuilder
+    from lancedb.table import LanceTable
 
 log = logging.getLogger(__name__)
 
@@ -134,7 +136,7 @@ def _is_fts_position_overflow(exc: Exception) -> bool:
 
 
 def _lexical_rows(
-    table: lancedb.table.Table,
+    table: LanceTable,
     query_text: str,
     limit: int,
     chunk_type: ChunkType | None,
@@ -149,7 +151,12 @@ def _lexical_rows(
     """
     from lancedb.query import MatchQuery
 
-    query = table.search(MatchQuery(query_text, column), query_type="fts").limit(limit)
+    # lancedb's stubs omit FullTextQuery from the fts overload and read MatchQuery's
+    # kw-only defaults as required; the call is the documented FTS query form.
+    query: LanceFtsQueryBuilder = table.search(  # type: ignore[call-overload]
+        MatchQuery(query_text, column),  # type: ignore[call-arg]
+        query_type="fts",
+    ).limit(limit)
     if chunk_type:
         query = query.where(_chunk_type_predicate(chunk_type))
     return [SearchChunk(**r) for r in query.to_list()]
@@ -158,7 +165,9 @@ def _lexical_rows(
 # Vector ANN index. IVF_PQ compresses vectors so search scales to millions;
 # refine_factor re-ranks the PQ candidates against full vectors to recover recall.
 # The index type is carried by the lancedb IvfPq config at build time.
-_VECTOR_METRIC = "cosine"
+_VECTOR_METRIC: Final = "cosine"
+# The scalar index kinds lilbee builds on the columns its queries filter by.
+ScalarIndexType = Literal["BTREE", "BITMAP"]
 _ANN_NPROBES_FLOOR = 20
 # Fraction of IVF partitions probed per query. 0.05 was the "fast" end of the
 # recall/latency curve and measurably cost recall at scale: on the 8.8M-passage
@@ -274,7 +283,7 @@ class Store:
         # Scalar indexes (source/chunk_type) are built at ingest; a serve-only
         # store builds them lazily from the search path.
         self._scalar_ready: bool = False
-        self._db: lancedb.DBConnection | None = None
+        self._db: LanceDBConnection | None = None
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
         self._source_ingested_cache: dict[str, str] | None = None
@@ -335,7 +344,7 @@ class Store:
             ]
         )
 
-    def _chunks_table(self) -> lancedb.table.Table:
+    def _chunks_table(self) -> LanceTable:
         """Open/create the chunks table, adding the title column to pre-title tables."""
         table = ensure_table(self.get_db(), CHUNKS_TABLE, self._chunks_schema())
         if _TITLE_COLUMN not in table.schema.names:
@@ -343,7 +352,7 @@ class Store:
             self._backfill_stem_titles_unlocked(table)
         return table
 
-    def _backfill_stem_titles_unlocked(self, table: lancedb.table.Table) -> None:
+    def _backfill_stem_titles_unlocked(self, table: LanceTable) -> None:
         """Backfill filename-stem titles for pre-upgrade rows. Caller holds ``write_lock()``.
 
         Without this the title arm only matches documents ingested after the
@@ -554,8 +563,9 @@ class Store:
                 )
             )
         table = self.open_table(CHUNKS_TABLE)
-        if table is not None:
-            dangling_scalar = _scalar_index_dangling(table, self._config.lancedb_dir)
+        indices = _index_registry(table) if table is not None else None
+        if table is not None and indices is not None:
+            dangling_scalar = _scalar_index_dangling(table, indices, self._config.lancedb_dir)
             if dangling_scalar:
                 warnings.append(
                     HealthWarning(
@@ -635,23 +645,24 @@ class Store:
             self._write_meta_unlocked(embedding_model=current_model, embedding_dim=current_dim)
             return True
 
-    def get_db(self) -> lancedb.DBConnection:
+    def get_db(self) -> LanceDBConnection:
         if self._db is None:
-            import lancedb as _lancedb
+            from lancedb.db import LanceDBConnection
 
             self._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-            self._db = _lancedb.connect(
+            self._db = LanceDBConnection(
                 str(self._config.lancedb_dir),
                 read_consistency_interval=READ_CONSISTENCY_INTERVAL,
             )
         return self._db
 
-    def open_table(self, name: str) -> lancedb.table.Table | None:
+    def open_table(self, name: str) -> LanceTable | None:
         """Open a table if it exists, otherwise return None."""
         db = self.get_db()
         if name not in table_names(db):
             return None
-        return db.open_table(name)
+        table: LanceTable = db.open_table(name)
+        return table
 
     def ensure_fts_index(self, *, blocking: bool = True) -> None:
         """Create the chunks FTS index, or run ``optimize()`` once it exists.
@@ -664,12 +675,14 @@ class Store:
 
         ``blocking=False`` (the search path) marks an existing index ready
         without the lock and skips maintenance when another process holds it,
-        so a long concurrent ingest cannot stall or fail a query.
+        so a long concurrent ingest cannot stall or fail a query. An unreadable
+        index registry never counts as an existing index.
         """
         probe = self.open_table(CHUNKS_TABLE)
         if probe is None:
             return
-        if _has_fts_index(probe) and not self._fts_index_dangling(probe):
+        indices = _index_registry(probe)
+        if indices is not None and _has_fts_index(indices):
             self._fts_ready = True
         try:
             with self._index_build_lock(blocking):
@@ -685,18 +698,19 @@ class Store:
         if table is None:
             return
         try:
-            if _has_fts_index(table):
+            indices = _index_registry(table)
+            if indices is None:
+                self._repair_fts_registry(table)
+                return
+            if _has_fts_index(indices):
                 self._fts_ready = True
-                if self._fts_index_dangling(table):
-                    self._rebuild_fts(table, "its files are missing")
-                    return
                 try:
                     # One optimize folds new rows into every index on the table.
                     table.optimize()
                     log.debug("FTS index optimized on '%s'", CHUNKS_TABLE)
-                    if self._fts_index_dangling(table):
-                        # Suspected producer of a dangling legacy FTS index; unconfirmed.
-                        self._rebuild_fts(table, "its files are missing after optimize()")
+                    if _index_registry(table) is None:
+                        # Suspected producer of an index without files; unconfirmed.
+                        self._repair_fts_registry(table)
                         return
                 except Exception as exc:
                     if _is_fts_position_overflow(exc):
@@ -720,14 +734,18 @@ class Store:
         except Exception:
             log.debug("FTS index ensure failed (empty table?)", exc_info=True)
 
-    def _ensure_title_fts_unlocked(self, table: lancedb.table.Table) -> None:
+    def _ensure_title_fts_unlocked(self, table: LanceTable) -> None:
         """Create the title FTS index when the column exists. Caller holds ``write_lock()``.
 
         Failure never blocks the chunk index: the title arm feature-detects the
         index per query, so a store without it simply searches without titles.
         """
-        if _TITLE_COLUMN not in table.schema.names or _has_fts_index(table, _TITLE_COLUMN):
-            self._title_fts_ready = _has_fts_index(table, _TITLE_COLUMN)
+        indices = _index_registry(table)
+        if indices is None:
+            self._repair_fts_registry(table)
+            return
+        if _TITLE_COLUMN not in table.schema.names or _has_fts_index(indices, _TITLE_COLUMN):
+            self._title_fts_ready = _has_fts_index(indices, _TITLE_COLUMN)
             return
         try:
             # Positionless for the same reason as the chunk index.
@@ -753,7 +771,8 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return
-        if _has_fts_index(table, _TITLE_COLUMN):
+        indices = _index_registry(table)
+        if indices is not None and _has_fts_index(indices, _TITLE_COLUMN):
             self._title_fts_ready = True
             return
         try:
@@ -764,17 +783,12 @@ class Store:
                 raise
             log.debug("Skipped title FTS build; another process holds the write lock")
 
-    def _fts_index_dangling(self, table: lancedb.table.Table) -> bool:
-        """True when the registered chunk FTS index has no files on disk."""
-        return _fts_index_dangling(table, self._config.lancedb_dir)
-
-    def _rebuild_fts(self, table: lancedb.table.Table, reason: str) -> None:
+    def _rebuild_fts(self, table: LanceTable, reason: str) -> None:
         """Replace the FTS indexes with fresh positionless ones. Caller holds the lock.
 
-        The one-shot remediation for an index that cannot serve: built
-        ``with_position=True`` and overflowing on every ``optimize()``, or
-        registered while its files are gone. The title index is rebuilt too
-        when the title arm is enabled.
+        The one-shot remediation for an index built ``with_position=True`` that
+        overflows on every ``optimize()``. The title index is rebuilt too when
+        the title arm is enabled.
         """
         try:
             table.create_index(_CHUNK_COLUMN, config=self._fts_config(), replace=True)
@@ -787,10 +801,52 @@ class Store:
                 exc_info=True,
             )
 
+    def _repair_fts_registry(self, table: LanceTable) -> list[IndexConfig] | None:
+        """Rebuild the chunks FTS indexes after the index listing raised. Caller holds the lock.
+
+        lancedb opens each FTS index's files while it lists the indexes, so an
+        FTS index without its files makes the listing raise; scalar and vector
+        indexes do not. Each FTS index (chunk text, plus title when the title
+        arm is on) is rebuilt with ``replace=True`` in its own try. The listing
+        is then read once more; the directory check on a readable listing
+        decides whether a scalar or vector index needs its own rebuild.
+
+        Returns the listing after the rebuild, ``None`` (logged once) when it
+        is still unreadable.
+        """
+        columns = [_CHUNK_COLUMN]
+        if self._config.title_search and _TITLE_COLUMN in table.schema.names:
+            columns.append(_TITLE_COLUMN)
+        for column in columns:
+            try:
+                table.create_index(column, config=self._fts_config(), replace=True)
+            except Exception:
+                log.warning(
+                    "Could not rebuild the FTS index on '%s.%s'", table.name, column, exc_info=True
+                )
+                continue
+            log.warning(
+                "Rebuilt the FTS index on '%s.%s' because the index listing is unreadable",
+                table.name,
+                column,
+            )
+            if column == _CHUNK_COLUMN:
+                self._fts_ready = True
+            else:
+                self._title_fts_ready = True
+        indices = _index_registry(table)
+        if indices is None:
+            log.warning(
+                "The index listing on '%s' is still unreadable after the FTS rebuild; "
+                "run `lilbee rebuild` to rebuild the search index",
+                table.name,
+            )
+        return indices
+
     # Tables and (column, index_type) pairs the query path filters by.
     # chunk_concepts serves the concept boost (ConceptGraph._chunk_concepts_from);
     # without its index every boosted query full-scans the table.
-    _SCALAR_TARGETS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
+    _SCALAR_TARGETS: tuple[tuple[str, tuple[tuple[str, ScalarIndexType], ...]], ...] = (
         (CHUNKS_TABLE, (("source", "BTREE"), ("chunk_type", "BITMAP"))),
         (CHUNK_CONCEPTS_TABLE, (("chunk_source", "BTREE"),)),
     )
@@ -802,9 +858,13 @@ class Store:
         default), but without an index each is a full-table scan. Readiness
         latches only when every target table exists and is covered, so a table
         created later (chunk_concepts under serve ordering) still gets its
-        index on a following call. The lock is taken only when there is
-        something to build; ``blocking=False`` (the search path) skips the
-        build when another process holds it instead of stalling the query.
+        index on a following call. A table whose scalar index lost its files
+        counts as pending, so the build step replaces it. A table whose index
+        listing is unreadable keeps readiness unlatched until the FTS path
+        repairs the listing. The lock is taken only
+        when there is something to build; ``blocking=False`` (the search path)
+        skips the build when another process holds it instead of stalling the
+        query.
         """
         pending = []
         complete = True
@@ -813,10 +873,15 @@ class Store:
             if table is None:
                 complete = False
                 continue
+            indices = _index_registry(table)
+            if indices is None:
+                # The FTS path repairs an unreadable listing; check again then.
+                complete = False
+                continue
             names = table.schema.names
-            dangling = _scalar_index_dangling(table, self._config.lancedb_dir)
+            dangling = _scalar_index_dangling(table, indices, self._config.lancedb_dir)
             needs_build = any(
-                c in names and (not _has_scalar_index(table, c) or c in dangling)
+                c in names and (not _has_scalar_index(indices, c) or c in dangling)
                 for c, _ in columns
             )
             if needs_build:
@@ -835,22 +900,29 @@ class Store:
             log.debug("Skipped scalar index build; another process holds the write lock")
 
     def _ensure_scalar_index_on(
-        self, table_name: str, columns: tuple[tuple[str, str], ...]
+        self, table_name: str, columns: tuple[tuple[str, ScalarIndexType], ...]
     ) -> None:
         """Build the given (column, index_type) scalar indexes on *table_name*.
 
-        Caller holds ``write_lock()``. Each column gets its own try so one
-        failure does not skip the rest; a failure on a populated table warns
-        (the prefilter speedup is silently lost) while an empty table's is debug.
+        Caller holds ``write_lock()``. A registered index whose files are gone
+        is replaced; nothing is built while the index listing is unreadable.
+        Each column gets its own try so one failure does not skip the rest; a
+        failure on a populated table warns (the prefilter speedup is silently
+        lost) while an empty table's is debug.
         """
         table = self.open_table(table_name)
         if table is None:
             return
+        indices = _index_registry(table)
+        if indices is None:
+            return
         names = table.schema.names
         fail_level = logging.WARNING if table.count_rows() > 0 else logging.DEBUG
-        dangling = _scalar_index_dangling(table, self._config.lancedb_dir)
+        dangling = _scalar_index_dangling(table, indices, self._config.lancedb_dir)
         for column, index_type in columns:
-            if column not in names or (_has_scalar_index(table, column) and column not in dangling):
+            if column not in names or (
+                _has_scalar_index(indices, column) and column not in dangling
+            ):
                 continue
             try:
                 table.create_scalar_index(column, index_type=index_type, replace=column in dangling)
@@ -864,6 +936,12 @@ class Store:
                     exc_info=True,
                 )
 
+    def _create_vector_index(self, table: LanceTable) -> None:
+        """Build the IVF_PQ index on the vector column, replacing any existing one."""
+        from lancedb.index import IvfPq
+
+        table.create_index("vector", config=IvfPq(distance_type=_VECTOR_METRIC), replace=True)
+
     def ensure_vector_index(self, *, force: bool = False) -> bool:
         """Build or refresh the ANN vector index when the corpus is large enough.
 
@@ -871,38 +949,63 @@ class Store:
         flat search, which is faster and exact for small vaults and is all a
         laptop needs. Once an index exists, ``optimize()`` folds new rows in.
         Pass ``force=True`` to build regardless of the threshold (publish flow).
-        Returns True when an index was created or refreshed.
+        An unreadable index listing gets its FTS repair first, and a registered
+        index whose files are gone is rebuilt instead of optimized. Returns
+        True when an index was created, refreshed, or rebuilt.
         """
         threshold = self._config.ann_index_threshold
         with self._write_lock():
             table = self.open_table(CHUNKS_TABLE)
             if table is None:
                 return False
-            if _has_vector_index(table):
+            indices = _index_registry(table)
+            if indices is None:
+                indices = self._repair_fts_registry(table)
+                if indices is None:
+                    return False
+            if _vector_index_dangling(table, indices, self._config.lancedb_dir):
+                return self._rebuild_dangling_vector_index(table)
+            if _has_vector_index(indices):
                 table.optimize()
                 log.debug("Vector index optimized on '%s'", CHUNKS_TABLE)
-                if self._fts_index_dangling(table):
-                    # Re-register in the same step when the prune dropped the FTS files.
-                    self._rebuild_fts(table, "its files are missing after optimize()")
+                if _index_registry(table) is None:
+                    # Repair in the same step when the prune dropped FTS files.
+                    self._repair_fts_registry(table)
                 return True
             if not force and (threshold <= 0 or table.count_rows() < threshold):
                 return False
-            from lancedb.index import IvfPq
+            return self._build_vector_index(table)
 
-            try:
-                table.create_index("vector", config=IvfPq(distance_type=_VECTOR_METRIC))
-                log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
-                return True
-            except Exception:
-                log.warning(
-                    "Vector ANN index build failed on '%s' at %d rows; search falls back "
-                    "to exact flat scan, which is slow at this scale. Free up memory/disk "
-                    "and re-run to rebuild the index.",
-                    CHUNKS_TABLE,
-                    table.count_rows(),
-                    exc_info=True,
-                )
-                return False
+    def _rebuild_dangling_vector_index(self, table: LanceTable) -> bool:
+        """Replace a registered vector index whose files are gone. Caller holds the lock."""
+        try:
+            self._create_vector_index(table)
+        except Exception:
+            log.warning(
+                "Could not rebuild the vector index on '%s' whose files are missing",
+                CHUNKS_TABLE,
+                exc_info=True,
+            )
+            return False
+        log.warning("Rebuilt the vector index on '%s' because its files are missing", CHUNKS_TABLE)
+        return True
+
+    def _build_vector_index(self, table: LanceTable) -> bool:
+        """Build the first vector index, warning on failure. Caller holds the lock."""
+        try:
+            self._create_vector_index(table)
+            log.info("Vector ANN index created on '%s'", CHUNKS_TABLE)
+            return True
+        except Exception:
+            log.warning(
+                "Vector ANN index build failed on '%s' at %d rows; search falls back "
+                "to exact flat scan, which is slow at this scale. Free up memory/disk "
+                "and re-run to rebuild the index.",
+                CHUNKS_TABLE,
+                table.count_rows(),
+                exc_info=True,
+            )
+            return False
 
     def _add_chunks_unlocked(self, records: list[dict]) -> int:
         """Add chunk records and return the count. Caller must hold ``write_lock()``."""
@@ -1127,6 +1230,8 @@ class Store:
             # A serve-only store never ran ingest, where scalar indexes are
             # built; without them the source/chunk_type prefilters full-scan.
             self.ensure_scalar_indexes(blocking=False)
+            # A repair replaces indexes; the handle must see the new versions.
+            table.checkout_latest()
 
         if query_text:
             hits = self._keyword_arm(
@@ -1161,7 +1266,7 @@ class Store:
 
     def _keyword_arm(
         self,
-        table: lancedb.table.Table,
+        table: LanceTable,
         query_text: str,
         query_vector: Vector,
         top_k: int,
@@ -1201,7 +1306,7 @@ class Store:
 
     def _vector_arm(
         self,
-        table: lancedb.table.Table,
+        table: LanceTable,
         query_vector: Vector,
         limit: int,
         chunk_type: ChunkType | None,
@@ -1212,10 +1317,12 @@ class Store:
         the limit applies *after* the type filter; post-filtering would
         silently starve wiki-only queries whose matches live past the window.
         """
-        query = table.search(query_vector).metric(_VECTOR_METRIC).limit(limit)
-        if _has_vector_index(table):
+        query = table.search(query_vector).distance_type(_VECTOR_METRIC).limit(limit)
+        indices = _index_registry(table)
+        if indices is None or _has_vector_index(indices):
             # IVF_PQ is lossy; probe more partitions and refine against full
-            # vectors so recall stays close to the exact flat scan.
+            # vectors so recall stays close to the exact flat scan. An unreadable
+            # registry may hide the index, and the tuning is harmless on a flat scan.
             query = query.nprobes(_ann_nprobes(table.count_rows()))
             query = query.refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
@@ -1224,7 +1331,7 @@ class Store:
 
     def _fts_arm(
         self,
-        table: lancedb.table.Table,
+        table: LanceTable,
         query_text: str,
         limit: int,
         chunk_type: ChunkType | None,
@@ -1234,7 +1341,7 @@ class Store:
 
     def _title_arm(
         self,
-        table: lancedb.table.Table,
+        table: LanceTable,
         query_text: str,
         limit: int,
         chunk_type: ChunkType | None,
@@ -1249,11 +1356,13 @@ class Store:
         document by title surfaces its chunks" holds as one stable row per doc.
 
         Empty when the store predates the title column or its FTS index (old
-        indexes keep working) and empty on any query-time failure: the optional
+        indexes keep working), when the index registry is unreadable, and on
+        any query-time failure: the optional
         title arm must never take down the healthy chunk arm, so its failure
         degrades to no-titles, mirroring ``bm25_probe``.
         """
-        if not _has_fts_index(table, _TITLE_COLUMN):
+        indices = _index_registry(table)
+        if indices is None or not _has_fts_index(indices, _TITLE_COLUMN):
             return []
         # Every chunk of one document ties on title BM25, so a fixed window can
         # fill up with a single long document's chunks and starve every other
@@ -1279,7 +1388,7 @@ class Store:
 
     def _hybrid_search(
         self,
-        table: lancedb.table.Table,
+        table: LanceTable,
         query_text: str,
         query_vector: Vector,
         top_k: int,
@@ -1611,8 +1720,7 @@ class Store:
         query = table.search()
         if source is not None:
             query = query.where(f"source = '{escape_sql_string(source)}'")
-        rows: list[PageTextRecord] = query.limit(None).to_list()
-        return rows
+        return cast("list[PageTextRecord]", query.limit(None).to_list())
 
     def page_texts_arrow(self, source: str | None = None) -> pa.Table:
         """Return per-page text rows as an Arrow table in a single scan.
@@ -1706,8 +1814,7 @@ class Store:
         if offset:
             query = query.offset(offset)
         query = query.limit(limit)
-        result: list[SourceRecord] = query.to_list()  # type: ignore[assignment]
-        return result
+        return cast("list[SourceRecord]", query.to_list())
 
     def count_sources(self, *, search: str | None = None) -> int:
         """Count tracked sources matching *search* without materializing rows."""
@@ -1747,7 +1854,7 @@ class Store:
             "created_at": meta.created_at or None,
         }
 
-    def _sources_table(self) -> lancedb.table.Table:
+    def _sources_table(self) -> LanceTable:
         """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
         defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
@@ -1852,7 +1959,7 @@ class Store:
         if cleanup_sources:
             self._delete_by_sources_unlocked(cleanup_sources)
 
-    def _add_page_texts_unlocked(self, db: lancedb.DBConnection, items: list[ChunkWrite]) -> None:
+    def _add_page_texts_unlocked(self, db: LanceDBConnection, items: list[ChunkWrite]) -> None:
         """Add the batch's page-text rows. Caller holds ``write_lock()``."""
         page_rows = [row for it in items for row in (it.page_texts or [])]
         if page_rows:
@@ -1951,7 +2058,7 @@ class Store:
 
     def _relocated_title(
         self,
-        sources: lancedb.table.Table | None,
+        sources: LanceTable | None,
         old: str,
         new: str,
         derive: Callable[[str], str],
@@ -2056,8 +2163,8 @@ class Store:
         if table is None:
             return []
         escaped = escape_sql_string(wiki_source)
-        rows: list[CitationRecord] = table.search().where(f"wiki_source = '{escaped}'").to_list()
-        return rows
+        rows = table.search().where(f"wiki_source = '{escaped}'").to_list()
+        return cast("list[CitationRecord]", rows)
 
     def get_citations_for_source(self, source_filename: str) -> list[CitationRecord]:
         """Get all citations that reference a source document (reverse lookup)."""
@@ -2065,10 +2172,8 @@ class Store:
         if table is None:
             return []
         escaped = escape_sql_string(source_filename)
-        rows: list[CitationRecord] = (
-            table.search().where(f"source_filename = '{escaped}'").to_list()
-        )
-        return rows
+        rows = table.search().where(f"source_filename = '{escaped}'").to_list()
+        return cast("list[CitationRecord]", rows)
 
     def delete_citations_for_wiki(self, wiki_source: str) -> bool:
         """Delete all citations for a wiki page. Returns whether the delete succeeded."""
@@ -2164,9 +2269,7 @@ class Store:
             ]
         )
 
-    def _duplicate_memory_id_unlocked(
-        self, table: lancedb.table.Table, record: MemoryRow
-    ) -> str | None:
+    def _duplicate_memory_id_unlocked(self, table: LanceTable, record: MemoryRow) -> str | None:
         """Return the id of a near-duplicate same-owner, same-kind memory, if any."""
         if table.count_rows() == 0:
             return None
@@ -2174,12 +2277,18 @@ class Store:
             f"owner = '{escape_sql_string(record.owner)}' "
             f"AND kind = '{escape_sql_string(record.kind)}'"
         )
-        rows = table.search(record.vector).metric("cosine").where(predicate).limit(1).to_list()
+        rows = (
+            table.search(record.vector)
+            .distance_type(_VECTOR_METRIC)
+            .where(predicate)
+            .limit(1)
+            .to_list()
+        )
         if rows and rows[0].get("_distance", 1.0) <= self._config.memory_dedup_distance:
             return str(rows[0]["id"])
         return None
 
-    def _evict_overflow_unlocked(self, table: lancedb.table.Table, owner: str) -> None:
+    def _evict_overflow_unlocked(self, table: LanceTable, owner: str) -> None:
         """Delete oldest memories for *owner* so an incoming insert stays within the cap."""
         cap = self._config.memory_max_per_owner
         predicate = f"owner = '{escape_sql_string(owner)}'"
@@ -2255,7 +2364,13 @@ class Store:
             return []
         self._ensure_embedding_compat()
         predicate = f"({owner_predicate}) AND kind = '{MemoryKind.FACT}'"
-        rows = table.search(query_vector).metric("cosine").where(predicate).limit(top_k).to_list()
+        rows = (
+            table.search(query_vector)
+            .distance_type(_VECTOR_METRIC)
+            .where(predicate)
+            .limit(top_k)
+            .to_list()
+        )
         return [MemoryRow(**r) for r in rows if r.get("_distance", 1.0) <= max_distance]
 
     def update_memory(self, memory_id: str, *, shared: bool, owner: str) -> bool:

@@ -20,6 +20,12 @@ from lilbee.data.store import (
     mmr_rerank,
     scope_to_chunk_type,
 )
+from lilbee.data.store.lance_helpers import (
+    _has_fts_index,
+    _has_scalar_index,
+    _has_vector_index,
+    _index_registry,
+)
 from lilbee.runtime.lock import write_lock
 from tests._mock_effects import repeat_last
 
@@ -445,32 +451,22 @@ class TestEnsureFtsIndex:
         create_spy.assert_not_called()
         optimize_spy.assert_called_once()
 
-    def test_optimize_rebuilds_fts_when_its_files_vanish(self, store, test_config):
+    def test_optimize_that_drops_index_files_repairs_the_registry(self, store, test_config):
         """An index whose files are gone right after optimize() is rebuilt in the same step.
 
-        The prune is simulated; the producer of the dangling index is not confirmed."""
-        import shutil
-
-        from lilbee.core.config import CHUNKS_TABLE
-
+        The prune is simulated; the producer of the missing files is not confirmed."""
         store.add_chunks(_make_records())
         store.ensure_fts_index()
         table = store.open_table("chunks")
         assert table is not None
 
-        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
-
-        def _optimize_then_prune():
-            for d in indices_dir.iterdir():
-                shutil.rmtree(d)
-
-        with (
-            mock.patch.object(type(table), "optimize", side_effect=_optimize_then_prune),
-            mock.patch.object(type(store), "_rebuild_fts") as rebuild_spy,
+        with mock.patch.object(
+            type(table), "optimize", side_effect=lambda: _remove_index_files(test_config)
         ):
             store.ensure_fts_index()
 
-        rebuild_spy.assert_called_once()
+        assert _has_fts_index(_readable_registry(store.open_table("chunks")))
+        assert store.bm25_probe("chunk number 1")
 
     def test_hybrid_failure_is_reported_as_a_health_warning(self, store):
         """A corpus-wide FTS breakage drops every query to vector-only recall.
@@ -737,12 +733,27 @@ class TestEnsureFtsIndex:
         assert fresh.health_warnings() == []
 
 
-def _remove_index_files(test_config):
-    """Delete every index directory under the chunks table, leaving the registrations."""
+def _remove_index_files(test_config, table_name=CHUNKS_TABLE, *, index_types=None):
+    """Delete index directories under *table_name*, leaving the registrations.
+
+    With *index_types*, only the indexes of those types lose their files.
+    """
     import shutil
 
-    for index_dir in (test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices").iterdir():
-        shutil.rmtree(index_dir)
+    from lancedb.db import LanceDBConnection
+
+    table = LanceDBConnection(str(test_config.lancedb_dir)).open_table(table_name)
+    indices_dir = test_config.lancedb_dir / f"{table_name}.lance" / "_indices"
+    for idx in table.list_indices():
+        if index_types is None or idx.index_type in index_types:
+            shutil.rmtree(indices_dir / idx.index_uuid)
+
+
+def _readable_registry(table):
+    """The table's index registry, asserting that lancedb can list it."""
+    indices = _index_registry(table)
+    assert indices is not None
+    return indices
 
 
 class TestIndexMismatch:
@@ -906,28 +917,19 @@ class TestEnsureScalarIndexes:
     def test_noop_when_no_table(self, store):
         store.ensure_scalar_indexes()  # empty store, no chunks table yet
 
-    def test_has_scalar_index_is_false_when_listing_raises(self, store):
-        from lilbee.data.store.lance_helpers import _has_scalar_index
-
-        store.add_chunks(_make_records())
-        table = store.open_table("chunks")
-        assert table is not None
-        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
-            assert _has_scalar_index(table, "source") is False
-
     def test_indexes_chunk_concepts_source_column(self, store):
         """The concept-boost path filters chunk_concepts by chunk_source per
         result, so that column gets its own BTree index too."""
         from lilbee.core.config import CHUNK_CONCEPTS_TABLE
         from lilbee.data.store import ensure_table
-        from lilbee.data.store.lance_helpers import _has_scalar_index
         from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
 
         store.add_chunks(_make_records())
         cc = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
         cc.add([{"chunk_source": "doc.md", "chunk_index": 0, "concept": "alpha"}])
         store.ensure_scalar_indexes()
-        assert _has_scalar_index(store.open_table(CHUNK_CONCEPTS_TABLE), "chunk_source")
+        indices = _readable_registry(store.open_table(CHUNK_CONCEPTS_TABLE))
+        assert _has_scalar_index(indices, "chunk_source")
 
     def test_one_column_failure_does_not_skip_the_other(self, store):
         """A BTree failure on 'source' must not skip the independent Bitmap on
@@ -992,11 +994,10 @@ class TestEnsureScalarIndexes:
             store.search([0.5] * test_config.embedding_dim, top_k=3)
         assert built >= 1
         assert spy.call_count == built  # second search probed, built nothing
-        from lilbee.data.store.lance_helpers import _has_scalar_index
 
         table = store.open_table("chunks")
-        assert _has_scalar_index(table, "source")
-        assert _has_scalar_index(table, "chunk_type")
+        assert _has_scalar_index(_readable_registry(table), "source")
+        assert _has_scalar_index(_readable_registry(table), "chunk_type")
 
     def test_fts_language_reaches_every_index_build(self, store, test_config):
         test_config.fts_language = "German"
@@ -1114,7 +1115,7 @@ class TestEnsureScalarIndexes:
     def test_scalar_index_builds_after_concepts_table_appears(self, store, test_config):
         """Serve ordering: chunk_concepts is created after the first search.
         The next search must still index it instead of latching ready early."""
-        from lilbee.data.store.lance_helpers import _has_scalar_index, ensure_table
+        from lilbee.data.store.lance_helpers import ensure_table
         from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
 
         store.add_chunks(_make_records())
@@ -1123,65 +1124,128 @@ class TestEnsureScalarIndexes:
         table = ensure_table(store.get_db(), "chunk_concepts", _chunk_concepts_schema())
         table.add([{"chunk_source": "doc0.md", "chunk_index": 0, "concept": "x"}])
         store.search([0.5] * test_config.embedding_dim, top_k=3)
-        assert _has_scalar_index(store.open_table("chunk_concepts"), "chunk_source")
+        indices = _readable_registry(store.open_table("chunk_concepts"))
+        assert _has_scalar_index(indices, "chunk_source")
         assert store._scalar_ready is True
 
 
+def _dangling_scalar(store, table_name=CHUNKS_TABLE):
+    """Columns of *table_name* whose scalar index is registered without its files."""
+    from lilbee.data.store.lance_helpers import _scalar_index_dangling
+
+    table = store.open_table(table_name)
+    return _scalar_index_dangling(table, _readable_registry(table), store._config.lancedb_dir)
+
+
+@contextmanager
+def _spy_scalar_builds():
+    """Record (column, replace) for every real create_scalar_index call."""
+    from lancedb.table import LanceTable
+
+    calls = []
+    real = LanceTable.create_scalar_index
+
+    def _record(self, column, **kwargs):
+        calls.append((column, kwargs.get("replace")))
+        return real(self, column, **kwargs)
+
+    with mock.patch.object(LanceTable, "create_scalar_index", _record):
+        yield calls
+
+
 class TestScalarIndexDangling:
-    """A registered scalar index whose directory is gone must be detected and
-    reported as SCALAR_INDEX_UNAVAILABLE, not misattributed to FTS."""
+    """lancedb lists a scalar index whose directory is gone without error, so the
+    store compares each registration with the ``_indices`` directory, reports the
+    loss as SCALAR_INDEX_UNAVAILABLE, and replaces the index."""
 
-    def _remove_scalar_index_files(self, test_config):
-        import shutil
+    _SCALAR_TYPES = frozenset({"BTree", "Bitmap"})
 
-        from lilbee.core.config import CHUNKS_TABLE
-
-        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
-        if not indices_dir.is_dir():
-            return
-        for index_dir in indices_dir.iterdir():
-            shutil.rmtree(index_dir)
-
-    def test_dangling_scalar_reports_scalar_warning_not_fts(self, store, test_config):
-        from lilbee.core.health_warnings import WarningCode
-
-        store.add_chunks(_make_records())
-        store.ensure_scalar_indexes()
-        store.ensure_fts_index()
-
-        self._remove_scalar_index_files(test_config)
-
-        codes = [w.code for w in store.health_warnings()]
-        assert WarningCode.SCALAR_INDEX_UNAVAILABLE in codes
-        assert WarningCode.FTS_UNAVAILABLE not in codes
-
-    def _scalar_index_dirs_exist(self, test_config) -> bool:
-        from lilbee.core.config import CHUNKS_TABLE
-
-        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
-        return indices_dir.is_dir() and any(indices_dir.iterdir())
-
-    def _store_with_dangling_scalar_index(self, store, test_config) -> Store:
+    def _store_with_missing_scalar_files(self, store, test_config) -> Store:
         """A fresh Store over a corpus whose scalar index files were removed."""
         store.add_chunks(_make_records())
         store.ensure_scalar_indexes()
         store.ensure_fts_index()
-        assert self._scalar_index_dirs_exist(test_config)
-        self._remove_scalar_index_files(test_config)
+        _remove_index_files(test_config, index_types=self._SCALAR_TYPES)
         return Store(test_config)
+
+    def test_dangling_scalar_reports_scalar_warning_not_fts(self, store, test_config):
+        from lilbee.core.health_warnings import WarningCode
+
+        fresh = self._store_with_missing_scalar_files(store, test_config)
+
+        assert sorted(_dangling_scalar(fresh)) == ["chunk_type", "source"]
+        codes = [w.code for w in fresh.health_warnings()]
+        assert WarningCode.SCALAR_INDEX_UNAVAILABLE in codes
+        assert WarningCode.FTS_UNAVAILABLE not in codes
 
     def test_search_rebuilds_a_dangling_scalar_index_after_restart(self, store, test_config):
         """A fresh process verifies the scalar indexes on its first query and rebuilds."""
-        fresh = self._store_with_dangling_scalar_index(store, test_config)
+        fresh = self._store_with_missing_scalar_files(store, test_config)
 
-        hits = fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+        hits = fresh.search(
+            [0.5] * cfg.embedding_dim,
+            top_k=1,
+            query_text="chunk number 1",
+            chunk_type=ChunkType.RAW,
+        )
 
         assert hits
-        assert self._scalar_index_dirs_exist(test_config)
+        assert _dangling_scalar(fresh) == []
+        assert fresh.health_warnings() == []
+
+    def test_a_missing_bitmap_directory_is_replaced(self, store, test_config):
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        _remove_index_files(test_config, index_types={"Bitmap"})
+        assert _dangling_scalar(store) == ["chunk_type"]
+
+        with _spy_scalar_builds() as builds:
+            store.ensure_scalar_indexes()
+
+        assert builds == [("chunk_type", True)]
+        assert _dangling_scalar(store) == []
+        assert store.search([0.5] * cfg.embedding_dim, top_k=1, chunk_type=ChunkType.RAW)
+
+    def test_one_dangling_index_among_healthy_ones_is_the_only_one_replaced(
+        self, store, test_config
+    ):
+        """Only the BTree directory is gone; the FTS and Bitmap indexes keep serving."""
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+        _remove_index_files(test_config, index_types={"BTree"})
+        assert _dangling_scalar(store) == ["source"]
+
+        with _spy_scalar_builds() as builds:
+            store.ensure_scalar_indexes()
+
+        assert builds == [("source", True)]
+        indices = _readable_registry(store.open_table("chunks"))
+        assert _has_fts_index(indices)
+        assert _dangling_scalar(store) == []
+        assert store.bm25_probe("chunk number 1", chunk_type=ChunkType.RAW)
+        hits = store.search([0.5] * cfg.embedding_dim, top_k=3, query_text="chunk number 1")
+        assert hits
+
+    def test_concepts_table_dangling_scalar_is_replaced(self, store, test_config):
+        from lilbee.core.config import CHUNK_CONCEPTS_TABLE
+        from lilbee.data.store.lance_helpers import ensure_table
+        from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+        store.add_chunks(_make_records())
+        cc = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+        cc.add([{"chunk_source": "doc0.md", "chunk_index": 0, "concept": "alpha"}])
+        store.ensure_scalar_indexes()
+        _remove_index_files(test_config, CHUNK_CONCEPTS_TABLE)
+        assert _dangling_scalar(store, CHUNK_CONCEPTS_TABLE) == ["chunk_source"]
+
+        store.ensure_scalar_indexes()
+
+        assert _dangling_scalar(store, CHUNK_CONCEPTS_TABLE) == []
 
     def test_failed_hybrid_arm_drops_the_scalar_latch(self, store, test_config):
         """A hybrid failure re-verifies the scalar indexes on the next query, not on every one."""
-        fresh = self._store_with_dangling_scalar_index(store, test_config)
+        fresh = self._store_with_missing_scalar_files(store, test_config)
         fresh._scalar_ready = True
         fresh._fts_ready = True
         query = [0.5] * cfg.embedding_dim
@@ -1190,15 +1254,15 @@ class TestScalarIndexDangling:
             hits = fresh.search(query, top_k=1, query_text="chunk number 1")
         assert hits
         assert fresh._scalar_ready is False
-        assert not self._scalar_index_dirs_exist(test_config)
+        assert sorted(_dangling_scalar(fresh)) == ["chunk_type", "source"]
 
         fresh.search(query, top_k=1, query_text="chunk number 1")
 
-        assert self._scalar_index_dirs_exist(test_config)
+        assert _dangling_scalar(fresh) == []
 
     def test_failed_vector_arm_drops_the_scalar_latch(self, store, test_config):
         """A vector-only failure surfaces and re-verifies the scalar indexes on the next query."""
-        fresh = self._store_with_dangling_scalar_index(store, test_config)
+        fresh = self._store_with_missing_scalar_files(store, test_config)
         fresh._scalar_ready = True
 
         with (
@@ -1209,15 +1273,142 @@ class TestScalarIndexDangling:
 
         assert fresh._scalar_ready is False
 
-    def test_dangling_probe_returns_empty_on_list_indices_error(self, store, test_config):
-        """An unreadable manifest is not evidence of missing files."""
-        from lilbee.data.store.lance_helpers import _scalar_index_dangling
+    def test_dangling_probe_skips_index_without_uuid(self, store, test_config):
+        """An index with no uuid has no directory to check, so it is not dangling."""
+        from lilbee.data.store.lance_helpers import _dangling_indices
 
         store.add_chunks(_make_records())
         table = store.open_table("chunks")
         assert table is not None
+        no_uuid = mock.MagicMock(index_type="BTree", columns=["source"], index_uuid=None)
+        assert _dangling_indices(table, [no_uuid], test_config.lancedb_dir) == []
+
+
+def _index_uuids(store, table_name=CHUNKS_TABLE):
+    """{index name: index_uuid} for every index on *table_name*."""
+    return {idx.name: idx.index_uuid for idx in _readable_registry(store.open_table(table_name))}
+
+
+class TestUnreadableIndexRegistry:
+    """lancedb opens FTS index files while it lists indexes, so a missing FTS
+    directory makes the listing raise. The store rebuilds only the FTS indexes;
+    scalar and vector indexes keep their files and are left alone."""
+
+    def test_registry_is_empty_without_indexes_and_none_when_listing_raises(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        assert table is not None
+        assert _index_registry(table) == []
         with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
-            assert _scalar_index_dangling(table, test_config.lancedb_dir) == []
+            assert _index_registry(table) is None
+
+    def test_a_missing_fts_directory_rebuilds_only_the_fts_index(self, store, test_config):
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+        before = _index_uuids(store)
+        _remove_index_files(test_config, index_types={"FTS"})
+        assert _index_registry(store.open_table("chunks")) is None
+
+        with _spy_scalar_builds() as builds:
+            store.ensure_fts_index()
+
+        assert builds == []
+        after = _index_uuids(store)
+        assert after["chunk_idx"] != before["chunk_idx"]
+        assert after["source_idx"] == before["source_idx"]
+        assert after["chunk_type_idx"] == before["chunk_type_idx"]
+        assert store.bm25_probe("chunk number 1")
+
+    def test_a_failed_title_rebuild_still_rebuilds_the_chunk_index(
+        self, store, test_config, caplog
+    ):
+        import logging
+
+        from lancedb.table import LanceTable
+
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        _remove_index_files(test_config, index_types={"FTS"})
+        fresh = Store(test_config)
+        real = LanceTable.create_index
+
+        def _fail_title(self, column, **kwargs):
+            if column == "title":
+                raise RuntimeError("no space")
+            return real(self, column, **kwargs)
+
+        with (
+            mock.patch.object(LanceTable, "create_index", _fail_title),
+            caplog.at_level(logging.WARNING),
+        ):
+            fresh.ensure_fts_index()
+
+        assert "Could not rebuild the FTS index on 'chunks.title'" in caplog.text
+        assert fresh._fts_ready is True
+        assert fresh._title_fts_ready is False
+        assert fresh.bm25_probe("plain body words")
+
+    def test_a_listing_that_stays_unreadable_warns_once_and_rebuilds_nothing_else(
+        self, store, test_config, caplog
+    ):
+        """The FTS rebuild latches keyword readiness, so later queries do not
+        retry it, and no scalar or vector index is rebuilt blind."""
+        import logging
+
+        from lancedb.table import LanceTable
+
+        store.add_chunks(_make_records())
+        store.ensure_scalar_indexes()
+        store.ensure_fts_index()
+        fresh = Store(test_config)
+        real = LanceTable.create_index
+        rebuilt = []
+
+        def _record(self, column, **kwargs):
+            rebuilt.append(column)
+            return real(self, column, **kwargs)
+
+        with (
+            mock.patch.object(LanceTable, "list_indices", side_effect=RuntimeError("boom")),
+            mock.patch.object(LanceTable, "create_index", _record),
+            _spy_scalar_builds() as scalar_builds,
+            caplog.at_level(logging.WARNING),
+        ):
+            fresh.ensure_fts_index()
+            fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 1")
+            fresh.search([0.5] * cfg.embedding_dim, top_k=1, query_text="chunk number 2")
+            fresh.ensure_scalar_indexes()
+
+        assert rebuilt == ["chunk"]
+        assert scalar_builds == []
+        assert caplog.text.count("still unreadable after the FTS rebuild") == 1
+        assert fresh._scalar_ready is False
+
+    def test_scalar_build_skips_a_table_whose_listing_is_unreadable(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with (
+            mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")),
+            _spy_scalar_builds() as builds,
+        ):
+            store._ensure_scalar_index_on("chunks", (("source", "BTREE"),))
+        assert builds == []
+
+    def test_title_index_build_repairs_an_unreadable_registry(self, store, test_config):
+        test_config.title_search = True
+        store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
+        store.ensure_fts_index()
+        _remove_index_files(test_config)
+        fresh = Store(test_config)
+
+        fresh.ensure_title_fts_index()
+
+        assert fresh._title_fts_ready is True
+        indices = _readable_registry(fresh.open_table("chunks"))
+        assert _has_fts_index(indices, "title")
+        assert _has_fts_index(indices)
 
 
 class TestEnsureVectorIndex:
@@ -1229,32 +1420,28 @@ class TestEnsureVectorIndex:
         assert store.ensure_vector_index() is False
 
     def test_below_threshold_keeps_flat_search(self, store, test_config):
-        from lilbee.data.store.lance_helpers import _has_vector_index
 
         store.add_chunks(_make_records())  # 3 rows, threshold defaults to 50_000
         assert store.ensure_vector_index() is False
         table = store.open_table("chunks")
-        assert _has_vector_index(table) is False
+        assert _has_vector_index(_readable_registry(table)) is False
         # Flat search still serves results without an ANN index.
         assert store.search([0.5] * test_config.embedding_dim, top_k=3)
 
     def test_threshold_zero_disables_build(self, store, test_config):
-        from lilbee.data.store.lance_helpers import _has_vector_index
 
         test_config.ann_index_threshold = 0
         store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
         assert store.ensure_vector_index() is False
-        assert _has_vector_index(store.open_table("chunks")) is False
+        assert _has_vector_index(_readable_registry(store.open_table("chunks"))) is False
 
     def test_builds_index_above_threshold(self, store, test_config):
         import math
 
-        from lilbee.data.store.lance_helpers import _has_vector_index
-
         test_config.ann_index_threshold = 50
         store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
         assert store.ensure_vector_index() is True
-        assert _has_vector_index(store.open_table("chunks")) is True
+        assert _has_vector_index(_readable_registry(store.open_table("chunks"))) is True
         # Search still finds the chunk whose vector matches the query (nprobes/refine).
         query = [math.sin(5 * 0.1 + j * 0.01) for j in range(test_config.embedding_dim)]
         results = store.search(query, top_k=3)
@@ -1262,13 +1449,12 @@ class TestEnsureVectorIndex:
         assert results[0].source == "doc5.md"
 
     def test_force_builds_below_threshold(self, store, test_config):
-        from lilbee.data.store.lance_helpers import _has_vector_index
 
         test_config.ann_index_threshold = 1_000_000
         store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
         assert store.ensure_vector_index() is False  # below threshold, no force
         assert store.ensure_vector_index(force=True) is True
-        assert _has_vector_index(store.open_table("chunks")) is True
+        assert _has_vector_index(_readable_registry(store.open_table("chunks"))) is True
 
     def test_optimizes_when_index_exists(self, store, test_config):
         test_config.ann_index_threshold = 50
@@ -1279,15 +1465,11 @@ class TestEnsureVectorIndex:
             assert store.ensure_vector_index() is True
         optimize_spy.assert_called_once()
 
-    def test_optimize_rebuilds_fts_when_vector_path_prunes_it(self, store, test_config):
+    def test_optimize_that_drops_fts_files_repairs_fts_in_the_same_step(self, store, test_config):
         """The vector path optimizes the same chunks table every sync, so a prune
-        that drops the FTS files there must re-register in the same step.
+        that drops the FTS files there must repair them in the same step.
 
-        The prune is simulated; the producer of the dangling index is not confirmed."""
-        import shutil
-
-        from lilbee.core.config import CHUNKS_TABLE
-
+        The prune is simulated; the producer of the missing files is not confirmed."""
         test_config.ann_index_threshold = 50
         store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
         store.ensure_fts_index()
@@ -1295,19 +1477,108 @@ class TestEnsureVectorIndex:
         table = store.open_table("chunks")
         assert table is not None
 
-        indices_dir = test_config.lancedb_dir / f"{CHUNKS_TABLE}.lance" / "_indices"
-
-        def _optimize_then_prune():
-            for d in indices_dir.iterdir():
-                shutil.rmtree(d)
-
-        with (
-            mock.patch.object(type(table), "optimize", side_effect=_optimize_then_prune),
-            mock.patch.object(type(store), "_rebuild_fts") as rebuild_spy,
+        with mock.patch.object(
+            type(table),
+            "optimize",
+            side_effect=lambda: _remove_index_files(test_config, index_types={"FTS"}),
         ):
             assert store.ensure_vector_index() is True
 
-        rebuild_spy.assert_called_once()
+        assert _has_fts_index(_readable_registry(store.open_table("chunks")))
+        assert store.bm25_probe("chunk")
+
+    def test_a_missing_fts_directory_leaves_the_vector_index_alone(self, store, test_config):
+        """IVF_PQ retrains k-means on a rebuild, so only the FTS index is rebuilt."""
+        import math
+
+        test_config.ann_index_threshold = 50
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        store.ensure_fts_index()
+        store.ensure_vector_index()
+        vector_uuid = _index_uuids(store)["vector_idx"]
+        _remove_index_files(test_config, index_types={"FTS"})
+        fresh = Store(test_config)
+
+        with mock.patch.object(Store, "_create_vector_index") as vector_build:
+            assert fresh.ensure_vector_index() is True
+            fresh.ensure_fts_index()
+
+        vector_build.assert_not_called()
+        assert _index_uuids(fresh)["vector_idx"] == vector_uuid
+        assert fresh.bm25_probe("chunk")
+        query = [math.sin(5 * 0.1 + j * 0.01) for j in range(test_config.embedding_dim)]
+        assert fresh.search(query, top_k=3)[0].source == "doc5.md"
+
+    def test_a_missing_vector_directory_above_threshold_is_rebuilt(self, store, test_config):
+        """lancedb lists an IVF_PQ index whose directory is gone without error, so
+        the directory check finds it and the index is rebuilt instead of optimized."""
+        import math
+
+        from lilbee.data.store.lance_helpers import _vector_index_dangling
+
+        test_config.ann_index_threshold = 50
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        store.ensure_vector_index()
+        _remove_index_files(test_config, index_types={"IvfPq"})
+        table = store.open_table("chunks")
+        assert _vector_index_dangling(table, _readable_registry(table), test_config.lancedb_dir)
+
+        with mock.patch.object(type(table), "optimize") as optimize_spy:
+            assert store.ensure_vector_index() is True
+
+        optimize_spy.assert_not_called()
+        table = store.open_table("chunks")
+        assert not _vector_index_dangling(table, _readable_registry(table), test_config.lancedb_dir)
+        query = [math.sin(5 * 0.1 + j * 0.01) for j in range(test_config.embedding_dim)]
+        assert store.search(query, top_k=3)[0].source == "doc5.md"
+
+    def test_a_failed_vector_rebuild_warns_and_returns_false(self, store, test_config, caplog):
+        test_config.ann_index_threshold = 50
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        store.ensure_vector_index()
+        _remove_index_files(test_config, index_types={"IvfPq"})
+        table = store.open_table("chunks")
+
+        with (
+            mock.patch.object(type(table), "create_index", side_effect=RuntimeError("no space")),
+            caplog.at_level("WARNING"),
+        ):
+            assert store.ensure_vector_index() is False
+
+        assert "Could not rebuild the vector index" in caplog.text
+
+    def test_unreadable_registry_below_threshold_builds_no_vector_index(self, store, test_config):
+        store.add_chunks(_make_records())  # 3 rows, threshold defaults to 50_000
+        store.ensure_fts_index()
+        _remove_index_files(test_config)
+
+        assert store.ensure_vector_index() is False
+
+        indices = _readable_registry(store.open_table("chunks"))
+        assert _has_fts_index(indices)
+        assert not _has_vector_index(indices)
+
+    def test_forced_build_on_an_unreadable_registry_repairs_then_builds(self, store, test_config):
+        test_config.ann_index_threshold = 1_000_000
+        store.add_chunks(_make_indexable_records(self._INDEXABLE, test_config.embedding_dim))
+        store.ensure_fts_index()
+        _remove_index_files(test_config)
+
+        assert store.ensure_vector_index(force=True) is True
+
+        indices = _readable_registry(store.open_table("chunks"))
+        assert _has_fts_index(indices)
+        assert _has_vector_index(indices)
+
+    def test_registry_that_stays_unreadable_builds_nothing(self, store):
+        store.add_chunks(_make_records())
+        table = store.open_table("chunks")
+        with (
+            mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")),
+            mock.patch.object(type(table), "create_index") as create,
+        ):
+            assert store.ensure_vector_index(force=True) is False
+        assert [c.args[0] for c in create.call_args_list] == ["chunk"]
 
     def test_build_failure_warns_and_returns_false(self, store, test_config, caplog):
         """bb-con: a real ANN build failure at scale is surfaced as a warning with
@@ -1322,55 +1593,22 @@ class TestEnsureVectorIndex:
         assert "ANN index build failed" in caplog.text
         assert "flat scan" in caplog.text
 
-    def test_has_vector_index_swallows_list_indices_errors(self, store):
-        from lilbee.data.store.lance_helpers import _has_vector_index
-
-        store.add_chunks(_make_records())
-        table = store.open_table("chunks")
-        with mock.patch.object(
-            type(table), "list_indices", side_effect=RuntimeError("backend down")
-        ):
-            assert _has_vector_index(table) is False
-
 
 class TestHasFtsIndex:
     def test_returns_false_on_fresh_table(self, store):
         store.add_chunks(_make_records())
-        from lilbee.data.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
-        assert _has_fts_index(table) is False
+        assert _has_fts_index(_readable_registry(table)) is False
 
     def test_returns_true_after_create(self, store):
         store.add_chunks(_make_records())
         store.ensure_fts_index()
-        from lilbee.data.store.lance_helpers import _has_fts_index
 
         table = store.open_table("chunks")
         assert table is not None
-        assert _has_fts_index(table) is True
-
-    def test_returns_false_on_list_indices_error(self, store):
-        store.add_chunks(_make_records())
-        from lilbee.data.store.lance_helpers import _has_fts_index
-
-        table = store.open_table("chunks")
-        assert table is not None
-        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
-            assert _has_fts_index(table) is False
-
-    def test_dangling_probe_reports_false_on_list_indices_error(self, store, test_config):
-        """An unreadable manifest is not evidence of missing files; the maintenance
-        pass then takes its usual create-or-optimize route."""
-        store.add_chunks(_make_records())
-        store.ensure_fts_index()
-        from lilbee.data.store.lance_helpers import _fts_index_dangling
-
-        table = store.open_table("chunks")
-        assert table is not None
-        with mock.patch.object(type(table), "list_indices", side_effect=RuntimeError("boom")):
-            assert _fts_index_dangling(table, test_config.lancedb_dir) is False
+        assert _has_fts_index(_readable_registry(table)) is True
 
 
 class TestFtsIndexStaleFlag:
@@ -1755,7 +1993,7 @@ class TestHybridSearch:
         table = mock.MagicMock()
         table.search.return_value = chain
         table.count_rows.return_value = 1_000_000
-        chain.metric.return_value = chain
+        chain.distance_type.return_value = chain
         chain.limit.return_value = chain
         chain.nprobes.return_value = chain
         chain.refine_factor.return_value = chain
@@ -2632,15 +2870,98 @@ class TestAdaptiveFilterFinalPass:
         assert filtered[0].chunk == "moderate"
 
 
-class TestTableNamesAttributeError:
-    def test_fallback_to_list_when_no_tables_attr(self, store):
-        """table_names falls back to list() when result has no .tables attribute."""
+class TestTableNames:
+    def test_follows_page_token_to_the_last_page(self):
+        """Names from every page are returned, not only the first page."""
+        from lance_namespace import ListTablesResponse
+
         from lilbee.data.store.lance_helpers import table_names
 
-        mock_db = mock.MagicMock()
-        mock_db.list_tables.return_value = ["chunks", "sources"]
-        result = table_names(mock_db)
-        assert result == ["chunks", "sources"]
+        db = mock.MagicMock()
+        db.list_tables.side_effect = [
+            ListTablesResponse(tables=["chunks", "sources"], page_token="sources.lance/"),
+            ListTablesResponse(tables=["citations"], page_token=None),
+        ]
+        assert table_names(db) == ["chunks", "sources", "citations"]
+        assert [c.kwargs["page_token"] for c in db.list_tables.call_args_list] == [
+            None,
+            "sources.lance/",
+        ]
+
+    def test_empty_page_token_ends_the_listing(self):
+        """An empty page token marks the end of the listing, same as None."""
+        from lance_namespace import ListTablesResponse
+
+        from lilbee.data.store.lance_helpers import table_names
+
+        db = mock.MagicMock()
+        db.list_tables.return_value = ListTablesResponse(tables=["chunks"], page_token="")
+        assert table_names(db) == ["chunks"]
+        db.list_tables.assert_called_once()
+
+    def test_lists_every_table_of_a_real_store_past_one_page(self, tmp_path):
+        """A real connection with more tables than one small page lists them all."""
+        import lancedb.db
+        import pyarrow as pa
+
+        from lilbee.data.store.lance_helpers import table_names
+
+        db = lancedb.db.LanceDBConnection(str(tmp_path))
+        names = [f"t{i:02d}" for i in range(12)]
+        for name in names:
+            db.create_table(name, schema=pa.schema([("a", pa.int64())]))
+        real_list = db.list_tables
+        with mock.patch.object(
+            db, "list_tables", side_effect=lambda **kw: real_list(limit=5, **kw)
+        ) as listing:
+            assert sorted(table_names(db)) == names
+        assert listing.call_count >= 3
+
+
+class TestEnsureTableRealLance:
+    """ensure_table against a real lancedb connection on disk."""
+
+    @staticmethod
+    def _schema():
+        import pyarrow as pa
+
+        return pa.schema([("a", pa.int64())])
+
+    def test_create_race_opens_the_table_the_other_writer_made(self, tmp_path):
+        """A table created after this connection's listing is opened, not recreated."""
+        import lancedb.db
+
+        from lilbee.data.store import lance_helpers
+
+        ours = lancedb.db.LanceDBConnection(str(tmp_path))
+        theirs = lancedb.db.LanceDBConnection(str(tmp_path))
+        theirs.create_table("chunks", schema=self._schema()).add([{"a": 7}])
+        with mock.patch.object(lance_helpers, "table_names", return_value=[]):
+            table = lance_helpers.ensure_table(ours, "chunks", self._schema())
+        assert table.to_arrow().column("a").to_pylist() == [7]
+
+    def test_existing_table_is_opened_with_its_rows(self, tmp_path):
+        import lancedb.db
+
+        from lilbee.data.store.lance_helpers import ensure_table
+
+        db = lancedb.db.LanceDBConnection(str(tmp_path))
+        ensure_table(db, "chunks", self._schema()).add([{"a": 1}])
+        assert ensure_table(db, "chunks", self._schema()).count_rows() == 1
+
+    def test_corrupt_table_raises_instead_of_being_recreated(self, tmp_path):
+        """An unreadable manifest surfaces as an error; no empty table replaces it."""
+        import lancedb.db
+
+        from lilbee.data.store.lance_helpers import ensure_table
+
+        db = lancedb.db.LanceDBConnection(str(tmp_path))
+        ensure_table(db, "chunks", self._schema()).add([{"a": 1}])
+        for manifest in (tmp_path / "chunks.lance" / "_versions").iterdir():
+            manifest.write_bytes(b"garbage")
+        fresh = lancedb.db.LanceDBConnection(str(tmp_path))
+        with pytest.raises(RuntimeError):
+            ensure_table(fresh, "chunks", self._schema())
 
 
 class TestSearchAdaptiveThresholdPath:
@@ -3474,13 +3795,12 @@ class TestTitleSearch:
         assert all(r.bm25_score is None for r in results)
 
     def test_title_arm_respects_chunk_type_filter(self, store, test_config):
-        from lilbee.data.store.lance_helpers import _has_fts_index
 
         test_config.title_search = True  # the title index is built only when enabled
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        assert _has_fts_index(table, "title")
+        assert _has_fts_index(_readable_registry(table), "title")
         assert store._title_arm(table, "zebra", 5, ChunkType.RAW)
         assert store._title_arm(table, "zebra", 5, ChunkType.WIKI) == []
 
@@ -3523,15 +3843,14 @@ class TestTitleSearch:
     def test_title_search_enable_at_runtime_builds_index_on_next_query(self, store, test_config):
         """Enabling title_search after _fts_ready latched builds the title
         index on the next query instead of no-opping until restart."""
-        from lilbee.data.store.lance_helpers import _has_fts_index
 
         test_config.title_search = False
         store.add_chunks(_titled_records("a.pdf", 2, title="zebra manifesto"))
         store.ensure_fts_index()
-        assert not _has_fts_index(store.open_table("chunks"), "title")
+        assert not _has_fts_index(_readable_registry(store.open_table("chunks")), "title")
         test_config.title_search = True
         store.search([0.1] * test_config.embedding_dim, top_k=3, query_text="zebra")
-        assert _has_fts_index(store.open_table("chunks"), "title")
+        assert _has_fts_index(_readable_registry(store.open_table("chunks")), "title")
 
     def test_backfill_failure_keeps_nulls_and_warns(self, store, caplog):
         """A failing backfill degrades to the old NULL-title behavior."""
