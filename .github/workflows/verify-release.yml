@@ -81,6 +81,11 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' > assets.txt
+          # build-gpu-executables.yml has no soft cell: every asset it builds is
+          # required. release.yml's assets are not listed here, because
+          # scripts/release_required_assets.sh is the one definition of which of
+          # those the release cannot ship without, and attach-prerelease already
+          # refused a release that was missing one.
           missing=0
           while read -r expected; do
             [ -n "${expected}" ] || continue
@@ -97,11 +102,9 @@ jobs:
           lilbee-windows-x86_64-cu125.exe
           lilbee-linux-x86_64-rocm
           lilbee-linux-x86_64-rocm.gfx.txt
-          lilbee-macos-x86_64
-          lilbee-compat-macos-x86_64
           EOF
           [ "${missing}" -eq 0 ] || { echo "a continue-on-error build cell dropped its artifact"; exit 1; }
-          echo "every expected soft-cell asset is present"
+          echo "every GPU asset is present"
 
   # The packaging fan-outs are dispatched fire-and-forget and finish after the RC
   # run this workflow triggers on, so their artifacts are still arriving when the

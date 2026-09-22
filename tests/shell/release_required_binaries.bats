@@ -5,11 +5,17 @@
 setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   SCRIPT="${REPO_ROOT}/scripts/assert_required_binaries.sh"
+  DERIVE="${REPO_ROOT}/scripts/release_required_assets.sh"
   WORKFLOW="${REPO_ROOT}/.github/workflows/release.yml"
   FIXTURE="${BATS_TEST_TMPDIR}/fx"
   mkdir -p "${FIXTURE}/bins" "${FIXTURE}/held"
   # The cells release.yml carries without `soft: true`.
-  REQUIRED=(lilbee-linux-x86_64 lilbee-macos-arm64 lilbee-windows-x86_64.exe)
+  REQUIRED=(
+    lilbee-linux-x86_64
+    lilbee-macos-arm64
+    lilbee-macos-x86_64
+    lilbee-windows-x86_64.exe
+  )
   for asset in "${REQUIRED[@]}"; do : > "${FIXTURE}/bins/${asset}"; done
   : > "${FIXTURE}/bins/lilbee-compat-windows-x86_64.exe"
 }
@@ -31,7 +37,7 @@ assert_binaries() {
 }
 
 @test "every cell without soft is required, and the gate names the one missing" {
-  [ "${#REQUIRED[@]}" -eq 3 ]
+  [ "${#REQUIRED[@]}" -eq 4 ]
   local checked=0
   for asset in "${REQUIRED[@]}"; do
     mv "${FIXTURE}/bins/${asset}" "${FIXTURE}/held/${asset}"
@@ -42,7 +48,32 @@ assert_binaries() {
     mv "${FIXTURE}/held/${asset}" "${FIXTURE}/bins/${asset}"
     checked=$(( checked + 1 ))
   done
-  [ "${checked}" -eq 3 ]
+  [ "${checked}" -eq 4 ]
+}
+
+# publish-packages.yml cannot publish the default Homebrew formula without the
+# Intel macOS binary: Homebrew refuses to load a formula that carries no url for
+# the host architecture. A release that drops it is not shippable, so the
+# derivation must name it.
+@test "the Intel macOS binary is required" {
+  # -x: an exact line, so lilbee-compat-macos-x86_64 cannot satisfy the check.
+  bash "${DERIVE}" "${WORKFLOW}" | grep -qxF lilbee-macos-x86_64
+}
+
+@test "the derivation omits every soft cell" {
+  local derived
+  derived=$(bash "${DERIVE}" "${WORKFLOW}")
+  for asset in lilbee-compat-linux-x86_64 lilbee-compat-macos-x86_64 \
+               lilbee-compat-windows-x86_64.exe; do
+    run grep -qxF "${asset}" <<< "${derived}"
+    [ "$status" -ne 0 ]
+  done
+}
+
+@test "the gate and the workflow read the same required set" {
+  local derived
+  derived=$(bash "${DERIVE}" "${WORKFLOW}" | sort)
+  [ "${derived}" = "$(printf '%s\n' "${REQUIRED[@]}" | sort)" ]
 }
 
 @test "a cell that lists asset_name before os is still required" {

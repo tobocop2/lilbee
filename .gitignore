@@ -60,6 +60,7 @@ scripts/*
 !scripts/create_prerelease.sh
 !scripts/strip_own_version.sh
 !scripts/assert_required_binaries.sh
+!scripts/release_required_assets.sh
 !scripts/release_dropped_cells.sh
 !scripts/ci_retry.sh
 !scripts/install_engine.sh
