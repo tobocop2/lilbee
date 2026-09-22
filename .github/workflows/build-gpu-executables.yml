@@ -380,23 +380,7 @@ jobs:
           EXE="./dist/${{ matrix.asset_name }}"
           EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
 
-          STDERR=$(mktemp)
-          ACTUAL=$("$EXE" --version 2>"$STDERR")
-          echo "Expected: lilbee ${EXPECTED}"
-          echo "Actual:   ${ACTUAL}"
-          cat "$STDERR"
-          test "${ACTUAL}" = "lilbee ${EXPECTED}"
-          if grep -qE "No such option|Type not yet supported|RuntimeError|ModuleNotFoundError" "$STDERR"; then
-            echo "FAIL: --version produced typer/runtime errors on stderr"
-            exit 1
-          fi
-
-          "$EXE" --help > /dev/null 2>"$STDERR"
-          if grep -qE "No such option|Type not yet supported|RuntimeError|ModuleNotFoundError" "$STDERR"; then
-            echo "FAIL: --help produced typer/runtime errors on stderr"
-            cat "$STDERR"
-            exit 1
-          fi
+          bash scripts/assert_launcher_boots.sh "$EXE" "$EXPECTED"
 
           echo "CUDA smoke test passed (--version, --help)"
 
