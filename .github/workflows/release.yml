@@ -109,10 +109,10 @@ jobs:
       && (needs.gate.outputs.ci_passed == 'true' || needs.test.result == 'success' || inputs.skip_tests)
     # Windows Nuitka has no ccache and was hitting 180m; 300m gives it room.
     timeout-minutes: 300
-    # Only soft cells (the pre-Haswell compat build) may fail without failing the
-    # release; every default binary stays hard-required. `soft` is also what
-    # scripts/assert_required_binaries.sh reads to decide which asset the release
-    # cannot ship without, so a cell that times out cannot strand the cascade.
+    # Only soft cells (the pre-Haswell compat builds) may fail without failing the
+    # release; every default binary stays hard-required. `soft` is the one
+    # definition of that, read by scripts/release_required_assets.sh, so a cell
+    # cannot be droppable for one gate and required by another.
     continue-on-error: ${{ matrix.soft == true }}
     strategy:
       fail-fast: false
@@ -143,17 +143,18 @@ jobs:
             backend: metal
             macos_floor: "14.0"
           # Intel Mac: built natively on macos-15-intel, GitHub's Intel image
-          # (Nuitka can't cross-compile arch from the arm64 runner). Soft because
-          # the Intel image can queue longer than the arm64 pool -- this asset must
-          # never block the release fan-out. The install below pins wheel resolution
-          # to the x86_64 target rather than the runner, so the deps come in at their
-          # oldest macOS build (pyarrow's 12.0 is the binding one) and reach every
-          # Ivy Bridge / Haswell Mac, which cap at macOS 12. The engine picks its
-          # CPU variant at runtime (see cmake_args.sh).
+          # (Nuitka can't cross-compile arch from the arm64 runner). Required: the
+          # default Homebrew formula carries an Intel url, and Homebrew refuses to
+          # load a formula that has no url for the host architecture, so a release
+          # without this asset breaks `brew install lilbee` on every Intel Mac.
+          # The install below pins wheel resolution to the x86_64 target rather than
+          # the runner, so the deps come in at their oldest macOS build (pyarrow's
+          # 12.0 is the binding one) and reach every Ivy Bridge / Haswell Mac, which
+          # cap at macOS 12. The engine picks its CPU variant at runtime (see
+          # cmake_args.sh).
           - os: macos-15-intel
             asset_name: lilbee-macos-x86_64
             backend: cpu
-            soft: true
             macos_floor: "12.0"
           # Pre-Haswell-safe Intel Mac build: same self-contained model as the
           # linux/windows compat cells (stock lancedb swapped for +compat, launcher
@@ -323,7 +324,6 @@ jobs:
       # lancedb in a step of its own leaves its closure (numpy, pyarrow,
       # pydantic, tqdm and five more) free to install at whatever PyPI serves
       # that day, which is the drift the constraints exist to stop.
-      # The cell stays soft so an install failure never blocks the fan-out.
       #
       # lancedb is the one package left out of the constraints, because the
       # locked version is the one with no wheel here. nuitka and pip are build
