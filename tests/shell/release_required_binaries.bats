@@ -70,6 +70,44 @@ assert_binaries() {
   done
 }
 
+# The gates that wait on a channel artifact ask this question: a droppable
+# binary may never arrive, so nothing that decides whether a tag is promotable
+# may wait on what it produces.
+@test "the droppable cells are named, and none of them is required" {
+  local soft required
+  soft=$(bash "${DERIVE}" --soft "${WORKFLOW}")
+  required=$(bash "${DERIVE}" "${WORKFLOW}")
+  [ -n "${soft}" ]
+  local checked=0
+  while IFS= read -r asset; do
+    run grep -qxF "${asset}" <<< "${required}"
+    [ "$status" -ne 0 ]
+    checked=$(( checked + 1 ))
+  done <<< "${soft}"
+  [ "${checked}" -eq 3 ]
+}
+
+@test "the compat Linux binary is droppable" {
+  # The promotion gate waits for its snap and flatpakref; both are skipped only
+  # while this cell stays soft.
+  bash "${DERIVE}" --soft "${WORKFLOW}" | grep -qxF lilbee-compat-linux-x86_64
+}
+
+@test "a matrix with no droppable cell fails loudly rather than returning nothing" {
+  cat > "${FIXTURE}/all-hard.yml" <<'YAML'
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: lilbee-linux-x86_64
+YAML
+  run bash "${DERIVE}" --soft "${FIXTURE}/all-hard.yml"
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"no cell with soft=true"* ]]
+}
+
 @test "the gate and the workflow read the same required set" {
   local derived
   derived=$(bash "${DERIVE}" "${WORKFLOW}" | sort)
@@ -101,5 +139,5 @@ YAML
   printf 'jobs:\n  build:\n    runs-on: ubuntu-latest\n' > "${FIXTURE}/empty.yml"
   run bash "${SCRIPT}" "${FIXTURE}/bins" "${FIXTURE}/empty.yml"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"no required cell"* ]]
+  [[ "$output" == *"no build cell"* ]]
 }

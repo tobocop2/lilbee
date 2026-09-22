@@ -50,6 +50,10 @@ jobs:
           sha_linux_compat=$(get_sha lilbee-compat-linux-x86_64)
           sha_windows_compat=$(get_sha lilbee-compat-windows-x86_64.exe)
 
+          # A publisher requires what it ships, whatever release.yml calls
+          # droppable: it cannot publish without the binary. Every channel in this
+          # workflow ships this one, so the failure reaches no unrelated channel,
+          # and nothing that decides whether the tag is promotable waits on it.
           [ -n "$sha_linux_compat" ] || { echo "lilbee-compat-linux-x86_64 missing from release ${tag}; run release.yml (compat cell) first"; exit 1; }
 
           {

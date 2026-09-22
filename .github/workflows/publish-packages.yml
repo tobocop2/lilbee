@@ -38,8 +38,6 @@ jobs:
       sha_windows_cu125: ${{ steps.info.outputs.sha_windows_cu125 }}
       sha_windows_cu124: ${{ steps.info.outputs.sha_windows_cu124 }}
     steps:
-      # scripts/release_required_assets.sh is read from the checkout.
-      - uses: actions/checkout@v7
       - name: Resolve tag and asset digests
         id: info
         env:
@@ -63,22 +61,9 @@ jobs:
           sha_windows_cu125=$(get_sha lilbee-windows-x86_64-cu125.exe)
           sha_windows_cu124=$(get_sha lilbee-windows-x86_64-cu124.exe)
 
-          # One definition of "required", shared with attach-prerelease. This job
-          # gates every channel, so a soft asset must never be checked here: most
-          # channels do not ship it. Assigned first, because a herestring hides the
-          # derivation's exit status.
-          required=$(bash scripts/release_required_assets.sh)
-          missing=""
-          while IFS= read -r asset; do
-            [ -n "${asset}" ] || continue
-            [ -n "$(get_sha "${asset}")" ] || missing="${missing} ${asset}"
-          done <<< "${required}"
-          [ -z "${missing}" ] || {
-            echo "missing from release ${tag}:${missing}"
-            echo "read the build cell for each one and rerun it before publishing"
-            exit 1
-          }
-
+          # This job gates every channel, so it asserts nothing about any asset:
+          # a missing binary stops the channels that ship it, in their own jobs,
+          # and leaves the rest to publish.
           {
             echo "tag=$tag"
             echo "version=$version"
@@ -104,6 +89,13 @@ jobs:
           SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
           SHA_MACOS_X86_64: ${{ needs.resolve.outputs.sha_macos_x86_64 }}
         run: |
+          set -euo pipefail
+          # The three urls the default formula carries. Homebrew refuses to load a
+          # formula that has no url for the host architecture, so a formula missing
+          # one of these is worse than an unchanged tap.
+          [ -n "$SHA_MACOS_ARM64" ] || { echo "lilbee-macos-arm64 is not on the release"; exit 1; }
+          [ -n "$SHA_MACOS_X86_64" ] || { echo "lilbee-macos-x86_64 is not on the release"; exit 1; }
+          [ -n "$SHA_LINUX" ] || { echo "lilbee-linux-x86_64 is not on the release"; exit 1; }
           args="--version ${VERSION} --sha-macos-arm64 ${SHA_MACOS_ARM64}"
           args="${args} --sha-macos-x86_64 ${SHA_MACOS_X86_64} --sha-linux-x86_64 ${SHA_LINUX}"
           echo "value=${args}" >> "$GITHUB_OUTPUT"
@@ -120,6 +112,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: The PKGBUILD pins the Linux binary
+        env:
+          SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
+        run: '[ -n "$SHA_LINUX" ] || { echo "lilbee-linux-x86_64 is not on the release"; exit 1; }'
       - uses: ./.github/actions/publish-aur-package
         with:
           pkgname: lilbee
@@ -143,6 +139,7 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha_linux }}
         run: |
           set -euo pipefail
+          [ -n "$SHA" ] || { echo "lilbee-linux-x86_64 is not on the release"; exit 1; }
           mkdir -p packaging/snap/payload
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             -p lilbee-linux-x86_64 -O packaging/snap/payload/lilbee-linux-x86_64
@@ -191,6 +188,10 @@ jobs:
           SHA_LINUX: ${{ needs.resolve.outputs.sha_linux }}
           SHA_DARWIN: ${{ needs.resolve.outputs.sha_macos_arm64 }}
         run: |
+          set -euo pipefail
+          # The two systems the flake pins.
+          [ -n "$SHA_LINUX" ] || { echo "lilbee-linux-x86_64 is not on the release"; exit 1; }
+          [ -n "$SHA_DARWIN" ] || { echo "lilbee-macos-arm64 is not on the release"; exit 1; }
           systems=$(jq -nc \
             --arg sha_linux "$SHA_LINUX" \
             --arg sha_darwin "$SHA_DARWIN" \
@@ -246,8 +247,7 @@ jobs:
           SHA_WINDOWS_CU124: ${{ needs.resolve.outputs.sha_windows_cu124 }}
         run: |
           set -euo pipefail
-          # lilbee-windows-x86_64.exe is in the required set resolve already checked.
-          # The CUDA pair comes from build-gpu-executables.yml, so it is checked here.
+          [ -n "$SHA_WINDOWS" ] || { echo "lilbee-windows-x86_64.exe missing from release"; exit 1; }
           [ -n "$SHA_WINDOWS_CU125" ] || { echo "lilbee-windows-x86_64-cu125.exe missing from release"; exit 1; }
           [ -n "$SHA_WINDOWS_CU124" ] || { echo "lilbee-windows-x86_64-cu124.exe missing from release"; exit 1; }
           python packaging/tools/render_scoop_manifest.py scoop-bucket/bucket/lilbee.json \

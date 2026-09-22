@@ -81,11 +81,11 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' > assets.txt
-          # build-gpu-executables.yml has no soft cell: every asset it builds is
-          # required. release.yml's assets are not listed here, because
-          # scripts/release_required_assets.sh is the one definition of which of
-          # those the release cannot ship without, and attach-prerelease already
-          # refused a release that was missing one.
+          # build-gpu-executables.yml runs every cell continue-on-error and marks
+          # none of them droppable, so this list is the one definition of which of
+          # its assets a release needs. release.yml's assets are not listed here:
+          # scripts/release_required_assets.sh owns that question, and
+          # attach-prerelease already refused a release missing one of them.
           missing=0
           while read -r expected; do
             [ -n "${expected}" ] || continue
@@ -118,6 +118,7 @@ jobs:
     timeout-minutes: 210
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v7
       - name: Every channel artifact reached the release
         shell: bash
         env:
@@ -129,11 +130,26 @@ jobs:
           WAIT_MINUTES: "180"
         run: |
           set -uo pipefail
-          expected="lilbee.flatpakref lilbee-cuda.flatpakref lilbee-rocm.flatpakref
-                    lilbee-compat.flatpakref
-                    lilbee-linux-x86_64.snap lilbee-linux-x86_64-cu125.snap
-                    lilbee-linux-x86_64-rocm.snap
-                    lilbee-compat-linux-x86_64.snap"
+          # artifact:the release binary it is built from. A channel artifact whose
+          # binary comes from a droppable cell is waited for by nobody: the binary
+          # may legitimately never exist, and this gate decides whether the tag is
+          # promotable, so requiring it is how a droppable cell blocks a release.
+          pairs="lilbee.flatpakref:lilbee-linux-x86_64
+                 lilbee-cuda.flatpakref:lilbee-linux-x86_64-cu125
+                 lilbee-rocm.flatpakref:lilbee-linux-x86_64-rocm
+                 lilbee-compat.flatpakref:lilbee-compat-linux-x86_64
+                 lilbee-linux-x86_64.snap:lilbee-linux-x86_64
+                 lilbee-linux-x86_64-cu125.snap:lilbee-linux-x86_64-cu125
+                 lilbee-linux-x86_64-rocm.snap:lilbee-linux-x86_64-rocm
+                 lilbee-compat-linux-x86_64.snap:lilbee-compat-linux-x86_64"
+          soft=$(bash scripts/release_required_assets.sh --soft) || {
+            echo "::error::cannot read which build cells are droppable"; exit 1; }
+          expected=""
+          for pair in ${pairs}; do
+            grep -qxF "${pair#*:}" <<< "${soft}" && continue
+            expected="${expected} ${pair%%:*}"
+          done
+          echo "waiting on:${expected}"
           deadline=$(( $(date +%s) + WAIT_MINUTES * 60 ))
           while true; do
             gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
