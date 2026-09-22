@@ -9,9 +9,10 @@ setup() {
   EXE="${FIXTURE}/lilbee"
 }
 
-# A stub executable whose --version prints the given stdout and stderr and
-# exits with the given code. --help is always clean.
-stub_exe() {  # stdout stderr exit-code
+# A stub executable. --version prints the given stdout and stderr and exits
+# with the given code; --help prints the given stderr and exits with its own
+# code, defaulting to clean.
+stub_exe() {  # version-stdout version-stderr version-rc [help-stderr] [help-rc]
   cat > "${EXE}" <<STUB
 #!/usr/bin/env bash
 case "\$1" in
@@ -20,7 +21,11 @@ case "\$1" in
     printf '%s\n' "$2" >&2
     exit $3
     ;;
-  --help) printf 'Usage: lilbee\n' ;;
+  --help)
+    printf 'Usage: lilbee\n'
+    printf '%s\n' "${4:-}" >&2
+    exit ${5:-0}
+    ;;
 esac
 STUB
   chmod +x "${EXE}"
@@ -63,6 +68,31 @@ old_gate() {  # expected-version
   [[ "$output" == *"Expected: lilbee 1.2.3"* ]]
   [[ "$output" == *"Actual:   lilbee 9.9.9"* ]]
   [[ "$output" == *"FAIL: --version printed the wrong version"* ]]
+}
+
+@test "the right version printed on a non-zero exit still fails" {
+  stub_exe "lilbee 1.2.3" "dyld: Library not loaded libllama.dylib" 1
+  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Library not loaded"* ]]
+  [[ "$output" == *"FAIL: --version exited 1"* ]]
+}
+
+@test "a failing --help prints its exit code and stderr, then fails" {
+  stub_exe "lilbee 1.2.3" "" 0 "Segmentation fault" 139
+  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"--help exit code: 139"* ]]
+  [[ "$output" == *"Segmentation fault"* ]]
+  [[ "$output" == *"FAIL: --help exited 139"* ]]
+}
+
+@test "a typer leak on --help stderr fails even when --help exits clean" {
+  stub_exe "lilbee 1.2.3" "" 0 "No such option: -B" 0
+  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"No such option: -B"* ]]
+  [[ "$output" == *"FAIL: --help produced typer/runtime errors on stderr"* ]]
 }
 
 @test "a typer leak on stderr fails even when the version matches" {
