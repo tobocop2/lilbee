@@ -40,8 +40,14 @@ fi
 
 selected=$(awk -F'\t' -v want="${want_soft}" '$1 == want { print $2 }' <<< "${cells}")
 
+# A matrix with nothing droppable is a legitimate state, and the direction this
+# repository moves in, so --soft returns nothing and succeeds. A matrix with
+# nothing required is not: it would mean the release ships no binary at all.
 if [ -z "${selected}" ]; then
-  echo "release_required_assets: ${workflow} has no cell with soft=${want_soft}." >&2
+  if [ "${want_soft}" = true ]; then
+    exit 0
+  fi
+  echo "release_required_assets: every cell in ${workflow} is droppable." >&2
   echo "release_required_assets: the matrix shape changed; update this derivation." >&2
   exit 1
 fi

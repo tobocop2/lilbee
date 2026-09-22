@@ -93,7 +93,10 @@ assert_binaries() {
   bash "${DERIVE}" --soft "${WORKFLOW}" | grep -qxF lilbee-compat-linux-x86_64
 }
 
-@test "a matrix with no droppable cell fails loudly rather than returning nothing" {
+# Every gate that skips a droppable artifact hard-fails when this cannot be
+# read, so a matrix with nothing droppable must succeed and say nothing. Failing
+# there would make every tag unpromotable the day the last soft cell goes.
+@test "a matrix with no droppable cell returns nothing and succeeds" {
   cat > "${FIXTURE}/all-hard.yml" <<'YAML'
 jobs:
   build:
@@ -104,8 +107,27 @@ jobs:
             asset_name: lilbee-linux-x86_64
 YAML
   run bash "${DERIVE}" --soft "${FIXTURE}/all-hard.yml"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+  run bash "${DERIVE}" "${FIXTURE}/all-hard.yml"
+  [ "$status" -eq 0 ]
+  [ "$output" = "lilbee-linux-x86_64" ]
+}
+
+@test "a matrix with nothing required fails loudly" {
+  cat > "${FIXTURE}/all-soft.yml" <<'YAML'
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset_name: lilbee-compat-linux-x86_64
+            soft: true
+YAML
+  run bash "${DERIVE}" "${FIXTURE}/all-soft.yml"
   [ "$status" -eq 1 ]
-  [[ "$output" == *"no cell with soft=true"* ]]
+  [[ "$output" == *"every cell"* ]]
 }
 
 @test "the gate and the workflow read the same required set" {

@@ -50,11 +50,9 @@ jobs:
           sha_linux_compat=$(get_sha lilbee-compat-linux-x86_64)
           sha_windows_compat=$(get_sha lilbee-compat-windows-x86_64.exe)
 
-          # A publisher requires what it ships, whatever release.yml calls
-          # droppable: it cannot publish without the binary. Every channel in this
-          # workflow ships this one, so the failure reaches no unrelated channel,
-          # and nothing that decides whether the tag is promotable waits on it.
-          [ -n "$sha_linux_compat" ] || { echo "lilbee-compat-linux-x86_64 missing from release ${tag}; run release.yml (compat cell) first"; exit 1; }
+          # This job gates every compat channel, so it asserts nothing: scoop
+          # ships only the Windows compat binary and must publish when the Linux
+          # one is absent. Each channel checks what it ships.
 
           {
             echo "tag=$tag"
@@ -68,6 +66,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: The formula pins the Linux compat binary
+        env:
+          SHA_LINUX_COMPAT: ${{ needs.resolve.outputs.sha_linux_compat }}
+        run: '[ -n "$SHA_LINUX_COMPAT" ] || { echo "lilbee-compat-linux-x86_64 is not on the release; run release.yml (compat cell) first"; exit 1; }'
       - uses: ./.github/actions/publish-homebrew-formula
         with:
           tap-token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -80,6 +82,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      - name: The PKGBUILD pins the Linux compat binary
+        env:
+          SHA_LINUX_COMPAT: ${{ needs.resolve.outputs.sha_linux_compat }}
+        run: '[ -n "$SHA_LINUX_COMPAT" ] || { echo "lilbee-compat-linux-x86_64 is not on the release; run release.yml (compat cell) first"; exit 1; }'
       - uses: ./.github/actions/publish-aur-package
         with:
           pkgname: lilbee-compat
@@ -103,6 +109,9 @@ jobs:
         env:
           SHA_LINUX_COMPAT: ${{ needs.resolve.outputs.sha_linux_compat }}
         run: |
+          set -euo pipefail
+          # The one system this flake entry pins.
+          [ -n "$SHA_LINUX_COMPAT" ] || { echo "lilbee-compat-linux-x86_64 is not on the release"; exit 1; }
           systems=$(jq -nc \
             --arg sha "$SHA_LINUX_COMPAT" \
             '{ "x86_64-linux": { asset: "lilbee-compat-linux-x86_64", sha256: $sha } }')
@@ -128,6 +137,7 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha_linux_compat }}
         run: |
           set -euo pipefail
+          [ -n "$SHA" ] || { echo "lilbee-compat-linux-x86_64 is not on the release"; exit 1; }
           mkdir -p packaging/snap-compat/payload
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" \
             -p lilbee-compat-linux-x86_64 -O packaging/snap-compat/payload/lilbee-compat-linux-x86_64

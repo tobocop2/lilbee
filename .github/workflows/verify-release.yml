@@ -81,28 +81,23 @@ jobs:
           set -euo pipefail
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
             --jq '.assets[].name' > assets.txt
-          # build-gpu-executables.yml runs every cell continue-on-error and marks
-          # none of them droppable, so this list is the one definition of which of
-          # its assets a release needs. release.yml's assets are not listed here:
-          # scripts/release_required_assets.sh owns that question, and
-          # attach-prerelease already refused a release missing one of them.
+          # The same derivation release.yml's assets go through, pointed at the GPU
+          # matrix. Every cell there runs continue-on-error and none is droppable,
+          # so the required set is the whole matrix. release.yml's own assets are
+          # not checked here: attach-prerelease already refused a release missing
+          # one of them.
+          expected=$(bash scripts/release_required_assets.sh \
+                       .github/workflows/build-gpu-executables.yml)
+          # The ROCm binary carries a sidecar naming the gfx targets it was built
+          # for. It is not a matrix cell, so it is named here.
+          expected="${expected}"$'\n'"lilbee-linux-x86_64-rocm.gfx.txt"
           missing=0
-          while read -r expected; do
-            [ -n "${expected}" ] || continue
+          while read -r asset; do
+            [ -n "${asset}" ] || continue
             # -x: an exact line. A substring match would let lilbee-linux-x86_64-cu125.snap
             # satisfy the check for the lilbee-linux-x86_64-cu125 binary.
-            grep -qxF "${expected}" assets.txt || { echo "missing from the release: ${expected}"; missing=1; }
-          done <<'EOF'
-          lilbee-linux-x86_64-cu121
-          lilbee-linux-x86_64-cu124
-          lilbee-linux-x86_64-cu125
-          lilbee-compat-linux-x86_64-cu124
-          lilbee-compat-linux-x86_64-rocm
-          lilbee-windows-x86_64-cu124.exe
-          lilbee-windows-x86_64-cu125.exe
-          lilbee-linux-x86_64-rocm
-          lilbee-linux-x86_64-rocm.gfx.txt
-          EOF
+            grep -qxF "${asset}" assets.txt || { echo "missing from the release: ${asset}"; missing=1; }
+          done <<< "${expected}"
           [ "${missing}" -eq 0 ] || { echo "a continue-on-error build cell dropped its artifact"; exit 1; }
           echo "every GPU asset is present"
 
