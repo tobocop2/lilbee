@@ -491,7 +491,7 @@ jobs:
           EXE="./dist/${{ matrix.asset_name }}"
           EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
 
-          bash scripts/assert_launcher_boots.sh "$EXE" "$EXPECTED"
+          bash scripts/assert_launcher_boots.sh "$EXPECTED" "$EXE"
 
           # Frozen multiprocessing reinvocations must be intercepted before typer.
           # Two real reinvocation shapes the running binary spawns into itself:

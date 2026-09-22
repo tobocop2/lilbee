@@ -17,8 +17,34 @@ setup() {
 smoke() {
   LILBEE_EXE="${FIXTURE}/bin/lilbee" MODELS_DIR="${FIXTURE}/models" \
   SMOKE_CALLS="${CALLS}" SMOKE_CRAWL_INDEXED="${SMOKE_CRAWL_INDEXED:-1}" \
+  SMOKE_FAIL_LEG="${SMOKE_FAIL_LEG:-}" \
   SKIP_CRAWL="${SKIP_CRAWL:-0}" PATH="${FIXTURE}/bin:${PATH}" \
   bash "${SCRIPT}"
+}
+
+# A captured leg as it stood before the fix: the command substitution runs
+# under set -e, and its output is printed on the following line.
+old_leg() {
+  SMOKE_CALLS="${CALLS}" SMOKE_FAIL_LEG=search \
+  bash -c '
+    set -euxo pipefail
+    search_out=$("$1" search "blue quartz resonator")
+    echo "${search_out}"
+    echo "${search_out}" | grep -qi quartz
+  ' _ "${FIXTURE}/bin/lilbee"
+}
+
+# The error the CLI printed reaches the log as a line of its own, rather than
+# inside the `set -x` trace of the assignment that swallowed it.
+printed_as_output() {
+  printf '%s\n' "$1" | grep -q '^Error: the search leg'
+}
+
+@test "control: the old leg names neither the failing leg nor its exit code" {
+  run old_leg
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"FAIL: search exited"* ]]
+  ! printed_as_output "$output"
 }
 
 @test "every leg runs and the gate passes" {
@@ -43,6 +69,27 @@ smoke() {
   [ "$status" -eq 1 ]
   [[ "$(cat "${CALLS}")" == *"search blue quartz resonator"* ]]
   [[ "$(cat "${CALLS}")" == *"ask What frequency"* ]]
+}
+
+@test "a failing search leg prints the error the CLI printed, then fails" {
+  SMOKE_FAIL_LEG=search run smoke
+  [ "$status" -eq 1 ]
+  printed_as_output "$output"
+  [[ "$output" == *"FAIL: search exited 3"* ]]
+}
+
+@test "a failing ask leg prints the error the CLI printed, then fails" {
+  SMOKE_FAIL_LEG=ask run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not reach the engine"* ]]
+  [[ "$output" == *"FAIL: ask exited 3"* ]]
+}
+
+@test "a failing crawl search leg prints the error the CLI printed, then fails" {
+  SMOKE_FAIL_LEG=crawl run smoke
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"could not reach the engine"* ]]
+  [[ "$output" == *"FAIL: crawl search exited 3"* ]]
 }
 
 @test "a missing model gguf fails before any leg runs" {

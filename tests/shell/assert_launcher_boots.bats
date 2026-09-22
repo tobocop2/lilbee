@@ -54,7 +54,7 @@ old_gate() {  # expected-version
 
 @test "a failing probe prints its exit code and stderr, then fails" {
   stub_exe "" "dyld: Library not loaded libllama.dylib" 1
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"--version exit code: 1"* ]]
   [[ "$output" == *"Library not loaded"* ]]
@@ -63,7 +63,7 @@ old_gate() {  # expected-version
 
 @test "a version mismatch prints both versions, then fails" {
   stub_exe "lilbee 9.9.9" "" 0
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"Expected: lilbee 1.2.3"* ]]
   [[ "$output" == *"Actual:   lilbee 9.9.9"* ]]
@@ -72,7 +72,7 @@ old_gate() {  # expected-version
 
 @test "the right version printed on a non-zero exit still fails" {
   stub_exe "lilbee 1.2.3" "dyld: Library not loaded libllama.dylib" 1
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"Library not loaded"* ]]
   [[ "$output" == *"FAIL: --version exited 1"* ]]
@@ -80,7 +80,7 @@ old_gate() {  # expected-version
 
 @test "a failing --help prints its exit code and stderr, then fails" {
   stub_exe "lilbee 1.2.3" "" 0 "Segmentation fault" 139
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"--help exit code: 139"* ]]
   [[ "$output" == *"Segmentation fault"* ]]
@@ -89,7 +89,7 @@ old_gate() {  # expected-version
 
 @test "a typer leak on --help stderr fails even when --help exits clean" {
   stub_exe "lilbee 1.2.3" "" 0 "No such option: -B" 0
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"No such option: -B"* ]]
   [[ "$output" == *"FAIL: --help produced typer/runtime errors on stderr"* ]]
@@ -97,14 +97,50 @@ old_gate() {  # expected-version
 
 @test "a typer leak on stderr fails even when the version matches" {
   stub_exe "lilbee 1.2.3" "No such option: -B" 0
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 1 ]
   [[ "$output" == *"FAIL: --version produced typer/runtime errors on stderr"* ]]
 }
 
 @test "a clean launcher passes" {
   stub_exe "lilbee 1.2.3" "" 0
-  run bash "${SCRIPT}" "${EXE}" 1.2.3
+  run bash "${SCRIPT}" 1.2.3 "${EXE}"
   [ "$status" -eq 0 ]
   [[ "$output" == *"LAUNCHER OK"* ]]
+}
+
+# A packaged build reaches its binary through a runner, as `flatpak run <app-id>`
+# does, so the launcher is a command plus arguments rather than one path.
+stub_runner() {  # forwards `run <app-id> <flag>` to the stub executable
+  cat > "${FIXTURE}/runner" <<RUNNER
+#!/usr/bin/env bash
+[ "\$1" = run ] || { echo "runner: unexpected \$*" >&2; exit 64; }
+[ "\$2" = md.example.App ] || { echo "runner: unknown app \$2" >&2; exit 64; }
+shift 2
+exec "${EXE}" "\$@"
+RUNNER
+  chmod +x "${FIXTURE}/runner"
+}
+
+@test "a launcher with arguments passes its arguments through" {
+  stub_exe "lilbee 1.2.3" "" 0
+  stub_runner
+  run bash "${SCRIPT}" 1.2.3 "${FIXTURE}/runner" run md.example.App
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"LAUNCHER OK"* ]]
+}
+
+@test "a launcher with arguments still reports a failing probe" {
+  stub_exe "" "dyld: Library not loaded libllama.dylib" 1
+  stub_runner
+  run bash "${SCRIPT}" 1.2.3 "${FIXTURE}/runner" run md.example.App
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Library not loaded"* ]]
+  [[ "$output" == *"FAIL: --version exited 1"* ]]
+}
+
+@test "a launcher with no command at all is a usage error" {
+  run bash "${SCRIPT}" 1.2.3
+  [ "$status" -eq 2 ]
+  [[ "$output" == *"usage"* ]]
 }

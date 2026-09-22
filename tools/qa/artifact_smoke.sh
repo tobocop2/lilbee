@@ -55,16 +55,23 @@ kept below 40 degrees. The calibration engineer on record is Ada Marlowe.
 EOF
 
 # Leg 2: ingest + search.
+# Every captured leg records its exit code and prints what it captured BEFORE
+# it asserts. A leg that fails inside a command substitution under `set -e`
+# ends the script at the assignment, and the error the CLI printed is lost.
 "${exe}" --data-dir "${data_dir}" add "${work}/smoke-doc.md"
-search_out=$("${exe}" --data-dir "${data_dir}" search "blue quartz resonator")
+rc=0
+search_out=$("${exe}" --data-dir "${data_dir}" search "blue quartz resonator") || rc=$?
 echo "${search_out}"
+[ "${rc}" -eq 0 ] || { echo "FAIL: search exited ${rc}" >&2; exit 1; }
 echo "${search_out}" | grep -qi "quartz" || { echo "FAIL: search returned no quartz hit" >&2; exit 1; }
 
 # Leg 3: RAG ask through the real chat engine. Asserts the pipeline produces
 # an answer, not the answer's content: a 0.6B model quoting the document is
 # not deterministic, and retrieval correctness is already covered by leg 2.
-ask_out=$("${exe}" --data-dir "${data_dir}" ask "What frequency is the blue quartz resonator calibrated to?")
+rc=0
+ask_out=$("${exe}" --data-dir "${data_dir}" ask "What frequency is the blue quartz resonator calibrated to?") || rc=$?
 echo "${ask_out}"
+[ "${rc}" -eq 0 ] || { echo "FAIL: ask exited ${rc}" >&2; exit 1; }
 [ -n "$(echo "${ask_out}" | tr -d '[:space:]')" ] || { echo "FAIL: ask returned an empty answer" >&2; exit 1; }
 case "${ask_out}" in *"Error:"*) echo "FAIL: ask surfaced an error" >&2; exit 1 ;; esac
 
@@ -72,8 +79,10 @@ case "${ask_out}" in *"Error:"*) echo "FAIL: ask surfaced an error" >&2; exit 1 
 # confirm the page text became searchable.
 if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   "${exe}" --data-dir "${data_dir}" add "https://example.com"
-  crawl_out=$("${exe}" --data-dir "${data_dir}" search "illustrative examples in documents")
+  rc=0
+  crawl_out=$("${exe}" --data-dir "${data_dir}" search "illustrative examples in documents") || rc=$?
   echo "${crawl_out}"
+  [ "${rc}" -eq 0 ] || { echo "FAIL: crawl search exited ${rc}" >&2; exit 1; }
   echo "${crawl_out}" | grep -qi "example" || { echo "FAIL: crawled page not searchable" >&2; exit 1; }
 fi
 
