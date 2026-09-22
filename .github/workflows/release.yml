@@ -316,9 +316,16 @@ jobs:
         run: uv sync --extra release && uv pip install 'nuitka[onefile]>=4.0,<5' pip
 
       # Intel Mac: `uv sync` can't run here -- stock lancedb 0.34.0 ships no
-      # macosx_x86_64 wheel. Resolve it from the +compat index (PEP 440 drop-in),
-      # then install the rest of [release] fresh from PyPI. The cell stays soft
-      # so an install failure never blocks the fan-out.
+      # macosx_x86_64 wheel. Resolve it from the +compat index (PEP 440 drop-in).
+      # Every other package is held to uv.lock through a constraints file that
+      # `uv export` writes from the lock, so this cell installs what every other
+      # cell installs. Without the constraints it resolved [release] fresh from
+      # PyPI on each run and drifted from the lock with no change to the repo.
+      # The cell stays soft so an install failure never blocks the fan-out.
+      #
+      # lancedb is the one package left out of the constraints, because the
+      # locked version is the one with no wheel here. nuitka and pip are build
+      # tools, unpinned on every cell.
       #
       # --python-platform resolves wheels for the x86_64 target instead of the
       # runner. Without it uv picks the newest wheel the macOS 15 image accepts
@@ -332,10 +339,15 @@ jobs:
         run: |
           set -euxo pipefail
           uv venv
+          uv export --frozen --extra release --no-hashes \
+            --no-emit-project --no-emit-package lilbee-engine \
+            --no-emit-package lancedb \
+            --format requirements-txt -o intel-constraints.txt
           uv pip install --python-platform x86_64-apple-darwin \
             --extra-index-url https://lilbee.sh/compat/ \
             lancedb==0.34.0+compat
           uv pip install --python-platform x86_64-apple-darwin \
+            --constraint intel-constraints.txt \
             '.[release]' 'nuitka[onefile]>=4.0,<5' pip
 
       - name: Verify extras installed in build venv
