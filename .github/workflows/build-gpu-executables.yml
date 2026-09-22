@@ -380,7 +380,7 @@ jobs:
           EXE="./dist/${{ matrix.asset_name }}"
           EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
 
-          bash scripts/assert_launcher_boots.sh "$EXE" "$EXPECTED"
+          bash scripts/assert_launcher_boots.sh "$EXPECTED" "$EXE"
 
           echo "CUDA smoke test passed (--version, --help)"
 

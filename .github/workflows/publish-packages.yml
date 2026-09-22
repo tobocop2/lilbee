@@ -155,13 +155,11 @@ jobs:
           path: packaging/snap
       - name: Smoke test
         env:
-          EXPECTED: lilbee ${{ needs.resolve.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
-          ACTUAL=$(/snap/bin/lilbee --version)
-          echo "snap: $ACTUAL"
-          test "$ACTUAL" = "$EXPECTED"
+          bash scripts/assert_launcher_boots.sh "$VERSION" /snap/bin/lilbee
       - name: Attach to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

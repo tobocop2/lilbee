@@ -117,7 +117,10 @@ jobs:
     env:
       APPDATA: /home/runner/.var/app/md.obsidian.Obsidian
       EXPECTED: lilbee ${{ needs.build.outputs.version }}
+      VERSION: ${{ needs.build.outputs.version }}
     steps:
+      - uses: actions/checkout@v7
+
       - name: Install flatpak and Obsidian
         run: |
           # The runner image ships third-party apt repos this job never installs
@@ -137,9 +140,7 @@ jobs:
       - name: Baseline outside the sandbox
         run: |
           chmod +x /tmp/dist/lilbee-linux-x86_64
-          ACTUAL=$(/tmp/dist/lilbee-linux-x86_64 --version)
-          echo "outside: $ACTUAL"
-          test "$ACTUAL" = "$EXPECTED"
+          bash scripts/assert_launcher_boots.sh "$VERSION" /tmp/dist/lilbee-linux-x86_64
 
       - name: Validate inside the Obsidian Flatpak sandbox
         run: |

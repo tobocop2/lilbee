@@ -6,11 +6,17 @@
 # assertion. A probe that fails inside a command substitution under `set -e`
 # ends the step at the assignment, and the captured diagnostic is lost.
 #
-# Usage: assert_launcher_boots.sh <executable> <expected-version>
+# The launcher is a whole command, so a packaged build reaches its binary
+# through its own runner: `flatpak run <app-id>`, a snap path, a plain file.
+#
+# Usage: assert_launcher_boots.sh <expected-version> <launcher> [launcher-arg...]
 set -euo pipefail
 
-exe="${1:?assert_launcher_boots.sh: usage: assert_launcher_boots.sh <executable> <expected-version>}"
-expected="${2:?assert_launcher_boots.sh: usage: assert_launcher_boots.sh <executable> <expected-version>}"
+usage="assert_launcher_boots.sh: usage: assert_launcher_boots.sh <expected-version> <launcher> [launcher-arg...]"
+expected="${1:?${usage}}"
+shift
+[ "$#" -gt 0 ] || { echo "${usage}" >&2; exit 2; }
+launcher=("$@")
 
 # What typer and the frozen multiprocessing dispatch print when the launcher
 # mis-detects frozen state and reinvocations reach the CLI parser.
@@ -19,8 +25,10 @@ leak_pattern="No such option|Type not yet supported|RuntimeError|ModuleNotFoundE
 stderr_file=$(mktemp)
 trap 'rm -f "${stderr_file}"' EXIT
 
+echo "Launcher: ${launcher[*]}"
+
 rc=0
-actual=$("${exe}" --version 2>"${stderr_file}") || rc=$?
+actual=$("${launcher[@]}" --version 2>"${stderr_file}") || rc=$?
 echo "--version exit code: ${rc}"
 echo "Expected: lilbee ${expected}"
 echo "Actual:   ${actual}"
@@ -40,7 +48,7 @@ if grep -qE "${leak_pattern}" "${stderr_file}"; then
 fi
 
 rc=0
-"${exe}" --help > /dev/null 2>"${stderr_file}" || rc=$?
+"${launcher[@]}" --help > /dev/null 2>"${stderr_file}" || rc=$?
 echo "--help exit code: ${rc}"
 echo "--help stderr:"
 cat "${stderr_file}"

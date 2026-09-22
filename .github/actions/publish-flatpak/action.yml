@@ -138,14 +138,12 @@ runs:
     - name: Smoke test the flatpakref install
       shell: bash
       env:
-        EXPECTED: lilbee ${{ inputs.version }}
+        VERSION: ${{ inputs.version }}
         APP_ID: ${{ inputs.app-id }}
       run: |
         set -euo pipefail
         flatpak install --user -y --noninteractive --from /tmp/local.flatpakref
-        ACTUAL=$(flatpak run "$APP_ID" --version)
-        echo "flatpak: $ACTUAL"
-        test "$ACTUAL" = "$EXPECTED"
+        bash scripts/assert_launcher_boots.sh "$VERSION" flatpak run "$APP_ID"
 
     - name: Push the pages repo
       shell: bash

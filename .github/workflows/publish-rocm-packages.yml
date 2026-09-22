@@ -134,13 +134,11 @@ jobs:
           path: packaging/snap-rocm
       - name: Smoke test
         env:
-          EXPECTED: lilbee ${{ needs.resolve.outputs.version }}
+          VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
           sudo snap install "${{ steps.build.outputs.snap }}" --dangerous --classic
-          ACTUAL=$(/snap/bin/lilbee-rocm --version)
-          echo "snap: $ACTUAL"
-          test "$ACTUAL" = "$EXPECTED"
+          bash scripts/assert_launcher_boots.sh "$VERSION" /snap/bin/lilbee-rocm
       - name: Attach to release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
