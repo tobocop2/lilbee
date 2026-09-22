@@ -59,6 +59,7 @@ scripts/*
 !scripts/detect_promotion.sh
 !scripts/create_prerelease.sh
 !scripts/strip_own_version.sh
+!scripts/assert_launcher_boots.sh
 !scripts/assert_required_binaries.sh
 !scripts/release_required_assets.sh
 !scripts/release_dropped_cells.sh

@@ -482,6 +482,7 @@ jobs:
         uses: ./.github/actions/restore-ci-models
 
       - name: Smoke test
+        id: smoke
         # End-to-end: --version, --help, server boot, /api/health version match,
         # then the core-functionality sweep (engine inference, ingest, search,
         # ask, crawl) via tools/qa/artifact_smoke.sh.
@@ -490,26 +491,7 @@ jobs:
           EXE="./dist/${{ matrix.asset_name }}"
           EXPECTED=$(awk -F'"' '/^version *= */ { print $2; exit }' pyproject.toml)
 
-          # Capture stderr: stdout-only checks miss the multiprocessing spawn loop ("No such option: -B").
-          STDERR=$(mktemp)
-          ACTUAL=$("$EXE" --version 2>"$STDERR")
-          echo "Expected: lilbee ${EXPECTED}"
-          echo "Actual:   ${ACTUAL}"
-          echo "Stderr:"
-          cat "$STDERR"
-          test "${ACTUAL}" = "lilbee ${EXPECTED}"
-          if grep -qE "No such option|Type not yet supported|RuntimeError|ModuleNotFoundError" "$STDERR"; then
-            echo "FAIL: --version produced typer/runtime errors on stderr"
-            exit 1
-          fi
-
-          # --help must be clean on stderr too.
-          "$EXE" --help > /dev/null 2>"$STDERR"
-          if grep -qE "No such option|Type not yet supported|RuntimeError|ModuleNotFoundError" "$STDERR"; then
-            echo "FAIL: --help produced typer/runtime errors on stderr"
-            cat "$STDERR"
-            exit 1
-          fi
+          bash scripts/assert_launcher_boots.sh "$EXE" "$EXPECTED"
 
           # Frozen multiprocessing reinvocations must be intercepted before typer.
           # Two real reinvocation shapes the running binary spawns into itself:
@@ -643,6 +625,19 @@ jobs:
           trap - EXIT
           LILBEE_EXE="$EXE" bash tools/qa/artifact_smoke.sh
         shell: bash
+
+      # A binary that fails its smoke test dies with the runner, so the failure
+      # cannot be reproduced anywhere. Keep it as a run artifact on that failure
+      # only. The name must not match attach-release-artifacts' `lilbee-*`
+      # pattern, so a failed binary can never reach a release.
+      - name: Upload the failed binary for local debugging
+        if: failure() && steps.smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v7
+        with:
+          name: smoke-failure-${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          compression-level: 0
+          retention-days: 7
 
       - name: Upload binary as a run artifact
         uses: actions/upload-artifact@v7
