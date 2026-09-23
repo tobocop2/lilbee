@@ -7,8 +7,8 @@ from pathlib import Path
 from typing import NoReturn
 
 import typer
-from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.session_export import session_markdown, write_session_markdown
 from lilbee.cli import theme
@@ -188,10 +188,9 @@ def export_cmd(
     if cfg.json_mode:
         json_output({"id": resolved, "path": str(path)})
         return
+    # A Text, not markup: a Windows separator before "[" would read as an escape.
     # soft_wrap keeps a long path on one line, so it copies whole.
-    console.print(
-        f"Exported to [{theme.ACCENT}]{escape(str(path))}[/{theme.ACCENT}].", soft_wrap=True
-    )
+    console.print(Text.assemble("Exported to ", (str(path), theme.ACCENT), "."), soft_wrap=True)
 
 
 @sessions_app.command("rename")
