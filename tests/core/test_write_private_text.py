@@ -62,6 +62,16 @@ class TestWritePrivateText:
         assert target.read_text(encoding="utf-8") == "new"
         assert _mode(target) == 0o600
 
+    def test_syncs_the_data_before_the_rename(self, tmp_path, monkeypatch):
+        """A crash after the rename must not leave the target empty."""
+        target = tmp_path / "secret.txt"
+        events: list[str] = []
+        real_fsync, real_replace = os.fsync, os.replace
+        monkeypatch.setattr(os, "fsync", lambda fd: (events.append("fsync"), real_fsync(fd)))
+        monkeypatch.setattr(os, "replace", lambda *a: (events.append("replace"), real_replace(*a)))
+        write_private_text(target, "s3cret")
+        assert events == ["fsync", "replace"]
+
     def test_leaves_no_temp_file_behind_when_the_write_fails(self, tmp_path, monkeypatch):
         def boom(*_args, **_kwargs):
             raise RuntimeError("boom")

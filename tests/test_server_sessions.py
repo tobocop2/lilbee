@@ -13,6 +13,7 @@ from lilbee.server.routes.sessions import (
     session_claim_route,
     session_create_route,
     session_delete_route,
+    session_fork_route,
     session_get_route,
     session_rename_route,
     session_set_summary_route,
@@ -115,6 +116,81 @@ class TestCreate:
         assert any(s["id"] == body["meta"]["id"] for s in listed)
 
 
+class TestFork:
+    def test_fork_without_a_body_copies_the_whole_conversation(self, client, store):
+        session_id = _seed(store)
+        store.set_summary(session_id, "notes")
+        resp = client.post(f"/api/sessions/{session_id}/fork")
+        assert resp.status_code == 201
+        body = resp.json()
+        assert body["meta"]["id"] != session_id
+        assert body["meta"]["forked_from"] == session_id
+        assert body["meta"]["title"] == "Torque specs (fork 1)"
+        assert body["meta"]["origin"] == "http"
+        assert [m["content"] for m in body["messages"]] == ["what specs?", "85 Nm."]
+        assert body["summary"] == "notes"
+
+    @pytest.mark.parametrize("message_count", [0, 1])
+    def test_fork_copies_the_leading_messages(self, client, store, message_count):
+        session_id = _seed(store)
+        resp = client.post(
+            f"/api/sessions/{session_id}/fork", json={"message_count": message_count}
+        )
+        assert resp.status_code == 201
+        assert resp.json()["meta"]["message_count"] == message_count
+
+    def test_fork_with_a_null_count_copies_everything(self, client, store):
+        session_id = _seed(store)
+        resp = client.post(f"/api/sessions/{session_id}/fork", json={"message_count": None})
+        assert resp.json()["meta"]["message_count"] == 2
+
+    def test_fork_is_listed_first(self, client, store):
+        session_id = _seed(store)
+        fork_id = client.post(f"/api/sessions/{session_id}/fork").json()["meta"]["id"]
+        assert client.get("/api/sessions").json()["sessions"][0]["id"] == fork_id
+
+    @pytest.mark.parametrize("message_count", [-1, 3])
+    def test_fork_outside_the_transcript_is_422(self, client, store, message_count):
+        session_id = _seed(store)
+        resp = client.post(
+            f"/api/sessions/{session_id}/fork", json={"message_count": message_count}
+        )
+        assert resp.status_code == 422
+        assert "0 to 2" in resp.json()["detail"]
+        assert len(store.list()) == 1
+
+    @pytest.mark.parametrize("message_count", [True, "2", 1.0])
+    def test_fork_count_must_be_an_integer(self, client, store, message_count):
+        session_id = _seed(store)
+        resp = client.post(
+            f"/api/sessions/{session_id}/fork", json={"message_count": message_count}
+        )
+        assert resp.status_code == 400
+        assert len(store.list()) == 1
+
+    def test_fork_unknown_id_404(self, client):
+        assert client.post("/api/sessions/nope/fork").status_code == 404
+
+    def test_forking_an_agent_session_is_409(self, client, store):
+        session_id = _seed(store, origin=SessionOrigin.MCP)
+        assert client.post(f"/api/sessions/{session_id}/fork").status_code == 409
+        assert len(store.list()) == 1
+
+    def test_appending_to_the_fork_leaves_the_source_unchanged(self, client, store):
+        session_id = _seed(store)
+        fork_id = client.post(f"/api/sessions/{session_id}/fork").json()["meta"]["id"]
+        client.post(
+            f"/api/sessions/{fork_id}/messages",
+            json={"role": "user", "content": "Q3", "sources": []},
+        )
+        assert store.get(session_id).meta.message_count == 2
+        assert store.get(fork_id).meta.message_count == 3
+
+    def test_every_session_carries_forked_from(self, client, store):
+        _seed(store)
+        assert client.get("/api/sessions").json()["sessions"][0]["forked_from"] == ""
+
+
 class TestAppendMessage:
     def test_appends_a_turn(self, client, store):
         # HTTP-created, so the HTTP surface owns it (a TUI session would 409;
@@ -186,6 +262,7 @@ def test_every_session_route_requires_the_token():
     assert not authenticates_itself(session_set_summary_route.fn)
     # The takeover operation above all: a read-only token must never claim.
     assert not authenticates_itself(session_claim_route.fn)
+    assert not authenticates_itself(session_fork_route.fn)
 
 
 class TestOwnership:
@@ -255,6 +332,7 @@ _DISABLED_ROUTES = {
     ),
     "rename": lambda client, sid: client.patch(f"/api/sessions/{sid}", json={"title": "t"}),
     "delete": lambda client, sid: client.delete(f"/api/sessions/{sid}"),
+    "fork": lambda client, sid: client.post(f"/api/sessions/{sid}/fork"),
 }
 
 

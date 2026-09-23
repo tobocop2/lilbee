@@ -1,4 +1,4 @@
-"""Session routes: list, get, create, append, summary, rename, delete.
+"""Session routes: list, get, create, append, fork, summary, rename, delete.
 
 Every route requires the token, reads included: a transcript is at least as
 personal as the memory store next door.
@@ -14,6 +14,7 @@ from lilbee.server.handlers.sessions import (
     claim_session,
     create_session,
     delete_session,
+    fork_session,
     get_session,
     list_sessions,
     rename_session,
@@ -23,6 +24,7 @@ from lilbee.server.models import (
     SessionCreateRequest,
     SessionDeleteResponse,
     SessionDetailResponse,
+    SessionForkRequest,
     SessionListResponse,
     SessionMessageCreateRequest,
     SessionRenameRequest,
@@ -55,6 +57,14 @@ async def session_add_message_route(
 ) -> SessionDetailResponse:
     """Append a turn to a conversation."""
     return await add_session_message(session_id, data)
+
+
+@post("/api/sessions/{session_id:str}/fork")
+async def session_fork_route(
+    session_id: FromPath[str], data: SessionForkRequest | None = None
+) -> SessionDetailResponse:
+    """Start a new conversation from a copy of this one's leading messages."""
+    return await fork_session(session_id, data)
 
 
 @post("/api/sessions/{session_id:str}/claim")
