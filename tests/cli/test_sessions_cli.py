@@ -1,4 +1,4 @@
-"""lilbee sessions CLI: list, show, rename, delete."""
+"""lilbee sessions CLI: list, show, fork, rename, delete."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from lilbee.cli import app
 from lilbee.core.config import cfg
-from lilbee.sessions import MessageRole, SessionMessage, SessionStore, TitleSource
+from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, SessionStore, TitleSource
 
 runner = CliRunner()
 
@@ -157,3 +157,62 @@ def test_unknown_prefix_json(tmp_path):
     result = runner.invoke(app, _args(tmp_path, "delete", "nope", json_mode=True))
     assert result.exit_code == 1
     assert json.loads(result.output) == {"error": "No session matching 'nope'."}
+
+
+def test_fork_whole_conversation(seeded):
+    tmp_path, session_id = seeded
+    result = runner.invoke(app, _args(tmp_path, "fork", session_id[:8]))
+    assert result.exit_code == 0, result.output
+    assert "Torque specs (fork 1)" in result.output
+    newest = SessionStore().list()[0]
+    assert newest.forked_from == session_id
+    assert newest.message_count == 2
+
+
+def test_fork_json_with_a_count(seeded):
+    tmp_path, session_id = seeded
+    result = runner.invoke(
+        app, _args(tmp_path, "fork", session_id, "--messages", "1", json_mode=True)
+    )
+    assert result.exit_code == 0, result.output
+    meta = json.loads(result.output)["meta"]
+    assert meta["forked_from"] == session_id
+    assert meta["message_count"] == 1
+    assert meta["title"] == "Torque specs (fork 1)"
+    assert meta["origin"] == SessionOrigin.CLI
+
+
+def test_fork_lists_first_with_its_title(seeded):
+    tmp_path, session_id = seeded
+    runner.invoke(app, _args(tmp_path, "fork", session_id))
+    result = runner.invoke(app, _args(tmp_path, "list"))
+    rows = [line for line in result.output.splitlines() if "Torque specs" in line]
+    assert "(fork 1)" in rows[0]
+
+
+@pytest.mark.parametrize("count", ["-1", "3"])
+def test_fork_outside_the_transcript_exits_1(seeded, count):
+    tmp_path, session_id = seeded
+    result = runner.invoke(
+        app, _args(tmp_path, "fork", session_id, "--messages", count, json_mode=True)
+    )
+    assert result.exit_code == 1
+    assert "0 to 2" in json.loads(result.output)["error"]
+    assert len(SessionStore().list()) == 1
+
+
+def test_fork_of_an_agent_session_exits_1(tmp_path):
+    (tmp_path / "data").mkdir()
+    cfg.data_dir = tmp_path / "data"
+    session_id = SessionStore().create(model_ref="m", scope="both", origin=SessionOrigin.MCP)
+    result = runner.invoke(app, _args(tmp_path, "fork", session_id))
+    assert result.exit_code == 1
+    assert "belongs to the mcp surface" in result.output
+    assert len(SessionStore().list()) == 1
+
+
+def test_fork_unknown_prefix_errors(tmp_path):
+    (tmp_path / "data").mkdir()
+    result = runner.invoke(app, _args(tmp_path, "fork", "deadbeef"))
+    assert result.exit_code == 1
+    assert "No session matching" in result.output

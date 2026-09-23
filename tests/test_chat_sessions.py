@@ -77,7 +77,7 @@ async def test_turns_append_to_the_same_session(sessions):
         screen = await await_chat(app, pilot)
         screen._persist_user_turn("first question")
         session_id = screen._session_id
-        screen._persist_assistant_turn("the answer", ["manual.pdf"])
+        screen._persist_assistant_turn(session_id, "the answer", ["manual.pdf"])
         screen._persist_user_turn("second question")
         assert screen._session_id == session_id
         assert len(sessions.list()) == 1
@@ -105,7 +105,7 @@ async def test_assistant_turn_swallows_deleted_session(sessions):
         screen = await await_chat(app, pilot)
         screen._persist_user_turn("q")
         sessions.delete(screen._session_id)  # gone mid-stream
-        screen._persist_assistant_turn("a", [])  # must not raise
+        screen._persist_assistant_turn(screen._session_id, "a", [])  # must not raise
         assert sessions.list() == []
 
 
@@ -113,7 +113,7 @@ async def test_assistant_persist_is_noop_without_a_session(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        screen._persist_assistant_turn("orphan answer", [])
+        screen._persist_assistant_turn(None, "orphan answer", [])
         assert sessions.list() == []
 
 
@@ -476,7 +476,7 @@ async def test_assistant_turn_is_not_saved_after_sessions_go_off(sessions, monke
         before = sessions.get(session_id).meta.message_count
 
         monkeypatch.setattr(cfg, "sessions_enabled", False)
-        screen._persist_assistant_turn("the answer", [])
+        screen._persist_assistant_turn(session_id, "the answer", [])
 
         assert sessions.get(session_id).meta.message_count == before
 

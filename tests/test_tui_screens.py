@@ -12994,7 +12994,11 @@ async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_not
                 # From a worker thread, as the streaming worker calls it: the
                 # real call_from_thread then runs each hop on the main thread.
                 await asyncio.to_thread(
-                    screen._finalize_stream, widget, [], ["I couldn't find that in your docs."]
+                    screen._finalize_stream,
+                    widget,
+                    [],
+                    ["I couldn't find that in your docs."],
+                    None,
                 )
                 await _pilot.pause()
                 mock_notify.assert_called_once()
@@ -13049,7 +13053,7 @@ async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
         # _finalize_stream runs on the streaming worker thread in production;
         # driving it from one keeps its call_from_thread hops real.
         await asyncio.to_thread(
-            screen._finalize_stream, widget, ["cv-manual.pdf", "specs.pdf"], ["done"]
+            screen._finalize_stream, widget, ["cv-manual.pdf", "specs.pdf"], ["done"], None
         )
         await _settle(pilot)
 

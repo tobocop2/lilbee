@@ -148,6 +148,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand("/clear", "_cmd_clear", help_text="Clear the conversation"),
     SlashCommand("/sessions", "_cmd_sessions", help_text="Open the sessions drawer"),
+    SlashCommand(
+        "/fork",
+        "_cmd_fork",
+        help_text="Branch this conversation into a new session from any question",
+    ),
     SlashCommand("/quit", "_cmd_quit", aliases=("/q", "/exit"), help_text="Exit lilbee"),
 )
 

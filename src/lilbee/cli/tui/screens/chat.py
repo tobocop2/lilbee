@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
@@ -64,6 +65,7 @@ from lilbee.cli.tui.widgets.context_chip import ContextChip
 from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+from lilbee.cli.tui.widgets.fork_picker import ForkPicker
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
@@ -101,9 +103,11 @@ from lilbee.runtime.progress import (
 )
 from lilbee.sessions import (
     MessageRole,
+    Session,
     SessionMessage,
     SessionNotFoundError,
     SessionOrigin,
+    SessionOwnershipError,
     SessionStore,
     TitleSource,
     derive_title,
@@ -188,6 +192,29 @@ def _parse_add_paths(args: str) -> list[Path]:
     if os.name == "nt":
         tokens = [t.strip('"').strip("'") for t in tokens]
     return [Path(token).expanduser() for token in tokens]
+
+
+class _LiveCount:
+    """How many stream bodies are running; each body holds it for its whole run.
+
+    Textual marks a thread worker CANCELLED the moment it is cancelled, while its
+    body keeps running and saving, so the worker's state cannot say this.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._count = 0
+
+    def __enter__(self) -> None:
+        with self._lock:
+            self._count += 1
+
+    def __exit__(self, *_exc: object) -> None:
+        with self._lock:
+            self._count -= 1
+
+    def __bool__(self) -> bool:
+        return self._count > 0
 
 
 class ChatWelcome(Static):
@@ -341,6 +368,9 @@ class ChatScreen(Screen[None]):
         # user turn creates one; reset to None on /clear so the next turn opens a
         # fresh session.
         self._session_id: str | None = None
+        # Stream bodies still running, including one a cancel has already
+        # released the busy gate for; /fork waits them out.
+        self._live_streams = _LiveCount()
         self._insert_mode: bool = True
         # Count of programmatic input edits whose (async) Changed events should
         # not re-filter the dropdown. The setter posts Changed after our flag
@@ -1441,6 +1471,44 @@ class ChatScreen(Screen[None]):
     def _cmd_sessions(self, _args: str) -> None:
         self.app.action_toggle_sessions()
 
+    def _cmd_fork(self, _args: str) -> None:
+        """Open the fork picker over the current session as the store holds it."""
+        if not cfg.sessions_enabled:
+            self.app.notify_sessions_disabled()
+            return
+        if self._live_streams:
+            self.notify(msg.FORK_WHILE_FINISHING, severity="warning")
+            return
+        if self._session_id is None:
+            self.notify(msg.FORK_NO_SESSION, severity="warning")
+            return
+        try:
+            source = get_services().session_store.get(self._session_id)
+        except SessionNotFoundError:
+            self.notify(msg.FORK_SESSION_GONE, severity="warning")
+            return
+        self.app.push_screen(ForkPicker(source.messages), partial(self._on_fork_picked, source))
+
+    def _on_fork_picked(self, source: Session, message_count: int | None) -> None:
+        """Fork *source* at the picked point, switch to the fork, and prefill the question."""
+        if message_count is None:
+            return
+        try:
+            fork_id = get_services().session_store.fork(
+                source.meta.id, message_count=message_count, origin=SessionOrigin.TUI
+            )
+        except SessionNotFoundError:
+            self.notify(msg.FORK_SESSION_GONE, severity="warning")
+            return
+        except SessionOwnershipError as exc:
+            self.notify(msg.FORK_FAILED.format(error=exc), severity="warning")
+            return
+        fork = self._load_session(fork_id)
+        self.notify(msg.FORK_DONE.format(title=fork.meta.title))
+        if message_count < len(source.messages):
+            self._set_input(source.messages[message_count].content)
+            self._enter_insert_mode()
+
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response."""
         from textual.css.query import NoMatches
@@ -1465,7 +1533,9 @@ class ChatScreen(Screen[None]):
             self._history.append({"role": "user", "content": text})
         self._persist_user_turn(text)
         self.streaming = True
-        self._stream_response(text, assistant_msg, self._current_chunk_type())
+        self._stream_response(
+            text, assistant_msg, self._current_chunk_type(), session_id=self._session_id
+        )
 
     def _current_scope_value(self) -> str:
         """The ScopeChip's selection, or "both" when the chip isn't mounted."""
@@ -1511,9 +1581,23 @@ class ChatScreen(Screen[None]):
             # open a fresh one so auto-save keeps working instead of crashing.
             store.add_message(self._open_session(store, text), message, surface=SessionOrigin.TUI)
 
-    def _persist_assistant_turn(self, content: str, sources: list[str]) -> None:
-        """Append the assistant turn to the active session. Worker thread."""
-        if self._session_id is None or not cfg.sessions_enabled:
+    def _save_assistant_turn(
+        self, session_id: str | None, content: str, sources: list[str]
+    ) -> None:
+        """Persist the assistant turn, telling the user when the save fails. Worker thread."""
+        try:
+            self._persist_assistant_turn(session_id, content, sources)
+        except (OSError, SessionOwnershipError) as exc:
+            log.warning("Could not save the assistant turn", exc_info=True)
+            call_from_thread(
+                self, self.notify, msg.SESSIONS_SAVE_FAILED.format(error=exc), severity="error"
+            )
+
+    def _persist_assistant_turn(
+        self, session_id: str | None, content: str, sources: list[str]
+    ) -> None:
+        """Append the assistant turn to *session_id*, the session its turn started in."""
+        if session_id is None or not cfg.sessions_enabled:
             # Sessions switched off mid-conversation: the id outlives the
             # setting, so the toggle has to be re-checked here rather than
             # relying on _persist_user_turn having left the id unset.
@@ -1521,15 +1605,19 @@ class ChatScreen(Screen[None]):
         # A concurrent delete of the active session must not crash the worker.
         with contextlib.suppress(SessionNotFoundError):
             get_services().session_store.add_message(
-                self._session_id,
+                session_id,
                 SessionMessage(role=MessageRole.ASSISTANT, content=content, sources=tuple(sources)),
                 surface=SessionOrigin.TUI,
             )
 
     def resume_session(self, session_id: str) -> None:
         """Load a saved session into the chat view and make it the active one."""
-        store = get_services().session_store
-        session = store.get(session_id)
+        session = self._load_session(session_id)
+        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+
+    def _load_session(self, session_id: str) -> Session:
+        """Replace the conversation with a saved session's transcript and summary."""
+        session = get_services().session_store.get(session_id)
         self._reset_conversation()
         self._session_id = session_id
         for message in session.messages:
@@ -1548,7 +1636,7 @@ class ChatScreen(Screen[None]):
         self._restore_session_model(session.meta.model_ref)
         self._refresh_context_usage()
         self._chat_log.scroll_end(animate=False)
-        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
+        return session
 
     def _restore_session_model(self, model_ref: str) -> None:
         """Switch to the session's chat model if it is still installed.
@@ -1591,15 +1679,26 @@ class ChatScreen(Screen[None]):
 
     @work(thread=True)
     def _stream_response(
-        self, question: str, widget: AssistantMessage, chunk_type: ChunkType | None
+        self,
+        question: str,
+        widget: AssistantMessage,
+        chunk_type: ChunkType | None,
+        *,
+        session_id: str | None,
     ) -> None:
         """Schedule the response stream on a background thread."""
-        self._do_stream_response(question, widget, chunk_type)
+        with self._live_streams:
+            self._do_stream_response(question, widget, chunk_type, session_id=session_id)
 
     def _do_stream_response(
-        self, question: str, widget: AssistantMessage, chunk_type: ChunkType | None
+        self,
+        question: str,
+        widget: AssistantMessage,
+        chunk_type: ChunkType | None,
+        *,
+        session_id: str | None,
     ) -> None:
-        """Stream LLM response, coalescing UI updates. Worker thread."""
+        """Stream the answer to *question*, saving it to *session_id*. Worker thread."""
         response_parts: list[str] = []
         sources: list[str] = []
         stream: Any = None
@@ -1634,7 +1733,7 @@ class ChatScreen(Screen[None]):
                     call_from_thread(self, widget.append_content, error_text)
         finally:
             close_stream(stream)
-            self._finalize_stream(widget, sources, response_parts)
+            self._finalize_stream(widget, sources, response_parts, session_id)
             call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
 
     @staticmethod
@@ -1846,20 +1945,27 @@ class ChatScreen(Screen[None]):
             timings.last_flush = now
 
     def _finalize_stream(
-        self, widget: AssistantMessage, sources: list[str], response_parts: list[str]
+        self,
+        widget: AssistantMessage,
+        sources: list[str],
+        response_parts: list[str],
+        session_id: str | None,
     ) -> None:
         """Persist the assistant turn and update the widget. Always runs."""
-        # _stream_response runs in a worker thread; reactive setters mutate
-        # widgets, so the streaming flag must flip on the main thread.
-        call_from_thread(self, self._set_streaming, False)
         full_response = "".join(response_parts)
-        if full_response:
-            with self._history_lock:
-                self._history.append({"role": "assistant", "content": full_response})
-            # No trim here: the next turn compacts before it builds its prompt, so
-            # trimming now would drop turns without folding them into the summary.
-            self._persist_assistant_turn(full_response, sources)
-            call_from_thread(self, self._refresh_context_usage)
+        try:
+            if full_response:
+                with self._history_lock:
+                    self._history.append({"role": "assistant", "content": full_response})
+                # No trim here: the next turn compacts before it builds its prompt,
+                # so trimming now would drop turns without folding them in.
+                self._save_assistant_turn(session_id, full_response, sources)
+                call_from_thread(self, self._refresh_context_usage)
+        finally:
+            # The busy gate drops only once the reply is on disk, so /fork cannot
+            # snapshot the session without it. Reactive setters mutate widgets,
+            # so the flag flips on the main thread.
+            call_from_thread(self, self._set_streaming, False)
         call_from_thread(self, widget.finish, sources)
         if (
             cfg.chat_mode == ChatMode.SEARCH.value

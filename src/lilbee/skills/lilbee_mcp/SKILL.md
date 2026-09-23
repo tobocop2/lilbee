@@ -95,6 +95,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_sessions_list()` | Your (agent-created) sessions, newest first. The user's own conversations are private: they never appear here, and their ids answer not-found. No LLM call. |
 | `lilbee_session_get(session_id)` | One of your sessions: metadata, full transcript, and `summary` — what compaction folded older turns into. Resume by carrying the summary plus the transcript into your own context; ignoring `summary` silently loses what was already condensed. |
 | `lilbee_session_create(model_ref, scope)` | Start a saved session and get its id back. |
+| `lilbee_session_fork(session_id, message_count)` | Copy one of your sessions into a new one: the first `message_count` messages, or all of them when omitted. Returns the new session in the `session_get` shape; the original is unchanged. |
 | `lilbee_session_add_message(session_id, role, content, sources, claim)` | Append one turn (`role` = `"user"` / `"assistant"`). A session id the user hands you can be taken over with `claim=true` -- it becomes yours and leaves their session list, so ask before claiming. |
 | `lilbee_session_set_summary(session_id, summary)` | Replace one of your sessions' compaction summary after folding history yourself. |
 | `lilbee_session_rename(session_id, title)` | Rename one of your sessions. |

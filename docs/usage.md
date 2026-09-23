@@ -304,16 +304,23 @@ step.
   live chat. Type to filter, `enter` resumes, `^n` new chat, `^r` rename,
   `^d` delete.
 - **The Sessions tab** is the same list full-screen.
-- **The CLI**: `lilbee sessions list / show / rename / delete` (see
+- **The CLI**: `lilbee sessions list / show / fork / rename / delete` (see
   [Sessions commands](#sessions-1)).
 
 Resuming restores the transcript and switches back to the model the
 conversation used, if it is still installed; otherwise lilbee keeps the
 current model and says so.
 
+Forking keeps a conversation and branches from it, like a save state. A fork
+is a new session with a copy of the first messages of another one; the
+original never changes. In the chat, `/fork` opens a picker. Choose "Whole
+conversation" to continue from the end, or "Before: <question>" to go back to
+that question: the fork opens with the question in the input, ready to edit.
+The fork is titled "<title> (fork N)" and sits at the top of the list.
+
 Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
 conversation. No database; back them up or sync them like any other file.
-The same surface exists over HTTP (list, read, create, append, rename,
+The same surface exists over HTTP (list, read, create, append, fork, rename,
 delete), so a script can own a conversation the way the TUI does. The TUI,
 HTTP server, and CLI are one conversation space: start a chat in Obsidian,
 continue it in the terminal.
@@ -899,6 +906,8 @@ See [Sessions](#sessions). Ids accept any unique prefix.
 ```bash
 lilbee sessions list                   # saved conversations, newest first
 lilbee sessions show 3f2a              # print a transcript by id prefix
+lilbee sessions fork 3f2a              # copy a conversation into a new one
+lilbee sessions fork 3f2a --messages 2 # copy only the first two messages
 lilbee sessions rename 3f2a "Brake specs"
 lilbee sessions delete 3f2a            # asks first; --yes skips the prompt
 lilbee --json sessions show 3f2a       # transcript + compaction summary as JSON
@@ -946,8 +955,8 @@ port file, and `lilbee agent-config` hands it to local clients. The surface
 covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
-saved conversations (`/api/sessions`: list, read, create, append, rename,
-delete, and the compaction summary), configuration (including a defaults
+saved conversations (`/api/sessions`: list, read, create, append, fork,
+rename, delete, and the compaction summary), configuration (including a defaults
 endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
