@@ -4,25 +4,15 @@ from __future__ import annotations
 
 import json
 import os
-import stat
-import sys
 
 import pytest
+from tests._private_mode import file_mode, posix_only
 
 from lilbee.core.security import write_private_text
 
-# Scoped per test, not module-wide: a blanket skip also hid the
+# posix_only is scoped per test, not module-wide: a blanket skip also hid the
 # token-corruption and path-anchoring tests, which assert no mode bits, from
 # Windows -- where a clobbered server.json is most likely.
-posix_only = pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
-
-
-@pytest.fixture()
-def permissive_umask():
-    """Run the body under umask 0 so any non-atomic write lands world-readable."""
-    previous = os.umask(0)
-    yield
-    os.umask(previous)
 
 
 @pytest.fixture()
@@ -36,17 +26,13 @@ def fresh_manager():
     path.unlink(missing_ok=True)
 
 
-def _mode(path) -> int:
-    return stat.S_IMODE(path.stat().st_mode)
-
-
 class TestWritePrivateText:
     @posix_only
     def test_creates_file_owner_only_under_permissive_umask(self, tmp_path, permissive_umask):
         target = tmp_path / "secret.txt"
         write_private_text(target, "s3cret")
         assert target.read_text(encoding="utf-8") == "s3cret"
-        assert _mode(target) == 0o600
+        assert file_mode(target) == 0o600
 
     def test_creates_missing_parents(self, tmp_path):
         target = tmp_path / "nested" / "deeper" / "secret.txt"
@@ -60,7 +46,7 @@ class TestWritePrivateText:
         target.chmod(0o644)
         write_private_text(target, "new")
         assert target.read_text(encoding="utf-8") == "new"
-        assert _mode(target) == 0o600
+        assert file_mode(target) == 0o600
 
     def test_syncs_the_data_before_the_rename(self, tmp_path, monkeypatch):
         """A crash after the rename must not leave the target empty."""
@@ -102,7 +88,7 @@ class TestSessionTokenPermissions:
         token = fresh_manager.load_or_generate()
         path = auth.server_json_path()
         assert json.loads(path.read_text(encoding="utf-8"))["token"] == token
-        assert _mode(path) == 0o600
+        assert file_mode(path) == 0o600
 
     def test_unchmoddable_token_file_warns_instead_of_failing_startup(
         self, fresh_manager, monkeypatch, caplog
@@ -138,7 +124,7 @@ class TestSessionTokenPermissions:
         second = fresh_manager.load_or_generate()
 
         assert second == first
-        assert _mode(path) == 0o600
+        assert file_mode(path) == 0o600
 
 
 @posix_only
@@ -151,7 +137,7 @@ class TestPersistedSettingsPermissions:
         monkeypatch.setattr(security.Path, "chmod", lambda *_a, **_k: None)
         settings.save(tmp_path, {"api_key": "sk-secret"})
         path = tmp_path / "config.toml"
-        assert _mode(path) == 0o600
+        assert file_mode(path) == 0o600
 
 
 class TestPersistedTokenIsTotal:
@@ -225,7 +211,7 @@ class TestPersistedSettingsAreHardenedOnLoad:
         path.chmod(0o644)
 
         assert settings.load(tmp_path) == {"api_key": "sk-secret"}
-        assert _mode(path) == 0o600
+        assert file_mode(path) == 0o600
 
     def test_an_unchmoddable_config_warns_instead_of_failing_the_read(
         self, tmp_path, monkeypatch, caplog
@@ -295,3 +281,49 @@ class TestHardeningOnWindows:
 
         monkeypatch.setattr(security.Path, "chmod", _fail)
         security.harden_private_file(target)
+
+
+class TestPrivateDirAndOpener:
+    @posix_only
+    def test_a_missing_dir_is_created_owner_only(self, tmp_path, permissive_umask):
+        from lilbee.core.security import ensure_private_dir
+
+        target = tmp_path / "nested" / "sessions"
+        ensure_private_dir(target)
+        assert file_mode(target) == 0o700
+
+    @posix_only
+    def test_an_existing_wide_dir_is_narrowed(self, tmp_path):
+        from lilbee.core.security import ensure_private_dir
+
+        target = tmp_path / "sessions"
+        target.mkdir()
+        target.chmod(0o755)
+        ensure_private_dir(target)
+        assert file_mode(target) == 0o700
+
+    def test_a_refused_dir_chmod_warns_instead_of_raising(self, tmp_path, monkeypatch, caplog):
+        from lilbee.core import security
+
+        target = tmp_path / "sessions"
+        target.mkdir()
+        monkeypatch.setattr(security.sys, "platform", "linux")
+        monkeypatch.setattr(security.stat, "S_IMODE", lambda _mode: 0o755)
+
+        def refuse(*_args, **_kwargs):
+            raise PermissionError("not owner")
+
+        monkeypatch.setattr(security.Path, "chmod", refuse)
+        with caplog.at_level("WARNING"):
+            security.ensure_private_dir(target)
+        assert "Could not restrict permissions" in caplog.text
+
+    @posix_only
+    def test_the_opener_creates_a_missing_file_owner_only(self, tmp_path, permissive_umask):
+        from lilbee.core.security import private_opener
+
+        target = tmp_path / "log.jsonl"
+        with open(target, "a", encoding="utf-8", opener=private_opener) as handle:
+            handle.write("x\n")
+        assert target.read_text(encoding="utf-8") == "x\n"
+        assert file_mode(target) == 0o600

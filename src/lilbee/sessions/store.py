@@ -25,7 +25,12 @@ from uuid import uuid4
 from filelock import FileLock
 
 from lilbee.core.config import cfg
-from lilbee.core.security import write_private_text
+from lilbee.core.security import (
+    OWNER_ONLY_MODE,
+    ensure_private_dir,
+    private_opener,
+    write_private_text,
+)
 
 SESSIONS_DIRNAME = "sessions"
 SESSIONS_DISABLED_HINT = (
@@ -278,8 +283,8 @@ class SessionStore:
         # milliseconds, so a blocked writer waits, never fails, under any
         # realistic contention; the timeout only bounds a wedged holder.
         with (
-            FileLock(str(path) + ".lock", timeout=_APPEND_LOCK_TIMEOUT_S),
-            path.open("a", encoding="utf-8") as fh,
+            FileLock(str(path) + ".lock", timeout=_APPEND_LOCK_TIMEOUT_S, mode=OWNER_ONLY_MODE),
+            open(path, "a", encoding="utf-8", opener=private_opener) as fh,
         ):
             fh.write(json.dumps(event) + "\n")
             fh.flush()
@@ -322,7 +327,7 @@ class SessionStore:
     def create(self, model_ref: str, scope: str, origin: SessionOrigin = SessionOrigin.TUI) -> str:
         """Start a new session owned by *origin* and return its id."""
         session_id = uuid4().hex
-        self._dir.mkdir(parents=True, exist_ok=True)
+        ensure_private_dir(self._dir)
         meta = self._meta_event(session_id, model_ref, scope, origin, self._now(), forked_from="")
         self._write_event(self._path(session_id), meta)
         return session_id
@@ -437,6 +442,7 @@ class SessionStore:
         """
         if not self._dir.exists():
             return []
+        ensure_private_dir(self._dir)
         paths = list(self._dir.glob("*.jsonl"))
         metas = [meta for meta in (self._meta_for(path) for path in paths) if meta is not None]
         if origins is not None:
