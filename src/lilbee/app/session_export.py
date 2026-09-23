@@ -23,7 +23,7 @@ _ROLE_HEADINGS: dict[MessageRole, str] = {
     MessageRole.USER: "User",
     MessageRole.ASSISTANT: "Assistant",
 }
-# Parsed after a message body; if it is not a heading, the body left a block open.
+# Parsed after a message body; if it lands inside a fence, the body left that fence open.
 _PROBE_HEADING = "\n\n# probe"
 
 
@@ -63,15 +63,12 @@ def _commonmark() -> MarkdownIt:
 def _close_open_fence(text: str) -> str:
     """*text* with a code fence it leaves open closed, so it cannot swallow what follows.
 
-    The parser decides: a heading placed after *text* must still parse as one.
-    A fence inside a list item never fails that test, because the heading ends
-    the item, so only a top-level fence is closed, and at column 0.
+    The parser decides: when a heading placed after *text* ends up inside a fence,
+    that fence is closed. A fence in a list item never does, because the heading
+    ends the item, so only a top-level fence is closed, and at column 0.
     """
-    tokens = _commonmark().parse(text + _PROBE_HEADING)
-    fences = [token for token in tokens if token.type == "fence"]
-    if tokens[-1].type == "heading_close" or not fences:
-        return text
-    return f"{text}\n{fences[-1].markup}"
+    last = _commonmark().parse(text + _PROBE_HEADING)[-1]
+    return f"{text}\n{last.markup}" if last.type == "fence" else text
 
 
 def default_export_name(meta: SessionMeta) -> str:

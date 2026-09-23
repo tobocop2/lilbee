@@ -126,9 +126,17 @@ def test_a_cut_off_code_fence_is_closed_before_the_next_section(content, closer)
     assert f"{content}\n{closer}\n\n## User\n\nnext question\n" in markdown
 
 
-def test_a_block_that_is_not_a_fence_is_left_as_written():
-    """An open HTML comment also swallows what follows; only fences are closed."""
-    content = "<!-- note\nstill a comment"
+@pytest.mark.parametrize(
+    "content",
+    [
+        "<!-- note\nstill a comment",
+        "```\nx\n```\n\n<!-- note\nstill a comment",
+        "```\nx\n```\n\n<pre>\nstill preformatted",
+    ],
+    ids=["comment", "closed-fence-then-comment", "closed-fence-then-pre"],
+)
+def test_a_block_that_is_not_a_fence_is_left_as_written(content):
+    """An open HTML block also swallows what follows; only fences are closed."""
     markdown = session_markdown(_session(_assistant(content)))
     assert markdown.endswith(f"## Assistant\n\n{content}\n")
 
