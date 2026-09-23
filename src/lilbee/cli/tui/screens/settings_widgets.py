@@ -84,7 +84,7 @@ def set_widget_value(widget: Widget, value: object) -> None:
             widget.value = str(value)
     elif isinstance(widget, TextArea):  # future-proofing: list/multiline defaults
         if isinstance(value, list):
-            widget.load_text("\n".join(value))
+            widget.load_text("\n".join(str(item) for item in value))
         else:
             widget.load_text("" if value is None else str(value))
 
@@ -168,7 +168,7 @@ def stringify_default(default: object) -> str:
     if default is None:
         return ""
     if isinstance(default, list):
-        return "\n".join(default)
+        return "\n".join(str(item) for item in default)
     return str(default)
 
 
@@ -238,11 +238,11 @@ def make_multiline_editor(key: str, value: str) -> ListTextArea:
 
 
 def make_list_editor(key: str) -> Collapsible:
-    """Create a Collapsible with a line-numbered TextArea for list[str] settings."""
+    """Create a Collapsible with a line-numbered TextArea for a list setting."""
     current = getattr(cfg, key, None) or []
     title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
     editor = ListTextArea(
-        text="\n".join(current),
+        text="\n".join(str(item) for item in current),
         show_line_numbers=True,
         name=key,
         id=f"{EDITOR_ID_PREFIX}{key}",

@@ -1478,6 +1478,28 @@ vision model is configured, it takes precedence.
 | **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
+### Which PDF pages get OCR
+
+By default (`ocr_strategy = "auto"`), lilbee OCRs only the PDF pages whose
+text layer is missing or garbled. Some scans carry a hidden text layer of poor
+quality, and that layer can pass the check. To OCR those pages too, set
+`ocr_strategy` to `scanned_pages`. xberg then also OCRs every page that it
+grades as a scan.
+
+`ocr_scan_confidence` sets how sure xberg must be that a page is a scan. It
+applies only when `ocr_strategy` is `scanned_pages`. The default is `0.7`. A
+slide with a full-page background image grades `0.5`, so lower the value to
+`0.5` to OCR such slides.
+
+`force_ocr_pages` overrides automatic page selection. While it is set, only the
+listed pages get OCR in every PDF, and `auto` and `scanned_pages` do not apply.
+Page numbers start at 1, for example `LILBEE_FORCE_OCR_PAGES=1,3`.
+
+If OCR is off (`enable_ocr = false`), lilbee ignores all three settings.
+A change to these settings applies to files that lilbee extracts afterwards.
+To apply it to files that are already indexed, run `lilbee rebuild`
+(`/rebuild` in the TUI).
+
 ### Tesseract
 
 [Tesseract](https://github.com/tesseract-ocr/tesseract) is used automatically

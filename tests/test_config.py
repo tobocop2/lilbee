@@ -367,6 +367,87 @@ class TestOcrLanguage:
             assert c.rag_system_prompt == "You are a pirate."
 
 
+class TestForceOcrPages:
+    def test_defaults_to_no_pages(self, tmp_path):
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            assert Config().force_ocr_pages == []
+
+    def test_env_comma_separated(self, tmp_path):
+        env = clean_env(tmp_path) | {"LILBEE_FORCE_OCR_PAGES": "1,3"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().force_ocr_pages == [1, 3]
+
+    def test_direct_list(self):
+        assert Config(force_ocr_pages=[2, 5]).force_ocr_pages == [2, 5]
+
+    def test_persisted_newline_form_is_sorted_and_deduplicated(self):
+        """app.settings joins list values with '\n' before writing config.toml."""
+        assert Config(force_ocr_pages="3\n1\n3").force_ocr_pages == [1, 3]
+
+    @pytest.mark.parametrize("value", [["1,3"], ["3", "1,3"]])
+    def test_comma_separated_items_inside_a_list_are_split(self, value):
+        assert Config(force_ocr_pages=value).force_ocr_pages == [1, 3]
+
+    def test_a_bare_int_is_one_page(self):
+        assert Config(force_ocr_pages=3).force_ocr_pages == [3]
+
+    def test_a_bare_zero_is_rejected(self):
+        with pytest.raises(ValueError, match="page numbers start at 1"):
+            Config(force_ocr_pages=0)
+
+    @pytest.mark.parametrize("value", [{"page": 1}, 1.5, True])
+    def test_a_bare_non_page_value_is_rejected(self, value):
+        with pytest.raises(ValueError, match="not a page number"):
+            Config(force_ocr_pages=value)
+
+    def test_string_items_from_the_list_editor_are_parsed(self):
+        assert Config(force_ocr_pages=["4", " 2 "]).force_ocr_pages == [2, 4]
+
+    def test_blank_string_is_no_pages(self):
+        assert Config(force_ocr_pages="").force_ocr_pages == []
+
+    @pytest.mark.parametrize("value", [[0], "-2", "1,0"])
+    def test_rejects_pages_below_one(self, value):
+        with pytest.raises(ValueError, match="page numbers start at 1"):
+            Config(force_ocr_pages=value)
+
+    @pytest.mark.parametrize("value", ["1,x", ["two"], [1.5], [True]])
+    def test_rejects_values_that_are_not_page_numbers(self, value):
+        with pytest.raises(ValueError, match="not a page number"):
+            Config(force_ocr_pages=value)
+
+
+class TestOcrStrategy:
+    def test_defaults_to_auto(self, tmp_path):
+        from lilbee.core.config.enums import OcrPageStrategy
+
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            config = Config()
+        assert config.ocr_strategy is OcrPageStrategy.AUTO
+        assert config.ocr_scan_confidence == 0.7
+
+    def test_env_selects_scanned_pages(self, tmp_path):
+        from lilbee.core.config.enums import OcrPageStrategy
+
+        env = clean_env(tmp_path) | {
+            "LILBEE_OCR_STRATEGY": "scanned_pages",
+            "LILBEE_OCR_SCAN_CONFIDENCE": "0.5",
+        }
+        with mock.patch.dict(os.environ, env, clear=True):
+            config = Config()
+        assert config.ocr_strategy is OcrPageStrategy.SCANNED_PAGES
+        assert config.ocr_scan_confidence == 0.5
+
+    def test_rejects_an_unknown_strategy(self):
+        with pytest.raises(ValueError):
+            Config(ocr_strategy="every_page")
+
+    @pytest.mark.parametrize("value", [-0.1, 1.5])
+    def test_rejects_a_confidence_outside_zero_to_one(self, value):
+        with pytest.raises(ValueError):
+            Config(ocr_scan_confidence=value)
+
+
 class TestTomlConfigFile:
     def test_toml_values_loaded(self, tmp_path):
         ref = "ollama/my-saved-model:latest"

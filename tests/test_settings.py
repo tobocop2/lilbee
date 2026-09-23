@@ -451,6 +451,56 @@ class TestTableModelSetting:
         assert both.reindex_required is True
 
 
+class TestOcrPageSelectionSettings:
+    """The PDF OCR page-selection settings are writable and survive a config.toml reload."""
+
+    def test_settings_map_entries(self):
+        assert SETTINGS_MAP["ocr_strategy"].choices == ("auto", "scanned_pages")
+        assert SETTINGS_MAP["ocr_scan_confidence"].type is float
+        assert SETTINGS_MAP["force_ocr_pages"].type is list
+        for key in ("ocr_strategy", "ocr_scan_confidence", "force_ocr_pages"):
+            assert SETTINGS_MAP[key].group == "Ingest"
+            assert key in WRITABLE_CONFIG_FIELDS
+        assert get_default("ocr_strategy") == "auto"
+        assert get_default("ocr_scan_confidence") == 0.7
+        assert get_default("force_ocr_pages") == []
+
+    def test_update_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "force_ocr_pages", [])
+        monkeypatch.setattr(appset.cfg, "ocr_strategy", "auto")
+        monkeypatch.setattr(appset.cfg, "ocr_scan_confidence", 0.7)
+        appset.apply_settings_update(
+            {
+                "force_ocr_pages": "3,1",
+                "ocr_strategy": "scanned_pages",
+                "ocr_scan_confidence": 0.5,
+            }
+        )
+        assert appset.cfg.force_ocr_pages == [1, 3]
+        assert settings.load(tmp_path)["force_ocr_pages"] == "1\n3"
+
+        appset.cfg.force_ocr_pages = []
+        appset.cfg.ocr_strategy = "auto"
+        appset.cfg.ocr_scan_confidence = 0.7
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.force_ocr_pages == [1, 3]
+        assert appset.cfg.ocr_strategy == "scanned_pages"
+        assert appset.cfg.ocr_scan_confidence == 0.5
+
+    def test_an_invalid_page_rolls_the_update_back(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "force_ocr_pages", [2])
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        with pytest.raises(ValueError, match="page numbers start at 1"):
+            appset.apply_settings_update({"force_ocr_pages": [0]})
+        assert appset.cfg.force_ocr_pages == [2]
+
+
 class TestMemoryTuningSettingsMap:
     """The dynamic-ctx tuning knobs are surfaced in the TUI settings map."""
 

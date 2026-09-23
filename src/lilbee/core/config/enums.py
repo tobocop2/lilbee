@@ -117,6 +117,13 @@ class TableModel(StrEnum):
     SLANET_WIRELESS = "slanet_wireless"
 
 
+class OcrPageStrategy(StrEnum):
+    """Which PDF pages xberg OCRs: failed native text only, or also pages graded as scans."""
+
+    AUTO = "auto"
+    SCANNED_PAGES = "scanned_pages"
+
+
 class KvCacheType(StrEnum):
     """KV cache element type. ``q8_0`` / ``q4_0`` require flash attention."""
 

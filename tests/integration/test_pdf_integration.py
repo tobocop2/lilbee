@@ -267,3 +267,59 @@ class TestVisionOcrFallback:
             phrase in text_lower for phrase in ["oil", "maintenance", "filter", "quarts", "engine"]
         )
         assert recognized, f"No expected phrases found in vision output: {text_lower[:200]}"
+
+
+def _image_only_pdf(page_texts: list[str]) -> bytes:
+    """A PDF whose pages are images of *page_texts*, with no text layer."""
+    import io
+
+    from PIL import Image, ImageDraw, ImageFont
+
+    images = []
+    for text in page_texts:
+        image = Image.new("L", (1275, 1650), 255)
+        ImageDraw.Draw(image).text((100, 200), text, fill=0, font=ImageFont.load_default(48))
+        images.append(image)
+    buf = io.BytesIO()
+    first, *rest = images
+    first.save(buf, format="PDF", save_all=True, append_images=rest, resolution=150)
+    return buf.getvalue()
+
+
+@pytest.mark.skipif(not shutil.which("tesseract"), reason="Tesseract not installed")
+class TestForceOcrPagesReplacesAutomaticOcr:
+    """xberg OCRs only the listed pages; a scanned page outside the list comes back empty."""
+
+    PDF = _image_only_pdf(
+        ["First page reads alpha bravo charlie", "Second page reads delta echo foxtrot"]
+    )
+
+    def _page_texts(self) -> list[str]:
+        from lilbee.data.extract.document import extraction_config
+        from lilbee.data.extract.xberg import extract_document
+        from lilbee.data.types import ExtractMode
+
+        doc = extract_document(
+            self.PDF,
+            "application/pdf",
+            filename="scan.pdf",
+            config=extraction_config(ExtractMode.PAGINATED),
+        )
+        return [page.content.strip() for page in doc.pages]
+
+    @pytest.fixture(autouse=True)
+    def _tesseract(self, monkeypatch):
+        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "enable_ocr", None)
+
+    def test_default_settings_ocr_every_scanned_page(self, monkeypatch):
+        monkeypatch.setattr(cfg, "force_ocr_pages", [])
+        first, second = self._page_texts()
+        assert "alpha" in first
+        assert "delta" in second
+
+    def test_force_ocr_pages_leaves_unlisted_scanned_pages_empty(self, monkeypatch):
+        monkeypatch.setattr(cfg, "force_ocr_pages", [1])
+        first, second = self._page_texts()
+        assert "alpha" in first
+        assert second == ""

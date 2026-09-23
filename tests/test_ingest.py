@@ -3643,6 +3643,77 @@ class TestExtractionConfig:
         assert pdf.reading_order is True
 
 
+class TestOcrPageSelection:
+    """cfg.ocr_strategy and cfg.force_ocr_pages reach xberg's ExtractionConfig."""
+
+    @pytest.fixture(autouse=True)
+    def _ocr_on(self, monkeypatch):
+        monkeypatch.setattr(cfg, "enable_ocr", None)
+
+    def test_auto_sends_the_auto_strategy_and_no_forced_pages(self):
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        for mode in ExtractMode:
+            config = extraction_config(mode)
+            assert config.ocr_strategy.mode == "auto"
+            assert config.force_ocr_pages is None
+
+    def test_scanned_pages_carries_the_configured_confidence_in_both_modes(self, monkeypatch):
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
+        monkeypatch.setattr(cfg, "ocr_scan_confidence", 0.5)
+        for mode in ExtractMode:
+            strategy = json.loads(str(extraction_config(mode).ocr_strategy))
+            assert strategy == {"mode": "scanned_pages", "min_confidence": 0.5}
+
+    def test_forced_pages_reach_both_modes(self, monkeypatch):
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "force_ocr_pages", [1, 3])
+        for mode in ExtractMode:
+            assert extraction_config(mode).force_ocr_pages == [1, 3]
+
+    def test_ocr_off_sends_auto_and_no_forced_pages(self, monkeypatch):
+        """xberg rejects scanned_pages when OCR is disabled."""
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "enable_ocr", False)
+        monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
+        monkeypatch.setattr(cfg, "force_ocr_pages", [2])
+        for mode in ExtractMode:
+            config = extraction_config(mode)
+            assert config.ocr_strategy.mode == "auto"
+            assert config.force_ocr_pages is None
+
+    def test_per_request_ocr_off_sends_auto_and_no_forced_pages(self, monkeypatch):
+        """The HTTP/MCP enable_ocr=False override also drops the page selection."""
+        from lilbee.data.extract.document import ocr_override
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
+        monkeypatch.setattr(cfg, "force_ocr_pages", [2])
+        with ocr_override(enable_ocr=False):
+            for mode in ExtractMode:
+                config = extraction_config(mode)
+                assert config.ocr_strategy.mode == "auto"
+                assert config.force_ocr_pages is None
+
+    @pytest.mark.parametrize("enable_ocr", [None, False])
+    def test_real_xberg_accepts_the_built_config(self, monkeypatch, enable_ocr):
+        from lilbee.data.extract.xberg import extract_document
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
+        monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
+        monkeypatch.setattr(cfg, "force_ocr_pages", [1])
+        for mode in ExtractMode:
+            doc = extract_document(
+                b"plain text", "text/plain", filename="a.txt", config=extraction_config(mode)
+            )
+            assert "plain text" in doc.content
+
+
 class TestTableModelCouplingWarning:
     """table_model only runs under layout detection; warn when it is silently unused."""
 
