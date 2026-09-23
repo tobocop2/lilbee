@@ -14,6 +14,7 @@ from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
 from lilbee.core.config import Config, cfg
 from lilbee.retrieval.query.compaction import CompactionResult
+from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
@@ -603,3 +604,49 @@ async def test_a_trim_for_a_replaced_conversation_is_dropped(sessions):
         screen._history = list(history)
         screen._compact_history(None, stale)
         assert screen._history == history
+
+
+async def test_a_fold_in_the_same_conversation_lands_through_the_send_path(sessions):
+    """With no resume or /clear, the turn's fold trims the history and saves its summary."""
+    source = _seed_fold_source(sessions)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        await pilot.pause()
+        await _fold_then(app, pilot, lambda: None)
+        assert screen._summary == "OLD NOTES"
+        assert sessions.get(source).summary == "OLD NOTES"
+        assert len(screen._history) < 7, "the folded turns leave the history"
+        assert screen._history[-1] == {"role": "user", "content": "new question"}
+
+
+async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_history(sessions):
+    """The cancelled answer is saved to its own session, never added to the resumed one."""
+    other = _seed_other(sessions)
+    first_token, release = threading.Event(), threading.Event()
+
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content="PARTIAL", is_reasoning=False)
+        first_token.set()
+        release.wait(_FOLD_WAIT_S)
+        yield StreamToken(content=" more", is_reasoning=False)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            screen._send_message("old question")
+            source = screen._session_id
+            assert await pump_until(pilot, first_token.is_set), "the answer must have started"
+            app.resume_session(other)
+            release.set()
+            assert await pump_until(pilot, lambda: not screen._live_streams)
+        assert screen._history == [
+            {"role": "user", "content": "other q"},
+            {"role": "assistant", "content": "other a"},
+        ]
+        assert [m.content for m in sessions.get(source).messages] == ["old question", "PARTIAL"]

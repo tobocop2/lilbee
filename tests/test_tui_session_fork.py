@@ -281,7 +281,8 @@ def _start_finalize(screen, session_id: str | None, reply: str) -> threading.Thr
     """Run the worker-side end of a turn off the main thread, as production does."""
     widget = screen.query(AssistantMessage).last()
     thread = threading.Thread(
-        target=screen._finalize_stream, args=(widget, [], [reply], session_id)
+        target=screen._finalize_stream,
+        args=(widget, [], [reply], session_id, screen._conversation_generation),
     )
     thread.start()
     return thread
@@ -384,7 +385,7 @@ def _hold_then_finish(started: threading.Event, release: threading.Event, reply:
     def body(self, question, widget, chunk_type, *, session_id, generation):
         started.set()
         release.wait(_WAIT_S)
-        self._finalize_stream(widget, [], [reply], session_id)
+        self._finalize_stream(widget, [], [reply], session_id, generation)
 
     return body
 
@@ -430,7 +431,7 @@ async def test_fork_waits_for_every_cancelled_body_not_just_the_first(sessions):
         started, release = held[question]
         started.set()
         release.wait(_WAIT_S)
-        self._finalize_stream(widget, [], [f"{question}-partial"], session_id)
+        self._finalize_stream(widget, [], [f"{question}-partial"], session_id, generation)
 
     async def fork_is_refused() -> bool:
         with patch.object(screen, "notify") as notify:
@@ -471,7 +472,7 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
 
     def folding_body(self, question, widget, chunk_type, *, session_id, generation):
         self._compact_history(session_id, generation)
-        self._finalize_stream(widget, [], [], session_id)
+        self._finalize_stream(widget, [], [], session_id, generation)
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:

@@ -1748,7 +1748,7 @@ class ChatScreen(Screen[None]):
                     call_from_thread(self, widget.append_content, error_text)
         finally:
             close_stream(stream)
-            self._finalize_stream(widget, sources, response_parts, session_id)
+            self._finalize_stream(widget, sources, response_parts, session_id, generation)
             call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
 
     @staticmethod
@@ -1965,13 +1965,21 @@ class ChatScreen(Screen[None]):
         sources: list[str],
         response_parts: list[str],
         session_id: str | None,
+        generation: int,
     ) -> None:
-        """Persist the assistant turn and update the widget. Always runs."""
+        """Persist the assistant turn and update the widget. Always runs.
+
+        The answer joins the history only while *generation* is still the
+        conversation on screen; it is saved to *session_id* either way.
+        """
         full_response = "".join(response_parts)
         try:
             if full_response:
                 with self._history_lock:
-                    self._history.append({"role": "assistant", "content": full_response})
+                    # A resume or /clear mid-answer replaced the conversation;
+                    # the answer belongs to the one that is gone.
+                    if generation == self._conversation_generation:
+                        self._history.append({"role": "assistant", "content": full_response})
                 # No trim here: the next turn compacts before it builds its prompt,
                 # so trimming now would drop turns without folding them in.
                 self._save_assistant_turn(session_id, full_response, sources)
