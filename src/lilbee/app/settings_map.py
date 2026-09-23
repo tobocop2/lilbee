@@ -248,6 +248,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Max files per extract_batch call when batch extraction is on",
     ),
+    "extraction_threads": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Threads xberg uses for PDF rendering, OCR and layout models, and the"
+            " most Tesseract OCR sessions that run at once (0 = auto, half the"
+            " available cores). Takes full effect after a restart."
+        ),
+    ),
     "embedding_model": SettingDef(
         str,
         nullable=False,

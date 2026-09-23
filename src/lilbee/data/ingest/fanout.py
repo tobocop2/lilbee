@@ -162,7 +162,7 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
         ShardSpec(
             shard=ShardId(index=index, count=processes),
             device=index % devices,
-            config=_shard_config(config, root / f"w{index}", plan_share),
+            config=_shard_config(config, root / f"w{index}", plan_share, processes),
             # Keyed by card, not by worker: workers sharing a card share one
             # fleet, workers on different cards never see each other's.
             engine_dir=root / f"gpu{index % devices}" / "engine",
@@ -173,17 +173,19 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
     ]
 
 
-def _shard_config(config: Config, root: Path, plan_share: int) -> Config:
+def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -> Config:
     """*config* with a private data root and this worker's share of the CPU pools.
 
     ``documents_dir`` and ``linked_roots`` are inherited: every worker reads the
     one shared corpus and only its own state is private.
     """
+    threads = config.extraction_threads
     return config.model_copy(
         update={
             "data_root": root,
             "lancedb_dir": root / "data" / "lancedb",
             "ingest_workers": plan_share,
+            "extraction_threads": max(1, threads // processes) if threads else 0,
         }
     )
 

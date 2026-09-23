@@ -1505,6 +1505,12 @@ ocr_language = "eng+deu"
 You can also set it in the `/settings` screen in the TUI, or over the HTTP and
 MCP settings APIs. Commas work in place of `+` if you prefer (`eng,deu`).
 
+The `extraction_threads` setting controls how much of the machine extraction
+uses. It sets the threads for PDF rendering, OCR and layout models. It also sets
+how many Tesseract sessions run at once, bounded by free memory. The default
+(`0`) uses half the available cores. Restart lilbee for a change to take full
+effect.
+
 ### Vision models
 
 lilbee runs vision OCR in one of two ways:

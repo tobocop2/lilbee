@@ -270,6 +270,12 @@ class Config(BaseSettings):
     # Coalesce concurrent extractions into one xberg extract_batch call.
     batch_extraction: bool = ConfigField(default=False, writable=True)
     batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
+    # xberg's shared thread budget: PDF rendering, OCR and ONNX inference. It
+    # also bounds concurrent Tesseract sessions, which xberg further limits to
+    # what free memory holds. 0 = auto, runtime.cpu.cpu_quota() (half the usable
+    # CPUs). The rayon pool is fixed at the first extraction, so a change takes
+    # full effect after a restart.
+    extraction_threads: int = ConfigField(default=0, ge=0, writable=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.

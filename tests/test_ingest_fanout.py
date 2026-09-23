@@ -214,6 +214,22 @@ class TestShardSpecs:
         assert {spec.cpu_share for spec in specs} == {10}
         assert {spec.config.ingest_workers for spec in specs} == {20}
 
+    def test_auto_extraction_threads_stay_auto_in_each_worker(self, monkeypatch):
+        """A worker's auto resolves against its own LILBEE_CPU_QUOTA share."""
+        monkeypatch.setattr(cfg, "extraction_threads", 0)
+        specs = fanout.shard_specs(cfg, processes=8, devices=8)
+        assert {spec.config.extraction_threads for spec in specs} == {0}
+
+    def test_explicit_extraction_threads_are_divided(self, monkeypatch):
+        monkeypatch.setattr(cfg, "extraction_threads", 40)
+        specs = fanout.shard_specs(cfg, processes=8, devices=8)
+        assert {spec.config.extraction_threads for spec in specs} == {5}
+
+    def test_the_extraction_threads_share_never_falls_below_one(self, monkeypatch):
+        monkeypatch.setattr(cfg, "extraction_threads", 2)
+        specs = fanout.shard_specs(cfg, processes=8, devices=8)
+        assert {spec.config.extraction_threads for spec in specs} == {1}
+
     def test_the_share_never_falls_below_one(self, monkeypatch):
         monkeypatch.setattr(fanout, "cpu_quota", lambda: 2)
         monkeypatch.setattr(fanout, "available_cpu_count", lambda: 4)
