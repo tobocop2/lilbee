@@ -209,6 +209,16 @@ SESSIONS_DELETED = "Deleted · {title}"
 SESSIONS_DELETE_CONFIRM_TITLE = "Delete session"
 SESSIONS_DELETE_CONFIRM = "Delete “{title}”? This cannot be undone."
 SESSIONS_HINT = "↵ resume   ^n new   ^r rename   ^d delete   esc close"
+SESSIONS_SAVE_FAILED = "Could not save the answer to this session: {error}"
+FORK_PICKER_TITLE = "Fork this conversation"
+FORK_PICKER_WHOLE = "Whole conversation"
+FORK_PICKER_BEFORE = "Before: {line}"
+FORK_PICKER_HINT = "↑↓ select   Enter fork   Esc close"
+FORK_DONE = "Forked · {title}"
+FORK_FAILED = "Could not fork: {error}"
+FORK_NO_SESSION = "Nothing to fork yet. Send a message first."
+FORK_SESSION_GONE = "This conversation was deleted, so it cannot be forked."
+FORK_WHILE_FINISHING = "Finishing the last reply. Try /fork again in a moment."
 # The context chip: how much of this chat the model can still see.
 #
 # "context", not "memory": lilbee already has a Memory feature (/memories, the

@@ -1,4 +1,4 @@
-"""Tests for the MCP session tools (list, get, rename, delete)."""
+"""Tests for the MCP session tools (list, get, fork, rename, delete)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from lilbee.mcp_server import (
     session_add_message,
     session_create,
     session_delete,
+    session_fork,
     session_get,
     session_rename,
     session_set_summary,
@@ -188,6 +189,44 @@ def test_claim_flag_on_unknown_session_errors(store):
     assert "error" in session_add_message("nope", "user", "x", claim=True)
 
 
+def test_session_fork_returns_the_new_session_like_session_get(store):
+    session_id = _seed(store)
+    store.set_summary(session_id, "notes")
+    result = session_fork(session_id)
+    fork_id = result["meta"]["id"]
+    assert fork_id != session_id
+    assert result == session_get(fork_id)
+    assert result["meta"]["forked_from"] == session_id
+    assert result["meta"]["origin"] == SessionOrigin.MCP
+    assert result["summary"] == "notes"
+    assert [m["content"] for m in result["messages"]] == ["what specs?", "85 Nm."]
+
+
+def test_session_fork_copies_the_leading_messages(store):
+    session_id = _seed(store)
+    result = session_fork(session_id, message_count=1)
+    assert [m["content"] for m in result["messages"]] == ["what specs?"]
+    assert result["summary"] == ""
+
+
+def test_session_fork_outside_the_transcript_errors(store):
+    session_id = _seed(store)
+    result = session_fork(session_id, message_count=3)
+    assert "0 to 2" in result["error"]
+    assert len(store.list()) == 1
+
+
+def test_session_fork_of_a_human_session_answers_not_found(store):
+    session_id = _seed(store, origin=SessionOrigin.TUI)
+    result = session_fork(session_id)
+    assert "No session with id" in result["error"]
+    assert len(store.list()) == 1
+
+
+def test_session_fork_unknown_errors(store):
+    assert "error" in session_fork("nope")
+
+
 # --- the mcp_sessions_enabled toggle -----------------------------------------
 
 
@@ -199,6 +238,7 @@ _DISABLED_CALLS = {
     "session_set_summary": lambda session_id: session_set_summary(session_id, "s"),
     "session_rename": lambda session_id: session_rename(session_id, "t"),
     "session_delete": lambda session_id: session_delete(session_id),
+    "session_fork": lambda session_id: session_fork(session_id),
 }
 
 
@@ -228,6 +268,7 @@ def test_disabled_session_tools_write_nothing(store):
     session_rename(session_id, "should not rename")
     session_delete(session_id)
     session_create("m")
+    session_fork(session_id)
 
     cfg.mcp_sessions_enabled = True
     assert len(store.get(session_id).messages) == before
@@ -261,3 +302,4 @@ async def test_session_tools_reach_the_wire_when_enabled(monkeypatch):
     _mcp = build_mcp_server()
     on_the_wire = {t.name for t in await _mcp.list_tools()}
     assert "session_create" in on_the_wire
+    assert "session_fork" in on_the_wire
