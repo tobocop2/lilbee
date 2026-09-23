@@ -1510,9 +1510,9 @@ class ChatScreen(Screen[None]):
         try:
             path = write_session_markdown(session, args.strip() or ".")
         except OSError as exc:
-            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error")
+            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error", markup=False)
             return
-        self.notify(msg.EXPORT_CHAT_DONE.format(path=path))
+        self.notify(msg.EXPORT_CHAT_DONE.format(path=path), markup=False)
 
     def _on_fork_picked(self, source: Session, message_count: int | None) -> None:
         """Fork *source* at the picked point, switch to the fork, and prefill the question."""

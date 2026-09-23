@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import os
-import re
+from functools import cache
 from pathlib import Path
 
 import yaml
+from markdown_it import MarkdownIt
 
 from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
@@ -22,8 +23,8 @@ _ROLE_HEADINGS: dict[MessageRole, str] = {
     MessageRole.USER: "User",
     MessageRole.ASSISTANT: "Assistant",
 }
-# A CommonMark fence line: up to three spaces, then three or more backticks or tildes.
-_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+# Parsed after a message body; if it is not a heading, the body left a block open.
+_PROBE_HEADING = "\n\n# probe"
 
 
 def session_markdown(session: Session) -> str:
@@ -54,21 +55,23 @@ def _message_section(message: SessionMessage) -> str:
     return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
 
 
+@cache
+def _commonmark() -> MarkdownIt:
+    return MarkdownIt("commonmark")
+
+
 def _close_open_fence(text: str) -> str:
-    """*text* with a code fence it leaves open closed, so it cannot swallow what follows."""
-    fence = ""
-    for line in text.splitlines():
-        match = _FENCE_RE.match(line)
-        if match is None:
-            continue
-        marker = match.group(1)
-        if not fence:
-            fence = marker
-        elif (
-            marker[0] == fence[0] and len(marker) >= len(fence) and not line[match.end() :].strip()
-        ):
-            fence = ""
-    return f"{text}\n{fence}" if fence else text
+    """*text* with a code fence it leaves open closed, so it cannot swallow what follows.
+
+    The parser decides: a heading placed after *text* must still parse as one.
+    A fence inside a list item never fails that test, because the heading ends
+    the item, so only a top-level fence is closed, and at column 0.
+    """
+    tokens = _commonmark().parse(text + _PROBE_HEADING)
+    fences = [token for token in tokens if token.type == "fence"]
+    if tokens[-1].type == "heading_close" or not fences:
+        return text
+    return f"{text}\n{fences[-1].markup}"
 
 
 def default_export_name(meta: SessionMeta) -> str:

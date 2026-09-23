@@ -102,6 +102,35 @@ async def test_export_to_a_named_file(sessions, workdir):
     assert target.is_file()
 
 
+@pytest.mark.parametrize("folder", ["[draft]", "[/x]"])
+async def test_the_notice_shows_a_bracketed_path_as_written(sessions, workdir, folder):
+    source = _seed(sessions)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        with patch.object(screen, "notify", wraps=screen.notify) as notify:
+            await _submit(pilot, f"/export-chat {folder}/")
+        target = (workdir / folder / f"torque-{source[:8]}.md").resolve()
+        assert _notified(notify) == [msg.EXPORT_CHAT_DONE.format(path=target)]
+        assert notify.call_args.kwargs["markup"] is False
+        assert app.is_running
+    assert target.is_file()
+
+
+async def test_the_failure_notice_is_not_markup(sessions, workdir):
+    source = _seed(sessions)
+    (workdir / "[draft]").write_text("x", encoding="utf-8")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        with patch.object(screen, "notify", wraps=screen.notify) as notify:
+            await _submit(pilot, "/export-chat [draft]/out.md")
+        assert notify.call_args.kwargs["markup"] is False
+        assert notify.call_args.kwargs["severity"] == "error"
+
+
 async def test_export_into_a_directory_uses_the_default_name(sessions, workdir):
     source = _seed(sessions)
     (workdir / "notes").mkdir()

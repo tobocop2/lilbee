@@ -1356,11 +1356,12 @@ class TestOpenAPISchema:
 
     def test_session_markdown_publishes_the_markdown_media_type(self, client):
         """The export route answers with a markdown document, and the schema
-        must say so; the not-found arm stays JSON."""
+        must say so; the validation and not-found arms stay JSON."""
         paths = client.get("/schema/openapi.json").json()["paths"]
         responses = paths["/api/sessions/{session_id}/markdown"]["get"]["responses"]
         assert set(responses["200"]["content"]) == {"text/markdown"}
         assert set(responses["400"]["content"]) == {"application/json"}
+        assert set(responses["404"]["content"]) == {"application/json"}
 
     def test_schema_serializes_to_json(self):
         """A ResponseSpec generates examples whatever create_examples says, and

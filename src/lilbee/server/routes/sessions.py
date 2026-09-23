@@ -7,6 +7,7 @@ personal as the memory store next door.
 from __future__ import annotations
 
 from litestar import delete, get, patch, post, put
+from litestar.exceptions import NotFoundException
 from litestar.params import FromPath
 
 from lilbee.data.types import MARKDOWN_MIME
@@ -47,7 +48,11 @@ async def session_get_route(session_id: FromPath[str]) -> SessionDetailResponse:
     return await get_session(session_id)
 
 
-@get("/api/sessions/{session_id:str}/markdown", media_type=MARKDOWN_MIME)
+@get(
+    "/api/sessions/{session_id:str}/markdown",
+    media_type=MARKDOWN_MIME,
+    raises=[NotFoundException],
+)
 async def session_markdown_route(session_id: FromPath[str]) -> str:
     """Return a conversation as a markdown document."""
     return await get_session_markdown(session_id)

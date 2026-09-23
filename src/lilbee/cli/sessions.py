@@ -10,7 +10,6 @@ import typer
 from rich.markup import escape
 from rich.table import Table
 
-from lilbee.app.session_export import session_markdown, write_session_markdown
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
@@ -170,6 +169,9 @@ def export_cmd(
     use_global: bool = global_option,
 ) -> None:
     """Export a saved conversation as markdown."""
+    # CLI startup path: the export's markdown parser stays off `lilbee --help`.
+    from lilbee.app.session_export import session_markdown, write_session_markdown
+
     apply_overrides(data_dir=data_dir, use_global=use_global)
     resolved = _resolve_id(session_id)
     session = _store().get(resolved)

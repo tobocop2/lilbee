@@ -256,6 +256,14 @@ def test_export_to_a_file_writes_it_and_prints_the_path(seeded):
     assert f"Exported to {target.resolve()}." in result.output
 
 
+def test_export_prints_a_bracketed_path_as_written(seeded):
+    tmp_path, session_id = seeded
+    target = tmp_path / "[draft]" / "[/x].md"
+    result = runner.invoke(app, _args(tmp_path, "export", session_id, "-o", str(target)))
+    assert result.exit_code == 0, result.output
+    assert f"Exported to {target.resolve()}." in result.output
+
+
 def test_export_into_a_directory_uses_the_default_name(seeded):
     tmp_path, session_id = seeded
     out_dir = tmp_path / "notes"

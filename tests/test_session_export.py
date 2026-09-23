@@ -7,6 +7,7 @@ import sys
 
 import pytest
 import yaml
+from markdown_it import MarkdownIt
 
 from lilbee.app.session_export import (
     SLUG_MAX_LEN,
@@ -125,6 +126,13 @@ def test_a_cut_off_code_fence_is_closed_before_the_next_section(content, closer)
     assert f"{content}\n{closer}\n\n## User\n\nnext question\n" in markdown
 
 
+def test_a_block_that_is_not_a_fence_is_left_as_written():
+    """An open HTML comment also swallows what follows; only fences are closed."""
+    content = "<!-- note\nstill a comment"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -137,6 +145,38 @@ def test_a_cut_off_code_fence_is_closed_before_the_next_section(content, closer)
 def test_balanced_fences_are_left_alone(content):
     markdown = session_markdown(_session(_assistant(content)))
     assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
+def _headings(markdown: str) -> list[str]:
+    """The section headings a CommonMark reader sees in the body."""
+    tokens = MarkdownIt("commonmark").parse(_body(markdown))
+    return [
+        tokens[i + 1].content
+        for i, token in enumerate(tokens)
+        if token.type == "heading_open" and token.tag == "h2"
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "steps:\n\n- item\n\n  ```\n  code",
+        "1. step\n\n   ```bash\n   cmd",
+        "  ```\nindented top-level fence",
+        "- item\n  ```\n  done\n  ```\n\n```\ntop-level cut off",
+        "1. step\n\n   ```bash\n   cmd\n```\nafter the list",
+    ],
+    ids=[
+        "bullet-item",
+        "numbered-item",
+        "indented-top-level",
+        "closed-item-then-open",
+        "closer-outdented-past-the-item",
+    ],
+)
+def test_every_section_heading_survives_a_cut_off_fence(content):
+    markdown = session_markdown(_session(_assistant(content), _user("next question")))
+    assert _headings(markdown) == ["Assistant", "User"]
 
 
 def test_the_sources_list_follows_the_closed_fence():
