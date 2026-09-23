@@ -5,9 +5,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 import pytest
-from textual.widgets import ListView
+from textual.widgets import Input, ListView
 
 from lilbee.app.services import get_services, set_services
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.sessions import SessionsScreen
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
@@ -71,6 +72,21 @@ async def _laid_out(pilot, widget):
     await wait_until(pilot, lambda: bool(widget.region.size))
     assert widget.region.size, "the widget was never laid out, so it has no hit area"
     return widget
+
+
+async def _start_rename(pilot, drawer, title: str) -> Input:
+    """Press ctrl+r once the drawer highlights a row, and return the filter box it took over.
+
+    The rows mount after the drawer does, so a ctrl+r that lands first finds no
+    selection and starts nothing. The rename assertions then pass without a rename.
+    """
+    rows = drawer.query_one("#sessions-list", ListView)
+    await wait_until(pilot, lambda: rows.highlighted_child is not None)
+    await pilot.press("ctrl+r")
+    field = drawer.query_one("#sessions-filter", Input)
+    assert field.placeholder == msg.SESSIONS_RENAME_PLACEHOLDER, "ctrl+r did not start a rename"
+    assert field.value == title
+    return field
 
 
 async def _hittable_row(pilot, drawer):
@@ -347,8 +363,8 @@ async def test_rename_in_drawer(sessions):
     session_id = _seed(sessions, "Old name")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        await _open_drawer(app, pilot)
-        await pilot.press("ctrl+r")
+        drawer = await _open_drawer(app, pilot)
+        await _start_rename(pilot, drawer, "Old name")
         for ch in " new":
             await pilot.press(ch)
         await pilot.press("enter")
@@ -361,11 +377,11 @@ async def test_rename_cancel_leaves_title(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
-        panel = drawer.query_one(SessionListPanel)
-        await pilot.press("ctrl+r")
+        field = await _start_rename(pilot, drawer, "Keep me")
+        drawer.query_one(SessionListPanel).action_close()  # cancels the rename, does not close
         await pilot.pause()
-        panel.action_close()  # escape cancels the rename, does not close
-        await pilot.pause()
+        assert field.placeholder == msg.SESSIONS_FILTER_PLACEHOLDER
+        assert field.value == ""
         assert sessions.get(session_id).meta.title == "Keep me"
         assert drawer.is_mounted
 
