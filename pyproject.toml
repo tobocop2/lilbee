@@ -131,6 +131,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/lilbee"]
 
+[tool.uv]
+# crawl4ai requires unclecode-litellm, a fork that installs into the same litellm/
+# directory as litellm itself; excluding it leaves litellm the only owner.
+exclude-dependencies = ["unclecode-litellm"]
+
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
 # building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
