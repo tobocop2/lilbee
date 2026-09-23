@@ -4467,7 +4467,7 @@ async def test_chat_compacts_history_over_token_budget_into_notes():
                 "summarize_history",
                 return_value=CompactionResult(summary="NOTES", condensed=8, stranded=0),
             ) as summarize:
-                app.screen._compact_history()
+                app.screen._compact_history(None, app.screen._conversation_generation)
         finally:
             cfg.chat_n_ctx_target = prior_target
             cfg.chat_compaction = prior_compaction

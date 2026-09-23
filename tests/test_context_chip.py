@@ -112,7 +112,8 @@ async def test_the_chip_tracks_a_real_conversation_filling_the_window() -> None:
         screen._history = [
             {"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 2000} for i in range(6)
         ]
-        screen._compact_history()  # compaction off: trims, no model call
+        # Compaction off: the fold trims and makes no model call.
+        screen._compact_history(None, screen._conversation_generation)
         await pilot.pause()
         assert chip.usage < filling * 6, "the chip falls back after turns leave the prompt"
 

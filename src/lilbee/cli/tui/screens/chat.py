@@ -364,6 +364,9 @@ class ChatScreen(Screen[None]):
         # Guarded by _history_lock alongside the turns it stands in for.
         self._summary = ""
         self._history_lock = threading.Lock()
+        # Which conversation _history holds; bumped under _history_lock whenever
+        # it is replaced, so a turn's late fold can tell it no longer applies.
+        self._conversation_generation = 0
         # The saved session this conversation persists to. None until the first
         # user turn creates one; reset to None on /clear so the next turn opens a
         # fresh session.
@@ -910,6 +913,7 @@ class ChatScreen(Screen[None]):
             # A new conversation inherits nothing, least of all the last one's
             # summary: carrying it would leak the old chat into the new prompt.
             self._summary = ""
+            self._conversation_generation += 1
         self._session_id = None
 
     def _cmd_crawl(self, args: str) -> None:
@@ -1534,7 +1538,11 @@ class ChatScreen(Screen[None]):
         self._persist_user_turn(text)
         self.streaming = True
         self._stream_response(
-            text, assistant_msg, self._current_chunk_type(), session_id=self._session_id
+            text,
+            assistant_msg,
+            self._current_chunk_type(),
+            session_id=self._session_id,
+            generation=self._conversation_generation,
         )
 
     def _current_scope_value(self) -> str:
@@ -1685,10 +1693,13 @@ class ChatScreen(Screen[None]):
         chunk_type: ChunkType | None,
         *,
         session_id: str | None,
+        generation: int,
     ) -> None:
         """Schedule the response stream on a background thread."""
         with self._live_streams:
-            self._do_stream_response(question, widget, chunk_type, session_id=session_id)
+            self._do_stream_response(
+                question, widget, chunk_type, session_id=session_id, generation=generation
+            )
 
     def _do_stream_response(
         self,
@@ -1697,15 +1708,19 @@ class ChatScreen(Screen[None]):
         chunk_type: ChunkType | None,
         *,
         session_id: str | None,
+        generation: int,
     ) -> None:
-        """Stream the answer to *question*, saving it to *session_id*. Worker thread."""
+        """Stream the answer to *question* in conversation *generation*, saving to *session_id*.
+
+        Worker thread.
+        """
         response_parts: list[str] = []
         sources: list[str] = []
         stream: Any = None
         try:
             if not self._await_chat_engine(widget):
                 return
-            self._compact_history()
+            self._compact_history(session_id, generation)
             with self._history_lock:
                 # [:-1] drops the question, which ask_stream takes separately.
                 recent = self._history[:-1]
@@ -1983,7 +1998,7 @@ class ChatScreen(Screen[None]):
         """Token budget for everything this conversation carries into the prompt."""
         return history_budget(cfg.chat_n_ctx_target)
 
-    def _compact_history(self) -> None:
+    def _compact_history(self, session_id: str | None, generation: int) -> None:
         """Fold turns that no longer fit into the rolling summary. Worker thread only.
 
         Runs before a prompt is built rather than after a turn lands, so the
@@ -1992,7 +2007,9 @@ class ChatScreen(Screen[None]):
 
         The summarizing model call is slow, so it happens without the lock held;
         only the known prefix is removed afterwards, which stays correct if the
-        user sends another turn meanwhile.
+        user sends another turn meanwhile. The result applies only while
+        *generation* is still the conversation on screen, and the summary is
+        saved to *session_id*, the session the turn started in.
         """
         with self._history_lock:
             history = list(self._history)
@@ -2007,6 +2024,8 @@ class ChatScreen(Screen[None]):
             if not dropped:
                 return
             with self._history_lock:
+                if generation != self._conversation_generation:
+                    return
                 del self._history[: len(dropped)]
             call_from_thread(self, self._on_history_trimmed, len(dropped))
             return
@@ -2028,15 +2047,19 @@ class ChatScreen(Screen[None]):
         finally:
             call_from_thread(self, self._set_compacting, False)
         with self._history_lock:
+            if generation != self._conversation_generation:
+                # A resume or /clear replaced the conversation during the model
+                # call; the fold belongs to the one that is gone.
+                return
             del self._history[: len(dropped)]
             self._summary = result.summary
-        if self._session_id and result.summary and cfg.sessions_enabled:
+        if session_id and result.summary and cfg.sessions_enabled:
             # A summary for a session deleted mid-chat is not worth a crash; the
             # next user turn reopens one and re-summarizes from there. The
             # toggle is re-checked because the fold keeps working in memory
             # after sessions go off, but must not reach the disk.
             with contextlib.suppress(SessionNotFoundError):
-                get_services().session_store.set_summary(self._session_id, result.summary)
+                get_services().session_store.set_summary(session_id, result.summary)
         call_from_thread(self, self._on_history_compacted, result.condensed, result.stranded)
 
     def _set_compacting(self, compacting: bool) -> None:
