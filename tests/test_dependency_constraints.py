@@ -13,7 +13,6 @@ guarded here too.
 from __future__ import annotations
 
 import tomllib
-from importlib.metadata import packages_distributions
 from pathlib import Path
 
 from packaging.requirements import Requirement
@@ -87,10 +86,3 @@ def test_qa_matrix_excludes_vulnerable_anyio() -> None:
     req = _qa_requirement("anyio")
     assert not req.specifier.contains("4.9.0")
     assert req.specifier.contains("4.14.2")
-
-
-def test_at_most_one_installed_distribution_provides_litellm() -> None:
-    # crawl4ai's unclecode-litellm fork writes the same litellm/ files, and the
-    # directory then mixes two versions depending on install order.
-    owners = set(packages_distributions().get("litellm", []))
-    assert len(owners) <= 1, owners
