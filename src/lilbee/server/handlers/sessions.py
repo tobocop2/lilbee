@@ -1,4 +1,4 @@
-"""Session route handlers: list, get, rename, forget.
+"""Session route handlers: list, get, create, append, fork, rename, forget.
 
 Reads and mutations go through the process ``SessionStore`` on the services
 container. A missing session id surfaces as a 404.
@@ -10,13 +10,14 @@ from collections.abc import Generator
 from contextlib import contextmanager
 
 from litestar.exceptions import ClientException, NotFoundException
-from litestar.status_codes import HTTP_409_CONFLICT
+from litestar.status_codes import HTTP_409_CONFLICT, HTTP_422_UNPROCESSABLE_ENTITY
 
 from lilbee.app.services import get_services
 from lilbee.server.models import (
     SessionCreateRequest,
     SessionDeleteResponse,
     SessionDetailResponse,
+    SessionForkRequest,
     SessionListResponse,
     SessionMessageCreateRequest,
     SessionMessageItem,
@@ -28,6 +29,7 @@ from lilbee.sessions import (
     HUMAN_ORIGINS,
     SESSIONS_DISABLED_HINT,
     Session,
+    SessionForkRangeError,
     SessionMessage,
     SessionMeta,
     SessionNotFoundError,
@@ -68,6 +70,8 @@ def _session_errors() -> Generator[None, None, None]:
         # 409, not 403: the resource exists and the token is fine; the session
         # is owned elsewhere, and claiming it is the documented resolution.
         raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
+    except SessionForkRangeError as exc:
+        raise ClientException(detail=str(exc), status_code=HTTP_422_UNPROCESSABLE_ENTITY) from exc
 
 
 def _meta_item(meta: SessionMeta) -> SessionMetaItem:
@@ -80,6 +84,7 @@ def _meta_item(meta: SessionMeta) -> SessionMetaItem:
         scope=meta.scope,
         message_count=meta.message_count,
         origin=meta.origin.value,
+        forked_from=meta.forked_from,
     )
 
 
@@ -131,6 +136,15 @@ async def add_session_message(
     with _session_errors():
         store.add_message(session_id, message, surface=SessionOrigin.HTTP)
         return _detail(store.get(session_id))
+
+
+async def fork_session(session_id: str, data: SessionForkRequest | None) -> SessionDetailResponse:
+    """Copy a conversation's leading messages into a new one and return it."""
+    message_count = data.message_count if data is not None else None
+    store = _store()
+    with _session_errors():
+        fork_id = store.fork(session_id, message_count=message_count, origin=SessionOrigin.HTTP)
+        return _detail(store.get(fork_id))
 
 
 async def claim_session(session_id: str) -> SessionDetailResponse:

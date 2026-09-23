@@ -855,6 +855,8 @@ class SessionMetaItem(BaseModel):
     origin: str = "tui"
     """Owning surface. tui/http/cli are one domain and append freely to each
     other's sessions; appends across the human/agent (mcp) boundary are 409."""
+    forked_from: str = ""
+    """Id of the session this one was forked from; empty when it is not a fork."""
 
 
 class SessionListResponse(BaseModel):
@@ -900,6 +902,24 @@ class SessionMessageCreateRequest(BaseModel):
     role: MessageRole
     content: str
     sources: list[str] = []
+
+
+class SessionForkRequest(BaseModel):
+    """Request body for ``POST /api/sessions/{session_id}/fork``.
+
+    ``message_count`` is the number of leading messages to copy; null copies all.
+    """
+
+    message_count: int | None = None
+
+    @field_validator("message_count", mode="before")
+    @classmethod
+    def _check_message_count(cls, value: object) -> object:
+        """Refuse ``true``, ``"2"`` and ``1.0`` rather than coerce them into a count."""
+        # isinstance: the raw JSON value, before pydantic's lax coercion runs.
+        if value is None or (isinstance(value, int) and not isinstance(value, bool)):
+            return value
+        raise ValueError("message_count must be a whole number or null")
 
 
 class SessionSummaryRequest(BaseModel):

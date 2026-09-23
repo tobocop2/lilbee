@@ -71,7 +71,8 @@ def write_private_text(path: Path, text: str) -> None:
     Writing under the umask and chmod'ing afterwards leaves a window where any
     local user can read the file, and these callers persist a bearer token and
     API keys. ``mkstemp`` creates at 0600 and ``os.replace`` keeps that mode,
-    atomically.
+    atomically. The data is fsynced before the rename, so a crash cannot leave
+    the target empty.
 
     Windows has no POSIX mode bits; there these rely on the inherited
     ``%LOCALAPPDATA%`` DACL.
@@ -81,6 +82,8 @@ def write_private_text(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp_name, path)
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)

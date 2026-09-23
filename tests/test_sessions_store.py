@@ -14,9 +14,12 @@ from lilbee.core.config import cfg
 from lilbee.sessions.store import (
     HUMAN_ORIGINS,
     SESSIONS_DIRNAME,
+    TITLE_ELLIPSIS,
+    TITLE_MAX_LEN,
     UNTITLED_SESSION_TITLE,
     MessageRole,
     Session,
+    SessionForkRangeError,
     SessionMessage,
     SessionNotFoundError,
     SessionOrigin,
@@ -417,3 +420,156 @@ def test_concurrent_appends_do_not_interleave(store: SessionStore) -> None:
     assert session.meta.message_count == 75, "every append must land exactly once"
     contents = {m.content.split()[0] for m in session.messages}
     assert contents == {f"{t}-{i}" for t in ("a", "b", "c") for i in range(25)}
+
+
+def _seed_conversation(store: SessionStore, origin: SessionOrigin = SessionOrigin.TUI) -> str:
+    """Q1, A1, Q2, A2 under the title "Torque", with a compaction summary."""
+    sid = store.create(model_ref="m", scope="both", origin=origin)
+    store.set_title(sid, "Torque", TitleSource.AUTO)
+    store.add_message(sid, _msg("Q1"))
+    store.add_message(sid, _msg("A1", role=MessageRole.ASSISTANT, sources=["manual.pdf"]))
+    store.add_message(sid, _msg("Q2"))
+    store.add_message(sid, _msg("A2", role=MessageRole.ASSISTANT))
+    store.set_summary(sid, "notes on Q1")
+    return sid
+
+
+@pytest.mark.parametrize("message_count", [None, 4])
+def test_whole_fork_copies_every_message_and_the_summary(
+    store: SessionStore, message_count: int | None
+) -> None:
+    sid = _seed_conversation(store)
+    fork = store.get(store.fork(sid, message_count=message_count))
+    assert fork.messages == store.get(sid).messages
+    assert fork.summary == "notes on Q1"
+    assert fork.meta.message_count == 4
+
+
+@pytest.mark.parametrize("message_count", [0, 2])
+def test_partial_fork_copies_the_prefix_and_drops_the_summary(
+    store: SessionStore, message_count: int
+) -> None:
+    sid = _seed_conversation(store)
+    fork = store.get(store.fork(sid, message_count=message_count))
+    assert fork.messages == store.get(sid).messages[:message_count]
+    assert fork.summary == ""
+
+
+@pytest.mark.parametrize("message_count", [-1, 5])
+def test_fork_outside_the_transcript_raises_range_error(
+    store: SessionStore, message_count: int
+) -> None:
+    sid = _seed_conversation(store)
+    with pytest.raises(SessionForkRangeError) as err:
+        store.fork(sid, message_count=message_count)
+    assert "0 to 4" in str(err.value)
+    assert [meta.id for meta in store.list()] == [sid]
+
+
+def test_fork_preserves_message_timestamps(store: SessionStore) -> None:
+    sid = _seed_conversation(store)
+    fork = store.get(store.fork(sid))
+    assert [m.ts for m in fork.messages] == [m.ts for m in store.get(sid).messages]
+    assert all(m.ts for m in fork.messages)
+
+
+def test_fork_records_its_source_and_copies_model_and_scope(store: SessionStore) -> None:
+    sid = store.create(model_ref="qwen3:8b", scope="wiki")
+    meta = store.get(store.fork(sid)).meta
+    assert meta.forked_from == sid
+    assert (meta.model_ref, meta.scope) == ("qwen3:8b", "wiki")
+
+
+def test_a_session_that_is_not_a_fork_has_no_source(store: SessionStore) -> None:
+    assert store.get(store.create(model_ref="m", scope="both")).meta.forked_from == ""
+
+
+def test_a_file_without_forked_from_reads_as_not_a_fork(store: SessionStore, tmp_path) -> None:
+    sid = store.create(model_ref="m", scope="both")
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl"
+    meta_line = json.loads(path.read_text(encoding="utf-8"))
+    del meta_line["forked_from"]
+    path.write_text(json.dumps(meta_line) + "\n", encoding="utf-8")
+    assert store.get(sid).meta.forked_from == ""
+
+
+def test_a_long_title_is_clipped_so_the_fork_suffix_fits(store: SessionStore) -> None:
+    sid = store.create(model_ref="m", scope="both")
+    store.set_title(sid, "t" * TITLE_MAX_LEN, TitleSource.AUTO)
+    title = store.get(store.fork(sid)).meta.title
+    kept = TITLE_MAX_LEN - len(" (fork 1)") - len(TITLE_ELLIPSIS)
+    assert title == "t" * kept + TITLE_ELLIPSIS + " (fork 1)"
+    assert len(title) == TITLE_MAX_LEN
+
+
+def test_a_short_title_is_kept_whole_in_the_fork_title(store: SessionStore) -> None:
+    sid = store.create(model_ref="m", scope="both")
+    fitting = "t" * (TITLE_MAX_LEN - len(" (fork 1)"))
+    store.set_title(sid, fitting, TitleSource.AUTO)
+    assert store.get(store.fork(sid)).meta.title == fitting + " (fork 1)"
+
+
+def test_fork_titles_number_the_forks_of_one_source(store: SessionStore) -> None:
+    sid = _seed_conversation(store)
+    first = store.fork(sid)
+    second = store.fork(sid, message_count=2)
+    assert store.get(first).meta.title == "Torque (fork 1)"
+    assert store.get(second).meta.title == "Torque (fork 2)"
+
+
+def test_fork_is_stamped_now_and_sorts_first(store: SessionStore) -> None:
+    """No summary, so only the title event, written last at fork time, can make it newest."""
+    sid = store.create(model_ref="m", scope="both")
+    store.add_message(sid, _msg("Q1"))
+    store.add_message(sid, _msg("A1", role=MessageRole.ASSISTANT))
+    store.create(model_ref="m", scope="both")
+    fork_id = store.fork(sid)
+    newest = store.list()[0]
+    assert newest.id == fork_id
+    assert newest.created_at == newest.updated_at
+    assert newest.created_at > store.get(sid).meta.updated_at
+
+
+def test_fork_and_source_are_independent(store: SessionStore) -> None:
+    sid = _seed_conversation(store)
+    fork_id = store.fork(sid, message_count=2)
+    store.add_message(fork_id, _msg("Q3 in the fork"))
+    store.add_message(sid, _msg("Q3 in the source"))
+    assert [m.content for m in store.get(sid).messages][-1] == "Q3 in the source"
+    assert [m.content for m in store.get(fork_id).messages] == ["Q1", "A1", "Q3 in the fork"]
+    assert store.get(sid).meta.message_count == 5
+
+
+def test_fork_never_writes_to_the_source(store: SessionStore, tmp_path) -> None:
+    sid = _seed_conversation(store)
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl"
+    before = path.read_bytes()
+    store.fork(sid)
+    assert path.read_bytes() == before
+
+
+def test_fork_of_a_fork_keeps_lineage_and_prefix(store: SessionStore) -> None:
+    sid = _seed_conversation(store)
+    child = store.fork(sid, message_count=2)
+    grandchild = store.get(store.fork(child, message_count=1))
+    assert grandchild.meta.forked_from == child
+    assert grandchild.meta.title == "Torque (fork 1) (fork 1)"
+    assert [m.content for m in grandchild.messages] == ["Q1"]
+
+
+def test_fork_is_owned_by_the_forking_surface(store: SessionStore) -> None:
+    sid = _seed_conversation(store)
+    fork_id = store.fork(sid, origin=SessionOrigin.HTTP)
+    assert store.get(fork_id).meta.origin == SessionOrigin.HTTP
+
+
+def test_fork_across_the_human_agent_boundary_is_refused(store: SessionStore) -> None:
+    sid = _seed_conversation(store, origin=SessionOrigin.MCP)
+    with pytest.raises(SessionOwnershipError):
+        store.fork(sid, origin=SessionOrigin.HTTP)
+    assert [meta.id for meta in store.list()] == [sid]
+
+
+def test_fork_of_an_unknown_session_raises(store: SessionStore) -> None:
+    with pytest.raises(SessionNotFoundError):
+        store.fork("nope")
