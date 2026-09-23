@@ -6,7 +6,8 @@ fsynced, never rewritten. Event types are ``meta`` (first line), ``title``
 (newest wins, so rename appends rather than rewrites), ``message``, and
 ``summary`` (newest wins; compaction's condensed view of the turns that no
 longer fit the prompt). The only corruption an append log can suffer is a torn
-final line, which the reader skips.
+final line, which the reader skips. A fork's file is written whole once, then
+only appended to.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from uuid import uuid4
 from filelock import FileLock
 
 from lilbee.core.config import cfg
+from lilbee.core.security import write_private_text
 
 SESSIONS_DIRNAME = "sessions"
 SESSIONS_DISABLED_HINT = (
@@ -40,6 +42,7 @@ _APPEND_LOCK_TIMEOUT_S = 10
 UNTITLED_SESSION_TITLE = "Untitled chat"
 TITLE_MAX_LEN = 60
 TITLE_ELLIPSIS = "…"
+FORK_TITLE_SUFFIX = " (fork {number})"
 
 
 def sessions_enabled() -> bool:
@@ -123,6 +126,8 @@ class SessionMeta:
     origin: SessionOrigin = SessionOrigin.TUI
     """Owning surface. Files written before ownership existed carry no origin;
     the only writer then was the TUI, so that is the fallback."""
+    forked_from: str = ""
+    """Id of the session this one was forked from; empty when it is not a fork."""
 
 
 @dataclass(frozen=True)
@@ -173,6 +178,19 @@ class SessionOwnershipError(Exception):
         self.surface = surface
 
 
+class SessionForkRangeError(ValueError):
+    """Raised when a fork point lies outside the source session's transcript."""
+
+    def __init__(self, session_id: str, message_count: int, available: int) -> None:
+        super().__init__(
+            f"Cannot fork session {session_id!r} after {message_count} messages: "
+            f"choose a count from 0 to {available}."
+        )
+        self.session_id = session_id
+        self.message_count = message_count
+        self.available = available
+
+
 def derive_title(text: str) -> str:
     """Title a session from its first user message: first line, truncated."""
     stripped = text.strip()
@@ -182,6 +200,36 @@ def derive_title(text: str) -> str:
     if len(first) > TITLE_MAX_LEN:
         return first[:TITLE_MAX_LEN] + TITLE_ELLIPSIS
     return first
+
+
+def _fork_title(source_title: str, number: int) -> str:
+    """``<source title> (fork N)``, the source part clipped so the whole fits TITLE_MAX_LEN."""
+    suffix = FORK_TITLE_SUFFIX.format(number=number)
+    room = TITLE_MAX_LEN - len(suffix)
+    if len(source_title) <= room:
+        return source_title + suffix
+    return source_title[: room - len(TITLE_ELLIPSIS)] + TITLE_ELLIPSIS + suffix
+
+
+def _fork_count(source: Session, message_count: int | None) -> int:
+    """The number of leading messages to copy, checked against *source*'s transcript."""
+    available = len(source.messages)
+    if message_count is None:
+        return available
+    if not 0 <= message_count <= available:
+        raise SessionForkRangeError(source.meta.id, message_count, available)
+    return message_count
+
+
+def _message_event(message: SessionMessage, ts: str) -> dict[str, Any]:
+    """The ``message`` event line for *message*, stamped *ts*."""
+    return {
+        "type": SessionEventType.MESSAGE,
+        "role": message.role,
+        "content": message.content,
+        "sources": list(message.sources),
+        "ts": ts,
+    }
 
 
 def _message_from_event(event: dict[str, Any], ts: str) -> SessionMessage:
@@ -251,24 +299,74 @@ class SessionStore:
                 except json.JSONDecodeError:
                     continue  # torn final line; skip it
 
+    @staticmethod
+    def _meta_event(
+        session_id: str,
+        model_ref: str,
+        scope: str,
+        origin: SessionOrigin,
+        now: str,
+        forked_from: str,
+    ) -> dict[str, Any]:
+        return {
+            "type": SessionEventType.META,
+            "id": session_id,
+            "created_at": now,
+            "model_ref": model_ref,
+            "scope": scope,
+            "origin": origin,
+            "forked_from": forked_from,
+            "ts": now,
+        }
+
     def create(self, model_ref: str, scope: str, origin: SessionOrigin = SessionOrigin.TUI) -> str:
         """Start a new session owned by *origin* and return its id."""
         session_id = uuid4().hex
         self._dir.mkdir(parents=True, exist_ok=True)
-        now = self._now()
-        self._write_event(
-            self._path(session_id),
-            {
-                "type": SessionEventType.META,
-                "id": session_id,
-                "created_at": now,
-                "model_ref": model_ref,
-                "scope": scope,
-                "origin": origin,
-                "ts": now,
-            },
-        )
+        meta = self._meta_event(session_id, model_ref, scope, origin, self._now(), forked_from="")
+        self._write_event(self._path(session_id), meta)
         return session_id
+
+    def fork(
+        self,
+        session_id: str,
+        *,
+        message_count: int | None = None,
+        origin: SessionOrigin = SessionOrigin.TUI,
+    ) -> str:
+        """Copy the first *message_count* messages (all when None) into a new session.
+
+        The fork is owned by *origin*, which must be allowed to append to the
+        source. The source is read once and never written.
+        """
+        source = self.get(session_id)
+        if not _may_append(origin, source.meta.origin):
+            raise SessionOwnershipError(session_id, source.meta.origin, origin)
+        count = _fork_count(source, message_count)
+        fork_id = uuid4().hex
+        events = self._fork_events(fork_id, source, count, origin)
+        write_private_text(self._path(fork_id), "".join(json.dumps(e) + "\n" for e in events))
+        return fork_id
+
+    def _fork_events(
+        self, fork_id: str, source: Session, count: int, origin: SessionOrigin
+    ) -> list[dict[str, Any]]:
+        """A fork's whole log; the title event is last so ``updated_at`` is the fork time."""
+        now = self._now()
+        meta = source.meta
+        events = [self._meta_event(fork_id, meta.model_ref, meta.scope, origin, now, meta.id)]
+        events += [_message_event(message, message.ts) for message in source.messages[:count]]
+        if count == len(source.messages) and source.summary:
+            events.append({"type": SessionEventType.SUMMARY, "summary": source.summary, "ts": now})
+        title = _fork_title(meta.title, self._fork_number(meta.id))
+        events.append(
+            {"type": SessionEventType.TITLE, "title": title, "source": TitleSource.AUTO, "ts": now}
+        )
+        return events
+
+    def _fork_number(self, source_id: str) -> int:
+        """1 plus the number of existing forks of *source_id*."""
+        return 1 + sum(1 for meta in self.list() if meta.forked_from == source_id)
 
     def add_message(
         self, session_id: str, message: SessionMessage, *, surface: SessionOrigin | None = None
@@ -284,16 +382,7 @@ class SessionStore:
             meta = self._meta_for(path)
             if meta is not None and not _may_append(surface, meta.origin):
                 raise SessionOwnershipError(session_id, meta.origin, surface)
-        self._write_event(
-            path,
-            {
-                "type": SessionEventType.MESSAGE,
-                "role": message.role,
-                "content": message.content,
-                "sources": list(message.sources),
-                "ts": self._now(),
-            },
-        )
+        self._write_event(path, _message_event(message, self._now()))
 
     def transfer(self, session_id: str, origin: SessionOrigin) -> None:
         """Append an origin event handing the session to *origin*; newest wins.
@@ -398,6 +487,7 @@ class SessionStore:
         updated_at = ""
         summary = ""
         origin = SessionOrigin.TUI
+        forked_from = ""
         message_count = 0
         messages: list[SessionMessage] = []
         for event in self._iter_events(path):
@@ -409,6 +499,7 @@ class SessionStore:
                 model_ref = event["model_ref"]
                 scope = event["scope"]
                 origin = SessionOrigin(event.get("origin", SessionOrigin.TUI))
+                forked_from = event.get("forked_from", "")
             elif event_type == SessionEventType.ORIGIN:
                 origin = SessionOrigin(event["origin"])
             elif event_type == SessionEventType.TITLE:
@@ -428,5 +519,6 @@ class SessionStore:
             scope=scope,
             message_count=message_count,
             origin=origin,
+            forked_from=forked_from,
         )
         return meta, tuple(messages), summary
