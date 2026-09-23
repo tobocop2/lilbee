@@ -2867,6 +2867,17 @@ class TestGetCompletions:
         r = get_completions(f"/export {d}/")
         assert any("out.parquet" in x for x in r)
 
+    def test_export_chat_arg_completions_offer_paths(self, tmp_path: object) -> None:
+        """``/export-chat`` takes an output path, so Tab completes filesystem entries."""
+        from pathlib import Path as P
+
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
+
+        d = P(str(tmp_path))
+        (d / "notes").mkdir()
+        r = get_completions(f"/export-chat {d}/")
+        assert any("notes" in x for x in r)
+
     def test_import_complete_path_collapses_so_enter_submits(self, tmp_path: object) -> None:
         """A fully-typed existing dataset path yields no completions so Enter submits."""
         from pathlib import Path as P

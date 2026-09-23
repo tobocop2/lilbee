@@ -89,7 +89,11 @@ class AssistantMessage(Vertical):
         super().__init__(classes="assistant-message")
         self._reasoning_parts: list[str] = []
         if content and sources:
-            content = _ensure_sources_block(content, sources)
+            # Lazy: formatting transitively imports the store stack, which widget
+            # import must not pay at TUI startup.
+            from lilbee.retrieval.query.formatting import with_sources_block
+
+            content = with_sources_block(content, sources)
         self._content_parts: list[str] = [content] if content else []
         # A restored turn is finished by definition: it must not raise a spinner.
         self._finished = bool(content)
@@ -206,7 +210,11 @@ class AssistantMessage(Vertical):
         # (if mounted) carries the post-stream title.
         self._dismiss_thinking_header()
         if sources and self._content_parts:
-            joined = _ensure_sources_block("".join(self._content_parts), sources)
+            # Lazy: formatting transitively imports the store stack, which widget
+            # import must not pay at TUI startup.
+            from lilbee.retrieval.query.formatting import with_sources_block
+
+            joined = with_sources_block("".join(self._content_parts), sources)
             self._content_parts = [joined]
         if self._content_widget is not None and self._content_parts:
             self._set_content(self._content_widget, "".join(self._content_parts))
@@ -253,18 +261,3 @@ class AssistantMessage(Vertical):
         if header.is_mounted:
             header.remove()
         self._thinking_header = None
-
-
-def _ensure_sources_block(content: str, sources: Sequence[str]) -> str:
-    """Append the same numbered, clickable ``Sources:`` list a live answer
-    carries, unless *content* already ends in one. One citation rendering
-    everywhere: a transcript mixing TUI-saved and API-saved turns must not
-    alternate styles."""
-    # Lazy: formatting transitively imports the store stack, which widget
-    # import must not pay at TUI startup.
-    from lilbee.retrieval.query.formatting import SOURCES_BLOCK_MARKER, source_markdown_link
-
-    if SOURCES_BLOCK_MARKER in content:
-        return content
-    lines = [f"{i}. {source_markdown_link(s)}" for i, s in enumerate(sources, 1)]
-    return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)

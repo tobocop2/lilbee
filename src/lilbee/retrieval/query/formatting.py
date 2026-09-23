@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
@@ -232,6 +233,15 @@ def format_sources_block(
         for i, r in enumerate(sources, 1)
     ]
     return SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+
+
+def with_sources_block(content: str, sources: Sequence[str]) -> str:
+    """*content* ending in the numbered, clickable ``Sources:`` list a live answer
+    carries, unless it already has one, so every saved turn cites one way."""
+    if SOURCES_BLOCK_MARKER in content:
+        return content
+    lines = [f"{i}. {source_markdown_link(s)}" for i, s in enumerate(sources, 1)]
+    return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
 def _extract_cited_indices(text: str) -> set[int]:

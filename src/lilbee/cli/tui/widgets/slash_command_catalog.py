@@ -44,7 +44,16 @@ _ROW_OPTION_PADDING = 2
 CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
     CatalogGroup(
         "CHAT & SESSION",
-        ("/sessions", "/fork", "/clear", "/cancel", "/quit", "/help", "/status"),
+        (
+            "/sessions",
+            "/fork",
+            "/export-chat",
+            "/clear",
+            "/cancel",
+            "/quit",
+            "/help",
+            "/status",
+        ),
     ),
     CatalogGroup(
         "MODELS",
