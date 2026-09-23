@@ -635,7 +635,7 @@ class LilbeeApp(App[None]):
         if view_name == msg.SESSIONS_VIEW and not cfg.sessions_enabled:
             # The tab stays visible so the feature is discoverable, but opening it
             # while off shows why rather than an empty list.
-            self._notify_sessions_disabled()
+            self.notify_sessions_disabled()
             return True
         return view_name != msg.DEFAULT_VIEW and get_views().get(view_name) is None
 
@@ -829,9 +829,9 @@ class LilbeeApp(App[None]):
             return
         self.screen.mount(FleetDrawer())
 
-    def _notify_sessions_disabled(self) -> None:
+    def notify_sessions_disabled(self) -> None:
         """Show the modal explaining sessions are off. Every session entry point
-        (ctrl+o, the Sessions tab, /sessions) routes here when disabled."""
+        (ctrl+o, the Sessions tab, /sessions, /fork) routes here when disabled."""
         from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
 
         # Guard against stacking a second copy if the entry point is hit twice.
@@ -844,7 +844,7 @@ class LilbeeApp(App[None]):
         Sessions tab, which already shows the full list. Shows a notice when
         sessions are turned off."""
         if not cfg.sessions_enabled:
-            self._notify_sessions_disabled()
+            self.notify_sessions_disabled()
             return
         from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 

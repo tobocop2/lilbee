@@ -15,6 +15,9 @@ from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
 from lilbee.sessions import (
     SESSIONS_DISABLED_HINT,
+    SessionForkRangeError,
+    SessionOrigin,
+    SessionOwnershipError,
     SessionStore,
     TitleSource,
     sessions_enabled,
@@ -28,6 +31,9 @@ sessions_app = typer.Typer(
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip the delete confirmation.")
 _id_argument = typer.Argument(..., help="Session id, or a unique prefix of it.")
+_messages_option = typer.Option(
+    None, "--messages", help="Copy only the first N messages (default: all of them)."
+)
 
 
 def _require_sessions() -> None:
@@ -123,6 +129,29 @@ def show_cmd(
     console.print(f"[{theme.ACCENT}]{session.meta.title}[/{theme.ACCENT}]")
     for message in session.messages:
         console.print(f"[bold]{message.role.value}[/bold]: {message.content}")
+
+
+@sessions_app.command("fork")
+def fork_cmd(
+    session_id: str = _id_argument,
+    messages: int | None = _messages_option,
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Start a new conversation from a copy of a saved one."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    store = _store()
+    try:
+        fork_id = store.fork(
+            _resolve_id(session_id), message_count=messages, origin=SessionOrigin.CLI
+        )
+    except (SessionOwnershipError, SessionForkRangeError) as exc:
+        _fail(str(exc))
+    meta = store.get(fork_id).meta
+    if cfg.json_mode:
+        json_output({"meta": asdict(meta)})
+        return
+    console.print(f"Forked to [{theme.ACCENT}]{meta.title}[/{theme.ACCENT}] ({fork_id[:8]}).")
 
 
 @sessions_app.command("rename")

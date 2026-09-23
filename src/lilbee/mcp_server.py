@@ -73,6 +73,7 @@ from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
     Session,
+    SessionForkRangeError,
     SessionMessage,
     SessionNotFoundError,
     SessionOrigin,
@@ -598,6 +599,11 @@ def session_get(session_id: str) -> dict[str, Any]:
         session = _require_agent_session(session_id)
     except SessionNotFoundError as exc:
         return _error(str(exc))
+    return _session_payload(session)
+
+
+def _session_payload(session: Session) -> dict[str, Any]:
+    """An agent session as the session tools return it: meta, transcript, summary."""
     return {
         "meta": asdict(session.meta),
         "messages": [
@@ -614,6 +620,20 @@ def session_get(session_id: str) -> dict[str, Any]:
         # rebuilds history without what was already condensed.
         "summary": session.summary,
     }
+
+
+@_tool_if(agent_sessions_enabled)
+def session_fork(session_id: str, message_count: int | None = None) -> dict[str, Any]:
+    """Copy the first message_count messages (all when omitted) into a new session."""
+    if not agent_sessions_enabled():
+        return _error(AGENT_SESSIONS_DISABLED_HINT)
+    store = get_services().session_store
+    try:
+        _require_agent_session(session_id)
+        fork_id = store.fork(session_id, message_count=message_count, origin=SessionOrigin.MCP)
+    except (SessionNotFoundError, SessionForkRangeError) as exc:
+        return _error(str(exc))
+    return _session_payload(store.get(fork_id))
 
 
 @_tool_if(agent_sessions_enabled)
