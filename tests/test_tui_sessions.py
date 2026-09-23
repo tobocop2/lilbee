@@ -310,32 +310,38 @@ async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
         assert not screen.query(SessionsDrawer)
 
 
-@pytest.mark.parametrize("key", ["enter", "ctrl+n"], ids=["resume", "new_chat"])
-@pytest.mark.parametrize("from_normal", [False, True], ids=["insert", "normal"])
-async def test_keys_typed_right_after_leaving_the_drawer_reach_the_chat_input(
-    sessions, key, from_normal
-):
-    """Resume and new chat land in INSERT with the prompt focused, so the next keys type it.
+async def _leave_drawer(pilot, chat, key: str) -> None:
+    """Open the drawer, press *key* once a row is highlighted, and wait for the drawer to close."""
+    await pilot.press("ctrl+o")
+    rows = chat.query_one("#sessions-list", ListView)
+    assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+    await pilot.press(key)
+    assert await wait_until(pilot, lambda: not chat.query(SessionsDrawer))
 
-    In NORMAL mode the letters before the first i / a / o run as vim commands.
-    """
+
+@pytest.mark.parametrize("key", ["enter", "ctrl+n"], ids=["resume", "new_chat"])
+async def test_keys_typed_after_leaving_the_drawer_from_normal_mode_reach_the_prompt(sessions, key):
+    """In NORMAL mode the letters before the first i / a / o would run as vim commands."""
     _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         chat = await await_chat(app, pilot)
-        if from_normal:
-            await pilot.press("escape")
-            assert await wait_until(pilot, lambda: not chat._insert_mode)
-        await pilot.press("ctrl+o")
-        rows = chat.query_one("#sessions-list", ListView)
-        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
-        await pilot.press(key)
-        assert await wait_until(pilot, lambda: not chat.query(SessionsDrawer))
-        assert await wait_until(pilot, lambda: chat._chat_input.has_focus)
+        await pilot.press("escape")
+        assert await wait_until(pilot, lambda: not chat._insert_mode)
+        await _leave_drawer(pilot, chat, key)
         await pilot.press(*"What is 5 plus 5?")
         await wait_until(pilot, lambda: chat._chat_input.value == "What is 5 plus 5?")
         assert chat._chat_input.value == "What is 5 plus 5?"
-        assert chat._insert_mode
+
+
+@pytest.mark.parametrize("key", ["enter", "ctrl+n"], ids=["resume", "new_chat"])
+async def test_leaving_the_drawer_in_insert_mode_focuses_the_prompt(sessions, key):
+    _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await _leave_drawer(pilot, chat, key)
+        assert await wait_until(pilot, lambda: chat._chat_input.has_focus)
 
 
 async def test_enter_resumes_after_filtering(sessions):

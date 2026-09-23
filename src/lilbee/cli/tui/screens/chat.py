@@ -495,12 +495,7 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def focus_prompt(self) -> None:
-        """Return focus to the chat input in INSERT mode.
-
-        Called when a modal (the model picker) closes, a session resumes, or a new
-        chat starts: the next act is typing a prompt, so focus must not stay
-        parked on the widget that opened it.
-        """
+        """Focus the chat input in INSERT mode so the next keys type a prompt."""
         self._enter_insert_mode()
 
     def action_focus_model_bar(self) -> None:
