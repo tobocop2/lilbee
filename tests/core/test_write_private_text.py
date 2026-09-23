@@ -285,11 +285,13 @@ class TestHardeningOnWindows:
 
 class TestPrivateDirAndOpener:
     @posix_only
-    def test_a_missing_dir_is_created_owner_only(self, tmp_path, permissive_umask):
-        from lilbee.core.security import ensure_private_dir
+    def test_a_missing_dir_is_created_owner_only(self, tmp_path, permissive_umask, monkeypatch):
+        from lilbee.core import security
 
         target = tmp_path / "nested" / "sessions"
-        ensure_private_dir(target)
+        # No chmod afterwards, so only the creation mode can make it owner-only.
+        monkeypatch.setattr(security.Path, "chmod", lambda *_a, **_k: None)
+        security.ensure_private_dir(target)
         assert file_mode(target) == 0o700
 
     @posix_only
