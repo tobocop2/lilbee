@@ -1385,6 +1385,37 @@ async def test_settings_ocr_language_round_trips_through_the_list_editor(tmp_pat
     assert settings.load(tmp_path)["ocr_language"] == "eng\ndeu"
 
 
+async def test_settings_force_ocr_pages_round_trips_through_the_list_editor(tmp_path, monkeypatch):
+    """The list editor renders and saves integer items, not only strings."""
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+    from lilbee.core import settings
+
+    cfg.data_root = tmp_path
+    monkeypatch.setattr(cfg, "force_ocr_pages", [1, 3])
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-force_ocr_pages", ListTextArea)
+        assert ta.text == "1\n3"
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("5\n2")
+        ta.blur()
+        landed = await pump_until(pilot, lambda: "force_ocr_pages" in settings.load(tmp_path))
+        assert landed, "the blur never reached the settings store"
+    assert cfg.force_ocr_pages == [2, 5]
+    assert settings.load(tmp_path)["force_ocr_pages"] == "2\n5"
+
+
+def test_list_setting_defaults_and_resets_stringify_integer_items():
+    from lilbee.cli.tui.screens.settings_widgets import set_widget_value, stringify_default
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    assert stringify_default([1, 3]) == "1\n3"
+    editor = ListTextArea("")
+    set_widget_value(editor, [2, 4])
+    assert editor.text == "2\n4"
+
+
 async def test_list_text_area_posts_blurred():
     """ListTextArea posts its Blurred message when focus moves away."""
     from textual.widgets import Input

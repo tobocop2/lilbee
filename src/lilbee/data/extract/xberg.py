@@ -7,14 +7,19 @@ in-memory document at a time, from both async and sync callers.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
+
+from lilbee.core.config import active_config
+from lilbee.runtime.cpu import cpu_quota
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
 
     from xberg import (
+        ConcurrencyConfig,
         ExtractedDocument,
         ExtractInput,
         ExtractionConfig,
@@ -41,6 +46,18 @@ def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractI
     )
 
 
+def _concurrency_config() -> ConcurrencyConfig:
+    """xberg's thread budget from the active config."""
+    from xberg import ConcurrencyConfig
+
+    return ConcurrencyConfig(max_threads=active_config().extraction_threads or cpu_quota())
+
+
+def _with_concurrency(config: ExtractionConfig) -> ExtractionConfig:
+    """*config* carrying the active concurrency; xberg latches the first call's pools."""
+    return replace(config, concurrency=_concurrency_config())
+
+
 def _first(result: ExtractionResult) -> ExtractedDocument:
     """Return the single extracted document, or raise on an extraction error.
 
@@ -65,7 +82,7 @@ async def aextract_document(
     """Extract one in-memory document. For callers already on the event loop."""
     from xberg import extract
 
-    return _first(await extract(_input(data, mime_type, filename), config))
+    return _first(await extract(_input(data, mime_type, filename), _with_concurrency(config)))
 
 
 async def aextract_batch(
@@ -89,7 +106,7 @@ async def aextract_batch(
         )
         for item in items
     ]
-    result = await extract_batch(inputs, config)
+    result = await extract_batch(inputs, _with_concurrency(config))
     failed: dict[int, Exception] = {e.index: RuntimeError(e.message) for e in result.errors}
     success_indices = [i for i in range(len(items)) if i not in failed]
     by_index: dict[int, ExtractedDocument | Exception] = dict(
@@ -120,4 +137,4 @@ def _run(coro: Coroutine[None, None, ExtractedDocument]) -> ExtractedDocument:
     except RuntimeError:
         return asyncio.run(coro)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+        return pool.submit(contextvars.copy_context().run, asyncio.run, coro).result()

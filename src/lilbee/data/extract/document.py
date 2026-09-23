@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
+from lilbee.core.config.enums import OcrPageStrategy
 from lilbee.data.offload import to_ingest_thread
 from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.data.title import derive_title, source_meta_from_extraction
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
         ExtractionConfig,
         LayoutDetectionConfig,
         OcrConfig,
+        OcrStrategy,
         PdfConfig,
     )
 
@@ -239,6 +241,24 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
     )
 
 
+def _ocr_strategy() -> OcrStrategy:
+    """xberg's page-selection strategy for cfg.ocr_strategy; auto when OCR is off."""
+    from xberg import OcrStrategy
+
+    config = active_config()
+    # xberg rejects scanned_pages when OCR is disabled.
+    if _effective_enable_ocr() is False or config.ocr_strategy is OcrPageStrategy.AUTO:
+        return OcrStrategy(OcrPageStrategy.AUTO.value)
+    return OcrStrategy.scanned_pages(config.ocr_scan_confidence)
+
+
+def _force_ocr_pages() -> list[int] | None:
+    """cfg.force_ocr_pages for xberg; None when empty or OCR is off."""
+    if _effective_enable_ocr() is False:
+        return None
+    return list(active_config().force_ocr_pages) or None
+
+
 def _ocr_force_requested() -> bool:
     """Whether LILBEE_OCR_FORCE forces vision OCR on every page (targeted re-ingest lever)."""
     import os
@@ -312,6 +332,8 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
             force_ocr=force_ocr,
             pdf_options=_pdf_options(),
             extraction_timeout_secs=_extraction_timeout_secs(),
+            ocr_strategy=_ocr_strategy(),
+            force_ocr_pages=_force_ocr_pages(),
         )
         # The layout fields keep xberg's defaults when layout detection is off.
         layout = _layout_config()
@@ -324,6 +346,8 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
         ocr=ocr,
         force_ocr=force_ocr,
         extraction_timeout_secs=_extraction_timeout_secs(),
+        ocr_strategy=_ocr_strategy(),
+        force_ocr_pages=_force_ocr_pages(),
     )
 
 

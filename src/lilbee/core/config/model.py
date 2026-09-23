@@ -33,6 +33,7 @@ from .enums import (
     FtsLanguage,
     KvCacheType,
     LlmProvider,
+    OcrPageStrategy,
     ReasoningMode,
     RerankerType,
     TableModel,
@@ -51,6 +52,31 @@ _UNSET_PATH = Path()
 # A Tesseract language code: ISO 639 letters plus script or orientation suffixes
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
+
+
+def _as_int(item: Any) -> int:
+    """A force_ocr_pages entry as an int: an int, or a string of digits."""
+    if isinstance(item, str) and item.strip().lstrip("-").isdigit():
+        return int(item)
+    # bool is an int subclass; True is not a page number.
+    if isinstance(item, int) and not isinstance(item, bool):
+        return item
+    raise ValueError(f"force_ocr_pages: {item!r} is not a page number")
+
+
+def _split_page_item(item: Any) -> list[Any]:
+    """A string force_ocr_pages item split on commas and newlines; other items as-is."""
+    if isinstance(item, str):
+        return item.replace("\n", ",").split(",")
+    return [item]
+
+
+def _page_number(item: Any) -> int:
+    """One force_ocr_pages entry as a 1-indexed page."""
+    page = _as_int(item)
+    if page < 1:
+        raise ValueError(f"force_ocr_pages: page numbers start at 1 (got {page})")
+    return page
 
 
 class Config(BaseSettings):
@@ -244,6 +270,15 @@ class Config(BaseSettings):
     # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
     # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
     ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
+    # PDF pages xberg OCRs. auto = pages whose native text fails its quality
+    # check; scanned_pages also OCRs every page graded as a scan.
+    ocr_strategy: OcrPageStrategy = ConfigField(default=OcrPageStrategy.AUTO, writable=True)
+    # Scan-grade threshold for scanned_pages. A slide with a full-bleed
+    # background image grades 0.5, so lower this to OCR such slides too.
+    ocr_scan_confidence: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
+    # 1-indexed pages that lilbee OCRs in every PDF; while set, it replaces the
+    # ocr_strategy page selection. Env form: LILBEE_FORCE_OCR_PAGES="1,3".
+    force_ocr_pages: list[int] = ConfigField(default_factory=list, writable=True)
     # Typed entity table for exact counting/cross-referencing; corpus-scale pass, off by default.
     entity_extraction: bool = ConfigField(default=False, writable=True)
     semantic_chunking: bool = ConfigField(default=False, writable=True)
@@ -270,6 +305,12 @@ class Config(BaseSettings):
     # Coalesce concurrent extractions into one xberg extract_batch call.
     batch_extraction: bool = ConfigField(default=False, writable=True)
     batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
+    # xberg's shared thread budget: PDF rendering, OCR and ONNX inference. It
+    # also bounds concurrent Tesseract sessions, which xberg further limits to
+    # what free memory holds. 0 = auto, runtime.cpu.cpu_quota() (half the usable
+    # CPUs). The rayon pool is fixed at the first extraction, so a change takes
+    # full effect after a restart.
+    extraction_threads: int = ConfigField(default=0, ge=0, writable=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
@@ -1128,6 +1169,18 @@ class Config(BaseSettings):
                     "(examples: eng, deu, chi_sim, jpn_vert)"
                 )
         return langs or ["eng"]
+
+    @field_validator("force_ocr_pages", mode="before")
+    @classmethod
+    def _parse_force_ocr_pages(cls, v: Any) -> list[int]:
+        """Accept a list, a string or one int; split string items on commas and newlines.
+
+        Newlines are accepted because ``app.settings`` joins list values with
+        ``\\n`` when it persists them to config.toml. Returns sorted unique pages.
+        """
+        items = v if isinstance(v, list) else [v]
+        parts = [p for item in items for p in _split_page_item(item)]
+        return sorted({_page_number(part) for part in parts if str(part).strip()})
 
     @field_validator("flash_attention", mode="before")
     @classmethod

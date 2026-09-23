@@ -248,6 +248,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Max files per extract_batch call when batch extraction is on",
     ),
+    "extraction_threads": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Threads xberg uses for PDF rendering, OCR and layout models, and the"
+            " most Tesseract OCR sessions that run at once (0 = auto, half the"
+            " available cores). Takes full effect after a restart."
+        ),
+    ),
     "embedding_model": SettingDef(
         str,
         nullable=False,
@@ -964,6 +974,35 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text="Tesseract OCR languages when no vision model is set; '+'-join, e.g. eng+deu",
+    ),
+    "ocr_strategy": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "PDF pages to OCR: auto (pages whose text layer is missing or garbled) or"
+            " scanned_pages (also every page that looks like a scan, e.g. a scanned"
+            " page with a hidden text layer)"
+        ),
+    ),
+    "ocr_scan_confidence": SettingDef(
+        float,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "How sure xberg must be that a page is a scan before it OCRs it (0-1)."
+            " Applies only when ocr_strategy is scanned_pages. Lower it to 0.5 to"
+            " also OCR slides with a full-page background image"
+        ),
+    ),
+    "force_ocr_pages": SettingDef(
+        list,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3)"
+            " or one per line"
+        ),
     ),
     "worker_pool_eager_start": SettingDef(
         bool,
