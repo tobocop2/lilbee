@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from lilbee.app.session_export import session_markdown
+from lilbee.app.session_export import session_markdown, write_session_markdown
 from lilbee.cli import app
 from lilbee.core.config import cfg
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, SessionStore, TitleSource
@@ -272,6 +272,23 @@ def test_export_prints_a_bracketed_path_as_written(seeded, name):
     printed = result.output.strip().removeprefix("Exported to ").removesuffix(".")
     assert printed == str(target.resolve())
     assert Path(printed).is_file()
+
+
+@pytest.mark.parametrize(
+    "blocker", ["[red]", "b\\[\\x]"], ids=["style-tag", "backslash-before-bracket"]
+)
+def test_export_error_prints_a_bracketed_path_as_written(seeded, blocker):
+    """The error names the path the user typed; markup would eat its brackets."""
+    tmp_path, session_id = seeded
+    blocking_file = tmp_path / blocker
+    blocking_file.parent.mkdir(parents=True, exist_ok=True)
+    blocking_file.write_text("x", encoding="utf-8")
+    target = str(blocking_file / "out.md")
+    with pytest.raises(OSError) as raised:
+        write_session_markdown(SessionStore().get(session_id), target)
+    result = runner.invoke(app, _args(tmp_path, "export", session_id, "-o", target))
+    assert result.exit_code == 1
+    assert result.output.strip() == f"Could not write the export: {raised.value}"
 
 
 def test_export_into_a_directory_uses_the_default_name(seeded):

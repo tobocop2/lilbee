@@ -66,7 +66,8 @@ def _fail(message: str) -> NoReturn:
     if cfg.json_mode:
         json_output({"error": message})
     else:
-        console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+        # Text, not markup: messages carry user paths and prefixes verbatim.
+        console.print(Text(message, style=theme.ERROR), soft_wrap=True)
     raise typer.Exit(1)
 
 
