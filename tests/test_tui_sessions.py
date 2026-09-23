@@ -310,6 +310,34 @@ async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
         assert not screen.query(SessionsDrawer)
 
 
+@pytest.mark.parametrize("key", ["enter", "ctrl+n"], ids=["resume", "new_chat"])
+@pytest.mark.parametrize("from_normal", [False, True], ids=["insert", "normal"])
+async def test_keys_typed_right_after_leaving_the_drawer_reach_the_chat_input(
+    sessions, key, from_normal
+):
+    """Resume and new chat land in INSERT with the prompt focused, so the next keys type it.
+
+    In NORMAL mode the letters before the first i / a / o run as vim commands.
+    """
+    _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        if from_normal:
+            await pilot.press("escape")
+            assert await wait_until(pilot, lambda: not chat._insert_mode)
+        await pilot.press("ctrl+o")
+        rows = chat.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        await pilot.press(key)
+        assert await wait_until(pilot, lambda: not chat.query(SessionsDrawer))
+        assert await wait_until(pilot, lambda: chat._chat_input.has_focus)
+        await pilot.press(*"What is 5 plus 5?")
+        await wait_until(pilot, lambda: chat._chat_input.value == "What is 5 plus 5?")
+        assert chat._chat_input.value == "What is 5 plus 5?"
+        assert chat._insert_mode
+
+
 async def test_enter_resumes_after_filtering(sessions):
     """Enter must resume the row a filter narrowed to, not just an unfiltered list."""
     _seed(sessions, "Alpha")
