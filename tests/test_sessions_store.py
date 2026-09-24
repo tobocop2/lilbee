@@ -28,6 +28,7 @@ from lilbee.sessions.store import (
     TitleSource,
     derive_title,
 )  # SESSIONS_DIRNAME / UNTITLED_SESSION_TITLE are internal, imported from the submodule
+from tests._private_mode import file_mode, posix_only
 
 
 class _FakeClock:
@@ -573,3 +574,54 @@ def test_fork_across_the_human_agent_boundary_is_refused(store: SessionStore) ->
 def test_fork_of_an_unknown_session_raises(store: SessionStore) -> None:
     with pytest.raises(SessionNotFoundError):
         store.fork("nope")
+
+
+@posix_only
+def test_a_new_session_file_and_its_lock_are_owner_only(
+    store: SessionStore, tmp_path, permissive_umask
+) -> None:
+    session_id = store.create(model_ref="m", scope="both")
+    path = tmp_path / "data" / SESSIONS_DIRNAME / f"{session_id}.jsonl"
+    assert file_mode(path) == 0o600
+    assert file_mode(Path(f"{path}.lock")) == 0o600
+
+
+@posix_only
+def test_appends_keep_the_session_file_owner_only(
+    store: SessionStore, tmp_path, permissive_umask
+) -> None:
+    sid = store.create(model_ref="m", scope="both")
+    store.add_message(sid, _msg("hello"))
+    store.set_title(sid, "t", TitleSource.CUSTOM)
+    store.set_summary(sid, "s")
+    store.transfer(sid, SessionOrigin.HTTP)
+    assert file_mode(tmp_path / "data" / SESSIONS_DIRNAME / f"{sid}.jsonl") == 0o600
+
+
+@posix_only
+@pytest.mark.parametrize("action", ["create", "fork"])
+def test_the_sessions_dir_is_owner_only(
+    store: SessionStore, tmp_path, permissive_umask, action: str
+) -> None:
+    sessions_dir = tmp_path / "data" / SESSIONS_DIRNAME
+    sid = store.create(model_ref="m", scope="both")
+    if action == "fork":
+        sessions_dir.chmod(0o755)
+        store.fork(sid)
+    assert file_mode(sessions_dir) == 0o700
+
+
+@posix_only
+def test_listing_narrows_a_wide_sessions_dir_left_by_an_older_release(
+    store: SessionStore, tmp_path
+) -> None:
+    sid = store.create(model_ref="m", scope="both")
+    sessions_dir = tmp_path / "data" / SESSIONS_DIRNAME
+    sessions_dir.chmod(0o755)
+    assert [meta.id for meta in store.list()] == [sid]
+    assert file_mode(sessions_dir) == 0o700
+
+
+def test_listing_without_a_sessions_dir_does_not_create_it(store: SessionStore, tmp_path) -> None:
+    assert store.list() == []
+    assert not (tmp_path / "data" / SESSIONS_DIRNAME).exists()
