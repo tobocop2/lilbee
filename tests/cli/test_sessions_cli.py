@@ -1,12 +1,14 @@
-"""lilbee sessions CLI: list, show, fork, rename, delete."""
+"""lilbee sessions CLI: list, show, fork, export, rename, delete."""
 
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+from lilbee.app.session_export import session_markdown, write_session_markdown
 from lilbee.cli import app
 from lilbee.core.config import cfg
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, SessionStore, TitleSource
@@ -214,5 +216,107 @@ def test_fork_of_an_agent_session_exits_1(tmp_path):
 def test_fork_unknown_prefix_errors(tmp_path):
     (tmp_path / "data").mkdir()
     result = runner.invoke(app, _args(tmp_path, "fork", "deadbeef"))
+    assert result.exit_code == 1
+    assert "No session matching" in result.output
+
+
+def test_export_prints_the_markdown_to_stdout(seeded):
+    tmp_path, session_id = seeded
+    result = runner.invoke(app, _args(tmp_path, "export", session_id[:8]))
+    assert result.exit_code == 0, result.output
+    assert result.output == session_markdown(SessionStore().get(session_id))
+
+
+def test_export_stdout_is_utf8_under_a_legacy_code_page(seeded):
+    """A Windows redirect encodes text with the locale code page, which cannot
+    hold CJK or emoji; the export writes UTF-8 bytes instead."""
+    tmp_path, session_id = seeded
+    SessionStore().set_title(session_id, "制动 🙂", TitleSource.CUSTOM)
+    cp1252_runner = CliRunner(charset="cp1252")
+    result = cp1252_runner.invoke(app, _args(tmp_path, "export", session_id))
+    assert result.exit_code == 0, result.output
+    assert "# 制动 🙂" in result.stdout_bytes.decode("utf-8")
+
+
+def test_export_json_carries_the_markdown(seeded):
+    tmp_path, session_id = seeded
+    result = runner.invoke(app, _args(tmp_path, "export", session_id, json_mode=True))
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.output) == {
+        "id": session_id,
+        "markdown": session_markdown(SessionStore().get(session_id)),
+    }
+
+
+def test_export_to_a_file_writes_it_and_prints_the_path(seeded):
+    tmp_path, session_id = seeded
+    target = tmp_path / "out.md"
+    result = runner.invoke(app, _args(tmp_path, "export", session_id, "-o", str(target)))
+    assert result.exit_code == 0, result.output
+    assert target.read_text(encoding="utf-8") == session_markdown(SessionStore().get(session_id))
+    assert f"Exported to {target.resolve()}." in result.output
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["[/x].md", "a\\[\\x].md"],
+    ids=["closing-tag", "backslash-before-bracket"],
+)
+def test_export_prints_a_bracketed_path_as_written(seeded, name):
+    """A backslash before a bracket is a markup escape to Rich, and on Windows
+    every separator is a backslash, so the path must not go through markup."""
+    tmp_path, session_id = seeded
+    target = tmp_path / "[draft]" / name
+    result = runner.invoke(app, _args(tmp_path, "export", session_id, "-o", str(target)))
+    assert result.exit_code == 0, result.output
+    printed = result.output.strip().removeprefix("Exported to ").removesuffix(".")
+    assert printed == str(target.resolve())
+    assert Path(printed).is_file()
+
+
+@pytest.mark.parametrize(
+    "blocker", ["[red]", "b\\[\\x]"], ids=["style-tag", "backslash-before-bracket"]
+)
+def test_export_error_prints_a_bracketed_path_as_written(seeded, blocker):
+    """The error names the path the user typed; markup would eat its brackets."""
+    tmp_path, session_id = seeded
+    blocking_file = tmp_path / blocker
+    blocking_file.parent.mkdir(parents=True, exist_ok=True)
+    blocking_file.write_text("x", encoding="utf-8")
+    target = str(blocking_file / "out.md")
+    with pytest.raises(OSError) as raised:
+        write_session_markdown(SessionStore().get(session_id), target)
+    result = runner.invoke(app, _args(tmp_path, "export", session_id, "-o", target))
+    assert result.exit_code == 1
+    assert result.output.strip() == f"Could not write the export: {raised.value}"
+
+
+def test_export_into_a_directory_uses_the_default_name(seeded):
+    tmp_path, session_id = seeded
+    out_dir = tmp_path / "notes"
+    out_dir.mkdir()
+    result = runner.invoke(
+        app, _args(tmp_path, "export", session_id, "--output", str(out_dir), json_mode=True)
+    )
+    assert result.exit_code == 0, result.output
+    expected = (out_dir / f"torque-specs-{session_id[:8]}.md").resolve()
+    assert json.loads(result.output) == {"id": session_id, "path": str(expected)}
+    assert expected.is_file()
+
+
+def test_export_that_cannot_write_exits_1(seeded):
+    tmp_path, session_id = seeded
+    blocker = tmp_path / "file"
+    blocker.write_text("x", encoding="utf-8")
+    result = runner.invoke(
+        app, _args(tmp_path, "export", session_id, "-o", str(blocker / "out.md"))
+    )
+    assert result.exit_code == 1
+    assert "Could not write the export" in result.output
+
+
+def test_export_unknown_prefix_errors(tmp_path):
+    (tmp_path / "data").mkdir()
+    result = runner.invoke(app, _args(tmp_path, "export", "deadbeef"))
     assert result.exit_code == 1
     assert "No session matching" in result.output

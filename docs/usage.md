@@ -210,6 +210,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/theme <name>` | | Switch theme |
 | `/status` | | Show indexed documents and config |
 | `/login <token>` | | Log in to HuggingFace |
+| `/export-chat [path]` | | Export this conversation as markdown. No path writes `<title>-<id>.md` in the current directory; a directory gets that name inside it |
 | `/clear` | | Clear chat history |
 | `/cancel` | | Cancel active operations |
 | `/reset` | | Factory reset (asks for confirmation) |
@@ -304,7 +305,7 @@ step.
   live chat. Type to filter, `enter` resumes, `^n` new chat, `^r` rename,
   `^d` delete.
 - **The Sessions tab** is the same list full-screen.
-- **The CLI**: `lilbee sessions list / show / fork / rename / delete` (see
+- **The CLI**: `lilbee sessions list / show / fork / export / rename / delete` (see
   [Sessions commands](#sessions-1)).
 
 Resuming restores the transcript and switches back to the model the
@@ -318,10 +319,18 @@ conversation" to continue from the end, or "Before: <question>" to go back to
 that question: the fork opens with the question in the input, ready to edit.
 The fork is titled "<title> (fork N)" and sits at the top of the list.
 
+Exporting writes a conversation as a markdown document: YAML front matter
+(title, session id, model, created and updated times, and the source session
+for a fork), then one `## User` or `## Assistant` section per turn with each
+answer's numbered sources. In the chat, `/export-chat` writes it to the current
+directory; `lilbee sessions export` prints it or writes it with `-o`. Files are
+owner-only (`0600`) on macOS and Linux, and an explicit path replaces an
+existing file. Source links are `file://` paths on this machine.
+
 Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
 conversation. No database; back them up or sync them like any other file.
-The same surface exists over HTTP (list, read, create, append, fork, rename,
-delete), so a script can own a conversation the way the TUI does. The TUI,
+The same surface exists over HTTP (list, read, export, create, append, fork,
+rename, delete), so a script can own a conversation the way the TUI does. The TUI,
 HTTP server, and CLI are one conversation space: start a chat in Obsidian,
 continue it in the terminal.
 
@@ -910,7 +919,10 @@ lilbee sessions fork 3f2a              # copy a conversation into a new one
 lilbee sessions fork 3f2a --messages 2 # copy only the first two messages
 lilbee sessions rename 3f2a "Brake specs"
 lilbee sessions delete 3f2a            # asks first; --yes skips the prompt
+lilbee sessions export 3f2a > chat.md  # the conversation as markdown on stdout
+lilbee sessions export 3f2a -o notes/  # write notes/<title>-<id>.md, owner-only
 lilbee --json sessions show 3f2a       # transcript + compaction summary as JSON
+lilbee --json sessions export 3f2a     # {"id", "markdown"}; with -o, {"id", "path"}
 ```
 
 ### Vault and status
@@ -956,7 +968,8 @@ covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
 saved conversations (`/api/sessions`: list, read, create, append, fork,
-rename, delete, and the compaction summary), configuration (including a defaults
+rename, delete, the compaction summary, and `GET /api/sessions/{id}/markdown`
+for a markdown export), configuration (including a defaults
 endpoint that powers per-setting reset), and status/health. The
 Obsidian plugin uses the `/api/source` endpoint for vault-aware source
 retrieval. Interactive REST API docs live at `/schema/redoc` when the server
