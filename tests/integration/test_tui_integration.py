@@ -294,7 +294,7 @@ class TestCrawlAndSync:
 
     async def test_crawl_becomes_searchable(self, rag_pipeline, monkeypatch) -> None:
         """Crawl a local HTTP page, verify its content is indexed."""
-        pytest.importorskip("crawl4ai")
+        pytest.importorskip("crawlberg")
         pytest.importorskip("pytest_httpserver")
 
         import ipaddress
