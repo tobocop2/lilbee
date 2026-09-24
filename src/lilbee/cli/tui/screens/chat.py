@@ -499,11 +499,7 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def focus_prompt(self) -> None:
-        """Return focus to the chat input in INSERT mode.
-
-        Called when a modal (the model picker) closes: the next act is typing
-        a prompt, so focus must not stay parked on the widget that opened it.
-        """
+        """Focus the chat input in INSERT mode so the next keys type a prompt."""
         self._enter_insert_mode()
 
     def action_focus_model_bar(self) -> None:
@@ -1644,8 +1640,9 @@ class ChatScreen(Screen[None]):
             )
 
     def resume_session(self, session_id: str) -> None:
-        """Load a saved session into the chat view and make it the active one."""
+        """Load a saved session into the chat view, make it the active one, and focus the prompt."""
         session = self._load_session(session_id)
+        self.focus_prompt()
         self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
 
     def _load_session(self, session_id: str) -> Session:
@@ -1695,8 +1692,9 @@ class ChatScreen(Screen[None]):
         return self._session_id
 
     def start_new_conversation(self) -> None:
-        """Clear the conversation and open a fresh session on the next turn."""
+        """Clear the conversation, open a fresh session on the next turn, and focus the prompt."""
         self._reset_conversation()
+        self.focus_prompt()
         self.notify(msg.SESSIONS_NEW)
 
     def _render_restored_message(self, message: SessionMessage) -> None:
