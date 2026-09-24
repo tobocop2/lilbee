@@ -314,9 +314,12 @@ current model and says so.
 
 Forking keeps a conversation and branches from it, like a save state. A fork
 is a new session with a copy of the first messages of another one; the
-original never changes. In the chat, `/fork` opens a picker. Choose "Whole
-conversation" to continue from the end, or "Before: <question>" to go back to
-that question: the fork opens with the question in the input, ready to edit.
+original never changes. In the chat, `/fork` opens a picker with one row for
+each answer, newest first. Each row shows the first line of the answer and the
+question it answers. Choose a row to fork after that answer: the fork keeps
+every message up to and including the answer, and the input is empty for your
+next question. If no answer exists yet, `/fork` tells you that nothing can be
+forked.
 The fork is titled "<title> (fork N)" and sits at the top of the list.
 
 Exporting writes a conversation as a markdown document: YAML front matter

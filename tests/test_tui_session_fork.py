@@ -1,4 +1,4 @@
-"""The /fork slash command: picker, switch, prefill, and every refusal."""
+"""The /fork slash command: picker, switch, and every refusal."""
 
 from __future__ import annotations
 
@@ -84,23 +84,27 @@ def _notified(mock_notify: MagicMock) -> list[str]:
     return [str(call.args[0]) for call in mock_notify.call_args_list]
 
 
-async def test_picker_lists_the_whole_conversation_and_each_question(sessions):
+def _row(answer: str, question: str) -> str:
+    """The text of the picker row for *answer*, with the question it answers under it."""
+    return f"{answer}\n{msg.FORK_PICKER_ANSWER_TO.format(question=question)}"
+
+
+def _labels(picker: ForkPicker) -> list[str]:
+    rows = picker.query_one("#fork-list", OptionList)
+    return [str(rows.get_option_at_index(i).prompt) for i in range(rows.option_count)]
+
+
+async def test_picker_lists_each_answer_newest_first(sessions):
     source = _seed(sessions)
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
         picker = await _open_picker(app, pilot)
-        rows = picker.query_one("#fork-list", OptionList)
-        labels = [str(rows.get_option_at_index(i).prompt) for i in range(rows.option_count)]
-        assert labels == [
-            msg.FORK_PICKER_WHOLE,
-            msg.FORK_PICKER_BEFORE.format(line="Q1"),
-            msg.FORK_PICKER_BEFORE.format(line="Q2"),
-        ]
+        assert _labels(picker) == [_row("A2", "Q2"), _row("A1", "Q1")]
 
 
-async def test_picking_a_question_forks_before_it_and_prefills_it(sessions):
+async def test_picking_an_answer_forks_through_it_and_leaves_the_input_empty(sessions):
     source = _seed(sessions)
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -108,38 +112,40 @@ async def test_picking_a_question_forks_before_it_and_prefills_it(sessions):
         screen.resume_session(source)
         await _open_picker(app, pilot)
         with patch.object(screen, "notify") as notify:
-            await pilot.press("down", "down", "enter")
+            await pilot.press("down", "enter")
             assert await pump_until(pilot, lambda: screen.session_id not in (None, source))
         fork = sessions.get(screen.session_id)
         assert fork.meta.forked_from == source
         assert [m.content for m in fork.messages] == ["Q1", "A1"]
-        assert screen._chat_input.value == "Q2\nsecond line"
+        assert screen._chat_input.value == ""
         assert _notified(notify) == [msg.FORK_DONE.format(title="Torque (fork 1)")]
         assert len(screen.query(AssistantMessage)) == 1
         assert sessions.get(source).meta.message_count == 4
 
 
-async def test_a_fork_from_normal_mode_lands_in_the_prefilled_input(sessions):
-    """The palette runs /fork from NORMAL mode; the prefilled question must be editable."""
+async def test_a_fork_from_normal_mode_lands_in_an_empty_input_in_insert_mode(sessions):
+    """The palette runs /fork from NORMAL mode with a draft in the input; the fork clears it."""
     source = _seed(sessions)
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
+        await pilot.press(*"draft")
+        assert await pump_until(pilot, lambda: screen._chat_input.value == "draft")
         await pilot.press("escape")
         assert await pump_until(pilot, lambda: not screen._insert_mode)
         await pilot.press("ctrl+p")
         await pilot.pause()
         await pilot.press(*"/fork", "enter")
         assert await pump_until(pilot, lambda: isinstance(app.screen, ForkPicker))
-        await pilot.press("down", "down", "enter")
+        await pilot.press("enter")
         assert await pump_until(pilot, lambda: screen.session_id not in (None, source))
-        assert screen._chat_input.value == "Q2\nsecond line"
+        assert screen._chat_input.value == ""
         assert screen._insert_mode
         assert screen._chat_input.has_focus
 
 
-async def test_whole_conversation_forks_everything_and_leaves_the_input_empty(sessions):
+async def test_the_latest_answer_forks_everything(sessions):
     source = _seed(sessions)
     sessions.set_summary(source, "notes")
     app = LilbeeApp()
@@ -154,6 +160,53 @@ async def test_whole_conversation_forks_everything_and_leaves_the_input_empty(se
         assert fork.summary == "notes"
         assert screen._summary == "notes"
         assert screen._chat_input.value == ""
+
+
+async def test_a_question_with_no_answer_yet_is_not_a_fork_point(sessions):
+    source = _seed(sessions)
+    sessions.add_message(source, SessionMessage(role=MessageRole.USER, content="Q3"))
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        picker = await _open_picker(app, pilot)
+        assert _labels(picker) == [_row("A2", "Q2"), _row("A1", "Q1")]
+        await pilot.press("enter")
+        assert await pump_until(pilot, lambda: screen.session_id not in (None, source))
+        assert sessions.get(screen.session_id).meta.message_count == 4
+
+
+async def test_an_answer_with_no_question_before_it_shows_only_the_answer(sessions):
+    session_id = sessions.create(model_ref=cfg.chat_model, scope="both")
+    for role, content in (
+        (MessageRole.ASSISTANT, "Welcome"),
+        (MessageRole.USER, "Q1"),
+        (MessageRole.ASSISTANT, "A1"),
+    ):
+        sessions.add_message(session_id, SessionMessage(role=role, content=content))
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(session_id)
+        picker = await _open_picker(app, pilot)
+        assert _labels(picker) == [_row("A1", "Q1"), "Welcome"]
+        await pilot.press("down", "enter")
+        assert await pump_until(pilot, lambda: screen.session_id not in (None, session_id))
+        assert sessions.get(screen.session_id).meta.message_count == 1
+
+
+async def test_fork_with_no_answer_yet_says_there_is_nothing_to_fork(sessions):
+    source = sessions.create(model_ref=cfg.chat_model, scope="both")
+    sessions.add_message(source, SessionMessage(role=MessageRole.USER, content="Q1"))
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        with patch.object(screen, "notify") as notify:
+            await _submit(pilot, "/fork")
+        assert _notified(notify) == [msg.FORK_NO_ANSWER]
+        assert not isinstance(app.screen, ForkPicker)
+        assert [meta.id for meta in sessions.list()] == [source]
 
 
 async def test_escape_closes_the_picker_without_forking(sessions):
@@ -200,14 +253,8 @@ async def test_picker_positions_come_from_the_log_after_compaction(sessions):
             assert await pump_until(pilot, lambda: screen._summary == "NOTES")
         assert [m["role"] for m in screen._history] != ["user", "assistant", "user", "assistant"]
         picker = await _open_picker(app, pilot)
-        rows = picker.query_one("#fork-list", OptionList)
-        labels = [str(rows.get_option_at_index(i).prompt) for i in range(rows.option_count)]
-        assert labels == [
-            msg.FORK_PICKER_WHOLE,
-            msg.FORK_PICKER_BEFORE.format(line="Q1"),
-            msg.FORK_PICKER_BEFORE.format(line="Q2"),
-        ]
-        await pilot.press("down", "down", "enter")
+        assert _labels(picker) == [_row("A2", "Q2"), _row("A1", "Q1")]
+        await pilot.press("down", "enter")
         assert await pump_until(pilot, lambda: screen.session_id not in (None, source))
         assert sessions.get(screen.session_id).meta.message_count == 2
 
