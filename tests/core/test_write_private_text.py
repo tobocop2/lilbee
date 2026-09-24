@@ -70,6 +70,23 @@ class TestWritePrivateText:
 
 
 @posix_only
+class TestFileLockOrWarnMode:
+    """The sibling ``.lock`` file must be owner-only, not follow the umask."""
+
+    def test_lock_file_is_created_owner_only_under_permissive_umask(
+        self, tmp_path, permissive_umask
+    ):
+        from pathlib import Path
+
+        from lilbee.core.security import file_lock_or_warn
+
+        target = tmp_path / "guarded.txt"
+        with file_lock_or_warn(target, timeout_s=1.0):
+            pass
+        assert file_mode(Path(f"{target}.lock")) == 0o600
+
+
+@posix_only
 class TestSessionTokenPermissions:
     """server.json holds the bearer token: it must never be readable by other users."""
 
@@ -126,6 +143,15 @@ class TestSessionTokenPermissions:
         assert second == first
         assert file_mode(path) == 0o600
 
+    def test_boot_lock_file_is_owner_only(self, fresh_manager, permissive_umask):
+        """The lock coordinating first-boot token creation is a secret sibling too."""
+        from pathlib import Path
+
+        from lilbee.server.auth import server_json_path
+
+        fresh_manager.load_or_generate()
+        assert file_mode(Path(f"{server_json_path()}.lock")) == 0o600
+
 
 @posix_only
 class TestPersistedSettingsPermissions:
@@ -138,6 +164,15 @@ class TestPersistedSettingsPermissions:
         settings.save(tmp_path, {"api_key": "sk-secret"})
         path = tmp_path / "config.toml"
         assert file_mode(path) == 0o600
+
+    def test_config_lock_file_is_owner_only(self, tmp_path, permissive_umask):
+        """The lock coordinating a config read-modify-write is a secret sibling too."""
+        from pathlib import Path
+
+        from lilbee.core import settings
+
+        settings.set_value(tmp_path, "api_key", "sk-secret")
+        assert file_mode(Path(f"{tmp_path / 'config.toml'}.lock")) == 0o600
 
 
 class TestPersistedTokenIsTotal:

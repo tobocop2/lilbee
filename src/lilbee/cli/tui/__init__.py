@@ -11,6 +11,7 @@ from pathlib import Path
 
 from lilbee.app.services import exit_when_stragglers_would_hang, reset_services_on_exit
 from lilbee.cli.tui.log_routing import setup_tui_log_file
+from lilbee.core.security import OWNER_ONLY_MODE
 
 
 def _silence_stderr_log_handlers() -> None:
@@ -56,7 +57,7 @@ def _redirect_native_stderr_to(log_path: Path) -> _StderrRedirect | None:
     in ``tui.log`` instead of on top of the screen.
     """
     try:
-        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, OWNER_ONLY_MODE)
     except OSError:
         return None
     saved_fd = os.dup(2)

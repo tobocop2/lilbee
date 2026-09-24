@@ -27,7 +27,7 @@ def file_lock_or_warn(path: Path, timeout_s: float) -> Iterator[None]:
     On timeout the caller proceeds unserialized: losing coordination to a stale
     lock file is worse than the rare interleave the lock prevents.
     """
-    flock = FileLock(str(path) + ".lock")
+    flock = FileLock(str(path) + ".lock", mode=OWNER_ONLY_MODE)
     try:
         flock.acquire(timeout=timeout_s)
     except FileLockTimeout:
