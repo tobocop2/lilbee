@@ -16,6 +16,7 @@ from lilbee.cli.tui import (
 )
 from lilbee.cli.tui.log_routing import setup_tui_log_file
 from lilbee.core.config import cfg
+from tests._private_mode import file_mode, posix_only
 
 
 @pytest.fixture(autouse=True)
@@ -145,6 +146,16 @@ def test_native_stderr_redirect_returns_none_on_unwritable_path(tmp_path):
     bogus = tmp_path / "does" / "not" / "exist" / "tui.log"
     redirect = _redirect_native_stderr_to(bogus)
     assert redirect is None
+
+
+@posix_only
+def test_native_stderr_redirect_creates_the_log_file_owner_only(tmp_path, permissive_umask):
+    """The redirect can create ``tui.log`` itself, so it must not follow the umask."""
+    log_path = tmp_path / "tui.log"
+    redirect = _redirect_native_stderr_to(log_path)
+    assert redirect is not None
+    _restore_native_stderr(redirect)
+    assert file_mode(log_path) == 0o600
 
 
 def test_restore_native_stderr_handles_none():
