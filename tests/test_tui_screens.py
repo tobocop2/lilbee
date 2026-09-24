@@ -40,6 +40,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     variant_to_row,
 )
 from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
+from lilbee.cli.tui.screens.chat import _Turn, _TurnEnded
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
@@ -3450,6 +3451,19 @@ async def test_chat_scroll_actions():
             mock_down.assert_called_once()
 
 
+def _live_turn(screen, widget=None) -> _Turn:
+    """Put *screen* mid-answer without starting a worker."""
+    turn = _Turn("q", widget or MagicMock(), screen._conversation_generation, None)
+    screen._turn = turn
+    screen.streaming = True
+    return turn
+
+
+def _end_turn(screen, turn: _Turn) -> None:
+    """End *turn* the way its worker does, on the main thread."""
+    screen._on_turn_ended(_TurnEnded(turn))
+
+
 async def test_chat_cancel_stream_not_streaming():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3458,12 +3472,18 @@ async def test_chat_cancel_stream_not_streaming():
         assert app.screen.streaming is False
 
 
-async def test_chat_cancel_stream_while_streaming():
+async def test_chat_cancel_stream_while_streaming_stops_but_stays_busy():
+    """A cancel asks the turn to stop; only the turn's end clears the busy flag."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        app.screen.streaming = True
+        turn = _live_turn(app.screen)
         app.screen.action_cancel_stream()
+        assert turn.stop.is_set()
+        assert app.screen.stopping is True
+        assert app.screen.streaming is True
+        _end_turn(app.screen, turn)
         assert app.screen.streaming is False
+        assert app.screen.stopping is False
 
 
 async def test_apply_model_change_queues_the_switch_while_streaming():
@@ -3474,7 +3494,7 @@ async def test_apply_model_change_queues_the_switch_while_streaming():
         screen = app.screen
         screen.streaming = True
         with (
-            patch.object(screen, "_cancel_inflight_stream") as mock_cancel,
+            patch.object(screen, "_stop_turn") as mock_cancel,
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
         ):
             screen.apply_model_change()
@@ -3521,15 +3541,15 @@ async def test_queued_switch_runs_when_the_stream_ends():
         assert screen.swapping_model is True
 
 
-async def test_queued_switch_runs_when_the_user_cancels_the_stream():
+async def test_queued_switch_runs_when_the_cancelled_turn_ends():
     """A cancelled answer still lands the queued switch: the user asked for the new
-    model, and cancelling the turn is not a withdrawal of that."""
+    model, and cancelling the turn is not a withdrawal of that. It lands when the
+    turn ends, never under a body that is still reading."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
-        screen._active_assistant = None
         await pilot.press("i")
-        screen.streaming = True
+        turn = _live_turn(screen)
         with (
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
             patch("lilbee.cli.tui.screens.chat.get_services"),
@@ -3537,6 +3557,8 @@ async def test_queued_switch_runs_when_the_user_cancels_the_stream():
             screen.apply_model_change()
             await pilot.press("ctrl+c")
             await pilot.pause()
+            mock_worker.assert_not_called()
+            _end_turn(screen, turn)
             mock_worker.assert_called_once()
         assert screen.streaming is False
 
@@ -3575,7 +3597,7 @@ async def testapply_model_change_spawns_worker_off_event_loop_when_not_streaming
         screen = app.screen
         screen.streaming = False
         with (
-            patch.object(screen, "_cancel_inflight_stream") as mock_cancel,
+            patch.object(screen, "_stop_turn") as mock_cancel,
             patch.object(screen, "_reload_chat_model_worker") as mock_worker,
             patch("lilbee.cli.tui.screens.chat.get_services") as mock_get,
         ):
@@ -3594,10 +3616,10 @@ async def test_cancel_stream_writes_a_note_into_the_bubble():
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
         bubble = MagicMock()
-        bubble.is_mounted = True
-        screen._active_assistant = bubble
-        screen.streaming = True
-        screen.action_cancel_stream()
+        turn = _live_turn(screen, bubble)
+        with patch("lilbee.cli.tui.screens.chat.get_services"):
+            screen.action_cancel_stream()
+        _end_turn(screen, turn)
         bubble.append_content.assert_called_once_with(msg.STREAM_CANCELLED)
         assert screen.streaming is False
 
@@ -3607,8 +3629,7 @@ async def test_cancel_stream_severs_the_inference_transport():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        screen._active_assistant = None
-        screen.streaming = True
+        _live_turn(screen)
         services = MagicMock()
         with patch("lilbee.cli.tui.screens.chat.get_services", return_value=services):
             screen.action_cancel_stream()
@@ -3838,11 +3859,10 @@ async def test_command_palette_runs_cancel_mid_answer_too():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         screen = app.screen
-        screen._active_assistant = None
-        screen.streaming = True
+        turn = _live_turn(screen)
         with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
             screen.run_command("/cancel")
-        assert screen.streaming is False
+        assert turn.stop.is_set()
         mock_services.return_value.cancel_inference.assert_called_once_with()
 
 
@@ -3867,15 +3887,14 @@ async def test_slash_cancel_typed_mid_answer_stops_the_stream():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
-        screen._active_assistant = None
         await pilot.press("i")
-        screen.streaming = True
+        turn = _live_turn(screen)
         inp = screen.query_one("#chat-input", ChatInput)
         inp.value = "/cancel"
         with patch("lilbee.cli.tui.screens.chat.get_services") as mock_services:
             await pilot.press("enter")
             await pilot.pause()
-        assert screen.streaming is False
+        assert turn.stop.is_set()
         mock_services.return_value.cancel_inference.assert_called_once_with()
 
 
@@ -4312,7 +4331,7 @@ async def _start_turn(pilot, screen):
     with patch.object(screen, "_stream_response"):
         screen._send_message("a question")
     await _settle(pilot)
-    widget = screen._active_assistant
+    widget = screen._turn.widget
     assert widget is not None
     # Composed, so append_content renders instead of only buffering. Without
     # this the answer never grows and the scroll assertions all pass vacuously.
@@ -4433,6 +4452,7 @@ async def test_chat_send_message_follows_the_answer_it_is_about_to_get():
         assert log.scroll_y < log.max_scroll_y
 
         # The next question must follow its own answer regardless.
+        _end_turn(screen, screen._turn)
         _, next_widget = await _start_turn(pilot, screen)
         await _grow_answer(pilot, next_widget, 160)
         assert log.scroll_y == log.max_scroll_y, "the new turn did not follow its answer"
@@ -6821,17 +6841,11 @@ def test_consume_stream_shows_the_rewrite_in_the_status_row():
             StreamToken(content="In 1910.", is_reasoning=False),
         ]
     )
-    with (
-        patch(
-            "lilbee.cli.tui.screens.chat._get_worker",
-            return_value=MagicMock(is_cancelled=False),
-        ),
-        patch(
-            "lilbee.cli.tui.screens.chat.call_from_thread",
-            side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
-        ),
+    with patch(
+        "lilbee.cli.tui.screens.chat.call_from_thread",
+        side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
     ):
-        screen._consume_stream(stream, widget, parts)
+        screen._consume_stream(stream, _Turn("q", widget, 0, None), parts)
     widget.set_thinking_status.assert_called_once_with(
         "Searching for: when was the journal written"
     )
@@ -6849,9 +6863,7 @@ async def test_chat_stream_response_error_worker(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        while app.screen.workers:
-            await _pilot.pause()
-        assert app.screen.streaming is False
+        assert await pump_until(_pilot, lambda: not app.screen.streaming)
 
 
 async def test_chat_stream_embedder_mismatch_adopt_worker(mock_svc):
@@ -6902,9 +6914,7 @@ async def test_chat_stream_response_reasoning_worker(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        while app.screen.workers:
-            await _pilot.pause()
-        assert app.screen.streaming is False
+        assert await pump_until(_pilot, lambda: not app.screen.streaming)
 
 
 async def test_chat_stream_response_inner_exception(mock_svc):
@@ -6927,9 +6937,7 @@ async def test_chat_stream_response_inner_exception(mock_svc):
         inp.value = "test"
         await _pilot.press("enter")
         await _pilot.pause()
-        while app.screen.workers:
-            await _pilot.pause()
-        assert app.screen.streaming is False
+        assert await pump_until(_pilot, lambda: not app.screen.streaming)
 
 
 async def test_chat_run_sync_worker():
@@ -7051,9 +7059,10 @@ async def test_chat_cancel_stream_with_streaming_workers(mock_svc):
         await _pilot.press("enter")
         await _pilot.pause()
         # Now cancel while streaming
-        app.screen.streaming = True
+        turn = app.screen._turn
         app.screen.action_cancel_stream()
-        assert app.screen.streaming is False
+        assert turn.stop.is_set()
+        assert app.screen.streaming is True
 
 
 async def test_chat_on_input_submitted_slash():
@@ -12972,10 +12981,9 @@ async def test_chat_notify_no_results_uses_warning_severity():
             )
 
 
-async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_nothing():
+async def test_chat_turn_end_emits_no_results_toast_when_search_finds_nothing():
     """In Search mode, a response without a Sources block triggers the toast."""
-    import asyncio
-    from unittest.mock import AsyncMock, MagicMock
+    from unittest.mock import MagicMock
 
     from lilbee.core.config import cfg
 
@@ -12985,38 +12993,28 @@ async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_not
         async with app.run_test(size=(120, 40)) as _pilot:
             await _pilot.pause()
             screen = app.screen
-            widget = MagicMock()
-            widget.finish = AsyncMock()
+            turn = _live_turn(screen, MagicMock())
+            turn.answer = "I couldn't find that in your docs."
             with (
                 patch.object(screen, "_embedding_ready", return_value=True),
                 patch.object(screen, "_notify_no_results") as mock_notify,
             ):
-                # From a worker thread, as the streaming worker calls it: the
-                # real call_from_thread then runs each hop on the main thread.
-                await asyncio.to_thread(
-                    screen._finalize_stream,
-                    widget,
-                    [],
-                    ["I couldn't find that in your docs."],
-                    None,
-                    screen._conversation_generation,
-                )
+                _end_turn(screen, turn)
                 await _pilot.pause()
                 mock_notify.assert_called_once()
     finally:
         cfg.chat_mode = "search"
 
 
-async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
-    """Regression: the answer must end scrolled to the bottom, citations included.
+async def test_chat_turn_end_scrolls_to_the_end_of_the_finished_answer():
+    """Regression: the answer must end scrolled to the bottom.
 
     A stream's last tokens sit unrendered in the debounce buffer, so ``finish``
-    is what renders the tail and mounts the citations -- and Markdown mounts
-    those blocks asynchronously, after ``finish`` returns. The answer can fit
-    the pane right up until that lands, which is the case that used to strand
-    the citations below the fold with no further stream tick to recover.
+    is what renders the tail -- and Markdown mounts those blocks asynchronously,
+    after ``finish`` returns. The answer can fit the pane right up until that
+    lands, which is the case that used to strand the tail below the fold with
+    no further stream tick to recover.
     """
-    import asyncio
     import time
 
     from textual.containers import VerticalScroll
@@ -13032,8 +13030,8 @@ async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
         with patch.object(screen, "_stream_response"):
             screen._send_message("a question")
         await _settle(pilot)
-        widget = screen._active_assistant
-        assert widget is not None
+        turn = screen._turn
+        widget = turn.widget
         # Composed, so the appends below render rather than silently buffering
         # and leaving both preconditions to pass against an empty bubble.
         assert widget._content_widget is not None
@@ -13051,16 +13049,8 @@ async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
         await _settle(pilot)
         assert log.max_scroll_y == 0, "precondition: the tail is still buffered"
 
-        # _finalize_stream runs on the streaming worker thread in production;
-        # driving it from one keeps its call_from_thread hops real.
-        await asyncio.to_thread(
-            screen._finalize_stream,
-            widget,
-            ["cv-manual.pdf", "specs.pdf"],
-            ["done"],
-            None,
-            screen._conversation_generation,
-        )
+        turn.answer = "done"
+        _end_turn(screen, turn)
         await _settle(pilot)
 
         assert log.scroll_y == log.max_scroll_y, (
@@ -13103,8 +13093,8 @@ def test_chat_has_help_attribute():
     assert "Chat" in ChatScreen.HELP
 
 
-async def test_chat_action_cancel_stream_cancels_workers_and_stream():
-    """action_cancel_stream (Ctrl+C from INSERT) cancels workers and stops streaming."""
+async def test_chat_action_cancel_stream_leaves_other_workers_running():
+    """action_cancel_stream (Ctrl+C from INSERT) stops the turn and nothing else."""
     import asyncio
 
     async def _slow_worker() -> None:
@@ -13113,13 +13103,14 @@ async def test_chat_action_cancel_stream_cancels_workers_and_stream():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
-        app.screen.streaming = True
-        # Start a real Textual worker so self.workers is non-empty
-        app.screen.run_worker(_slow_worker(), exclusive=False)
+        turn = _live_turn(app.screen)
+        other = app.screen.run_worker(_slow_worker(), exclusive=False)
         await _pilot.pause()
-        assert len(list(app.screen.workers)) > 0
-        app.screen.action_cancel_stream()
-        assert app.screen.streaming is False
+        with patch("lilbee.cli.tui.screens.chat.get_services"):
+            app.screen.action_cancel_stream()
+        assert turn.stop.is_set()
+        assert not other.is_cancelled
+        other.cancel()
 
 
 async def test_chat_action_toggle_markdown():
