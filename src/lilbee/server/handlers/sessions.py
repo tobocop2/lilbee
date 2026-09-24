@@ -1,4 +1,4 @@
-"""Session route handlers: list, get, create, append, fork, rename, forget.
+"""Session route handlers: list, get, markdown, create, append, fork, rename, forget.
 
 Reads and mutations go through the process ``SessionStore`` on the services
 container. A missing session id surfaces as a 404.
@@ -13,6 +13,7 @@ from litestar.exceptions import ClientException, NotFoundException
 from litestar.status_codes import HTTP_409_CONFLICT, HTTP_422_UNPROCESSABLE_ENTITY
 
 from lilbee.app.services import get_services
+from lilbee.app.session_export import session_markdown
 from lilbee.server.models import (
     SessionCreateRequest,
     SessionDeleteResponse,
@@ -115,6 +116,12 @@ async def get_session(session_id: str) -> SessionDetailResponse:
     """Return a session's metadata and transcript, or 404 if unknown."""
     with _session_errors():
         return _detail(_store().get(session_id))
+
+
+async def get_session_markdown(session_id: str) -> str:
+    """Return a session as a markdown document, or 404 if unknown."""
+    with _session_errors():
+        return session_markdown(_store().get(session_id))
 
 
 async def create_session(data: SessionCreateRequest) -> SessionDetailResponse:

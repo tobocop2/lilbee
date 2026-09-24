@@ -35,6 +35,7 @@ from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.services import get_services, reset_store
+from lilbee.app.session_export import write_session_markdown
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
@@ -1475,23 +1476,47 @@ class ChatScreen(Screen[None]):
     def _cmd_sessions(self, _args: str) -> None:
         self.app.action_toggle_sessions()
 
-    def _cmd_fork(self, _args: str) -> None:
-        """Open the fork picker over the current session as the store holds it."""
+    def _read_active_session(self, finishing: str, no_session: str, gone: str) -> Session | None:
+        """The active session as the store holds it, or None after telling the user why not."""
         if not cfg.sessions_enabled:
             self.app.notify_sessions_disabled()
-            return
+            return None
         if self._live_streams:
-            self.notify(msg.FORK_WHILE_FINISHING, severity="warning")
-            return
+            self.notify(finishing, severity="warning")
+            return None
         if self._session_id is None:
-            self.notify(msg.FORK_NO_SESSION, severity="warning")
-            return
+            self.notify(no_session, severity="warning")
+            return None
         try:
-            source = get_services().session_store.get(self._session_id)
+            return get_services().session_store.get(self._session_id)
         except SessionNotFoundError:
-            self.notify(msg.FORK_SESSION_GONE, severity="warning")
+            self.notify(gone, severity="warning")
+            return None
+
+    def _cmd_fork(self, _args: str) -> None:
+        """Open the fork picker over the current session as the store holds it."""
+        source = self._read_active_session(
+            msg.FORK_WHILE_FINISHING, msg.FORK_NO_SESSION, msg.FORK_SESSION_GONE
+        )
+        if source is None:
             return
         self.app.push_screen(ForkPicker(source.messages), partial(self._on_fork_picked, source))
+
+    def _cmd_export_chat(self, args: str) -> None:
+        """Write the current session as markdown to *args*, or to the working directory."""
+        session = self._read_active_session(
+            msg.EXPORT_CHAT_WHILE_FINISHING,
+            msg.EXPORT_CHAT_NO_SESSION,
+            msg.EXPORT_CHAT_SESSION_GONE,
+        )
+        if session is None:
+            return
+        try:
+            path = write_session_markdown(session, args.strip() or ".")
+        except OSError as exc:
+            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error", markup=False)
+            return
+        self.notify(msg.EXPORT_CHAT_DONE.format(path=path), markup=False)
 
     def _on_fork_picked(self, source: Session, message_count: int | None) -> None:
         """Fork *source* at the picked point, switch to the fork, and prefill the question."""

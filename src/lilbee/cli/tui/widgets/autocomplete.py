@@ -46,7 +46,7 @@ _MAX_PATH_COMPLETIONS = 20
 # Commands whose argument is a filesystem path. They share _path_options and
 # the path-specific accept rules (typed-directory prefix kept, existing-path
 # collapse).
-PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export"})
+PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat"})
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 
@@ -222,6 +222,7 @@ _ARG_SOURCES: dict[str, Callable[[], list[str]]] = {
     "/add": _path_options,
     "/import": _path_options,
     "/export": _path_options,
+    "/export-chat": _path_options,
 }
 
 

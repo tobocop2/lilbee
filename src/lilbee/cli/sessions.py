@@ -8,7 +8,9 @@ from typing import NoReturn
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
+from lilbee.app.session_export import session_markdown, write_session_markdown
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output
@@ -34,6 +36,12 @@ _id_argument = typer.Argument(..., help="Session id, or a unique prefix of it.")
 _messages_option = typer.Option(
     None, "--messages", help="Copy only the first N messages (default: all of them)."
 )
+_output_option = typer.Option(
+    None,
+    "--output",
+    "-o",
+    help="Write to this file, or into this directory, instead of printing to stdout.",
+)
 
 
 def _require_sessions() -> None:
@@ -58,7 +66,8 @@ def _fail(message: str) -> NoReturn:
     if cfg.json_mode:
         json_output({"error": message})
     else:
-        console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+        # Text, not markup: messages carry user paths and prefixes verbatim.
+        console.print(Text(message, style=theme.ERROR), soft_wrap=True)
     raise typer.Exit(1)
 
 
@@ -152,6 +161,37 @@ def fork_cmd(
         json_output({"meta": asdict(meta)})
         return
     console.print(f"Forked to [{theme.ACCENT}]{meta.title}[/{theme.ACCENT}] ({fork_id[:8]}).")
+
+
+@sessions_app.command("export")
+def export_cmd(
+    session_id: str = _id_argument,
+    output: str | None = _output_option,
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Export a saved conversation as markdown."""
+    apply_overrides(data_dir=data_dir, use_global=use_global)
+    resolved = _resolve_id(session_id)
+    session = _store().get(resolved)
+    if output is None:
+        markdown = session_markdown(session)
+        if cfg.json_mode:
+            json_output({"id": resolved, "markdown": markdown})
+            return
+        # Bytes go to the binary stream, so a redirect is UTF-8 on every platform.
+        typer.echo(markdown.encode("utf-8"), nl=False)
+        return
+    try:
+        path = write_session_markdown(session, output)
+    except OSError as exc:
+        _fail(f"Could not write the export: {exc}")
+    if cfg.json_mode:
+        json_output({"id": resolved, "path": str(path)})
+        return
+    # A Text, not markup: a Windows separator before "[" would read as an escape.
+    # soft_wrap keeps a long path on one line, so it copies whole.
+    console.print(Text.assemble("Exported to ", (str(path), theme.ACCENT), "."), soft_wrap=True)
 
 
 @sessions_app.command("rename")

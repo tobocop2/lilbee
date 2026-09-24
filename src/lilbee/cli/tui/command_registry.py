@@ -153,6 +153,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_fork",
         help_text="Branch this conversation into a new session from any question",
     ),
+    SlashCommand(
+        "/export-chat",
+        "_cmd_export_chat",
+        args_hint="[path]",
+        help_text="Export this conversation as markdown (default: the current directory)",
+    ),
     SlashCommand("/quit", "_cmd_quit", aliases=("/q", "/exit"), help_text="Exit lilbee"),
 )
 
