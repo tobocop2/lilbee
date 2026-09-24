@@ -2456,6 +2456,26 @@ class TestAppSetActiveModelDownloadGuard:
         assert app._reject_if_downloading(True) is False
         assert app._reject_if_downloading(7) is False
 
+    async def test_reject_if_downloading_toasts_a_bracketed_label_without_markup(self) -> None:
+        """The in-flight download's label is a user-typed model ref."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+
+        ref = "acme/note[draft]-GGUF"
+        app = LilbeeApp()
+        app.task_bar.queue.enqueue(lambda: None, "note[draft]", TaskType.DOWNLOAD.value)
+        with (
+            mock.patch(
+                "lilbee.cli.tui.widgets.task_bar_controller.download_task_name",
+                return_value="note[draft]",
+            ),
+            mock.patch.object(app, "notify") as mock_notify,
+        ):
+            assert app._reject_if_downloading(ref) is True
+        mock_notify.assert_called_once()
+        assert "note[draft]" in mock_notify.call_args[0][0]
+        assert mock_notify.call_args.kwargs["markup"] is False
+
 
 class TestModelInfoExceptionBranches:
     """``_read_chat_arch`` / ``_read_embed_arch`` swallow read errors and return the info object."""

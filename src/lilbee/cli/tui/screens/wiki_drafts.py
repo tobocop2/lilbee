@@ -83,7 +83,7 @@ def _post_success(app: LilbeeApp, message: str) -> None:
     No reload here: the WIKI task's done hook rescans the wiki screens, and
     each rescan re-walks every page's frontmatter from disk.
     """
-    call_from_thread(app, app.notify, message, severity="information")
+    call_from_thread(app, app.notify, message, severity="information", markup=False)
 
 
 def _post_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
@@ -100,7 +100,7 @@ def _apply_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> Non
 
     No done hook fires for a failed task, so this path reloads itself.
     """
-    app.notify(message, severity=severity)
+    app.notify(message, severity=severity, markup=False)
     app.task_bar.reload_wiki_screens()
 
 

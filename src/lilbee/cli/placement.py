@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.placement import (
     PlacementView,
@@ -54,7 +55,8 @@ def _guard(action: Callable[[], PlacementView]) -> None:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+            # Text, not markup: the error can carry a spec file path or model ref.
+            console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(code=1) from exc
     if cfg.json_mode:
         # The same canonical shape the HTTP and MCP surfaces return.
@@ -107,9 +109,13 @@ def _render_view(view: PlacementView) -> None:
         console.print(f"  [{theme.ERROR}]{role.value}: does not fit, no server[/{theme.ERROR}]")
 
     for skipped in view.skipped_not_installed:
+        # Text, not markup: skipped.model is a user-configured model reference.
         console.print(
-            f"  [{theme.WARNING}]{skipped.role.value}: {skipped.model} not downloaded, "
-            f"pull it to place it[/{theme.WARNING}]"
+            Text.assemble(
+                (f"  {skipped.role.value}: ", theme.WARNING),
+                skipped.model,
+                (" not downloaded, pull it to place it", theme.WARNING),
+            )
         )
 
     if view.rejected_spec_json:

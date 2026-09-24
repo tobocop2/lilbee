@@ -6,6 +6,7 @@ from pathlib import Path
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
@@ -94,7 +95,10 @@ def memory_list_cmd(
         return
     table = Table("id", "kind", "shared", "text")
     for m in memories:
-        table.add_row(m.id[:_ID_PREVIEW_CHARS], m.kind.value, "yes" if m.shared else "no", m.text)
+        # Text, not a bare string: memory text is user-authored and carries brackets verbatim.
+        table.add_row(
+            m.id[:_ID_PREVIEW_CHARS], m.kind.value, "yes" if m.shared else "no", Text(m.text)
+        )
     console.print(table)
 
 
@@ -117,7 +121,8 @@ def memory_recall_cmd(
         console.print("No relevant memories.")
         return
     for m in memories:
-        console.print(f"- {m.text}")
+        # Text, not markup: memory text is user-authored and carries brackets verbatim.
+        console.print(Text.assemble("- ", m.text))
 
 
 @memory_app.command(name="remove")
@@ -137,7 +142,10 @@ def memory_remove(
         if not deleted:
             raise typer.Exit(1)
         return
-    console.print(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")
+    # Text, not markup: memory_id is a user-supplied CLI argument.
+    console.print(
+        Text.assemble(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")
+    )
     # Exit non-zero on not-found, matching `model remove` / `remove`.
     if not deleted:
         raise typer.Exit(1)

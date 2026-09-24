@@ -10,6 +10,7 @@ from typing import Any, NoReturn
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
@@ -35,6 +36,7 @@ from lilbee.cli.helpers import (
     announce_retrieval_query,
     auto_sync,
     json_output,
+    print_prefixed,
 )
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
@@ -70,8 +72,9 @@ def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:
     if cfg.json_mode:
         json_output({"error": str(exc), "hint": hint, "persisted_model": exc.persisted_model})
         raise SystemExit(1)
-    console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
-    console.print(hint)
+    # Text, not markup: the index's persisted embedder model can carry brackets.
+    print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+    console.print(Text(hint), soft_wrap=True)
     raise SystemExit(1)
 
 
@@ -242,7 +245,7 @@ def search(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     cleaned = [clean_result(r) for r in results]
 
@@ -352,7 +355,7 @@ def ask(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
 
 
@@ -375,7 +378,7 @@ def use_embedder(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
 
     if cfg.json_mode:
@@ -383,7 +386,8 @@ def use_embedder(
             {"command": "use-embedder", "model": result.model, "status": result.status.value}
         )
         return
-    console.print(f"Now embedding with [{theme.ACCENT}]{result.model}[/{theme.ACCENT}].")
+    # Text, not markup: result.model is a user-typed embedder ref.
+    console.print(Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."))
 
 
 def chat(
@@ -479,9 +483,10 @@ def _topics_for_query(query: str) -> None:
     if not all_concepts:
         console.print("No concepts found for this query.")
         return
-    console.print(f"Concepts related to [{theme.ACCENT}]{query}[/{theme.ACCENT}]:")
+    # Text, not markup: query is user-typed and concepts are extracted document content.
+    console.print(Text.assemble("Concepts related to ", (query, theme.ACCENT), ":"))
     for c in all_concepts:
-        console.print(f"  {c}")
+        console.print(Text.assemble("  ", c))
 
 
 def _topics_overview(top_k: int) -> None:

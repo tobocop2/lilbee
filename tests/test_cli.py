@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+from rich.text import Text
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
@@ -237,12 +238,31 @@ class TestSync:
         runner.invoke(app, ["sync"])
         assert mock_sync.call_args.kwargs.get("prune_ignored") is False
 
+    def test_sync_error_prints_a_bracketed_path_literally(self):
+        """A sync error can carry a document path, which must not go through markup."""
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._run_sync_with_signal_cancel",
+            side_effect=RuntimeError("locked: notes[draft].txt"),
+        ):
+            result = runner.invoke(app, ["sync"])
+        assert result.exit_code != 0
+        assert "Error: locked: notes[draft].txt" in result.output
+
 
 class TestRebuild:
     def test_rebuild_empty(self):
         result = runner.invoke(app, ["rebuild"])
         assert result.exit_code == 0
         assert "Rebuilt:" in result.output
+
+    def test_rebuild_error_prints_a_bracketed_path_literally(self):
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._run_sync_with_signal_cancel",
+            side_effect=RuntimeError("locked: notes[draft].txt"),
+        ):
+            result = runner.invoke(app, ["rebuild"])
+        assert result.exit_code != 0
+        assert "Error: locked: notes[draft].txt" in result.output
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_rebuild_processes_sets_ingest_processes(self, mock_sync, isolated_env):
@@ -349,6 +369,41 @@ class TestAdd:
         assert result.exit_code == 0
         assert "Warning" in result.output
         assert "is taken by another source" in result.output
+
+    def test_add_nonexistent_bracketed_path_prints_it_literally(self, tmp_path):
+        """A bracketed path in the not-found error must not go through markup."""
+        missing = tmp_path / "note[draft].txt"
+        result = runner.invoke(app, ["add", str(missing)])
+        assert result.exit_code != 0
+        assert f"Path not found: {missing}" in result.output
+
+    def test_add_warns_with_a_bracketed_name_taken_literally(self, isolated_env, tmp_path):
+        """A source label containing brackets must survive the warning verbatim."""
+        one = tmp_path / "a" / "man[ual]"
+        one.mkdir(parents=True)
+        (one / "doc.txt").write_text("content", encoding="utf-8")
+        runner.invoke(app, ["add", str(one)])
+
+        two = tmp_path / "b" / "man[ual]"
+        two.mkdir(parents=True)
+        (two / "other.txt").write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(two)])
+
+        assert result.exit_code == 0
+        assert "man[ual]" in result.output
+        assert "is taken by another source" in result.output
+
+    def test_add_sync_error_prints_a_bracketed_path_literally(self, isolated_env, tmp_path):
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        with mock.patch(
+            "lilbee.cli.commands.ingest_sync._run_sync_with_signal_cancel",
+            side_effect=RuntimeError("locked: notes[draft].txt"),
+        ):
+            result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code != 0
+        assert "Error: locked: notes[draft].txt" in result.output
 
 
 class TestAddIgnoresDirs:
@@ -775,6 +830,26 @@ class TestAutoSync:
         with mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg:
             auto_sync(con, background=True)
             mock_bg.assert_called_once_with(con)
+
+    def test_auto_sync_error_prints_a_bracketed_path_literally(self) -> None:
+        """A sync error can carry a document path, which must not go through markup."""
+        from rich.console import Console
+
+        from lilbee.cli.helpers import auto_sync
+
+        con = Console(quiet=True)
+        with (
+            mock.patch(
+                "lilbee.data.ingest.sync",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("locked: notes[draft].txt"),
+            ),
+            mock.patch.object(con, "print") as mock_print,
+            pytest.raises(SystemExit),
+        ):
+            auto_sync(con)
+        printed = mock_print.call_args.args[0]
+        assert "locked: notes[draft].txt" in printed.plain
 
 
 class TestAddPathsBackground:
@@ -1877,6 +1952,27 @@ class TestRemove:
         assert result.exit_code == 0
         assert cfg.worker_pool_eager_start is False
 
+    def test_remove_bracketed_name_prints_it_literally(self, isolated_env, mock_svc):
+        """A source name with brackets must not go through markup."""
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=["note[draft].pdf"], not_found=[]
+        )
+        result = runner.invoke(app, ["remove", "note[draft].pdf"])
+        assert result.exit_code == 0
+        assert "Removed note[draft].pdf" in result.output
+
+    def test_remove_not_found_bracketed_name_prints_it_literally(self, mock_svc):
+        from lilbee.data.store import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(
+            removed=[], not_found=["note[draft].pdf"]
+        )
+        result = runner.invoke(app, ["remove", "note[draft].pdf"])
+        assert result.exit_code == 1
+        assert "Not found: note[draft].pdf" in result.output
+
 
 class TestChunks:
     """Test chunks command."""
@@ -1987,6 +2083,40 @@ class TestChunks:
         assert data["source"] == "test.txt"
         assert len(data["chunks"]) == 1
         assert "vector" not in data["chunks"][0]
+
+    def test_chunks_nonexistent_bracketed_source_prints_it_literally(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
+        result = runner.invoke(app, ["chunks", "note[draft].pdf"])
+        assert result.exit_code == 1
+        assert "Source not found: note[draft].pdf" in result.output
+
+    def test_chunks_bracketed_source_and_content_print_literally(self, isolated_env, mock_svc):
+        """The source name and the chunk preview are document content, not markup."""
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "note[draft].txt",
+                "file_hash": "abc123",
+                "chunk_count": 1,
+                "ingested_at": "2026-01-01T00:00:00",
+            },
+        ]
+        mock_svc.store.get_chunks_by_source.return_value = [
+            SearchChunk(
+                source="note[draft].txt",
+                content_type="text",
+                page_start=0,
+                page_end=0,
+                line_start=0,
+                line_end=0,
+                chunk="See [bold]section 2[/bold] for torque specs.",
+                chunk_index=0,
+                vector=[0.1] * 768,
+            ),
+        ]
+        result = runner.invoke(app, ["chunks", "note[draft].txt"])
+        assert result.exit_code == 0
+        assert "chunks from note[draft].txt" in result.output
+        assert "See [bold]section 2[/bold] for torque specs." in result.output
 
 
 class TestReset:
@@ -4043,6 +4173,13 @@ class TestWikiBrowseCommands:
         assert result.exit_code == 1
         assert "not found" in json.loads(result.output)["error"]
 
+    def test_read_missing_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
+        """A user-typed slug must not go through markup."""
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "read", "entities/no[pe]"])
+        assert result.exit_code == 1
+        assert "wiki page not found: entities/no[pe]" in result.output
+
 
 class TestWikiCitations:
     def test_citations_empty(self, mock_svc):
@@ -4050,6 +4187,12 @@ class TestWikiCitations:
         result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/doc.md"])
         assert result.exit_code == 0
         assert "No citations found" in result.output
+
+    def test_citations_empty_bracketed_path_prints_it_literally(self, mock_svc):
+        mock_svc.store.get_citations_for_wiki.return_value = []
+        result = runner.invoke(app, ["wiki", "citations", "wiki/summaries/note[draft].md"])
+        assert result.exit_code == 0
+        assert "No citations found for wiki/summaries/note[draft].md" in result.output
 
     def test_citations_with_records(self, mock_svc):
         mock_svc.store.get_citations_for_wiki.return_value = [_citation_row()]
@@ -4483,6 +4626,18 @@ class TestWikiDraftsCli:
         )
         return isolated_env
 
+    def _seed_slug(self, isolated_env: Path, slug: str) -> Path:
+        """Like :meth:`_seed`, but the draft's slug is *slug*."""
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        summaries = isolated_env / "wiki" / "summaries"
+        summaries.mkdir(parents=True, exist_ok=True)
+        (summaries / f"{slug}.md").write_text("old body\n", encoding="utf-8")
+        drafts = isolated_env / "wiki" / "drafts"
+        drafts.mkdir(parents=True, exist_ok=True)
+        (drafts / f"{slug}.md").write_text("new body\n", encoding="utf-8")
+        return isolated_env
+
     def test_list_no_drafts(self, mock_svc, isolated_env):
         cfg.wiki = True
         cfg.wiki_dir = "wiki"
@@ -4526,6 +4681,13 @@ class TestWikiDraftsCli:
         cfg.wiki_dir = "wiki"
         result = runner.invoke(app, ["wiki", "drafts", "diff", "missing"])
         assert result.exit_code == 1
+
+    def test_diff_missing_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
+        cfg.wiki = True
+        cfg.wiki_dir = "wiki"
+        result = runner.invoke(app, ["wiki", "drafts", "diff", "mis[sing]"])
+        assert result.exit_code == 1
+        assert "draft not found: mis[sing]" in result.output
         assert "not found" in result.output
 
     def test_diff_missing_slug_json_error(self, mock_svc, isolated_env):
@@ -4613,6 +4775,14 @@ class TestWikiDraftsCli:
         assert "Accepted" in result.output
         assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
 
+    def test_accept_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
+        """A user-typed slug must not go through markup."""
+        self._seed_slug(isolated_env, "x[1]")
+        with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "x[1]"])
+        assert result.exit_code == 0, result.output
+        assert "Accepted x[1]" in result.output
+
     def test_accept_json_output(self, mock_svc, isolated_env):
         self._seed(isolated_env)
         cfg.json_mode = True
@@ -4696,6 +4866,12 @@ class TestWikiDraftsCli:
         assert result.exit_code == 0
         assert "Rejected" in result.output
         assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
+
+    def test_reject_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
+        self._seed_slug(isolated_env, "x[1]")
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "x[1]"])
+        assert result.exit_code == 0, result.output
+        assert "Rejected x[1]" in result.output
 
     def test_reject_json_output(self, mock_svc, isolated_env):
         self._seed(isolated_env)
@@ -4817,6 +4993,21 @@ class TestSyncProgressPrinter:
         cb(EventType.FILE_START, FileStartEvent(file="doc.md", total_files=5, current_file=2))
         con.print.assert_called_once()
         assert "doc.md" in str(con.print.call_args)
+
+    def test_file_start_event_bracketed_path_prints_it_literally(self):
+        """A document path with brackets must not go through markup."""
+        from lilbee.cli.sync import _sync_progress_printer
+        from lilbee.runtime.progress import EventType, FileStartEvent
+
+        con = MagicMock()
+        cb = _sync_progress_printer(con)
+        cb(
+            EventType.FILE_START,
+            FileStartEvent(file="note[draft].md", total_files=5, current_file=2),
+        )
+        printed = con.print.call_args.args[0]
+        assert isinstance(printed, Text)
+        assert "note[draft].md" in printed.plain
 
     def test_done_event(self):
         """_sync_progress_printer handles DONE event with summary."""
@@ -5238,6 +5429,28 @@ class TestSelfCheck:
             "gpu_devices",
         }
 
+    def test_loading_line_prints_a_bracketed_model_path_literally(self, tmp_path: Path) -> None:
+        """A user-supplied --chat-model-path can carry brackets verbatim."""
+        chat = tmp_path / "note[draft]" / "chat.gguf"
+        chat.parent.mkdir()
+        chat.write_bytes(b"chat")
+        emb = tmp_path / "emb.gguf"
+        emb.write_bytes(b"emb")
+        chat_patch, embed_patch = self._patch_self_check()
+        with chat_patch, embed_patch:
+            result = runner.invoke(
+                app,
+                [
+                    "self-check",
+                    "--chat-model-path",
+                    str(chat),
+                    "--embed-model-path",
+                    str(emb),
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        assert f"Loading chat model {chat}" in result.output
+
     def test_installed_model_path_none_when_registry_listing_fails(self) -> None:
         """A broken registry (corrupt manifests) falls back to the download leg."""
         from lilbee.catalog.types import ModelTask
@@ -5248,6 +5461,15 @@ class TestSelfCheck:
             side_effect=OSError("corrupt manifest"),
         ):
             assert _installed_model_path(ModelTask.CHAT, "acme/x-GGUF/x.gguf") is None
+
+    def test_emit_failure_prints_a_bracketed_error_literally(self) -> None:
+        """The failure detail is a model exception's repr and can carry a path."""
+        from lilbee.cli.commands import setup
+
+        with mock.patch.object(setup.console, "print") as mock_print:
+            setup._self_check_emit_failure("FileNotFoundError: note[draft].gguf")
+        printed = mock_print.call_args.args[0]
+        assert printed.plain == "SELF-CHECK FAILED: FileNotFoundError: note[draft].gguf"
 
     def test_installed_model_path_skips_unresolvable_refs(self) -> None:
         """A manifest whose blob is gone is skipped; nothing suitable yields None."""

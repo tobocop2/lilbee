@@ -260,4 +260,4 @@ class SessionListPanel(Vertical):
             return
         self._store().delete(meta.id)
         self.refresh_list()
-        self.app.notify(msg.SESSIONS_DELETED.format(title=meta.title))
+        self.app.notify(msg.SESSIONS_DELETED.format(title=meta.title), markup=False)

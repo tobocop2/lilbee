@@ -135,9 +135,12 @@ def show_cmd(
             }
         )
         return
-    console.print(f"[{theme.ACCENT}]{session.meta.title}[/{theme.ACCENT}]")
+    console.print(Text(session.meta.title, style=theme.ACCENT), soft_wrap=True)
     for message in session.messages:
-        console.print(f"[bold]{message.role.value}[/bold]: {message.content}")
+        # Text, not markup: message content is user-authored and carries brackets verbatim.
+        console.print(
+            Text.assemble((message.role.value, "bold"), ": ", message.content), soft_wrap=True
+        )
 
 
 @sessions_app.command("fork")
@@ -160,7 +163,11 @@ def fork_cmd(
     if cfg.json_mode:
         json_output({"meta": asdict(meta)})
         return
-    console.print(f"Forked to [{theme.ACCENT}]{meta.title}[/{theme.ACCENT}] ({fork_id[:8]}).")
+    # Text, not markup: a title is user-chosen and carries brackets verbatim.
+    console.print(
+        Text.assemble("Forked to ", (meta.title, theme.ACCENT), f" ({fork_id[:8]})."),
+        soft_wrap=True,
+    )
 
 
 @sessions_app.command("export")
@@ -208,7 +215,8 @@ def rename_cmd(
     if cfg.json_mode:
         json_output({"id": resolved, "title": title})
         return
-    console.print(f"Renamed to [{theme.ACCENT}]{title}[/{theme.ACCENT}].")
+    # Text, not markup: a title is user-chosen and carries brackets verbatim.
+    console.print(Text.assemble("Renamed to ", (title, theme.ACCENT), "."), soft_wrap=True)
 
 
 @sessions_app.command("delete")

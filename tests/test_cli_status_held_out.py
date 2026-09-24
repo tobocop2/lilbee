@@ -41,6 +41,20 @@ def test_held_out_files_are_listed_with_their_reasons() -> None:
     assert any("1" in s and "held out" in s and "--retry-skipped" in s for s in strings)
 
 
+def test_a_bracketed_filename_and_reason_render_literally() -> None:
+    """The held-out table must not treat a filename or reason as markup, and
+    a Windows path's backslash before a bracket must survive."""
+    status = _status(
+        skipped=[SkippedSource(filename="notes\\[draft].md", reason="unsupported: [scan]")],
+        skipped_total=1,
+    )
+    tables, _strings = _texts(status)
+    table = next(t for t in tables if t.title == "Held out of the index")
+    filename_cell, reason_cell = (col._cells[0] for col in table.columns)
+    assert filename_cell.plain == "notes\\[draft].md"
+    assert reason_cell.plain == "unsupported: [scan]"
+
+
 def test_the_held_out_summary_names_what_the_cap_hid() -> None:
     status = _status(
         skipped=[SkippedSource(filename="a.md", reason="no text extracted (0 chunks)")],

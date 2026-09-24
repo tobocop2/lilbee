@@ -13,8 +13,10 @@ from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.models import (
     ListModelsResult,
@@ -35,7 +37,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output
+from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 
 if TYPE_CHECKING:
@@ -188,7 +190,8 @@ def show_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+            # Text, not markup: the error carries a user-typed model ref.
+            console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     if cfg.json_mode:
         json_output(data.model_dump())
@@ -222,13 +225,13 @@ def _run_pull(
                 }
             )
         else:
-            console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {msg}")
+            print_prefixed(console, "Error: ", msg, style=theme.ERROR)
         raise typer.Exit(1) from None
     except (RuntimeError, PermissionError) as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise typer.Exit(1) from None
 
 
@@ -257,7 +260,10 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         console=err_console,
         transient=False,
     ) as progress:
-        task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
+        # escape(), not Text: ref is a model reference (not a filesystem path),
+        # so there is no Windows separator for escape() to eat, and the
+        # Progress task description column only accepts a markup string.
+        task_id = progress.add_task(f"Downloading {escape(ref)}", total=100, detail="")
 
         def on_update(p: DownloadProgress) -> None:
             progress.update(task_id, completed=p.percent, detail=p.detail)
@@ -265,9 +271,9 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         final = _run_pull(ref, src, on_update, allow_unsupported=allow_unsupported)
 
     if final.status == PullStatus.ALREADY_INSTALLED:
-        console.print(f"{ref} is already installed.")
+        console.print(Text(f"{ref} is already installed."), soft_wrap=True)
     else:
-        console.print(f"Pulled [{theme.ACCENT}]{ref}[/{theme.ACCENT}].")
+        console.print(Text.assemble("Pulled ", (ref, theme.ACCENT), "."), soft_wrap=True)
 
 
 @model_app.command("pull")
@@ -324,7 +330,8 @@ def rm_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+            # Text, not markup: the error carries a user-typed model ref.
+            console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     if cfg.json_mode:
         json_output(data.model_dump())
@@ -332,10 +339,11 @@ def rm_cmd(
             raise typer.Exit(1)
         return
     if not data.deleted:
-        console.print(f"[{theme.WARNING}]Not found: {ref}[/{theme.WARNING}]")
+        print_prefixed(console, "Not found: ", ref, style=theme.WARNING)
         raise typer.Exit(1)
     suffix = f" ({data.freed_gb:.2f} GB freed)" if data.freed_gb else ""
-    console.print(f"Removed [{theme.ACCENT}]{ref}[/{theme.ACCENT}]{suffix}.")
+    # Text, not markup: ref is a user-typed model reference.
+    console.print(Text.assemble("Removed ", (ref, theme.ACCENT), suffix, "."), soft_wrap=True)
 
 
 def _is_interactive_terminal() -> bool:

@@ -82,6 +82,19 @@ def test_show_by_prefix(seeded):
     assert "85 Nm." in result.output
 
 
+@pytest.mark.parametrize("blocker", ["[red]", "a[b"], ids=["style-tag", "unbalanced-bracket"])
+def test_show_prints_a_bracketed_title_and_message_as_written(seeded, blocker):
+    """A bracketed title or message must not go through markup."""
+    tmp_path, session_id = seeded
+    store = SessionStore()
+    store.set_title(session_id, blocker, TitleSource.CUSTOM)
+    store.add_message(session_id, SessionMessage(role=MessageRole.USER, content=blocker))
+    result = runner.invoke(app, _args(tmp_path, "show", session_id))
+    assert result.exit_code == 0, result.output
+    assert blocker in result.output
+    assert result.output.count(blocker) >= 2
+
+
 def test_show_json(seeded):
     tmp_path, session_id = seeded
     result = runner.invoke(app, _args(tmp_path, "show", session_id, json_mode=True))
@@ -111,6 +124,16 @@ def test_rename_json(seeded):
     tmp_path, session_id = seeded
     result = runner.invoke(app, _args(tmp_path, "rename", session_id, "New", json_mode=True))
     assert json.loads(result.output) == {"id": session_id, "title": "New"}
+
+
+@pytest.mark.parametrize(
+    "title", ["[red]Renamed", "C:\\notes\\[draft]"], ids=["style-tag", "windows-backslash"]
+)
+def test_rename_prints_a_bracketed_title_as_written(seeded, title):
+    tmp_path, session_id = seeded
+    result = runner.invoke(app, _args(tmp_path, "rename", session_id, title))
+    assert result.exit_code == 0, result.output
+    assert f"Renamed to {title}." in result.output
 
 
 def test_delete_with_yes(seeded):
@@ -182,6 +205,15 @@ def test_fork_json_with_a_count(seeded):
     assert meta["message_count"] == 1
     assert meta["title"] == "Torque specs (fork 1)"
     assert meta["origin"] == SessionOrigin.CLI
+
+
+def test_fork_prints_a_bracketed_title_as_written(seeded):
+    tmp_path, session_id = seeded
+    store = SessionStore()
+    store.set_title(session_id, "[red]Torque", TitleSource.CUSTOM)
+    result = runner.invoke(app, _args(tmp_path, "fork", session_id))
+    assert result.exit_code == 0, result.output
+    assert "Forked to [red]Torque (fork 1) (" in result.output
 
 
 def test_fork_lists_first_with_its_title(seeded):

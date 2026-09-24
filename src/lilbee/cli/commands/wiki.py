@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, NoReturn
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.services import get_services
 from lilbee.cli import theme
@@ -216,7 +217,8 @@ def wiki_read(
         if cfg.json_mode:
             json_output({"error": message})
         else:
-            console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+            # Text, not markup: a wiki slug is user-typed and carries brackets verbatim.
+            console.print(Text(message, style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1)
 
     if cfg.json_mode:
@@ -301,7 +303,10 @@ def _render_citations(
         return
 
     if not records:
-        console.print(f"No citations found for [{theme.ACCENT}]{value}[/{theme.ACCENT}]")
+        # Text, not markup: value is a user-supplied source or wiki path.
+        console.print(
+            Text.assemble("No citations found for ", (value, theme.ACCENT)), soft_wrap=True
+        )
         return
 
     table = Table(title=title)
@@ -407,7 +412,8 @@ def wiki_synthesize(
             f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] synthesis pages:"
         )
         for path in paths:
-            console.print(f"  {path}")
+            # Text, not markup: a generated page path can carry a corpus-derived name.
+            console.print(Text.assemble("  ", str(path)), soft_wrap=True)
     else:
         console.print("No synthesis pages generated (need 3+ sources per cluster).")
     _print_build_stats(result["stats"])
@@ -513,7 +519,8 @@ def wiki_generate(
         read_slug = page_slug(path, cfg.data_root / cfg.wiki_dir)
         json_output({"command": "wiki_generate", "slug": read_slug, "path": str(path)})
     else:
-        console.print(f"Wrote {path}")
+        # Text, not markup: a generated page path can carry a corpus-derived name.
+        console.print(Text.assemble("Wrote ", str(path)), soft_wrap=True)
 
 
 @wiki_app.command(name="wipe")
@@ -601,7 +608,8 @@ def _run_wiki_build(command_name: str) -> None:
             f"wiki pages from {result['entities']} extracted records:"
         )
         for path in pages:
-            console.print(f"  {path}")
+            # Text, not markup: a generated page path can carry a corpus-derived name.
+            console.print(Text.assemble("  ", str(path)), soft_wrap=True)
     else:
         console.print("No concept or entity pages generated.")
     _print_build_stats(result["stats"])
@@ -746,7 +754,8 @@ def wiki_drafts_diff(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+            # Text, not markup: the error carries the draft's path verbatim.
+            console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     except PathTraversalError:
         _draft_slug_error()
@@ -776,7 +785,8 @@ def wiki_drafts_accept(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+            # Text, not markup: the error carries the draft's path verbatim.
+            console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     except PathTraversalError:
         _draft_slug_error()
@@ -784,9 +794,14 @@ def wiki_drafts_accept(
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_accept", **result.to_dict()})
         return
+    # Text, not markup: the slug is user-typed and the destination is a path.
     console.print(
-        f"Accepted [{theme.ACCENT}]{slug}[/{theme.ACCENT}] -> "
-        f"{result.moved_to} ({result.reindexed_chunks} chunks re-indexed)"
+        Text.assemble(
+            "Accepted ",
+            (slug, theme.ACCENT),
+            f" -> {result.moved_to} ({result.reindexed_chunks} chunks re-indexed)",
+        ),
+        soft_wrap=True,
     )
 
 
@@ -809,7 +824,8 @@ def wiki_drafts_reject(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(f"[{theme.ERROR}]{exc}[/{theme.ERROR}]")
+            # Text, not markup: the error carries the draft's path verbatim.
+            console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     except PathTraversalError:
         _draft_slug_error()
@@ -817,4 +833,5 @@ def wiki_drafts_reject(
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_reject", "slug": slug})
         return
-    console.print(f"Rejected [{theme.ACCENT}]{slug}[/{theme.ACCENT}]")
+    # Text, not markup: the slug is user-typed and carries brackets verbatim.
+    console.print(Text.assemble("Rejected ", (slug, theme.ACCENT)), soft_wrap=True)

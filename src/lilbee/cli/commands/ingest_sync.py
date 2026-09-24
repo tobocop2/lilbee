@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+from rich.text import Text
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -33,6 +34,7 @@ from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
     add_paths,
     json_output,
+    print_prefixed,
     sync_result_to_json,
 )
 from lilbee.core.config import cfg
@@ -388,7 +390,7 @@ def sync_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     if cfg.json_mode:
         json_output(sync_result_to_json(result))
@@ -419,7 +421,7 @@ def rebuild(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     if not isinstance(result, SyncResult):
         raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
@@ -461,7 +463,7 @@ def _validate_file_paths(file_paths: list[Path]) -> None:
         if cfg.json_mode:
             json_output({"error": f"Path not found: {fp}"})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Path not found: {fp}")
+        print_prefixed(console, "Error: ", f"Path not found: {fp}", style=theme.ERROR)
         raise SystemExit(1)
 
 
@@ -572,7 +574,7 @@ def add(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
 
 
@@ -593,7 +595,7 @@ def chunks(
         if cfg.json_mode:
             json_output({"error": f"Source not found: {source}"})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]Source not found:[/{theme.ERROR}] {source}")
+        print_prefixed(console, "Source not found: ", source, style=theme.ERROR)
         raise SystemExit(1)
 
     raw_chunks = store.get_chunks_by_source(source)
@@ -606,16 +608,20 @@ def chunks(
         json_output({"command": "chunks", "source": source, "chunks": cleaned})
         return
 
+    # Text, not markup: the source name and chunk text are document content.
     console.print(
-        f"[{theme.LABEL}]{len(cleaned)}[/{theme.LABEL}]"
-        f" chunks from [{theme.ACCENT}]{source}[/{theme.ACCENT}]\n"
+        Text.assemble(
+            (str(len(cleaned)), theme.LABEL), " chunks from ", (source, theme.ACCENT), "\n"
+        ),
+        soft_wrap=True,
     )
     for c in cleaned:
         idx = c.get("chunk_index", "?")
         preview = c.get("chunk", "")[:CHUNK_PREVIEW_LEN]
         if len(c.get("chunk", "")) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        console.print(f"  [{idx}] {preview}")
+        # Text, not markup: the preview is document content.
+        console.print(Text.assemble(f"  [{idx}] ", preview), soft_wrap=True)
 
 
 _remove_names_argument = typer.Argument(
@@ -662,9 +668,10 @@ def remove(
             raise SystemExit(1)
         return
 
+    # Text, not markup: a source name is user-chosen and carries brackets verbatim.
     for name in result.removed:
-        console.print(f"Removed [{theme.ACCENT}]{name}[/{theme.ACCENT}]")
+        console.print(Text.assemble("Removed ", (name, theme.ACCENT)), soft_wrap=True)
     for name in result.not_found:
-        console.print(f"[{theme.ERROR}]Not found:[/{theme.ERROR}] {name}")
+        print_prefixed(console, "Not found: ", name, style=theme.ERROR)
     if not result.removed and result.not_found:
         raise SystemExit(1)

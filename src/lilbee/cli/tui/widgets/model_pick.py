@@ -150,13 +150,17 @@ def _persist(
             get_services().reload_role(target_role, wait=True)
         except Exception as exc:  # any reload failure becomes a toast, never a crash
             call_from_thread(
-                app, app.notify, msg.MODEL_SWAP_FAILED.format(error=exc), severity="error"
+                app,
+                app.notify,
+                msg.MODEL_SWAP_FAILED.format(error=exc),
+                severity="error",
+                markup=False,
             )
             return
         call_from_thread(app, _finish)
 
     def _finish() -> None:
         on_done()
-        app.notify(msg.MODEL_SWAP_DONE.format(name=ref))
+        app.notify(msg.MODEL_SWAP_DONE.format(name=ref), markup=False)
 
     app.run_worker(_runner, thread=True, exit_on_error=False, name=_PERSIST_WORKER_NAME)

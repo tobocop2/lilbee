@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from unittest.mock import patch
 
 import pytest
 from textual.app import ComposeResult
@@ -197,3 +198,58 @@ async def test_an_unresolvable_file_leaves_the_rows_own_figure(
         screen._install_model(dataclasses.replace(_model(), size_gb=4.0))
 
         assert asked == [int(4.0 * 1024**3)]
+
+
+async def test_enqueue_download_notifies_a_bracketed_name_without_markup() -> None:
+    """The model's display name is derived from a user-chosen HF repo id."""
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        pilot.app.task_bar.start_download = lambda *_a, **_kw: None
+        notified: list[tuple[str, dict]] = []
+        screen.notify = lambda message, **kw: notified.append((message, kw))
+
+        model = dataclasses.replace(_model(), hf_repo="acme/note[draft]-GGUF")
+        screen._enqueue_download(model)
+
+        assert len(notified) == 1
+        message, kwargs = notified[0]
+        assert "note[draft]" in message
+        assert kwargs["markup"] is False
+
+
+async def test_unsupported_confirm_enqueue_notifies_a_bracketed_name_without_markup() -> None:
+    """The unsupported-arch confirm path's queued toast carries the same bracketed name.
+
+    ``_enqueue_download`` has two toast sites for the same message: one inline
+    for a normal download, one inside the confirm dialog's callback for an
+    unsupported architecture. Both must drop markup on the same user-chosen name.
+    """
+    from lilbee.catalog.types import ModelCompat
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    async with _App().run_test(size=(120, 40)) as pilot:
+        screen = CatalogScreen()
+        await pilot.app.push_screen(screen)
+        await pilot.pause()
+
+        pilot.app.task_bar.start_download = lambda *_a, **_kw: None
+        notified: list[tuple[str, dict]] = []
+        screen.notify = lambda message, **kw: notified.append((message, kw))
+
+        with patch.object(screen.app, "push_screen") as mock_push:
+            model = dataclasses.replace(
+                _model(), hf_repo="acme/note[draft]-GGUF", compat=ModelCompat.UNSUPPORTED
+            )
+            screen._enqueue_download(model)
+            on_confirm = mock_push.call_args[0][1]
+            on_confirm(True)
+
+        assert len(notified) == 1
+        message, kwargs = notified[0]
+        assert "note[draft]" in message
+        assert kwargs["markup"] is False

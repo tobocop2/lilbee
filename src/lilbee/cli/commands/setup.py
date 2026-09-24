@@ -16,6 +16,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
+from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import (
@@ -24,7 +25,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output
+from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
@@ -134,7 +135,7 @@ def _self_check_emit_failure(error: str) -> None:
     if cfg.json_mode:
         json_output({"ok": False, "error": error})
     else:
-        console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {error}")
+        print_prefixed(console, "SELF-CHECK FAILED: ", error, style=theme.ERROR)
 
 
 def _resolved_provider_kwargs() -> dict[str, Any]:
@@ -234,7 +235,8 @@ def _self_check_leg(
         if model_path is None:
             model_path = _download_self_check_model(repo, filename)
             download_dir = model_path.parent
-        console.print(f"Loading {label} model {model_path}")
+        # Text, not markup: a self-check model path can be user-supplied.
+        console.print(Text.assemble(f"Loading {label} model ", str(model_path)), soft_wrap=True)
         result = check(model_path)
     except Exception as exc:
         _self_check_emit_failure(repr(exc))

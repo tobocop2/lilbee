@@ -119,6 +119,9 @@ async def test_picking_an_answer_forks_through_it_and_leaves_the_input_empty(ses
         assert [m.content for m in fork.messages] == ["Q1", "A1"]
         assert screen._chat_input.value == ""
         assert _notified(notify) == [msg.FORK_DONE.format(title="Torque (fork 1)")]
+        # The title is user-chosen (session rename, or an AI-generated title that
+        # can itself echo bracketed input), so the toast must disable markup.
+        assert notify.call_args.kwargs["markup"] is False
         assert len(screen.query(AssistantMessage)) == 1
         assert sessions.get(source).meta.message_count == 4
 

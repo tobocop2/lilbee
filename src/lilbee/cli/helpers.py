@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from rich.console import Console, RenderableType
 from rich.markup import escape
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.ingest import RegisterResult, register_sources
 from lilbee.app.status import StatusResult
@@ -124,7 +125,9 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         held.add_column("File", style=theme.ACCENT)
         held.add_column("Reason", style=theme.MUTED)
         for skipped in status.skipped:
-            held.add_row(escape(skipped.filename), escape(skipped.reason))
+            # Text, not escape(): a Windows path's separator before "[" survives Text
+            # but escape() eats it.
+            held.add_row(Text(skipped.filename), Text(skipped.reason))
         yield held
         b = theme.LABEL
         hidden = status.skipped_total - len(status.skipped)
@@ -172,12 +175,23 @@ SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
 
+def print_prefixed(con: Console, prefix: str, detail: object, *, style: str) -> None:
+    """Print *prefix* in *style*, then *detail* as literal text.
+
+    *detail* often carries a user-controlled value (a path, a name, an
+    exception message). Printing it as text rather than markup keeps a
+    bracket, or a Windows path separator before one, from being parsed as a
+    style tag.
+    """
+    con.print(Text.assemble((prefix, style), str(detail)), soft_wrap=True)
+
+
 def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:
     """Register *paths* as source roots, reporting what happened to each."""
     result = register_sources(paths, force=force)
     for name in result.name_taken:
         warning = NAME_TAKEN_WARNING.format(name=name)
-        con.print(f"[{theme.WARNING}]Warning:[/{theme.WARNING}] {warning}")
+        print_prefixed(con, "Warning: ", warning, style=theme.WARNING)
     return result
 
 
@@ -219,7 +233,8 @@ def add_paths(
     if chat_mode:
         print(summary)
     else:
-        con.print(f"[{theme.MUTED}]{summary}[/{theme.MUTED}]")
+        # Text, not markup: summary carries user-chosen source names verbatim.
+        con.print(Text(summary, style=theme.MUTED), soft_wrap=True)
     if not registration.reached_corpus:
         return
 
@@ -267,7 +282,7 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
     try:
         result = asyncio.run(sync())
     except RuntimeError as exc:
-        con.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(con, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     summary = _format_sync_summary(
         len(result.added),

@@ -716,6 +716,111 @@ async def test_apply_raises_placement_error_from_spec(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_preview_placement_error_notifies_without_markup(monkeypatch):
+    """action_preview's PlacementError notification disables markup for a bracketed message."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **k: calls.append((msg, k)))
+
+        def _boom() -> object:
+            raise PlacementError("device [0] has [bold]red[/bold] free")
+
+        monkeypatch.setattr(body, "_spec_from_editor", _boom)
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+
+    assert any("device [0] has [bold]red[/bold] free" in msg for msg, _ in calls)
+    assert any(k.get("markup") is False for _, k in calls)
+
+
+@pytest.mark.asyncio
+async def test_apply_placement_error_notifies_without_markup(monkeypatch):
+    """action_apply's PlacementError notification disables markup for a bracketed message."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **k: calls.append((msg, k)))
+
+        def _boom() -> object:
+            raise PlacementError("spec for [role] is invalid")
+
+        monkeypatch.setattr(body, "_spec_from_editor", _boom)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert any("spec for [role] is invalid" in msg for msg, _ in calls)
+    assert any(k.get("markup") is False for _, k in calls)
+
+
+@pytest.mark.asyncio
+async def test_preview_worker_error_notifies_without_markup(monkeypatch):
+    """_preview_worker's exception notification disables markup for a bracketed message."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+
+    def _boom(spec):  # type: ignore[no-untyped-def]
+        raise RuntimeError("preview failed for org/model[7b].gguf")
+
+    monkeypatch.setattr(fbm, "preview_placement", _boom)
+    calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **k: calls.append((msg, k)))
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        await pilot.pause()
+
+    assert any("preview failed for org/model[7b].gguf" in msg for msg, _ in calls)
+    assert any(k.get("markup") is False for _, k in calls)
+
+
+@pytest.mark.asyncio
+async def test_change_placement_error_notifies_without_markup(monkeypatch):
+    """_change_placement's exception notification disables markup for a bracketed message."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+
+    def _boom(spec):  # type: ignore[no-untyped-def]
+        raise RuntimeError("apply failed for C:\\models\\[draft].gguf")
+
+    monkeypatch.setattr(fbm, "set_placement", _boom)
+    calls: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **k: calls.append((msg, k)))
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert any("apply failed for C:\\models\\[draft].gguf" in msg for msg, _ in calls)
+    assert any(k.get("markup") is False for _, k in calls)
+
+
+@pytest.mark.asyncio
 async def test_clear_ignored_while_applying(monkeypatch):
     """ctrl+x is a no-op when apply is in progress (single-flight guard)."""
     from lilbee.cli.tui.widgets import fleet_body as fbm

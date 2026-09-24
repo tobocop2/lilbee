@@ -549,7 +549,9 @@ class LilbeeApp(App[None]):
         downloading = self.task_bar.downloading_label_for(value)
         if downloading is None:
             return False
-        self.notify(msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning")
+        self.notify(
+            msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning", markup=False
+        )
         return True
 
     def set_active_model(self, key: str, value: str) -> None:
