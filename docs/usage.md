@@ -201,6 +201,9 @@ tab-complete; `/help` opens the same catalog live.
 | `/crawl [url]` | | Crawl a URL. No args opens a dialog |
 | `/delete <name>` | | Remove a document from the index |
 | `/prune-ignored` | | Drop indexed documents a `.lilbeeignore` now excludes |
+| `/rebuild` | | Re-index the documents directory from scratch |
+| `/export <path>` | | Export a per-page text dataset (parquet or jsonl) |
+| `/import <path>` | | Import a per-page text dataset, then re-embed it |
 | `/remove <name>` | | Remove an installed model |
 | `/wiki` | | Open the generated wiki |
 | `/remember <text>` | | Save a memory (prefix with `pref:` for a preference). Needs memory enabled |
@@ -210,6 +213,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/theme <name>` | | Switch theme |
 | `/status` | | Show indexed documents and config |
 | `/login <token>` | | Log in to HuggingFace |
+| `/sessions` | | Open the sessions drawer |
 | `/fork` | | Branch this conversation after an answer you pick from a picker listing answers newest first; the fork opens with an empty input. With no answer yet, there is nothing to fork |
 | `/export-chat [path]` | | Export this conversation as markdown. No path writes `<title>-<id>.md` in the current directory; a directory gets that name inside it |
 | `/clear` | | Clear chat history |
