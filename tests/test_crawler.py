@@ -39,7 +39,6 @@ from lilbee.crawler.save import (
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
 from tests._mock_effects import repeat_last
-from tests._sys_modules import inject_modules
 
 
 @pytest.fixture(autouse=True)
@@ -234,16 +233,6 @@ class TestContentHash:
         assert content_hash("hello") != content_hash("world")
 
 
-def _make_crawl4ai_result(url="https://example.com", markdown="# Test", success=True, error=None):
-    """Build a mock crawl4ai CrawlResult."""
-    result = MagicMock()
-    result.url = url
-    result.markdown = markdown
-    result.success = success
-    result.error_message = error
-    return result
-
-
 @pytest.fixture(autouse=True)
 def _no_dns(monkeypatch):
     """Bypass SSRF DNS resolution in all crawler tests."""
@@ -425,14 +414,6 @@ class TestRequireValidCrawlUrl:
         require_valid_crawl_url("http://example.com")
 
 
-def _mock_crawl4ai(mock_crawler_cls):
-    """Install a fake crawl4ai module in sys.modules with the given AsyncWebCrawler."""
-    mock_mod = MagicMock()
-    mock_mod.AsyncWebCrawler = mock_crawler_cls
-    mock_mod.CrawlerRunConfig = MagicMock()
-    return mock_mod
-
-
 SEED = "https://example.com"
 
 
@@ -553,7 +534,7 @@ class TestCrawlSingle:
     ) -> None:
         """Without the ``crawler`` extra installed, crawl_single fails fast.
 
-        Without this guard the lazy ``import crawl4ai`` inside the fetcher
+        Without this guard the lazy ``import crawlberg`` inside the fetcher
         would be swallowed by the broad ``except Exception`` at the bottom
         of crawl_single, turning a missing-extra install into a silent
         ``CrawlResult(success=False)`` and a ``crawl_done`` with
@@ -1182,6 +1163,22 @@ class TestCrawlRecursive:
         assert len(results) == 3
         assert stub.closed == 1
 
+    async def test_error_during_cancel_teardown_is_not_a_failure(self, caplog):
+        """A crawl that raises after cancel reports nothing rather than a failed page."""
+        import threading
+
+        cancel = threading.Event()
+
+        async def _gen():
+            yield cb.page(f"{SEED}/p1", "# P1")
+            cancel.set()
+            raise RuntimeError("stream dropped")
+
+        with cb.StubCrawlberg(_gen).installed(), caplog.at_level("DEBUG"):
+            results = await crawl_recursive(SEED, max_depth=1, max_pages=10, cancel=cancel)
+        assert results == []
+        assert "ended during cancel teardown" in caplog.text
+
     async def test_mixed_success_failure(self):
         script = [cb.page(SEED, "# Home", depth=0), cb.error(f"{SEED}/broken", "404")]
         with cb.StubCrawlberg(script).installed():
@@ -1271,117 +1268,6 @@ class TestCrawlRecursive:
         monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
         with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_recursive("https://example.com", max_depth=1)
-
-
-class _StubURLFilter:
-    def __init__(self) -> None:
-        self.stats = MagicMock()
-
-    def _update_stats(self, passed: bool) -> None:
-        pass
-
-    def apply(self, url: str) -> bool:
-        return True
-
-
-class _StubDomainFilter(_StubURLFilter):
-    def __init__(self, allowed_domains: str) -> None:
-        super().__init__()
-        self.allowed_domains = allowed_domains
-
-    def apply(self, url: str) -> bool:
-        from urllib.parse import urlparse
-
-        host = (urlparse(url).hostname or "").lower()
-        allowed = self.allowed_domains.lower()
-        return host == allowed or host.endswith(f".{allowed}")
-
-
-@pytest.fixture
-def _stub_crawl4ai_filters(monkeypatch):
-    """Make ``crawl4ai.deep_crawling.filters`` importable with minimal stand-ins.
-
-    CI installs without the ``crawler`` extra, so ``_host_scope_filter``'s inline
-    ``from crawl4ai.deep_crawling.filters import ...`` would raise ImportError.
-    """
-    stub = MagicMock(URLFilter=_StubURLFilter, DomainFilter=_StubDomainFilter)
-    monkeypatch.setitem(sys.modules, "crawl4ai", MagicMock())
-    monkeypatch.setitem(sys.modules, "crawl4ai.deep_crawling", MagicMock())
-    monkeypatch.setitem(sys.modules, "crawl4ai.deep_crawling.filters", stub)
-
-
-class TestHostScopeFilter:
-    """whole-site crawl must scope to the exact host by default."""
-
-    @pytest.fixture(autouse=True)
-    def _public_dns(self, monkeypatch):
-        """The filter re-validates each link's IP; resolve to a public IP by default."""
-        monkeypatch.setattr(
-            "lilbee.crawler.url_filter.socket.getaddrinfo",
-            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
-        )
-
-    def test_exact_host_rejects_other_subdomains(self, _stub_crawl4ai_filters):
-        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
-
-        f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=False)
-        assert f.apply("https://en.wikipedia.org/wiki/Y") is True
-        assert f.apply("https://af.wikipedia.org/wiki/Y") is False
-        assert f.apply("https://wikipedia.org/wiki/Y") is False
-
-    def test_include_subdomains_allows_siblings(self, _stub_crawl4ai_filters):
-        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
-
-        f = _host_scope_filter("https://en.wikipedia.org/wiki/X", include_subdomains=True)
-        assert f.apply("https://en.wikipedia.org/wiki/Y") is True
-        assert f.apply("https://other.example.com/") is False
-
-    def test_returns_none_when_host_missing(self, _stub_crawl4ai_filters):
-        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
-
-        assert _host_scope_filter("not-a-url", include_subdomains=False) is None
-
-    def test_exact_host_rejects_link_resolving_to_private_ip(
-        self, _stub_crawl4ai_filters, monkeypatch
-    ):
-        """A discovered in-host link that resolves to a private IP is dropped (DNS-rebind)."""
-        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
-
-        def _resolve(host, *a, **kw):
-            if host == "internal.example.com":
-                return [(2, 1, 6, "", ("10.0.0.9", 0))]
-            return [(2, 1, 6, "", ("93.184.216.34", 0))]
-
-        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
-        f = _host_scope_filter("https://internal.example.com/a", include_subdomains=False)
-        # Same host, but it resolves to a private IP: must be rejected.
-        assert f.apply("https://internal.example.com/b") is False
-
-    def test_include_subdomains_rejects_link_resolving_to_private_ip(
-        self, _stub_crawl4ai_filters, monkeypatch
-    ):
-        """Subdomain-scope crawls also re-validate each discovered link's IP."""
-        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
-
-        def _resolve(host, *a, **kw):
-            if host == "rebind.example.com":
-                return [(2, 1, 6, "", ("127.0.0.1", 0))]
-            return [(2, 1, 6, "", ("93.184.216.34", 0))]
-
-        monkeypatch.setattr("lilbee.crawler.url_filter.socket.getaddrinfo", _resolve)
-        f = _host_scope_filter("https://example.com/a", include_subdomains=True)
-        assert f.apply("https://rebind.example.com/x") is False
-
-    def test_public_in_host_link_still_allowed(self, _stub_crawl4ai_filters, monkeypatch):
-        """A normal public in-host link passes both scope and IP checks."""
-        from lilbee.crawler.crawl4ai_fetcher import _host_scope_filter
-
-        monkeypatch.setattr(
-            "lilbee.crawler.url_filter.socket.getaddrinfo",
-            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
-        )
-        f = _host_scope_filter("https://example.com/a", include_subdomains=False)
-        assert f.apply("https://example.com/b") is True
 
 
 class TestSitemapCounting:
@@ -1878,443 +1764,6 @@ class TestCrawlAndSaveSemaphore:
         assert sem is not None
         assert sem._value == 2
         reset_services()
-
-
-@pytest.fixture
-def runner_on_crawl4ai(monkeypatch):
-    """Route the runner through the crawl4ai adapter these tests pin."""
-    from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
-
-    monkeypatch.setattr(
-        "lilbee.crawler.runner.CrawlbergFetcher",
-        lambda *, render_mode: Crawl4aiFetcher(render_mode=render_mode),
-    )
-
-
-@pytest.mark.usefixtures("runner_on_crawl4ai")
-class TestCrawlCancel:
-    """Cancel path: the three stitches that were broken on the first pass."""
-
-    def _setup_crawl4ai(self, mock_instance):
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-        mock_bfs_cls = MagicMock()
-        mock_deep = MagicMock()
-        mock_deep.BFSDeepCrawlStrategy = mock_bfs_cls
-        mock_dispatcher_mod = MagicMock()
-        mock_dispatcher_mod.RateLimiter = MagicMock()
-        mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
-        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
-        mock_strategy_mod = MagicMock()
-        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
-        mock_filters_mod = MagicMock()
-        mock_filters_mod.FilterChain = MagicMock()
-        mock_filters_mod.URLPatternFilter = MagicMock()
-        return {
-            "crawl4ai": mock_mod,
-            "crawl4ai.deep_crawling": mock_deep,
-            "crawl4ai.deep_crawling.filters": mock_filters_mod,
-            "crawl4ai.async_dispatcher": mock_dispatcher_mod,
-            "crawl4ai.async_crawler_strategy": mock_strategy_mod,
-        }, mock_bfs_cls
-
-    async def test_strategy_should_cancel_wired(self):
-        """crawl_recursive passes should_cancel= to BFSDeepCrawlStrategy."""
-        import threading as _threading
-
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        modules, bfs_cls = self._setup_crawl4ai(mock_instance)
-        evt = _threading.Event()
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, cancel=evt)
-
-        kwargs = bfs_cls.call_args.kwargs
-        assert "should_cancel" in kwargs
-        cb = kwargs["should_cancel"]
-        assert cb() is False
-        evt.set()
-        assert cb() is True
-
-    async def test_strategy_cancel_called_on_event(self):
-        """When cancel fires mid-stream, strategy.cancel() is invoked."""
-        import asyncio as _asyncio
-        import threading as _threading
-
-        cancel = _threading.Event()
-
-        async def _gen():
-            for i in range(1, 5):
-                await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}")
-                if i == 1:
-                    cancel.set()
-
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        modules, bfs_cls = self._setup_crawl4ai(mock_instance)
-        strategy_instance = MagicMock()
-        strategy_instance.cancel = MagicMock()
-        bfs_cls.return_value = strategy_instance
-
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=10, cancel=cancel)
-
-        strategy_instance.cancel.assert_called_once()
-
-    async def test_stream_aclose_called_on_async_gen(self):
-        """The async-generator stream is aclose()'d before the crawler context exits."""
-        import threading as _threading
-
-        aclose_called = []
-
-        async def _gen():
-            try:
-                for i in range(1, 4):
-                    yield _make_crawl4ai_result(url=f"https://example.com/p{i}")
-            finally:
-                aclose_called.append(True)
-
-        gen = _gen()
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=gen)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        modules, _ = self._setup_crawl4ai(mock_instance)
-        cancel = _threading.Event()
-        cancel.set()  # cancel immediately so the loop breaks after first result
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=10, cancel=cancel)
-        # The generator's finally ran, proving aclose completed
-        assert aclose_called == [True]
-
-    async def test_stream_aclose_noop_for_list(self):
-        """List-mode arun return (batch shape) doesn't trigger aclose."""
-        mock_results = [_make_crawl4ai_result(url="https://example.com", markdown="# H")]
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_results)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        modules, _ = self._setup_crawl4ai(mock_instance)
-        with inject_modules(modules):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
-        assert len(results) == 1
-
-    async def test_post_cancel_teardown_errors_logged_at_debug(self, caplog):
-        """After cancel, BrowserContext-closed errors log at DEBUG, not WARNING."""
-        import logging as _logging
-        import threading as _threading
-
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(side_effect=RuntimeError("BrowserContext.new_page: boom"))
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        modules, _ = self._setup_crawl4ai(mock_instance)
-        cancel = _threading.Event()
-        cancel.set()  # cancel fired before the exception happens
-        caplog.set_level(_logging.DEBUG, logger="lilbee.crawler")
-        with inject_modules(modules):
-            results = await crawl_recursive("https://example.com", cancel=cancel)
-
-        # No synthetic failure entry on the cancel path
-        assert results == []
-        # The teardown error is at DEBUG, not WARNING. Scope to the crawler logger:
-        # an unrelated background warm-up thread can otherwise leak a warning here.
-        warnings = [
-            r
-            for r in caplog.records
-            if r.levelno == _logging.WARNING and r.name.startswith("lilbee.crawler")
-        ]
-        assert not warnings
-
-    async def test_safe_strategy_cancel_missing_method(self):
-        """_safe_strategy_cancel tolerates strategies without a cancel() method."""
-        from lilbee.crawler.crawl4ai_fetcher import _safe_strategy_cancel
-
-        _safe_strategy_cancel(object())  # object() has no cancel; must not raise
-
-    async def test_safe_strategy_cancel_swallows_runtime_error(self, caplog):
-        """_safe_strategy_cancel logs at debug when cancel() raises RuntimeError.
-
-        Mirrors the real shape of ``BFSDeepCrawlStrategy.cancel()`` failing after
-        the strategy's internal state was already torn down.
-        """
-        import logging as _logging
-
-        from lilbee.crawler.crawl4ai_fetcher import _safe_strategy_cancel
-
-        class _Strategy:
-            def cancel(self) -> None:
-                raise RuntimeError("strategy already closed")
-
-        with caplog.at_level(_logging.DEBUG, logger="lilbee.crawler.crawl4ai_fetcher"):
-            _safe_strategy_cancel(_Strategy())
-        assert any("strategy.cancel() raised" in r.getMessage() for r in caplog.records)
-
-    async def test_safe_aclose_noop_on_none(self):
-        """_safe_aclose returns cleanly when stream is None (e.g. crawler never opened)."""
-        from lilbee.crawler.crawl4ai_fetcher import _safe_aclose
-
-        await _safe_aclose(None)  # must not raise
-
-    async def test_safe_aclose_logs_and_swallows_teardown_error(self, caplog):
-        """A failing aclose() must not propagate; it is logged at debug instead."""
-        from lilbee.crawler.crawl4ai_fetcher import _safe_aclose
-
-        async def _gen():
-            try:
-                yield 1
-            finally:
-                raise RuntimeError("boom in cleanup")
-
-        stream = _gen()
-        await stream.__anext__()  # enter the generator so aclose triggers the finally
-        with caplog.at_level("DEBUG"):
-            await _safe_aclose(stream)  # must not raise
-        assert any("aclose() raised during teardown" in r.getMessage() for r in caplog.records)
-
-    async def test_hard_cap_on_visible_counter(self):
-        """counter never exceeds the resolved max_pages, even if crawl4ai yields more.
-
-        crawl4ai's BFS only counts successful pages toward max_pages, so failed
-        or redirected pages can push our per-result counter past the cap. We
-        break the loop explicitly when counter hits the cap.
-        """
-        import asyncio as _asyncio
-
-        async def _gen():
-            # yield 10 results even though cap will be 3
-            for i in range(1, 11):
-                await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}")
-
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        modules, bfs_cls = self._setup_crawl4ai(mock_instance)
-        strategy_instance = MagicMock()
-        strategy_instance.cancel = MagicMock()
-        bfs_cls.return_value = strategy_instance
-
-        events = []
-
-        def on_progress(event_type, data):
-            if event_type == EventType.CRAWL_PAGE:
-                events.append(data.current)
-
-        with inject_modules(modules):
-            results = await crawl_recursive(
-                "https://example.com", max_depth=1, max_pages=3, on_progress=on_progress
-            )
-
-        # User-visible counter stops at 3; no event announces current=4.
-        assert events == [1, 2, 3]
-        assert len(results) == 3
-        # Strategy was asked to stop once the cap hit.
-        strategy_instance.cancel.assert_called_once()
-
-
-@pytest.mark.usefixtures("runner_on_crawl4ai")
-class TestCrawlDispatcher:
-    """Rate-limit dispatcher wiring for the recursive path."""
-
-    def _setup_crawl4ai(self, mock_instance):
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-        mock_deep = MagicMock()
-        mock_deep.BFSDeepCrawlStrategy = MagicMock()
-        mock_dispatcher_mod = MagicMock()
-        mock_rl = MagicMock()
-        mock_sd = MagicMock()
-        mock_dispatcher_mod.RateLimiter = mock_rl
-        mock_dispatcher_mod.SemaphoreDispatcher = mock_sd
-        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
-        mock_strategy_mod = MagicMock()
-        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
-        mock_filters_mod = MagicMock()
-        mock_filters_mod.FilterChain = MagicMock()
-        mock_filters_mod.URLPatternFilter = MagicMock()
-        return (
-            {
-                "crawl4ai": mock_mod,
-                "crawl4ai.deep_crawling": mock_deep,
-                "crawl4ai.deep_crawling.filters": mock_filters_mod,
-                "crawl4ai.async_dispatcher": mock_dispatcher_mod,
-                "crawl4ai.async_crawler_strategy": mock_strategy_mod,
-            },
-            mock_rl,
-            mock_sd,
-        )
-
-    async def test_uniform_knobs_on_crawler_run_config(self):
-        """mean_delay / max_range / semaphore_count come from cfg."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        modules, _, _ = self._setup_crawl4ai(mock_instance)
-        crc = modules["crawl4ai"].CrawlerRunConfig
-
-        cfg.crawl_mean_delay = 2.0
-        cfg.crawl_max_delay_range = 1.0
-        cfg.crawl_concurrent_requests = 7
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
-
-        kwargs = crc.call_args.kwargs
-        assert kwargs["mean_delay"] == 2.0
-        assert kwargs["max_range"] == 1.0
-        assert kwargs["semaphore_count"] == 7
-
-    async def test_rate_limiter_built_when_flag_on(self):
-        """HTTP mode: crawl_retry_on_rate_limit=True builds RateLimiter + SemaphoreDispatcher."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
-
-        cfg.crawl_retry_on_rate_limit = True
-        cfg.crawl_retry_base_delay_min = 1.0
-        cfg.crawl_retry_base_delay_max = 3.0
-        cfg.crawl_retry_max_backoff = 30.0
-        cfg.crawl_retry_max_attempts = 3
-        cfg.crawl_concurrent_requests = 3
-        with inject_modules(modules):
-            await crawl_recursive(
-                "https://example.com", max_depth=1, max_pages=5, render_mode=CrawlRenderMode.HTTP
-            )
-
-        rl_kwargs = mock_rl.call_args.kwargs
-        assert rl_kwargs["base_delay"] == (1.0, 3.0)
-        assert rl_kwargs["max_delay"] == 30.0
-        assert rl_kwargs["max_retries"] == 3
-        sd_kwargs = mock_sd.call_args.kwargs
-        assert sd_kwargs["semaphore_count"] == 3
-        assert sd_kwargs["rate_limiter"] is mock_rl.return_value
-
-    async def test_browser_mode_uses_memory_adaptive_dispatcher(self):
-        """Browser mode swaps in MemoryAdaptiveDispatcher to back off under memory pressure."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
-        mad = modules["crawl4ai.async_dispatcher"].MemoryAdaptiveDispatcher
-
-        cfg.crawl_retry_on_rate_limit = True
-        cfg.crawl_concurrent_requests = 4
-        with inject_modules(modules):
-            await crawl_recursive(
-                "https://example.com", max_depth=1, max_pages=5, render_mode=CrawlRenderMode.BROWSER
-            )
-
-        mock_sd.assert_not_called()
-        mad.assert_called_once()
-        mad_kwargs = mad.call_args.kwargs
-        assert mad_kwargs["max_session_permit"] == 4
-        assert mad_kwargs["rate_limiter"] is mock_rl.return_value
-
-    def test_browser_config_reads_memory_levers_from_cfg(self, monkeypatch):
-        """Browser-mode BrowserConfig is built from the configurable memory levers."""
-        from lilbee.crawler import crawl4ai_fetcher
-
-        monkeypatch.setattr(cfg, "crawl_browser_recycle_pages", 7)
-        monkeypatch.setattr(cfg, "crawl_browser_extra_args", ["--flag-a", "--flag-b"])
-        mock_mod = MagicMock()
-        with inject_modules({"crawl4ai": mock_mod}):
-            crawl4ai_fetcher._build_inner_crawler(
-                verbose=False, render_mode=CrawlRenderMode.BROWSER
-            )
-        bc_kwargs = mock_mod.BrowserConfig.call_args.kwargs
-        assert bc_kwargs["max_pages_before_recycle"] == 7
-        assert bc_kwargs["extra_args"] == ["--flag-a", "--flag-b"]
-
-    async def test_rate_limiter_disabled_when_flag_off(self):
-        """crawl_retry_on_rate_limit=False skips the dispatcher entirely."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        modules, mock_rl, mock_sd = self._setup_crawl4ai(mock_instance)
-
-        cfg.crawl_retry_on_rate_limit = False
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
-
-        mock_rl.assert_not_called()
-        mock_sd.assert_not_called()
-
-    async def test_lilbee_async_crawler_forwards_default_dispatcher(self):
-        """_LilbeeAsyncCrawler threads its default dispatcher into arun_many."""
-        from lilbee.crawler.crawl4ai_fetcher import _LilbeeAsyncCrawler
-
-        inner = MagicMock()
-        inner.arun_many = AsyncMock()
-        crawler = _LilbeeAsyncCrawler(inner, dispatcher="DEFAULT")
-        await crawler.arun_many(["u"], config="C")
-        inner.arun_many.assert_awaited_once_with(["u"], config="C", dispatcher="DEFAULT")
-
-    async def test_exclude_patterns_build_filter_chain(self):
-        """cfg.crawl_exclude_patterns feeds URLPatternFilter into BFS strategy."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        modules, _, _ = self._setup_crawl4ai(mock_instance)
-        bfs_cls = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        url_pattern_cls = modules["crawl4ai.deep_crawling.filters"].URLPatternFilter
-        filter_chain_cls = modules["crawl4ai.deep_crawling.filters"].FilterChain
-
-        cfg.crawl_exclude_patterns = ["/page/\\d+", "/tag/"]
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
-
-        # URLPatternFilter gets the patterns with reverse=True, use_glob=False
-        url_pattern_cls.assert_called_once()
-        call = url_pattern_cls.call_args
-        assert call.args[0] == ["/page/\\d+", "/tag/"]
-        assert call.kwargs.get("reverse") is True
-        assert call.kwargs.get("use_glob") is False
-        # FilterChain gets a list containing the pattern filter
-        filter_chain_cls.assert_called_once()
-        # BFS strategy receives the filter_chain
-        assert "filter_chain" in bfs_cls.call_args.kwargs
-
-    async def test_empty_exclude_patterns_uses_empty_filter_chain(self):
-        """cfg.crawl_exclude_patterns=[] means no URLPatternFilter is constructed."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        modules, _, _ = self._setup_crawl4ai(mock_instance)
-        url_pattern_cls = modules["crawl4ai.deep_crawling.filters"].URLPatternFilter
-
-        cfg.crawl_exclude_patterns = []
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
-        url_pattern_cls.assert_not_called()
-
-    async def test_lilbee_async_crawler_explicit_dispatcher_wins(self):
-        """An explicit dispatcher= on arun_many beats the default."""
-        from lilbee.crawler.crawl4ai_fetcher import _LilbeeAsyncCrawler
-
-        inner = MagicMock()
-        inner.arun_many = AsyncMock()
-        crawler = _LilbeeAsyncCrawler(inner, dispatcher="DEFAULT")
-        await crawler.arun_many(["u"], dispatcher="EXPLICIT")
-        inner.arun_many.assert_awaited_once_with(["u"], config=None, dispatcher="EXPLICIT")
 
 
 class TestSaveSingleResult:
@@ -2984,30 +2433,3 @@ class TestChromiumBootstrapTermination:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert proc.terminated  # the orphaned install was terminated
-
-
-class TestCrawl4aiAdapterEdges:
-    """crawl4ai adapter paths the runner no longer reaches."""
-
-    async def test_browser_mode_without_chromium_raises(self, monkeypatch):
-        from lilbee.crawler.crawl4ai_fetcher import _open_crawler
-
-        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserError, match="Chromium"):
-            async with _open_crawler(render_mode=CrawlRenderMode.BROWSER):
-                pass
-
-    async def test_single_result_stream_yields_it(self):
-        from lilbee.crawler.crawl4ai_fetcher import _iter_crawl_stream
-
-        result = _make_crawl4ai_result()
-        assert [item async for item in _iter_crawl_stream(result)] == [result]
-
-    def test_crawler_available_probes_crawl4ai(self):
-        from lilbee.crawler import crawl4ai_fetcher
-
-        crawl4ai_fetcher.crawler_available.cache_clear()
-        with patch("importlib.util.find_spec", return_value=None) as find_spec:
-            assert crawl4ai_fetcher.crawler_available() is False
-        crawl4ai_fetcher.crawler_available.cache_clear()
-        find_spec.assert_called_once_with("crawl4ai")

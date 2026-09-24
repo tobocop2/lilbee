@@ -578,20 +578,19 @@ class TestMemoryTuningSettingsMap:
         # field must be writable through the HTTP / MCP / programmatic contract.
         assert "crawl_render_mode" in WRITABLE_CONFIG_FIELDS
 
-    def test_browser_memory_levers_in_settings_map(self):
+    def test_list_default_comes_from_its_factory(self):
+        from lilbee.core.config.defaults import DEFAULT_CRAWL_EXCLUDE_PATTERNS
 
-        recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
-        assert recycle.writable is True
-        assert recycle.type is int
-        assert get_default("crawl_browser_recycle_pages") == 50
+        assert get_default("crawl_exclude_patterns") == list(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
 
-        extra = SETTINGS_MAP["crawl_browser_extra_args"]
-        assert extra.writable is True
-        assert extra.type is list
-        assert get_default("crawl_browser_extra_args") == [
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-        ]
+    def test_removed_crawler_settings_are_not_offered(self):
+        for name in (
+            "crawl_browser_recycle_pages",
+            "crawl_browser_extra_args",
+            "crawl_convert_workers",
+        ):
+            assert name not in SETTINGS_MAP
+            assert name not in WRITABLE_CONFIG_FIELDS
 
 
 class TestCrawlRenderModeConfig:
@@ -617,13 +616,6 @@ class TestCrawlRenderModeConfig:
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "bogus")
         with pytest.raises(ValidationError):
             Config()
-
-    def test_browser_memory_lever_defaults(self):
-        from lilbee.core.config.model import Config
-
-        c = Config()
-        assert c.crawl_browser_recycle_pages == 50
-        assert c.crawl_browser_extra_args == ["--disable-dev-shm-usage", "--disable-gpu"]
 
 
 class TestOverlayPersistedSettings:
@@ -722,8 +714,8 @@ class TestListSettingRegexMarker:
     def test_only_regex_list_validates_as_regex(self):
 
         assert SETTINGS_MAP["crawl_exclude_patterns"].validate_regex is True
-        # Chromium flag list must not be regex-validated.
-        assert SETTINGS_MAP["crawl_browser_extra_args"].validate_regex is False
+        # A list of plain values must not be regex-validated.
+        assert SETTINGS_MAP["ocr_language"].validate_regex is False
 
 
 class TestUtf8RoundTrip:

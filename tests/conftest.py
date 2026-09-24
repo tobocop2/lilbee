@@ -235,7 +235,7 @@ def _only_real_litellm_installed(dist: str) -> str:
 
 @pytest.fixture(autouse=True)
 def _seal_litellm_distributions(monkeypatch):
-    """Report real litellm installed and no fork, instead of the host's packages."""
+    """Report litellm installed, instead of the host's packages."""
     monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _only_real_litellm_installed)
     _real_litellm_available.cache_clear()
     yield

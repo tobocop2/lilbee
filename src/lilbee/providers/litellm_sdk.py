@@ -210,29 +210,13 @@ def _extract_tool_call_delta(call: Any, *, fallback_index: int) -> SdkToolCallDe
     )
 
 
-_UV_EXCLUDES_URL = "https://lilbee.sh/uv-excludes.txt"
-
 LITELLM_MISSING_MSG = (
     "Remote and API models need the lilbee[litellm] extra. If you installed lilbee with "
-    "uv tool install, run your install command again with litellm added to the extras, "
-    f"and keep --excludes {_UV_EXCLUDES_URL} if you use the crawler. If you installed "
-    "lilbee with pip, run: pip install 'lilbee[litellm]'. If the crawler extra is also "
-    "installed, lilbee then asks you to remove the unclecode-litellm fork and shows how."
+    "uv tool install, run your install command again with litellm added to the extras. "
+    "If you installed lilbee with pip, run: pip install 'lilbee[litellm]'."
 )
 
 _LITELLM_DIST = "litellm"
-# crawl4ai requires unclecode-litellm, a fork that installs into litellm's package
-# directory, so the litellm package alone does not tell which one is installed.
-_LITELLM_FORK_DIST = "unclecode-litellm"
-_LITELLM_FORK_MSG = (
-    "Both litellm and unclecode-litellm are installed. unclecode-litellm is a fork of "
-    "litellm that crawl4ai requires, and it writes into the same litellm package, so "
-    "remote and API models cannot load reliably. If you installed lilbee with "
-    "uv tool install, run your install command again with --reinstall --excludes "
-    f"{_UV_EXCLUDES_URL} added. If you installed lilbee with pip, run: "
-    "pip uninstall -y unclecode-litellm && "
-    "pip install --force-reinstall --no-deps litellm=={version}"
-)
 
 
 def _installed_version(dist: str) -> str | None:
@@ -245,7 +229,7 @@ def _installed_version(dist: str) -> str | None:
 
 @functools.cache
 def litellm_available() -> bool:
-    """Return True if the ``litellm`` distribution is installed, not only crawl4ai's fork.
+    """Return True if the ``litellm`` distribution is installed.
 
     Reads package metadata instead of importing ``litellm``, whose first import
     takes seconds on Windows and would block the Settings screen's compose.
@@ -255,15 +239,8 @@ def litellm_available() -> bool:
 
 def _require_litellm() -> Any:
     """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
-    litellm_version = _installed_version(_LITELLM_DIST)
-    if litellm_version is None:
+    if _installed_version(_LITELLM_DIST) is None:
         raise ProviderError(LITELLM_MISSING_MSG, provider=_PROVIDER_NAME)
-    # Temporary: pip cannot exclude the fork. Remove once crawl4ai ships
-    # unclecode/crawl4ai#2107.
-    if _installed_version(_LITELLM_FORK_DIST) is not None:
-        raise ProviderError(
-            _LITELLM_FORK_MSG.format(version=litellm_version), provider=_PROVIDER_NAME
-        )
     try:
         import litellm
     except ImportError as exc:

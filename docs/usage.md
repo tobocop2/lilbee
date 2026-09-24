@@ -1144,7 +1144,7 @@ pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-ba
 
 # uv tool
 uv tool install --prerelease=allow 'lilbee[graph]'
-uv tool install --prerelease=allow 'lilbee[crawler]' --excludes https://lilbee.sh/uv-excludes.txt
+uv tool install --prerelease=allow 'lilbee[crawler]'
 uv tool install --prerelease=allow 'lilbee[litellm]'
 ```
 
@@ -1152,15 +1152,11 @@ Install several at once, engine included:
 
 ```bash
 # uv tool
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/ --excludes https://lilbee.sh/uv-excludes.txt
+uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
 
 # pip
 pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
-pip uninstall -y unclecode-litellm
-pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
 ```
-
-Add `--excludes https://lilbee.sh/uv-excludes.txt` to any uv install that has `crawler` in the extras list; on uv 0.10.8 or later, `uv tool upgrade` keeps it. With pip, run the two commands above after a `pip install` that has both `crawler` and `litellm`.
 
 </details>
 
@@ -1231,8 +1227,8 @@ Based on: Microsoft Research's LazyGraphRAG technique, Church & Hanks 1990
 Index web pages alongside your local documents. Crawl single pages or follow
 links recursively.
 
-**What it does:** Fetches web pages using a headless browser (Playwright),
-extracts markdown content, and indexes it. Supports recursive crawling with
+**What it does:** Fetches web pages over HTTP, or through a headless Chromium
+for pages that need JavaScript, extracts markdown content, and indexes it. Supports recursive crawling with
 configurable depth, concurrent fetching, live progress, cancel, per-domain
 rate-limit + retries on HTTP 429/503, and SSRF protection against internal
 network access.

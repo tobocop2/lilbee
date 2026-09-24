@@ -3230,7 +3230,7 @@ class TestAddWithUrls:
     @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_add_url_json_output_is_clean(self, mock_sync, mock_crawl, mock_avail, isolated_env):
-        """--json add with a URL produces clean JSON with no crawl4ai prefix text."""
+        """--json add with a URL produces clean JSON with no crawler prefix text."""
         from pathlib import Path
 
         mock_crawl.return_value = [Path("a.md")]
@@ -3256,7 +3256,7 @@ class TestAddWithUrls:
         mock_crawl.assert_called_once()
 
     def test_add_url_without_crawler_installed(self):
-        """Adding a URL when crawl4ai is not installed shows install message."""
+        """Adding a URL when the crawler extra is not installed shows install message."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = runner.invoke(app, ["add", "https://example.com"])
             assert result.exit_code == 1
@@ -6032,7 +6032,7 @@ class TestSelfCheckExtras:
         assert payload == {
             "ok": True,
             "litellm": True,
-            "crawl4ai": True,
+            "crawlberg": True,
             "spacy": True,
             "graspologic_native": True,
             "charset_detection": True,
@@ -6043,9 +6043,9 @@ class TestSelfCheckExtras:
         chardet.models import that frozen builds have shipped broken.
 
         Calls the probe directly rather than the command: the unmocked
-        command imports the known-heavy extras (crawl4ai, litellm, spacy),
-        and a real crawl4ai import leaves its submodules in sys.modules,
-        which breaks the crawler tests' top-level-only module injection.
+        command imports the known-heavy extras (crawlberg, litellm, spacy),
+        and a real crawlberg import leaves it in sys.modules, which breaks the
+        crawler tests' module injection.
         """
         from lilbee.cli.commands import setup as setup_module
 
@@ -6114,7 +6114,7 @@ class TestSelfCheckExtras:
             ),
             mock.patch(
                 "lilbee.cli.commands.setup.importlib.import_module",
-                side_effect=self._import_module_stub(missing={"crawl4ai"}),
+                side_effect=self._import_module_stub(missing={"crawlberg"}),
             ),
         ):
             result = runner.invoke(app, ["--json", "self-check-extras"])
@@ -6122,8 +6122,8 @@ class TestSelfCheckExtras:
         payload = json.loads(result.stdout.strip().splitlines()[-1])
         assert payload["ok"] is False
         assert payload["litellm"] is True
-        assert payload["crawl4ai"] is False
-        assert "crawl4ai_error" in payload
+        assert payload["crawlberg"] is False
+        assert "crawlberg_error" in payload
         assert payload["spacy"] is True
         assert payload["graspologic_native"] is True
 

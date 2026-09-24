@@ -360,7 +360,7 @@ def self_check_cmd(
         console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
-_SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
+_SELF_CHECK_EXTRAS = ("litellm", "crawlberg", "spacy", "graspologic_native")
 
 # The name of the functional charset-detection leg in self-check-extras output.
 _CHARSET_PROBE = "charset_detection"

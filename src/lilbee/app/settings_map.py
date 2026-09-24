@@ -66,8 +66,8 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
-    # List editors validate each line as a regex only when this is set; flag-style
-    # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
+    # List editors validate each line as a regex only when this is set; a list of
+    # plain values would be wrongly rejected otherwise.
     validate_regex: bool = False
     # Credentials: the TUI masks the editor so the value is never on screen in
     # plain text, including while it is being pasted.
@@ -167,15 +167,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "Threads for synchronous MCP tool handlers; the ceiling on how many agents"
             " one daemon serves before retrieval calls queue"
-        ),
-    ),
-    "crawl_convert_workers": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Crawled pages converted to markdown on worker threads at once, so a crawl"
-            " does not block request handling; 0 converts on the event loop"
         ),
     ),
     "auto_sync": SettingDef(
@@ -777,24 +768,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "How crawls fetch pages. http = lightweight, no browser (default, best "
             "for static and server-rendered sites). browser = Chromium with "
             "JavaScript enabled for client-rendered sites, at much higher memory cost."
-        ),
-    ),
-    "crawl_browser_recycle_pages": SettingDef(
-        int,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Browser mode: recycle the Chromium process every N pages to cap memory "
-            "growth on long crawls (0 = never recycle)."
-        ),
-    ),
-    "crawl_browser_extra_args": SettingDef(
-        list,
-        nullable=False,
-        group=SettingGroup.CRAWLING,
-        help_text=(
-            "Browser mode: extra Chromium launch flags, one per line. "
-            "Defaults trim shared-memory and GPU use."
         ),
     ),
     "crawl_max_pages": SettingDef(

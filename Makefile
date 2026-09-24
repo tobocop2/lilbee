@@ -64,9 +64,6 @@ check: lint format-check typecheck test test-shell  ## Run all checks (same as C
 install:
 	uv tool install ".[crawler]" --force --reinstall --compile-bytecode
 
-crawl-setup:  ## Download Playwright Chromium for /crawl
-	uv run playwright install chromium
-
 dns-setup:  ## One-time DNS setup for lilbee.sh at Porkbun (reads creds from pass)
 	bash scripts/porkbun-dns-setup.sh
 

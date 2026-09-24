@@ -16,17 +16,14 @@ from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
 from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from tests._crawlberg_stub import StubCrawlberg, error, page
-from tests._sys_modules import inject_modules
 
 
 @dataclass(frozen=True)
@@ -47,82 +44,6 @@ def _specs(*specs: Spec) -> SpecStream:
             yield spec
 
     return replay
-
-
-def _mock_crawl4ai_modules(instance: Any) -> dict[str, Any]:
-    """Build the ``sys.modules`` override shape that ``Crawl4aiFetcher`` needs.
-
-    Mirrors the fixture used in ``tests/test_crawler.py`` so the contract
-    test exercises the crawl4ai adapter without requiring the ``crawler``
-    extra to be installed in the unit-test env.
-    """
-    mock_crawl4ai = MagicMock()
-    mock_crawl4ai.AsyncWebCrawler = MagicMock(return_value=instance)
-    mock_crawl4ai.CrawlerRunConfig = MagicMock()
-
-    mock_deep = MagicMock()
-    mock_deep.BFSDeepCrawlStrategy = MagicMock()
-
-    mock_filters = MagicMock()
-    mock_filters.FilterChain = MagicMock()
-    mock_filters.URLPatternFilter = MagicMock()
-    mock_filters.URLFilter = MagicMock
-    mock_filters.DomainFilter = MagicMock
-
-    mock_dispatcher = MagicMock()
-    mock_dispatcher.RateLimiter = MagicMock()
-    mock_dispatcher.SemaphoreDispatcher = MagicMock()
-    mock_dispatcher.MemoryAdaptiveDispatcher = MagicMock()
-
-    mock_strategy = MagicMock()
-    mock_strategy.AsyncHTTPCrawlerStrategy = MagicMock()
-
-    return {
-        "crawl4ai": mock_crawl4ai,
-        "crawl4ai.deep_crawling": mock_deep,
-        "crawl4ai.deep_crawling.filters": mock_filters,
-        "crawl4ai.async_dispatcher": mock_dispatcher,
-        "crawl4ai.async_crawler_strategy": mock_strategy,
-    }
-
-
-def _make_crawl4ai_result(
-    url: str = "https://example.com", markdown: str = "# Hello", success: bool = True
-) -> Any:
-    result = MagicMock()
-    result.url = url
-    result.markdown = markdown
-    result.success = success
-    result.error_message = None
-    return result
-
-
-def _crawl4ai_result(spec: Spec) -> Any:
-    result = _make_crawl4ai_result(url=spec.url, markdown=spec.markdown, success=spec.error is None)
-    result.error_message = spec.error
-    return result
-
-
-@contextmanager
-def _crawl4ai_stub(stream: SpecStream, *, single: bool) -> Iterator[None]:
-    """Serve *stream* through a mocked crawl4ai ``AsyncWebCrawler``."""
-
-    async def results() -> AsyncIterator[Any]:
-        async for spec in stream():
-            yield _crawl4ai_result(spec)
-
-    async def first_result() -> Any:
-        return await anext(aiter(results()), None)
-
-    async def arun(**_kw: Any) -> Any:
-        return await first_result() if single else results()
-
-    instance = AsyncMock()
-    instance.arun = AsyncMock(side_effect=arun)
-    instance.__aenter__ = AsyncMock(return_value=instance)
-    instance.__aexit__ = AsyncMock(return_value=False)
-    with inject_modules(_mock_crawl4ai_modules(instance)):
-        yield
 
 
 @contextmanager
@@ -152,7 +73,6 @@ class Backend:
 def _stub_chromium(monkeypatch, tmp_path: Path):
     """Browser mode finds a Chromium on disk without one being installed."""
     shell = tmp_path / "chrome-headless-shell"
-    monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
     monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: shell)
     monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
     monkeypatch.delenv("CHROME", raising=False)
@@ -160,12 +80,6 @@ def _stub_chromium(monkeypatch, tmp_path: Path):
 
 # Every backend / mode lives in this table; each must pass the suite below.
 BACKENDS: dict[str, Backend] = {
-    "crawl4ai-http": Backend(
-        lambda: Crawl4aiFetcher(quiet=True, render_mode=CrawlRenderMode.HTTP), _crawl4ai_stub
-    ),
-    "crawl4ai-browser": Backend(
-        lambda: Crawl4aiFetcher(quiet=True, render_mode=CrawlRenderMode.BROWSER), _crawl4ai_stub
-    ),
     "crawlberg-http": Backend(
         lambda: CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP), _crawlberg_stub
     ),
