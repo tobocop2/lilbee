@@ -1075,7 +1075,7 @@ class TestRequireLitellm:
             _require_litellm()
         message = str(caught.value)
         assert "run your install command again with litellm added to the extras" in message
-        assert "--excludes excludes.txt" in message
+        assert "--excludes https://lilbee.sh/uv-excludes.txt" in message
         assert "pip install 'lilbee[litellm]'" in message
         assert "unclecode-litellm" in message
         assert "uv tool install --prerelease=allow 'lilbee[" not in message
@@ -1126,7 +1126,10 @@ class TestLitellmForkGuard:
         message = str(caught.value)
         assert "pip uninstall -y unclecode-litellm" in message
         assert "pip install --force-reinstall --no-deps litellm==1.98.0" in message
-        assert "your install command again with --reinstall --excludes excludes.txt" in message
+        assert (
+            "your install command again with --reinstall --excludes "
+            "https://lilbee.sh/uv-excludes.txt" in message
+        )
         assert "lilbee[" not in message
 
     def test_fork_check_runs_before_the_litellm_import(self) -> None:
