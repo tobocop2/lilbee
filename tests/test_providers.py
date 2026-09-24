@@ -1083,14 +1083,18 @@ class TestRequireLitellm:
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
-        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.litellm_sdk import LITELLM_MISSING_MSG, LitellmSdkBackend
 
         cfg.llm_provider = "remote"
         with (
             mock.patch.object(LitellmSdkBackend, "available", return_value=False),
-            pytest.raises(ProviderError, match="SDK backend adapter is not installed"),
+            pytest.raises(ProviderError) as caught,
         ):
             create_provider(cfg)
+        assert str(caught.value) == LITELLM_MISSING_MSG
+
+
+_FORK_ERROR = "Both litellm and unclecode-litellm are installed"
 
 
 def _installed_dists(**versions: str) -> Callable[[str], str]:
@@ -1116,7 +1120,7 @@ class TestLitellmForkGuard:
         with (
             mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
             inject_modules({"litellm": mock.MagicMock()}),
-            pytest.raises(ProviderError, match="unclecode-litellm") as caught,
+            pytest.raises(ProviderError, match=_FORK_ERROR) as caught,
         ):
             _require_litellm()
         message = str(caught.value)
@@ -1133,7 +1137,7 @@ class TestLitellmForkGuard:
         with (
             mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
             inject_modules({"litellm": None}),
-            pytest.raises(ProviderError, match="unclecode-litellm"),
+            pytest.raises(ProviderError, match=_FORK_ERROR),
         ):
             _require_litellm()
 
@@ -1151,7 +1155,7 @@ class TestLitellmForkGuard:
         with (
             mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
             inject_modules({"litellm": fake_litellm}),
-            pytest.raises(ProviderError, match="unclecode-litellm"),
+            pytest.raises(ProviderError, match=_FORK_ERROR),
         ):
             LitellmSdkBackend().complete(request)
         fake_litellm.completion.assert_not_called()

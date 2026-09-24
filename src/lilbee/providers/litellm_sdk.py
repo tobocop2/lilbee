@@ -210,7 +210,7 @@ def _extract_tool_call_delta(call: Any, *, fallback_index: int) -> SdkToolCallDe
     )
 
 
-_LITELLM_MISSING_MSG = (
+LITELLM_MISSING_MSG = (
     "Remote and API models need the lilbee[litellm] extra. If you installed lilbee with "
     "uv tool install, run your install command again with litellm added to the extras, "
     "and keep --excludes excludes.txt if you use the crawler. If you installed lilbee "
@@ -255,7 +255,7 @@ def _require_litellm() -> Any:
     """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
     litellm_version = _installed_version(_LITELLM_DIST)
     if litellm_version is None:
-        raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME)
+        raise ProviderError(LITELLM_MISSING_MSG, provider=_PROVIDER_NAME)
     # Temporary: pip cannot exclude the fork. Remove once crawl4ai ships
     # unclecode/crawl4ai#2107.
     if _installed_version(_LITELLM_FORK_DIST) is not None:
@@ -265,7 +265,7 @@ def _require_litellm() -> Any:
     try:
         import litellm
     except ImportError as exc:
-        raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
+        raise ProviderError(LITELLM_MISSING_MSG, provider=_PROVIDER_NAME) from exc
     return litellm
 
 
