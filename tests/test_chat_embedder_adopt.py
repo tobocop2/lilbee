@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from unittest.mock import MagicMock, PropertyMock, patch
 
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.screens.chat import ChatScreen
+from lilbee.cli.tui.screens.chat import ChatScreen, _Turn
 from lilbee.data.store import EmbeddingModelMismatchError
 
 
@@ -52,7 +52,7 @@ class TestStreamResponseDispatch:
         screen._history_lock.__enter__ = MagicMock(return_value=None)
         screen._history_lock.__exit__ = MagicMock(return_value=False)
         screen._on_embedding_mismatch = MagicMock()  # type: ignore[method-assign]
-        screen._finalize_stream = MagicMock()  # type: ignore[method-assign]
+        screen._save_turn = MagicMock()  # type: ignore[method-assign]
         # The engine wait is its own unit (test_chat_startup_gating); here the
         # engine is ready so the dispatch under test runs unconditionally.
         screen._await_chat_engine = MagicMock(return_value=True)  # type: ignore[method-assign]
@@ -70,7 +70,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
+            screen._do_stream_response(_Turn("q", widget, 0, None), None)
         screen._on_embedding_mismatch.assert_called_once()
         widget.append_content.assert_not_called()
 
@@ -86,9 +86,9 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
+            screen._do_stream_response(_Turn("q", widget, 0, None), None)
         services.searcher.ask_stream.assert_not_called()
-        screen._finalize_stream.assert_called_once()
+        screen._save_turn.assert_called_once()
 
     def test_a_dropped_connection_reads_as_a_dropped_connection(self):
         """A severed engine socket (quit mid-answer, engine death) must not
@@ -106,7 +106,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
+            screen._do_stream_response(_Turn("q", widget, 0, None), None)
         rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
         assert "forcibly closed" not in rendered
         assert msg.STREAM_DISCONNECTED.strip("\n") in rendered
@@ -123,7 +123,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
+            screen._do_stream_response(_Turn("q", widget, 0, None), None)
         screen._on_embedding_mismatch.assert_not_called()
         assert any("kaboom" in str(c.args) for c in widget.append_content.call_args_list)
 

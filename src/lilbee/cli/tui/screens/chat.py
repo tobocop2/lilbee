@@ -11,7 +11,7 @@ import shlex
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
@@ -25,6 +25,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.css.query import NoMatches
 from textual.dom import DOMNode
+from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Footer, Markdown, Select, Static
@@ -52,7 +53,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remember_from_input,
     unregister_added_roots,
 )
-from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
     PATH_ARG_COMMANDS,
@@ -131,6 +132,33 @@ class _StreamTimings:
     last_flush: float
 
 
+@dataclass
+class _Turn:
+    """One live question: its stop signal, answer bubble, conversation and session."""
+
+    question: str
+    widget: AssistantMessage
+    generation: int
+    session_id: str | None
+    stop: threading.Event = field(default_factory=threading.Event)
+    answer: str = ""
+
+
+class _TurnEnded(Message):
+    """Posted by a turn's worker once its body has ended, whether or not the answer saved."""
+
+    bubble = False
+
+    def __init__(self, turn: _Turn) -> None:
+        super().__init__()
+        self.turn = turn
+
+
+# The stream worker's group. Only Textual's teardown cancels it: a turn stops
+# through its stop signal, so its body always runs and always ends the turn.
+_TURN_WORKER_GROUP = "chat_turn"
+
+
 # ``/crawl`` command flags.
 _CRAWL_FLAG_DEPTH = "--depth"
 _CRAWL_FLAG_MAX_PAGES = "--max-pages"
@@ -156,6 +184,13 @@ def _engine_status_text(snapshot: WarmProgress) -> str:
 
 
 _SETTING_TYPE_HINTS: dict[type, str] = {int: "a whole number", float: "a number"}
+
+
+def _stream_error_text(exc: Exception) -> str:
+    """The note for a failed answer; a severed engine socket names the problem, not the OS error."""
+    if isinstance(exc, ConnectionError):
+        return msg.STREAM_DISCONNECTED
+    return msg.STREAM_ERROR.format(error=exc)
 
 
 def _setting_type_hint(kind: type) -> str:
@@ -195,29 +230,6 @@ def _parse_add_paths(args: str) -> list[Path]:
     return [Path(token).expanduser() for token in tokens]
 
 
-class _LiveCount:
-    """How many stream bodies are running; each body holds it for its whole run.
-
-    Textual marks a thread worker CANCELLED the moment it is cancelled, while its
-    body keeps running and saving, so the worker's state cannot say this.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._count = 0
-
-    def __enter__(self) -> None:
-        with self._lock:
-            self._count += 1
-
-    def __exit__(self, *_exc: object) -> None:
-        with self._lock:
-            self._count -= 1
-
-    def __bool__(self) -> bool:
-        return self._count > 0
-
-
 class ChatWelcome(Static):
     """Empty-state welcome posted into the chat log; removed on first message."""
 
@@ -254,7 +266,11 @@ class ChatScreen(Screen[None]):
     CSS_PATH = "chat.tcss"
     AUTO_FOCUS = "#chat-input"
 
+    # True from the start of a turn until its worker has ended it, so it also
+    # covers a stopped turn whose body is still unwinding.
     streaming: reactive[bool] = reactive(False)
+    # True once the live turn was asked to stop; hides the Ctrl+C cancel.
+    stopping: reactive[bool] = reactive(False)
     # True while a chat-model swap's fleet reload runs in the background. Gates the
     # submit handler and disables the input so the user can't fire a prompt into a
     # half-loaded fleet; cleared when the swap worker finishes (or fails).
@@ -372,9 +388,8 @@ class ChatScreen(Screen[None]):
         # user turn creates one; reset to None on /clear so the next turn opens a
         # fresh session.
         self._session_id: str | None = None
-        # Stream bodies still running, including one a cancel has already
-        # released the busy gate for; /fork waits them out.
-        self._live_streams = _LiveCount()
+        # The live turn; set with the busy flag and cleared only when it ends.
+        self._turn: _Turn | None = None
         self._insert_mode: bool = True
         # Count of programmatic input edits whose (async) Changed events should
         # not re-filter the dropdown. The setter posts Changed after our flag
@@ -389,13 +404,9 @@ class ChatScreen(Screen[None]):
         # The warm tip is worth one toast per session, on the first prompt that
         # has to wait out a cold engine load.
         self._warm_tip_shown: bool = False
-        # The bubble receiving the in-flight response, so a cancel can leave a
-        # visible note in it instead of letting the turn die silently.
-        self._active_assistant: AssistantMessage | None = None
-        # The live turn's question; a context boundary mounts above it, never
-        # after it. Outlives its turn like _active_assistant (next send
-        # overwrites, reset clears). Never clear it in _finalize_stream: the
-        # input unblocks first, so the clear races the next turn's question.
+        # The latest turn's question; a context boundary mounts above it, never
+        # after it. Outlives its turn: the next send overwrites it and a reset
+        # clears it.
         self._active_question: UserMessage | None = None
         # A model switch asked for mid-answer, applied once the stream ends.
         self._model_switch_queued: bool = False
@@ -680,11 +691,14 @@ class ChatScreen(Screen[None]):
             self.notify(msg.FLEET_RELOADING, severity="warning", timeout=3)
             return True
         if self.streaming and not runs_while_streaming(self._slash_name(text)):
-            # Only one chat message may be in flight at a time; surface a toast
-            # so the prompt is visibly rejected, not silently dropped.
-            self.notify(msg.CHAT_BUSY, severity="warning", timeout=3)
+            self._notify_busy()
             return True
         return False
+
+    def _notify_busy(self) -> None:
+        """Say why a submit was refused: the turn is answering, or still stopping."""
+        text = msg.CHAT_STOPPING if self.stopping else msg.CHAT_BUSY
+        self.notify(text, severity="warning", timeout=3)
 
     @staticmethod
     def _slash_name(text: str) -> str:
@@ -732,20 +746,17 @@ class ChatScreen(Screen[None]):
         else:
             self.notify(msg.CMD_UNKNOWN.format(cmd=cmd), severity="warning")
 
-    def _set_streaming(self, value: bool) -> None:
-        """Main-thread setter so worker-thread paths can route through ``call_from_thread``."""
-        self.streaming = value
-
     def watch_streaming(self, streaming: bool) -> None:
         if streaming:
             self._enter_streaming_state()
         else:
             self._exit_streaming_state()
 
+    def watch_stopping(self, _stopping: bool) -> None:
+        self.refresh_bindings()
+
     def _enter_streaming_state(self) -> None:
         self.add_class("streaming")
-        # Cancel + finalize both write streaming=False; reactive dedupe
-        # keeps the watcher a no-op on equal values.
         self.refresh_bindings()
 
     def _exit_streaming_state(self) -> None:
@@ -877,12 +888,9 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.CMD_ADD_SUCCESS.format(count=len(registered)))
 
     def _cmd_cancel(self, _args: str) -> None:
-        # _cancel_inflight_stream already cancels every screen worker, so the
-        # two branches each cancel everything exactly once.
-        if self.streaming:
-            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
-        else:
-            for worker in self.workers:
+        self._stop_turn()
+        for worker in self.workers:
+            if worker.group != _TURN_WORKER_GROUP:
                 worker.cancel()
         self.notify(msg.CMD_CANCEL)
 
@@ -891,19 +899,13 @@ class ChatScreen(Screen[None]):
         self.notify(msg.CMD_CLEAR)
 
     def _reset_conversation(self) -> None:
-        """Cancel any stream, empty the log and history, and drop the active session.
+        """Stop the live turn, empty the log and history, and drop the active session.
 
         The current session is already persisted, so dropping the id just makes the
         next user turn open a fresh one.
         """
-        if self.streaming:
-            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
-        else:
-            for worker in self.workers:
-                worker.cancel()
-        self.streaming = False
+        self._stop_turn()
         self._chat_log.remove_children()
-        self._active_assistant = None
         self._active_question = None
         with self._history_lock:
             self._history.clear()
@@ -1472,13 +1474,10 @@ class ChatScreen(Screen[None]):
     def _cmd_sessions(self, _args: str) -> None:
         self.app.action_toggle_sessions()
 
-    def _read_active_session(self, finishing: str, no_session: str, gone: str) -> Session | None:
+    def _read_active_session(self, no_session: str, gone: str) -> Session | None:
         """The active session as the store holds it, or None after telling the user why not."""
         if not cfg.sessions_enabled:
             self.app.notify_sessions_disabled()
-            return None
-        if self._live_streams:
-            self.notify(finishing, severity="warning")
             return None
         if self._session_id is None:
             self.notify(no_session, severity="warning")
@@ -1491,9 +1490,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_fork(self, _args: str) -> None:
         """Open the fork picker over the current session as the store holds it."""
-        source = self._read_active_session(
-            msg.FORK_WHILE_FINISHING, msg.FORK_NO_SESSION, msg.FORK_SESSION_GONE
-        )
+        source = self._read_active_session(msg.FORK_NO_SESSION, msg.FORK_SESSION_GONE)
         if source is None:
             return
         self.app.push_screen(ForkPicker(source.messages), partial(self._on_fork_picked, source))
@@ -1501,9 +1498,7 @@ class ChatScreen(Screen[None]):
     def _cmd_export_chat(self, args: str) -> None:
         """Write the current session as markdown to *args*, or to the working directory."""
         session = self._read_active_session(
-            msg.EXPORT_CHAT_WHILE_FINISHING,
-            msg.EXPORT_CHAT_NO_SESSION,
-            msg.EXPORT_CHAT_SESSION_GONE,
+            msg.EXPORT_CHAT_NO_SESSION, msg.EXPORT_CHAT_SESSION_GONE
         )
         if session is None:
             return
@@ -1535,9 +1530,12 @@ class ChatScreen(Screen[None]):
             self._enter_insert_mode()
 
     def _send_message(self, text: str) -> None:
-        """Send a user message and stream the response."""
+        """Send a user message and stream the response, unless a turn is live."""
         from textual.css.query import NoMatches
 
+        if self.streaming:
+            self._notify_busy()
+            return
         log = self._chat_log
         with contextlib.suppress(NoMatches):
             log.query_one("#chat-welcome", ChatWelcome).remove()
@@ -1548,7 +1546,6 @@ class ChatScreen(Screen[None]):
         # The assistant bubble owns its own ThinkingHeader animator until
         # the first reasoning or content token swaps it out.
         assistant_msg = AssistantMessage()
-        self._active_assistant = assistant_msg
         log.mount(assistant_msg)
         # A fresh turn always follows its own answer, even if the user had
         # scrolled up during the previous response and released the anchor.
@@ -1557,14 +1554,10 @@ class ChatScreen(Screen[None]):
         with self._history_lock:
             self._history.append({"role": "user", "content": text})
         self._persist_user_turn(text)
+        turn = _Turn(text, assistant_msg, self._conversation_generation, self._session_id)
+        self._turn = turn
         self.streaming = True
-        self._stream_response(
-            text,
-            assistant_msg,
-            self._current_chunk_type(),
-            session_id=self._session_id,
-            generation=self._conversation_generation,
-        )
+        self._stream_response(turn, self._current_chunk_type())
 
     def _current_scope_value(self) -> str:
         """The ScopeChip's selection, or "both" when the chip isn't mounted."""
@@ -1708,87 +1701,65 @@ class ChatScreen(Screen[None]):
         # compose has not built yet, and the answer would render empty.
         log.mount(AssistantMessage(content=message.content, sources=list(message.sources)))
 
-    @work(thread=True)
-    def _stream_response(
-        self,
-        question: str,
-        widget: AssistantMessage,
-        chunk_type: ChunkType | None,
-        *,
-        session_id: str | None,
-        generation: int,
-    ) -> None:
-        """Schedule the response stream on a background thread."""
-        with self._live_streams:
-            self._do_stream_response(
-                question, widget, chunk_type, session_id=session_id, generation=generation
-            )
+    @work(thread=True, group=_TURN_WORKER_GROUP)
+    def _stream_response(self, turn: _Turn, chunk_type: ChunkType | None) -> None:
+        """Run *turn* on a background thread and end it, whatever happens."""
+        try:
+            self._do_stream_response(turn, chunk_type)
+        finally:
+            post_from_thread(self, _TurnEnded(turn))
 
-    def _do_stream_response(
-        self,
-        question: str,
-        widget: AssistantMessage,
-        chunk_type: ChunkType | None,
-        *,
-        session_id: str | None,
-        generation: int,
-    ) -> None:
-        """Stream the answer to *question* in conversation *generation*, saving to *session_id*.
-
-        Worker thread.
-        """
+    def _do_stream_response(self, turn: _Turn, chunk_type: ChunkType | None) -> None:
+        """Stream the answer to *turn*'s question and save it. Worker thread."""
         response_parts: list[str] = []
-        sources: list[str] = []
         stream: Any = None
         try:
-            if not self._await_chat_engine(widget):
+            if not self._await_chat_engine(turn) or self._turn_stopped(turn):
                 return
-            self._compact_history(session_id, generation)
+            self._compact_history(turn.session_id, turn.generation)
+            if self._turn_stopped(turn):
+                return
             with self._history_lock:
                 # [:-1] drops the question, which ask_stream takes separately.
                 recent = self._history[:-1]
                 summary = self._summary
             history_snapshot = prompt_history(recent, summary, max_tokens=self._history_budget())
             stream = get_services().searcher.ask_stream(
-                question, history=history_snapshot, chunk_type=chunk_type
+                turn.question, history=history_snapshot, chunk_type=chunk_type
             )
-            self._consume_stream(stream, widget, response_parts)
+            self._consume_stream(stream, turn, response_parts)
         except EmbeddingModelMismatchError as exc:
             with contextlib.suppress(Exception):
-                call_from_thread(self, self._on_embedding_mismatch, exc, question, widget)
+                call_from_thread(self, self._on_embedding_mismatch, exc, turn.question, turn.widget)
         except Exception as exc:
             log.debug("Stream error", exc_info=True)
-            # A deliberate cancel severs the transport, which surfaces here as a
-            # stream error; the cancel already wrote its note into the bubble.
-            if not self._stream_worker_cancelled():
-                # A severed engine socket names the OS error, not the problem.
-                error_text = (
-                    msg.STREAM_DISCONNECTED
-                    if isinstance(exc, ConnectionError)
-                    else msg.STREAM_ERROR.format(error=exc)
-                )
+            # A stop severs the transport, which surfaces here as a stream error;
+            # the turn's end already says it was cancelled.
+            if not self._turn_stopped(turn):
                 with contextlib.suppress(Exception):
-                    call_from_thread(self, widget.append_content, error_text)
+                    call_from_thread(self, turn.widget.append_content, _stream_error_text(exc))
         finally:
             close_stream(stream)
-            self._finalize_stream(widget, sources, response_parts, session_id, generation)
-            call_from_thread(self, self._maybe_extract_memories, question, "".join(response_parts))
+            turn.answer = "".join(response_parts)
+            self._save_turn(turn)
 
     @staticmethod
-    def _stream_worker_cancelled() -> bool:
-        """Whether the calling stream worker was cancelled; False off-worker."""
+    def _turn_stopped(turn: _Turn) -> bool:
+        """Whether *turn* was asked to stop, or Textual is tearing its worker down."""
+        if turn.stop.is_set():
+            return True
         try:
             return _get_worker().is_cancelled
         except NoActiveWorker:
             return False
 
-    def _await_chat_engine(self, widget: AssistantMessage) -> bool:
-        """Hold the stream until the engine can serve, painting the load into *widget*.
+    def _await_chat_engine(self, turn: _Turn) -> bool:
+        """Hold the stream until the engine can serve, painting the load into *turn*'s bubble.
 
         The default lifecycle loads the engine on demand, so the first prompt of
         a session usually lands here: the answer bubble's thinking row carries the
         live load phase instead of the input locking up. Worker thread. Returns
-        False once the wait was cancelled or the load failed, with any failure
+        False once the turn was stopped or the load failed, with any failure
         already rendered into the bubble.
         """
         from lilbee.app.placement import (
@@ -1809,7 +1780,7 @@ class ChatScreen(Screen[None]):
         # so the prompt waits out a fresh load instead of bouncing.
         request_engine_warm()
         self._show_warm_tip_once()
-        worker = _get_worker()
+        widget = turn.widget
 
         def _paint(snapshot: WarmProgress) -> None:
             with contextlib.suppress(Exception):
@@ -1820,11 +1791,11 @@ class ChatScreen(Screen[None]):
         # for many seconds, and a bare scanner reads as a hang.
         with contextlib.suppress(Exception):
             call_from_thread(self, widget.set_thinking_status, msg.ENGINE_WARMING)
-        if wait_chat_ready(on_progress=_paint, should_abort=lambda: worker.is_cancelled):
+        if wait_chat_ready(on_progress=_paint, should_abort=lambda: self._turn_stopped(turn)):
             with contextlib.suppress(Exception):
                 call_from_thread(self, widget.set_thinking_status, "")
             return True
-        if worker.is_cancelled:
+        if self._turn_stopped(turn):
             return False
         error = chat_warm_error()
         text = (
@@ -1927,11 +1898,9 @@ class ChatScreen(Screen[None]):
         call_from_thread(self, self.notify, msg.EMBED_ADOPTED.format(model=ref))
         call_from_thread(self, self._send_message, question)
 
-    def _consume_stream(
-        self, stream: Any, widget: AssistantMessage, response_parts: list[str]
-    ) -> None:
-        """Pull tokens off *stream*, batching UI updates to ~50 ms windows."""
-        worker = _get_worker()
+    def _consume_stream(self, stream: Any, turn: _Turn, response_parts: list[str]) -> None:
+        """Pull tokens off *stream* into *turn*'s bubble, batching UI updates to ~50 ms windows."""
+        widget = turn.widget
         reason_buf: list[str] = []
         content_buf: list[str] = []
         timings = _StreamTimings(last_flush=time.monotonic())
@@ -1945,7 +1914,7 @@ class ChatScreen(Screen[None]):
                 content_buf.clear()
 
         for token in stream:
-            if worker.is_cancelled:
+            if self._turn_stopped(turn):
                 break
             try:
                 if isinstance(token, RetrievalNotice):
@@ -1982,44 +1951,48 @@ class ChatScreen(Screen[None]):
             flush()
             timings.last_flush = now
 
-    def _finalize_stream(
-        self,
-        widget: AssistantMessage,
-        sources: list[str],
-        response_parts: list[str],
-        session_id: str | None,
-        generation: int,
-    ) -> None:
-        """Persist the assistant turn and update the widget. Always runs.
+    def _save_turn(self, turn: _Turn) -> None:
+        """Add *turn*'s answer to the history and its session. Worker thread.
 
-        The answer joins the history only while *generation* is still the
-        conversation on screen; it is saved to *session_id* either way.
+        The answer joins the history only while the turn's conversation is still
+        on screen; it is saved to the turn's session either way.
         """
-        full_response = "".join(response_parts)
-        try:
-            if full_response:
-                with self._history_lock:
-                    # A resume or /clear mid-answer replaced the conversation;
-                    # the answer belongs to the one that is gone.
-                    if generation == self._conversation_generation:
-                        self._history.append({"role": "assistant", "content": full_response})
-                # No trim here: the next turn compacts before it builds its prompt,
-                # so trimming now would drop turns without folding them in.
-                self._save_assistant_turn(session_id, full_response, sources)
-                call_from_thread(self, self._refresh_context_usage)
-        finally:
-            # The busy gate drops only once the reply is on disk, so /fork cannot
-            # snapshot the session without it. Reactive setters mutate widgets,
-            # so the flag flips on the main thread.
-            call_from_thread(self, self._set_streaming, False)
-        call_from_thread(self, widget.finish, sources)
+        if not turn.answer:
+            return
+        with self._history_lock:
+            # A resume or /clear mid-answer replaced the conversation; the
+            # answer belongs to the one that is gone.
+            if turn.generation == self._conversation_generation:
+                self._history.append({"role": "assistant", "content": turn.answer})
+        # No trim here: the next turn compacts before it builds its prompt, so
+        # trimming now would drop turns without folding them in.
+        self._save_assistant_turn(turn.session_id, turn.answer, [])
+
+    @on(_TurnEnded)
+    def _on_turn_ended(self, event: _TurnEnded) -> None:
+        """Drop the busy flag first, then finish the turn's bubble if it is on screen."""
+        turn = event.turn
+        self._turn = None
+        self.stopping = False
+        self.streaming = False
+        self._maybe_extract_memories(turn.question, turn.answer)
+        if turn.generation == self._conversation_generation:
+            self._show_turn_end(turn)
+
+    def _show_turn_end(self, turn: _Turn) -> None:
+        """Finish *turn*'s bubble, its cancel note, the context chip and the search toast."""
+        if turn.stop.is_set():
+            turn.widget.append_content(msg.STREAM_CANCELLED)
+        turn.widget.finish()
+        if not turn.answer:
+            return
+        self._refresh_context_usage()
         if (
             cfg.chat_mode == ChatMode.SEARCH.value
             and self._embedding_ready()
-            and full_response
-            and SOURCES_BLOCK_MARKER not in full_response
+            and SOURCES_BLOCK_MARKER not in turn.answer
         ):
-            call_from_thread(self, self._notify_no_results)
+            self._notify_no_results()
 
     def _notify_no_results(self) -> None:
         self.notify(msg.CHAT_MODE_SEARCH_NO_RESULTS, severity="warning")
@@ -2182,7 +2155,7 @@ class ChatScreen(Screen[None]):
           INSERT mode; otherwise the App's Quit binding takes the slot.
         """
         if action == "cancel_stream":
-            return self.streaming and self._insert_mode
+            return self.streaming and not self.stopping and self._insert_mode
         if action == "enter_model_strip":
             # NORMAL mode parks the cursor on the transcript, and that is the
             # only place these letters are free. Stated as where they DO apply,
@@ -2224,26 +2197,23 @@ class ChatScreen(Screen[None]):
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
-        """Cancel an in-flight chat stream. Bound to Ctrl+C from INSERT mode."""
-        if self.streaming:
-            self._cancel_inflight_stream(msg.STREAM_CANCELLED)
+        """Stop the live answer. Bound to Ctrl+C from INSERT mode."""
+        self._stop_turn()
 
-    def _cancel_inflight_stream(self, note: str) -> None:
-        """Stop the streaming worker, sever its inference call, and say so.
+    def _stop_turn(self) -> None:
+        """Ask the live turn to stop and sever its inference call.
 
-        The worker cancel is cooperative and only observed between tokens, so
-        ``cancel_inference`` severs the in-flight stream's transport to unblock
-        a reader stuck in a socket read. *note* lands in the answer bubble: a
-        cancelled turn must say it was cancelled, not die silently while the
-        user waits for an answer that will never arrive.
+        The body sees the stop at the engine wait, before and after the fold,
+        between tokens and in its error branch; ``cancel_inference`` severs the
+        stream's transport to unblock a reader stuck in a socket read. The turn
+        stays busy until its worker ends it.
         """
-        for worker in self.workers:
-            worker.cancel()
+        turn = self._turn
+        if turn is None:
+            return
+        turn.stop.set()
         get_services().cancel_inference()
-        bubble = self._active_assistant
-        if bubble is not None and bubble.is_mounted:
-            bubble.append_content(note)
-        self.streaming = False
+        self.stopping = True
 
     def apply_model_change(self) -> None:
         """Swap to the new chat model without freezing the UI or losing an answer.

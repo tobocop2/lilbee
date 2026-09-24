@@ -966,11 +966,16 @@ class TestChatInteractions:
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            from lilbee.cli.tui.screens.chat import _Turn
+
             app.screen._insert_mode = True
+            turn = _Turn("q", mock.MagicMock(), 0, None)
+            app.screen._turn = turn
             app.screen.streaming = True
             await pilot.press("ctrl+c")
             await pilot.pause()
-            assert app.screen.streaming is False
+            assert turn.stop.is_set()
+            assert app.screen.stopping is True
 
     async def test_submit_empty_does_nothing(self, _mock_resolve):
         """Submitting empty input is a no-op."""
@@ -2680,11 +2685,15 @@ class TestChatSlashCommands:
             assert len(chat_log.children) == 0
             assert app.screen._history == []
 
-    async def test_cmd_clear_cancels_stream(self, _mock_resolve):
-        """/clear cancels active workers before clearing."""
+    async def test_cmd_clear_stops_the_live_turn_only(self, _mock_resolve):
+        """/clear stops the live turn and leaves every other worker running."""
+        from lilbee.cli.tui.screens.chat import _Turn
+
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
+            turn = _Turn("q", mock.MagicMock(), 0, None)
+            app.screen._turn = turn
             app.screen.streaming = True
             mock_worker = mock.MagicMock()
             with mock.patch.object(
@@ -2693,12 +2702,12 @@ class TestChatSlashCommands:
                 mock_workers.return_value = [mock_worker]
                 app.screen._handle_slash("/clear")
             await pilot.pause()
-            mock_worker.cancel.assert_called_once()
-            assert app.screen.streaming is False
+            mock_worker.cancel.assert_not_called()
+            assert turn.stop.is_set()
             assert app.screen._history == []
 
-    async def test_cmd_clear_cancels_workers_when_idle(self, _mock_resolve):
-        """/clear with no stream in flight still cancels background workers."""
+    async def test_cmd_clear_leaves_workers_running_when_idle(self, _mock_resolve):
+        """/clear starts a new conversation; it does not stop background workers."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
@@ -2710,7 +2719,7 @@ class TestChatSlashCommands:
                 mock_workers.return_value = [mock_worker]
                 app.screen._handle_slash("/clear")
             await pilot.pause()
-            mock_worker.cancel.assert_called_once()
+            mock_worker.cancel.assert_not_called()
             assert app.screen._history == []
 
     async def test_cmd_cancel_cancels_workers_when_idle(self, _mock_resolve):
@@ -3419,9 +3428,11 @@ class TestChatStreaming:
                 await pilot.pause()
                 assert app.screen.streaming
                 assert app.screen._insert_mode
+                turn = app.screen._turn
                 app.screen.action_cancel_stream()
                 await pilot.pause()
-                assert app.screen.streaming is False
+                assert turn.stop.is_set()
+                assert app.screen.stopping is True
 
     async def test_input_placeholder_stays_default_through_streaming(
         self, _mock_resolve, _mock_services
@@ -3437,7 +3448,7 @@ class TestChatStreaming:
                 await pilot.press("enter")
                 await pilot.pause()
                 assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
-                app.screen._set_streaming(False)
+                app.screen.streaming = False
                 await pilot.pause()
                 assert inp.placeholder == msg_module.CHAT_INPUT_PLACEHOLDER_DEFAULT
 
@@ -3458,7 +3469,7 @@ class TestChatStreaming:
                     await pilot.pause()
                     assert app.screen.streaming is True
                     mock_worker.assert_not_called()
-                    app.screen._set_streaming(False)
+                    app.screen.streaming = False
                     await pilot.pause()
                     mock_worker.assert_called_once()
 

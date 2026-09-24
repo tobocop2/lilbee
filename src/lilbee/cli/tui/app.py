@@ -624,7 +624,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         screen = self.screen
-        if isinstance(screen, ChatScreen) and screen.streaming:
+        if isinstance(screen, ChatScreen) and screen.streaming and not screen.stopping:
             screen.action_cancel_stream()
             self.notify(msg.APP_QUIT_AGAIN_HINT)
             return
