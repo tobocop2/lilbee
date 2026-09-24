@@ -151,7 +151,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/fork",
         "_cmd_fork",
-        help_text="Branch this conversation into a new session from any question",
+        help_text="Branch this conversation into a new session after any answer",
     ),
     SlashCommand(
         "/export-chat",

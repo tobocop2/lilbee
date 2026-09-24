@@ -67,7 +67,7 @@ from lilbee.cli.tui.widgets.context_chip import ContextChip
 from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
-from lilbee.cli.tui.widgets.fork_picker import ForkPicker
+from lilbee.cli.tui.widgets.fork_picker import ForkPicker, fork_points
 from lilbee.cli.tui.widgets.help_hint import HelpHint
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.model_bar import ChatModeToggle, ModelBar
@@ -1489,11 +1489,15 @@ class ChatScreen(Screen[None]):
             return None
 
     def _cmd_fork(self, _args: str) -> None:
-        """Open the fork picker over the current session as the store holds it."""
+        """Open the fork picker over the answers of the current session as the store holds it."""
         source = self._read_active_session(msg.FORK_NO_SESSION, msg.FORK_SESSION_GONE)
         if source is None:
             return
-        self.app.push_screen(ForkPicker(source.messages), partial(self._on_fork_picked, source))
+        points = fork_points(source.messages)
+        if not points:
+            self.notify(msg.FORK_NO_ANSWER, severity="warning")
+            return
+        self.app.push_screen(ForkPicker(points), partial(self._on_fork_picked, source))
 
     def _cmd_export_chat(self, args: str) -> None:
         """Write the current session as markdown to *args*, or to the working directory."""
@@ -1510,7 +1514,7 @@ class ChatScreen(Screen[None]):
         self.notify(msg.EXPORT_CHAT_DONE.format(path=path), markup=False)
 
     def _on_fork_picked(self, source: Session, message_count: int | None) -> None:
-        """Fork *source* at the picked point, switch to the fork, and prefill the question."""
+        """Fork *source* after the picked answer and switch to the fork with an empty input."""
         if message_count is None:
             return
         try:
@@ -1525,9 +1529,8 @@ class ChatScreen(Screen[None]):
             return
         fork = self._load_session(fork_id)
         self.notify(msg.FORK_DONE.format(title=fork.meta.title))
-        if message_count < len(source.messages):
-            self._set_input(source.messages[message_count].content)
-            self._enter_insert_mode()
+        self._set_input("")
+        self._enter_insert_mode()
 
     def _send_message(self, text: str) -> None:
         """Send a user message and stream the response, unless a turn is live."""

@@ -1,12 +1,14 @@
-"""Modal that picks where to fork a conversation: the whole of it, or before a question."""
+"""Modal that picks the answer a fork of the conversation ends on."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import ClassVar
 
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Vertical
+from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
@@ -14,6 +16,36 @@ from textual.widgets.option_list import Option
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
 from lilbee.sessions import MessageRole, SessionMessage, derive_title
+
+
+@dataclass(frozen=True, slots=True)
+class ForkPoint:
+    """A place to fork: after one answer, with the question it answers if there is one."""
+
+    message_count: int
+    answer: str
+    question: str | None
+
+
+def fork_points(messages: tuple[SessionMessage, ...]) -> list[ForkPoint]:
+    """One point after each answer in the saved log, newest first."""
+    points: list[ForkPoint] = []
+    question: str | None = None
+    for index, message in enumerate(messages):
+        if message.role == MessageRole.USER:
+            question = message.content
+        else:
+            points.append(ForkPoint(index + 1, message.content, question))
+    return points[::-1]
+
+
+def _label(point: ForkPoint) -> Content:
+    """The answer's first line, and under it the question it answers."""
+    answer = Content(derive_title(point.answer))
+    if point.question is None:
+        return answer
+    question = msg.FORK_PICKER_ANSWER_TO.format(question=derive_title(point.question))
+    return Content.assemble(answer, "\n", Content.styled(question, "$text-muted"))
 
 
 class ForkPicker(ModalScreen[int | None]):
@@ -25,34 +57,24 @@ class ForkPicker(ModalScreen[int | None]):
         Binding("escape", "cancel", "Close", show=True),
     ]
 
-    def __init__(self, messages: tuple[SessionMessage, ...]) -> None:
+    def __init__(self, points: list[ForkPoint]) -> None:
         super().__init__()
-        self._messages = messages
-        # Row i forks with _counts[i] messages: all of them, then each question's log index.
-        self._counts = [len(messages)] + [
-            index for index, message in enumerate(messages) if message.role == MessageRole.USER
-        ]
+        self._points = points
 
     def compose(self) -> ComposeResult:
         with Vertical(id="fork-root"):
             yield Static(msg.FORK_PICKER_TITLE, id="fork-title")
-            yield ClampedOptionList(*self._options(), id="fork-list")
+            yield ClampedOptionList(
+                *(Option(_label(point)) for point in self._points), id="fork-list"
+            )
             yield Static(msg.FORK_PICKER_HINT, id="fork-hint")
-
-    def _options(self) -> list[Option]:
-        """One row per entry in ``_counts``: the whole conversation, then each question."""
-        before = [
-            msg.FORK_PICKER_BEFORE.format(line=derive_title(self._messages[index].content))
-            for index in self._counts[1:]
-        ]
-        return [Option(label) for label in [msg.FORK_PICKER_WHOLE, *before]]
 
     def on_mount(self) -> None:
         self.query_one("#fork-list", OptionList).focus()
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         event.stop()
-        self.dismiss(self._counts[event.option_index])
+        self.dismiss(self._points[event.option_index].message_count)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
