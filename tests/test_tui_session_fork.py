@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -17,6 +18,7 @@ from lilbee.cli.tui.widgets.message import AssistantMessage
 from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
 from lilbee.core.config import cfg
 from lilbee.retrieval.query.compaction import CompactionResult
+from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
@@ -277,15 +279,55 @@ async def _join(pilot, thread: threading.Thread) -> None:
     assert await pump_until(pilot, lambda: not thread.is_alive())
 
 
-def _start_finalize(screen, session_id: str | None, reply: str) -> threading.Thread:
-    """Run the worker-side end of a turn off the main thread, as production does."""
-    widget = screen.query(AssistantMessage).last()
-    thread = threading.Thread(
-        target=screen._finalize_stream,
-        args=(widget, [], [reply], session_id, screen._conversation_generation),
-    )
-    thread.start()
-    return thread
+class _Reply:
+    """An answer that streams *first*, holds until released, then streams *rest*."""
+
+    def __init__(self, first: str, rest: str = "", *, held: bool = False) -> None:
+        self.first = first
+        self.rest = rest
+        self.started = threading.Event()
+        self.release = threading.Event()
+        if not held:
+            self.release.set()
+
+    def __call__(self, *_args: object, **_kwargs: object):
+        return self._tokens()
+
+    def _tokens(self):
+        yield StreamToken(content=self.first, is_reasoning=False)
+        self.started.set()
+        self.release.wait(_WAIT_S)
+        if self.rest:
+            yield StreamToken(content=self.rest, is_reasoning=False)
+
+
+@contextmanager
+def _answering(reply: _Reply):
+    """Answer every question with *reply* from a ready engine."""
+    with (
+        patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+        patch.object(get_services().searcher, "ask_stream", side_effect=reply),
+    ):
+        try:
+            yield
+        finally:
+            reply.release.set()
+
+
+def _failing_assistant_save(store, error: Exception):
+    """An add_message that saves user turns and raises *error* for the reply."""
+    real_add = store.add_message
+
+    def add(session_id, message, **kwargs):
+        if message.role == MessageRole.ASSISTANT:
+            raise error
+        real_add(session_id, message, **kwargs)
+
+    return add
+
+
+async def _turn_ends(pilot, screen) -> None:
+    assert await pump_until(pilot, lambda: not screen.streaming)
 
 
 async def test_fork_in_the_gap_before_the_reply_is_saved_is_refused(sessions):
@@ -309,16 +351,16 @@ async def test_fork_in_the_gap_before_the_reply_is_saved_is_refused(sessions):
                 release.wait(_WAIT_S)
             real_add(session_id, message, **kwargs)
 
-        screen.streaming = True
         with (
+            _answering(_Reply("A3")),
             patch.object(sessions, "add_message", side_effect=slow_add),
             patch.object(screen, "notify") as notify,
         ):
-            worker = _start_finalize(screen, source, "A3")
+            await _submit(pilot, "Q3")
             assert await pump_until(pilot, persist_started.is_set)
             await _submit(pilot, "/fork")
             release.set()
-            await _join(pilot, worker)
+            await _turn_ends(pilot, screen)
         assert msg.CHAT_BUSY in _notified(notify)
         assert not isinstance(app.screen, ForkPicker)
         assert sessions.get(source).messages[-1].content == "A3"
@@ -333,8 +375,13 @@ async def test_the_reply_lands_in_the_session_its_turn_started_in(sessions):
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
         await pilot.pause()
-        screen._session_id = other
-        await _join(pilot, _start_finalize(screen, source, "A3"))
+        reply = _Reply("A3", held=True)
+        with _answering(reply):
+            await _submit(pilot, "Q3")
+            assert await pump_until(pilot, reply.started.is_set)
+            screen._session_id = other
+            reply.release.set()
+            await _turn_ends(pilot, screen)
         assert sessions.get(source).messages[-1].content == "A3"
         assert sessions.get(other).meta.message_count == 4
 
@@ -346,119 +393,88 @@ async def test_a_failed_save_still_finishes_the_turn_and_says_so(sessions):
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
         await pilot.pause()
-        widget = screen.query(AssistantMessage).last()
-        screen.streaming = True
+        add = _failing_assistant_save(sessions, OSError("disk full"))
         with (
-            patch.object(sessions, "add_message", side_effect=OSError("disk full")),
+            _answering(_Reply("A3")),
+            patch.object(sessions, "add_message", side_effect=add),
             patch.object(screen, "notify") as notify,
-            patch.object(widget, "finish") as finish,
+            patch.object(AssistantMessage, "finish") as finish,
         ):
-            await _join(pilot, _start_finalize(screen, source, "A3"))
+            await _submit(pilot, "Q3")
+            await _turn_ends(pilot, screen)
             await pilot.pause()
-        assert not screen.streaming
         finish.assert_called_once()
         assert _notified(notify) == [msg.SESSIONS_SAVE_FAILED.format(error="disk full")]
 
 
 async def test_an_unexpected_save_error_still_clears_the_busy_gate(sessions):
+    """The turn's end is posted from the worker's outermost finally, so a crash still ends it."""
     source = _seed(sessions)
+    threads: list[threading.Thread] = []
+    body = ChatScreen._stream_response.__wrapped__
+
+    def start_on_a_thread(self, turn, chunk_type):
+        thread = threading.Thread(target=body, args=(self, turn, chunk_type))
+        thread.start()
+        threads.append(thread)
+
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
         await pilot.pause()
-        screen.streaming = True
         errors: list[BaseException] = []
         with (
-            patch.object(sessions, "add_message", side_effect=RuntimeError("bug")),
+            _answering(_Reply("A3")),
+            patch.object(ChatScreen, "_stream_response", start_on_a_thread),
+            patch.object(
+                sessions,
+                "add_message",
+                side_effect=_failing_assistant_save(sessions, RuntimeError("bug")),
+            ),
             patch("threading.excepthook", lambda args: errors.append(args.exc_value)),
         ):
-            await _join(pilot, _start_finalize(screen, source, "A3"))
-            await pilot.pause()
-        assert not screen.streaming
+            await _submit(pilot, "Q3")
+            assert threads, "the turn must have started"
+            await _join(pilot, threads[0])
+            await _turn_ends(pilot, screen)
         assert [str(e) for e in errors] == ["bug"]
 
 
-def _hold_then_finish(started: threading.Event, release: threading.Event, reply: str):
-    """A stream body that is still running after a cancel, then saves *reply*."""
-
-    def body(self, question, widget, chunk_type, *, session_id, generation):
-        started.set()
-        release.wait(_WAIT_S)
-        self._finalize_stream(widget, [], [reply], session_id, generation)
-
-    return body
-
-
 async def test_fork_after_a_cancel_waits_for_the_reply_the_source_keeps(sessions):
-    """A cancel drops the busy gate while the worker still saves the partial reply.
+    """A cancelled turn keeps the chat busy until its partial reply is saved.
 
     A fork in that window would snapshot the source without the reply the
     source then keeps.
     """
     source = _seed(sessions)
-    started, release = threading.Event(), threading.Event()
+    reply = _Reply("A3-partial", " more", held=True)
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
-        body = _hold_then_finish(started, release, "A3-partial")
-        with patch.object(ChatScreen, "_do_stream_response", body):
+        with _answering(reply):
             await _submit(pilot, "Q3")
-            assert await pump_until(pilot, started.is_set)
+            assert await pump_until(pilot, reply.started.is_set)
             await pilot.press("ctrl+c")
-            assert await pump_until(pilot, lambda: not screen.streaming)
             with patch.object(screen, "notify") as notify:
                 await _submit(pilot, "/fork")
             assert not isinstance(app.screen, ForkPicker)
             refused = _notified(notify)
-            release.set()
-            assert await pump_until(pilot, lambda: not screen._live_streams)
+            reply.release.set()
+            await _turn_ends(pilot, screen)
         assert sessions.get(source).messages[-1].content == "A3-partial"
-        await _open_picker(app, pilot)
+        # The refused /fork stays in the input, so a second Enter sends it.
+        await pilot.press("enter")
+        assert await pump_until(pilot, lambda: isinstance(app.screen, ForkPicker))
         await pilot.press("enter")
         assert await pump_until(pilot, lambda: screen.session_id not in (None, source))
-        assert refused == [msg.FORK_WHILE_FINISHING]
+        assert refused == [msg.CHAT_STOPPING]
         assert sessions.get(screen.session_id).messages[-1].content == "A3-partial"
 
 
-async def test_fork_waits_for_every_cancelled_body_not_just_the_first(sessions):
-    """After a cancel the user can start a new turn while the old body still runs."""
-    source = _seed(sessions)
-    held = {q: (threading.Event(), threading.Event()) for q in ("Q3", "Q4")}
-
-    def body(self, question, widget, chunk_type, *, session_id, generation):
-        started, release = held[question]
-        started.set()
-        release.wait(_WAIT_S)
-        self._finalize_stream(widget, [], [f"{question}-partial"], session_id, generation)
-
-    async def fork_is_refused() -> bool:
-        with patch.object(screen, "notify") as notify:
-            await _submit(pilot, "/fork")
-        return _notified(notify) == [msg.FORK_WHILE_FINISHING]
-
-    app = LilbeeApp()
-    async with app.run_test(size=(120, 40)) as pilot:
-        screen = await await_chat(app, pilot)
-        screen.resume_session(source)
-        with patch.object(ChatScreen, "_do_stream_response", body):
-            for question in ("Q3", "Q4"):
-                await _submit(pilot, question)
-                assert await pump_until(pilot, held[question][0].is_set)
-                await pilot.press("ctrl+c")
-                assert await pump_until(pilot, lambda: not screen.streaming)
-            assert await fork_is_refused()
-            held["Q3"][1].set()
-            assert await pump_until(pilot, lambda: len(sessions.get(source).messages) == 7)
-            assert await fork_is_refused()
-            held["Q4"][1].set()
-            assert await pump_until(pilot, lambda: not screen._live_streams)
-        await _open_picker(app, pilot)
-
-
 async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
-    """The fold runs inside the stream worker, so a cancel mid-fold still refuses /fork.
+    """The fold runs inside the turn, so a cancel mid-fold still refuses /fork.
 
     A fork in that window would take the source's summary into a partial fork.
     """
@@ -469,10 +485,6 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
         folding.set()
         release.wait(_WAIT_S)
         return CompactionResult(summary="NOTES", condensed=4, stranded=0)
-
-    def folding_body(self, question, widget, chunk_type, *, session_id, generation):
-        self._compact_history(session_id, generation)
-        self._finalize_stream(widget, [], [], session_id, generation)
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -487,41 +499,37 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
                 for i in range(6)
             ]
         with (
-            patch.object(ChatScreen, "_do_stream_response", folding_body),
+            _answering(_Reply("")),
             patch.object(get_services().searcher, "summarize_history", side_effect=slow_summarize),
             patch.object(screen, "notify") as notify,
         ):
             await _submit(pilot, "Q3")
             assert await pump_until(pilot, folding.is_set)
             await pilot.press("ctrl+c")
-            assert await pump_until(pilot, lambda: not screen.streaming)
             await _submit(pilot, "/fork")
             release.set()
-            assert await pump_until(pilot, lambda: not screen._live_streams)
-        assert msg.FORK_WHILE_FINISHING in _notified(notify)
+            await _turn_ends(pilot, screen)
+        assert msg.CHAT_STOPPING in _notified(notify)
         assert not isinstance(app.screen, ForkPicker)
         assert [meta.id for meta in sessions.list()] == [source]
 
 
-async def test_a_worker_cancelled_before_it_ran_does_not_block_fork(sessions):
-    """Cancelled before its body started, the worker saves nothing, so /fork may proceed."""
+async def test_a_turn_stopped_before_it_ran_ends_and_lets_fork_proceed(sessions):
+    """Stopped before its body started, the turn still ends, asks nothing and saves nothing."""
     source = _seed(sessions)
-    ran: list[bool] = []
-
-    def body(self, question, widget, chunk_type, *, session_id, generation):
-        ran.append(True)
-
+    reply = _Reply("A3")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
-        with patch.object(ChatScreen, "_do_stream_response", body):
-            # One synchronous step: the worker's task is cancelled before it first runs.
+        with _answering(reply):
+            # One synchronous step: the stop lands before the worker first runs.
             screen._send_message("Q3")
-            screen._cancel_inflight_stream(msg.STREAM_CANCELLED)
+            screen.action_cancel_stream()
+            await _turn_ends(pilot, screen)
             await _open_picker(app, pilot)
-        assert ran == []
-        assert not screen._live_streams
+        assert not reply.started.is_set()
+        assert [m.content for m in sessions.get(source).messages][-1] == "Q3"
 
 
 async def test_forking_a_session_an_agent_claimed_is_refused(sessions):

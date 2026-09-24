@@ -927,11 +927,16 @@ class TestContextAwareQuit:
         async with app.run_test() as pilot:
             await await_chat(app, pilot)
             await pilot.pause()
+            from lilbee.cli.tui.screens.chat import _Turn
+
             screen = app.screen
+            turn = _Turn("q", mock.MagicMock(), 0, None)
+            screen._turn = turn
             screen.streaming = True
             await app.action_quit()
             await pilot.pause()
-            assert not screen.streaming
+            assert turn.stop.is_set()
+            assert screen.stopping
             assert app.is_running
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")

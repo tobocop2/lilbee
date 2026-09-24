@@ -11,11 +11,15 @@ from textual.app import ComposeResult
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF, make_mock_services
 from lilbee.app.services import set_services
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.screens.chat import _engine_status_text
+from lilbee.cli.tui.screens.chat import _engine_status_text, _Turn
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from tests._lilbee_app_test_host import LilbeeAppHost
+
+
+def _turn(widget: mock.MagicMock) -> _Turn:
+    return _Turn("q", widget, 0, None)
 
 
 class _ChatHost(LilbeeAppHost):
@@ -86,7 +90,7 @@ async def test_await_engine_returns_at_once_when_ready(_warming_services):
         screen = app.screen
         widget = mock.MagicMock()
         with mock.patch("lilbee.app.placement.wait_chat_ready") as waited:
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(widget)) is True
         waited.assert_not_called()
         widget.set_thinking_status.assert_not_called()
         _warming_services.provider.warm_up_pool.assert_not_called()
@@ -106,12 +110,8 @@ async def test_await_engine_kicks_a_rewarm_when_not_ready(_warming_services):
         with (
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
             mock.patch("lilbee.app.placement.wait_chat_ready", return_value=True),
-            mock.patch(
-                "lilbee.cli.tui.screens.chat._get_worker",
-                return_value=mock.MagicMock(is_cancelled=False),
-            ),
         ):
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(widget)) is True
         _warming_services.provider.warm_up_pool.assert_called_once_with()
 
 
@@ -134,12 +134,8 @@ async def test_await_engine_paints_progress_then_proceeds(_warming_services):
         with (
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
             mock.patch("lilbee.app.placement.wait_chat_ready", side_effect=_wait),
-            mock.patch(
-                "lilbee.cli.tui.screens.chat._get_worker",
-                return_value=mock.MagicMock(is_cancelled=False),
-            ),
         ):
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(widget)) is True
         painted = [c.args[0] for c in widget.set_thinking_status.call_args_list]
         assert painted[0] == msg.ENGINE_WARMING  # labelled before the first snapshot
         assert _engine_status_text(snapshot) in painted
@@ -147,21 +143,19 @@ async def test_await_engine_paints_progress_then_proceeds(_warming_services):
 
 
 async def test_await_engine_cancelled_wait_stays_silent(_warming_services):
-    """A cancelled prompt ends the wait without painting an error."""
+    """A stopped turn ends the wait without painting an error."""
     app = _ChatHost()
     async with app.run_test(size=(100, 40)) as pilot:
         await pilot.pause()
         screen = app.screen
         widget = mock.MagicMock()
+        turn = _turn(widget)
+        turn.stop.set()
         with (
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
             mock.patch("lilbee.app.placement.wait_chat_ready", return_value=False),
-            mock.patch(
-                "lilbee.cli.tui.screens.chat._get_worker",
-                return_value=mock.MagicMock(is_cancelled=True),
-            ),
         ):
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is False
+            assert await asyncio.to_thread(screen._await_chat_engine, turn) is False
         widget.append_content.assert_not_called()
 
 
@@ -178,12 +172,8 @@ async def test_await_engine_failure_lands_in_the_bubble(_warming_services):
         with (
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
             mock.patch("lilbee.app.placement.wait_chat_ready", return_value=False),
-            mock.patch(
-                "lilbee.cli.tui.screens.chat._get_worker",
-                return_value=mock.MagicMock(is_cancelled=False),
-            ),
         ):
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is False
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(widget)) is False
         rendered = widget.append_content.call_args[0][0]
         assert msg.ENGINE_LOAD_FAILED.format(error="out of memory") in rendered
         assert msg.ENGINE_FAILED_HINT in rendered
@@ -200,12 +190,8 @@ async def test_await_engine_stall_reports_not_ready(_warming_services):
         with (
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=False),
             mock.patch("lilbee.app.placement.wait_chat_ready", return_value=False),
-            mock.patch(
-                "lilbee.cli.tui.screens.chat._get_worker",
-                return_value=mock.MagicMock(is_cancelled=False),
-            ),
         ):
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is False
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(widget)) is False
         assert widget.append_content.call_args[0][0] == msg.ENGINE_NOT_READY
 
 
@@ -255,7 +241,7 @@ async def test_await_engine_builds_services_when_none_exist(_warming_services):
             mock.patch("lilbee.cli.tui.screens.chat.get_services") as build,
             mock.patch("lilbee.app.placement.chat_engine_ready", return_value=True),
         ):
-            assert await asyncio.to_thread(screen._await_chat_engine, widget) is True
+            assert await asyncio.to_thread(screen._await_chat_engine, _turn(widget)) is True
         build.assert_called_once()
 
 
