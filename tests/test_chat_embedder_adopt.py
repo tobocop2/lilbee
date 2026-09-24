@@ -70,7 +70,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None)
+            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
         screen._on_embedding_mismatch.assert_called_once()
         widget.append_content.assert_not_called()
 
@@ -86,7 +86,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None)
+            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
         services.searcher.ask_stream.assert_not_called()
         screen._finalize_stream.assert_called_once()
 
@@ -106,7 +106,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None)
+            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
         rendered = " ".join(str(c.args) for c in widget.append_content.call_args_list)
         assert "forcibly closed" not in rendered
         assert msg.STREAM_DISCONNECTED.strip("\n") in rendered
@@ -123,7 +123,7 @@ class TestStreamResponseDispatch:
                 side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
             ),
         ):
-            screen._do_stream_response("q", widget, None, session_id=None)
+            screen._do_stream_response("q", widget, None, session_id=None, generation=0)
         screen._on_embedding_mismatch.assert_not_called()
         assert any("kaboom" in str(c.args) for c in widget.append_content.call_args_list)
 
