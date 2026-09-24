@@ -299,3 +299,66 @@ async def test_a_turn_stopped_before_its_body_starts_does_not_fold(held):
         assert calls == []
         assert screen._summary == ""
         assert held.questions == []
+
+
+async def test_a_send_during_a_fold_after_cancel_loses_no_turn():
+    """A turn sent while a cancelled fold still runs cannot fold the same prefix again.
+
+    Every turn is afterwards either in the history or in the summary, exactly once.
+    """
+    folding, release = threading.Event(), threading.Event()
+    asked: list[str] = []
+    compacted: list[int] = []
+
+    def summarize(dropped, summary, **_kwargs):
+        # The first fold holds; any later one returns at once, so both can finish.
+        if not folding.is_set():
+            folding.set()
+            release.wait(_WAIT_S)
+        labels = "".join(f"|{m['content'][:4]}" for m in dropped)
+        return CompactionResult(summary=summary + labels, condensed=len(dropped), stranded=0)
+
+    def answer(question: str, **_kwargs: object):
+        asked.append(question)
+        return iter([StreamToken(content=f"A-{question}", is_reasoning=False)])
+
+    turns = [f"m{i:02d}:" + "x" * 1200 for i in range(6)]
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        cfg.chat_n_ctx_target = 512
+        cfg.chat_compaction = True
+        with screen._history_lock:
+            screen._history = [
+                {"role": "user" if i % 2 == 0 else "assistant", "content": content}
+                for i, content in enumerate(turns)
+            ]
+        searcher = get_services().searcher
+        real_compacted = screen._on_history_compacted
+
+        def record_compacted(condensed: int, stranded: int) -> None:
+            compacted.append(condensed)
+            real_compacted(condensed, stranded)
+
+        with (
+            patch.object(searcher, "summarize_history", side_effect=summarize) as fold,
+            patch.object(searcher, "ask_stream", side_effect=answer),
+            patch.object(screen, "_on_history_compacted", side_effect=record_compacted),
+        ):
+            await _submit(pilot, "Q1")
+            assert await pump_until(pilot, folding.is_set)
+            await pilot.press("ctrl+c")
+            await pilot.pause()
+            await _submit(pilot, "Q2")
+            release.set()
+            assert await pump_until(pilot, lambda: not screen.streaming)
+            # A refused Q2 is still the draft; Enter sends it once the chat is idle.
+            await pilot.press("enter")
+            assert await pump_until(pilot, lambda: "Q2" in asked and not screen.streaming)
+            assert await pump_until(pilot, lambda: len(compacted) == fold.call_count)
+        with screen._history_lock:
+            held_by_summary = [label for label in screen._summary.split("|") if label]
+            in_history = [m["content"][:4] for m in screen._history]
+        everything = held_by_summary + in_history
+        expected = [t[:4] for t in turns] + ["Q1", "Q2", "A-Q2"]
+        assert sorted(everything) == sorted(expected)
