@@ -389,11 +389,10 @@ jobs:
           path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-chromium-v1
 
-      # Always runs in the full-crawl cell: it is a no-op when the cached revision
-      # matches, and installs the expected revision when the cache holds another.
-      - name: Install Chromium for browser-mode crawls
-        if: matrix.full-crawl
+      - name: Install the headless Chromium for browser-mode crawls
+        if: matrix.full-crawl && steps.pw-cache.outputs.cache-hit != 'true'
         run: uv run lilbee setup crawler
+        continue-on-error: true
         env:
           PYTHONIOENCODING: utf-8
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
