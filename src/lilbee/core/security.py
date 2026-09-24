@@ -16,7 +16,8 @@ from filelock import Timeout as FileLockTimeout
 
 log = logging.getLogger(__name__)
 
-_OWNER_ONLY_MODE = 0o600
+OWNER_ONLY_MODE = 0o600
+OWNER_ONLY_DIR_MODE = 0o700
 
 
 @contextmanager
@@ -90,6 +91,11 @@ def write_private_text(path: Path, text: str) -> None:
         raise
 
 
+def private_opener(path: str, flags: int) -> int:
+    """``open(..., opener=)`` hook that creates a missing file owner-only."""
+    return os.open(path, flags, OWNER_ONLY_MODE)
+
+
 def harden_private_file(path: Path) -> None:
     """Narrow *path* to owner-only, tolerating a file we do not own.
 
@@ -100,11 +106,25 @@ def harden_private_file(path: Path) -> None:
 
     No-op on Windows, which has no POSIX mode bits.
     """
+    _narrow_mode(path, OWNER_ONLY_MODE)
+
+
+def ensure_private_dir(path: Path) -> None:
+    """Create *path* owner-only, or narrow it when it already exists wider.
+
+    Same failure semantics as :func:`harden_private_file`.
+    """
+    path.mkdir(mode=OWNER_ONLY_DIR_MODE, parents=True, exist_ok=True)
+    _narrow_mode(path, OWNER_ONLY_DIR_MODE)
+
+
+def _narrow_mode(path: Path, mode: int) -> None:
+    """chmod *path* to *mode* unless it already has it; a refused chmod warns."""
     if sys.platform == "win32":  # pragma: no cover - Windows uses the DACL
         return
-    if stat.S_IMODE(path.stat().st_mode) == _OWNER_ONLY_MODE:
+    if stat.S_IMODE(path.stat().st_mode) == mode:
         return
     try:
-        path.chmod(_OWNER_ONLY_MODE)
+        path.chmod(mode)
     except OSError:
         log.warning("Could not restrict permissions on %s.", path, exc_info=True)
