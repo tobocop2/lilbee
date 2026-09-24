@@ -25,13 +25,25 @@ def file_lock_or_warn(path: Path, timeout_s: float) -> Iterator[None]:
     """Serialize access to *path* across processes via a sibling ``.lock`` file.
 
     On timeout the caller proceeds unserialized: losing coordination to a stale
-    lock file is worse than the rare interleave the lock prevents.
+    lock file is worse than the rare interleave the lock prevents. filelock
+    applies the owner-only mode under its own lock on every acquire and
+    suppresses a refused chmod only for ``PermissionError``; some NFS/FUSE/SMB
+    mounts refuse it with a different ``OSError`` (e.g. ``ENOTSUP``), which
+    must degrade the same way rather than crash the caller.
     """
     flock = FileLock(str(path) + ".lock", mode=OWNER_ONLY_MODE)
     try:
         flock.acquire(timeout=timeout_s)
     except FileLockTimeout:
         log.warning("Timed out waiting for the %s lock; proceeding without it.", path.name)
+        yield
+        return
+    except OSError:
+        log.warning(
+            "Could not fully acquire the %s lock; proceeding without it.",
+            path.name,
+            exc_info=True,
+        )
         yield
         return
     try:

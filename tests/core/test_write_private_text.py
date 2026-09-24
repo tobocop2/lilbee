@@ -85,6 +85,27 @@ class TestFileLockOrWarnMode:
             pass
         assert file_mode(Path(f"{target}.lock")) == 0o600
 
+    def test_a_refused_fchmod_warns_instead_of_crashing(self, tmp_path, monkeypatch, caplog):
+        """Some NFS/FUSE/SMB mounts return ENOTSUP (not EACCES/EPERM) from fchmod.
+
+        filelock's own suppression only covers PermissionError, so that errno
+        would otherwise escape as an unhandled OSError from acquire() and crash
+        a settings save or the first-boot token write, instead of degrading like
+        a lock timeout does.
+        """
+        import errno
+
+        from lilbee.core.security import file_lock_or_warn
+
+        def refuse(*_args, **_kwargs):
+            raise OSError(errno.ENOTSUP, "Operation not supported")
+
+        monkeypatch.setattr(os, "fchmod", refuse)
+        target = tmp_path / "guarded.txt"
+        with caplog.at_level("WARNING"), file_lock_or_warn(target, timeout_s=1.0):
+            pass
+        assert "proceeding without it" in caplog.text
+
 
 @posix_only
 class TestSessionTokenPermissions:
