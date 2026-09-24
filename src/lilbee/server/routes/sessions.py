@@ -6,7 +6,11 @@ personal as the memory store next door.
 
 from __future__ import annotations
 
-from litestar import delete, get, patch, post, put
+import re
+from urllib.parse import quote
+
+from litestar import Response, delete, get, patch, post, put
+from litestar.datastructures import ResponseHeader
 from litestar.exceptions import NotFoundException
 from litestar.params import FromPath
 
@@ -35,6 +39,17 @@ from lilbee.server.models import (
     SessionSummaryRequest,
 )
 
+CONTENT_DISPOSITION = "Content-Disposition"
+# Printable ASCII except the quote and backslash a quoted filename cannot hold bare.
+_FILENAME_UNSAFE_RE = re.compile(r"[^ !#-\[\]-~]")
+_FILENAME_PLACEHOLDER = "_"
+
+
+def _attachment_disposition(filename: str) -> str:
+    """An RFC 6266 attachment header: an ASCII *filename* fallback plus the exact UTF-8 name."""
+    fallback = _FILENAME_UNSAFE_RE.sub(_FILENAME_PLACEHOLDER, filename)
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
+
 
 @get("/api/sessions")
 async def sessions_list_route() -> SessionListResponse:
@@ -52,10 +67,22 @@ async def session_get_route(session_id: FromPath[str]) -> SessionDetailResponse:
     "/api/sessions/{session_id:str}/markdown",
     media_type=MARKDOWN_MIME,
     raises=[NotFoundException],
+    response_headers=[
+        ResponseHeader(
+            name=CONTENT_DISPOSITION,
+            description="The export's file name: the title slug and the session id prefix.",
+            documentation_only=True,
+        )
+    ],
 )
-async def session_markdown_route(session_id: FromPath[str]) -> str:
-    """Return a conversation as a markdown document."""
-    return await get_session_markdown(session_id)
+async def session_markdown_route(session_id: FromPath[str]) -> Response[str]:
+    """Return a conversation as a markdown document, named for download."""
+    export = await get_session_markdown(session_id)
+    return Response(
+        export.markdown,
+        media_type=MARKDOWN_MIME,
+        headers={CONTENT_DISPOSITION: _attachment_disposition(export.filename)},
+    )
 
 
 @post("/api/sessions")

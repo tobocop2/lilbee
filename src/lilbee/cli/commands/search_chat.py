@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -121,9 +120,6 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
         err.print(notice, style=theme.WARNING)
 
 
-_MD_FILE_LINK_RE = re.compile(r"\[([^\]]+)\]\((file://[^)]+)\)")
-
-
 def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
     """Stream an answer to stdout verbatim, then render its Sources block.
 
@@ -181,12 +177,14 @@ def _print_sources_block(block: str) -> None:
     """Render the Sources block, turning ``[label](file://...)`` into terminal links."""
     from rich.markup import escape
 
+    from lilbee.retrieval.query.formatting import FILE_LINK_RE
+
     if not console.is_terminal or console.legacy_windows:
         console.print(block, markup=False, highlight=False)
         return
     parts: list[str] = []
     last = 0
-    for m in _MD_FILE_LINK_RE.finditer(block):
+    for m in FILE_LINK_RE.finditer(block):
         parts.append(escape(block[last : m.start()]))
         parts.append(f"[link={m.group(2)}]{escape(m.group(1))}[/link]")
         last = m.end()

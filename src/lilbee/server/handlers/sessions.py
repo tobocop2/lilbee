@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from collections.abc import Generator
 from contextlib import contextmanager
+from dataclasses import dataclass
 
 from litestar.exceptions import ClientException, NotFoundException
 from litestar.status_codes import HTTP_409_CONFLICT, HTTP_422_UNPROCESSABLE_ENTITY
 
 from lilbee.app.services import get_services
-from lilbee.app.session_export import session_markdown
+from lilbee.app.session_export import default_export_name, session_markdown
 from lilbee.server.models import (
     SessionCreateRequest,
     SessionDeleteResponse,
@@ -40,6 +41,14 @@ from lilbee.sessions import (
     TitleSource,
     sessions_enabled,
 )
+
+
+@dataclass(frozen=True)
+class SessionMarkdown:
+    """A session's markdown export and the file name it is saved under."""
+
+    filename: str
+    markdown: str
 
 
 def _require_sessions() -> None:
@@ -118,10 +127,13 @@ async def get_session(session_id: str) -> SessionDetailResponse:
         return _detail(_store().get(session_id))
 
 
-async def get_session_markdown(session_id: str) -> str:
-    """Return a session as a markdown document, or 404 if unknown."""
+async def get_session_markdown(session_id: str) -> SessionMarkdown:
+    """Return a session as a markdown document with its file name, or 404 if unknown."""
     with _session_errors():
-        return session_markdown(_store().get(session_id))
+        session = _store().get(session_id)
+        return SessionMarkdown(
+            filename=default_export_name(session.meta), markdown=session_markdown(session)
+        )
 
 
 async def create_session(data: SessionCreateRequest) -> SessionDetailResponse:

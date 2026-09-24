@@ -32,6 +32,7 @@ from lilbee.server.models import (
     SourceContentResponse,
     StatusResponse,
 )
+from lilbee.server.routes.sessions import CONTENT_DISPOSITION
 
 
 @get("/api/health")
@@ -125,6 +126,6 @@ async def source_content_route(
         # attacker-named files don't render inline anywhere.
         headers = {"X-Content-Type-Options": "nosniff"}
         if content_type == "application/octet-stream":
-            headers["Content-Disposition"] = f'attachment; filename="{Path(source).name}"'
+            headers[CONTENT_DISPOSITION] = f'attachment; filename="{Path(source).name}"'
         return Response(content=body, media_type=content_type, status_code=200, headers=headers)
     return result

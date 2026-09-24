@@ -2673,6 +2673,21 @@ class TestEnsureChatModelWiring:
         assert "](file:///" not in out  # raw markdown replaced
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_source_named_with_brackets_is_still_a_hyperlink(self, mock_sync, mock_svc):
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer", "\n\nSources:\n", "1. [notes [draft].md](file:///kb/notes%20%5Bdraft%5D.md)"
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "\x1b]8;" in out and "notes [draft].md" in out
+        assert "](file:///" not in out
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_sources_stay_markdown_on_a_legacy_windows_console(self, mock_sync, mock_svc):
         """Rich emits no OSC 8 on the legacy path, so the hyperlink branch would
         render the label and drop the URL. Legacy consoles keep the markdown."""

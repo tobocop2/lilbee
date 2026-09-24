@@ -213,6 +213,8 @@ def build_context(results: list[SearchChunk]) -> str:
 # Grepped by consumers to know an answer carries its own Sources list (the
 # no-results toast; the pill row, which must not stack a second list).
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
+# A Sources line's ``[label](file-url)`` link: group 1 is the label, group 2 the URL.
+FILE_LINK_RE = re.compile(r"\[(.+?)\]\((file://[^)\s]+)\)")
 
 
 def format_sources_block(

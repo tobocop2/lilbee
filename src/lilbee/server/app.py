@@ -84,6 +84,7 @@ from lilbee.server.routes.search import (
     search_route,
 )
 from lilbee.server.routes.sessions import (
+    CONTENT_DISPOSITION,
     session_add_message_route,
     session_claim_route,
     session_create_route,
@@ -271,6 +272,7 @@ def create_app() -> Litestar:
         allow_origin_regex=cfg.cors_origin_regex,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
+        expose_headers=[CONTENT_DISPOSITION],
     )
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(

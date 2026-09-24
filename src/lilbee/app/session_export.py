@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from functools import cache
 from pathlib import Path
 
@@ -11,7 +12,11 @@ from markdown_it import MarkdownIt
 
 from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
-from lilbee.retrieval.query.formatting import with_sources_block
+from lilbee.retrieval.query.formatting import (
+    FILE_LINK_RE,
+    SOURCES_BLOCK_MARKER,
+    with_sources_block,
+)
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
 
 _EXPORT_SUFFIX = ".md"
@@ -25,6 +30,11 @@ _ROLE_HEADINGS: dict[MessageRole, str] = {
 }
 # Parsed after a message body; if it lands inside a fence, the body left that fence open.
 _PROBE_HEADING = "\n\n# probe"
+_ATX_MARKER = "#"
+_TURN_HEADING_LEVEL = 2
+_MAX_HEADING_LEVEL = 6
+_ESCAPE = "\\"
+_LINE_BREAK_RE = re.compile(r"\r\n?")
 
 
 def session_markdown(session: Session) -> str:
@@ -49,10 +59,40 @@ def _front_matter(meta: SessionMeta) -> str:
 
 
 def _message_section(message: SessionMessage) -> str:
-    body = _close_open_fence(message.content.rstrip())
+    body = _close_open_fence(_LINE_BREAK_RE.sub("\n", message.content).rstrip())
     if message.sources:
         body = with_sources_block(body, message.sources)
-    return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
+    return f"## {_ROLE_HEADINGS[message.role]}\n\n{_nest_headings(_unlink_sources(body))}"
+
+
+def _unlink_sources(text: str) -> str:
+    """*text* with the file links in its Sources list reduced to their labels."""
+    head, marker, block = text.partition(SOURCES_BLOCK_MARKER)
+    return head + marker + FILE_LINK_RE.sub(r"\1", block)
+
+
+def _nest_headings(text: str) -> str:
+    """*text* with no heading at or above the turn level.
+
+    The parser finds the headings, so a ``#`` in code or a ``#tag`` stays as
+    written. A ``#`` heading drops two levels, to at most six; an underlined
+    heading cannot go below level two, so its underline is escaped to text.
+    """
+    lines = text.split("\n")
+    for token in _commonmark().parse(text):
+        if token.type == "heading_open" and token.map:
+            _nest_heading(lines, token.markup, *token.map)
+    return "\n".join(lines)
+
+
+def _nest_heading(lines: list[str], markup: str, start: int, end: int) -> None:
+    """Rewrite the heading spanning lines *start* to *end* (exclusive) in place."""
+    if markup.startswith(_ATX_MARKER):
+        level = min(len(markup) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
+        lines[start] = lines[start].replace(markup, _ATX_MARKER * level, 1)
+    else:
+        underline = end - 1
+        lines[underline] = lines[underline].replace(markup, _ESCAPE + markup, 1)
 
 
 @cache
