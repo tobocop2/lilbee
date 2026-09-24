@@ -1190,6 +1190,18 @@ class TestLitellmForkGuard:
             _require_litellm()
 
 
+class TestUvExcludesFile:
+    """The hosted exclude file must stay in step with the code that names it."""
+
+    def test_content_and_url_match_the_fork_constants(self) -> None:
+        from lilbee.providers.litellm_sdk import _LITELLM_FORK_DIST, _UV_EXCLUDES_URL
+
+        excludes_file = Path(__file__).resolve().parents[1] / "site" / "uv-excludes.txt"
+        content = excludes_file.read_text(encoding="utf-8").strip()
+        assert content == _LITELLM_FORK_DIST
+        assert _UV_EXCLUDES_URL.endswith(excludes_file.name)
+
+
 class TestLiteLLMShowModelCapabilities:
     """Tests for SdkLLMProvider.show_model capabilities parsing via litellm backend."""
 

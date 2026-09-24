@@ -1157,7 +1157,7 @@ pip uninstall -y unclecode-litellm
 pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
 ```
 
-Add `--excludes https://lilbee.sh/uv-excludes.txt` to any uv install that has `crawler` in the extras list; `uv tool upgrade` keeps it. With pip, run the two commands above after a `pip install` that has both `crawler` and `litellm`.
+Add `--excludes https://lilbee.sh/uv-excludes.txt` to any uv install that has `crawler` in the extras list; on uv 0.10.8 or later, `uv tool upgrade` keeps it. With pip, run the two commands above after a `pip install` that has both `crawler` and `litellm`.
 
 </details>
 

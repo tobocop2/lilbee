@@ -190,7 +190,7 @@ The Linux x86_64 wheel and binary bundle the Vulkan loader, so they start on any
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,litellm]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three. See the [install commands in the usage guide](docs/usage.md#optional-extras) for the crawler and litellm extras together.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,litellm]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three. See the [install commands in the usage guide](docs/usage.md#optional-extras) for any uv install that has `crawler` in the extras list.
 
 | Extra       | What it adds                                                                                                                                              |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
