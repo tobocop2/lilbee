@@ -85,22 +85,34 @@ class TestFileLockOrWarnMode:
             pass
         assert file_mode(Path(f"{target}.lock")) == 0o600
 
-    def test_a_refused_fchmod_warns_instead_of_crashing(self, tmp_path, monkeypatch, caplog):
-        """Some NFS/FUSE/SMB mounts return ENOTSUP (not EACCES/EPERM) from fchmod.
 
-        filelock's own suppression only covers PermissionError, so that errno
-        would otherwise escape as an unhandled OSError from acquire() and crash
-        a settings save or the first-boot token write, instead of degrading like
-        a lock timeout does.
-        """
-        import errno
+class TestFileLockOrWarnDegradesOnAcquireError:
+    """Not ``@posix_only``: the branch must be covered on every OS CI runs.
 
+    A refused ``mode=`` application (e.g. the ``ENOTSUP`` some NFS/FUSE/SMB
+    mounts return from ``fchmod``, which filelock's own suppression does not
+    cover) surfaces as an ``OSError`` from ``FileLock.acquire``, not as
+    ``FileLockTimeout``. Patching ``os.fchmod`` to reach that branch only
+    works on POSIX, so this drives it at the platform-neutral seam
+    ``file_lock_or_warn`` itself calls through.
+    """
+
+    @pytest.mark.parametrize("platform", ["linux", "darwin", "win32"])
+    def test_an_os_error_from_acquire_warns_instead_of_crashing(
+        self, tmp_path, monkeypatch, caplog, platform
+    ):
+        import filelock
+
+        from lilbee.core import security
         from lilbee.core.security import file_lock_or_warn
 
-        def refuse(*_args, **_kwargs):
-            raise OSError(errno.ENOTSUP, "Operation not supported")
+        def refuse(self, *_args, **_kwargs):
+            raise OSError("Operation not supported")
 
-        monkeypatch.setattr(os, "fchmod", refuse)
+        # file_lock_or_warn has no platform branch of its own; forcing win32
+        # here proves that, rather than only asserting it by not testing it.
+        monkeypatch.setattr(security.sys, "platform", platform)
+        monkeypatch.setattr(filelock.FileLock, "acquire", refuse)
         target = tmp_path / "guarded.txt"
         with caplog.at_level("WARNING"), file_lock_or_warn(target, timeout_s=1.0):
             pass
