@@ -193,6 +193,20 @@ def test_a_pasted_answer_inside_a_code_fence_stays_as_written():
     assert f"## User\n\n{content}\n\n## Assistant\n" in markdown
 
 
+def test_a_stored_answer_cut_off_in_a_code_block_keeps_its_sources_list_plain():
+    content = (
+        "Try:\n\n```python\nx = 1\n\nSources:\n\n1. [manual.pdf](file:///kb/manual.pdf), page 3"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("```python\nx = 1\n```\n\nSources:\n\n1. manual.pdf, page 3\n")
+
+
+def test_a_pasted_answer_stays_as_written_when_a_later_code_block_is_left_open():
+    pasted = "look:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```"
+    markdown = session_markdown(_session(_user(f"{pasted}\n\n```\nnew")))
+    assert f"## User\n\n{pasted}\n\n```\nnew\n```\n" in markdown
+
+
 def test_the_last_sources_list_is_the_one_made_plain():
     content = (
         "quoting:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```\n\nnew [1]"

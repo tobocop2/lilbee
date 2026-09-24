@@ -5,17 +5,19 @@ from __future__ import annotations
 import os
 import re
 import string
-from functools import cache
 from pathlib import Path
 
 import yaml
-from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from lilbee.core.security import write_private_text
 from lilbee.core.text import collapse_whitespace, make_slug
 from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
     SOURCES_BLOCK_MARKER,
+    close_open_fence,
+    commonmark,
+    open_code_fence,
     source_label,
     with_sources_block,
 )
@@ -30,8 +32,6 @@ _ROLE_HEADINGS: dict[MessageRole, str] = {
     MessageRole.USER: "User",
     MessageRole.ASSISTANT: "Assistant",
 }
-# Parsed after a message body; if it lands inside a fence, the body left that fence open.
-_PROBE_HEADING = "\n\n# probe"
 _ATX_MARKER = "#"
 _TURN_HEADING_LEVEL = 2
 _MAX_HEADING_LEVEL = 6
@@ -76,16 +76,34 @@ def _message_section(message: SessionMessage) -> str:
 
 
 def _split_sources_list(content: str) -> tuple[str, str]:
-    """*content* split before its last Sources list, unless that list sits inside a code fence."""
+    """*content* split before its last Sources list, unless that list is quoted in a code block.
+
+    A list after a code block the answer never closed (a cut-off answer) is lilbee's;
+    a list inside a code block that closes after it is pasted text.
+    """
     text, marker, stored_sources = content.rpartition(SOURCES_BLOCK_MARKER)
-    if not marker or _open_fence_closer(text):
+    if not marker:
         return content, ""
-    return text, marker + stored_sources
+    fence = open_code_fence(text)
+    if fence is None or _never_closed(fence, content):
+        return text, marker + stored_sources
+    return content, ""
+
+
+def _never_closed(fence: Token, content: str) -> bool:
+    """Whether *fence*, opened in a prefix of *content*, is still open at its end."""
+    end = open_code_fence(content)
+    return (
+        end is not None
+        and end.map is not None
+        and fence.map is not None
+        and end.map[0] == fence.map[0]
+    )
 
 
 def _contained(text: str) -> str:
     """*text* with open fences closed and headings nested, so it stays inside its turn."""
-    return _nest_headings(_close_open_fence(text))
+    return _nest_headings(close_open_fence(text))
 
 
 def _plain_source(source: str) -> str:
@@ -112,7 +130,7 @@ def _nest_headings(text: str) -> str:
     heading cannot go below level two, so its underline is escaped to text.
     """
     lines = text.split("\n")
-    for token in _commonmark().parse(text):
+    for token in commonmark().parse(text):
         if token.type == "heading_open" and token.map:
             _nest_heading(lines, token.markup, *token.map)
     return "\n".join(lines)
@@ -126,28 +144,6 @@ def _nest_heading(lines: list[str], markup: str, start: int, end: int) -> None:
     else:
         underline = end - 1
         lines[underline] = lines[underline].replace(markup, _ESCAPE + markup, 1)
-
-
-@cache
-def _commonmark() -> MarkdownIt:
-    return MarkdownIt("commonmark")
-
-
-def _close_open_fence(text: str) -> str:
-    """*text* with a code fence it leaves open closed, so it cannot swallow what follows.
-
-    The parser decides: when a heading placed after *text* ends up inside a fence,
-    that fence is closed. A fence in a list item never does, because the heading
-    ends the item, so only a top-level fence is closed, and at column 0.
-    """
-    closer = _open_fence_closer(text)
-    return f"{text}\n{closer}" if closer else text
-
-
-def _open_fence_closer(text: str) -> str:
-    """The markup that closes the top-level fence *text* leaves open, or '' when none is."""
-    last = _commonmark().parse(text + _PROBE_HEADING)[-1]
-    return last.markup if last.type == "fence" else ""
 
 
 def default_export_name(meta: SessionMeta) -> str:

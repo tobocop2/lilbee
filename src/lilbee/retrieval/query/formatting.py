@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from functools import cache
 from pathlib import Path
+
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from lilbee.core.text import collapse_whitespace
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
@@ -216,6 +220,8 @@ def build_context(results: list[SearchChunk]) -> str:
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
 # A Sources line's ``[label](file-url)`` link, matched within one line.
 FILE_LINK_RE = re.compile(r"\[(?P<label>.+?)\]\((?P<url>file://[^)\s]+)\)")
+# Parsed after a text; if it lands inside a fence, the text left that fence open.
+_FENCE_PROBE = "\n\n# probe"
 
 
 def format_sources_block(
@@ -249,6 +255,29 @@ def with_sources_block(
         return content
     lines = [f"{i}. {render(s)}" for i, s in enumerate(sources, 1)]
     return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+
+
+@cache
+def commonmark() -> MarkdownIt:
+    """The shared CommonMark parser."""
+    return MarkdownIt("commonmark")
+
+
+def open_code_fence(text: str) -> Token | None:
+    """The top-level code fence *text* leaves open, or None when every fence is closed."""
+    last = commonmark().parse(text + _FENCE_PROBE)[-1]
+    return last if last.type == "fence" else None
+
+
+def close_open_fence(text: str) -> str:
+    """*text* with a code fence it leaves open closed, so it cannot swallow what follows.
+
+    The parser decides: when a heading placed after *text* ends up inside a fence,
+    that fence is closed. A fence in a list item never does, because the heading
+    ends the item, so only a top-level fence is closed, and at column 0.
+    """
+    fence = open_code_fence(text)
+    return f"{text}\n{fence.markup}" if fence else text
 
 
 def _extract_cited_indices(text: str) -> set[int]:
