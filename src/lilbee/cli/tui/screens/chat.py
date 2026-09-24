@@ -1114,7 +1114,6 @@ class ChatScreen(Screen[None]):
                 depth=depth,
                 max_pages=max_pages,
                 on_progress=on_progress,
-                quiet=True,
                 include_subdomains=include_subdomains,
                 render_mode=render_mode,
             )

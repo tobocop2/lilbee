@@ -104,7 +104,8 @@ graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # Floor for transitive soupsieve (crawl4ai -> beautifulsoup4 -> soupsieve):
 # 2.9.0 fixes GHSA-j934-xhv5-fg8f and GHSA-gjv8-xp57-g29c. beautifulsoup4 asks
 # for soupsieve>=1.6.1 at every published release, so only a direct floor holds.
-crawler = ["crawl4ai>=0.9.0", "soupsieve>=2.9.0"]
+# playwright installs the headless Chromium shell that browser-mode crawls launch.
+crawler = ["crawl4ai>=0.9.0", "soupsieve>=2.9.0", "crawlberg>=1.7.1", "playwright>=1.61.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows

@@ -94,10 +94,7 @@ async def _drain_page_stream(
                 # failure. Log and keep streaming; the caller still sees the
                 # result in its returned list.
                 log.exception("Flush callback failed for %s", new_result.url)
-        # Hard cap on visible progress. The BFS may emit failed / redirected
-        # pages that push the per-result counter past the cap even after the
-        # strategy has stopped dispatching. Break explicitly so the
-        # user-visible count never exceeds the number the caller asked for.
+        # The user-visible count never exceeds the number the caller asked for.
         if counter >= pages_cap:
             break
     return results
@@ -112,10 +109,9 @@ def _handle_crawl_teardown_error(
 ) -> None:
     """Classify a recursive-crawl exception: cancel-teardown vs real failure.
 
-    After cancel, crawl4ai may raise BrowserContext teardown errors as
-    in-flight URLs bail. That's expected noise, not a failure worth
-    surfacing. Otherwise, log and append a synthetic error result (only
-    when nothing was produced so callers always see at least one entry).
+    An error raised while a cancelled crawl tears down is expected, not a
+    failure worth surfacing. Otherwise, log and append a synthetic error result
+    (only when nothing was produced so callers always see at least one entry).
     """
     cancelled = cancel is not None and cancel.is_set()
     if cancelled:

@@ -1,11 +1,10 @@
-"""Integration tests for web crawling: real crawl4ai against a local HTTP server.
+"""Integration tests for web crawling: real crawlberg against a local HTTP server.
 
-These tests exercise the full pipeline: crawl4ai fetches real HTML from a local
+These tests exercise the full pipeline: crawlberg fetches real HTML from a local
 pytest-httpserver, saves as markdown, and verifies the files land correctly.
 Only the embedding model is faked (existing test pattern).
 
-Requires: crawl4ai + Playwright browser binaries.
-Skipped automatically when crawl4ai is not installed.
+Skipped automatically when the crawler extra is not installed.
 """
 
 import ipaddress
@@ -13,7 +12,7 @@ import time
 
 import pytest
 
-crawl4ai = pytest.importorskip("crawl4ai")
+crawlberg = pytest.importorskip("crawlberg")
 
 from lilbee.core.config import cfg  # noqa: E402
 from lilbee.crawler import (  # noqa: E402
@@ -118,7 +117,7 @@ def test_site_with_404(httpserver):
 
 class TestSinglePageCrawl:
     async def test_crawl_single_page_saves_markdown(self, test_site, allow_localhost):
-        """Real crawl4ai fetches a page and saves as .md."""
+        """Real crawlberg fetches a page and saves as .md."""
         url = test_site.url_for("/")
         paths = await crawl_and_save(str(url), depth=0)
         assert len(paths) == 1
@@ -128,11 +127,7 @@ class TestSinglePageCrawl:
         assert len(content) > 0
 
     async def test_crawl_resolves_links_against_a_base_href(self, httpserver, allow_localhost):
-        """A ``<base href>`` page's relative links resolve against the base in the saved markdown.
-
-        lilbee silences crawl4ai's own converter and re-derives the base URL, so this proves
-        the silenced path resolves links the way an un-silenced crawl would.
-        """
+        """A ``<base href>`` page's relative links resolve against the base in the markdown."""
         page = (
             "<html><head><base href='https://based.example/docs/'></head>"
             "<body><h1>Guide</h1><a href='guide'>Read the guide</a></body></html>"
@@ -175,7 +170,7 @@ class TestRecursiveCrawl:
         """Recursive crawl with depth=1 fetches linked pages."""
         url = str(test_site.url_for("/"))
         paths = await crawl_and_save(url, depth=1)
-        # Should get at least the home page; may get about page too depending on crawl4ai
+        # Should get at least the home page; may get about page too depending on the backend
         assert len(paths) >= 1
         all_content = " ".join(p.read_text(encoding="utf-8") for p in paths)
         assert len(all_content) > 0
@@ -285,10 +280,10 @@ class TestErrors:
         """A 404 page produces an empty or error result, doesn't crash."""
         httpserver.expect_request("/notfound").respond_with_data("Not Found", status=404)
         url = str(httpserver.url_for("/notfound"))
-        # crawl4ai may return success=False or empty markdown for 404s
+        # The backend may report a failure or empty markdown for a 404
         # Either way, crawl_and_save should not raise
         paths = await crawl_and_save(url, depth=0)
-        # May be 0 (failed) or 1 (crawl4ai returned something): just verify no crash
+        # May be 0 (failed) or 1 (the backend returned something): just verify no crash
         assert isinstance(paths, list)
 
     async def test_crawl_unreachable_host(self):

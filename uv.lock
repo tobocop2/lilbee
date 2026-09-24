@@ -835,6 +835,18 @@ wheels = [
 ]
 
 [[package]]
+name = "crawlberg"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/06/9afc5d221ee16842527271933bdf1b37f0905d6e7acb9a6a3ac586e6d970/crawlberg-1.7.1.tar.gz", hash = "sha256:17c3da242d8a5c290542eaef8a2bd637b7928885925ff867afa82e6c12ceca4a", size = 109444, upload-time = "2026-09-16T19:05:22.787Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/41/3f/1f141ba8bbe7bb9ccc6fde5c518c8bca9ccd72dbcb5b24f2f0efe867c54c/crawlberg-1.7.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:a3c0064a9b7ceb472ca2f3d3685e6647b4f84e61919abdad42c595aa7ae0fef1", size = 9612030, upload-time = "2026-09-16T19:05:12.702Z" },
+    { url = "https://files.pythonhosted.org/packages/89/0b/c801d626f5bec71de0d5eb4c78e86ef1d4560f87bf9097788e4196de82a1/crawlberg-1.7.1-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:e71ce44863aad40ebedc333c3eee8ae49276fc7c2fe4df4551b0c1a89aea3045", size = 10558349, upload-time = "2026-09-16T19:05:15.426Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/69/b3d9fa9bee49af57c475ae94b61cd424695b086501a03c9e3e1048bc23c3/crawlberg-1.7.1-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:ade72a270b0cf2173efb4119ca9f0c787ea5dce7bb9332713a72bc61bd00c94d", size = 10513660, upload-time = "2026-09-16T19:05:17.889Z" },
+    { url = "https://files.pythonhosted.org/packages/ea/74/4e843c0a8e1ec028bf2c0bf2cb6b89e7491528db59559af50f1c304050c3/crawlberg-1.7.1-cp310-abi3-win_amd64.whl", hash = "sha256:568cd1899c9e21e4a7ceec3e7ea48f0526a390dbb7d976fb7f8d484cdecce16f", size = 16346485, upload-time = "2026-09-16T19:05:20.701Z" },
+]
+
+[[package]]
 name = "cryptography"
 version = "50.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1905,6 +1917,8 @@ dependencies = [
 [package.optional-dependencies]
 crawler = [
     { name = "crawl4ai" },
+    { name = "crawlberg" },
+    { name = "playwright" },
     { name = "soupsieve" },
 ]
 cuda12 = [
@@ -1924,8 +1938,10 @@ litellm = [
 ]
 release = [
     { name = "crawl4ai" },
+    { name = "crawlberg" },
     { name = "graspologic-native" },
     { name = "litellm" },
+    { name = "playwright" },
     { name = "soupsieve" },
     { name = "spacy" },
 ]
@@ -1956,6 +1972,7 @@ dev = [
 requires-dist = [
     { name = "cachetools", specifier = ">=7.1.4" },
     { name = "crawl4ai", marker = "extra == 'crawler'", specifier = ">=0.9.0" },
+    { name = "crawlberg", marker = "extra == 'crawler'", specifier = ">=1.7.1" },
     { name = "diskcache", specifier = ">=5.6.1" },
     { name = "filelock", specifier = ">=3.10,<3.33" },
     { name = "gguf", specifier = ">=0.19" },
@@ -1977,6 +1994,7 @@ requires-dist = [
     { name = "nvidia-cuda-runtime-cu12", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'cuda12'" },
     { name = "pathspec", specifier = ">=1.1.1" },
     { name = "pillow", specifier = ">=11.3.0" },
+    { name = "playwright", marker = "extra == 'crawler'", specifier = ">=1.61.0" },
     { name = "psutil", specifier = ">=5.9" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "regex" },

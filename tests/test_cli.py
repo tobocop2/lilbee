@@ -3362,17 +3362,6 @@ class TestCrawlUrlsBlocking:
         assert call_kwargs["depth"] == 5
         assert call_kwargs["max_pages"] == 20
 
-    @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    def test_json_mode_passes_quiet(self, mock_crawl, isolated_env):
-        """In JSON mode, quiet=True is passed to crawl_and_save."""
-        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
-
-        mock_crawl.return_value = []
-        cfg.json_mode = True
-        _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
-        call_kwargs = mock_crawl.call_args[1]
-        assert call_kwargs["quiet"] is True
-
     @mock.patch("lilbee.cli.commands.ingest_sync._run_crawl_with_signal_cancel")
     def test_cancel_event_breaks_multi_url_loop(self, mock_run, isolated_env):
         """If the SIGINT handler sets cancel mid-run, the next URL is skipped."""

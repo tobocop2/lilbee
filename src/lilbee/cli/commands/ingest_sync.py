@@ -276,7 +276,6 @@ def _run_crawl_with_signal_cancel(
             max_pages=max_pages,
             on_progress=on_progress,
             cancel=cancel_event,
-            quiet=cfg.json_mode,
             include_subdomains=include_subdomains,
         )
         result: list[Path] = loop.run_until_complete(coro)
