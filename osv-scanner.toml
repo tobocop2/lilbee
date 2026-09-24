@@ -13,10 +13,6 @@ id = "PYSEC-2022-42969"
 reason = "py 1.11.0 (unmaintained) pulled in transitively by pytest-forked>=1.6.0, which the `make test-ci-forked` target uses. The advisory is a ReDoS in py.path.svnwc that requires attacker-controlled Subversion repository paths; lilbee and pytest-forked never call py.path.svnwc, and it is not exposed to untrusted input. No upstream fix will ship. Revisit if pytest-forked drops the py dependency."
 
 [[IgnoredVulns]]
-id = "GHSA-vfmq-68hx-4jfw"
-reason = "lxml 5.4.0 pinned transitively by crawl4ai 0.8.9 (latest release), which requires `lxml~=5.3`. The fix lands in lxml 6.1.0 (defaults `resolve_entities` to 'internal' for iterparse/ETCompatXMLParser). lxml is only installed when users opt into the `crawler` extra, and crawl4ai uses lxml primarily for HTML scraping, not untrusted XML parsing with iterparse. Revisit when crawl4ai loosens its lxml pin."
-
-[[IgnoredVulns]]
 id = "GHSA-xqmj-j6mv-4862"
 reason = "Server-side template injection in the LiteLLM Proxy server's `POST /prompts/test` endpoint. lilbee uses litellm only as an SDK (litellm.completion in src/lilbee/providers/litellm_sdk.py) and never runs the proxy server, so the affected endpoint is not exposed. Bumping to the patched 1.83.7 is currently blocked: litellm 1.83.7+ hard-pins click==8.1.8, but typer (a direct dependency) requires click>=8.2.1. Revisit when litellm loosens its click pin or typer relaxes its click floor."
 
@@ -49,23 +45,3 @@ reason = "ReDoS in pygments GUID matching (CVE-2026-4539). pygments is only reso
 [[IgnoredVulns]]
 id = "PYSEC-2025-183"
 reason = "DISPUTED weak-encryption finding in pyjwt (CVE-2025-45768). Upstream's response: HMAC key length is chosen by the application, not the library; pyjwt has no plan to enforce a minimum and there is no fixed version. pyjwt is pulled in transitively by mcp 1.26.0; lilbee never imports pyjwt or calls jwt.encode/decode with caller-controlled key material. Revisit if a real (non-disputed) advisory ships or if mcp drops the dependency."
-
-[[IgnoredVulns]]
-id = "PYSEC-2024-277"
-reason = "DISPUTED deserialization finding in joblib.numpy_pickle.NumpyArrayWrapper.read_array (CVE-2024-34997). Upstream's response: NumpyArrayWrapper is only invoked when reading joblib-produced cache files, i.e. trusted content the same process wrote earlier. joblib is pulled in transitively by nltk via crawl4ai and is only installed with the `crawler` extra; lilbee never calls joblib directly. No upstream fix is planned."
-
-[[IgnoredVulns]]
-id = "GHSA-h8wq-7xc4-p3qx"
-reason = "False positive against nltk 3.9.4. OSV advisory CVE-2026-0846 fixes the issue in nltk 3.9.3 (affected versions enumerate up to 3.9.2 only); uv.lock pins 3.9.4, which is already past the fix. osv-scanner's range comparison still flags it; suppression is a guard until the scanner refreshes. nltk is pulled in transitively by crawl4ai under the `crawler` extra and lilbee never imports it. Remove this entry once osv-scanner stops emitting the alert."
-
-[[IgnoredVulns]]
-id = "GHSA-p4gq-832x-fm9v"
-reason = "Path traversal in nltk.data.load() via URL-encoded path separators (CVE-2026-54293). All nltk <= 3.9.4 are affected and no fixed version has been published to PyPI (3.9.4 is the latest release; 3.10.0 is still a pre-release). nltk is pulled in transitively by crawl4ai under the `crawler` extra; lilbee never imports nltk, and crawl4ai only calls it with hardcoded resource names (e.g. `tokenizers/punkt`) while crawled text is passed to sent_tokenize/word_tokenize as data, never as a resource path, so the attacker-controlled-path vector is unreachable. The Dependabot alert is dismissed as tolerable risk; bb-m851 tracks the bump to nltk >= 3.10 once it ships."
-
-[[IgnoredVulns]]
-id = "PYSEC-2026-597"
-reason = "nltk path traversal, second advisory for the incomplete #3504 fix (percent-encoded ..%2f bypass of _UNSAFE_NO_PROTOCOL_RE; alias CVE-2026-12243). Same triage as GHSA-p4gq-832x-fm9v: no fixed nltk release exists (3.9.4 is latest), nltk arrives transitively via crawl4ai under the crawler extra, lilbee never imports nltk, and crawl4ai only loads hardcoded resource names while crawled text flows in as tokenizer data, never as a resource path, so the attacker-controlled-path vector is unreachable. bb-m851 tracks the bump once nltk >= 3.10 ships."
-
-[[IgnoredVulns]]
-id = "GHSA-8mgp-746c-j5xp"
-reason = "nltk model-artifact APIs bypass the pathsec sandbox (CVE-2026-81726, PYSEC-2026-3740). Every nltk release up to and including 3.10.3 is affected and upstream has published no fix. The advisory covers TransitionParser.train/parse, AveragedPerceptron.save/load, PerceptronTagger.save_to_json and save_maxent_params, and it only bites an application that sets pathsec.ENFORCE and then lets untrusted input choose a model path. nltk arrives transitively via crawl4ai under the `crawler` extra; lilbee never imports nltk, never enables pathsec, and crawl4ai touches none of the affected APIs (it uses nltk.data.find, nltk.download, sent_tokenize, word_tokenize, stopwords and WordNetLemmatizer only), so no model path is caller-controlled. Remove this entry once nltk ships a fixed release."
