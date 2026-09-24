@@ -6,6 +6,7 @@ import pytest
 from litestar.testing import TestClient
 
 from lilbee.app import services as svc_mod
+from lilbee.app.session_export import session_markdown
 from lilbee.core.config import cfg
 from lilbee.server.auth import authenticates_itself
 from lilbee.server.routes.sessions import (
@@ -15,6 +16,7 @@ from lilbee.server.routes.sessions import (
     session_delete_route,
     session_fork_route,
     session_get_route,
+    session_markdown_route,
     session_rename_route,
     session_set_summary_route,
     sessions_list_route,
@@ -89,6 +91,23 @@ class TestGet:
 
     def test_unknown_id_404(self, client):
         assert client.get("/api/sessions/nope").status_code == 404
+
+
+class TestMarkdown:
+    def test_returns_the_session_as_markdown(self, client, store):
+        session_id = _seed(store)
+        resp = client.get(f"/api/sessions/{session_id}/markdown")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "text/markdown; charset=utf-8"
+        assert resp.text == session_markdown(store.get(session_id))
+
+    def test_unknown_id_404(self, client):
+        assert client.get("/api/sessions/nope/markdown").status_code == 404
+
+    def test_reads_any_session_the_get_route_reads(self, client, store):
+        session_id = _seed(store, origin=SessionOrigin.MCP)
+        assert client.get(f"/api/sessions/{session_id}").status_code == 200
+        assert client.get(f"/api/sessions/{session_id}/markdown").status_code == 200
 
 
 class TestGetSummary:
@@ -263,6 +282,7 @@ def test_every_session_route_requires_the_token():
     # The takeover operation above all: a read-only token must never claim.
     assert not authenticates_itself(session_claim_route.fn)
     assert not authenticates_itself(session_fork_route.fn)
+    assert not authenticates_itself(session_markdown_route.fn)
 
 
 class TestOwnership:
@@ -333,6 +353,7 @@ _DISABLED_ROUTES = {
     "rename": lambda client, sid: client.patch(f"/api/sessions/{sid}", json={"title": "t"}),
     "delete": lambda client, sid: client.delete(f"/api/sessions/{sid}"),
     "fork": lambda client, sid: client.post(f"/api/sessions/{sid}/fork"),
+    "markdown": lambda client, sid: client.get(f"/api/sessions/{sid}/markdown"),
 }
 
 

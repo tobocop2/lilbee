@@ -36,8 +36,9 @@ class TestSessionsDisabled:
             ["sessions", "rename", "abc", "new title"],
             ["sessions", "delete", "abc", "--yes"],
             ["sessions", "fork", "abc"],
+            ["sessions", "export", "abc"],
         ],
-        ids=["list", "show", "rename", "delete", "fork"],
+        ids=["list", "show", "rename", "delete", "fork", "export"],
     )
     def test_command_reports_sessions_are_off(self, argv):
         cfg.sessions_enabled = False

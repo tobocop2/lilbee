@@ -1,4 +1,4 @@
-"""Session routes: list, get, create, append, fork, summary, rename, delete.
+"""Session routes: list, get, markdown, create, append, fork, summary, rename, delete.
 
 Every route requires the token, reads included: a transcript is at least as
 personal as the memory store next door.
@@ -7,8 +7,10 @@ personal as the memory store next door.
 from __future__ import annotations
 
 from litestar import delete, get, patch, post, put
+from litestar.exceptions import NotFoundException
 from litestar.params import FromPath
 
+from lilbee.data.types import MARKDOWN_MIME
 from lilbee.server.handlers.sessions import (
     add_session_message,
     claim_session,
@@ -16,6 +18,7 @@ from lilbee.server.handlers.sessions import (
     delete_session,
     fork_session,
     get_session,
+    get_session_markdown,
     list_sessions,
     rename_session,
     set_session_summary,
@@ -43,6 +46,16 @@ async def sessions_list_route() -> SessionListResponse:
 async def session_get_route(session_id: FromPath[str]) -> SessionDetailResponse:
     """Return a conversation's metadata and full transcript."""
     return await get_session(session_id)
+
+
+@get(
+    "/api/sessions/{session_id:str}/markdown",
+    media_type=MARKDOWN_MIME,
+    raises=[NotFoundException],
+)
+async def session_markdown_route(session_id: FromPath[str]) -> str:
+    """Return a conversation as a markdown document."""
+    return await get_session_markdown(session_id)
 
 
 @post("/api/sessions")
