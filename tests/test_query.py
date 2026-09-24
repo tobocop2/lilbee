@@ -271,6 +271,12 @@ class TestFormatSource:
 
         assert source_markdown_link("memory:m1") == "memory:m1"
 
+    def test_a_link_label_stays_on_one_line(self):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        link = source_markdown_link("a\nb\r\nc.md")
+        assert link.startswith("[a b c.md](file://")
+
 
 class TestUniqueSources:
     def test_first_chunk_per_distinct_source_in_order(self):

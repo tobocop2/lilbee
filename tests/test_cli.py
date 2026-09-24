@@ -2688,6 +2688,24 @@ class TestEnsureChatModelWiring:
         assert "](file:///" not in out
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_citation_line_with_a_bracket_is_not_part_of_a_link(self, mock_sync, mock_svc):
+        from rich.console import Console
+
+        mock_svc.searcher.ask_stream.return_value = _mock_stream(
+            "answer",
+            "\n\nSources:\n",
+            "1. [wiki.md](file:///kb/wiki.md)\n    → ~/docs/notes [draft].pdf, page 2\n",
+            "2. [b.md](file:///kb/b.md), page 4",
+        )
+        term = Console(force_terminal=True, legacy_windows=False, width=200)
+        with mock.patch("lilbee.cli.commands.search_chat.console", term), term.capture() as cap:
+            result = runner.invoke(app, ["ask", "test"])
+        assert result.exit_code == 0, result.output
+        out = cap.get()
+        assert "→ ~/docs/notes [draft].pdf, page 2\n2. " in out
+        assert "file:///kb/wiki.md" in out and "file:///kb/b.md" in out
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ask_sources_stay_markdown_on_a_legacy_windows_console(self, mock_sync, mock_svc):
         """Rich emits no OSC 8 on the legacy path, so the hyperlink branch would
         render the label and drop the URL. Legacy consoles keep the markdown."""

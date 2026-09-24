@@ -159,10 +159,48 @@ def test_a_stored_source_name_cannot_add_structure_to_the_sources_list():
     content = (
         "x [1][2]\n\nSources:\n\n"
         "1. [# hash.md](file:///kb/%23%20hash.md), page 2\n"
-        "2. [a\nb.md](file:///kb/a%0Ab.md)"
+        "2. [- dash.md](file:///kb/-%20dash.md)"
     )
     markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith("Sources:\n\n1. \\# hash.md, page 2\n2. a b.md\n")
+    assert markdown.endswith("Sources:\n\n1. \\# hash.md, page 2\n2. \\- dash.md\n")
+
+
+def test_a_citation_line_with_a_bracket_keeps_the_next_source_on_its_own_line():
+    content = (
+        "x [1][2]\n\nSources:\n\n"
+        "1. [wiki.md](file:///kb/wiki.md)\n"
+        "    → ~/docs/notes [draft].pdf, page 2\n"
+        "2. [b.md](file:///kb/b.md), page 4"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(
+        "Sources:\n\n1. wiki.md\n    → ~/docs/notes [draft].pdf, page 2\n2. b.md, page 4\n"
+    )
+
+
+def test_a_bracketed_name_that_is_not_a_link_does_not_join_the_next_line():
+    content = "x\n\nSources:\n\n1. [draft] plain.md\n2. [b.md](file:///kb/b.md)"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("Sources:\n\n1. [draft] plain.md\n2. b.md\n")
+
+
+def test_a_pasted_answer_inside_a_code_fence_stays_as_written():
+    content = (
+        "look:\n\n```\n85 Nm [1].\n\nSources:\n\n"
+        "1. [manual.pdf](file:///kb/manual.pdf), page 3\n```\n\nThanks."
+    )
+    markdown = session_markdown(_session(_user(content), _assistant("ok")))
+    assert f"## User\n\n{content}\n\n## Assistant\n" in markdown
+
+
+def test_the_last_sources_list_is_the_one_made_plain():
+    content = (
+        "quoting:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```\n\nnew [1]"
+        "\n\nSources:\n\n1. [b.md](file:///kb/b.md), page 2"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert "1. [a.md](file:///kb/a.md)\n```\n\nnew [1]" in markdown
+    assert markdown.endswith("new [1]\n\nSources:\n\n1. b.md, page 2\n")
 
 
 @pytest.mark.parametrize("sources", [("a\rb.md", "# h.md"), ("a\rb.md", "# h.md", "c\r\r\rd.md")])

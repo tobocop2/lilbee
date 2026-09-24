@@ -66,13 +66,21 @@ def _front_matter(meta: SessionMeta) -> str:
 def _message_section(message: SessionMessage) -> str:
     """One turn: the message with its headings nested, then its Sources list as plain names."""
     content = _LINE_BREAK_RE.sub("\n", message.content).rstrip()
-    text, marker, stored_sources = content.partition(SOURCES_BLOCK_MARKER)
+    text, stored_sources = _split_sources_list(content)
     body = _contained(text.rstrip())
-    if marker:
-        body += _contained(marker + FILE_LINK_RE.sub(_plain_link, stored_sources))
+    if stored_sources:
+        body += _contained(FILE_LINK_RE.sub(_plain_link, stored_sources))
     elif message.sources:
         body = with_sources_block(body, message.sources, render=_plain_source)
     return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
+
+
+def _split_sources_list(content: str) -> tuple[str, str]:
+    """*content* split before its last Sources list, unless that list sits inside a code fence."""
+    text, marker, stored_sources = content.rpartition(SOURCES_BLOCK_MARKER)
+    if not marker or _open_fence_closer(text):
+        return content, ""
+    return text, marker + stored_sources
 
 
 def _contained(text: str) -> str:
@@ -85,7 +93,7 @@ def _plain_source(source: str) -> str:
 
 
 def _plain_link(link: re.Match[str]) -> str:
-    return _plain_name(link[1])
+    return _plain_name(link["label"])
 
 
 def _plain_name(name: str) -> str:
@@ -132,8 +140,14 @@ def _close_open_fence(text: str) -> str:
     that fence is closed. A fence in a list item never does, because the heading
     ends the item, so only a top-level fence is closed, and at column 0.
     """
+    closer = _open_fence_closer(text)
+    return f"{text}\n{closer}" if closer else text
+
+
+def _open_fence_closer(text: str) -> str:
+    """The markup that closes the top-level fence *text* leaves open, or '' when none is."""
     last = _commonmark().parse(text + _PROBE_HEADING)[-1]
-    return f"{text}\n{last.markup}" if last.type == "fence" else text
+    return last.markup if last.type == "fence" else ""
 
 
 def default_export_name(meta: SessionMeta) -> str:

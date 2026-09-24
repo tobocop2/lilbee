@@ -6,6 +6,7 @@ import re
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from lilbee.core.text import collapse_whitespace
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
 
 CONTEXT_TEMPLATE = """Context:
@@ -147,7 +148,7 @@ def source_markdown_link(source: str) -> str:
     """A bare source name as the same clickable ``[label](file-url)`` markdown a
     live answer's Sources block uses; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
-    label = source_label(source)
+    label = collapse_whitespace(source_label(source))
     if is_memory_source(source):
         return label
     url = _source_file_url(source)
@@ -213,8 +214,8 @@ def build_context(results: list[SearchChunk]) -> str:
 # Grepped by consumers to know an answer carries its own Sources list (the
 # no-results toast; the pill row, which must not stack a second list).
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
-# A Sources line's ``[label](file-url)`` link: group 1 is the label, group 2 the URL.
-FILE_LINK_RE = re.compile(r"\[(.+?)\]\((file://[^)\s]+)\)", re.DOTALL)
+# A Sources line's ``[label](file-url)`` link, matched within one line.
+FILE_LINK_RE = re.compile(r"\[(?P<label>.+?)\]\((?P<url>file://[^)\s]+)\)")
 
 
 def format_sources_block(

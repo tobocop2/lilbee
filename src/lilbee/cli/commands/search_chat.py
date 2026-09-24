@@ -185,7 +185,7 @@ def _print_sources_block(block: str) -> None:
     last = 0
     for m in FILE_LINK_RE.finditer(block):
         parts.append(escape(block[last : m.start()]))
-        parts.append(f"[link={m.group(2)}]{escape(m.group(1))}[/link]")
+        parts.append(f"[link={m['url']}]{escape(m['label'])}[/link]")
         last = m.end()
     parts.append(escape(block[last:]))
     console.print("".join(parts), highlight=False)
