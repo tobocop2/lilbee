@@ -27,7 +27,7 @@ from lilbee.modelhub.model_manager.discovery import (
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.litellm_sdk import LITELLM_MISSING_MSG, litellm_available
+from lilbee.providers.litellm_sdk import litellm_available
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
 from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS, local_server_for_key
@@ -37,7 +37,7 @@ from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, provider_has_ke
 log = logging.getLogger(__name__)
 
 # User-facing reasons a persisted ref is unusable, shared across surfaces.
-REASON_LITELLM_MISSING = LITELLM_MISSING_MSG
+REASON_LITELLM_MISSING = "the litellm extra isn't installed"
 REASON_SERVER_UNREACHABLE = "the model server at {base_url} isn't reachable"
 REASON_NO_API_KEY = "no API key is configured for {provider}"
 REASON_NOT_INSTALLED = "it isn't installed"
