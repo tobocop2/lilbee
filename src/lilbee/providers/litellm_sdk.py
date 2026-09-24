@@ -15,6 +15,8 @@ import base64
 import functools
 import logging
 from collections.abc import Callable, Iterator
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from typing import Any, cast
 
 import httpx
@@ -232,9 +234,41 @@ _LITELLM_MISSING_MSG = (
     "Reinstall with: uv tool install --prerelease=allow 'lilbee[litellm]'"
 )
 
+# Temporary: crawl4ai requires unclecode-litellm, a fork that installs into litellm's
+# package directory. Remove this check once crawl4ai ships unclecode/crawl4ai#2107.
+_LITELLM_DIST = "litellm"
+_LITELLM_FORK_DIST = "unclecode-litellm"
+_LITELLM_FORK_MSG = (
+    "Both litellm and unclecode-litellm are installed. unclecode-litellm is a fork of "
+    "litellm that crawl4ai requires, and it writes into the same litellm package, so "
+    "remote and API models cannot load reliably. For a pip install, run: "
+    "pip uninstall -y unclecode-litellm && "
+    "pip install --force-reinstall --no-deps litellm=={version}. "
+    "For a uv tool install, write unclecode-litellm into a file excludes.txt, then run: "
+    "uv tool install --reinstall --prerelease=allow --excludes excludes.txt "
+    "'lilbee[crawler,litellm]'"
+)
+
+
+def _installed_version(dist: str) -> str | None:
+    """Return the installed version of distribution *dist*, or None when it is absent."""
+    try:
+        return _dist_version(dist)
+    except PackageNotFoundError:
+        return None
+
+
+def _refuse_litellm_fork() -> None:
+    """Raise a ProviderError when the crawl4ai litellm fork shares litellm's package."""
+    litellm_version = _installed_version(_LITELLM_DIST)
+    if litellm_version is None or _installed_version(_LITELLM_FORK_DIST) is None:
+        return
+    raise ProviderError(_LITELLM_FORK_MSG.format(version=litellm_version), provider=_PROVIDER_NAME)
+
 
 def _require_litellm() -> Any:
     """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
+    _refuse_litellm_fork()
     try:
         import litellm
     except ImportError as exc:

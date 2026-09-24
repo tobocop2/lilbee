@@ -1148,6 +1148,18 @@ pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https
 uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
 ```
 
+The crawler depends on `unclecode-litellm`, a fork of litellm that writes into the same `litellm` package. If you install `crawler` and `litellm` together, remove the fork before you use remote models. Until you do, remote models stop with an error that gives the same commands.
+
+```bash
+# pip
+pip uninstall -y unclecode-litellm
+pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
+
+# uv tool: exclude the fork when you install
+echo unclecode-litellm > excludes.txt
+uv tool install --reinstall --prerelease=allow --excludes excludes.txt 'lilbee[crawler,litellm]'
+```
+
 </details>
 
 **NVIDIA users**: the default Vulkan build works, but the CUDA flavour is
