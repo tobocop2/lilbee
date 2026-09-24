@@ -210,6 +210,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/theme <name>` | | Switch theme |
 | `/status` | | Show indexed documents and config |
 | `/login <token>` | | Log in to HuggingFace |
+| `/fork` | | Branch this conversation after an answer you pick from a picker listing answers newest first; the fork opens with an empty input. With no answer yet, there is nothing to fork |
 | `/export-chat [path]` | | Export this conversation as markdown. No path writes `<title>-<id>.md` in the current directory; a directory gets that name inside it |
 | `/clear` | | Clear chat history |
 | `/cancel` | | Cancel active operations |
