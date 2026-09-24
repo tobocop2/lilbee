@@ -4467,7 +4467,7 @@ async def test_chat_compacts_history_over_token_budget_into_notes():
                 "summarize_history",
                 return_value=CompactionResult(summary="NOTES", condensed=8, stranded=0),
             ) as summarize:
-                app.screen._compact_history()
+                app.screen._compact_history(None, app.screen._conversation_generation)
         finally:
             cfg.chat_n_ctx_target = prior_target
             cfg.chat_compaction = prior_compaction
@@ -12999,6 +12999,7 @@ async def test_chat_finalize_stream_emits_no_results_toast_when_search_finds_not
                     [],
                     ["I couldn't find that in your docs."],
                     None,
+                    screen._conversation_generation,
                 )
                 await _pilot.pause()
                 mock_notify.assert_called_once()
@@ -13053,7 +13054,12 @@ async def test_chat_finalize_stream_scrolls_to_the_end_of_the_finished_answer():
         # _finalize_stream runs on the streaming worker thread in production;
         # driving it from one keeps its call_from_thread hops real.
         await asyncio.to_thread(
-            screen._finalize_stream, widget, ["cv-manual.pdf", "specs.pdf"], ["done"], None
+            screen._finalize_stream,
+            widget,
+            ["cv-manual.pdf", "specs.pdf"],
+            ["done"],
+            None,
+            screen._conversation_generation,
         )
         await _settle(pilot)
 
