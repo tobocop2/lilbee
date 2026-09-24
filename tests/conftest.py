@@ -40,6 +40,7 @@ from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
+from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
@@ -226,14 +227,19 @@ def _assume_litellm_available(request, monkeypatch):
     monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
 
 
-def _no_installed_distribution(dist: str) -> str:
+def _only_real_litellm_installed(dist: str) -> str:
+    if dist == "litellm":
+        return "1.98.0"
     raise PackageNotFoundError(dist)
 
 
 @pytest.fixture(autouse=True)
-def _hide_installed_litellm_distributions(monkeypatch):
-    """Keep the litellm fork check off the host's installed packages; tests plant their own."""
-    monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _no_installed_distribution)
+def _seal_litellm_distributions(monkeypatch):
+    """Report real litellm installed and no fork, instead of the host's packages."""
+    monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _only_real_litellm_installed)
+    _real_litellm_available.cache_clear()
+    yield
+    _real_litellm_available.cache_clear()
 
 
 @pytest.fixture(autouse=True)

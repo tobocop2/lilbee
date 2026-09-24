@@ -906,7 +906,7 @@
 
       <div class="installextras">
         <div class="extras-h">optional extras</div>
-        <div class="extras-sub">For a <code>pip</code> / <code>uv</code> install, add the name in brackets, e.g. <code>'lilbee[crawler,litellm]'</code>. With <code>crawler</code> and <code>litellm</code> together, keep the litellm fork out: for uv, add <code>--excludes excludes.txt</code>, where the file holds the line <code>unclecode-litellm</code>; for pip, follow the <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#optional-extras">usage note</a>. The binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, scoop, and npm builds bundle all three already. lilbee works without them.</div>
+        <div class="extras-sub">For a <code>pip</code> / <code>uv</code> install, add the name in brackets, e.g. <code>'lilbee[crawler,litellm]'</code>. The crawler does not need litellm, but crawl4ai pulls in a litellm fork. For uv, add <code>--excludes excludes.txt</code>, where the file holds the line <code>unclecode-litellm</code>. For pip with <code>litellm</code> too, follow the <a href="https://github.com/tobocop2/lilbee/blob/main/docs/usage.md#optional-extras">usage note</a>. The binary, Homebrew, AUR, Nix, Docker, Flatpak, Snap, scoop, and npm builds bundle all three already. lilbee works without them.</div>
         <div class="extras-grid">
           <div class="extra"><span class="tag">[crawler]</span><span>index websites too: crawl a docs site or wiki to markdown, then search it offline</span></div>
           <div class="extra"><span class="tag">[litellm]</span><span>bridge to popular hosted model providers for chat, vision, or embeddings; you bring the key, the terminal app flags when one's active</span></div>

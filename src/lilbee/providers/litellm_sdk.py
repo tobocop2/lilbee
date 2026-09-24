@@ -210,33 +210,17 @@ def _extract_tool_call_delta(call: Any, *, fallback_index: int) -> SdkToolCallDe
     )
 
 
-@functools.cache
-def litellm_available() -> bool:
-    """Return True if the ``litellm`` package is installed.
-
-    Uses ``importlib.util.find_spec`` rather than ``import litellm`` so the
-    check stays fast on the UI thread. Executing ``litellm`` on Windows
-    with Defender real-time scanning takes seconds (the package loads a
-    long list of provider plugins on first import); the Settings screen
-    builds synchronously and calls this in ``_FEATURE_GATED_GROUPS``, so
-    a real import here blocks the entire TUI on the first Settings open.
-    ``find_spec`` just walks ``sys.path`` to locate the package; the
-    heavy import runs later, in worker threads or remote-call paths
-    where the cost is expected.
-    """
-    import importlib.util
-
-    return importlib.util.find_spec("litellm") is not None
-
-
 _LITELLM_MISSING_MSG = (
-    "Remote and API models need the lilbee[litellm] extra. "
-    "Reinstall with: uv tool install --prerelease=allow 'lilbee[litellm]'"
+    "Remote and API models need the lilbee[litellm] extra. If you installed lilbee with "
+    "uv tool install, run your install command again with litellm added to the extras, "
+    "and keep --excludes excludes.txt if you use the crawler. If you installed lilbee "
+    "with pip, run: pip install 'lilbee[litellm]'. If the crawler extra is also "
+    "installed, lilbee then asks you to remove the unclecode-litellm fork and shows how."
 )
 
-# Temporary: crawl4ai requires unclecode-litellm, a fork that installs into litellm's
-# package directory. Remove this check once crawl4ai ships unclecode/crawl4ai#2107.
 _LITELLM_DIST = "litellm"
+# crawl4ai requires unclecode-litellm, a fork that installs into litellm's package
+# directory, so the litellm package alone does not tell which one is installed.
 _LITELLM_FORK_DIST = "unclecode-litellm"
 _LITELLM_FORK_MSG = (
     "Both litellm and unclecode-litellm are installed. unclecode-litellm is a fork of "
@@ -257,17 +241,27 @@ def _installed_version(dist: str) -> str | None:
         return None
 
 
-def _refuse_litellm_fork() -> None:
-    """Raise a ProviderError when the crawl4ai litellm fork shares litellm's package."""
-    litellm_version = _installed_version(_LITELLM_DIST)
-    if litellm_version is None or _installed_version(_LITELLM_FORK_DIST) is None:
-        return
-    raise ProviderError(_LITELLM_FORK_MSG.format(version=litellm_version), provider=_PROVIDER_NAME)
+@functools.cache
+def litellm_available() -> bool:
+    """Return True if the ``litellm`` distribution is installed, not only crawl4ai's fork.
+
+    Reads package metadata instead of importing ``litellm``, whose first import
+    takes seconds on Windows and would block the Settings screen's compose.
+    """
+    return _installed_version(_LITELLM_DIST) is not None
 
 
 def _require_litellm() -> Any:
     """Import ``litellm`` or raise a user-facing ProviderError with install steps."""
-    _refuse_litellm_fork()
+    litellm_version = _installed_version(_LITELLM_DIST)
+    if litellm_version is None:
+        raise ProviderError(_LITELLM_MISSING_MSG, provider=_PROVIDER_NAME)
+    # Temporary: pip cannot exclude the fork. Remove once crawl4ai ships
+    # unclecode/crawl4ai#2107.
+    if _installed_version(_LITELLM_FORK_DIST) is not None:
+        raise ProviderError(
+            _LITELLM_FORK_MSG.format(version=litellm_version), provider=_PROVIDER_NAME
+        )
     try:
         import litellm
     except ImportError as exc:

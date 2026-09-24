@@ -1136,8 +1136,9 @@ pip install --pre 'lilbee[crawler]'    # web crawling: index websites alongside 
 pip install --pre 'lilbee[litellm]'    # remote providers: connect to any SDK-backed provider
 
 # uv tool
+echo unclecode-litellm > excludes.txt
 uv tool install --prerelease=allow 'lilbee[graph]'
-uv tool install --prerelease=allow 'lilbee[crawler]'
+uv tool install --prerelease=allow 'lilbee[crawler]' --excludes excludes.txt
 uv tool install --prerelease=allow 'lilbee[litellm]'
 ```
 
@@ -1154,7 +1155,7 @@ pip uninstall -y unclecode-litellm
 pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
 ```
 
-The crawler depends on `unclecode-litellm`, a fork of litellm that writes into the same `litellm` package. When you install `crawler` and `litellm` together, keep the fork out. With uv, `--excludes excludes.txt` does this, and `uv tool upgrade` keeps the exclusion. pip cannot exclude a package, so the two pip commands after the install remove the fork and restore litellm. If the fork is present, remote models stop with an error that gives the repair.
+The crawler does not need litellm. crawl4ai still requires `unclecode-litellm`, a fork of litellm that writes into the same `litellm` package. With uv, `--excludes excludes.txt` keeps the fork out, and `uv tool upgrade` keeps the exclusion. pip cannot exclude a package, so a pip install of the crawler gets the fork. lilbee does not use the fork for remote models. If you also install the litellm extra with pip, the two pip commands after the install remove the fork and restore litellm. If both are present, remote models stop with an error that gives the repair.
 
 If you already installed with uv without the exclusion, run your install command again with `--reinstall --excludes excludes.txt` added. Keep your own extras and index URL in the command.
 
