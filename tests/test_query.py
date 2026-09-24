@@ -1410,8 +1410,9 @@ class TestAskStream:
         [
             (["Try:\n\n```python\n", "x = 1"], "```python\nx = 1\n```\n\nSources:\n"),
             (["```\nx\n```\n", "done"], "```\nx\n```\ndone\n\nSources:\n"),
+            (["Look\n\n```\nSources"], "Look\n\n```\n```\n\nSources:\n"),
         ],
-        ids=["cut-off", "balanced"],
+        ids=["cut-off", "balanced", "held-back-tail"],
     )
     def test_the_sources_list_starts_outside_any_code_block(self, mock_svc, chunks, before_sources):
         mock_svc.store.search.return_value = [_make_result()]

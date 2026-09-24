@@ -250,11 +250,12 @@ def with_sources_block(
     render: Callable[[str], str] = source_markdown_link,
 ) -> str:
     """*content* ending in the numbered ``Sources:`` list a live answer carries,
-    each source shown by *render*, unless it already has one."""
+    each source shown by *render*, unless it already has one. A code block the
+    content leaves open is closed first, so the list is never inside it."""
     if SOURCES_BLOCK_MARKER in content:
         return content
     lines = [f"{i}. {render(s)}" for i, s in enumerate(sources, 1)]
-    return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+    return close_open_fence(content.rstrip()) + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
 @cache
