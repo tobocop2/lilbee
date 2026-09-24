@@ -598,7 +598,7 @@ https://github.com/user-attachments/assets/7c4f1096-44a4-40b5-b511-0f6496c520c5
 
 Conversations are kept. Reopen an earlier one and it comes back with its history and citations intact.
 
-Fork a conversation after any answer to try a different follow-up. The fork keeps the messages up to that answer, and the original stays as it was. Use `/fork` in the chat, or `lilbee sessions fork` on the command line. Export a conversation as a markdown document with its sources. Use `/export-chat` in the chat, or `lilbee sessions export` on the command line. Both also work over HTTP. See [Sessions](docs/usage.md#sessions) in the usage guide for the full command set.
+Fork a conversation after any answer to try a different follow-up. The fork keeps the messages up to and including that answer, and the original stays as it was. Use `/fork` in the chat, or `lilbee sessions fork` on the command line. Export a conversation as a markdown document with its sources. Use `/export-chat` in the chat, or `lilbee sessions export` on the command line. Both also work over HTTP. See [Sessions](docs/usage.md#sessions) in the usage guide for the full command set.
 
 <!-- demo: sessions | resume an earlier conversation from the sessions drawer -->
 
