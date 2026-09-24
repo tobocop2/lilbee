@@ -24,8 +24,7 @@ class WebFetcher(Protocol):
     Lifecycle ordering:
 
     1. ``__aenter__`` is called before any fetch method. Adapters with
-       per-operation setup (e.g. crawl4ai opens a fresh
-       ``AsyncWebCrawler`` inside each fetch method) may no-op here.
+       per-operation setup may no-op here.
     2. ``fetch_single`` and ``fetch_recursive`` may be called multiple
        times during the same context; they must not assume fresh state.
     3. ``fetch_recursive`` returns an async generator; callers are
@@ -61,8 +60,7 @@ class WebFetcher(Protocol):
         """Stream pages discovered by BFS from ``seed_url``.
 
         ``depth`` / ``max_pages``: positive int caps, or ``None`` for
-        unbounded. Adapters translate ``None`` into whatever sentinel the
-        underlying SDK wants (crawl4ai uses ``math.inf``).
+        unbounded.
 
         Returns an async generator so the orchestration layer can
         react per page (progress events, save-to-disk, cancel) and
