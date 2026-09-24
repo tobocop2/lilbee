@@ -191,7 +191,10 @@ async def test_picker_positions_come_from_the_log_after_compaction(sessions):
             "summarize_history",
             return_value=CompactionResult(summary="NOTES", condensed=4, stranded=0),
         ):
-            threading.Thread(target=screen._compact_history).start()
+            threading.Thread(
+                target=screen._compact_history,
+                args=(source, screen._conversation_generation),
+            ).start()
             assert await pump_until(pilot, lambda: screen._summary == "NOTES")
         assert [m["role"] for m in screen._history] != ["user", "assistant", "user", "assistant"]
         picker = await _open_picker(app, pilot)
@@ -278,7 +281,8 @@ def _start_finalize(screen, session_id: str | None, reply: str) -> threading.Thr
     """Run the worker-side end of a turn off the main thread, as production does."""
     widget = screen.query(AssistantMessage).last()
     thread = threading.Thread(
-        target=screen._finalize_stream, args=(widget, [], [reply], session_id)
+        target=screen._finalize_stream,
+        args=(widget, [], [reply], session_id, screen._conversation_generation),
     )
     thread.start()
     return thread
@@ -378,10 +382,10 @@ async def test_an_unexpected_save_error_still_clears_the_busy_gate(sessions):
 def _hold_then_finish(started: threading.Event, release: threading.Event, reply: str):
     """A stream body that is still running after a cancel, then saves *reply*."""
 
-    def body(self, question, widget, chunk_type, *, session_id):
+    def body(self, question, widget, chunk_type, *, session_id, generation):
         started.set()
         release.wait(_WAIT_S)
-        self._finalize_stream(widget, [], [reply], session_id)
+        self._finalize_stream(widget, [], [reply], session_id, generation)
 
     return body
 
@@ -423,11 +427,11 @@ async def test_fork_waits_for_every_cancelled_body_not_just_the_first(sessions):
     source = _seed(sessions)
     held = {q: (threading.Event(), threading.Event()) for q in ("Q3", "Q4")}
 
-    def body(self, question, widget, chunk_type, *, session_id):
+    def body(self, question, widget, chunk_type, *, session_id, generation):
         started, release = held[question]
         started.set()
         release.wait(_WAIT_S)
-        self._finalize_stream(widget, [], [f"{question}-partial"], session_id)
+        self._finalize_stream(widget, [], [f"{question}-partial"], session_id, generation)
 
     async def fork_is_refused() -> bool:
         with patch.object(screen, "notify") as notify:
@@ -466,9 +470,9 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
         release.wait(_WAIT_S)
         return CompactionResult(summary="NOTES", condensed=4, stranded=0)
 
-    def folding_body(self, question, widget, chunk_type, *, session_id):
-        self._compact_history()
-        self._finalize_stream(widget, [], [], session_id)
+    def folding_body(self, question, widget, chunk_type, *, session_id, generation):
+        self._compact_history(session_id, generation)
+        self._finalize_stream(widget, [], [], session_id, generation)
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -504,7 +508,7 @@ async def test_a_worker_cancelled_before_it_ran_does_not_block_fork(sessions):
     source = _seed(sessions)
     ran: list[bool] = []
 
-    def body(self, question, widget, chunk_type, *, session_id):
+    def body(self, question, widget, chunk_type, *, session_id, generation):
         ran.append(True)
 
     app = LilbeeApp()

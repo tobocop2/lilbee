@@ -2,19 +2,24 @@
 
 from __future__ import annotations
 
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from lilbee.app.services import get_services, set_services
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.cli.tui.widgets.thinking_header import ThinkingHeader
 from lilbee.core.config import Config, cfg
 from lilbee.retrieval.query.compaction import CompactionResult
+from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
-from tests._lilbee_app_test_host import await_chat
+from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
+
+_FOLD_WAIT_S = 5.0
 
 
 @pytest.fixture(autouse=True)
@@ -232,7 +237,7 @@ async def test_compaction_summarizes_the_overflow_instead_of_dropping_it(session
             "summarize_history",
             return_value=CompactionResult(summary="NOTES", condensed=4, stranded=0),
         ) as summarize:
-            screen._compact_history()
+            screen._compact_history(screen._session_id, screen._conversation_generation)
         summarize.assert_called_once()
         dropped = summarize.call_args.args[0]
         assert dropped, "the overflow is what gets summarized"
@@ -267,7 +272,7 @@ async def test_default_path_drops_the_tail_with_zero_model_calls(sessions):
             {"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 1200} for i in range(6)
         ]
         with patch.object(get_services().searcher, "summarize_history") as summarize:
-            screen._compact_history()
+            screen._compact_history(screen._session_id, screen._conversation_generation)
         summarize.assert_not_called(), "the default path must not call the model"
         assert len(screen._history) < 6, "the oldest turns still leave the prompt"
         assert screen._summary == "", "nothing is summarized when compaction is off"
@@ -303,7 +308,7 @@ async def test_compaction_never_summarizes_the_turn_being_answered(sessions):
             {"role": "assistant", "content": "y" * 4000},
         ]
         with patch.object(get_services().searcher, "summarize_history") as summarize:
-            screen._compact_history()
+            screen._compact_history(screen._session_id, screen._conversation_generation)
         summarize.assert_not_called(), "the live exchange must never be summarized"
         assert len(screen._history) == 2, "and it stays intact for the prompt to window"
 
@@ -317,7 +322,7 @@ async def test_compaction_is_skipped_when_everything_still_fits(sessions):
         screen = await await_chat(app, pilot)
         screen._history = [{"role": "user", "content": "short"}]
         with patch.object(get_services().searcher, "summarize_history") as summarize:
-            screen._compact_history()
+            screen._compact_history(screen._session_id, screen._conversation_generation)
         summarize.assert_not_called()
         assert screen._summary == ""
 
@@ -340,7 +345,8 @@ async def test_compaction_survives_the_session_being_deleted_mid_chat(sessions):
             "summarize_history",
             return_value=CompactionResult(summary="NOTES", condensed=4, stranded=0),
         ):
-            screen._compact_history()  # must not raise
+            # Must not raise.
+            screen._compact_history(screen._session_id, screen._conversation_generation)
         assert screen._summary == "NOTES"
 
 
@@ -498,8 +504,149 @@ async def test_compaction_summary_is_not_saved_after_sessions_go_off(sessions, m
             screen._history = [{"role": "user", "content": "x" * 1200} for _ in range(6)]
             cfg.chat_n_ctx_target = 512
             cfg.chat_compaction = True
-            screen._compact_history()
+            screen._compact_history(screen._session_id, screen._conversation_generation)
 
         assert summarize.called, "the test must drive a real fold, or it asserts nothing"
         assert screen._summary == "folded", "the fold landed in memory"
         assert sessions.get(session_id).summary == "", "but nothing reached the disk"
+
+
+def _seed_fold_source(store) -> str:
+    """A saved conversation long enough that its next turn folds."""
+    session_id = store.create(model_ref=cfg.chat_model, scope="both")
+    for i in range(6):
+        role = MessageRole.USER if i % 2 == 0 else MessageRole.ASSISTANT
+        store.add_message(session_id, SessionMessage(role=role, content="x" * 1200))
+    return session_id
+
+
+def _seed_other(store) -> str:
+    """A short conversation with its own notes, the one the user switches to."""
+    session_id = store.create(model_ref=cfg.chat_model, scope="both")
+    store.add_message(session_id, SessionMessage(role=MessageRole.USER, content="other q"))
+    store.add_message(session_id, SessionMessage(role=MessageRole.ASSISTANT, content="other a"))
+    store.set_summary(session_id, "OTHER NOTES")
+    return session_id
+
+
+async def _fold_then(app, pilot, switch) -> None:
+    """Send a turn whose fold blocks in the model call, run *switch*, then release it."""
+    folding, release = threading.Event(), threading.Event()
+
+    def slow_summarize(*_args, **_kwargs):
+        folding.set()
+        release.wait(_FOLD_WAIT_S)
+        return CompactionResult(summary="OLD NOTES", condensed=4, stranded=0)
+
+    screen = app.screen
+    cfg.chat_n_ctx_target = 512
+    cfg.chat_compaction = True
+    with (
+        patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+        patch.object(get_services().searcher, "ask_stream", return_value=iter(())),
+        patch.object(get_services().searcher, "summarize_history", side_effect=slow_summarize),
+    ):
+        screen._send_message("new question")
+        assert await pump_until(pilot, folding.is_set), "the turn must reach the fold"
+        switch()
+        release.set()
+        assert await pump_until(pilot, lambda: not screen._live_streams)
+
+
+async def test_resuming_during_a_fold_leaves_the_resumed_conversation_alone(sessions):
+    """The old turn's fold must not trim, re-summarize or save into the session resumed over it."""
+    source = _seed_fold_source(sessions)
+    other = _seed_other(sessions)
+    other_before = sessions.get(other)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        await pilot.pause()
+        await _fold_then(app, pilot, lambda: app.resume_session(other))
+        other_after = sessions.get(other)
+        assert (screen._session_id, screen._history, screen._summary, other_after.summary) == (
+            other,
+            [{"role": "user", "content": "other q"}, {"role": "assistant", "content": "other a"}],
+            "OTHER NOTES",
+            "OTHER NOTES",
+        )
+        assert other_after.messages == other_before.messages
+
+
+async def test_clearing_during_a_fold_starts_from_an_empty_conversation(sessions):
+    """/clear mid-fold: the new conversation inherits none of the old one's notes."""
+    source = _seed_fold_source(sessions)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        await pilot.pause()
+        await _fold_then(app, pilot, lambda: screen._cmd_clear(""))
+        assert screen._session_id is None
+        assert screen._history == []
+        assert screen._summary == ""
+        assert [meta.id for meta in sessions.list()] == [source]
+
+
+async def test_a_trim_for_a_replaced_conversation_is_dropped(sessions):
+    """Compaction off: a trim computed for an earlier conversation leaves the current one whole."""
+    cfg.chat_compaction = False
+    cfg.chat_n_ctx_target = 512
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        stale = screen._conversation_generation
+        screen._reset_conversation()
+        history = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 1200} for i in range(6)
+        ]
+        screen._history = list(history)
+        screen._compact_history(None, stale)
+        assert screen._history == history
+
+
+async def test_a_fold_in_the_same_conversation_lands_through_the_send_path(sessions):
+    """With no resume or /clear, the turn's fold trims the history and saves its summary."""
+    source = _seed_fold_source(sessions)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        screen.resume_session(source)
+        await pilot.pause()
+        await _fold_then(app, pilot, lambda: None)
+        assert screen._summary == "OLD NOTES"
+        assert sessions.get(source).summary == "OLD NOTES"
+        assert len(screen._history) < 7, "the folded turns leave the history"
+        assert screen._history[-1] == {"role": "user", "content": "new question"}
+
+
+async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_history(sessions):
+    """The cancelled answer is saved to its own session, never added to the resumed one."""
+    other = _seed_other(sessions)
+    first_token, release = threading.Event(), threading.Event()
+
+    def stream(*_args, **_kwargs):
+        yield StreamToken(content="PARTIAL", is_reasoning=False)
+        first_token.set()
+        release.wait(_FOLD_WAIT_S)
+        yield StreamToken(content=" more", is_reasoning=False)
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=stream),
+        ):
+            screen._send_message("old question")
+            source = screen._session_id
+            assert await pump_until(pilot, first_token.is_set), "the answer must have started"
+            app.resume_session(other)
+            release.set()
+            assert await pump_until(pilot, lambda: not screen._live_streams)
+        assert screen._history == [
+            {"role": "user", "content": "other q"},
+            {"role": "assistant", "content": "other a"},
+        ]
+        assert [m.content for m in sessions.get(source).messages] == ["old question", "PARTIAL"]
