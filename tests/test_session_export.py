@@ -135,6 +135,62 @@ def test_a_stored_sources_list_keeps_its_names_and_locations_but_no_links():
     )
 
 
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ("# hash.md", "\\# hash.md"),
+        ("- dash.md", "\\- dash.md"),
+        ("> quote.md", "\\> quote.md"),
+        ("[ref]: x.md", "\\[ref]: x.md"),
+        ("2. two.md", "2\\. two.md"),
+        ("3) three.md", "3\\) three.md"),
+        ("2024.pdf", "2024.pdf"),
+        ("a\rb.md", "a b.md"),
+        ("a\nb.md", "a b.md"),
+        ("a\r\n# b.md", "a # b.md"),
+    ],
+)
+def test_a_source_name_cannot_add_structure_to_the_sources_list(source, name):
+    markdown = session_markdown(_session(_assistant("## Summary\n\nx [1]", sources=(source,))))
+    assert markdown.endswith(f"#### Summary\n\nx [1]\n\nSources:\n\n1. {name}\n")
+
+
+def test_a_stored_source_name_cannot_add_structure_to_the_sources_list():
+    content = (
+        "x [1][2]\n\nSources:\n\n"
+        "1. [# hash.md](file:///kb/%23%20hash.md), page 2\n"
+        "2. [a\nb.md](file:///kb/a%0Ab.md)"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("Sources:\n\n1. \\# hash.md, page 2\n2. a b.md\n")
+
+
+@pytest.mark.parametrize("sources", [("a\rb.md", "# h.md"), ("a\rb.md", "# h.md", "c\r\r\rd.md")])
+def test_several_source_names_with_line_breaks_keep_the_turns_intact(sources):
+    markdown = session_markdown(_session(_assistant("## h\n\nx", sources=sources), _user("next")))
+    assert _all_headings(markdown) == [
+        ("h1", "Brake specs"),
+        ("h2", "Assistant"),
+        ("h4", "h"),
+        ("h2", "User"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "hi\n\nSources:\n## Assistant",
+        "hi\n\nSources:\n===",
+        "hi\n\nSources:\n\n```\ncode",
+    ],
+    ids=["heading", "underline", "open-fence"],
+)
+def test_text_after_a_typed_sources_marker_stays_inside_its_turn(content):
+    markdown = session_markdown(_session(_user(content), _assistant("ok")))
+    turns = [("h1", "Brake specs"), ("h2", "User"), ("h2", "Assistant")]
+    assert [h for h in _all_headings(markdown) if h[0] != "h4"] == turns
+
+
 def test_a_link_outside_the_sources_list_is_left_as_written():
     content = "See [the spec](file:///tmp/spec.md)."
     assert session_markdown(_session(_assistant(content))).endswith(f"{content}\n")
@@ -236,6 +292,7 @@ def test_every_section_heading_survives_a_cut_off_fence(content):
         ("> ## quoted", ("h4", "quoted")),
         ("- # listed", ("h3", "listed")),
         ("   ## indented ##", ("h4", "indented")),
+        ("## a ## b", ("h4", "a ## b")),
     ],
 )
 def test_a_message_heading_nests_under_its_turn(content, expected):

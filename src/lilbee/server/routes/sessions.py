@@ -6,15 +6,13 @@ personal as the memory store next door.
 
 from __future__ import annotations
 
-import re
-from urllib.parse import quote
-
 from litestar import Response, delete, get, patch, post, put
 from litestar.datastructures import ResponseHeader
 from litestar.exceptions import NotFoundException
 from litestar.params import FromPath
 
 from lilbee.data.types import MARKDOWN_MIME
+from lilbee.server.content_disposition import CONTENT_DISPOSITION, attachment_disposition
 from lilbee.server.handlers.sessions import (
     add_session_message,
     claim_session,
@@ -38,17 +36,6 @@ from lilbee.server.models import (
     SessionRenameResponse,
     SessionSummaryRequest,
 )
-
-CONTENT_DISPOSITION = "Content-Disposition"
-# Printable ASCII except the quote and backslash a quoted filename cannot hold bare.
-_FILENAME_UNSAFE_RE = re.compile(r"[^ !#-\[\]-~]")
-_FILENAME_PLACEHOLDER = "_"
-
-
-def _attachment_disposition(filename: str) -> str:
-    """An RFC 6266 attachment header: an ASCII *filename* fallback plus the exact UTF-8 name."""
-    fallback = _FILENAME_UNSAFE_RE.sub(_FILENAME_PLACEHOLDER, filename)
-    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 @get("/api/sessions")
@@ -81,7 +68,7 @@ async def session_markdown_route(session_id: FromPath[str]) -> Response[str]:
     return Response(
         export.markdown,
         media_type=MARKDOWN_MIME,
-        headers={CONTENT_DISPOSITION: _attachment_disposition(export.filename)},
+        headers={CONTENT_DISPOSITION: attachment_disposition(export.filename)},
     )
 
 

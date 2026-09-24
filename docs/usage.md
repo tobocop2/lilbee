@@ -330,8 +330,8 @@ answer's numbered sources. In the chat, `/export-chat` writes it to the current
 directory; `lilbee sessions export` prints it or writes it with `-o`. Files are
 owner-only (`0600`) on macOS and Linux, and an explicit path replaces an
 existing file. Sources appear as plain names with their page or line range,
-such as `manual.pdf, page 3`, with no links. A heading inside a message moves
-down two levels (to `###` or below), so it stays inside its turn.
+such as `manual.pdf, page 3`, with no links. A markdown heading inside a
+message moves down two levels (to `###` or below), so it stays inside its turn.
 
 Sessions are append-only JSONL files under `<data_dir>/sessions/`, one per
 conversation. No database; back them up or sync them like any other file.

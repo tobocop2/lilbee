@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import string
 from functools import cache
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from lilbee.core.text import collapse_whitespace, make_slug
 from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
     SOURCES_BLOCK_MARKER,
+    source_label,
     with_sources_block,
 )
 from lilbee.sessions import MessageRole, Session, SessionMessage, SessionMeta
@@ -35,6 +37,9 @@ _TURN_HEADING_LEVEL = 2
 _MAX_HEADING_LEVEL = 6
 _ESCAPE = "\\"
 _LINE_BREAK_RE = re.compile(r"\r\n?")
+_ASCII_PUNCTUATION = frozenset(string.punctuation)
+# An ordered-list marker at the start of a name, as in ``2. notes.md``.
+_LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
 
 
 def session_markdown(session: Session) -> str:
@@ -59,16 +64,36 @@ def _front_matter(meta: SessionMeta) -> str:
 
 
 def _message_section(message: SessionMessage) -> str:
-    body = _close_open_fence(_LINE_BREAK_RE.sub("\n", message.content).rstrip())
-    if message.sources:
-        body = with_sources_block(body, message.sources)
-    return f"## {_ROLE_HEADINGS[message.role]}\n\n{_nest_headings(_unlink_sources(body))}"
+    """One turn: the message with its headings nested, then its Sources list as plain names."""
+    content = _LINE_BREAK_RE.sub("\n", message.content).rstrip()
+    text, marker, stored_sources = content.partition(SOURCES_BLOCK_MARKER)
+    body = _contained(text.rstrip())
+    if marker:
+        body += _contained(marker + FILE_LINK_RE.sub(_plain_link, stored_sources))
+    elif message.sources:
+        body = with_sources_block(body, message.sources, render=_plain_source)
+    return f"## {_ROLE_HEADINGS[message.role]}\n\n{body}"
 
 
-def _unlink_sources(text: str) -> str:
-    """*text* with the file links in its Sources list reduced to their labels."""
-    head, marker, block = text.partition(SOURCES_BLOCK_MARKER)
-    return head + marker + FILE_LINK_RE.sub(r"\1", block)
+def _contained(text: str) -> str:
+    """*text* with open fences closed and headings nested, so it stays inside its turn."""
+    return _nest_headings(_close_open_fence(text))
+
+
+def _plain_source(source: str) -> str:
+    return _plain_name(source_label(source))
+
+
+def _plain_link(link: re.Match[str]) -> str:
+    return _plain_name(link[1])
+
+
+def _plain_name(name: str) -> str:
+    """*name* on one line, escaped so it cannot start a heading, list, quote or other block."""
+    name = collapse_whitespace(name)
+    if name[:1] in _ASCII_PUNCTUATION:
+        return _ESCAPE + name
+    return _LIST_NUMBER_RE.sub(r"\1\\\2", name, count=1)
 
 
 def _nest_headings(text: str) -> str:

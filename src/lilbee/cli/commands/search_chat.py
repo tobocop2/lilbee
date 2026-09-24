@@ -40,6 +40,7 @@ from lilbee.core.config import cfg
 from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to_chunk_type
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
+from lilbee.retrieval.query.formatting import FILE_LINK_RE
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
 _TOPIC_PREVIEW_LIMIT = 5
@@ -176,8 +177,6 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
 def _print_sources_block(block: str) -> None:
     """Render the Sources block, turning ``[label](file://...)`` into terminal links."""
     from rich.markup import escape
-
-    from lilbee.retrieval.query.formatting import FILE_LINK_RE
 
     if not console.is_terminal or console.legacy_windows:
         console.print(block, markup=False, highlight=False)

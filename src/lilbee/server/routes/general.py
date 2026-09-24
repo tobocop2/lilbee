@@ -22,6 +22,7 @@ from pydantic import ValidationError
 from lilbee.app.services import request_server_exit
 from lilbee.app.settings import config_write_failure_message
 from lilbee.server import handlers
+from lilbee.server.content_disposition import CONTENT_DISPOSITION, attachment_disposition
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     ConfigResponse,
@@ -32,7 +33,6 @@ from lilbee.server.models import (
     SourceContentResponse,
     StatusResponse,
 )
-from lilbee.server.routes.sessions import CONTENT_DISPOSITION
 
 
 @get("/api/health")
@@ -126,6 +126,6 @@ async def source_content_route(
         # attacker-named files don't render inline anywhere.
         headers = {"X-Content-Type-Options": "nosniff"}
         if content_type == "application/octet-stream":
-            headers[CONTENT_DISPOSITION] = f'attachment; filename="{Path(source).name}"'
+            headers[CONTENT_DISPOSITION] = attachment_disposition(Path(source).name)
         return Response(content=body, media_type=content_type, status_code=200, headers=headers)
     return result

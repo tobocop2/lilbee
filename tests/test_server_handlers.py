@@ -5426,6 +5426,33 @@ class TestSourceContentRoute:
         assert "evil.html" in resp.headers["content-disposition"]
 
     @pytest.mark.parametrize(
+        ("filename", "header"),
+        [
+            ('a"b.html', "attachment; filename=\"a_b.html\"; filename*=UTF-8''a%22b.html"),
+            (
+                "制动.html",
+                "attachment; filename=\"__.html\"; filename*=UTF-8''%E5%88%B6%E5%8A%A8.html",
+            ),
+        ],
+    )
+    async def test_raw_attachment_names_any_file_in_a_valid_header(
+        self, isolated_env, filename, header
+    ):
+        from litestar.testing import AsyncTestClient
+
+        from lilbee.server.app import create_app
+
+        (cfg.documents_dir / filename).write_bytes(b"<p>x</p>")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.get(
+                "/api/source",
+                params={"source": filename, "raw": True},
+                headers=self._auth_headers(),
+            )
+        assert resp.status_code == 200
+        assert resp.headers["content-disposition"] == header
+
+    @pytest.mark.parametrize(
         ("filename", "body"),
         [
             ("evil.js", b"alert(1)"),

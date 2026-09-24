@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
@@ -81,7 +81,7 @@ _WEB_PREFIX = "_web"
 _SOURCE_SEP = " · "
 
 
-def _source_label(source: str) -> str:
+def source_label(source: str) -> str:
     """Readable name for a source. Web-ingested docs collapse to ``host · slug``;
     local files keep their documents-dir-relative path."""
     prefix = f"{_WEB_PREFIX}/"
@@ -147,7 +147,7 @@ def source_markdown_link(source: str) -> str:
     """A bare source name as the same clickable ``[label](file-url)`` markdown a
     live answer's Sources block uses; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
-    label = _source_label(source)
+    label = source_label(source)
     if is_memory_source(source):
         return label
     url = _source_file_url(source)
@@ -161,7 +161,7 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     as their plain ``memory:<id>`` label: they have no file to link.
     """
     if result.memory_id is not None:
-        return _source_label(result.source)
+        return source_label(result.source)
     head = source_markdown_link(result.source)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
@@ -214,7 +214,7 @@ def build_context(results: list[SearchChunk]) -> str:
 # no-results toast; the pill row, which must not stack a second list).
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
 # A Sources line's ``[label](file-url)`` link: group 1 is the label, group 2 the URL.
-FILE_LINK_RE = re.compile(r"\[(.+?)\]\((file://[^)\s]+)\)")
+FILE_LINK_RE = re.compile(r"\[(.+?)\]\((file://[^)\s]+)\)", re.DOTALL)
 
 
 def format_sources_block(
@@ -237,12 +237,16 @@ def format_sources_block(
     return SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
-def with_sources_block(content: str, sources: Sequence[str]) -> str:
-    """*content* ending in the numbered, clickable ``Sources:`` list a live answer
-    carries, unless it already has one, so every saved turn cites one way."""
+def with_sources_block(
+    content: str,
+    sources: Sequence[str],
+    render: Callable[[str], str] = source_markdown_link,
+) -> str:
+    """*content* ending in the numbered ``Sources:`` list a live answer carries,
+    each source shown by *render*, unless it already has one."""
     if SOURCES_BLOCK_MARKER in content:
         return content
-    lines = [f"{i}. {source_markdown_link(s)}" for i, s in enumerate(sources, 1)]
+    lines = [f"{i}. {render(s)}" for i, s in enumerate(sources, 1)]
     return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
