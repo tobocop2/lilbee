@@ -374,6 +374,14 @@ def _isolate_playwright_browsers_path(_playwright_browsers_root, monkeypatch):
 
 
 @pytest.fixture
+def permissive_umask():
+    """Run the body under umask 0 so anything not created owner-only lands world-readable."""
+    previous = os.umask(0)
+    yield
+    os.umask(previous)
+
+
+@pytest.fixture
 def overlay_reads_config_toml(monkeypatch):
     """Opt a test back into the config.toml overlay path.
 
