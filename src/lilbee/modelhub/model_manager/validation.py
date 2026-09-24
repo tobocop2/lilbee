@@ -27,7 +27,7 @@ from lilbee.modelhub.model_manager.discovery import (
 )
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
-from lilbee.providers.litellm_sdk import litellm_available
+from lilbee.providers import litellm_sdk
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
 from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS, local_server_for_key
@@ -75,7 +75,7 @@ def _local_server_reachable(spec: LocalServerSpec, base_url: str) -> bool:
 
 def _classify_local_server_ref(spec: LocalServerSpec) -> tuple[ValidationResult, str | None]:
     """Classify an ollama/lm_studio ref: needs the litellm extra and a live server."""
-    if not litellm_available():
+    if not litellm_sdk.litellm_available():
         return ValidationResult.UNKNOWN, REASON_LITELLM_MISSING
     base_url = base_url_for(spec.key)
     if not _local_server_reachable(spec, base_url):
