@@ -623,7 +623,7 @@ class ModelBar(Widget, can_focus=False):
         """Focus the member at *index*, clamped to the ends of the strip."""
         members = self.strip
         if members:
-            members[max(0, min(index, len(members) - 1))].focus()
+            self.screen.set_focus(members[max(0, min(index, len(members) - 1))])
 
     def _focused_index(self) -> int | None:
         """Position of the focused member, or None when focus is off the strip."""

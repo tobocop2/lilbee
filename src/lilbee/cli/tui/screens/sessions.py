@@ -58,14 +58,6 @@ class SessionsScreen(Screen[None]):
     def action_jump_bottom(self) -> None:
         self.query_one(SessionListPanel).jump_to(-1)
 
-    @on(SessionListPanel.Resumed)
-    def _on_resumed(self, event: SessionListPanel.Resumed) -> None:
-        self.app.resume_session(event.session_id)
-
-    @on(SessionListPanel.NewChat)
-    def _on_new_chat(self, _event: SessionListPanel.NewChat) -> None:
-        self.app.new_chat()
-
     @on(SessionListPanel.CloseRequested)
     def _on_close(self, _event: SessionListPanel.CloseRequested) -> None:
         # Same semantics as q: return to where the user came from.

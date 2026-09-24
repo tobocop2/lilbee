@@ -24,7 +24,7 @@ from lilbee.cli.tui.screens.status import StatusScreen
 from lilbee.cli.tui.screens.task_center import TaskCenter
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.core.config import cfg
-from tests._lilbee_app_test_host import await_chat, pump_until
+from tests._lilbee_app_test_host import await_chat, pump_until, send_key_burst
 
 
 @pytest.fixture(autouse=True)
@@ -1452,6 +1452,22 @@ async def test_h_and_l_step_between_roles_once_inside_the_strip():
         await pilot.press("h")
         await pilot.pause()
         assert app.screen.focused.id == "model-pick-chat"
+
+
+async def test_keys_typed_in_one_burst_after_h_then_a_reach_the_prompt():
+    """h enters the strip and a returns to INSERT, in the order typed, with no key lost."""
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: not screen._insert_mode)
+
+        send_key_burst(app, "h", "a", *"hello")
+        await pump_until(pilot, lambda: screen._chat_input.value == "hello")
+        assert screen._chat_input.value == "hello"
+        assert screen._chat_input.has_focus
+        assert screen._insert_mode
 
 
 async def test_typing_h_and_l_in_insert_mode_reaches_the_prompt():

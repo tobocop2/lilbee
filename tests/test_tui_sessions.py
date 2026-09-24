@@ -16,7 +16,7 @@ from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
 from tests._async_wait import wait_until
-from tests._lilbee_app_test_host import await_chat, shown_footer_keys
+from tests._lilbee_app_test_host import await_chat, send_key_burst, shown_footer_keys
 from tests.conftest import make_mock_services
 
 
@@ -54,7 +54,7 @@ def _seed(store, title: str) -> str:
 
 async def _open_drawer(app, pilot) -> SessionsDrawer:
     screen = await await_chat(app, pilot)
-    app.action_toggle_sessions()
+    await app.action_toggle_sessions()
     await pilot.pause()
     return screen.query_one(SessionsDrawer)
 
@@ -103,7 +103,7 @@ async def test_drawer_opens_lists_and_insets_bars(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         drawer = screen.query_one(SessionsDrawer)
         assert len(drawer.query(SessionRow)) == 2
@@ -114,7 +114,7 @@ async def test_drawer_toggle_closes_and_restores_bars(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _open_drawer(app, pilot)
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         assert not screen.query(SessionsDrawer)
         assert not screen.has_class("sessions-open")
@@ -174,7 +174,7 @@ async def test_disabled_shows_notice_on_toggle(sessions, monkeypatch) -> None:
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         assert isinstance(app.screen, NoticeDialog)
         assert not screen.query(SessionsDrawer)
@@ -203,19 +203,19 @@ async def test_the_notice_dismisses_and_never_stacks(sessions, monkeypatch) -> N
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         notice = app.screen
         assert isinstance(notice, NoticeDialog)
         # A second press while the notice is up must not stack another copy.
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         assert app.screen is notice
         await pilot.press("escape")
         await pilot.pause()
         assert not isinstance(app.screen, NoticeDialog)
         # Reopen and close by clicking the pill instead.
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         await pilot.click("#notice-dismiss")
         await pilot.pause()
@@ -342,6 +342,55 @@ async def test_leaving_the_drawer_in_insert_mode_focuses_the_prompt(sessions, ke
         chat = await await_chat(app, pilot)
         await _leave_drawer(pilot, chat, key)
         assert await wait_until(pilot, lambda: chat._chat_input.has_focus)
+
+
+@pytest.mark.parametrize("key", ["enter", "ctrl+n"], ids=["resume", "new_chat"])
+async def test_keys_typed_in_the_same_burst_as_leaving_the_drawer_reach_the_prompt(sessions, key):
+    """Typing ahead of the drawer key must not land in the drawer's filter box."""
+    session_id = _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+o")
+        rows = chat.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        send_key_burst(app, key, *"hello")
+        await wait_until(pilot, lambda: chat._chat_input.value == "hello")
+        assert chat._chat_input.value == "hello"
+        assert chat._chat_input.has_focus
+        assert not chat.query(SessionsDrawer)
+        assert (chat.session_id == session_id) is (key == "enter")
+
+
+async def test_enter_in_the_same_burst_as_opening_the_drawer_resumes(sessions):
+    """Enter pressed before the drawer's rows have mounted still resumes the top row."""
+    session_id = _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        send_key_burst(app, "ctrl+o", "enter")
+        await wait_until(pilot, lambda: chat.session_id == session_id)
+        assert chat.session_id == session_id
+        assert not chat.query(SessionsDrawer)
+
+
+@pytest.mark.parametrize("opening", [(), ("ctrl+o",)], ids=["drawer_open", "with_ctrl_o"])
+async def test_a_filter_typed_in_the_same_burst_as_enter_picks_the_row(sessions, opening):
+    """Enter resumes the row the keys typed before it filtered to, not the top of the full list."""
+    wanted = _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        if not opening:
+            await pilot.press("ctrl+o")
+            rows = chat.query_one("#sessions-list", ListView)
+            assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+            assert rows.highlighted_child.meta.title == "Alpha", "the filter must change the pick"
+        send_key_burst(app, *opening, *"Gamma", "enter", *"hello")
+        await wait_until(pilot, lambda: chat._chat_input.value == "hello")
+        assert chat.session_id == wanted
+        assert chat._chat_input.value == "hello"
 
 
 async def test_enter_resumes_after_filtering(sessions):
@@ -515,16 +564,16 @@ async def test_sessions_tab_shows_list(sessions):
         assert len(app.screen.query(SessionRow)) == 1
 
 
-async def test_sessions_tab_resume_switches_to_chat(sessions):
+async def test_sessions_tab_click_resume_switches_to_chat(sessions):
     session_id = _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await await_chat(app, pilot)
         app.switch_view("Sessions")
         await pilot.pause()
-        app.screen.query_one(SessionListPanel).post_message(SessionListPanel.Resumed(session_id))
-        await pilot.pause()
-        assert app.active_view == "Chat"
+        row = await _laid_out(pilot, app.screen.query(SessionRow)[0])
+        assert await pilot.click(row), "the click never reached the session row"
+        assert await wait_until(pilot, lambda: app.active_view == "Chat")
         assert app.chat_screen().session_id == session_id
 
 
@@ -548,10 +597,8 @@ async def test_sessions_tab_new_and_close_go_to_chat(sessions):
         await await_chat(app, pilot)
         app.switch_view("Sessions")
         await pilot.pause()
-        panel = app.screen.query_one(SessionListPanel)
-        panel.post_message(SessionListPanel.NewChat())
-        await pilot.pause()
-        assert app.active_view == "Chat"
+        await pilot.press("ctrl+n")
+        assert await wait_until(pilot, lambda: app.active_view == "Chat")
         app.switch_view("Sessions")
         await pilot.pause()
         app.screen.query_one(SessionListPanel).post_message(SessionListPanel.CloseRequested())
@@ -576,7 +623,7 @@ async def test_toggle_sessions_is_noop_on_the_tab(sessions):
         await await_chat(app, pilot)
         app.switch_view("Sessions")
         await pilot.pause()
-        app.action_toggle_sessions()
+        await app.action_toggle_sessions()
         await pilot.pause()
         assert not app.screen.query(SessionsDrawer)
 

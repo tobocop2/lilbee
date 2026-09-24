@@ -8,6 +8,7 @@ each container decides how to leave.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -68,6 +69,13 @@ class SessionRow(ListItem):
         yield _RowText(Content.styled(meta_line, "$text-muted"), classes="session-row-meta")
 
 
+async def _caught_up(widget: Input) -> None:
+    """Return once *widget* has handled every message already queued for it."""
+    done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    if widget.call_later(done.set_result, None):
+        await done
+
+
 class SessionListPanel(Vertical):
     """Filterable session list with resume / rename / delete / new actions."""
 
@@ -76,6 +84,7 @@ class SessionListPanel(Vertical):
     DEFAULT_CSS: ClassVar[str] = _ROW_CSS
 
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "select", "Resume", show=False, priority=True),
         Binding("ctrl+n", "new_chat", "New", show=True, priority=True),
         Binding("ctrl+r", "rename", "Rename", show=False, priority=True),
         Binding("ctrl+d", "delete", "Delete", show=False, priority=True),
@@ -85,14 +94,14 @@ class SessionListPanel(Vertical):
     ]
 
     class Resumed(Message):
-        """A session was chosen to resume."""
+        """A session was resumed."""
 
         def __init__(self, session_id: str) -> None:
             super().__init__()
             self.session_id = session_id
 
     class NewChat(Message):
-        """The user asked to start a new chat."""
+        """A new chat was started."""
 
     class CloseRequested(Message):
         """The user asked to close the panel."""
@@ -104,6 +113,9 @@ class SessionListPanel(Vertical):
         # the store replays every event of every session, so it happens on mount
         # and after a mutation only; keystrokes filter this list in memory.
         self._metas: list[SessionMeta] = []
+        # The rows as last rendered, in list order; the selection reads these
+        # rather than the ListView children, which mount a step later.
+        self._shown: list[SessionMeta] = []
         self._query = ""
         # The drawer focuses the filter for immediate type-to-switch. The
         # full-screen tab focuses the list instead, so the nav keys ([ ]) bubble
@@ -120,7 +132,7 @@ class SessionListPanel(Vertical):
     def on_mount(self) -> None:
         self.refresh_list()
         target = "#sessions-filter" if self._focus_filter else "#sessions-list"
-        self.query_one(target).focus()
+        self.screen.set_focus(self.query_one(target))
 
     def _store(self) -> SessionStore:
         return get_services().session_store
@@ -146,6 +158,7 @@ class SessionListPanel(Vertical):
         needle = self._query.strip().lower()
         active_id = self.app.current_session_id()
         metas = [m for m in self._metas if needle in m.title.lower()]
+        self._shown = metas
         for meta in metas:
             lv.append(SessionRow(meta, active=meta.id == active_id))
         if metas:
@@ -160,10 +173,11 @@ class SessionListPanel(Vertical):
         )
 
     def _selected(self) -> SessionMeta | None:
-        item = self.query_one("#sessions-list", ListView).highlighted_child
-        # highlighted_child is typed ListItem | None; every row we add is a
-        # SessionRow, so narrow to read its meta.
-        return item.meta if isinstance(item, SessionRow) else None
+        """The session under the cursor, or the first one while the rows are still mounting."""
+        index = self.query_one("#sessions-list", ListView).index
+        if not self._shown:
+            return None
+        return self._shown[index if index is not None and index < len(self._shown) else 0]
 
     @on(Input.Changed, "#sessions-filter")
     def _on_filter(self, event: Input.Changed) -> None:
@@ -171,28 +185,33 @@ class SessionListPanel(Vertical):
             self._query = event.value
             self._render_rows()
 
-    @on(Input.Submitted, "#sessions-filter")
-    def _on_submit(self, _event: Input.Submitted) -> None:
-        if self._renaming_id is not None:
-            self._commit_rename()
-            return
-        self._resume(self._selected())
-
     @on(ListView.Selected, "#sessions-list")
     def _on_row_selected(self, event: ListView.Selected) -> None:
-        """Resume the row the list itself reports as chosen.
-
-        ListView posts this both for a click and for enter while it holds focus,
-        and a click also moves focus off the filter box. Resuming only from the
-        filter's Submitted leaves a click inert and then strands the panel with
-        no working key to resume from.
-        """
+        """Resume a clicked row; enter never gets here, the panel's own binding takes it."""
         if self._renaming_id is None:
             self._resume(event.item.meta if isinstance(event.item, SessionRow) else None)
 
     def _resume(self, meta: SessionMeta | None) -> None:
+        """Resume *meta* within this key's step, so focus is on the prompt before the next key."""
         if meta is not None:
+            self.app.resume_session(meta.id)
             self.post_message(self.Resumed(meta.id))
+
+    async def action_select(self) -> None:
+        """Enter: finish a rename, else resume the highlighted session.
+
+        Runs as a priority binding, before the filter box has applied the keys
+        typed ahead of Enter, so it first waits for the filter to catch up.
+        """
+        field = self.query_one("#sessions-filter", Input)
+        await _caught_up(field)
+        if self._renaming_id is not None:
+            self._commit_rename()
+            return
+        if field.value != self._query:
+            self._query = field.value
+            self._render_rows()
+        self._resume(self._selected())
 
     def action_cursor_down(self) -> None:
         self.query_one("#sessions-list", ListView).action_cursor_down()
@@ -209,6 +228,7 @@ class SessionListPanel(Vertical):
         lv.index = count - 1 if index < 0 else min(index, count - 1)
 
     def action_new_chat(self) -> None:
+        self.app.new_chat()
         self.post_message(self.NewChat())
 
     def action_close(self) -> None:

@@ -92,6 +92,21 @@ def ready_services():
         set_services(None)
 
 
+def send_key_burst(app, *keys: str) -> None:
+    """Queue *keys* through the driver in one go, the way a terminal delivers typing ahead.
+
+    ``pilot.press`` waits for the app to go idle after every key, so a key can
+    never arrive while an earlier key's focus change is still pending. A burst
+    removes that wait. Single characters only, plus named keys such as enter.
+    """
+    from textual import events
+
+    for key in keys:
+        event = events.Key(key, key if len(key) == 1 else None)
+        event.set_sender(app)
+        app._driver.send_message(event)
+
+
 def shown_footer_keys(app) -> set[str]:
     """Keys the active screen's footer row is currently advertising.
 
