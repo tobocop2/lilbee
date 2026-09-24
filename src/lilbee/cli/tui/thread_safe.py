@@ -1,9 +1,7 @@
 """Thread-safe helpers for posting from @work(thread=True) workers to the main thread.
 
-Textual's call_from_thread raises OSError when the app's message queue
-has already been closed during shutdown. Since workers run in daemon
-threads, they can outlive the app. This module provides a drop-in
-wrapper that silently drops calls when the app is gone.
+A thread worker's body can outlive the app during shutdown, and Textual then
+refuses the call. These wrappers drop the call instead of crashing the worker.
 """
 
 from __future__ import annotations
@@ -12,6 +10,7 @@ import logging
 from typing import Any
 
 from textual.dom import DOMNode
+from textual.message import Message
 
 log = logging.getLogger(__name__)
 
@@ -53,3 +52,13 @@ def call_from_thread(node: DOMNode, fn: Any, *args: Any, **kwargs: Any) -> None:
             getattr(fn, "__name__", fn),
             exc,
         )
+
+
+def post_from_thread(node: DOMNode, message: Message) -> None:
+    """Post *message* to *node* without waiting; drop it when the app is gone."""
+    try:
+        node.post_message(message)
+    except (AttributeError, RuntimeError) as exc:
+        # The same "app is gone" signals call_from_thread drops: a torn-down
+        # node has no parent to reach the app through.
+        log.debug("post_from_thread dropped %s: %s", type(message).__name__, exc)

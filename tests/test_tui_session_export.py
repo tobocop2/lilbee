@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,11 +13,15 @@ from lilbee.app.services import get_services, set_services
 from lilbee.app.session_export import session_markdown
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
 from lilbee.core.config import cfg
+from lilbee.retrieval.reasoning import StreamToken
 from lilbee.sessions import MessageRole, SessionMessage, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
+
+_WAIT_S = 5.0
 
 
 @pytest.fixture(autouse=True)
@@ -180,16 +185,44 @@ async def test_export_of_a_deleted_session_says_it_is_gone(sessions, workdir):
     assert list(workdir.iterdir()) == []
 
 
-async def test_export_while_a_reply_is_still_saving_is_refused(sessions, workdir):
+async def test_export_while_a_turn_is_stopping_waits_for_the_turn_to_end(sessions, workdir):
+    """The busy gate refuses /export-chat until the stopped turn has saved its reply."""
     source = _seed(sessions)
+    started, release = threading.Event(), threading.Event()
+
+    def held_answer(*_args: object, **_kwargs: object):
+        yield StreamToken(content="A2-partial", is_reasoning=False)
+        started.set()
+        release.wait(_WAIT_S)
+        yield StreamToken(content=" more", is_reasoning=False)
+
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await await_chat(app, pilot)
         screen.resume_session(source)
-        with screen._live_streams, patch.object(screen, "notify") as notify:
-            await _submit(pilot, "/export-chat")
-        assert _notified(notify) == [msg.EXPORT_CHAT_WHILE_FINISHING]
-    assert list(workdir.iterdir()) == []
+        with (
+            patch.object(ChatScreen, "_await_chat_engine", return_value=True),
+            patch.object(get_services().searcher, "ask_stream", side_effect=held_answer),
+        ):
+            try:
+                await _submit(pilot, "Q2")
+                assert await pump_until(pilot, started.is_set)
+                await pilot.press("ctrl+c")
+                with patch.object(screen, "notify") as refused:
+                    await _submit(pilot, "/export-chat")
+                written_while_stopping = list(workdir.iterdir())
+            finally:
+                release.set()
+            assert await pump_until(pilot, lambda: not screen.streaming)
+        # The refused command stays in the input, so a second Enter sends it.
+        with patch.object(screen, "notify") as done:
+            await pilot.press("enter")
+            await pilot.pause()
+        assert _notified(refused) == [msg.CHAT_STOPPING]
+        assert written_while_stopping == []
+        (exported,) = workdir.iterdir()
+        assert _notified(done) == [msg.EXPORT_CHAT_DONE.format(path=exported.resolve())]
+        assert "A2-partial" in exported.read_text(encoding="utf-8")
 
 
 async def test_export_with_sessions_off_shows_the_sessions_notice(sessions, workdir, monkeypatch):

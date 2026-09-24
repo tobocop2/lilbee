@@ -1,4 +1,4 @@
-"""Tests for the thread-safe call_from_thread wrapper."""
+"""Tests for the thread-safe call_from_thread and post_from_thread wrappers."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 
 
 def test_call_from_thread_forwards_to_app():
@@ -76,3 +76,23 @@ def test_call_from_thread_propagates_an_attribute_error_raised_inside_the_callba
     node.app.call_from_thread.side_effect = AttributeError("real bug inside fn")
     with pytest.raises(AttributeError, match="real bug inside fn"):
         call_from_thread(node, MagicMock(), "arg")
+
+
+def test_post_from_thread_posts_to_the_node():
+    node = MagicMock()
+    message = MagicMock()
+    post_from_thread(node, message)
+    node.post_message.assert_called_once_with(message)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        pytest.param(AttributeError("'ChatScreen' object has no attribute"), id="torn-down-node"),
+        pytest.param(RuntimeError("App is not running"), id="app-gone"),
+    ],
+)
+def test_post_from_thread_drops_the_message_when_the_app_is_gone(error):
+    node = MagicMock()
+    node.post_message.side_effect = error
+    post_from_thread(node, MagicMock())  # must not raise

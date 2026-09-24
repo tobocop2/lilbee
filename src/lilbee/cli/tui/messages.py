@@ -218,12 +218,10 @@ FORK_DONE = "Forked · {title}"
 FORK_FAILED = "Could not fork: {error}"
 FORK_NO_SESSION = "Nothing to fork yet. Send a message first."
 FORK_SESSION_GONE = "This conversation was deleted, so it cannot be forked."
-FORK_WHILE_FINISHING = "Finishing the last reply. Try /fork again in a moment."
 EXPORT_CHAT_DONE = "Exported to {path}"
 EXPORT_CHAT_FAILED = "Could not export: {error}"
 EXPORT_CHAT_NO_SESSION = "Nothing to export yet. Send a message first."
 EXPORT_CHAT_SESSION_GONE = "This conversation was deleted, so it cannot be exported."
-EXPORT_CHAT_WHILE_FINISHING = "Finishing the last reply. Try /export-chat again in a moment."
 # The context chip: how much of this chat the model can still see.
 #
 # "context", not "memory": lilbee already has a Memory feature (/memories, the
@@ -384,6 +382,7 @@ SCOPE_PILL_BOTH = "Both"
 SCOPE_PILL_WIKI = "Wiki"
 SCOPE_PILL_RAW = "Raw"
 CHAT_BUSY = "Already answering. Press Ctrl+C to cancel, then submit your next prompt."
+CHAT_STOPPING = "Stopping the answer. Submit again in a moment."
 CHAT_MODEL_DOWNLOADING = "{name} is still downloading. Wait for it to finish, then submit."
 MODEL_BEING_DOWNLOADED = (
     "{name} is still downloading. Wait for it to finish before setting it active."

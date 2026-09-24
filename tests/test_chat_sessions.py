@@ -550,7 +550,7 @@ async def _fold_then(app, pilot, switch) -> None:
         assert await pump_until(pilot, folding.is_set), "the turn must reach the fold"
         switch()
         release.set()
-        assert await pump_until(pilot, lambda: not screen._live_streams)
+        assert await pump_until(pilot, lambda: not screen.streaming)
 
 
 async def test_resuming_during_a_fold_leaves_the_resumed_conversation_alone(sessions):
@@ -644,7 +644,7 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
             assert await pump_until(pilot, first_token.is_set), "the answer must have started"
             app.resume_session(other)
             release.set()
-            assert await pump_until(pilot, lambda: not screen._live_streams)
+            assert await pump_until(pilot, lambda: not screen.streaming)
         assert screen._history == [
             {"role": "user", "content": "other q"},
             {"role": "assistant", "content": "other a"},
