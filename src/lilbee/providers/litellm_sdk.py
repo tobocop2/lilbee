@@ -241,12 +241,11 @@ _LITELLM_FORK_DIST = "unclecode-litellm"
 _LITELLM_FORK_MSG = (
     "Both litellm and unclecode-litellm are installed. unclecode-litellm is a fork of "
     "litellm that crawl4ai requires, and it writes into the same litellm package, so "
-    "remote and API models cannot load reliably. For a pip install, run: "
-    "pip uninstall -y unclecode-litellm && "
-    "pip install --force-reinstall --no-deps litellm=={version}. "
-    "For a uv tool install, write unclecode-litellm into a file excludes.txt, then run: "
-    "uv tool install --reinstall --prerelease=allow --excludes excludes.txt "
-    "'lilbee[crawler,litellm]'"
+    "remote and API models cannot load reliably. If you installed lilbee with "
+    "uv tool install, write unclecode-litellm into a file excludes.txt, then run your "
+    "install command again with --reinstall --excludes excludes.txt added. If you "
+    "installed lilbee with pip, run: pip uninstall -y unclecode-litellm && "
+    "pip install --force-reinstall --no-deps litellm=={version}"
 )
 
 

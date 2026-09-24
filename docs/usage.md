@@ -1144,21 +1144,19 @@ uv tool install --prerelease=allow 'lilbee[litellm]'
 Install several at once, engine included:
 
 ```bash
-pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
-uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
-```
+# uv tool
+echo unclecode-litellm > excludes.txt
+uv tool install --prerelease=allow 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/ --excludes excludes.txt
 
-The crawler depends on `unclecode-litellm`, a fork of litellm that writes into the same `litellm` package. If you install `crawler` and `litellm` together, remove the fork before you use remote models. Until you do, remote models stop with an error that gives the same commands.
-
-```bash
 # pip
+pip install --pre 'lilbee[engine,graph,crawler,litellm]' --extra-index-url https://lilbee.sh/cu125/
 pip uninstall -y unclecode-litellm
 pip install --force-reinstall --no-deps "litellm==$(pip show litellm | sed -n 's/^Version: //p')"
-
-# uv tool: exclude the fork when you install
-echo unclecode-litellm > excludes.txt
-uv tool install --reinstall --prerelease=allow --excludes excludes.txt 'lilbee[crawler,litellm]'
 ```
+
+The crawler depends on `unclecode-litellm`, a fork of litellm that writes into the same `litellm` package. When you install `crawler` and `litellm` together, keep the fork out. With uv, `--excludes excludes.txt` does this, and `uv tool upgrade` keeps the exclusion. pip cannot exclude a package, so the two pip commands after the install remove the fork and restore litellm. If the fork is present, remote models stop with an error that gives the repair.
+
+If you already installed with uv without the exclusion, run your install command again with `--reinstall --excludes excludes.txt` added. Keep your own extras and index URL in the command.
 
 </details>
 

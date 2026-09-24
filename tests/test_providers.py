@@ -1113,7 +1113,8 @@ class TestLitellmForkGuard:
         message = str(caught.value)
         assert "pip uninstall -y unclecode-litellm" in message
         assert "pip install --force-reinstall --no-deps litellm==1.98.0" in message
-        assert "--excludes" in message
+        assert "your install command again with --reinstall --excludes excludes.txt" in message
+        assert "lilbee[" not in message
 
     def test_fork_check_runs_before_the_litellm_import(self) -> None:
         from lilbee.providers.base import ProviderError

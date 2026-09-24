@@ -5,6 +5,7 @@ import shutil
 import sys
 import threading
 import warnings
+from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -223,6 +224,16 @@ def _assume_litellm_available(request, monkeypatch):
     if "real_litellm_probe" in {m.name for m in request.node.iter_markers()}:
         return
     monkeypatch.setattr("lilbee.providers.litellm_sdk.litellm_available", lambda: True)
+
+
+def _no_installed_distribution(dist: str) -> str:
+    raise PackageNotFoundError(dist)
+
+
+@pytest.fixture(autouse=True)
+def _hide_installed_litellm_distributions(monkeypatch):
+    """Keep the litellm fork check off the host's installed packages; tests plant their own."""
+    monkeypatch.setattr("lilbee.providers.litellm_sdk._dist_version", _no_installed_distribution)
 
 
 @pytest.fixture(autouse=True)
