@@ -1,7 +1,6 @@
 """Tests for the web crawling module."""
 
 import asyncio
-import math
 import sys
 import types
 from pathlib import Path
@@ -38,6 +37,7 @@ from lilbee.crawler.save import (
     normalize_crawled_markdown,
 )
 from lilbee.runtime.progress import EventType
+from tests import _crawlberg_stub as cb
 from tests._mock_effects import repeat_last
 from tests._sys_modules import inject_modules
 
@@ -67,6 +67,10 @@ def isolated_env(tmp_path, monkeypatch, request):
     cls = request.cls.__name__ if request.cls else ""
     if cls not in ("TestPlaywrightBrowserCheck", "TestChromiumInstalledMatching"):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: shell)
+    # The browser-mode fetcher points CHROME at the shell; restore it after each test.
+    monkeypatch.delenv("CHROME", raising=False)
     # Stub crawler_available so crawl_and_save's pre-flight backend check passes
     # in CI envs where the [crawler] extra isn't installed. Tests that exercise
     # the missing-extra path opt out by re-patching to ``False``. Both the SDK
@@ -76,7 +80,7 @@ def isolated_env(tmp_path, monkeypatch, request):
     # ``sys.modules`` patching, so it opts out of the auto-stub.
     if cls != "TestCrawlerAvailable":
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: True)
-        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: True)
     # Default the sitemap bound to "unknown" so tests don't hit the network.
     # Tests that exercise the sitemap hook directly (TestSitemapCounting)
     # opt out of this autopatch.
@@ -263,7 +267,7 @@ class TestCrawlerAvailable:
         crawler_available.cache_clear()
         with patch(
             "importlib.util.find_spec",
-            return_value=MagicMock(name="crawl4ai_spec"),
+            return_value=MagicMock(name="crawlberg_spec"),
         ):
             assert crawler_available() is True
         crawler_available.cache_clear()
@@ -277,11 +281,10 @@ class TestCrawlerAvailable:
         crawler_available.cache_clear()
 
     def test_does_not_execute_module_init(self):
-        """Regression guard: probe must not actually import ``crawl4ai``.
+        """Regression guard: probe must not actually import ``crawlberg``.
 
-        ``crawl4ai`` is a known-heavy import (AGENTS.md lists it). The
-        Settings screen calls this on the UI thread, so executing the
-        module here would block the TUI.
+        crawlberg loads a native library. The Settings screen calls this on
+        the UI thread, so executing the module here would block the TUI.
         """
         import sys as _sys
 
@@ -290,11 +293,11 @@ class TestCrawlerAvailable:
         crawler_available.cache_clear()
         with patch(
             "importlib.util.find_spec",
-            return_value=MagicMock(name="crawl4ai_spec"),
+            return_value=MagicMock(name="crawlberg_spec"),
         ):
-            had_module = "crawl4ai" in _sys.modules
+            had_module = "crawlberg" in _sys.modules
             crawler_available()
-            assert ("crawl4ai" in _sys.modules) is had_module
+            assert ("crawlberg" in _sys.modules) is had_module
         crawler_available.cache_clear()
 
 
@@ -430,56 +433,39 @@ def _mock_crawl4ai(mock_crawler_cls):
     return mock_mod
 
 
+SEED = "https://example.com"
+
+
+def _failing_engine(message: str):
+    def create_engine(config):
+        raise RuntimeError(message)
+
+    return create_engine
+
+
 class TestCrawlSingle:
     async def test_success(self):
-        mock_result = _make_crawl4ai_result()
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_result)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-
-        with inject_modules({"crawl4ai": mock_mod}):
-            result = await crawl_single("https://example.com")
+        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
+            result = await crawl_single(SEED)
         assert result.success
         assert result.markdown == "# Test"
 
     async def test_emits_setup_bracket_around_warmup(self):
         """The browser warmup is bracketed by setup events so the Task Center
         shows a 'preparing crawler' stage instead of a silent stall."""
-        mock_result = _make_crawl4ai_result()
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_result)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-
         events: list[tuple] = []
-        with inject_modules({"crawl4ai": mock_mod}):
-            result = await crawl_single(
-                "https://example.com", on_progress=lambda e, d: events.append((e, d))
-            )
+        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
+            result = await crawl_single(SEED, on_progress=lambda e, d: events.append((e, d)))
         assert result.success
         setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
         assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
 
     async def test_http_mode_omits_setup_bracket(self):
         """HTTP mode opens a browserless client, so no 'browser' setup stage fires."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_make_crawl4ai_result())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_mod = _mock_crawl4ai(MagicMock(return_value=mock_instance))
-        mock_strategy = MagicMock()
-        mock_strategy.AsyncHTTPCrawlerStrategy = MagicMock()
-
         events: list[tuple] = []
-        modules = {"crawl4ai": mock_mod, "crawl4ai.async_crawler_strategy": mock_strategy}
-        with inject_modules(modules):
+        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
             result = await crawl_single(
-                "https://example.com",
+                SEED,
                 render_mode=CrawlRenderMode.HTTP,
                 on_progress=lambda e, d: events.append((e, d)),
             )
@@ -488,110 +474,79 @@ class TestCrawlSingle:
         assert setup_types == []
 
     async def test_failure(self):
-        mock_result = _make_crawl4ai_result(success=False, markdown="", error="Connection refused")
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_result)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-
-        with inject_modules({"crawl4ai": mock_mod}):
-            result = await crawl_single("https://example.com")
+        with cb.StubCrawlberg([cb.error(SEED, "Connection refused")]).installed():
+            result = await crawl_single(SEED)
         assert not result.success
         assert result.error == "Connection refused"
 
     async def test_exception(self):
-        mock_instance = AsyncMock()
-        mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("timeout"))
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-
-        with inject_modules({"crawl4ai": mock_mod}):
-            result = await crawl_single("https://example.com")
+        stub = cb.StubCrawlberg()
+        stub.module.create_engine = _failing_engine("timeout")
+        with stub.installed():
+            result = await crawl_single(SEED)
         assert not result.success
         assert "timeout" in result.error
 
-    async def test_bootstraps_and_retries_when_chromium_missing(self, monkeypatch):
-        """Recover when Playwright launch fails because of a missing binary."""
-        success_result = _make_crawl4ai_result()
-        ok_instance = AsyncMock()
-        ok_instance.arun = AsyncMock(return_value=success_result)
-        ok_instance.__aenter__ = AsyncMock(return_value=ok_instance)
-        ok_instance.__aexit__ = AsyncMock(return_value=False)
-        fail_instance = AsyncMock()
-        fail_instance.__aenter__ = AsyncMock(
-            side_effect=RuntimeError("launch: Executable doesn't exist at chromium-1208/...")
+    async def test_bootstraps_and_retries_when_chromium_missing(self, monkeypatch, tmp_path):
+        """A headless shell missing at launch is installed once, then the fetch retries."""
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap.headless_shell_executable",
+            MagicMock(side_effect=repeat_last(None, shell)),
         )
-        fail_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(side_effect=repeat_last(fail_instance, ok_instance))
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
         bootstrapped: list[bool] = []
 
         async def fake_bootstrap(on_progress):
             bootstrapped.append(True)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
-        with inject_modules({"crawl4ai": mock_mod}):
-            result = await crawl_single("https://example.com")
+        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
+            result = await crawl_single(SEED)
         assert result.success
         assert result.markdown == "# Test"
         assert bootstrapped == [True], "bootstrap_chromium should fire exactly once"
 
-    async def test_retry_failure_is_returned_as_error_result(self, monkeypatch):
+    async def test_retry_failure_is_returned_as_error_result(self, monkeypatch, tmp_path):
         """If the retry also fails, surface that error -- not the original."""
-        fail_instance = AsyncMock()
-        fail_instance.__aenter__ = AsyncMock(
-            side_effect=RuntimeError("launch: Executable doesn't exist at chromium-1208/...")
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap.headless_shell_executable",
+            MagicMock(side_effect=repeat_last(None, shell)),
         )
-        fail_instance.__aexit__ = AsyncMock(return_value=False)
-        retry_fail = AsyncMock()
-        retry_fail.__aenter__ = AsyncMock(side_effect=RuntimeError("still broken after bootstrap"))
-        retry_fail.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(side_effect=repeat_last(fail_instance, retry_fail))
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
 
         async def fake_bootstrap(on_progress):
             pass
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
-        with inject_modules({"crawl4ai": mock_mod}):
-            result = await crawl_single("https://example.com")
+        stub = cb.StubCrawlberg()
+        stub.module.create_engine = _failing_engine("still broken after bootstrap")
+        with stub.installed():
+            result = await crawl_single(SEED)
         assert not result.success
         assert "still broken after bootstrap" in result.error
-
-    async def test_quiet_passes_verbose_false(self):
-        """quiet=True passes verbose=False to AsyncWebCrawler."""
-        mock_result = _make_crawl4ai_result()
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_result)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-
-        with inject_modules({"crawl4ai": mock_mod}):
-            await crawl_single("https://example.com", quiet=True)
-        mock_crawler_cls.assert_called_once()
-        assert mock_crawler_cls.call_args.kwargs["verbose"] is False
 
     async def test_missing_chromium_raises_crawler_browser_missing(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Without Chromium installed, crawl_single raises a clean exception.
+        """Without Chromium after a bootstrap attempt, crawl_single raises a clean exception.
 
-        Regression test for bb-60mj: without this guard Playwright prints
-        a raw ASCII install banner into the TUI and the task lands as DONE.
+        Regression test for bb-60mj: the task must land as failed, not done.
         """
         from lilbee.crawler import CrawlerBrowserError
 
-        # Stub crawl4ai so the test runs even when the `crawler` extra
-        # isn't installed in the unit-test env.
-        monkeypatch.setitem(__import__("sys").modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
-        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserError, match="Chromium"):
-            await crawl_single("https://example.com")
+        monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: None)
+        bootstrapped: list[bool] = []
+
+        async def fake_bootstrap(on_progress):
+            bootstrapped.append(True)
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
+        with (
+            cb.StubCrawlberg().installed(),
+            pytest.raises(CrawlerBrowserError, match="Chromium"),
+        ):
+            await crawl_single(SEED)
+        assert bootstrapped == [True]
 
     async def test_missing_crawler_extra_raises_backend_missing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -608,33 +563,43 @@ class TestCrawlSingle:
         from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
-        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
         with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_single("https://example.com")
 
 
-class TestChromiumInstalledMatching:
-    """``chromium_installed`` must match the bundled Playwright's revision.
+def _install_shell(root: Path, revision: str, monkeypatch) -> Path:
+    """Lay out a headless shell binary the way Playwright installs it on a Linux x86_64 host."""
+    monkeypatch.setattr(bootstrap_mod.sys, "platform", "linux")
+    monkeypatch.setattr(bootstrap_mod.platform, "machine", lambda: "x86_64")
+    executable = (
+        root
+        / f"chromium_headless_shell-{revision}"
+        / "chrome-headless-shell-linux64"
+        / "chrome-headless-shell"
+    )
+    executable.parent.mkdir(parents=True)
+    executable.write_bytes(b"")
+    return executable
 
-    System Chromium directories like ``chromium-1217`` are useless if the
-    bundled Playwright driver was built against ``chromium-1208``; launch
-    fails with ``Executable doesn't exist`` even though the bootstrap
-    check returned True.
-    """
+
+class TestChromiumInstalledMatching:
+    """``chromium_installed`` looks for the headless shell at the bundled Playwright's revision."""
 
     def test_matches_expected_revision_when_present(self, tmp_path, monkeypatch):
         from lilbee.crawler import bootstrap
 
-        (tmp_path / "chromium-1208").mkdir()
+        executable = _install_shell(tmp_path, "1208", monkeypatch)
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
 
         assert bootstrap.chromium_installed() is True
+        assert bootstrap.headless_shell_executable() == executable
 
     def test_rejects_wrong_revision(self, tmp_path, monkeypatch):
         from lilbee.crawler import bootstrap
 
-        (tmp_path / "chromium-1217").mkdir()
+        _install_shell(tmp_path, "1217", monkeypatch)
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
 
@@ -643,11 +608,31 @@ class TestChromiumInstalledMatching:
     def test_falls_back_to_any_revision_when_expected_unknown(self, tmp_path, monkeypatch):
         from lilbee.crawler import bootstrap
 
-        (tmp_path / "chromium-1217").mkdir()
+        _install_shell(tmp_path, "1217", monkeypatch)
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: None)
 
         assert bootstrap.chromium_installed() is True
+
+    def test_full_chromium_build_does_not_count(self, tmp_path, monkeypatch):
+        """Only the headless shell is launched, so the full build alone is not installed."""
+        from lilbee.crawler import bootstrap
+
+        _install_shell(tmp_path, "1208", monkeypatch).unlink()
+        (tmp_path / "chromium-1208").mkdir()
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
+
+        assert bootstrap.chromium_installed() is False
+
+    def test_platform_without_a_known_layout_has_no_shell(self, tmp_path, monkeypatch):
+        from lilbee.crawler import bootstrap
+
+        _install_shell(tmp_path, "1208", monkeypatch)
+        monkeypatch.setattr(bootstrap.platform, "machine", lambda: "riscv64")
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+
+        assert bootstrap.headless_shell_executable() is None
 
     def test_returns_false_when_cache_root_missing(self, tmp_path, monkeypatch):
         from lilbee.crawler import bootstrap
@@ -671,7 +656,10 @@ class TestReadChromiumRevision:
     def test_extracts_chromium_revision(self, tmp_path):
         from lilbee.crawler.bootstrap import _read_chromium_revision
 
-        payload = '{"browsers": [{"name": "chromium", "revision": 1208}]}'
+        payload = (
+            '{"browsers": [{"name": "chromium", "revision": 1300},'
+            ' {"name": "chromium-headless-shell", "revision": 1208}]}'
+        )
         path = tmp_path / "browsers.json"
         path.write_text(payload, encoding="utf-8")
         assert _read_chromium_revision(path) == "1208"
@@ -687,7 +675,7 @@ class TestReadChromiumRevision:
         from lilbee.crawler.bootstrap import _read_chromium_revision
 
         path = tmp_path / "browsers.json"
-        path.write_text('{"browsers": [{"name": "chromium"}]}', encoding="utf-8")
+        path.write_text('{"browsers": [{"name": "chromium-headless-shell"}]}', encoding="utf-8")
         assert _read_chromium_revision(path) is None
 
     def test_returns_none_on_malformed_json(self, tmp_path):
@@ -748,7 +736,8 @@ class TestExpectedChromiumRevision:
         pkg.mkdir()
         (pkg / "__init__.py").write_text("", encoding="utf-8")
         (pkg / "browsers.json").write_text(
-            '{"browsers": [{"name": "chromium", "revision": 1208}]}', encoding="utf-8"
+            '{"browsers": [{"name": "chromium-headless-shell", "revision": 1208}]}',
+            encoding="utf-8",
         )
         fake = types.ModuleType("playwright")
         fake.__file__ = str(pkg / "__init__.py")
@@ -814,7 +803,10 @@ class TestBootstrapChromium:
                 self.returncode = 0
                 return self.returncode
 
-        async def _fake_create_subprocess_exec(*_args, **_kwargs):
+        argv: list[tuple] = []
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
+            argv.append(args)
             return _Proc()
 
         monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
@@ -822,6 +814,8 @@ class TestBootstrapChromium:
         events: list[tuple[EventType, object]] = []
         await bootstrap_chromium(on_progress=lambda e, d: events.append((e, d)))
 
+        # Only the headless shell is downloaded: it is the one binary a crawl launches.
+        assert argv == [("/fake/node", "/fake/cli.js", "install", "--only-shell", "chromium")]
         types = [e for e, _ in events]
         assert types[0] == EventType.SETUP_START
         assert types[-1] == EventType.SETUP_DONE
@@ -1038,12 +1032,11 @@ class TestPlaywrightBrowserCheck:
         assert not chromium_installed()
 
     def test_detects_installed_chromium(self, tmp_path, monkeypatch):
-        """When the expected revision is unknown, any chromium-* subdirectory counts."""
+        """When the expected revision is unknown, any installed headless shell counts."""
         from lilbee.crawler.bootstrap import chromium_installed
 
         browsers = tmp_path / "ms-playwright"
-        browsers.mkdir()
-        (browsers / "chromium-1234").mkdir()
+        _install_shell(browsers, "1234", monkeypatch)
         monkeypatch.setattr("lilbee.crawler.bootstrap._browsers_cache_path", lambda: browsers)
         monkeypatch.setattr("lilbee.crawler.bootstrap._expected_chromium_revision", lambda: None)
         assert chromium_installed()
@@ -1098,57 +1091,20 @@ class TestSetupEventHelpers:
 
 
 class TestCrawlRecursive:
-    def _setup_crawl4ai(self, mock_instance):
-        """Create a fake crawl4ai module with the given crawler instance."""
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_bfs = MagicMock()
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-        mock_deep = MagicMock()
-        mock_deep.BFSDeepCrawlStrategy = mock_bfs
-        # Recursive crawls build a SemaphoreDispatcher + RateLimiter when
-        # cfg.crawl_retry_on_rate_limit is True (default). Stub both so
-        # `from crawl4ai.async_dispatcher import ...` succeeds.
-        mock_dispatcher_mod = MagicMock()
-        mock_dispatcher_mod.RateLimiter = MagicMock()
-        mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
-        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
-        mock_strategy_mod = MagicMock()
-        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
-        # Recursive crawls also build a FilterChain with URLPatternFilter to
-        # exclude WordPress noise patterns. Stub both.
-        mock_filters_mod = MagicMock()
-        mock_filters_mod.FilterChain = MagicMock()
-        mock_filters_mod.URLPatternFilter = MagicMock()
-        return {
-            "crawl4ai": mock_mod,
-            "crawl4ai.deep_crawling": mock_deep,
-            "crawl4ai.deep_crawling.filters": mock_filters_mod,
-            "crawl4ai.async_dispatcher": mock_dispatcher_mod,
-            "crawl4ai.async_crawler_strategy": mock_strategy_mod,
-        }
-
     async def test_returns_multiple_results(self):
-        mock_results = [
-            _make_crawl4ai_result(url="https://example.com", markdown="# Home"),
-            _make_crawl4ai_result(url="https://example.com/about", markdown="# About"),
-        ]
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_results)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
+        script = [cb.page(SEED, "# Home", depth=0), cb.page(f"{SEED}/about", "# About")]
         progress_calls = []
 
         def on_progress(event_type, data):
             progress_calls.append((event_type, data))
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
+        with cb.StubCrawlberg(script).installed():
             results = await crawl_recursive(
-                "https://example.com", max_depth=1, max_pages=10, on_progress=on_progress
+                SEED, max_depth=1, max_pages=10, on_progress=on_progress
             )
         assert len(results) == 2
-        assert results[0].url == "https://example.com"
-        assert results[1].url == "https://example.com/about"
+        assert results[0].url == SEED
+        assert results[1].url == f"{SEED}/about"
         # Streaming semantics: total is unknown during BFS, counter advances per page.
         from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 
@@ -1164,29 +1120,20 @@ class TestCrawlRecursive:
 
     async def test_emits_events_before_stream_exhausted(self):
         """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
-        import asyncio as _asyncio
-
         observations: list[tuple[str, int]] = []
 
         async def _gen():
             for i in range(1, 4):
-                await _asyncio.sleep(0)
+                await asyncio.sleep(0)
                 observations.append(("yielded", i))
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
-
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+                yield cb.page(f"{SEED}/p{i}", f"# P{i}")
 
         def on_progress(event_type, data):
             if event_type == EventType.CRAWL_PAGE:
                 observations.append(("progress", data.current))
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
-            await crawl_recursive(
-                "https://example.com", max_depth=2, max_pages=100, on_progress=on_progress
-            )
+        with cb.StubCrawlberg(_gen).installed():
+            await crawl_recursive(SEED, max_depth=2, max_pages=100, on_progress=on_progress)
 
         # Each page's progress event must appear immediately after its yield,
         # before any subsequent yield. Pattern: yielded=1, progress=1, yielded=2, progress=2, ...
@@ -1196,182 +1143,116 @@ class TestCrawlRecursive:
 
     async def test_cancel_stops_mid_stream(self):
         """Setting the cancel event mid-stream stops further result collection."""
-        import asyncio as _asyncio
         import threading
 
         cancel = threading.Event()
 
         async def _gen():
             for i in range(1, 6):
-                await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+                await asyncio.sleep(0)
+                yield cb.page(f"{SEED}/p{i}", f"# P{i}")
                 if i == 2:
                     cancel.set()
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
-            results = await crawl_recursive(
-                "https://example.com", max_depth=2, max_pages=100, cancel=cancel
-            )
+        stub = cb.StubCrawlberg(_gen)
+        with stub.installed():
+            results = await crawl_recursive(SEED, max_depth=2, max_pages=100, cancel=cancel)
 
         assert len(results) <= 2
+        assert stub.closed == 1
 
-    async def test_single_result_not_list(self):
-        """When deep crawl returns a single result (not a list), it's handled."""
-        mock_result = _make_crawl4ai_result()
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_result)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+    async def test_hard_cap_on_visible_counter(self):
+        """The visible counter stops at max_pages and the stream closes there."""
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
-        assert len(results) == 1
+        async def _gen():
+            for i in range(1, 11):
+                await asyncio.sleep(0)
+                yield cb.page(f"{SEED}/p{i}")
+
+        events = []
+
+        def on_progress(event_type, data):
+            if event_type == EventType.CRAWL_PAGE:
+                events.append(data.current)
+
+        stub = cb.StubCrawlberg(_gen)
+        with stub.installed():
+            results = await crawl_recursive(SEED, max_depth=1, max_pages=3, on_progress=on_progress)
+        assert events == [1, 2, 3]
+        assert len(results) == 3
+        assert stub.closed == 1
 
     async def test_mixed_success_failure(self):
-        mock_results = [
-            _make_crawl4ai_result(url="https://example.com", markdown="# Home"),
-            _make_crawl4ai_result(url="https://example.com/broken", success=False, error="404"),
-        ]
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=mock_results)
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=10)
+        script = [cb.page(SEED, "# Home", depth=0), cb.error(f"{SEED}/broken", "404")]
+        with cb.StubCrawlberg(script).installed():
+            results = await crawl_recursive(SEED, max_depth=1, max_pages=10)
         assert len(results) == 2
         assert results[0].success
         assert not results[1].success
 
     async def test_exception_returns_error_result(self):
-        mock_instance = AsyncMock()
-        mock_instance.__aenter__ = AsyncMock(side_effect=RuntimeError("network error"))
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
-            results = await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+        stub = cb.StubCrawlberg()
+        stub.module.create_engine = _failing_engine("network error")
+        with stub.installed():
+            results = await crawl_recursive(SEED, max_depth=1, max_pages=5)
         assert len(results) == 1
         assert not results[0].success
 
     async def test_defaults_to_unbounded_depth_but_capped_pages(self):
-        """No max_depth / max_pages: depth is math.inf, pages clamps to the safety ceiling."""
-        import math
-
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
+        """No max_depth / max_pages: depth is unbounded, pages clamps to the safety ceiling."""
         cfg.crawl_max_depth = None
         cfg.crawl_max_pages = None
         cfg.crawl_safety_max_pages = 5_000
-        modules = self._setup_crawl4ai(mock_instance)
-        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com")
-        kwargs = bfs.call_args.kwargs
-        assert kwargs["max_depth"] == math.inf
-        assert kwargs["max_pages"] == 5_000
+        stub = cb.StubCrawlberg()
+        with stub.installed():
+            await crawl_recursive(SEED)
+        assert stub.config["max_depth"] is None
+        assert stub.config["max_pages"] == 5_000
 
     async def test_explicit_cap_overrides_cfg_ceiling(self):
         """An explicit int wins even when cfg sets a lower ceiling."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
         cfg.crawl_max_pages = 10
-        modules = self._setup_crawl4ai(mock_instance)
-        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=999)
-        assert bfs.call_args.kwargs["max_pages"] == 999
+        stub = cb.StubCrawlberg()
+        with stub.installed():
+            await crawl_recursive(SEED, max_depth=1, max_pages=999)
+        assert stub.config["max_pages"] == 999
 
     async def test_cfg_ceiling_applied_when_none_passed(self):
         """cfg.crawl_max_pages acts as ceiling when caller passes None."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
         cfg.crawl_max_pages = 10
-        modules = self._setup_crawl4ai(mock_instance)
-        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=None)
-        assert bfs.call_args.kwargs["max_pages"] == 10
+        stub = cb.StubCrawlberg()
+        with stub.installed():
+            await crawl_recursive(SEED, max_depth=1, max_pages=None)
+        assert stub.config["max_pages"] == 10
 
     async def test_zero_max_pages_is_unlimited(self):
         """max_pages=0 (CRAWL_PAGES_UNLIMITED) is an explicit no-limit, even past cfg."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
         cfg.crawl_max_pages = 10
-        modules = self._setup_crawl4ai(mock_instance)
-        bfs = modules["crawl4ai.deep_crawling"].BFSDeepCrawlStrategy
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=0)
-        # Unbounded reaches the BFS strategy as inf, the same convention as depth.
-        assert bfs.call_args.kwargs["max_pages"] == math.inf
-
-    async def test_quiet_passes_verbose_false(self):
-        """quiet=True passes verbose=False to AsyncWebCrawler."""
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=[])
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        modules = self._setup_crawl4ai(mock_instance)
-        modules["crawl4ai"].AsyncWebCrawler = mock_crawler_cls
-
-        with inject_modules(modules):
-            await crawl_recursive("https://example.com", max_depth=1, quiet=True)
-        mock_crawler_cls.assert_called_once()
-        assert mock_crawler_cls.call_args.kwargs["verbose"] is False
+        stub = cb.StubCrawlberg()
+        with stub.installed():
+            await crawl_recursive(SEED, max_depth=1, max_pages=0)
+        assert stub.config["max_pages"] is None
 
     async def test_reraises_browser_missing_from_crawler_open(self, monkeypatch):
         """CrawlerBrowserError raised inside the try block propagates past the broad except."""
         from lilbee.crawler import CrawlerBrowserError
 
-        mock_instance = AsyncMock()
-        mock_instance.__aenter__ = AsyncMock(side_effect=CrawlerBrowserError("chromium gone"))
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
-
-        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
+        monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: None)
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
-            pytest.raises(CrawlerBrowserError, match="chromium gone"),
+            cb.StubCrawlberg().installed(),
+            pytest.raises(CrawlerBrowserError, match="Chromium"),
         ):
-            await crawl_recursive("https://example.com", max_depth=1, max_pages=5)
+            await crawl_recursive(SEED, max_depth=1, max_pages=5)
 
     async def test_propagates_crawler_browser_missing(self, monkeypatch):
-        """bb-wq8g: crawl_recursive re-raises CrawlerBrowserError past its broad except."""
-        import sys as _sys
-
+        """bb-wq8g: crawl_recursive refuses a browser-mode crawl when Chromium is missing."""
         from lilbee.crawler import CrawlerBrowserError
 
-        # Stub crawl4ai + the deep_crawling submodule so the test runs even
-        # when the `crawler` extra isn't installed: crawl_recursive imports
-        # both at the top of its body before _open_crawler can fire.
-        monkeypatch.setitem(_sys.modules, "crawl4ai", _mock_crawl4ai(MagicMock()))
-        monkeypatch.setitem(
-            _sys.modules, "crawl4ai.deep_crawling", MagicMock(BFSDeepCrawlStrategy=MagicMock())
-        )
-        monkeypatch.setitem(
-            _sys.modules,
-            "crawl4ai.deep_crawling.filters",
-            MagicMock(FilterChain=MagicMock(), URLPatternFilter=MagicMock()),
-        )
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
-        with pytest.raises(CrawlerBrowserError, match="Chromium"):
-            await crawl_recursive("https://example.com", max_depth=1)
+        stub = cb.StubCrawlberg()
+        with stub.installed(), pytest.raises(CrawlerBrowserError, match="Chromium"):
+            await crawl_recursive(SEED, max_depth=1)
+        assert stub.configs == []
 
     async def test_missing_crawler_extra_raises_backend_missing(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1387,7 +1268,7 @@ class TestCrawlRecursive:
         from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
-        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
         with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
             await crawl_recursive("https://example.com", max_depth=1)
 
@@ -1648,20 +1529,14 @@ class TestCrawlAndSave:
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     @patch("lilbee.crawler.runner.crawl_single")
-    async def test_max_pages_one_routes_to_single_page(
+    async def test_max_pages_one_is_a_one_page_recursive_crawl(
         self, mock_crawl_single, mock_crawl_recursive, isolated_env
     ):
-        """bb-7oh9: max_pages=1 is a single-page crawl.
-
-        crawl4ai's BFS under-counts tiny max_pages (max_pages=1 yields 0), so a
-        one-page request must route to the reliable single-URL fetch and index
-        the seed rather than nothing.
-        """
-        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
-        paths = await crawl_and_save("https://example.com", max_pages=1)
-        assert len(paths) == 1
-        mock_crawl_single.assert_awaited_once()
-        mock_crawl_recursive.assert_not_called()
+        """max_pages=1 runs the recursive crawl capped at one page."""
+        mock_crawl_recursive.return_value = [CrawlResult(url="https://example.com")]
+        await crawl_and_save("https://example.com", max_pages=1)
+        mock_crawl_single.assert_not_called()
+        assert mock_crawl_recursive.await_args.kwargs["max_pages"] == 1
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_triggers_bootstrap_when_chromium_missing(
@@ -1701,7 +1576,7 @@ class TestCrawlAndSave:
         from lilbee.crawler import CrawlerBackendError
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
-        monkeypatch.setattr("lilbee.crawler.crawl4ai_fetcher.crawler_available", lambda: False)
+        monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
         bootstrap_called: list[object] = []
 
@@ -1745,23 +1620,6 @@ class TestCrawlAndSave:
         await crawl_and_save("https://example.com")
         mock_crawl_recursive.assert_awaited_once()
         assert mock_crawl_recursive.await_args.kwargs["max_depth"] is None
-
-    @patch("lilbee.crawler.runner.crawl_single")
-    async def test_quiet_forwarded_to_crawl_single(self, mock_crawl_single, isolated_env):
-        """quiet=True is forwarded to crawl_single (depth=0 path)."""
-        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hi")
-        await crawl_and_save("https://example.com", depth=0, quiet=True)
-        mock_crawl_single.assert_awaited_once()
-        assert mock_crawl_single.await_args.args == ("https://example.com",)
-        assert mock_crawl_single.await_args.kwargs["quiet"] is True
-
-    @patch("lilbee.crawler.runner.crawl_recursive")
-    async def test_quiet_forwarded_to_crawl_recursive(self, mock_crawl_recursive, isolated_env):
-        """quiet=True is forwarded to crawl_recursive."""
-        mock_crawl_recursive.return_value = []
-        await crawl_and_save("https://example.com", depth=2, quiet=True)
-        call_kwargs = mock_crawl_recursive.call_args[1]
-        assert call_kwargs["quiet"] is True
 
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_include_subdomains_defaults_false(self, mock_crawl_recursive, isolated_env):
@@ -2022,6 +1880,18 @@ class TestCrawlAndSaveSemaphore:
         reset_services()
 
 
+@pytest.fixture
+def runner_on_crawl4ai(monkeypatch):
+    """Route the runner through the crawl4ai adapter these tests pin."""
+    from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
+
+    monkeypatch.setattr(
+        "lilbee.crawler.runner.CrawlbergFetcher",
+        lambda *, render_mode: Crawl4aiFetcher(render_mode=render_mode),
+    )
+
+
+@pytest.mark.usefixtures("runner_on_crawl4ai")
 class TestCrawlCancel:
     """Cancel path: the three stitches that were broken on the first pass."""
 
@@ -2255,6 +2125,7 @@ class TestCrawlCancel:
         strategy_instance.cancel.assert_called_once()
 
 
+@pytest.mark.usefixtures("runner_on_crawl4ai")
 class TestCrawlDispatcher:
     """Rate-limit dispatcher wiring for the recursive path."""
 
@@ -2565,28 +2436,6 @@ class TestUpdateSingleMetadata:
 class TestStreamingFlush:
     """End-to-end tests for the per-page flush contract in crawl_and_save."""
 
-    def _setup_crawl4ai(self, mock_instance):
-        mock_crawler_cls = MagicMock(return_value=mock_instance)
-        mock_mod = _mock_crawl4ai(mock_crawler_cls)
-        mock_deep = MagicMock()
-        mock_deep.BFSDeepCrawlStrategy = MagicMock()
-        mock_dispatcher_mod = MagicMock()
-        mock_dispatcher_mod.RateLimiter = MagicMock()
-        mock_dispatcher_mod.SemaphoreDispatcher = MagicMock()
-        mock_dispatcher_mod.MemoryAdaptiveDispatcher = MagicMock()
-        mock_strategy_mod = MagicMock()
-        mock_strategy_mod.AsyncHTTPCrawlerStrategy = MagicMock()
-        mock_filters_mod = MagicMock()
-        mock_filters_mod.FilterChain = MagicMock()
-        mock_filters_mod.URLPatternFilter = MagicMock()
-        return {
-            "crawl4ai": mock_mod,
-            "crawl4ai.deep_crawling": mock_deep,
-            "crawl4ai.deep_crawling.filters": mock_filters_mod,
-            "crawl4ai.async_dispatcher": mock_dispatcher_mod,
-            "crawl4ai.async_crawler_strategy": mock_strategy_mod,
-        }
-
     async def test_cancel_preserves_written_pages(self, isolated_env):
         """A cancelled recursive crawl keeps the pages it already streamed."""
         import asyncio as _asyncio
@@ -2595,20 +2444,17 @@ class TestStreamingFlush:
         cancel = threading.Event()
 
         async def _gen():
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+            yield cb.page("https://example.com/p2", "# P2")
             cancel.set()
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p3", markdown="# P3")
-            yield _make_crawl4ai_result(url="https://example.com/p4", markdown="# P4")
+            yield cb.page("https://example.com/p3", "# P3")
+            yield cb.page("https://example.com/p4", "# P4")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
+        with stub.installed():
             paths = await crawl_and_save(
                 "https://example.com", depth=2, max_pages=10, cancel=cancel
             )
@@ -2637,12 +2483,9 @@ class TestStreamingFlush:
             for i in range(1, 4):
                 call_order.append(f"yield-{i}")
                 await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+                yield cb.page(f"https://example.com/p{i}", f"# P{i}")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         real_save = _save_single_result
 
@@ -2651,7 +2494,7 @@ class TestStreamingFlush:
             return real_save(result, meta)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.crawler.save._save_single_result", side_effect=_wrapped),
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=10)
@@ -2682,16 +2525,13 @@ class TestStreamingFlush:
         save_crawl_metadata(seed_meta)
 
         async def _gen():
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# Same")
+            yield cb.page("https://example.com/p1", "# Same")
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# NewPage")
+            yield cb.page("https://example.com/p2", "# NewPage")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
+        with stub.installed():
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
         # p1 is skipped (unchanged), p2 is written.
@@ -2726,14 +2566,11 @@ class TestStreamingFlush:
         async def _gen():
             for url, md in urls_and_content:
                 await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=url, markdown=md)
+                yield cb.page(url, md)
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
+        with stub.installed():
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
 
         assert len(paths) == 3
@@ -2753,18 +2590,15 @@ class TestStreamingFlush:
         cancel = threading.Event()
 
         async def _gen():
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
             cancel.set()
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+            yield cb.page("https://example.com/p2", "# P2")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch(
                 "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
             ) as mock_sync,
@@ -2778,15 +2612,12 @@ class TestStreamingFlush:
 
         async def _gen():
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch(
                 "lilbee.crawler.runner._maybe_periodic_sync", new_callable=AsyncMock
             ) as mock_sync,
@@ -2799,12 +2630,9 @@ class TestStreamingFlush:
 
         async def _gen():
             await asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         sync_completed = asyncio.Event()
 
@@ -2822,7 +2650,7 @@ class TestStreamingFlush:
         before = set(asyncio.all_tasks())
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.data.ingest.sync", _short_sync),
         ):
             await crawl_and_save("https://example.com", depth=0)
@@ -2844,9 +2672,7 @@ class TestStreamingFlush:
         async def _short_sync(*_args, **_kwargs):
             await asyncio.sleep(0)
 
-        async def _fake_single(
-            url: str, *, quiet: bool = False, on_progress=None, render_mode=None
-        ) -> CrawlResult:
+        async def _fake_single(url: str, *, on_progress=None, render_mode=None) -> CrawlResult:
             await asyncio.sleep(0)
             return CrawlResult(url=url, markdown=f"# {url}")
 
@@ -2878,15 +2704,12 @@ class TestStreamingFlush:
         async def _gen():
             for i in range(1, total_pages + 1):
                 await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+                yield cb.page(f"https://example.com/p{i}", f"# P{i}")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=total_pages)
@@ -2903,15 +2726,12 @@ class TestStreamingFlush:
         async def _gen():
             for i in range(1, METADATA_FLUSH_INTERVAL + 1):
                 await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+                yield cb.page(f"https://example.com/p{i}", f"# P{i}")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             await crawl_and_save("https://example.com", depth=2, max_pages=METADATA_FLUSH_INTERVAL)
@@ -2927,12 +2747,9 @@ class TestStreamingFlush:
         async def _gen():
             for i in range(1, 3):
                 await _asyncio.sleep(0)
-                yield _make_crawl4ai_result(url=f"https://example.com/p{i}", markdown=f"# P{i}")
+                yield cb.page(f"https://example.com/p{i}", f"# P{i}")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         call_count = {"n": 0}
 
@@ -2943,7 +2760,7 @@ class TestStreamingFlush:
             return  # second page falls through unchanged
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.crawler.save._save_single_result", side_effect=failing_save),
         ):
             # Must not raise even though the first page write fails.
@@ -2968,13 +2785,10 @@ class TestStreamingFlush:
         import asyncio as _asyncio
 
         async def _gen():
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
             await _asyncio.sleep(0)
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         real_flush = save_crawl_metadata
         call_count = {"n": 0}
@@ -2987,7 +2801,7 @@ class TestStreamingFlush:
             real_flush(meta)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.crawler.save.save_crawl_metadata", side_effect=flush_or_fail),
         ):
             # Markdown was already written durably; the final flush must not
@@ -3004,18 +2818,15 @@ class TestStreamingFlush:
         cancel = threading.Event()
 
         async def _gen():
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
             cancel.set()
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+            yield cb.page("https://example.com/p2", "# P2")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch(
                 "lilbee.crawler.save.save_crawl_metadata", wraps=save_crawl_metadata
             ) as spy_flush,
@@ -3034,15 +2845,12 @@ class TestStreamingFlush:
         async def _gen():
             await _asyncio.sleep(0)
             # Empty markdown is skipped by _save_single_result
-            yield _make_crawl4ai_result(url="https://example.com/empty", markdown="")
+            yield cb.page("https://example.com/empty", "")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         with (
-            inject_modules(self._setup_crawl4ai(mock_instance)),
+            stub.installed(),
             patch("lilbee.crawler.save.save_crawl_metadata") as mock_flush,
         ):
             paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
@@ -3057,15 +2865,12 @@ class TestStreamingFlush:
         cancel = threading.Event()
 
         async def _gen():
-            yield _make_crawl4ai_result(url="https://example.com/p1", markdown="# P1")
+            yield cb.page("https://example.com/p1", "# P1")
             cancel.set()
             await _asyncio.sleep(0)
-            yield _make_crawl4ai_result(url="https://example.com/p2", markdown="# P2")
+            yield cb.page("https://example.com/p2", "# P2")
 
-        mock_instance = AsyncMock()
-        mock_instance.arun = AsyncMock(return_value=_gen())
-        mock_instance.__aenter__ = AsyncMock(return_value=mock_instance)
-        mock_instance.__aexit__ = AsyncMock(return_value=False)
+        stub = cb.StubCrawlberg(_gen)
 
         done_events: list = []
 
@@ -3073,7 +2878,7 @@ class TestStreamingFlush:
             if event_type == EventType.CRAWL_DONE:
                 done_events.append(data)
 
-        with inject_modules(self._setup_crawl4ai(mock_instance)):
+        with stub.installed():
             paths = await crawl_and_save(
                 "https://example.com",
                 depth=2,
@@ -3179,3 +2984,30 @@ class TestChromiumBootstrapTermination:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert proc.terminated  # the orphaned install was terminated
+
+
+class TestCrawl4aiAdapterEdges:
+    """crawl4ai adapter paths the runner no longer reaches."""
+
+    async def test_browser_mode_without_chromium_raises(self, monkeypatch):
+        from lilbee.crawler.crawl4ai_fetcher import _open_crawler
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: False)
+        with pytest.raises(CrawlerBrowserError, match="Chromium"):
+            async with _open_crawler(render_mode=CrawlRenderMode.BROWSER):
+                pass
+
+    async def test_single_result_stream_yields_it(self):
+        from lilbee.crawler.crawl4ai_fetcher import _iter_crawl_stream
+
+        result = _make_crawl4ai_result()
+        assert [item async for item in _iter_crawl_stream(result)] == [result]
+
+    def test_crawler_available_probes_crawl4ai(self):
+        from lilbee.crawler import crawl4ai_fetcher
+
+        crawl4ai_fetcher.crawler_available.cache_clear()
+        with patch("importlib.util.find_spec", return_value=None) as find_spec:
+            assert crawl4ai_fetcher.crawler_available() is False
+        crawl4ai_fetcher.crawler_available.cache_clear()
+        find_spec.assert_called_once_with("crawl4ai")

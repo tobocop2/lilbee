@@ -21,8 +21,12 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, save, sitemap
-from lilbee.crawler.bootstrap import CrawlerBrowserError
-from lilbee.crawler.crawl4ai_fetcher import Crawl4aiFetcher
+from lilbee.crawler.bootstrap import (
+    CHROMIUM_MISSING_MESSAGE,
+    ChromiumMissingError,
+    CrawlerBrowserError,
+)
+from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
 from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
     _drain_page_stream,
@@ -95,15 +99,22 @@ def _resolve_page_limit(max_pages: int | None) -> int | None:
     return cfg.crawl_safety_max_pages
 
 
-def _looks_like_missing_chromium(exc: BaseException) -> bool:
-    """Heuristic for the Playwright "Executable doesn't exist" launch failure."""
-    return "Executable doesn't exist" in str(exc)
+async def _fetch_single_page(url: str, render_mode: CrawlRenderMode) -> CrawlResult:
+    """One single-URL fetch; any failure but a missing browser becomes a failed result."""
+    try:
+        async with CrawlbergFetcher(render_mode=render_mode) as fetcher:
+            page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
+        return _fetched_to_result(page)
+    except CrawlerBrowserError:
+        raise
+    except Exception as exc:
+        log.warning("Failed to crawl %s: %s", url, exc)
+        return CrawlResult(url=url, success=False, error=str(exc))
 
 
 async def crawl_single(
     url: str,
     *,
-    quiet: bool = False,
     on_progress: DetailedProgressCallback | None = None,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
 ) -> CrawlResult:
@@ -114,10 +125,8 @@ async def crawl_single(
     and passes the canonical value down.
 
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
-    On a "Chromium executable missing" launch failure, re-runs the
-    bootstrap once and retries -- ``chromium_installed()`` can return True
-    when the wrong revision lives in the cache root, in which case the
-    launch fails the first attempt.
+    When the headless Chromium shell is missing at launch, runs the bootstrap
+    once and retries.
 
     ``on_progress`` receives a setup_start/setup_done bracket around opening
     the crawler so the first crawl's browser warmup is visible rather than a
@@ -136,30 +145,16 @@ async def crawl_single(
     emit_setup = render_mode is CrawlRenderMode.BROWSER
     if on_progress is not None and emit_setup:
         on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
+        on_progress(
+            EventType.SETUP_DONE,
+            SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
+        )
     try:
-        async with Crawl4aiFetcher(quiet=quiet, render_mode=render_mode) as fetcher:
-            if on_progress is not None and emit_setup:
-                on_progress(
-                    EventType.SETUP_DONE,
-                    SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
-                )
-            page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
-        return _fetched_to_result(page)
-    except CrawlerBrowserError:
-        raise
-    except Exception as exc:
-        if _looks_like_missing_chromium(exc):
-            log.warning("Chromium missing for %s; bootstrapping then retrying", url)
-            await bootstrap.bootstrap_chromium(on_progress=None)
-            try:
-                async with Crawl4aiFetcher(quiet=quiet, render_mode=render_mode) as fetcher:
-                    page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
-                return _fetched_to_result(page)
-            except Exception as retry_exc:
-                log.warning("Crawl retry failed for %s: %s", url, retry_exc)
-                return CrawlResult(url=url, success=False, error=str(retry_exc))
-        log.warning("Failed to crawl %s: %s", url, exc)
-        return CrawlResult(url=url, success=False, error=str(exc))
+        return await _fetch_single_page(url, render_mode)
+    except ChromiumMissingError:
+        log.warning("Chromium missing for %s; bootstrapping then retrying", url)
+        await bootstrap.bootstrap_chromium(on_progress=None)
+        return await _fetch_single_page(url, render_mode)
 
 
 async def crawl_recursive(
@@ -169,7 +164,6 @@ async def crawl_recursive(
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
     *,
-    quiet: bool = False,
     include_subdomains: bool = False,
     on_result: Callable[[CrawlResult], Any] | None = None,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
@@ -209,14 +203,9 @@ async def crawl_recursive(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
 
-    # Fail fast before pulling in backend submodules so callers get a clean
-    # CrawlerBrowserError instead of a Playwright install banner. HTTP mode
-    # needs no browser, so the guard only applies to browser-mode crawls.
+    # HTTP mode needs no browser, so the guard only applies to browser-mode crawls.
     if render_mode is CrawlRenderMode.BROWSER and not bootstrap.chromium_installed():
-        raise CrawlerBrowserError(
-            "Playwright Chromium browser not installed. "
-            "Run 'uv run playwright install chromium' to enable browser-mode crawling."
-        )
+        raise ChromiumMissingError(CHROMIUM_MISSING_MESSAGE)
 
     # Best-effort sitemap lookup so the TUI / CLI can render a real page-count
     # denominator instead of [n/-1]. Falls back to CRAWL_TOTAL_UNKNOWN on any
@@ -237,17 +226,14 @@ async def crawl_recursive(
     if on_progress is not None and emit_setup:
         on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
-        async with Crawl4aiFetcher(quiet=quiet, render_mode=render_mode) as fetcher:
+        async with CrawlbergFetcher(render_mode=render_mode) as fetcher:
             if on_progress is not None and emit_setup:
                 on_progress(
                     EventType.SETUP_DONE,
                     SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
                 )
-            # Hold an explicit reference to the generator so we can aclose
-            # it deterministically on break. Without this, the generator's
-            # finally block (which also short-circuits the BFS strategy) only
-            # runs at gc time, which is too late for callers that expect the
-            # strategy to stop the moment we hit ``max_pages``.
+            # The explicit reference lets the stream close, and the crawl stop,
+            # the moment the drain breaks on max_pages or cancel.
             page_stream = fetcher.fetch_recursive(
                 url,
                 depth=depth,
@@ -374,7 +360,6 @@ async def _run_crawl(
     max_pages: int | None,
     on_progress: DetailedProgressCallback | None,
     cancel: threading.Event | None,
-    quiet: bool,
     include_subdomains: bool,
     flush_page: Callable[[Any], Awaitable[Path | None]],
     render_mode: CrawlRenderMode,
@@ -385,16 +370,10 @@ async def _run_crawl(
     ``cfg.crawl_max_depth`` of 0 routes to the single-page path instead of
     blowing up inside the recursive resolver.
 
-    A resolved page limit of 1 is also a single-page crawl: crawl4ai's BFS
-    under-counts tiny ``max_pages`` (``max_pages=1`` yields 0 pages), so route
-    the "at most one page" request to the reliable single-URL fetch.
     """
     depth = _resolve_depth(depth, cfg.crawl_max_depth)
-    pages = _resolve_page_limit(max_pages)
-    if depth == 0 or pages == 1:
-        result = await crawl_single(
-            url, quiet=quiet, on_progress=on_progress, render_mode=render_mode
-        )
+    if depth == 0:
+        result = await crawl_single(url, on_progress=on_progress, render_mode=render_mode)
         try:
             await flush_page(result)
         except OSError:
@@ -409,7 +388,6 @@ async def _run_crawl(
         max_pages=max_pages,
         on_progress=on_progress,
         cancel=cancel,
-        quiet=quiet,
         include_subdomains=include_subdomains,
         on_result=flush_page,
         render_mode=render_mode,
@@ -424,7 +402,6 @@ async def crawl_and_save(
     max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
     cancel: threading.Event | None = None,
-    quiet: bool = False,
     include_subdomains: bool = False,
     render_mode: CrawlRenderMode | None = None,
 ) -> list[Path]:
@@ -469,7 +446,6 @@ async def crawl_and_save(
             max_pages=max_pages,
             on_progress=on_progress,
             cancel=cancel,
-            quiet=quiet,
             include_subdomains=include_subdomains,
             flush_page=flush_page,
             render_mode=mode,
