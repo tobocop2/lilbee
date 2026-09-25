@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 
 import pytest
 import yaml
@@ -415,12 +416,70 @@ def test_an_html_heading_inline_mid_paragraph_is_demoted():
         "inline code `<h2>` stays",
         "<header>not a heading</header>",
         "<hr>",
+        "<h2o>",
     ],
-    ids=["fenced-code-block", "inline-code-span", "header-tag", "hr-tag"],
+    ids=["fenced-code-block", "inline-code-span", "header-tag", "hr-tag", "h2o-tag"],
 )
 def test_an_html_tag_that_is_not_a_heading_is_left_as_written(content):
     markdown = session_markdown(_session(_assistant(content)))
     assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "- a <h2\n  class=x>y</h2>",
+            "- a <h4\n  class=x>y</h4>",
+        ),
+        (
+            "> a <h2\n> class=x>y</h2>",
+            "> a <h4\n> class=x>y</h4>",
+        ),
+    ],
+    ids=["list-item", "blockquote"],
+)
+def test_a_tag_split_across_a_container_continuation_line_does_not_crash(content, expected):
+    """A list or blockquote strips its own marker from a continuation line before the
+    parser sees it, so a tag opening on one line and closing on the next must be found
+    in the raw source, not in the parser's de-prefixed copy of it."""
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_a_code_span_before_a_real_heading_is_left_alone_and_the_heading_is_demoted():
+    content = "Use `<h2>` like <h2>Assistant</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\nUse `<h2>` like <h4>Assistant</h4>\n")
+
+
+def test_an_unterminated_backtick_does_not_stop_a_later_real_tag_from_demoting():
+    content = "a ` <h2>x</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\na ` <h4>x</h4>\n")
+
+
+def test_a_fake_heading_inside_a_code_span_with_a_nested_backtick_run_stays_written():
+    content = "`<h2>a``b<h2>` <h2>real</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\n`<h2>a``b<h2>` <h4>real</h4>\n")
+
+
+def test_two_identical_tags_in_one_span_are_each_demoted():
+    content = "a <h2>x</h2> <h2>x</h2> <h2>y</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\na <h4>x</h4> <h4>x</h4> <h4>y</h4>\n")
+
+
+def test_a_large_adversarial_html_block_demotes_in_well_under_a_second():
+    """A block of many unclosed ``<h1 `` starts must not rescan to a `>` that never
+    comes; a quadratic regex took 14s on 160KB of this shape before the fix."""
+    content = "<h1 " * 40_000
+    start = time.perf_counter()
+    markdown = session_markdown(_session(_assistant(content)))
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+    assert "<h3 " in markdown
 
 
 def test_the_sources_list_follows_the_closed_fence():

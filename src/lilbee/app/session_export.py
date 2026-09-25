@@ -38,10 +38,9 @@ _MAX_HEADING_LEVEL = 6
 _ESCAPE = "\\"
 _LINE_BREAK_RE = re.compile(r"\r\n?")
 _ASCII_PUNCTUATION = frozenset(string.punctuation)
-# An HTML heading tag, open or close, any case, with or without attributes:
-# <h2>, </h2>, <H3 class="x">. ``header`` and ``hr`` never match, because a
-# digit must follow the ``h`` directly.
-_HTML_HEADING_RE = re.compile(r"<(?P<slash>/?)(?P<tag>[Hh])(?P<level>[1-6])(?P<rest>[^>]*)>")
+# An HTML heading's ``<h``/``</h`` plus level; a boundary after the digit is what
+# excludes ``<header>``, ``<hr>`` and ``<h2o>``.
+_HTML_HEADING_RE = re.compile(r"<(?P<slash>/?)(?P<tag>[Hh])(?P<level>[1-6])(?=[\s/>])")
 # An ordered-list marker at the start of a name, as in ``2. notes.md``.
 _LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
 
@@ -158,13 +157,13 @@ def _nest_heading(lines: list[str], markup: str, start: int, end: int) -> None:
 
 
 def _demote_html_tag(match: re.Match[str]) -> str:
-    """*match*, an HTML heading tag, with its level raised by the turn offset."""
+    """*match*, an HTML heading tag's opening chars, with its level raised by the turn offset."""
     level = min(int(match["level"]) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
-    return f"<{match['slash']}{match['tag']}{level}{match['rest']}>"
+    return f"<{match['slash']}{match['tag']}{level}"
 
 
 def _demote_html_block(lines: list[str], start: int, end: int) -> None:
-    """Rewrite any HTML heading tag in the raw HTML block spanning *start* to *end*."""
+    """Rewrite any HTML heading tag's level in the raw HTML block spanning *start* to *end*."""
     joined = "\n".join(lines[start:end])
     lines[start:end] = _HTML_HEADING_RE.sub(_demote_html_tag, joined).split("\n")
 
@@ -172,27 +171,47 @@ def _demote_html_block(lines: list[str], start: int, end: int) -> None:
 def _demote_html_inline(
     lines: list[str], children: list[Token] | None, start: int, end: int
 ) -> None:
-    """Rewrite each HTML heading tag among *children* within the span *start* to *end*.
-
-    Only tags the parser tokenized as real HTML are candidates, so the same
-    text inside a code span, which the parser tokenizes separately, is never
-    a match. Children are walked in source order and each tag is located from
-    where the previous one ended, so two identical tags in one span each
-    rewrite their own occurrence.
-    """
-    tags = [child.content for child in children or [] if child.type == "html_inline"]
-    if not tags:
+    """Rewrite each HTML heading tag's level within the inline span *start* to *end*."""
+    if not any(child.type == "html_inline" for child in children or ()):
         return
     joined = "\n".join(lines[start:end])
-    cursor = 0
-    pieces: list[str] = []
-    for tag in tags:
-        index = joined.index(tag, cursor)
-        pieces.append(joined[cursor:index])
-        pieces.append(_HTML_HEADING_RE.sub(_demote_html_tag, tag))
-        cursor = index + len(tag)
-    pieces.append(joined[cursor:])
-    lines[start:end] = "".join(pieces).split("\n")
+    masked = _code_span_ranges(joined)
+
+    def _demote_unless_masked(match: re.Match[str]) -> str:
+        if any(lo <= match.start() < hi for lo, hi in masked):
+            return match.group()
+        return _demote_html_tag(match)
+
+    lines[start:end] = _HTML_HEADING_RE.sub(_demote_unless_masked, joined).split("\n")
+
+
+def _code_span_ranges(text: str) -> list[tuple[int, int]]:
+    """The ``(start, end)`` character ranges of *text* a backtick code span covers."""
+    ranges: list[tuple[int, int]] = []
+    i, length = 0, len(text)
+    while i < length:
+        if text[i] != "`":
+            i += 1
+            continue
+        run_start = i
+        while i < length and text[i] == "`":
+            i += 1
+        fence = text[run_start:i]
+        probe = i
+        while True:
+            close = text.find(fence, probe)
+            if close == -1:
+                break
+            close_end = close + len(fence)
+            if close_end < length and text[close_end] == "`":
+                probe = close_end
+                while probe < length and text[probe] == "`":
+                    probe += 1
+                continue
+            ranges.append((run_start, close_end))
+            i = close_end
+            break
+    return ranges
 
 
 def default_export_name(meta: SessionMeta) -> str:
