@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import string
-from bisect import bisect_right
+from collections.abc import Iterator
 from functools import cache
 from pathlib import Path
 
@@ -40,6 +40,8 @@ _ATX_MARKER = "#"
 _TURN_HEADING_LEVEL = 2
 _MAX_HEADING_LEVEL = 6
 _ESCAPE = "\\"
+# The only characters a markdown blank line may hold.
+_MARKDOWN_BLANK = " \t"
 _LINE_BREAK_RE = re.compile(r"\r\n?")
 _ASCII_PUNCTUATION = frozenset(string.punctuation)
 # An HTML heading's ``<h``/``</h`` plus level; a boundary after the digit (or the
@@ -153,28 +155,31 @@ def _nest_headings(text: str) -> str:
     written, and an HTML heading tag inside a fence or an inline code span
     stays as written too. A ``#`` heading drops two levels, to at most six;
     an underlined heading cannot go below level two, so its underline is
-    escaped to text. An HTML heading tag, open or close, drops the same two
-    levels, independently of whether it is ever closed.
+    escaped to text, and a blank line ends that text where the heading
+    ended. An HTML heading tag, open or close, drops the same two levels,
+    independently of whether it is ever closed.
     """
     lines = text.split("\n")
-    for token in _heading_parser().parse(text):
-        if token.type == "heading_open" and token.map:
-            _nest_heading(lines, token.markup, *token.map)
+    tokens = _heading_parser().parse(text)
+    paragraph_ends: list[tuple[int, str]] = []
+    for token in tokens:
+        if token.type == "heading_open" and token.map and token.markup.startswith(_ATX_MARKER):
+            level = min(len(token.markup) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
+            start = token.map[0]
+            lines[start] = lines[start].replace(token.markup, _ATX_MARKER * level, 1)
+        elif token.type == "heading_open" and token.map:
+            underline = token.map[1] - 1
+            container, _, rest = lines[underline].partition(token.markup)
+            lines[underline] = container + _ESCAPE + token.markup + rest
+            if token.map[1] < len(lines) and lines[token.map[1]].strip(_MARKDOWN_BLANK):
+                paragraph_ends.append((underline, container.rstrip()))
         elif token.type == "html_block" and token.map:
             _demote_html_block(lines, *token.map)
         elif token.type == "inline" and token.map:
             _demote_html_inline(lines, token.content, token.children, *token.map)
+    for underline, blank_line in paragraph_ends:
+        lines[underline] += "\n" + blank_line
     return "\n".join(lines)
-
-
-def _nest_heading(lines: list[str], markup: str, start: int, end: int) -> None:
-    """Rewrite the heading spanning lines *start* to *end* (exclusive) in place."""
-    if markup.startswith(_ATX_MARKER):
-        level = min(len(markup) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
-        lines[start] = lines[start].replace(markup, _ATX_MARKER * level, 1)
-    else:
-        underline = end - 1
-        lines[underline] = lines[underline].replace(markup, _ESCAPE + markup, 1)
 
 
 def _demote_html_tag(match: re.Match[str]) -> str:
@@ -193,72 +198,34 @@ def _demote_html_inline(
     lines: list[str], content: str, children: list[Token] | None, start: int, end: int
 ) -> None:
     """Rewrite each real HTML heading tag's level within the inline span *start* to *end*."""
-    spans = [
-        child.meta
-        for child in children or ()
-        if child.type == "html_inline"
-        and child.meta
-        and _HTML_HEADING_RE.search(content[child.meta["start"] : child.meta["end"]])
-    ]
+    spans = [child.meta for child in children or () if child.type == "html_inline" and child.meta]
     if not spans:
         return
-    raw_lines = lines[start:end]
-    content_lines = content.split("\n")
-    mapping = _content_to_raw_map(raw_lines, content_lines)
-    if mapping is None:
-        # Whitespace such as a tab, \f, \v or NBSP defeats the mapping: demote every look-alike.
-        joined = "\n".join(raw_lines)
-        lines[start:end] = _HTML_HEADING_RE.sub(_demote_html_tag, joined).split("\n")
+    real = _inside_spans(_HTML_HEADING_RE.finditer(content), spans)
+    if not any(real):
         return
-    content_starts, deltas = mapping
-    raw = "\n".join(raw_lines)
+    raw = "\n".join(lines[start:end])
     pieces: list[str] = []
     cursor = 0
-    for span in spans:
-        raw_start = _map_content_pos(span["start"], content_starts, deltas)
-        raw_end = _map_content_pos(span["end"], content_starts, deltas)
-        pieces.append(raw[cursor:raw_start])
-        pieces.append(_HTML_HEADING_RE.sub(_demote_html_tag, raw[raw_start:raw_end]))
-        cursor = raw_end
+    # The parser only strips container markers and whitespace, so the matches pair up in order.
+    for match, is_real in zip(_HTML_HEADING_RE.finditer(raw), real, strict=True):
+        if is_real:
+            pieces += [raw[cursor : match.start()], _demote_html_tag(match)]
+            cursor = match.end()
     pieces.append(raw[cursor:])
     lines[start:end] = "".join(pieces).split("\n")
 
 
-def _content_to_raw_map(
-    raw_lines: list[str], content_lines: list[str]
-) -> tuple[list[int], list[int]] | None:
-    """Each content line's start offset and its raw-offset delta, or None if a line isn't mapped."""
-    if len(raw_lines) != len(content_lines):
-        return None
-    content_starts = []
-    deltas = []
-    content_pos = 0
-    raw_pos = 0
-    for raw_line, content_line in zip(raw_lines, content_lines, strict=True):
-        width = _line_prefix_width(raw_line, content_line)
-        if width is None:
-            return None
-        content_starts.append(content_pos)
-        deltas.append(raw_pos + width - content_pos)
-        content_pos += len(content_line) + 1
-        raw_pos += len(raw_line) + 1
-    return content_starts, deltas
-
-
-def _line_prefix_width(raw_line: str, content_line: str) -> int | None:
-    """*content_line*'s offset into *raw_line*, which may also end in spaces and tabs."""
-    if raw_line.endswith(content_line):
-        return len(raw_line) - len(content_line)
-    trimmed = raw_line.rstrip(" \t")
-    if trimmed.endswith(content_line):
-        return len(trimmed) - len(content_line)
-    return None
-
-
-def _map_content_pos(pos: int, content_starts: list[int], deltas: list[int]) -> int:
-    """*pos* in the joined content lines as the same position in the joined raw lines."""
-    line = bisect_right(content_starts, pos) - 1
-    return pos + deltas[line]
+def _inside_spans(matches: Iterator[re.Match[str]], spans: list[dict[str, int]]) -> list[bool]:
+    """Whether each of *matches*, in order, starts inside one of the ordered *spans*."""
+    inside = []
+    spans_left = iter(spans)
+    span = next(spans_left, None)
+    for match in matches:
+        while span is not None and span["end"] <= match.start():
+            span = next(spans_left, None)
+        inside.append(span is not None and span["start"] <= match.start())
+    return inside
 
 
 def default_export_name(meta: SessionMeta) -> str:
