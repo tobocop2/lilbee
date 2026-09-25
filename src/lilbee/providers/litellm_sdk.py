@@ -210,11 +210,13 @@ def _extract_tool_call_delta(call: Any, *, fallback_index: int) -> SdkToolCallDe
     )
 
 
+_UV_EXCLUDES_URL = "https://lilbee.sh/uv-excludes.txt"
+
 LITELLM_MISSING_MSG = (
     "Remote and API models need the lilbee[litellm] extra. If you installed lilbee with "
     "uv tool install, run your install command again with litellm added to the extras, "
-    "and keep --excludes excludes.txt if you use the crawler. If you installed lilbee "
-    "with pip, run: pip install 'lilbee[litellm]'. If the crawler extra is also "
+    f"and keep --excludes {_UV_EXCLUDES_URL} if you use the crawler. If you installed "
+    "lilbee with pip, run: pip install 'lilbee[litellm]'. If the crawler extra is also "
     "installed, lilbee then asks you to remove the unclecode-litellm fork and shows how."
 )
 
@@ -226,9 +228,9 @@ _LITELLM_FORK_MSG = (
     "Both litellm and unclecode-litellm are installed. unclecode-litellm is a fork of "
     "litellm that crawl4ai requires, and it writes into the same litellm package, so "
     "remote and API models cannot load reliably. If you installed lilbee with "
-    "uv tool install, write unclecode-litellm into a file excludes.txt, then run your "
-    "install command again with --reinstall --excludes excludes.txt added. If you "
-    "installed lilbee with pip, run: pip uninstall -y unclecode-litellm && "
+    "uv tool install, run your install command again with --reinstall --excludes "
+    f"{_UV_EXCLUDES_URL} added. If you installed lilbee with pip, run: "
+    "pip uninstall -y unclecode-litellm && "
     "pip install --force-reinstall --no-deps litellm=={version}"
 )
 
