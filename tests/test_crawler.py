@@ -431,29 +431,6 @@ class TestCrawlSingle:
         assert result.success
         assert result.markdown == "# Test"
 
-    async def test_emits_setup_bracket_around_warmup(self):
-        """The browser warmup is bracketed by setup events so the Task Center
-        shows a 'preparing crawler' stage instead of a silent stall."""
-        events: list[tuple] = []
-        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
-            result = await crawl_single(SEED, on_progress=lambda e, d: events.append((e, d)))
-        assert result.success
-        setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
-        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
-
-    async def test_http_mode_omits_setup_bracket(self):
-        """HTTP mode opens a browserless client, so no 'browser' setup stage fires."""
-        events: list[tuple] = []
-        with cb.StubCrawlberg([cb.page(SEED, "# Test", depth=0)]).installed():
-            result = await crawl_single(
-                SEED,
-                render_mode=CrawlRenderMode.HTTP,
-                on_progress=lambda e, d: events.append((e, d)),
-            )
-        assert result.success
-        setup_types = [e for e, _ in events if e in (EventType.SETUP_START, EventType.SETUP_DONE)]
-        assert setup_types == []
-
     async def test_failure(self):
         with cb.StubCrawlberg([cb.error(SEED, "Connection refused")]).installed():
             result = await crawl_single(SEED)
@@ -1092,12 +1069,11 @@ class TestCrawlRecursive:
         page_events = [c for c in progress_calls if c[0] == EventType.CRAWL_PAGE]
         assert [c[1].current for c in page_events] == [1, 2]
         assert all(c[1].total == CRAWL_TOTAL_UNKNOWN for c in page_events)
-        # The browser warmup is bracketed by setup events so the Task Center
-        # shows a "preparing crawler" stage instead of a silent stall.
+        # Setup events mean a Chromium install; with the shell present there is none.
         setup_types = [
             e for e, _ in progress_calls if e in (EventType.SETUP_START, EventType.SETUP_DONE)
         ]
-        assert setup_types == [EventType.SETUP_START, EventType.SETUP_DONE]
+        assert setup_types == []
 
     async def test_emits_events_before_stream_exhausted(self):
         """CRAWL_PAGE fires per page as it arrives, not only after the full list."""
