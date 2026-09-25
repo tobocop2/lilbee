@@ -211,7 +211,7 @@ class FleetBody(Widget):
                 help_icon.tooltip = msg.FLEET_HELP_TOOLTIP
                 yield help_icon
             yield GpuFleetPanel()
-            yield Static("", id="placement-skipped")
+            yield Static("", id="placement-skipped", markup=False)
             yield Vertical(id="placement-editor")
             with Horizontal(id="placement-commands"):
                 yield FleetPill(msg.FLEET_CMD_PREVIEW, id=_CMD_PREVIEW, classes="cmd-pill")

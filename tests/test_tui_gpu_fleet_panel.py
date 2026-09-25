@@ -611,12 +611,15 @@ async def test_badge_without_separator(monkeypatch: pytest.MonkeyPatch) -> None:
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         p = app.query_one(GpuFleetPanel)
-        p.set_devices([_make_device(0)], labels={0: "CUDA0"}, roles={0: "chat"})
+        p.set_devices([_make_device(0)], labels={0: "CUDA0"}, roles={0: "rerank"})
         p._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
         rendered = str(p.render())
-        assert "chat" in rendered
+    assert rendered.rstrip().endswith("G  rerank")
+    badge = pm._badge_content("rerank", "#111111", "#222222")
+    assert badge.plain == "rerank"
+    assert [(span.start, span.end, str(span.style)) for span in badge.spans] == [(0, 6, "#111111")]
 
 
 @pytest.mark.asyncio

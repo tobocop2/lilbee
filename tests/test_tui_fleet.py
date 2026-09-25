@@ -148,6 +148,30 @@ async def test_skipped_role_shows_not_downloaded_note(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["local/[b]eta-model.gguf", "org/q[red]x.gguf"])
+async def test_skipped_note_shows_a_bracketed_model_name_as_written(monkeypatch, model):
+    """The skipped model comes from the configured ref; ``[b]`` must not restyle it."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import SkippedRole
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    view = replace(
+        _make_view_with_skipped(), skipped_not_installed=(SkippedRole(WorkerRole.CHAT, model),)
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        rendered = str(app.screen.query_one("#placement-skipped", Static).render())
+    assert f"chat: {fbm._clean_model_name(model)} not downloaded" in rendered
+
+
+@pytest.mark.asyncio
 async def test_no_skipped_note_when_all_models_installed(monkeypatch):
     """With every configured model installed the note stays hidden."""
     from textual.widgets import Static
