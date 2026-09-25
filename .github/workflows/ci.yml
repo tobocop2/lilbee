@@ -386,7 +386,7 @@ jobs:
         id: pw-rev
         shell: bash
         run: |
-          revision="$(uv run python -c 'import json, pathlib, playwright; p = pathlib.Path(playwright.__file__).parent / "driver" / "package" / "browsers.json"; print(next(b["revision"] for b in json.loads(p.read_text())["browsers"] if b["name"] == "chromium-headless-shell"))')"
+          revision="$(uv run python -c 'import sys; from lilbee.crawler.bootstrap import _expected_chromium_revision as expected; revision = expected(); sys.exit("Playwright names no headless shell revision") if revision is None else print(revision)')"
           echo "revision=${revision}" >> "${GITHUB_OUTPUT}"
 
       - name: Restore Playwright cache
