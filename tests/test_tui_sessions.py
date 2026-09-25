@@ -766,6 +766,55 @@ async def test_rename_cancel_leaves_title(sessions):
         assert drawer.is_mounted
 
 
+async def test_rename_cancel_clears_a_filter_left_over_from_before_the_rename(sessions):
+    """bb-huhr3 repro: filter to one row, rename it, clear the box, cancel.
+
+    The box ends up empty, so the list must show every row again, not stay
+    narrowed to the filter text the rename overwrote. Cancels via
+    action_close() directly, the same way test_rename_cancel_leaves_title
+    does: a real Escape keypress never reaches the drawer here, a separate
+    pre-existing gap where the chat screen's own Escape binding wins first.
+    """
+    _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        for ch in "Gam":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert len(drawer.query(SessionRow)) == 1
+        field = await _start_rename(pilot, drawer, "Gamma")
+        await pilot.press("end", "ctrl+u")
+        await pilot.pause()
+        assert field.value == ""
+        drawer.query_one(SessionListPanel).action_close()  # cancels the rename, does not close
+        await pilot.pause()
+        assert field.value == ""
+        rows = drawer.query(SessionRow)
+        assert len(rows) == 2, "an empty box must show every row, not the pre-rename filter"
+
+
+async def test_rename_commit_clears_a_filter_left_over_from_before_the_rename(sessions):
+    """Enter must drop the stale filter too, not just Escape (bb-huhr3)."""
+    _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        for ch in "Gam":
+            await pilot.press(ch)
+        await pilot.pause()
+        assert len(drawer.query(SessionRow)) == 1
+        await _start_rename(pilot, drawer, "Gamma")
+        await pilot.press("end", "ctrl+u")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        rows = drawer.query(SessionRow)
+        assert len(rows) == 2, "an empty box must show every row, not the pre-rename filter"
+
+
 async def test_delete_confirmed_removes_session(sessions):
     session_id = _seed(sessions, "Delete me")
     app = LilbeeApp()
