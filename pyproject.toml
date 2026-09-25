@@ -79,6 +79,12 @@ dependencies = [
     # gitignore-syntax matching for .lilbeeignore. Already present transitively;
     # the floor is where the non-deprecated "gitignore" pattern factory lands.
     "pathspec>=1.1.1",
+    # Chat export pairs parsed heading tags with the raw lines and raises on a
+    # mismatch, so a parser change can crash the export. Already present
+    # transitively through rich and textual; the floor is the version the
+    # export was fuzz-tested against, and the ceiling keeps it off the next
+    # major.
+    "markdown-it-py>=4.2.0,<5",
 ]
 
 [project.optional-dependencies]
