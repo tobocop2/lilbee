@@ -9,12 +9,10 @@ import ipaddress
 import json
 import logging
 import os
-import threading
-from collections.abc import AsyncGenerator, Iterator
-from contextlib import aclosing, contextmanager
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from lilbee.core.config.enums import CrawlRenderMode
@@ -239,57 +237,16 @@ def _crawl_config(render_mode: CrawlRenderMode, spec: _CrawlSpec) -> crawlberg.C
     )
 
 
-def _headless_shell() -> Path:
-    """Playwright's headless shell, which browser mode launches instead of a system Chrome."""
+def _point_at_headless_shell() -> None:
+    """Make every crawlberg browser launch in this process use Playwright's headless shell."""
     executable = bootstrap.headless_shell_executable()
     if executable is None:
         raise ChromiumMissingError(CHROMIUM_MISSING_MESSAGE)
-    return executable
-
-
-class _ChromeEnv:
-    """Sets ``CHROME`` while any browser crawl runs and restores it after the last one.
-
-    crawlberg reads the variable at every browser launch and takes no path argument,
-    so it stays set for the whole of each crawl, including crawls that overlap.
-    """
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._crawls = 0
-        self._saved: str | None = None
-
-    @contextmanager
-    def pointing_at(self, executable: Path | None) -> Iterator[None]:
-        """Point ``CHROME`` at *executable* for the block; ``None`` leaves it alone."""
-        if executable is None:
-            yield
-            return
-        self._enter(executable)
-        try:
-            yield
-        finally:
-            self._exit()
-
-    def _enter(self, executable: Path) -> None:
-        with self._lock:
-            if self._crawls == 0:
-                self._saved = os.environ.get(_CHROME_ENV)
-            self._crawls += 1
-            os.environ[_CHROME_ENV] = str(executable)
-
-    def _exit(self) -> None:
-        with self._lock:
-            self._crawls -= 1
-            if self._crawls > 0:
-                return
-            if self._saved is None:
-                os.environ.pop(_CHROME_ENV, None)
-            else:
-                os.environ[_CHROME_ENV] = self._saved
-
-
-_chrome_env = _ChromeEnv()
+    # Never removed: crawlberg launches Chrome after a crawl ends (xberg-io/crawlberg#77)
+    # and takes no binary path until xberg-io/crawlberg#79. Written only when it differs,
+    # since crawlberg may read it from another thread at any time.
+    if os.environ.get(_CHROME_ENV) != str(executable):
+        os.environ[_CHROME_ENV] = str(executable)
 
 
 def _parse_event(raw: object) -> _Event | None:
@@ -314,7 +271,6 @@ async def _events(
     config: crawlberg.CrawlConfig,
     seed_url: str,
     cancel: CancelToken | None,
-    chrome: Path | None,
 ) -> AsyncGenerator[_Event, None]:
     """Stream one crawl's page and error events until it completes or *cancel* is set.
 
@@ -323,17 +279,16 @@ async def _events(
     """
     import crawlberg
 
-    with _chrome_env.pointing_at(chrome):
-        engine = crawlberg.create_engine(config)
-        # crawl_stream is an async generator; its stub types it as an AsyncIterator.
-        stream = cast(AsyncGenerator[object, None], crawlberg.crawl_stream(engine, seed_url))
-        async with aclosing(stream):
-            async for raw in stream:
-                if cancel is not None and cancel.is_set():
-                    return
-                event = _parse_event(raw)
-                if event is not None:
-                    yield event
+    engine = crawlberg.create_engine(config)
+    # crawl_stream is an async generator; its stub types it as an AsyncIterator.
+    stream = cast(AsyncGenerator[object, None], crawlberg.crawl_stream(engine, seed_url))
+    async with aclosing(stream):
+        async for raw in stream:
+            if cancel is not None and cancel.is_set():
+                return
+            event = _parse_event(raw)
+            if event is not None:
+                yield event
 
 
 def _url_allowed(url: str) -> bool:
@@ -387,8 +342,9 @@ class CrawlbergFetcher:
         self, spec: _CrawlSpec, seed_url: str, cancel: CancelToken | None
     ) -> AsyncGenerator[_Event, None]:
         """This crawl's events; browser mode finds the headless shell before any engine starts."""
-        chrome = _headless_shell() if self._render_mode is CrawlRenderMode.BROWSER else None
-        return _events(_crawl_config(self._render_mode, spec), seed_url, cancel, chrome)
+        if self._render_mode is CrawlRenderMode.BROWSER:
+            _point_at_headless_shell()
+        return _events(_crawl_config(self._render_mode, spec), seed_url, cancel)
 
     async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
         """Fetch *url* alone; a redirected page keeps the requested URL."""

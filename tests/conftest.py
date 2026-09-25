@@ -35,6 +35,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.core.config import cfg
+from lilbee.crawler.crawlberg_fetcher import _CHROME_ENV
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
@@ -388,6 +389,17 @@ def _isolate_playwright_browsers_path(_playwright_browsers_root, monkeypatch):
     ``_browsers_cache_path`` honors this env var ahead of the platform default.
     """
     monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(_playwright_browsers_root))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_chrome_env(monkeypatch):
+    """Start each test without ``CHROME`` and give the runner's value back after it.
+
+    Browser mode sets ``CHROME`` and never removes it. ``setenv`` comes first because
+    ``delenv`` of an unset name records nothing to undo.
+    """
+    monkeypatch.setenv(_CHROME_ENV, "")
+    monkeypatch.delenv(_CHROME_ENV)
 
 
 @pytest.fixture

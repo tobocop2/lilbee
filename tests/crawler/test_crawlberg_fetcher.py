@@ -5,7 +5,7 @@ from __future__ import annotations
 import ipaddress
 import os
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, MutableMapping
 
 import pytest
 
@@ -17,7 +17,6 @@ from lilbee.crawler.crawlberg_fetcher import (
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
-    _ChromeEnv,
     admitted_networks,
     crawler_available,
 )
@@ -186,36 +185,128 @@ class TestCrawlConfig:
         assert ("cidr", "::1/128") in policy["allowlist"]
 
 
+SYSTEM_CHROME = "/usr/bin/system-chrome"
+
+
+def _record_chrome_at_engine_build(stub: StubCrawlberg) -> list[str | None]:
+    """The value of ``CHROME`` each time the stub builds an engine."""
+    seen: list[str | None] = []
+    build = stub.module.create_engine
+
+    def create_engine(config: object) -> object:
+        seen.append(os.environ.get(_CHROME_ENV))
+        return build(config)
+
+    stub.module.create_engine = create_engine
+    return seen
+
+
+class _RecordingEnviron(MutableMapping[str, str]):
+    """``os.environ`` that records each value written to ``CHROME``, the same on every OS."""
+
+    def __init__(self, environ: MutableMapping[str, str]) -> None:
+        self._environ = environ
+        self.chrome_writes: list[str] = []
+
+    def __getitem__(self, key: str) -> str:
+        return self._environ[key]
+
+    def __setitem__(self, key: str, value: str) -> None:
+        if key == _CHROME_ENV:
+            self.chrome_writes.append(value)
+        self._environ[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        del self._environ[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._environ)
+
+    def __len__(self) -> int:
+        return len(self._environ)
+
+
 class TestBrowserMode:
-    @pytest.mark.parametrize("before", [None, "/usr/bin/system-chrome"], ids=["unset", "set"])
-    async def test_points_crawlberg_at_the_headless_shell_only_while_it_crawls(
+    @pytest.mark.parametrize("before", [None, SYSTEM_CHROME], ids=["unset", "set"])
+    async def test_chrome_is_the_shell_before_any_engine_is_built(
         self, monkeypatch, tmp_path, before: str | None
     ):
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
-        if before is None:
-            monkeypatch.delenv(_CHROME_ENV, raising=False)
-        else:
+        if before is not None:
             monkeypatch.setenv(_CHROME_ENV, before)
-        during: list[str | None] = []
-
-        async def crawl() -> AsyncIterator[Payload]:
-            during.append(os.environ.get(_CHROME_ENV))
-            yield page(SEED, depth=0)
-
-        stub = StubCrawlberg(crawl)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        at_build = _record_chrome_at_engine_build(stub)
         with stub.installed():
             await CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER).fetch_single(
                 SEED, timeout=5
             )
-        assert during == [str(shell)]
-        assert os.environ.get(_CHROME_ENV) == before
+        assert at_build == [str(shell)]
         assert stub.config["browser"].kwargs == {
             "mode": "always",
             "timeout": 5000,
             "overall_timeout": 10000,
             "shutdown_timeout": 5000,
         }
+
+    @pytest.mark.parametrize("before", [None, SYSTEM_CHROME], ids=["unset", "set"])
+    async def test_chrome_stays_on_the_shell_after_a_cancelled_crawl_closes(
+        self, monkeypatch, tmp_path, before: str | None
+    ):
+        """crawlberg can launch Chrome after the stream closes, so CHROME is never taken back."""
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        if before is not None:
+            monkeypatch.setenv(_CHROME_ENV, before)
+        cancel = threading.Event()
+        cancel.set()
+        stub = StubCrawlberg([page(SEED, depth=0), page(f"{SEED}a", depth=1), complete(2)])
+        with stub.installed():
+            pages = await _recursive(
+                CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER), cancel=cancel
+            )
+        assert pages == []
+        assert stub.closed == 1
+        assert os.environ.get(_CHROME_ENV) == str(shell)
+
+    async def test_chrome_stays_on_the_shell_after_a_crawl_runs_to_its_end(
+        self, monkeypatch, tmp_path
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        stub = StubCrawlberg(
+            [page(SEED, depth=0), page(f"{SEED}a", depth=1), page(f"{SEED}b", depth=1), complete(3)]
+        )
+        with stub.installed():
+            pages = await _recursive(CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER))
+        assert [fetched.url for fetched in pages] == [SEED, f"{SEED}a", f"{SEED}b"]
+        assert stub.closed == 1
+        assert os.environ.get(_CHROME_ENV) == str(shell)
+
+    async def test_later_crawls_do_not_write_chrome_again(self, monkeypatch, tmp_path):
+        """crawlberg may read CHROME from another thread, so it is written once, not per crawl."""
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        environ = _RecordingEnviron(os.environ)
+        monkeypatch.setattr(os, "environ", environ)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            for _ in range(3):
+                await CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER).fetch_single(
+                    SEED, timeout=5
+                )
+        assert environ.chrome_writes == [str(shell)]
+
+    @pytest.mark.parametrize("before", [None, SYSTEM_CHROME], ids=["unset", "set"])
+    async def test_http_mode_leaves_chrome_alone(self, monkeypatch, tmp_path, before: str | None):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        if before is not None:
+            monkeypatch.setenv(_CHROME_ENV, before)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP).fetch_single(SEED, timeout=5)
+        assert os.environ.get(_CHROME_ENV) == before
 
     async def test_missing_shell_raises_before_any_engine_starts(self, monkeypatch):
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: None)
@@ -225,23 +316,7 @@ class TestBrowserMode:
                 SEED, timeout=5
             )
         assert stub.configs == []
-
-
-class TestChromeEnv:
-    def test_overlapping_crawls_keep_it_set_until_the_last_one_ends(self, monkeypatch, tmp_path):
-        monkeypatch.setenv(_CHROME_ENV, "/usr/bin/system-chrome")
-        shell = tmp_path / "chrome-headless-shell"
-        scope = _ChromeEnv()
-        with scope.pointing_at(shell):
-            with scope.pointing_at(shell):
-                pass
-            assert os.environ[_CHROME_ENV] == str(shell)
-        assert os.environ[_CHROME_ENV] == "/usr/bin/system-chrome"
-
-    def test_http_mode_leaves_it_alone(self, monkeypatch):
-        monkeypatch.setenv(_CHROME_ENV, "/usr/bin/system-chrome")
-        with _ChromeEnv().pointing_at(None):
-            assert os.environ[_CHROME_ENV] == "/usr/bin/system-chrome"
+        assert _CHROME_ENV not in os.environ
 
 
 class TestFetchSingle:

@@ -1,7 +1,6 @@
 """Tests for the web crawling module."""
 
 import asyncio
-import platform
 import sys
 import types
 from pathlib import Path
@@ -70,8 +69,6 @@ def isolated_env(tmp_path, monkeypatch, request):
         monkeypatch.setattr("lilbee.crawler.bootstrap.chromium_installed", lambda: True)
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: shell)
-    # The browser-mode fetcher points CHROME at the shell; restore it after each test.
-    monkeypatch.delenv("CHROME", raising=False)
     # Stub crawler_available so crawl_and_save's pre-flight backend check passes
     # in CI envs where the [crawler] extra isn't installed. Tests that exercise
     # the missing-extra path opt out by re-patching to ``False``. Both the SDK
@@ -530,21 +527,12 @@ class TestCrawlSingle:
 
 # The directory and file each Playwright build unpacks the headless shell into.
 _LINUX_X64_SHELL = ("chrome-headless-shell-linux64", "chrome-headless-shell")
-_MAC_ARM64_SHELL = ("chrome-headless-shell-mac-arm64", "chrome-headless-shell")
-_WIN_X64_SHELL = ("chrome-headless-shell-win64", "chrome-headless-shell.exe")
-# (sys.platform, platform.machine(), the build Playwright installs on that host).
-# Playwright installs the x64 build on every Windows host, and the arm64 build on
-# an Apple CPU even when Python runs under Rosetta.
-_HOST_SHELLS = [
-    pytest.param("linux", "x86_64", _LINUX_X64_SHELL, id="linux-x64"),
-    pytest.param("linux", "aarch64", ("chrome-linux", "headless_shell"), id="linux-arm64"),
-    pytest.param(
-        "darwin", "x86_64", ("chrome-headless-shell-mac-x64", "chrome-headless-shell"), id="mac-x64"
-    ),
-    pytest.param("darwin", "arm64", _MAC_ARM64_SHELL, id="mac-arm64"),
-    pytest.param("darwin", "x86_64", _MAC_ARM64_SHELL, id="mac-arm64-under-rosetta"),
-    pytest.param("win32", "AMD64", _WIN_X64_SHELL, id="win-x64"),
-    pytest.param("win32", "ARM64", _WIN_X64_SHELL, id="win-arm64-host"),
+_PLAYWRIGHT_SHELLS = [
+    pytest.param(_LINUX_X64_SHELL, id="linux-x64"),
+    pytest.param(("chrome-linux", "headless_shell"), id="linux-arm64"),
+    pytest.param(("chrome-headless-shell-mac-x64", "chrome-headless-shell"), id="mac-x64"),
+    pytest.param(("chrome-headless-shell-mac-arm64", "chrome-headless-shell"), id="mac-arm64"),
+    pytest.param(("chrome-headless-shell-win64", "chrome-headless-shell.exe"), id="win-x64"),
 ]
 
 
@@ -557,13 +545,13 @@ def _install_shell(
     complete: bool = True,
 ) -> Path:
     """Lay out a headless shell binary the way Playwright installs it."""
-    directory = root / f"chromium_headless_shell-{revision}"
+    directory = root / f"{bootstrap_mod._HEADLESS_SHELL_DIR_PREFIX}{revision}"
     shell = directory.joinpath(*layout)
     shell.parent.mkdir(parents=True)
     shell.write_bytes(b"")
     shell.chmod(0o755 if executable else 0o644)
     if complete:
-        (directory / "INSTALLATION_COMPLETE").write_bytes(b"")
+        (directory / bootstrap_mod._INSTALL_COMPLETE_MARKER).write_bytes(b"")
     return shell
 
 
@@ -609,16 +597,15 @@ class TestChromiumInstalledMatching:
 
         assert bootstrap.chromium_installed() is False
 
-    @pytest.mark.parametrize(("host", "machine", "layout"), _HOST_SHELLS)
-    def test_finds_the_shell_on_every_host(self, tmp_path, monkeypatch, host, machine, layout):
+    @pytest.mark.parametrize("layout", _PLAYWRIGHT_SHELLS)
+    def test_finds_the_shell_in_every_playwright_build(self, tmp_path, monkeypatch, layout):
+        """Found by file name, whichever build Playwright installed on the host."""
         from lilbee.crawler import bootstrap
 
         shell = _install_shell(tmp_path, "1208", layout)
         (shell.parent / "libEGL.so").write_bytes(b"")
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
-        monkeypatch.setattr(sys, "platform", host)
-        monkeypatch.setattr(platform, "machine", lambda: machine)
 
         assert bootstrap.headless_shell_executable() == shell
 
@@ -629,8 +616,6 @@ class TestChromiumInstalledMatching:
         _install_shell(tmp_path, "1208", executable=False)
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
-        monkeypatch.setattr(sys, "platform", "linux")
-        monkeypatch.setattr(platform, "machine", lambda: "x86_64")
 
         assert bootstrap.headless_shell_executable() is None
 
