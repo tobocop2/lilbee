@@ -143,6 +143,11 @@ class SessionListPanel(Vertical):
         # The rows as last rendered, in list order; the selection reads these
         # rather than the ListView children, which mount a step later.
         self._shown: list[SessionMeta] = []
+        # The text the rows are filtered by. Mirrors the box except while a
+        # rename repurposes it to hold a title, and it is a cache rather than
+        # a read of the box on every render: re-rendering resets the list
+        # cursor to the top row, so a render only happens when this actually
+        # changes, not on every stray Changed message the box emits.
         self._query = ""
         # The drawer focuses the filter for immediate type-to-switch. The
         # full-screen tab focuses the list instead, so the nav keys ([ ]) bubble
@@ -214,7 +219,10 @@ class SessionListPanel(Vertical):
         """Render for the filter box's current text, unless the rows already show it.
 
         Reads the box rather than a Changed event's value: a burst leaves older
-        Changed events queued behind a key that has already rendered the newer text.
+        Changed events queued behind a key that has already rendered the newer
+        text. The comparison against _query also guards a stray duplicate or
+        stale Changed message from re-rendering over a cursor move the user
+        already made for the same text.
         """
         value = self.query_one("#sessions-filter", Input).value
         if self._renaming_id is None and value != self._query:
@@ -315,6 +323,10 @@ class SessionListPanel(Vertical):
         field = self.query_one("#sessions-filter", Input)
         field.value = ""
         field.placeholder = msg.SESSIONS_FILTER_PLACEHOLDER
+        # Setting an already-empty box fires no Changed message (the value
+        # does not change), so _query would otherwise keep whatever text the
+        # rename covered up and the list would stay filtered by it.
+        self._query = ""
         self.refresh_list()
 
     async def action_delete(self) -> None:
