@@ -1626,6 +1626,26 @@ async def test_closing_the_drawer_skips_a_prior_focus_that_is_gone():
         assert chat.focused is not None and chat.focused.is_attached
 
 
+async def test_a_drawer_opened_with_nothing_focused_still_closes():
+    """With no prior focus to return to, closing the drawer leaves focus on a live widget."""
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        chat.set_focus(None)
+        assert await pump_until(pilot, lambda: chat.focused is None)
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: bool(chat.query(FleetDrawer)))
+        drawer = chat.query_one(FleetDrawer)
+        assert drawer._return_focus is None
+        next(widget for widget in drawer.query("*") if widget.focusable).focus()
+        assert await pump_until(pilot, chat._focus_in_drawer)
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: not chat.query(FleetDrawer))
+        assert chat.focused is None or chat.focused.is_attached
+
+
 async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():
     """Walking to a pill must be able to act, not only to arrive.
 

@@ -21,8 +21,14 @@ class Drawer(Vertical):
         self._return_focus: Widget | None = None
 
     def on_compose(self) -> None:
-        """Remember the focus from before the drawer opened; children mount after this."""
-        self._return_focus = self.screen.focused
+        """Remember the focus from before the drawer opened; children mount after this.
+
+        Focus inside another drawer is looked past to that drawer's own return target,
+        since that drawer can close first.
+        """
+        focused = self.screen.focused
+        holder = drawer_holding(focused)
+        self._return_focus = focused if holder is None else holder._return_focus
 
     def remove(self) -> AwaitRemove:
         """Close the drawer, handing focus it holds back to where it was before it opened."""
@@ -30,3 +36,10 @@ class Drawer(Vertical):
         if self.has_focus_within and previous is not None and previous.is_attached:
             self.screen.set_focus(previous)
         return super().remove()
+
+
+def drawer_holding(widget: Widget | None) -> Drawer | None:
+    """The drawer that contains *widget*, or None when it sits outside every drawer."""
+    if widget is None:
+        return None
+    return next((node for node in widget.ancestors_with_self if isinstance(node, Drawer)), None)

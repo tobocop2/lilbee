@@ -64,7 +64,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
-from lilbee.cli.tui.widgets.drawer import Drawer
+from lilbee.cli.tui.widgets.drawer import drawer_holding
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.fork_picker import ForkPicker, fork_points
@@ -2516,8 +2516,7 @@ class ChatScreen(Screen[None]):
         to name itself here would otherwise swallow its own Enter until someone
         noticed.
         """
-        focused = self.focused
-        return bool(focused and any(isinstance(n, Drawer) for n in focused.ancestors_with_self))
+        return drawer_holding(self.focused) is not None
 
     def _focus_in_model_bar(self) -> bool:
         """True when focus is on any model-strip member.

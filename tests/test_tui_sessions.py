@@ -12,6 +12,8 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.sessions import SessionsScreen
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+from lilbee.cli.tui.widgets.drawer import Drawer
+from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
@@ -856,7 +858,7 @@ async def test_close_drawer_with_escape(sessions):
         assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
-async def test_panel_close_request_removes_drawer(sessions):
+async def test_escape_on_the_session_list_closes_the_drawer(sessions):
     _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -866,6 +868,47 @@ async def test_panel_close_request_removes_drawer(sessions):
         assert await pump_until(pilot, lambda: rows.has_focus)
         await pilot.press("escape")
         assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
+
+
+async def _focus_into(pilot, chat, drawer_type: type[Drawer]) -> None:
+    """Put focus inside the open *drawer_type*, which the fleet drawer does not take on open."""
+    drawer = chat.query_one(drawer_type)
+    if not drawer.has_focus_within:
+        next(widget for widget in drawer.query("*") if widget.focusable).focus()
+    assert await pump_until(pilot, lambda: drawer.has_focus_within)
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (("ctrl+o", SessionsDrawer), ("ctrl+g", FleetDrawer)),
+        (("ctrl+g", FleetDrawer), ("ctrl+o", SessionsDrawer)),
+    ],
+    ids=["sessions-then-fleet", "fleet-then-sessions"],
+)
+async def test_a_drawer_opened_from_another_drawer_returns_focus_past_it(sessions, first, second):
+    """Two drawers open in turn: closing both puts focus back where it was before either."""
+    _seed(sessions, "Torque specs")
+    (first_key, first_type), (second_key, second_type) = first, second
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        before = chat.focused
+        await pilot.press(first_key)
+        assert await pump_until(pilot, lambda: bool(chat.query(first_type)))
+        await _focus_into(pilot, chat, first_type)
+        await pilot.press(second_key)
+        assert await pump_until(pilot, lambda: bool(chat.query(second_type)))
+        await pilot.press(first_key)
+        assert await pump_until(pilot, lambda: not chat.query(first_type))
+        await _focus_into(pilot, chat, second_type)
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: not chat.query(second_type))
+        assert chat.focused is before, f"focus went to {chat.focused!r}"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is chat
+        assert app.active_view == msg.DEFAULT_VIEW
 
 
 @pytest.mark.parametrize("close_key", ["escape", "ctrl+o"])
