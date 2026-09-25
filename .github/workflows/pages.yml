@@ -135,15 +135,25 @@ jobs:
             touch wheel-indexes/.empty
           fi
 
-      - name: Build compat (pre-Haswell lancedb) index
+      - name: Build compat index
         # Serves lilbee.sh/compat/: the +compat lancedb wheels built by the
-        # tobocop2/lancedb fork and hosted as release assets there. Independent
-        # of the lilbee wheel set above.
+        # tobocop2/lancedb fork, plus, temporarily, the crawlberg preview
+        # wheels built by the tobocop2/crawlberg fork so lilbee can pin a
+        # crawlberg build ahead of its PyPI release. Both are hosted as
+        # release assets on their fork; each --source writes its own project
+        # dir under compat/ without touching the other's. The crawlberg
+        # source is temporary: remove it once crawlberg 1.8.0 is on PyPI.
+        # Its on-missing=warn means a missing release or a transient gh api
+        # failure warns and skips compat/crawlberg/ instead of failing the
+        # job; the lancedb source keeps the default, fail, so a broken
+        # lancedb release still stops the deploy.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           rm -f wheel-indexes/.empty
-          python3 tools/build_compat_index.py wheel-indexes --repo tobocop2/lancedb
+          python3 tools/build_compat_index.py wheel-indexes \
+            --source 'repo=tobocop2/lancedb,tag-filter=compat,project=lancedb' \
+            --source 'repo=tobocop2/crawlberg,tag-filter=+lilbee,project=crawlberg,on-missing=warn'
 
       - name: Upload wheel-indexes artifact
         uses: actions/upload-artifact@v7
