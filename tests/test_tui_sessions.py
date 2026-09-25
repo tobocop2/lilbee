@@ -420,6 +420,103 @@ async def test_enter_in_the_same_burst_as_a_cursor_key_resumes_the_moved_to_row(
         assert chat.session_id == wanted
 
 
+@pytest.mark.parametrize("typed", ["a", "am"], ids=["one_letter", "two_letters"])
+async def test_a_cursor_key_after_filter_text_in_one_burst_moves_within_the_filtered_rows(
+    sessions, typed
+):
+    """Down typed after filter text moves the cursor in the filtered list, and it stays there."""
+    wanted = _seed(sessions, "Gamma one")
+    _seed(sessions, "Gamma two")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+o")
+        rows = chat.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        assert rows.highlighted_child.meta.title == "Alpha"
+        send_key_burst(app, *typed, "down", "down", "enter")
+        await wait_until(pilot, lambda: chat.session_id == wanted)
+        assert chat.session_id == wanted
+
+
+@pytest.mark.parametrize("stale", ["a", "am"], ids=["older_text", "same_text"])
+async def test_a_filter_change_that_arrives_after_a_cursor_key_keeps_the_cursor(sessions, stale):
+    """A Changed event the list receives late must not re-render over the cursor the user moved.
+
+    Built deterministically: the filter changes with its Changed event held back,
+    Down renders for the new text and moves, and then the held event arrives.
+    """
+    wanted = _seed(sessions, "Gamma one")
+    _seed(sessions, "Gamma two")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        drawer = await _open_drawer(app, pilot)
+        field = drawer.query_one("#sessions-filter", Input)
+        with field.prevent(Input.Changed):
+            field.value = "am"
+        await pilot.press("down")
+        rows = drawer.query_one("#sessions-list", ListView)
+        assert rows.index == 1
+        field.post_message(Input.Changed(field, stale))
+        await pilot.pause()
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: chat.session_id == wanted)
+
+
+async def test_delete_in_the_same_burst_as_filter_text_asks_about_the_filtered_row(sessions):
+    """ctrl+d typed after filter text asks about the row the filter narrowed to, not the top row."""
+    _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+o")
+        rows = chat.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        assert rows.highlighted_child.meta.title == "Alpha"
+        with (
+            patch.object(ConfirmDialog, "__init__", return_value=None) as dialog,
+            patch.object(app, "push_screen"),
+        ):
+            send_key_burst(app, *"Gam", "ctrl+d")
+            assert await wait_until(pilot, lambda: dialog.called)
+        dialog.assert_called_once_with(
+            msg.SESSIONS_DELETE_CONFIRM_TITLE, msg.SESSIONS_DELETE_CONFIRM.format(title="Gamma")
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "start", "index"),
+    [("j", 0, 1), ("G", 0, 2), ("k", 2, 1), ("g", 2, 0)],
+    ids=["j_moves_down", "G_jumps_to_the_end", "k_moves_up", "g_jumps_to_the_top"],
+)
+async def test_sessions_tab_list_keys_work_with_focus_outside_the_list(sessions, key, start, index):
+    """j / k / g / G drive the tab's list wherever focus is, like the other browse screens."""
+    from lilbee.cli.tui.widgets.status_bar import ViewTab
+
+    for n in range(3):
+        _seed(sessions, f"s{n}")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        app.switch_view("Sessions")
+        assert await wait_until(pilot, lambda: bool(app.screen.query("#sessions-list")))
+        rows = app.screen.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        rows.index = start
+        tab = app.screen.query(ViewTab).first()
+        tab.focus()
+        await pilot.pause()
+        assert tab.has_focus
+        assert rows.index == start
+        await pilot.press(key)
+        await pilot.pause()
+        assert rows.index == index
+
+
 async def test_a_readiness_change_just_before_the_drawer_opens_leaves_focus_in_the_drawer(
     sessions,
 ):

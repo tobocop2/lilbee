@@ -9,7 +9,7 @@ from textual.app import ComposeResult
 from textual.binding import BindingType
 from textual.screen import Screen
 
-from lilbee.cli.tui.browse_bindings import browse_back_bindings
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.widgets.session_list import SessionListPanel
 
 if TYPE_CHECKING:
@@ -23,8 +23,12 @@ class SessionsScreen(Screen[None]):
 
     CSS_PATH = "sessions.tcss"
 
-    # The list keys (j / k / g / G) belong to the panel, which binds them with priority.
-    BINDINGS: ClassVar[list[BindingType]] = browse_back_bindings()
+    # The panel binds the list keys (j / k / g / G) with priority while focus is
+    # inside it; these copies reach the panel from anywhere else on the screen.
+    BINDINGS: ClassVar[list[BindingType]] = [
+        *browse_back_bindings(),
+        *BROWSE_LIST_BINDINGS,
+    ]
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -43,6 +47,18 @@ class SessionsScreen(Screen[None]):
 
     def action_go_back(self) -> None:
         self.app.go_back()
+
+    async def action_cursor_down(self) -> None:
+        await self.query_one(SessionListPanel).action_cursor_down()
+
+    async def action_cursor_up(self) -> None:
+        await self.query_one(SessionListPanel).action_cursor_up()
+
+    async def action_jump_top(self) -> None:
+        await self.query_one(SessionListPanel).action_jump_top()
+
+    async def action_jump_bottom(self) -> None:
+        await self.query_one(SessionListPanel).action_jump_bottom()
 
     @on(SessionListPanel.CloseRequested)
     def _on_close(self, _event: SessionListPanel.CloseRequested) -> None:

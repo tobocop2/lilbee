@@ -95,8 +95,9 @@ class SessionListPanel(Vertical):
 
     DEFAULT_CSS: ClassVar[str] = _ROW_CSS
 
-    # Every key that moves the cursor is a priority binding, like Enter, so the
-    # keys apply in the order typed. A focused filter still types j / k / g / G:
+    # Every key that moves the cursor or acts on a row is a priority binding, so
+    # the keys apply in the order typed; each first waits for the filter to apply
+    # the text typed ahead of it. A focused filter still types j / k / g / G:
     # Textual drops a binding whose key the focused Input consumes.
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Resume", show=False, priority=True),
@@ -189,10 +190,28 @@ class SessionListPanel(Vertical):
         return self._shown[index if index is not None and index < len(self._shown) else 0]
 
     @on(Input.Changed, "#sessions-filter")
-    def _on_filter(self, event: Input.Changed) -> None:
-        if self._renaming_id is None:
-            self._query = event.value
+    def _on_filter(self, _event: Input.Changed) -> None:
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """Render for the filter box's current text, unless the rows already show it.
+
+        Reads the box rather than a Changed event's value: a burst leaves older
+        Changed events queued behind a key that has already rendered the newer text.
+        """
+        value = self.query_one("#sessions-filter", Input).value
+        if self._renaming_id is None and value != self._query:
+            self._query = value
             self._render_rows()
+
+    async def _filter_caught_up(self) -> None:
+        """Wait for the filter box to apply the keys typed ahead, then render for them.
+
+        The panel's bindings are priority bindings, so they run before the filter
+        box has handled the keys queued for it.
+        """
+        await _caught_up(self.query_one("#sessions-filter", Input))
+        self._apply_filter()
 
     @on(ListView.Selected, "#sessions-list")
     def _on_row_selected(self, event: ListView.Selected) -> None:
@@ -213,31 +232,27 @@ class SessionListPanel(Vertical):
         self.post_message(self.ChatOpened())
 
     async def action_select(self) -> None:
-        """Enter: finish a rename, else resume the highlighted session.
-
-        Runs as a priority binding, before the filter box has applied the keys
-        typed ahead of Enter, so it first waits for the filter to catch up.
-        """
-        field = self.query_one("#sessions-filter", Input)
-        await _caught_up(field)
+        """Enter: finish a rename, else resume the highlighted session."""
+        await self._filter_caught_up()
         if self._renaming_id is not None:
             self._commit_rename()
             return
-        if field.value != self._query:
-            self._query = field.value
-            self._render_rows()
         self._resume(self._selected())
 
-    def action_cursor_down(self) -> None:
+    async def action_cursor_down(self) -> None:
+        await self._filter_caught_up()
         self.query_one("#sessions-list", ListView).action_cursor_down()
 
-    def action_cursor_up(self) -> None:
+    async def action_cursor_up(self) -> None:
+        await self._filter_caught_up()
         self.query_one("#sessions-list", ListView).action_cursor_up()
 
-    def action_jump_top(self) -> None:
+    async def action_jump_top(self) -> None:
+        await self._filter_caught_up()
         self.jump_to(0)
 
-    def action_jump_bottom(self) -> None:
+    async def action_jump_bottom(self) -> None:
+        await self._filter_caught_up()
         self.jump_to(-1)
 
     def jump_to(self, index: int) -> None:
@@ -258,7 +273,8 @@ class SessionListPanel(Vertical):
             return
         self.post_message(self.CloseRequested())
 
-    def action_rename(self) -> None:
+    async def action_rename(self) -> None:
+        await self._filter_caught_up()
         selected = self._selected()
         if selected is None:
             return
@@ -284,7 +300,8 @@ class SessionListPanel(Vertical):
         field.placeholder = msg.SESSIONS_FILTER_PLACEHOLDER
         self.refresh_list()
 
-    def action_delete(self) -> None:
+    async def action_delete(self) -> None:
+        await self._filter_caught_up()
         selected = self._selected()
         if selected is None:
             return
