@@ -23,6 +23,7 @@ from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.anthropic_api.routes import anthropic_router
 from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.chat_completions_api.routes import completions_router
+from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
 from lilbee.server.routes.agent_config import (
     agent_config_index_route,
@@ -271,6 +272,7 @@ def create_app() -> Litestar:
         allow_origin_regex=cfg.cors_origin_regex,
         allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
         allow_headers=["Content-Type", "Authorization"],
+        expose_headers=[CONTENT_DISPOSITION],
     )
     mcp_route, mcp_session_lifespan = build_mcp_mount()
     return Litestar(

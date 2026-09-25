@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import re
+from urllib.parse import unquote
+
 import pytest
 from litestar.testing import TestClient
 
 from lilbee.app import services as svc_mod
-from lilbee.app.session_export import session_markdown
+from lilbee.app.session_export import default_export_name, session_markdown
 from lilbee.core.config import cfg
 from lilbee.server.auth import authenticates_itself
+from lilbee.server.handlers import sessions as sessions_handlers
 from lilbee.server.routes.sessions import (
     session_add_message_route,
     session_claim_route,
@@ -52,6 +56,20 @@ def client(store):
     auth_mod.session_manager.disable()
     yield TestClient(create_app())
     auth_mod.session_manager.cleanup()
+
+
+# RFC 6266 quoted filename (printable ASCII, no quote or backslash), then the
+# RFC 5987 ext-value, whose attr-chars leave only "%XX" to decode.
+_DISPOSITION_RE = re.compile(
+    r"attachment; filename=\"([ !#-\[\]-~]*)\"; filename\*=UTF-8''([A-Za-z0-9!#$&+\-.^_`|~%]+)"
+)
+
+
+def _disposition_names(header: str) -> tuple[str, str]:
+    """The (ASCII fallback, decoded UTF-8) file names an attachment header carries."""
+    match = _DISPOSITION_RE.fullmatch(header)
+    assert match, header
+    return match[1], unquote(match[2], errors="strict")
 
 
 def _seed(store, origin: SessionOrigin = SessionOrigin.TUI) -> str:
@@ -103,6 +121,49 @@ class TestMarkdown:
 
     def test_unknown_id_404(self, client):
         assert client.get("/api/sessions/nope/markdown").status_code == 404
+
+    def test_names_the_download_with_the_export_file_name(self, client, store):
+        session_id = _seed(store)
+        resp = client.get(f"/api/sessions/{session_id}/markdown")
+        name = f"torque-specs-{session_id[:8]}.md"
+        assert resp.headers["content-disposition"] == (
+            f"attachment; filename=\"{name}\"; filename*=UTF-8''{name}"
+        )
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            "Bremsbeläge 制动",
+            'say "hi" \\ there',
+            "tab\tnew\nline\x85next\ufeffbom\x1c\x1d\x1e\x1fend",
+            "\x85\ufeff",
+        ],
+    )
+    def test_any_title_gives_a_header_that_names_the_cli_file(self, client, store, title):
+        session_id = _seed(store)
+        store.set_title(session_id, title, TitleSource.CUSTOM)
+        header = client.get(f"/api/sessions/{session_id}/markdown").headers["content-disposition"]
+        assert header.isascii()
+        assert _disposition_names(header) == (default_export_name(store.get(session_id).meta),) * 2
+
+    def test_a_name_outside_ascii_keeps_an_ascii_fallback(self, client, store, monkeypatch):
+        name = 'Bremsbeläge "制动"\\\x85\ufeff\x1c\x7f.md'
+        monkeypatch.setattr(sessions_handlers, "default_export_name", lambda meta: name)
+        session_id = _seed(store)
+        header = client.get(f"/api/sessions/{session_id}/markdown").headers["content-disposition"]
+        assert header.isascii()
+        fallback, encoded = _disposition_names(header)
+        assert encoded == name
+        assert fallback.isprintable() and fallback.isascii()
+        assert len(fallback) == len(name)
+
+    def test_a_browser_client_can_read_the_file_name(self, client, store):
+        session_id = _seed(store)
+        resp = client.get(
+            f"/api/sessions/{session_id}/markdown", headers={"Origin": "app://obsidian.md"}
+        )
+        exposed = resp.headers["access-control-expose-headers"].lower().split(", ")
+        assert "content-disposition" in exposed
 
     def test_reads_any_session_the_get_route_reads(self, client, store):
         session_id = _seed(store, origin=SessionOrigin.MCP)

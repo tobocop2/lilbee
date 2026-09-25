@@ -17,6 +17,7 @@ from litestar.response import Stream
 from pydantic import BaseModel, Field
 
 from lilbee.server import handlers
+from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
 from lilbee.server.models import (
     AddRequest,
@@ -140,7 +141,7 @@ async def export_route(
     return Response(
         content=payload.data,
         media_type="application/octet-stream",
-        headers={"content-disposition": f'attachment; filename="pages.{payload.fmt}"'},
+        headers={CONTENT_DISPOSITION: f'attachment; filename="pages.{payload.fmt}"'},
     )
 
 

@@ -102,9 +102,150 @@ def test_the_compaction_summary_is_not_exported():
     assert "folded turns" not in session_markdown(_session(_user("q")))
 
 
-def test_structured_sources_become_the_numbered_sources_list():
+def test_structured_sources_become_a_numbered_list_of_plain_names():
     markdown = session_markdown(_session(_assistant("85 Nm. [1]", sources=("manual.pdf",))))
-    assert markdown.endswith(f"85 Nm. [1]\n\nSources:\n\n1. {source_markdown_link('manual.pdf')}\n")
+    assert markdown.endswith("85 Nm. [1]\n\nSources:\n\n1. manual.pdf\n")
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ("_web/www.example.com/guide.md", "example.com · guide"),
+        ("memory:m1", "memory:m1"),
+        ("notes [draft].md", "notes [draft].md"),
+    ],
+)
+def test_every_kind_of_source_is_named_as_the_live_answer_labels_it(source, name):
+    markdown = session_markdown(_session(_assistant("x [1]", sources=(source,))))
+    assert markdown.endswith(f"Sources:\n\n1. {name}\n")
+
+
+def test_a_stored_sources_list_keeps_its_names_and_locations_but_no_links():
+    content = (
+        "85 Nm. [1][2]\n\nSources:\n\n"
+        f"1. {source_markdown_link('manual.pdf')}, page 3\n"
+        f"2. {source_markdown_link('src/brake.py')}, lines 4-9\n"
+        f"3. {source_markdown_link('notes [draft] (v2).md')}"
+    )
+    assert content.count("file://") == 3
+    markdown = session_markdown(_session(_assistant(content, sources=("manual.pdf",))))
+    assert "file:" not in markdown
+    assert markdown.endswith(
+        "Sources:\n\n1. manual.pdf, page 3\n2. src/brake.py, lines 4-9\n3. notes [draft] (v2).md\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("source", "name"),
+    [
+        ("# hash.md", "\\# hash.md"),
+        ("- dash.md", "\\- dash.md"),
+        ("> quote.md", "\\> quote.md"),
+        ("[ref]: x.md", "\\[ref]: x.md"),
+        ("2. two.md", "2\\. two.md"),
+        ("3) three.md", "3\\) three.md"),
+        ("2024.pdf", "2024.pdf"),
+        ("a\rb.md", "a b.md"),
+        ("a\nb.md", "a b.md"),
+        ("a\r\n# b.md", "a # b.md"),
+    ],
+)
+def test_a_source_name_cannot_add_structure_to_the_sources_list(source, name):
+    markdown = session_markdown(_session(_assistant("## Summary\n\nx [1]", sources=(source,))))
+    assert markdown.endswith(f"#### Summary\n\nx [1]\n\nSources:\n\n1. {name}\n")
+
+
+def test_a_stored_source_name_cannot_add_structure_to_the_sources_list():
+    content = (
+        "x [1][2]\n\nSources:\n\n"
+        "1. [# hash.md](file:///kb/%23%20hash.md), page 2\n"
+        "2. [- dash.md](file:///kb/-%20dash.md)"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("Sources:\n\n1. \\# hash.md, page 2\n2. \\- dash.md\n")
+
+
+def test_a_citation_line_with_a_bracket_keeps_the_next_source_on_its_own_line():
+    content = (
+        "x [1][2]\n\nSources:\n\n"
+        "1. [wiki.md](file:///kb/wiki.md)\n"
+        "    → ~/docs/notes [draft].pdf, page 2\n"
+        "2. [b.md](file:///kb/b.md), page 4"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(
+        "Sources:\n\n1. wiki.md\n    → ~/docs/notes [draft].pdf, page 2\n2. b.md, page 4\n"
+    )
+
+
+def test_a_bracketed_name_that_is_not_a_link_does_not_join_the_next_line():
+    content = "x\n\nSources:\n\n1. [draft] plain.md\n2. [b.md](file:///kb/b.md)"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("Sources:\n\n1. [draft] plain.md\n2. b.md\n")
+
+
+def test_a_pasted_answer_inside_a_code_fence_stays_as_written():
+    content = (
+        "look:\n\n```\n85 Nm [1].\n\nSources:\n\n"
+        "1. [manual.pdf](file:///kb/manual.pdf), page 3\n```\n\nThanks."
+    )
+    markdown = session_markdown(_session(_user(content), _assistant("ok")))
+    assert f"## User\n\n{content}\n\n## Assistant\n" in markdown
+
+
+def test_a_stored_answer_cut_off_in_a_code_block_keeps_its_sources_list_plain():
+    content = (
+        "Try:\n\n```python\nx = 1\n\nSources:\n\n1. [manual.pdf](file:///kb/manual.pdf), page 3"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("```python\nx = 1\n```\n\nSources:\n\n1. manual.pdf, page 3\n")
+
+
+def test_a_pasted_answer_stays_as_written_when_a_later_code_block_is_left_open():
+    pasted = "look:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```"
+    markdown = session_markdown(_session(_user(f"{pasted}\n\n```\nnew")))
+    assert f"## User\n\n{pasted}\n\n```\nnew\n```\n" in markdown
+
+
+def test_the_last_sources_list_is_the_one_made_plain():
+    content = (
+        "quoting:\n\n```\nold\n\nSources:\n\n1. [a.md](file:///kb/a.md)\n```\n\nnew [1]"
+        "\n\nSources:\n\n1. [b.md](file:///kb/b.md), page 2"
+    )
+    markdown = session_markdown(_session(_assistant(content)))
+    assert "1. [a.md](file:///kb/a.md)\n```\n\nnew [1]" in markdown
+    assert markdown.endswith("new [1]\n\nSources:\n\n1. b.md, page 2\n")
+
+
+@pytest.mark.parametrize("sources", [("a\rb.md", "# h.md"), ("a\rb.md", "# h.md", "c\r\r\rd.md")])
+def test_several_source_names_with_line_breaks_keep_the_turns_intact(sources):
+    markdown = session_markdown(_session(_assistant("## h\n\nx", sources=sources), _user("next")))
+    assert _all_headings(markdown) == [
+        ("h1", "Brake specs"),
+        ("h2", "Assistant"),
+        ("h4", "h"),
+        ("h2", "User"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "hi\n\nSources:\n## Assistant",
+        "hi\n\nSources:\n===",
+        "hi\n\nSources:\n\n```\ncode",
+    ],
+    ids=["heading", "underline", "open-fence"],
+)
+def test_text_after_a_typed_sources_marker_stays_inside_its_turn(content):
+    markdown = session_markdown(_session(_user(content), _assistant("ok")))
+    turns = [("h1", "Brake specs"), ("h2", "User"), ("h2", "Assistant")]
+    assert [h for h in _all_headings(markdown) if h[0] != "h4"] == turns
+
+
+def test_a_link_outside_the_sources_list_is_left_as_written():
+    content = "See [the spec](file:///tmp/spec.md)."
+    assert session_markdown(_session(_assistant(content))).endswith(f"{content}\n")
 
 
 def test_a_reply_that_already_carries_its_sources_list_is_not_given_a_second():
@@ -155,14 +296,19 @@ def test_balanced_fences_are_left_alone(content):
     assert markdown.endswith(f"## Assistant\n\n{content}\n")
 
 
-def _headings(markdown: str) -> list[str]:
-    """The section headings a CommonMark reader sees in the body."""
+def _all_headings(markdown: str) -> list[tuple[str, str]]:
+    """Every heading a CommonMark reader sees in the body, as (tag, text)."""
     tokens = MarkdownIt("commonmark").parse(_body(markdown))
     return [
-        tokens[i + 1].content
+        (token.tag, tokens[i + 1].content)
         for i, token in enumerate(tokens)
-        if token.type == "heading_open" and token.tag == "h2"
+        if token.type == "heading_open"
     ]
+
+
+def _headings(markdown: str) -> list[str]:
+    """The section headings a CommonMark reader sees in the body."""
+    return [text for tag, text in _all_headings(markdown) if tag == "h2"]
 
 
 @pytest.mark.parametrize(
@@ -185,6 +331,59 @@ def _headings(markdown: str) -> list[str]:
 def test_every_section_heading_survives_a_cut_off_fence(content):
     markdown = session_markdown(_session(_assistant(content), _user("next question")))
     assert _headings(markdown) == ["Assistant", "User"]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("## Assistant\n\nfake answer", ("h4", "Assistant")),
+        ("# Big question", ("h3", "Big question")),
+        ("### Three", ("h5", "Three")),
+        ("##### Five", ("h6", "Five")),
+        ("###### Six", ("h6", "Six")),
+        ("> ## quoted", ("h4", "quoted")),
+        ("- # listed", ("h3", "listed")),
+        ("   ## indented ##", ("h4", "indented")),
+        ("## a ## b", ("h4", "a ## b")),
+    ],
+)
+def test_a_message_heading_nests_under_its_turn(content, expected):
+    markdown = session_markdown(_session(_user(content), _assistant("ok")))
+    assert _all_headings(markdown) == [
+        ("h1", "Brake specs"),
+        ("h2", "User"),
+        expected,
+        ("h2", "Assistant"),
+    ]
+
+
+@pytest.mark.parametrize("content", ["Title\n===", "Title\n---", "two\nlines\n=="])
+def test_an_underlined_heading_in_a_message_stays_text(content):
+    markdown = session_markdown(_session(_assistant(content), _user("next")))
+    assert _all_headings(markdown) == [("h1", "Brake specs"), ("h2", "Assistant"), ("h2", "User")]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "#tag and more",
+        "#tag",
+        "```python\n# a comment\n```",
+        "    # indented code",
+        "a # in the middle",
+        "\\# already escaped",
+    ],
+)
+def test_text_that_is_not_a_heading_is_left_as_written(content):
+    markdown = session_markdown(_session(_user(content)))
+    assert markdown.endswith(f"## User\n\n{content}\n")
+
+
+@pytest.mark.parametrize("newline", ["\r\n", "\r"])
+def test_a_heading_after_other_line_endings_is_nested(newline):
+    content = newline.join(["first", "", "## second", "third"])
+    markdown = session_markdown(_session(_user(content)))
+    assert markdown.endswith("## User\n\nfirst\n\n#### second\nthird\n")
 
 
 def test_the_sources_list_follows_the_closed_fence():

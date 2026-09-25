@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from functools import cache
 from pathlib import Path
 
+from markdown_it import MarkdownIt
+from markdown_it.token import Token
+
+from lilbee.core.text import collapse_whitespace
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
 
 CONTEXT_TEMPLATE = """Context:
@@ -81,7 +86,7 @@ _WEB_PREFIX = "_web"
 _SOURCE_SEP = " · "
 
 
-def _source_label(source: str) -> str:
+def source_label(source: str) -> str:
     """Readable name for a source. Web-ingested docs collapse to ``host · slug``;
     local files keep their documents-dir-relative path."""
     prefix = f"{_WEB_PREFIX}/"
@@ -147,7 +152,7 @@ def source_markdown_link(source: str) -> str:
     """A bare source name as the same clickable ``[label](file-url)`` markdown a
     live answer's Sources block uses; the plain label when no path resolves.
     Public so restored transcripts render sources identically to live ones."""
-    label = _source_label(source)
+    label = collapse_whitespace(source_label(source))
     if is_memory_source(source):
         return label
     url = _source_file_url(source)
@@ -161,7 +166,7 @@ def format_source(result: SearchChunk, citations: list[CitationRecord] | None = 
     as their plain ``memory:<id>`` label: they have no file to link.
     """
     if result.memory_id is not None:
-        return _source_label(result.source)
+        return source_label(result.source)
     head = source_markdown_link(result.source)
     if result.chunk_type is ChunkType.WIKI and citations:
         return "\n".join([head, *(_format_citation(c) for c in citations)])
@@ -213,6 +218,10 @@ def build_context(results: list[SearchChunk]) -> str:
 # Grepped by consumers to know an answer carries its own Sources list (the
 # no-results toast; the pill row, which must not stack a second list).
 SOURCES_BLOCK_MARKER = "\n\nSources:\n"
+# A Sources line's ``[label](file-url)`` link, matched within one line.
+FILE_LINK_RE = re.compile(r"\[(?P<label>.+?)\]\((?P<url>file://[^)\s]+)\)")
+# Parsed after a text; if it lands inside a fence, the text left that fence open.
+_FENCE_PROBE = "\n\n# probe"
 
 
 def format_sources_block(
@@ -235,13 +244,41 @@ def format_sources_block(
     return SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
 
 
-def with_sources_block(content: str, sources: Sequence[str]) -> str:
-    """*content* ending in the numbered, clickable ``Sources:`` list a live answer
-    carries, unless it already has one, so every saved turn cites one way."""
+def with_sources_block(
+    content: str,
+    sources: Sequence[str],
+    render: Callable[[str], str] = source_markdown_link,
+) -> str:
+    """*content* ending in the numbered ``Sources:`` list a live answer carries,
+    each source shown by *render*, unless it already has one. A code block the
+    content leaves open is closed first, so the list is never inside it."""
     if SOURCES_BLOCK_MARKER in content:
         return content
-    lines = [f"{i}. {source_markdown_link(s)}" for i, s in enumerate(sources, 1)]
-    return content.rstrip() + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+    lines = [f"{i}. {render(s)}" for i, s in enumerate(sources, 1)]
+    return close_open_fence(content.rstrip()) + SOURCES_BLOCK_MARKER + "\n" + "\n".join(lines)
+
+
+@cache
+def commonmark() -> MarkdownIt:
+    """The shared CommonMark parser."""
+    return MarkdownIt("commonmark")
+
+
+def open_code_fence(text: str) -> Token | None:
+    """The top-level code fence *text* leaves open, or None when every fence is closed."""
+    last = commonmark().parse(text + _FENCE_PROBE)[-1]
+    return last if last.type == "fence" else None
+
+
+def close_open_fence(text: str) -> str:
+    """*text* with a code fence it leaves open closed, so it cannot swallow what follows.
+
+    The parser decides: when a heading placed after *text* ends up inside a fence,
+    that fence is closed. A fence in a list item never does, because the heading
+    ends the item, so only a top-level fence is closed, and at column 0.
+    """
+    fence = open_code_fence(text)
+    return f"{text}\n{fence.markup}" if fence else text
 
 
 def _extract_cited_indices(text: str) -> set[int]:

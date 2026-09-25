@@ -65,6 +65,7 @@ from lilbee.retrieval.query.formatting import (
     StreamingCitationFilter,
     build_context,
     cited_subset,
+    close_open_fence,
     format_sources_block,
     strip_llm_citations,
 )
@@ -1481,7 +1482,7 @@ class Searcher:
         )
         if not result.sources:
             return result.answer
-        answer = strip_llm_citations(result.answer)
+        answer = close_open_fence(strip_llm_citations(result.answer))
         return f"{answer}{format_sources_block(result.sources)}"
 
     def _stream_direct(
@@ -1552,24 +1553,26 @@ class Searcher:
             show_reasoning=self._config.show_reasoning,
             cap_chars=effective_reasoning_cap(),
         )
-        yield from self._filtered_answer_tokens(events)
+        answer = yield from self._filtered_answer_tokens(events)
         # A model that emits its own trailing Sources block has had it dropped by
         # the filter above; this authoritative list is numbered to match the
         # ``[n]`` markers the model used, so every citation resolves to a line.
         block = format_sources_block(results)
         if block:
-            yield StreamToken(content=block, is_reasoning=False)
+            fence_closer = close_open_fence(answer).removeprefix(answer)
+            yield StreamToken(content=fence_closer + block, is_reasoning=False)
 
     def _filtered_answer_tokens(
         self, events: Generator[Any, None, None]
-    ) -> Generator[StreamToken, None, None]:
-        """Pump model events through the streaming citation filter.
+    ) -> Generator[StreamToken, None, str]:
+        """Pump model events through the streaming citation filter; return the answer shown.
 
         Reasoning tokens pass through untouched; answer tokens are withheld
         while they could still be the start of a model-authored Sources
         block, and any held-back tail is released when the stream ends.
         """
         cite_filter = StreamingCitationFilter()
+        shown_parts: list[str] = []
         try:
             for token in cap_events_as_stream_tokens(events):
                 if token.is_reasoning:
@@ -1577,9 +1580,14 @@ class Searcher:
                     continue
                 shown = cite_filter.feed(token.content)
                 if shown:
+                    shown_parts.append(shown)
                     yield StreamToken(content=shown, is_reasoning=False)
         except (ConnectionError, OSError) as exc:
-            yield StreamToken(content=f"\n\n[Connection lost: {exc}]", is_reasoning=False)
+            lost = f"\n\n[Connection lost: {exc}]"
+            shown_parts.append(lost)
+            yield StreamToken(content=lost, is_reasoning=False)
         tail = cite_filter.flush()
         if tail:
+            shown_parts.append(tail)
             yield StreamToken(content=tail, is_reasoning=False)
+        return "".join(shown_parts)

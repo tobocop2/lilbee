@@ -120,6 +120,13 @@ class TestAssistantMessageAsync:
         assert synthesized.count("\nSources:\n") == 1, "array-only turns gain the same list"
         assert "1. [manual.md](" in synthesized, "and it is the clickable markdown form"
 
+    def test_a_restored_answer_cut_off_in_a_code_block_lists_sources_after_it(self) -> None:
+        from lilbee.cli.tui.widgets.message import AssistantMessage
+
+        restored = AssistantMessage(content="Try:\n\n```python\nx = 1", sources=("manual.md",))
+        joined = "".join(restored._content_parts)
+        assert "```python\nx = 1\n```\n\nSources:\n\n1. [manual.md](" in joined
+
     def test_finishing_a_never_mounted_message_does_not_crash(self) -> None:
         """A turn can end before its bubble reaches the screen; finish() must
         not touch widgets that compose() never built."""
@@ -310,6 +317,16 @@ class TestAssistantMessageAsync:
             joined = "".join(am._content_parts)
             assert joined.count("\nSources:\n") == 1
             assert "1. [manual.md](" in joined
+
+    async def test_finish_closes_a_cut_off_code_block_before_the_sources(self) -> None:
+        app = _MsgApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            am = app._am
+            am.append_content("Try:\n\n```python\nx = 1")
+            am.finish(sources=["manual.md"])
+            joined = "".join(am._content_parts)
+            assert "```python\nx = 1\n```\n\nSources:\n" in joined
 
     async def test_markdown_rendering_true_uses_markdown_widget(self) -> None:
         from textual.widgets import Markdown

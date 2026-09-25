@@ -1363,6 +1363,11 @@ class TestOpenAPISchema:
         assert set(responses["400"]["content"]) == {"application/json"}
         assert set(responses["404"]["content"]) == {"application/json"}
 
+    def test_session_markdown_documents_the_file_name_header(self, client):
+        paths = client.get("/schema/openapi.json").json()["paths"]
+        ok = paths["/api/sessions/{session_id}/markdown"]["get"]["responses"]["200"]
+        assert set(ok["headers"]) == {"Content-Disposition"}
+
     def test_schema_serializes_to_json(self):
         """A ResponseSpec generates examples whatever create_examples says, and
         polyfactory fills them with live pydantic instances, which stdlib json

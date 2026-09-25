@@ -271,6 +271,12 @@ class TestFormatSource:
 
         assert source_markdown_link("memory:m1") == "memory:m1"
 
+    def test_a_link_label_stays_on_one_line(self):
+        from lilbee.retrieval.query.formatting import source_markdown_link
+
+        link = source_markdown_link("a\nb\r\nc.md")
+        assert link.startswith("[a b c.md](file://")
+
 
 class TestUniqueSources:
     def test_first_chunk_per_distinct_source_in_order(self):
@@ -974,6 +980,12 @@ class TestCitedSources:
         assert "1. [a.pdf](file://" in answer
         assert "2. [b.pdf](file://" in answer
 
+    def test_ask_closes_a_cut_off_code_block_before_the_sources(self, mock_svc):
+        mock_svc.store.search.return_value = [_make_result(source="a.pdf")]
+        mock_svc.provider.chat.return_value = _text_result("Try [1]:\n\n```python\nx = 1")
+        answer = get_services().searcher.ask("q")
+        assert "```python\nx = 1\n```\n\nSources:\n" in answer
+
 
 class TestContextBudget:
     """bb-6kt: RAG sources are trimmed to fit num_ctx instead of overflow-erroring."""
@@ -1392,6 +1404,23 @@ class TestAskStream:
         assert len(messages) == 4
         assert messages[1]["role"] == "user"
         assert messages[1]["content"] == "previous question"
+
+    @pytest.mark.parametrize(
+        ("chunks", "before_sources"),
+        [
+            (["Try:\n\n```python\n", "x = 1"], "```python\nx = 1\n```\n\nSources:\n"),
+            (["```\nx\n```\n", "done"], "```\nx\n```\ndone\n\nSources:\n"),
+            (["Look\n\n```\nSources"], "Look\n\n```\n```\n\nSources:\n"),
+        ],
+        ids=["cut-off", "balanced", "held-back-tail"],
+    )
+    def test_the_sources_list_starts_outside_any_code_block(self, mock_svc, chunks, before_sources):
+        mock_svc.store.search.return_value = [_make_result()]
+        mock_svc.provider.chat.return_value = iter(chunks)
+        tokens = get_services().searcher.ask_stream("test")
+        combined = "".join(st.content for st in tokens if not st.is_reasoning)
+        assert before_sources in combined
+        assert combined.count("```") == 2
 
     def test_skips_empty_tokens(self, mock_svc):
         mock_svc.store.search.return_value = [_make_result()]
