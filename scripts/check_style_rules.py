@@ -664,35 +664,88 @@ def _text_column_hit(node: ast.Call, bindings: dict[str, str]) -> Iterator[tuple
         yield node.lineno, "builds TextColumn from a non-constant format without markup=False"
 
 
+def _print_or_log_receiver(value: ast.expr) -> str | None:
+    """The bound name behind a ``.print``/``.log`` receiver: itself, or its ``.console``.
+
+    ``Progress``/``Live`` without ``console=`` fall back to ``rich.get_console()``,
+    so ``p.console`` names that same global console and ``p.console.print(...)``
+    parses markup exactly like ``p.print(...)`` does.
+    """
+    if isinstance(value, ast.Name):
+        return value.id
+    if (
+        isinstance(value, ast.Attribute)
+        and value.attr == CONSOLE_KW
+        and isinstance(value.value, ast.Name)
+    ):
+        return value.value.id
+    return None
+
+
 def _print_or_log_receiver_names(tree: ast.Module) -> frozenset[str]:
-    """Names that ``.print(`` or ``.log(`` is called on anywhere in *tree*.
+    """Names that ``.print(``/``.log(`` (directly, or via ``.console``) is called on in *tree*.
 
     File-scoped, and coarse the same way the module's own name-rebinding
     blind spot is: it does not confirm a given Progress/Live binding is the
     one that gets printed through, only that some name spelled the same way
     does somewhere in the file.
     """
-    return frozenset(
-        node.func.value.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr in _PRINT_OR_LOG_ATTRS
-        and isinstance(node.func.value, ast.Name)
-    )
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _PRINT_OR_LOG_ATTRS
+        ):
+            name = _print_or_log_receiver(node.func.value)
+            if name is not None:
+                names.add(name)
+    return frozenset(names)
 
 
-def _progress_or_live_binding(stmt: ast.stmt) -> tuple[ast.Call, str | None] | None:
-    """The Progress/Live call and the name it binds to, for one assignment or with."""
-    if isinstance(stmt, ast.Assign) and len(stmt.targets) == 1 and isinstance(stmt.value, ast.Call):
-        target = stmt.targets[0]
-        return stmt.value, target.id if isinstance(target, ast.Name) else None
-    if isinstance(stmt, (ast.With, ast.AsyncWith)):
+def _assign_target_names(target: ast.expr) -> Iterator[str]:
+    """Every plain name *target* binds, recursing into tuple/list unpacking."""
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            yield from _assign_target_names(elt)
+
+
+def _named_calls(value: ast.expr, target: ast.expr) -> Iterator[tuple[ast.Call, str | None]]:
+    """Pair each call *value* holds with the name *target* binds it to.
+
+    Walks a tuple/list target against a tuple/list value in lockstep, so
+    ``p, x = Progress(), 1`` pairs the call with ``p`` and not with the whole
+    right-hand side.
+    """
+    if isinstance(value, ast.Call):
+        yield value, next(_assign_target_names(target), None)
+    elif isinstance(value, (ast.Tuple, ast.List)) and isinstance(target, (ast.Tuple, ast.List)):
+        for sub_value, sub_target in zip(value.elts, target.elts, strict=False):
+            yield from _named_calls(sub_value, sub_target)
+
+
+def _progress_or_live_bindings(stmt: ast.stmt) -> Iterator[tuple[ast.Call, str | None]]:
+    """Every (Progress/Live call, bound name) pair one statement produces.
+
+    Covers a plain, annotated, or multi-target assign, tuple/list unpacking
+    where the call is one element, and ``with ... as name:``. A target this
+    cannot name (an attribute, a starred element) still yields the call with
+    ``name=None``, so a console-less construction is seen even when nothing
+    downstream can prove it gets printed through.
+    """
+    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        yield from _named_calls(stmt.value, stmt.target)
+    elif isinstance(stmt, ast.Assign):
+        for target in stmt.targets:
+            yield from _named_calls(stmt.value, target)
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
         for item in stmt.items:
             if isinstance(item.context_expr, ast.Call):
                 as_name = item.optional_vars
-                return item.context_expr, as_name.id if isinstance(as_name, ast.Name) else None
-    return None
+                name = next(_assign_target_names(as_name), None) if as_name is not None else None
+                yield item.context_expr, name
 
 
 def _progress_live_hit(
@@ -743,10 +796,8 @@ def _node_hits(
         yield from _markup_import_hits(node)
     if isinstance(node, ast.ClassDef):
         yield from _class_def_hit(node, bindings)
-    if isinstance(node, (ast.Assign, ast.With, ast.AsyncWith)):
-        binding = _progress_or_live_binding(node)
-        if binding is not None:
-            call, name = binding
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.With, ast.AsyncWith)):
+        for call, name in _progress_or_live_bindings(node):
             yield from _progress_live_hit(call, name, bindings, print_or_log_names)
     if isinstance(node, ast.Call):
         yield from _call_hits(node, bindings)

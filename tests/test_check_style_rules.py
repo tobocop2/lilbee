@@ -511,6 +511,28 @@ class TestCheckMarkupParsers:
                 "from rich.live import Live\nwith Live() as live:\n    live.log('status')",
                 id="live_without_console_logs",
             ),
+            pytest.param(
+                "from rich.progress import Progress\n"
+                "with Progress() as p:\n"
+                "    p.console.print('x')",
+                id="progress_console_attribute_print",
+            ),
+            pytest.param(
+                "from rich.live import Live\nwith Live() as p:\n    p.console.log('x')",
+                id="live_console_attribute_log",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\np: Progress = Progress()\np.print('x')",
+                id="progress_annotated_assign",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\na = b = Progress()\nb.print('x')",
+                id="progress_multi_target_assign",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\np, x = Progress(), 1\np.log('x')",
+                id="progress_tuple_unpacking",
+            ),
         ],
     )
     def test_flags_a_way_to_parse_markup(self, tmp_path: Path, source: str) -> None:
@@ -558,6 +580,21 @@ class TestCheckMarkupParsers:
             pytest.param(
                 "from rich.progress import Progress\nProgress(console=make_console())",
                 id="progress_with_console",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\n"
+                "with Progress() as p:\n"
+                "    p.console.export_text()",
+                id="progress_console_attribute_non_print_log",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\n"
+                "def emit(prog):\n"
+                "    prog.print('x')\n\n"
+                "\n"
+                "with Progress() as p:\n"
+                "    emit(p)",
+                id="progress_passed_to_a_helper_under_another_name",
             ),
         ],
     )
