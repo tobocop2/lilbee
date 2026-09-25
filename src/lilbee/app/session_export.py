@@ -5,9 +5,13 @@ from __future__ import annotations
 import os
 import re
 import string
+from functools import cache
 from pathlib import Path
 
 import yaml
+from markdown_it import MarkdownIt
+from markdown_it.rules_inline.html_inline import html_inline as _stock_html_inline
+from markdown_it.rules_inline.state_inline import StateInline
 from markdown_it.token import Token
 
 from lilbee.core.security import write_private_text
@@ -16,7 +20,6 @@ from lilbee.retrieval.query.formatting import (
     FILE_LINK_RE,
     SOURCES_BLOCK_MARKER,
     close_open_fence,
-    commonmark,
     open_code_fence,
     source_label,
     with_sources_block,
@@ -38,9 +41,9 @@ _MAX_HEADING_LEVEL = 6
 _ESCAPE = "\\"
 _LINE_BREAK_RE = re.compile(r"\r\n?")
 _ASCII_PUNCTUATION = frozenset(string.punctuation)
-# An HTML heading's ``<h``/``</h`` plus level; a boundary after the digit is what
-# excludes ``<header>``, ``<hr>`` and ``<h2o>``.
-_HTML_HEADING_RE = re.compile(r"<(?P<slash>/?)(?P<tag>[Hh])(?P<level>[1-6])(?=[\s/>])")
+# An HTML heading's ``<h``/``</h`` plus level; a boundary after the digit (or the
+# text simply ending there) is what excludes ``<header>``, ``<hr>`` and ``<h2o>``.
+_HTML_HEADING_RE = re.compile(r"<(?P<slash>/?)(?P<tag>[Hh])(?P<level>[1-6])(?=[\s/>]|$)")
 # An ordered-list marker at the start of a name, as in ``2. notes.md``.
 _LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
 
@@ -125,6 +128,25 @@ def _plain_name(name: str) -> str:
     return _LIST_NUMBER_RE.sub(r"\1\\\2", name, count=1)
 
 
+def _html_inline_with_span(state: StateInline, silent: bool) -> bool:
+    """The stock ``html_inline`` rule, plus the ``state.src`` span it matched on ``token.meta``."""
+    start = state.pos
+    matched = _stock_html_inline(state, silent)
+    if matched and not silent and state.tokens and state.tokens[-1].type == "html_inline":
+        state.tokens[-1].meta = {"start": start, "end": state.pos}
+    return matched
+
+
+@cache
+def _heading_parser() -> MarkdownIt:
+    """A CommonMark parser whose ``html_inline`` tokens carry the source span they
+    matched, so a heading tag is found by the parser's own precedence over escapes,
+    code spans and autolinks, never by a second, independent scan of the raw text."""
+    md = MarkdownIt("commonmark")
+    md.inline.ruler.at("html_inline", _html_inline_with_span)
+    return md
+
+
 def _nest_headings(text: str) -> str:
     """*text* with no heading, markdown or HTML, at or above the turn level.
 
@@ -136,13 +158,13 @@ def _nest_headings(text: str) -> str:
     levels, independently of whether it is ever closed.
     """
     lines = text.split("\n")
-    for token in commonmark().parse(text):
+    for token in _heading_parser().parse(text):
         if token.type == "heading_open" and token.map:
             _nest_heading(lines, token.markup, *token.map)
         elif token.type == "html_block" and token.map:
             _demote_html_block(lines, *token.map)
         elif token.type == "inline" and token.map:
-            _demote_html_inline(lines, token.children, *token.map)
+            _demote_html_inline(lines, token.content, token.children, *token.map)
     return "\n".join(lines)
 
 
@@ -169,60 +191,76 @@ def _demote_html_block(lines: list[str], start: int, end: int) -> None:
 
 
 def _demote_html_inline(
-    lines: list[str], children: list[Token] | None, start: int, end: int
+    lines: list[str], content: str, children: list[Token] | None, start: int, end: int
 ) -> None:
-    """Rewrite each HTML heading tag's level within the inline span *start* to *end*."""
-    if not any(child.type == "html_inline" for child in children or ()):
-        return
-    joined = "\n".join(lines[start:end])
-    masked = _code_span_ranges(joined)
+    """Rewrite each real HTML heading tag's level within the inline span *start* to *end*.
 
-    def _demote_unless_masked(match: re.Match[str]) -> str:
-        if any(lo <= match.start() < hi for lo, hi in masked):
-            return match.group()
-        return _demote_html_tag(match)
-
-    lines[start:end] = _HTML_HEADING_RE.sub(_demote_unless_masked, joined).split("\n")
-
-
-def _code_span_ranges(text: str) -> list[tuple[int, int]]:
-    """The ``(start, end)`` character ranges of *text* a backtick code span covers.
-
-    Mirrors ``markdown_it``'s own backtick scan (``rules_inline/backticks.py``),
-    including its reject cache: a run of many distinct-length backtick runs that
-    never close would otherwise rescan the remaining text once per run.
+    A tag's raw extent comes from the parser's own match (``_html_inline_with_span``),
+    recorded as an offset into *content*, the parser's de-prefixed reconstruction of
+    this span. Each raw line ends with its content-line counterpart exactly, because
+    a container only ever strips a prefix from a line's front, so that offset maps
+    onto the raw lines exactly; where it does not (a construct outside that rule,
+    such as a hard line break), the span is left as written rather than guessed at.
     """
-    ranges: list[tuple[int, int]] = []
-    reject: dict[int, int] = {}
-    scanned_to_end = False
-    i, length = 0, len(text)
-    while i < length:
-        if text[i] != "`":
-            i += 1
-            continue
-        run_start = i
-        while i < length and text[i] == "`":
-            i += 1
-        opener_length = i - run_start
-        if scanned_to_end and reject.get(opener_length, -1) <= run_start:
-            continue
-        probe = i
-        while True:
-            close = text.find("`", probe)
-            if close == -1:
-                scanned_to_end = True
-                break
-            close_end = close
-            while close_end < length and text[close_end] == "`":
-                close_end += 1
-            closer_length = close_end - close
-            if closer_length == opener_length:
-                ranges.append((run_start, close_end))
-                i = close_end
-                break
-            reject[closer_length] = close
-            probe = close_end
-    return ranges
+    spans = [child.meta for child in children or () if child.type == "html_inline" and child.meta]
+    if not spans:
+        return
+    raw_lines = lines[start:end]
+    content_lines = content.split("\n")
+    widths = _line_prefix_widths(raw_lines, content_lines)
+    if widths is None:
+        return
+    raw = "\n".join(raw_lines)
+    for span in spans:
+        raw_start = _map_content_pos(span["start"], content_lines, widths)
+        raw_end = _map_content_pos(span["end"], content_lines, widths)
+        tag = _HTML_HEADING_RE.sub(_demote_html_tag, raw[raw_start:raw_end])
+        raw = raw[:raw_start] + tag + raw[raw_end:]
+    lines[start:end] = raw.split("\n")
+
+
+def _line_prefix_widths(raw_lines: list[str], content_lines: list[str]) -> list[int] | None:
+    """The stripped container-prefix width of each of *raw_lines*, or None when
+    *content_lines* is not each raw line with only its front trimmed."""
+    if len(raw_lines) != len(content_lines):
+        return None
+    widths = []
+    for raw_line, content_line in zip(raw_lines, content_lines, strict=True):
+        width = _line_prefix_width(raw_line, content_line)
+        if width is None:
+            return None
+        widths.append(width)
+    return widths
+
+
+def _line_prefix_width(raw_line: str, content_line: str) -> int | None:
+    """*content_line*'s leading offset into *raw_line*, or None when *content_line*
+    is not *raw_line* with a leading container prefix removed.
+
+    A container also drops the line's trailing spaces and tabs before parsing it
+    for inline content, a plain top-level line does not, and both are checked
+    here because either can be this line's raw form.
+    """
+    if raw_line.endswith(content_line):
+        return len(raw_line) - len(content_line)
+    trimmed = raw_line.rstrip(" \t")
+    if trimmed.endswith(content_line):
+        return len(trimmed) - len(content_line)
+    return None
+
+
+def _map_content_pos(pos: int, content_lines: list[str], widths: list[int]) -> int:
+    """*pos*, an offset into *content_lines* joined by newlines, as the same offset
+    into the raw lines joined the same way, each widened by its prefix."""
+    raw_pos = 0
+    remaining = pos
+    for content_line, width in zip(content_lines, widths, strict=True):
+        line_len = len(content_line)
+        if remaining <= line_len:
+            return raw_pos + width + remaining
+        remaining -= line_len + 1
+        raw_pos += width + line_len + 1
+    return raw_pos + remaining
 
 
 def default_export_name(meta: SessionMeta) -> str:

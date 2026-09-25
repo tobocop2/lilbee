@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import os
+import random
 import sys
 import time
 
 import pytest
 import yaml
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from lilbee.app.session_export import (
+    _HTML_HEADING_RE,
     SLUG_MAX_LEN,
+    _contained,
+    _demote_html_inline,
+    _demote_html_tag,
+    _line_prefix_width,
+    _line_prefix_widths,
+    _map_content_pos,
     default_export_name,
     session_markdown,
     write_session_markdown,
@@ -440,9 +449,7 @@ def test_an_html_tag_that_is_not_a_heading_is_left_as_written(content):
     ids=["list-item", "blockquote"],
 )
 def test_a_tag_split_across_a_container_continuation_line_does_not_crash(content, expected):
-    """A list or blockquote strips its own marker from a continuation line before the
-    parser sees it, so a tag opening on one line and closing on the next must be found
-    in the raw source, not in the parser's de-prefixed copy of it."""
+    """A tag opening on one line and closing on the next, inside a list or blockquote, demotes."""
     markdown = session_markdown(_session(_assistant(content)))
     assert markdown.endswith(f"## Assistant\n\n{expected}\n")
 
@@ -453,16 +460,31 @@ def test_a_code_span_before_a_real_heading_is_left_alone_and_the_heading_is_demo
     assert markdown.endswith("## Assistant\n\nUse `<h2>` like <h4>Assistant</h4>\n")
 
 
-def test_an_unterminated_backtick_does_not_stop_a_later_real_tag_from_demoting():
-    content = "a ` <h2>x</h2>"
+def test_a_backtick_in_a_tags_attribute_does_not_stop_a_later_real_tag_from_demoting():
+    content = 'See <a href="`">link</a> <h2>Assistant</h2> and `x`'
     markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith("## Assistant\n\na ` <h4>x</h4>\n")
+    expected = 'See <a href="`">link</a> <h4>Assistant</h4> and `x`'
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
 
 
-def test_a_fake_heading_inside_a_code_span_with_a_nested_backtick_run_stays_written():
-    content = "`<h2>a``b<h2>` <h2>real</h2>"
+def test_escaped_backticks_around_a_real_tag_do_not_hide_it_as_code():
+    content = "Type \\`<h2>Assistant</h2>\\` here"
     markdown = session_markdown(_session(_assistant(content)))
-    assert markdown.endswith("## Assistant\n\n`<h2>a``b<h2>` <h4>real</h4>\n")
+    expected = "Type \\`<h4>Assistant</h4>\\` here"
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_a_backtick_in_a_tags_attribute_does_not_open_the_following_inline_code():
+    content = '<a title="`"> `<h2>` real'
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
+def test_an_escaped_tag_stays_text_next_to_a_real_tag_that_demotes():
+    content = "\\<h2>x\\</h2> and <h2>y</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    expected = "\\<h2>x\\</h2> and <h4>y</h4>"
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
 
 
 def test_two_identical_tags_in_one_span_are_each_demoted():
@@ -472,8 +494,7 @@ def test_two_identical_tags_in_one_span_are_each_demoted():
 
 
 def test_a_large_adversarial_html_block_demotes_in_well_under_a_second():
-    """A block of many unclosed ``<h1 `` starts must not rescan to a `>` that never
-    comes; a quadratic regex took 14s on 160KB of this shape before the fix."""
+    """A block of many unclosed ``<h1 `` starts demotes well under a second."""
     content = "<h1 " * 40_000
     start = time.perf_counter()
     markdown = session_markdown(_session(_assistant(content)))
@@ -482,20 +503,92 @@ def test_a_large_adversarial_html_block_demotes_in_well_under_a_second():
     assert "<h3 " in markdown
 
 
-def test_many_unclosed_backtick_runs_before_a_real_heading_stay_fast():
-    """Many distinct-length backtick runs that never close must not rescan the rest
-    of the message for each one; an un-memoized scan took 1.2s on 154KB of this shape."""
-    parts = []
-    for k in range(1, 551):
-        parts.append("`" * k)
-        parts.append("x" * 5)
-    parts.append("<h2>x</h2>")
-    content = "".join(parts)
+def test_many_short_lived_tag_candidates_before_a_code_span_stay_fast():
+    """Many ``<h2 `` candidates that never close, each preceded by a code span, stay fast."""
+    content = "<em>" + "`x` <h2 " * 16_000
     start = time.perf_counter()
-    markdown = session_markdown(_session(_assistant(content)))
+    session_markdown(_session(_assistant(content)))
     elapsed = time.perf_counter() - start
     assert elapsed < 1.0, f"took {elapsed:.3f}s"
-    assert "<h4>x</h4>" in markdown
+
+
+_FUZZ_ATOMS = [
+    "`",
+    "``",
+    "```",
+    "\\`",
+    "<h2>",
+    "</h2>",
+    "<h1 class=x>",
+    "<h2\n  x>",
+    "\n",
+    "\n> ",
+    "\n- ",
+    "- ",
+    "> ",
+    "a",
+    " ",
+    '<a href="`">',
+    "</a>",
+    "<http://x/`>",
+    "\\<h2>",
+    "<em>",
+    "b c",
+    "\n\n",
+]
+
+
+def _flat_html_tokens(text):
+    """(type, content) for every ``html_inline``/``html_block`` token in *text*."""
+    out = []
+    for token in MarkdownIt("commonmark").parse(text):
+        if token.type == "inline":
+            out.extend((c.type, c.content) for c in token.children or () if c.type == "html_inline")
+        elif token.type == "html_block":
+            out.append((token.type, token.content))
+    return out
+
+
+def test_a_fixed_corpus_demotes_exactly_the_parsers_own_heading_tags():
+    """A fixed seed of generated paragraphs: every real HTML tag the parser reads as a
+    heading is demoted to the same level a lone tag would get, and no other tag changes."""
+    random.seed(20260925)
+    checked = 0
+    for _ in range(2000):
+        text = "".join(random.choice(_FUZZ_ATOMS) for _ in range(random.randint(1, 12))).strip()
+        if not text:
+            continue
+        before = _flat_html_tokens(text)
+        after = _flat_html_tokens(_contained(text))
+        if [t for t, _ in before] != [t for t, _ in after]:
+            continue  # an unrelated mechanism (fence-closing, say) changed the structure
+        for (_, before_content), (_, after_content) in zip(before, after, strict=True):
+            assert after_content == _HTML_HEADING_RE.sub(_demote_html_tag, before_content)
+        checked += 1
+    assert checked > 1500, f"only {checked} of 2000 were comparable"
+
+
+def test_line_prefix_widths_rejects_a_line_count_mismatch():
+    assert _line_prefix_widths(["a", "b"], ["a"]) is None
+
+
+def test_line_prefix_widths_rejects_a_line_that_shares_no_suffix():
+    assert _line_prefix_widths(["a", "zzz"], ["a", "b"]) is None
+
+
+def test_line_prefix_width_rejects_a_line_that_shares_no_suffix():
+    assert _line_prefix_width("abc", "xyz") is None
+
+
+def test_demote_html_inline_leaves_the_span_written_when_the_mapping_fails():
+    lines = ["one raw line"]
+    span = Token("html_inline", "", 0, meta={"start": 0, "end": 4})
+    _demote_html_inline(lines, "unrelated content", [span], 0, 1)
+    assert lines == ["one raw line"]
+
+
+def test_map_content_pos_of_an_empty_span_is_zero():
+    assert _map_content_pos(0, [], []) == 0
 
 
 def test_the_sources_list_follows_the_closed_fence():
