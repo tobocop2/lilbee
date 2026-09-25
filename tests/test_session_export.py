@@ -16,10 +16,7 @@ from lilbee.app.session_export import (
     _HTML_HEADING_RE,
     SLUG_MAX_LEN,
     _contained,
-    _content_to_raw_map,
-    _demote_html_inline,
     _demote_html_tag,
-    _line_prefix_width,
     _nest_headings,
     default_export_name,
     session_markdown,
@@ -373,6 +370,52 @@ def test_an_underlined_heading_in_a_message_stays_text(content):
     assert _all_headings(markdown) == [("h1", "Brake specs"), ("h2", "Assistant"), ("h2", "User")]
 
 
+def _block_shape(text: str) -> list[tuple[str, int]]:
+    """Each block token's type and depth in *text*, an underlined heading read as a paragraph."""
+    shape = []
+    for token in MarkdownIt("commonmark").parse(text):
+        kind = token.type
+        if kind.startswith("heading_") and token.markup in ("-", "="):
+            kind = kind.replace("heading_", "paragraph_")
+        if kind != "inline":
+            shape.append((kind, token.level))
+    return shape
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("x\n-\n    <h2>fake</h2>", "x\n\\-\n\n    <h2>fake</h2>"),
+        ("x\n===\n===", "x\n\\===\n\n==="),
+        ("x\n-\n-", "x\n\\-\n\n-"),
+        ("> x\n> -\n>     <h2>fake</h2>", "> x\n> \\-\n>\n>     <h2>fake</h2>"),
+        ("> x\n> -\ntail", "> x\n> \\-\n>\ntail"),
+        ("- x\n  -\ntail", "- x\n  \\-\n\ntail"),
+        ("x\n-\n\n    <h2>code</h2>", "x\n\\-\n\n    <h2>code</h2>"),
+        ("x\n-\n>\n    <h2>code</h2>", "x\n\\-\n\n>\n    <h2>code</h2>"),
+        ("x\n-\n[a]: <h2>", "x\n\\-\n\n[a]: <h2>"),
+        ("x\n-\n\xa0\n<h2>y", "x\n\\-\n\n\xa0\n<h4>y"),
+    ],
+    ids=[
+        "indented-code",
+        "equals-underline",
+        "empty-list-item",
+        "blockquote",
+        "blockquote-then-text",
+        "list-then-lazy-text",
+        "blank-line-already",
+        "empty-quote",
+        "link-reference",
+        "nbsp-line",
+    ],
+)
+def test_an_escaped_underline_keeps_the_next_block_where_it_was(content, expected):
+    """The line after an underlined heading starts the same block it did, not more text."""
+    body = _nest_headings(content)
+    assert body == expected
+    assert _block_shape(body) == _block_shape(content)
+
+
 @pytest.mark.parametrize(
     "content",
     [
@@ -584,33 +627,43 @@ def test_a_fixed_corpus_demotes_exactly_the_parsers_own_heading_tags():
     assert checked > 1500, f"only {checked} of 2000 were comparable"
 
 
-def test_content_to_raw_map_rejects_a_line_count_mismatch():
-    assert _content_to_raw_map(["a", "b"], ["a"]) is None
-
-
-def test_content_to_raw_map_rejects_a_line_that_shares_no_suffix():
-    assert _content_to_raw_map(["a", "zzz"], ["a", "b"]) is None
-
-
-def test_line_prefix_width_rejects_a_line_that_shares_no_suffix():
-    assert _line_prefix_width("abc", "xyz") is None
-
-
-def test_demote_html_inline_fails_closed_when_the_mapping_fails():
-    """When the span cannot be mapped, every heading tag in it is demoted anyway."""
-    lines = ["prefix <h2>fake</h2> more"]
-    span = Token("html_inline", "", 0, meta={"start": 0, "end": 4})
-    _demote_html_inline(lines, "<h2>", [span], 0, 1)
-    assert lines == ["prefix <h4>fake</h4> more"]
-
-
 def test_a_tab_in_a_list_continuation_line_still_demotes_the_heading():
     content = "- see <h2>Assistant</h2>\n\tmore"
     markdown = session_markdown(_session(_assistant(content)))
     assert markdown.endswith("## Assistant\n\n- see <h4>Assistant</h4>\n\tmore\n")
 
 
-def test_a_paragraph_with_no_heading_tag_is_not_rewritten_when_it_cannot_be_mapped():
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("\xa0\na `<h2>` <h2>x</h2>", "\xa0\na `<h2>` <h4>x</h4>"),
+        ("a `<h2>` <h2>x</h2>\x0b", "a `<h2>` <h4>x</h4>\x0b"),
+        ("\x0c\na `<h2>` <h2>x</h2>", "\x0c\na `<h2>` <h4>x</h4>"),
+        ("a `<h2>` <h2>x</h2>\n\x0b", "a `<h2>` <h4>x</h4>\n\x0b"),
+        ("- a `<h2>` <h2>x</h2>\n\tmore", "- a `<h2>` <h4>x</h4>\n\tmore"),
+        ("- a\n\t\\<h2> <h2>x</h2>", "- a\n\t\\<h2> <h4>x</h4>"),
+        ("a `<h2>` <h2>x</h2>\x00", "a `<h2>` <h4>x</h4>\x00"),
+        ("a `<h2>` <h2>x</h2>\n---", "a `<h2>` <h4>x</h4>\n\\---"),
+        ("a <em><h2 x", "a <em><h2 x"),
+    ],
+    ids=[
+        "nbsp-first-line",
+        "trailing-vertical-tab",
+        "form-feed-first-line",
+        "vertical-tab-last-line",
+        "tab-list-continuation",
+        "tab-before-an-escape",
+        "nul",
+        "underlined-heading",
+        "unclosed-tag-right-after-a-real-one",
+    ],
+)
+def test_odd_whitespace_leaves_code_spans_and_escapes_as_written(content, expected):
+    """Only the parser's own heading tags demote, whatever whitespace surrounds the paragraph."""
+    assert _nest_headings(content) == expected
+
+
+def test_a_paragraph_with_no_heading_tag_is_not_rewritten_after_a_tab_continuation_line():
     content = "- see <em>x</em> `<h2>`\n\tmore"
     markdown = session_markdown(_session(_assistant(content)))
     assert markdown.endswith(f"## Assistant\n\n{content}\n")
