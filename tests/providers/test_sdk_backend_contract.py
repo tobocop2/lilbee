@@ -116,7 +116,12 @@ class TestAvailable:
 
     @pytest.mark.real_litellm_probe
     def test_returns_false_when_sdk_missing(self, backend: LlmSdkBackend) -> None:
-        with mock.patch.dict(sys.modules, {"litellm": None}):
+        from importlib.metadata import PackageNotFoundError
+
+        def not_installed(dist: str) -> str:
+            raise PackageNotFoundError(dist)
+
+        with mock.patch("lilbee.providers.litellm_sdk._dist_version", not_installed):
             assert backend.available() is False
 
 

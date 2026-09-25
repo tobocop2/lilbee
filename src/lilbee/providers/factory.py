@@ -33,15 +33,12 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
             # migrating to a different SDK. Replace LitellmSdkBackend here
             # with the new adapter and the rest of lilbee is untouched.
             # heavy: litellm_sdk loads litellm provider fanout (>50ms)
-            from lilbee.providers.litellm_sdk import LitellmSdkBackend
+            from lilbee.providers.litellm_sdk import LITELLM_MISSING_MSG, LitellmSdkBackend
             from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
             backend = LitellmSdkBackend()
             if not backend.available():
-                raise ProviderError(
-                    "SDK backend adapter is not installed. Install with: "
-                    "pip install 'lilbee[litellm]'"
-                )
+                raise ProviderError(LITELLM_MISSING_MSG)
             return SdkLLMProvider(
                 backend,
                 api_key=config.llm_api_key,

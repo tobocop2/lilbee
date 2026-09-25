@@ -623,13 +623,14 @@ class TestAppCanonicalizeFallbackNotice:
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.core.config import cfg
         from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+        from lilbee.modelhub.model_manager.validation import REASON_LITELLM_MISSING
 
         app = LilbeeApp()
         embed_canon = CanonicalRef(
             original="ollama/nomic-embed-text:latest",
             effective="ollama/nomic-embed-text:latest",
             status=ValidationResult.UNKNOWN,
-            reason="the litellm extra isn't installed; run pip install 'lilbee[litellm]'",
+            reason=REASON_LITELLM_MISSING,
         )
         ok_canon = CanonicalRef(
             original="ok/model", effective="ok/model", status=ValidationResult.OK

@@ -343,9 +343,7 @@ def test_canonicalize_embedding_model_ok_passthrough():
 @pytest.fixture
 def _litellm_absent():
     """Pretend the litellm extra is not installed (the reported crash scenario)."""
-    with mock.patch(
-        "lilbee.modelhub.model_manager.validation.litellm_available", return_value=False
-    ):
+    with mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=False):
         yield
 
 
@@ -399,7 +397,7 @@ def test_ollama_ref_unusable_when_server_unreachable():
     """litellm present but the server is down: unusable, reason names the server."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with (
-        mock.patch("lilbee.modelhub.model_manager.validation.litellm_available", return_value=True),
+        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[],
@@ -420,7 +418,7 @@ def test_ollama_ref_unusable_when_the_server_listing_is_malformed():
     # The parse loop runs outside the request guard, so this raises past it.
     response.json.return_value = {"models": [None]}
     with (
-        mock.patch("lilbee.modelhub.model_manager.validation.litellm_available", return_value=True),
+        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.discovery._http_get",
             return_value=response,
@@ -437,7 +435,7 @@ def test_ollama_ref_kept_when_server_live():
     """litellm present and the server lists models: keep the user's ollama ref."""
     cfg.embedding_model = "ollama/nomic-embed-text:latest"
     with (
-        mock.patch("lilbee.modelhub.model_manager.validation.litellm_available", return_value=True),
+        mock.patch("lilbee.providers.litellm_sdk.litellm_available", return_value=True),
         mock.patch(
             "lilbee.modelhub.model_manager.validation.classify_remote_models",
             return_value=[mock.MagicMock()],

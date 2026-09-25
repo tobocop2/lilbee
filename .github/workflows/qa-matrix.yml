@@ -378,6 +378,15 @@ jobs:
           python -m pip install "lilbee[crawler,litellm]==${{ steps.ver.outputs.version }}"
           echo "LILBEE_QA_BIN=$(command -v lilbee)" >> "$GITHUB_ENV"
 
+      # crawl4ai's litellm fork shares litellm's package; remove it until crawl4ai ships unclecode/crawl4ai#2107.
+      - name: Remove the litellm fork that crawl4ai installs
+        run: |
+          litellm_version="$(python -c 'from importlib.metadata import version; print(version("litellm"))')"
+          python -m pip uninstall -y unclecode-litellm
+          python -m pip install --force-reinstall --no-deps "litellm==${litellm_version}"
+          if python -m pip show -q unclecode-litellm; then exit 1; fi
+          python -c 'import crawl4ai; from litellm import completion'
+
       - name: Bring up Ollama
         uses: ./.github/actions/ollama-up
         with:

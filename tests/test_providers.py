@@ -17,6 +17,8 @@ from tests._gguf_fixture import has_gguf_parser
 from tests._sys_modules import inject_modules
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from lilbee.providers.routing_provider import RoutingProvider
     from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
@@ -992,57 +994,49 @@ class TestLitellmResponseView:
 
 
 class TestLitellmAvailable:
-    """Exercises the un-patched ``litellm_available`` install probe.
-
-    The helper uses ``importlib.util.find_spec`` so the check is cheap to
-    call on the UI thread (Settings's ``_FEATURE_GATED_GROUPS`` hits it
-    synchronously during ``compose``). Mocking ``find_spec`` is the right
-    boundary for these tests; ``sys.modules`` doesn't matter for the
-    spec-lookup path.
-    """
+    """The un-patched ``litellm_available`` probe, driven through installed-package metadata."""
 
     @pytest.mark.real_litellm_probe
-    def test_returns_false_when_not_installed(self) -> None:
+    @pytest.mark.parametrize(
+        ("versions", "expected"),
+        [
+            ({"litellm": "1.98.0"}, True),
+            ({"litellm": "1.98.0", "unclecode_litellm": "1.81.13"}, True),
+            ({"unclecode_litellm": "1.81.13"}, False),
+            ({}, False),
+        ],
+        ids=["litellm-only", "both", "fork-only", "neither"],
+    )
+    def test_requires_the_real_litellm_distribution(
+        self, versions: dict[str, str], expected: bool
+    ) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
-        litellm_available.cache_clear()
-        with mock.patch("importlib.util.find_spec", return_value=None):
-            assert litellm_available() is False
-        litellm_available.cache_clear()
-
-    @pytest.mark.real_litellm_probe
-    def test_returns_true_when_module_present(self) -> None:
-        from lilbee.providers.litellm_sdk import litellm_available
-
-        litellm_available.cache_clear()
-        with mock.patch(
-            "importlib.util.find_spec",
-            return_value=mock.MagicMock(name="litellm_spec"),
-        ):
-            assert litellm_available() is True
-        litellm_available.cache_clear()
+        with mock.patch("lilbee.providers.litellm_sdk._dist_version", _installed_dists(**versions)):
+            assert litellm_available() is expected
 
     @pytest.mark.real_litellm_probe
     def test_does_not_execute_module_init(self) -> None:
-        """Regression guard: the probe must not import the package itself.
-
-        ``litellm.__init__`` loads provider plugins and takes multi-second
-        time on Windows. Settings's compose calls this synchronously, so
-        executing the module would block the UI thread on every fresh
-        process. Asserting that no ``litellm`` entry lands in
-        ``sys.modules`` after the probe runs codifies the contract.
-        """
+        """The probe reads metadata only; importing litellm would block the Settings compose."""
         from lilbee.providers.litellm_sdk import litellm_available
 
-        litellm_available.cache_clear()
-        with mock.patch(
-            "importlib.util.find_spec",
-            return_value=mock.MagicMock(name="litellm_spec"),
-        ):
-            had_module = "litellm" in sys.modules
-            litellm_available()
-            assert ("litellm" in sys.modules) is had_module
-        litellm_available.cache_clear()
+        had_module = "litellm" in sys.modules
+        assert litellm_available() is True
+        assert ("litellm" in sys.modules) is had_module
+
+    @pytest.mark.real_litellm_probe
+    def test_fork_only_reports_the_litellm_extra_missing(self) -> None:
+        from lilbee.modelhub.model_manager.validation import (
+            REASON_LITELLM_MISSING,
+            ValidationResult,
+            _classify_local_server_ref,
+        )
+        from lilbee.providers.local_servers import OLLAMA
+
+        lookup = _installed_dists(unclecode_litellm="1.81.13")
+        with mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup):
+            result = _classify_local_server_ref(OLLAMA)
+        assert result == (ValidationResult.UNKNOWN, REASON_LITELLM_MISSING)
 
 
 class TestLitellmBackendSupportsTools:
@@ -1069,17 +1063,128 @@ class TestRequireLitellm:
         ):
             _require_litellm()
 
+    def test_install_hint_keeps_the_users_own_extras(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        lookup = _installed_dists(unclecode_litellm="1.81.13")
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            pytest.raises(ProviderError) as caught,
+        ):
+            _require_litellm()
+        message = str(caught.value)
+        assert "run your install command again with litellm added to the extras" in message
+        assert "--excludes excludes.txt" in message
+        assert "pip install 'lilbee[litellm]'" in message
+        assert "unclecode-litellm" in message
+        assert "uv tool install --prerelease=allow 'lilbee[" not in message
+
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.factory import create_provider
-        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.litellm_sdk import LITELLM_MISSING_MSG, LitellmSdkBackend
 
         cfg.llm_provider = "remote"
         with (
             mock.patch.object(LitellmSdkBackend, "available", return_value=False),
-            pytest.raises(ProviderError, match="SDK backend adapter is not installed"),
+            pytest.raises(ProviderError) as caught,
         ):
             create_provider(cfg)
+        assert str(caught.value) == LITELLM_MISSING_MSG
+
+
+_FORK_ERROR = "Both litellm and unclecode-litellm are installed"
+
+
+def _installed_dists(**versions: str) -> Callable[[str], str]:
+    """Build a distribution-version lookup that knows only *versions* (keys use ``_``)."""
+    from importlib.metadata import PackageNotFoundError
+
+    known = {name.replace("_", "-"): value for name, value in versions.items()}
+
+    def lookup(dist: str) -> str:
+        if dist not in known:
+            raise PackageNotFoundError(dist)
+        return known[dist]
+
+    return lookup
+
+
+class TestLitellmForkGuard:
+    def test_raises_when_litellm_and_fork_are_both_installed(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            inject_modules({"litellm": mock.MagicMock()}),
+            pytest.raises(ProviderError, match=_FORK_ERROR) as caught,
+        ):
+            _require_litellm()
+        message = str(caught.value)
+        assert "pip uninstall -y unclecode-litellm" in message
+        assert "pip install --force-reinstall --no-deps litellm==1.98.0" in message
+        assert "your install command again with --reinstall --excludes excludes.txt" in message
+        assert "lilbee[" not in message
+
+    def test_fork_check_runs_before_the_litellm_import(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            inject_modules({"litellm": None}),
+            pytest.raises(ProviderError, match=_FORK_ERROR),
+        ):
+            _require_litellm()
+
+    def test_complete_refuses_before_calling_litellm(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import LitellmSdkBackend
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_backend import CompletionRequest
+
+        fake_litellm = mock.MagicMock()
+        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
+        request = CompletionRequest(
+            ref=parse_model_ref("openai/gpt-4o"), messages=[{"role": "user", "content": "hi"}]
+        )
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            inject_modules({"litellm": fake_litellm}),
+            pytest.raises(ProviderError, match=_FORK_ERROR),
+        ):
+            LitellmSdkBackend().complete(request)
+        fake_litellm.completion.assert_not_called()
+
+    def test_real_litellm_alone_loads(self) -> None:
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        fake_litellm = mock.MagicMock()
+        with (
+            mock.patch(
+                "lilbee.providers.litellm_sdk._dist_version", _installed_dists(litellm="1.98.0")
+            ),
+            inject_modules({"litellm": fake_litellm}),
+        ):
+            assert _require_litellm() is fake_litellm
+
+    @pytest.mark.parametrize(
+        "versions", [{"unclecode_litellm": "1.81.13"}, {}], ids=["fork-only", "neither"]
+    )
+    def test_refuses_without_the_real_distribution(self, versions: dict[str, str]) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", _installed_dists(**versions)),
+            inject_modules({"litellm": mock.MagicMock()}),
+            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
+        ):
+            _require_litellm()
 
 
 class TestLiteLLMShowModelCapabilities:
