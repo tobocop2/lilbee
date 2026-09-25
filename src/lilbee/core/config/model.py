@@ -668,7 +668,8 @@ class Config(BaseSettings):
     crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, writable=True)
     crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, writable=True)
     crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, writable=True)
-    crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
+    # crawlberg refuses more than 20 retries.
+    crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, le=20, writable=True)
 
     # Regex patterns dropped at link-discovery time. Defaults block CMS
     # scaffolding (WordPress admin, archives, tracking params, etc.).

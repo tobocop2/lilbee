@@ -9,10 +9,12 @@ import ipaddress
 import json
 import logging
 import os
-from collections.abc import AsyncGenerator
-from contextlib import aclosing
+import threading
+from collections.abc import AsyncGenerator, Iterator
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from lilbee.core.config.enums import CrawlRenderMode
@@ -31,7 +33,7 @@ log = logging.getLogger(__name__)
 
 _Network = TypeVar("_Network", ipaddress.IPv4Network, ipaddress.IPv6Network)
 
-# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.7.1, DEFAULT_DENY_NET_CIDRS).
+# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.8.0, DEFAULT_DENY_NET_CIDRS).
 CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -51,6 +53,12 @@ CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, 
     )
 )
 _MAX_REDIRECTS = 10
+# Tracking query parameters stripped from a discovered link before it is queued: crawlberg's
+# default list, set explicitly. A trailing ``*`` matches by prefix.
+_TRACKING_PARAMS = ("utm_*", "fbclid", "gclid", "ref")
+# A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
+_BROWSER_OVERALL_TIMEOUTS = 2
+_BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
 _RATE_LIMIT_STATUSES = (429, 503)
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
@@ -146,7 +154,7 @@ def _ssrf_policy() -> crawlberg.SsrfPolicy:
 
 
 def _content_config() -> crawlberg.ContentConfig:
-    """Markdown output that keeps navigation, forms and all page text."""
+    """Markdown output with no frontmatter that keeps navigation, forms and all page text."""
     import crawlberg
 
     return crawlberg.ContentConfig(
@@ -154,6 +162,42 @@ def _content_config() -> crawlberg.ContentConfig:
         remove_forms=False,
         exclude_selectors=[],
         preprocessing_preset="minimal",
+        extract_metadata=False,
+    )
+
+
+def _ms(seconds: float) -> int:
+    """*seconds* in whole milliseconds."""
+    return round(seconds * _MS_PER_SECOND)
+
+
+@dataclass(frozen=True)
+class _Pacing:
+    """crawlberg's per-domain delay and jitter ratio for waits in ``[mean, mean + range]``.
+
+    crawlberg scales the delay by a factor in ``[1 - ratio, 1 + ratio]``, so the delay is
+    the middle of that span and the ratio is half the range over it.
+    """
+
+    rate_limit_ms: int
+    jitter_ratio: float
+
+    @classmethod
+    def of(cls, spec: ConcurrencySpec) -> _Pacing:
+        half_range = spec.max_delay_range / 2
+        middle = spec.mean_delay + half_range
+        return cls(_ms(middle), half_range / middle if middle > 0 else 0.0)
+
+
+def _browser_config(render_mode: CrawlRenderMode, timeout_ms: int) -> crawlberg.BrowserConfig:
+    """The browser settings, with a deadline on each whole browser fetch."""
+    import crawlberg
+
+    return crawlberg.BrowserConfig(
+        mode=_BROWSER_MODES[render_mode],
+        timeout=timeout_ms,
+        overall_timeout=timeout_ms * _BROWSER_OVERALL_TIMEOUTS,
+        shutdown_timeout=_BROWSER_SHUTDOWN_TIMEOUT_MS,
     )
 
 
@@ -161,38 +205,91 @@ def _crawl_config(render_mode: CrawlRenderMode, spec: _CrawlSpec) -> crawlberg.C
     """The crawlberg config for one crawl, with every default lilbee depends on set."""
     import crawlberg
 
-    pacing = spec.concurrency
-    retries = pacing.retry_on_rate_limit
-    timeout_ms = int(spec.timeout * _MS_PER_SECOND)
-    # crawlberg has no delay jitter or backoff range, so max_delay_range and the
-    # retry delay settings do not apply.
+    concurrency = spec.concurrency
+    retries = concurrency.retry_on_rate_limit
+    pacing = _Pacing.of(concurrency)
+    timeout_ms = _ms(spec.timeout)
     return crawlberg.CrawlConfig(
         max_depth=spec.depth,
         max_pages=spec.max_pages,
-        max_concurrent=pacing.semaphore_count,
+        max_concurrent=concurrency.semaphore_count,
         stay_on_domain=True,
         allow_subdomains=spec.filters.include_subdomains,
         exclude_paths=list(spec.filters.exclude_patterns),
+        path_patterns_match_query=True,
+        dedup_include_query=True,
+        strip_tracking_params=True,
+        tracking_params=list(_TRACKING_PARAMS),
         request_timeout=timeout_ms,
-        rate_limit_ms=int(pacing.mean_delay * _MS_PER_SECOND),
+        rate_limit_ms=pacing.rate_limit_ms,
+        rate_limit_jitter_ratio=pacing.jitter_ratio,
         max_redirects=_MAX_REDIRECTS,
-        retry_count=pacing.retry_max_attempts if retries else 0,
+        retry_count=concurrency.retry_max_attempts if retries else 0,
         retry_codes=list(_RATE_LIMIT_STATUSES) if retries else [],
+        retry_initial_delay_ms=_ms(
+            (concurrency.retry_base_delay_min + concurrency.retry_base_delay_max) / 2
+        ),
+        retry_max_delay_ms=_ms(concurrency.retry_max_backoff),
         respect_robots_txt=False,
         soft_http_errors=False,
         download_documents=False,
         content=_content_config(),
-        browser=crawlberg.BrowserConfig(mode=_BROWSER_MODES[render_mode], timeout=timeout_ms),
+        browser=_browser_config(render_mode, timeout_ms),
         ssrf=_ssrf_policy(),
     )
 
 
-def _point_at_headless_shell() -> None:
-    """Make crawlberg launch Playwright's headless shell, never a system Chrome."""
+def _headless_shell() -> Path:
+    """Playwright's headless shell, which browser mode launches instead of a system Chrome."""
     executable = bootstrap.headless_shell_executable()
     if executable is None:
         raise ChromiumMissingError(CHROMIUM_MISSING_MESSAGE)
-    os.environ[_CHROME_ENV] = str(executable)
+    return executable
+
+
+class _ChromeEnv:
+    """Sets ``CHROME`` while any browser crawl runs and restores it after the last one.
+
+    crawlberg reads the variable at every browser launch and takes no path argument,
+    so it stays set for the whole of each crawl, including crawls that overlap.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._crawls = 0
+        self._saved: str | None = None
+
+    @contextmanager
+    def pointing_at(self, executable: Path | None) -> Iterator[None]:
+        """Point ``CHROME`` at *executable* for the block; ``None`` leaves it alone."""
+        if executable is None:
+            yield
+            return
+        self._enter(executable)
+        try:
+            yield
+        finally:
+            self._exit()
+
+    def _enter(self, executable: Path) -> None:
+        with self._lock:
+            if self._crawls == 0:
+                self._saved = os.environ.get(_CHROME_ENV)
+            self._crawls += 1
+            os.environ[_CHROME_ENV] = str(executable)
+
+    def _exit(self) -> None:
+        with self._lock:
+            self._crawls -= 1
+            if self._crawls > 0:
+                return
+            if self._saved is None:
+                os.environ.pop(_CHROME_ENV, None)
+            else:
+                os.environ[_CHROME_ENV] = self._saved
+
+
+_chrome_env = _ChromeEnv()
 
 
 def _parse_event(raw: object) -> _Event | None:
@@ -214,7 +311,10 @@ def _parse_event(raw: object) -> _Event | None:
 
 
 async def _events(
-    config: crawlberg.CrawlConfig, seed_url: str, cancel: CancelToken | None
+    config: crawlberg.CrawlConfig,
+    seed_url: str,
+    cancel: CancelToken | None,
+    chrome: Path | None,
 ) -> AsyncGenerator[_Event, None]:
     """Stream one crawl's page and error events until it completes or *cancel* is set.
 
@@ -223,16 +323,17 @@ async def _events(
     """
     import crawlberg
 
-    engine = crawlberg.create_engine(config)
-    # crawl_stream is an async generator; its stub types it as an AsyncIterator.
-    stream = cast(AsyncGenerator[object, None], crawlberg.crawl_stream(engine, seed_url))
-    async with aclosing(stream):
-        async for raw in stream:
-            if cancel is not None and cancel.is_set():
-                return
-            event = _parse_event(raw)
-            if event is not None:
-                yield event
+    with _chrome_env.pointing_at(chrome):
+        engine = crawlberg.create_engine(config)
+        # crawl_stream is an async generator; its stub types it as an AsyncIterator.
+        stream = cast(AsyncGenerator[object, None], crawlberg.crawl_stream(engine, seed_url))
+        async with aclosing(stream):
+            async for raw in stream:
+                if cancel is not None and cancel.is_set():
+                    return
+                event = _parse_event(raw)
+                if event is not None:
+                    yield event
 
 
 def _url_allowed(url: str) -> bool:
@@ -245,11 +346,11 @@ def _url_allowed(url: str) -> bool:
 
 
 async def _to_page(event: _Event, seed_url: str) -> FetchedPage | None:
-    """The fetched page for *event*, or None when lilbee's policy refuses its final URL."""
+    """The fetched page for *event*, or None when lilbee's URL policy refuses its URL."""
     if event.kind is _EventKind.ERROR:
         return FetchedPage(url=event.url, success=False, error=event.error)
     if not await asyncio.to_thread(_url_allowed, event.url):
-        log.warning("Dropped %s: lilbee does not crawl the address it resolves to", event.url)
+        log.warning("Dropped %s: lilbee's URL policy refuses it", event.url)
         return None
     url = seed_url if event.depth == _SEED_DEPTH else event.url
     return FetchedPage(url=url, markdown=event.markdown)
@@ -282,15 +383,17 @@ class CrawlbergFetcher:
     ) -> None:
         return None
 
-    def _config(self, spec: _CrawlSpec) -> crawlberg.CrawlConfig:
-        if self._render_mode is CrawlRenderMode.BROWSER:
-            _point_at_headless_shell()
-        return _crawl_config(self._render_mode, spec)
+    def _stream(
+        self, spec: _CrawlSpec, seed_url: str, cancel: CancelToken | None
+    ) -> AsyncGenerator[_Event, None]:
+        """This crawl's events; browser mode finds the headless shell before any engine starts."""
+        chrome = _headless_shell() if self._render_mode is CrawlRenderMode.BROWSER else None
+        return _events(_crawl_config(self._render_mode, spec), seed_url, cancel, chrome)
 
     async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
         """Fetch *url* alone; a redirected page keeps the requested URL."""
-        config = self._config(_CrawlSpec(depth=_SEED_DEPTH, max_pages=1, timeout=timeout))
-        async with aclosing(_events(config, url, None)) as events:
+        spec = _CrawlSpec(depth=_SEED_DEPTH, max_pages=1, timeout=timeout)
+        async with aclosing(self._stream(spec, url, None)) as events:
             async for event in events:
                 return _single_result(await _to_page(event, url), url)
         return _single_result(None, url)
@@ -312,8 +415,7 @@ class CrawlbergFetcher:
         like a link filtered out before it is fetched; a refused seed is a failed page.
         """
         spec = _CrawlSpec(depth, max_pages, timeout, concurrency, filters)
-        config = self._config(spec)
-        async with aclosing(_events(config, seed_url, cancel)) as events:
+        async with aclosing(self._stream(spec, seed_url, cancel)) as events:
             async for event in events:
                 if event.refused_by_ssrf and event.url != seed_url:
                     log.debug("crawlberg refused %s: %s", event.url, event.error)

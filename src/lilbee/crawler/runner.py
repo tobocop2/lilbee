@@ -44,15 +44,7 @@ from lilbee.runtime.progress import (
     CrawlStartEvent,
     DetailedProgressCallback,
     EventType,
-    SetupDoneEvent,
-    SetupStartEvent,
 )
-
-# Component name for the browser-warmup setup phase (distinct from the
-# Chromium download, whose component is "chromium"). The crawl emits a
-# start/done bracket around opening the crawler so the Task Center shows a
-# "preparing crawler" stage instead of a silent stall on first use.
-_BROWSER_SETUP_COMPONENT = "browser"
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +107,6 @@ async def _fetch_single_page(url: str, render_mode: CrawlRenderMode) -> CrawlRes
 async def crawl_single(
     url: str,
     *,
-    on_progress: DetailedProgressCallback | None = None,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
 ) -> CrawlResult:
     """Fetch a single URL.
@@ -127,10 +118,6 @@ async def crawl_single(
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
     When the headless Chromium shell is missing at launch, runs the bootstrap
     once and retries.
-
-    ``on_progress`` receives a setup_start/setup_done bracket around opening
-    the crawler so the first crawl's browser warmup is visible rather than a
-    silent stall.
     """
     validate_crawl_url(url)
     from lilbee.crawler import crawler_available
@@ -138,16 +125,6 @@ async def crawl_single(
     if not crawler_available():
         raise bootstrap.CrawlerBackendError(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
-        )
-    # The setup bracket exists to surface the Chromium warmup, which only
-    # happens in browser mode; HTTP mode opens a browserless client with no
-    # warmup, so emitting a "browser" setup stage there would be misleading.
-    emit_setup = render_mode is CrawlRenderMode.BROWSER
-    if on_progress is not None and emit_setup:
-        on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
-        on_progress(
-            EventType.SETUP_DONE,
-            SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
         )
     try:
         return await _fetch_single_page(url, render_mode)
@@ -218,20 +195,8 @@ async def crawl_recursive(
     filters = build_filter_spec(include_subdomains=include_subdomains)
 
     results: list[CrawlResult] = []
-    # Browser mode launches Chromium, whose one-time warmup can take many
-    # seconds; bracket it with setup events so the Task Center shows a
-    # "preparing crawler" stage instead of a silent stall. HTTP mode has no
-    # browser warmup, so the bracket is skipped to avoid a misleading stage.
-    emit_setup = render_mode is CrawlRenderMode.BROWSER
-    if on_progress is not None and emit_setup:
-        on_progress(EventType.SETUP_START, SetupStartEvent(component=_BROWSER_SETUP_COMPONENT))
     try:
         async with CrawlbergFetcher(render_mode=render_mode) as fetcher:
-            if on_progress is not None and emit_setup:
-                on_progress(
-                    EventType.SETUP_DONE,
-                    SetupDoneEvent(component=_BROWSER_SETUP_COMPONENT, success=True),
-                )
             # The explicit reference lets the stream close, and the crawl stop,
             # the moment the drain breaks on max_pages or cancel.
             page_stream = fetcher.fetch_recursive(
@@ -373,7 +338,7 @@ async def _run_crawl(
     """
     depth = _resolve_depth(depth, cfg.crawl_max_depth)
     if depth == 0:
-        result = await crawl_single(url, on_progress=on_progress, render_mode=render_mode)
+        result = await crawl_single(url, render_mode=render_mode)
         try:
             await flush_page(result)
         except OSError:

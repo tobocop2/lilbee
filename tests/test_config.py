@@ -325,6 +325,18 @@ class TestOcrLanguage:
             with pytest.raises(ValidationError):
                 setattr(cfg, field, bad)
 
+    def test_crawl_retry_attempts_stop_at_the_crawler_limit(self):
+        from pydantic import ValidationError
+
+        original = cfg.crawl_retry_max_attempts
+        try:
+            cfg.crawl_retry_max_attempts = 20
+            assert cfg.crawl_retry_max_attempts == 20
+            with pytest.raises(ValidationError):
+                cfg.crawl_retry_max_attempts = 21
+        finally:
+            cfg.crawl_retry_max_attempts = original
+
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
             c = Config()

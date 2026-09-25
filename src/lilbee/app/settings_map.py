@@ -818,19 +818,28 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Enable per-domain backoff and retries on HTTP 429/503",
+        help_text=(
+            "Retry a page that answers HTTP 429 or 503, another server error, or a timeout."
+            " Off: no retries"
+        ),
     ),
     "crawl_retry_base_delay_min": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Minimum base-delay (seconds) on rate-limit responses",
+        help_text=(
+            "Base delay range, low end (seconds). The first retry waits halfway between"
+            " the low and high end, and each later retry waits twice as long"
+        ),
     ),
     "crawl_retry_base_delay_max": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Maximum base-delay (seconds) on rate-limit responses",
+        help_text=(
+            "Base delay range, high end (seconds). The first retry waits halfway between"
+            " the low and high end, and each later retry waits twice as long"
+        ),
     ),
     "crawl_retry_max_backoff": SettingDef(
         float,
@@ -842,7 +851,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Retry count per URL when a rate-limit code comes back",
+        help_text="Retries per page, at most 20",
     ),
     "crawl_exclude_patterns": SettingDef(
         list,
