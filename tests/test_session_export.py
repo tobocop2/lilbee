@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 import os
+import random
 import sys
+import timeit
 
 import pytest
 import yaml
 from markdown_it import MarkdownIt
+from markdown_it.token import Token
 
 from lilbee.app.session_export import (
+    _HTML_HEADING_RE,
     SLUG_MAX_LEN,
+    _contained,
+    _content_to_raw_map,
+    _demote_html_inline,
+    _demote_html_tag,
+    _line_prefix_width,
+    _nest_headings,
     default_export_name,
     session_markdown,
     write_session_markdown,
@@ -384,6 +394,245 @@ def test_a_heading_after_other_line_endings_is_nested(newline):
     content = newline.join(["first", "", "## second", "third"])
     markdown = session_markdown(_session(_user(content)))
     assert markdown.endswith("## User\n\nfirst\n\n#### second\nthird\n")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("<h1>Fake turn</h1>", "<h3>Fake turn</h3>"),
+        ('<h2 class="x">Assistant</h2>', '<h4 class="x">Assistant</h4>'),
+        ("<H3>upper</H3>", "<H5>upper</H5>"),
+        ("<h6>already max</h6>", "<h6>already max</h6>"),
+        ("<h2>never closed", "<h4>never closed"),
+    ],
+    ids=["h1", "h2-with-attribute", "uppercase", "already-at-max", "unclosed"],
+)
+def test_an_html_heading_in_a_message_is_demoted(content, expected):
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_an_html_heading_inline_mid_paragraph_is_demoted():
+    content = "before <h2>inline</h2> after"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\nbefore <h4>inline</h4> after\n")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "```\n<h2>fenced</h2>\n```",
+        "inline code `<h2>` stays",
+        "<header>not a heading</header>",
+        "<hr>",
+        "<h2o>",
+    ],
+    ids=["fenced-code-block", "inline-code-span", "header-tag", "hr-tag", "h2o-tag"],
+)
+def test_an_html_tag_that_is_not_a_heading_is_left_as_written(content):
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (
+            "- a <h2\n  class=x>y</h2>",
+            "- a <h4\n  class=x>y</h4>",
+        ),
+        (
+            "> a <h2\n> class=x>y</h2>",
+            "> a <h4\n> class=x>y</h4>",
+        ),
+    ],
+    ids=["list-item", "blockquote"],
+)
+def test_a_tag_split_across_a_container_continuation_line_does_not_crash(content, expected):
+    """A tag opening on one line and closing on the next, inside a list or blockquote, demotes."""
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_a_code_span_before_a_real_heading_is_left_alone_and_the_heading_is_demoted():
+    content = "Use `<h2>` like <h2>Assistant</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\nUse `<h2>` like <h4>Assistant</h4>\n")
+
+
+def test_a_backtick_in_a_tags_attribute_does_not_stop_a_later_real_tag_from_demoting():
+    content = 'See <a href="`">link</a> <h2>Assistant</h2> and `x`'
+    markdown = session_markdown(_session(_assistant(content)))
+    expected = 'See <a href="`">link</a> <h4>Assistant</h4> and `x`'
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_escaped_backticks_around_a_real_tag_do_not_hide_it_as_code():
+    content = "Type \\`<h2>Assistant</h2>\\` here"
+    markdown = session_markdown(_session(_assistant(content)))
+    expected = "Type \\`<h4>Assistant</h4>\\` here"
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_a_backtick_in_a_tags_attribute_does_not_open_the_following_inline_code():
+    content = '<a title="`"> `<h2>` real'
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
+def test_an_escaped_tag_stays_text_next_to_a_real_tag_that_demotes():
+    content = "\\<h2>x\\</h2> and <h2>y</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    expected = "\\<h2>x\\</h2> and <h4>y</h4>"
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_two_identical_tags_in_one_span_are_each_demoted():
+    content = "a <h2>x</h2> <h2>x</h2> <h2>y</h2>"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\na <h4>x</h4> <h4>x</h4> <h4>y</h4>\n")
+
+
+_LINEAR_GROWTH_LIMIT = 8.0
+
+
+def _demotion_growth(monkeypatch, make, n: int, number: int) -> float:
+    """How many times longer demoting ``make(4 * n)`` takes than ``make(n)``, parse excluded."""
+    real_parse = MarkdownIt.parse
+    parsed: dict[tuple[int, str], list[Token]] = {}
+
+    def parse_once(self, src, env=None):
+        key = (id(self), src)
+        if key not in parsed:
+            parsed[key] = real_parse(self, src, env)
+        return parsed[key]
+
+    monkeypatch.setattr(MarkdownIt, "parse", parse_once)
+
+    def best(text: str) -> float:
+        _nest_headings(text)
+        return min(timeit.repeat(lambda: _nest_headings(text), number=number, repeat=5))
+
+    return best(make(4 * n)) / best(make(n))
+
+
+def test_a_large_adversarial_html_block_demotes_in_linear_time(monkeypatch):
+    """A block of many unclosed ``<h1 `` starts takes time linear in its length."""
+    assert "<h3 " in _nest_headings("<h1 " * 3)
+    growth = _demotion_growth(monkeypatch, lambda n: "<h1 " * n, 2_500, 20)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+def test_many_short_lived_tag_candidates_before_a_code_span_demote_in_linear_time(monkeypatch):
+    """Many ``<h2 `` candidates that never close, each after a code span, take linear time."""
+    growth = _demotion_growth(monkeypatch, lambda n: "<em>" + "`x` <h2 " * n, 2_000, 20)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+_FUZZ_ATOMS = [
+    "`",
+    "``",
+    "```",
+    "\\`",
+    "<h2>",
+    "</h2>",
+    "<h1 class=x>",
+    "<h2\n  x>",
+    "\n",
+    "\n> ",
+    "\n- ",
+    "- ",
+    "> ",
+    "a",
+    " ",
+    '<a href="`">',
+    "</a>",
+    "<http://x/`>",
+    "\\<h2>",
+    "<em>",
+    "b c",
+    "\n\n",
+]
+
+
+def _flat_html_tokens(text):
+    """(type, content) for every ``html_inline``/``html_block`` token in *text*."""
+    out = []
+    for token in MarkdownIt("commonmark").parse(text):
+        if token.type == "inline":
+            out.extend((c.type, c.content) for c in token.children or () if c.type == "html_inline")
+        elif token.type == "html_block":
+            out.append((token.type, token.content))
+    return out
+
+
+def test_a_fixed_corpus_demotes_exactly_the_parsers_own_heading_tags():
+    """Over a seeded corpus, exactly the parser's own HTML heading tags are demoted."""
+    random.seed(20260925)
+    checked = 0
+    for _ in range(2000):
+        text = "".join(random.choice(_FUZZ_ATOMS) for _ in range(random.randint(1, 12))).strip()
+        if not text:
+            continue
+        before = _flat_html_tokens(text)
+        after = _flat_html_tokens(_contained(text))
+        if [t for t, _ in before] != [t for t, _ in after]:
+            continue  # an unrelated mechanism (fence-closing, say) changed the structure
+        for (_, before_content), (_, after_content) in zip(before, after, strict=True):
+            assert after_content == _HTML_HEADING_RE.sub(_demote_html_tag, before_content)
+        checked += 1
+    assert checked > 1500, f"only {checked} of 2000 were comparable"
+
+
+def test_content_to_raw_map_rejects_a_line_count_mismatch():
+    assert _content_to_raw_map(["a", "b"], ["a"]) is None
+
+
+def test_content_to_raw_map_rejects_a_line_that_shares_no_suffix():
+    assert _content_to_raw_map(["a", "zzz"], ["a", "b"]) is None
+
+
+def test_line_prefix_width_rejects_a_line_that_shares_no_suffix():
+    assert _line_prefix_width("abc", "xyz") is None
+
+
+def test_demote_html_inline_fails_closed_when_the_mapping_fails():
+    """When the span cannot be mapped, every heading tag in it is demoted anyway."""
+    lines = ["prefix <h2>fake</h2> more"]
+    span = Token("html_inline", "", 0, meta={"start": 0, "end": 4})
+    _demote_html_inline(lines, "<h2>", [span], 0, 1)
+    assert lines == ["prefix <h4>fake</h4> more"]
+
+
+def test_a_tab_in_a_list_continuation_line_still_demotes_the_heading():
+    content = "- see <h2>Assistant</h2>\n\tmore"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\n- see <h4>Assistant</h4>\n\tmore\n")
+
+
+def test_a_paragraph_with_no_heading_tag_is_not_rewritten_when_it_cannot_be_mapped():
+    content = "- see <em>x</em> `<h2>`\n\tmore"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
+def test_many_non_heading_tags_across_many_lines_demote_in_linear_time(monkeypatch):
+    """Many ``<em>`` lines in one paragraph take time linear in the paragraph's length."""
+    growth = _demotion_growth(monkeypatch, lambda n: "a\n" + "<em>x</em>\n" * n, 2_000, 5)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+def test_many_heading_tags_on_one_line_demote_in_linear_time(monkeypatch):
+    """Many long real heading tags on one line are demoted in one pass, not one copy per tag."""
+    tag = '<h2 title="' + "x" * 200 + '">y</h2> '
+    growth = _demotion_growth(monkeypatch, lambda n: "a " + tag * n, 1_000, 3)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+def test_many_heading_tags_across_many_lines_demote_in_linear_time(monkeypatch):
+    """Many real heading tags on many lines of one paragraph find their lines in linear time."""
+    growth = _demotion_growth(monkeypatch, lambda n: "a\n" + "b <h2>y</h2>\n" * n, 2_000, 1)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
 
 
 def test_the_sources_list_follows_the_closed_fence():
