@@ -206,10 +206,7 @@ def _demote_html_inline(
     content_lines = content.split("\n")
     mapping = _content_to_raw_map(raw_lines, content_lines)
     if mapping is None:
-        # A fake turn-level heading is worse than over-demoting, so every heading
-        # look-alike in the span is demoted directly in the raw text, including one
-        # inside a code span or an escaped string, when a construct such as a
-        # tab-expanded continuation line keeps this mapping from placing it exactly.
+        # Whitespace such as a tab, \f, \v or NBSP defeats the mapping: demote every look-alike.
         joined = "\n".join(raw_lines)
         lines[start:end] = _HTML_HEADING_RE.sub(_demote_html_tag, joined).split("\n")
         return
@@ -249,8 +246,7 @@ def _content_to_raw_map(
 
 
 def _line_prefix_width(raw_line: str, content_line: str) -> int | None:
-    """*content_line*'s leading offset into *raw_line*, front-trimmed and, since a
-    container also drops trailing spaces and tabs, optionally back-trimmed too."""
+    """*content_line*'s offset into *raw_line*, which may also end in spaces and tabs."""
     if raw_line.endswith(content_line):
         return len(raw_line) - len(content_line)
     trimmed = raw_line.rstrip(" \t")
@@ -260,8 +256,7 @@ def _line_prefix_width(raw_line: str, content_line: str) -> int | None:
 
 
 def _map_content_pos(pos: int, content_starts: list[int], deltas: list[int]) -> int:
-    """*pos*, an offset into the content lines joined by newlines, as the same offset
-    into the raw lines joined the same way, found in one line's constant offset."""
+    """*pos* in the joined content lines as the same position in the joined raw lines."""
     line = bisect_right(content_starts, pos) - 1
     return pos + deltas[line]
 

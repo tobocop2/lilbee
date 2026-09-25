@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import random
 import sys
-import time
+import timeit
 
 import pytest
 import yaml
@@ -20,6 +20,7 @@ from lilbee.app.session_export import (
     _demote_html_inline,
     _demote_html_tag,
     _line_prefix_width,
+    _nest_headings,
     default_export_name,
     session_markdown,
     write_session_markdown,
@@ -492,23 +493,40 @@ def test_two_identical_tags_in_one_span_are_each_demoted():
     assert markdown.endswith("## Assistant\n\na <h4>x</h4> <h4>x</h4> <h4>y</h4>\n")
 
 
-def test_a_large_adversarial_html_block_demotes_in_well_under_a_second():
-    """A block of many unclosed ``<h1 `` starts demotes well under a second."""
-    content = "<h1 " * 40_000
-    start = time.perf_counter()
-    markdown = session_markdown(_session(_assistant(content)))
-    elapsed = time.perf_counter() - start
-    assert elapsed < 1.0, f"took {elapsed:.3f}s"
-    assert "<h3 " in markdown
+_LINEAR_GROWTH_LIMIT = 8.0
 
 
-def test_many_short_lived_tag_candidates_before_a_code_span_stay_fast():
-    """Many ``<h2 `` candidates that never close, each preceded by a code span, stay fast."""
-    content = "<em>" + "`x` <h2 " * 16_000
-    start = time.perf_counter()
-    session_markdown(_session(_assistant(content)))
-    elapsed = time.perf_counter() - start
-    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+def _demotion_growth(monkeypatch, make, n: int, number: int) -> float:
+    """How many times longer demoting ``make(4 * n)`` takes than ``make(n)``, parse excluded."""
+    real_parse = MarkdownIt.parse
+    parsed: dict[tuple[int, str], list[Token]] = {}
+
+    def parse_once(self, src, env=None):
+        key = (id(self), src)
+        if key not in parsed:
+            parsed[key] = real_parse(self, src, env)
+        return parsed[key]
+
+    monkeypatch.setattr(MarkdownIt, "parse", parse_once)
+
+    def best(text: str) -> float:
+        _nest_headings(text)
+        return min(timeit.repeat(lambda: _nest_headings(text), number=number, repeat=5))
+
+    return best(make(4 * n)) / best(make(n))
+
+
+def test_a_large_adversarial_html_block_demotes_in_linear_time(monkeypatch):
+    """A block of many unclosed ``<h1 `` starts takes time linear in its length."""
+    assert "<h3 " in _nest_headings("<h1 " * 3)
+    growth = _demotion_growth(monkeypatch, lambda n: "<h1 " * n, 2_500, 20)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+def test_many_short_lived_tag_candidates_before_a_code_span_demote_in_linear_time(monkeypatch):
+    """Many ``<h2 `` candidates that never close, each after a code span, take linear time."""
+    growth = _demotion_growth(monkeypatch, lambda n: "<em>" + "`x` <h2 " * n, 2_000, 20)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
 
 
 _FUZZ_ATOMS = [
@@ -549,8 +567,7 @@ def _flat_html_tokens(text):
 
 
 def test_a_fixed_corpus_demotes_exactly_the_parsers_own_heading_tags():
-    """A fixed seed of generated paragraphs: every real HTML tag the parser reads as a
-    heading is demoted to the same level a lone tag would get, and no other tag changes."""
+    """Over a seeded corpus, exactly the parser's own HTML heading tags are demoted."""
     random.seed(20260925)
     checked = 0
     for _ in range(2000):
@@ -580,8 +597,7 @@ def test_line_prefix_width_rejects_a_line_that_shares_no_suffix():
 
 
 def test_demote_html_inline_fails_closed_when_the_mapping_fails():
-    """A tab-expanded continuation line, among other causes, can make the mapping fail;
-    every heading tag in the span is demoted anyway rather than left at turn level."""
+    """When the span cannot be mapped, every heading tag in it is demoted anyway."""
     lines = ["prefix <h2>fake</h2> more"]
     span = Token("html_inline", "", 0, meta={"start": 0, "end": 4})
     _demote_html_inline(lines, "<h2>", [span], 0, 1)
@@ -594,22 +610,29 @@ def test_a_tab_in_a_list_continuation_line_still_demotes_the_heading():
     assert markdown.endswith("## Assistant\n\n- see <h4>Assistant</h4>\n\tmore\n")
 
 
-def test_many_non_heading_tags_in_one_message_do_not_each_cost_a_mapping_and_a_copy():
-    """Every ``<em>`` span costs a parser match; a non-heading one costs nothing more."""
-    content = "a\n" + "<em>x</em>\n" * 20_000
-    start = time.perf_counter()
-    session_markdown(_session(_assistant(content)))
-    elapsed = time.perf_counter() - start
-    assert elapsed < 5.0, f"took {elapsed:.3f}s"
+def test_a_paragraph_with_no_heading_tag_is_not_rewritten_when_it_cannot_be_mapped():
+    content = "- see <em>x</em> `<h2>`\n\tmore"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
 
 
-def test_many_real_heading_tags_in_one_message_build_the_output_once():
-    """Demoting many real tags in one span is one pass over it, not one copy per tag."""
-    content = "a " + "<h2>x</h2> " * 40_000
-    start = time.perf_counter()
-    session_markdown(_session(_assistant(content)))
-    elapsed = time.perf_counter() - start
-    assert elapsed < 5.0, f"took {elapsed:.3f}s"
+def test_many_non_heading_tags_across_many_lines_demote_in_linear_time(monkeypatch):
+    """Many ``<em>`` lines in one paragraph take time linear in the paragraph's length."""
+    growth = _demotion_growth(monkeypatch, lambda n: "a\n" + "<em>x</em>\n" * n, 2_000, 5)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+def test_many_heading_tags_on_one_line_demote_in_linear_time(monkeypatch):
+    """Many long real heading tags on one line are demoted in one pass, not one copy per tag."""
+    tag = '<h2 title="' + "x" * 200 + '">y</h2> '
+    growth = _demotion_growth(monkeypatch, lambda n: "a " + tag * n, 1_000, 3)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+
+
+def test_many_heading_tags_across_many_lines_demote_in_linear_time(monkeypatch):
+    """Many real heading tags on many lines of one paragraph find their lines in linear time."""
+    growth = _demotion_growth(monkeypatch, lambda n: "a\n" + "b <h2>y</h2>\n" * n, 2_000, 1)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
 
 
 def test_the_sources_list_follows_the_closed_fence():
