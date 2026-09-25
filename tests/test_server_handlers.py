@@ -5428,7 +5428,10 @@ class TestSourceContentRoute:
     @pytest.mark.parametrize(
         ("filename", "header"),
         [
-            ('a"b.html', "attachment; filename=\"a_b.html\"; filename*=UTF-8''a%22b.html"),
+            (
+                "my notes.html",
+                "attachment; filename=\"my notes.html\"; filename*=UTF-8''my%20notes.html",
+            ),
             (
                 "制动.html",
                 "attachment; filename=\"__.html\"; filename*=UTF-8''%E5%88%B6%E5%8A%A8.html",
