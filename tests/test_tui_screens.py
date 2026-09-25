@@ -27,6 +27,7 @@ from lilbee.cli.tui.screens.catalog import (
     _WORKER_FETCH_HF,
     _WORKER_FETCH_MORE_HF,
     _WORKER_FETCH_REMOTE,
+    CatalogScreen,
 )
 from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
@@ -4545,7 +4546,9 @@ async def test_chat_log_does_not_follow_again_from_part_way_back_down():
 
         await _reader_scrolls_up(pilot)
         await _grow_answer(pilot, widget, 160)
-        assert log.max_scroll_y > was_the_bottom, "precondition: the answer outgrew that spot"
+        assert await pump_until(pilot, lambda: log.max_scroll_y > was_the_bottom), (
+            "precondition: the answer outgrew that spot"
+        )
 
         # Back to where the bottom used to be -- short of where it is now.
         log.scroll_to(y=was_the_bottom, animate=False)
@@ -6068,12 +6071,22 @@ async def test_catalog_grid_scroll_fires_load_more_near_bottom():
                 assert load_more.called
 
 
-async def test_catalog_scroll_prefetch_skipped_during_cooldown():
-    """A second scroll fires within the cooldown window must not re-trigger load."""
-    import time as _time
+_PREFETCH_ARMED_AT = 100.0
+_SINCE_ARMED = pytest.mark.parametrize(
+    ("since_armed", "loads"),
+    [(0.1, False), (CatalogScreen._SCROLL_PREFETCH_COOLDOWN + 0.1, True)],
+    ids=["inside_cooldown", "after_cooldown"],
+)
 
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
 
+def _catalog_clock_at(now: float):
+    """Pin the catalog's clock, so a cooldown test does not depend on the runner's speed."""
+    return patch("lilbee.cli.tui.screens.catalog.time", SimpleNamespace(monotonic=lambda: now))
+
+
+@_SINCE_ARMED
+async def test_catalog_scroll_prefetch_waits_out_the_cooldown(since_armed, loads):
+    """A list scroll past the threshold loads the next page only once the cooldown has run out."""
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
@@ -6086,10 +6099,18 @@ async def test_catalog_scroll_prefetch_skipped_during_cooldown():
             screen._grid_view = False
             screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            screen._scroll_prefetch_armed_at = _time.monotonic()
-            with patch.object(screen, "_load_more") as load_more:
+            screen._scroll_prefetch_armed_at = _PREFETCH_ARMED_AT
+            list_type = type(screen._list_widget)
+            with (
+                patch.object(
+                    list_type, "max_scroll_y", new_callable=PropertyMock, return_value=100.0
+                ),
+                patch.object(list_type, "scroll_y", new_callable=PropertyMock, return_value=99.0),
+                patch.object(screen, "_load_more") as load_more,
+                _catalog_clock_at(_PREFETCH_ARMED_AT + since_armed),
+            ):
                 screen._on_list_scrolled(99.0)
-                assert not load_more.called
+            assert load_more.called is loads
 
 
 async def test_catalog_scroll_prefetch_skipped_when_max_scroll_zero():
@@ -6289,13 +6310,10 @@ async def test_catalog_mouse_scroll_loads_more_in_list_view_at_max():
                 assert load_more.called
 
 
-async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
-    """Repeat wheel events at max_y inside the cooldown must not cascade."""
-    import time as _time
-
+@_SINCE_ARMED
+async def test_catalog_mouse_scroll_at_max_y_waits_out_the_cooldown(since_armed, loads):
+    """A wheel at max_y loads the next page only after the cooldown, so repeats cannot cascade."""
     from textual.events import MouseScrollDown
-
-    from lilbee.cli.tui.screens.catalog import CatalogScreen
 
     app = CatalogTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -6309,7 +6327,7 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
             screen._grid_view = True
             screen._hf_has_more_by_task[ModelTask.CHAT] = True
             screen._loading_more = False
-            screen._scroll_prefetch_armed_at = _time.monotonic()
+            screen._scroll_prefetch_armed_at = _PREFETCH_ARMED_AT
             container_type = type(screen._grid_container)
             event = MouseScrollDown(None, 0, 0, 0, 1, 0, False, False, False)
             with (
@@ -6326,9 +6344,10 @@ async def test_catalog_mouse_scroll_at_max_y_respects_cooldown():
                     return_value=100.0,
                 ),
                 patch.object(screen, "_load_more") as load_more,
+                _catalog_clock_at(_PREFETCH_ARMED_AT + since_armed),
             ):
                 screen.on_mouse_scroll_down(event)
-                assert not load_more.called
+            assert load_more.called is loads
 
 
 async def test_catalog_mouse_scroll_in_list_view_below_max_defers():
@@ -13262,8 +13281,12 @@ async def test_chat_turn_end_scrolls_to_the_end_of_the_finished_answer():
         # Hold the debounce open so the rest stays buffered however long the
         # pause above took: a slow host must not quietly turn this into a test
         # of an answer that already overflowed before it finished.
-        widget._last_md_update = time.monotonic()
-        widget.append_content("\n\n".join(f"answer paragraph {i}" for i in range(300)))
+        armed_at = time.monotonic()
+        widget._last_md_update = armed_at
+        with patch(
+            "lilbee.cli.tui.widgets.message.time", SimpleNamespace(monotonic=lambda: armed_at)
+        ):
+            widget.append_content("\n\n".join(f"answer paragraph {i}" for i in range(300)))
         await _settle(pilot)
         assert log.max_scroll_y == 0, "precondition: the tail is still buffered"
 

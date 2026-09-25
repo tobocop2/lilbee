@@ -5479,10 +5479,14 @@ class TestSelfCheck:
         )
         monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
         monkeypatch.setattr("lilbee.providers.fleet.planning._plan_devices", lambda _b: [])
-        # Applying the GPU env disables conflicting Vulkan ICDs, which enumerates
-        # adapters in a child process. That child gets 10 seconds and does not
-        # always start inside it on a Windows runner, so the test times out on
-        # work it is not about.
+        # The Vulkan adapter probe runs in a child that gets 10 seconds, and on a
+        # loaded Windows runner it does not always start inside them. Both the
+        # loader safety step and the sizing device read ask that probe, so stub
+        # the probe itself, and keep the loader safety step's environment writes
+        # out of this process.
+        monkeypatch.setattr(
+            "lilbee.providers.fleet.gpu_select._enumerate_vulkan_devices", lambda: None
+        )
         monkeypatch.setattr(
             "lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda *a, **k: None
         )
