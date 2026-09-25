@@ -8,6 +8,7 @@ import json
 import threading
 import time
 from collections.abc import Iterator
+from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -18,6 +19,7 @@ from lilbee.core.config import cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.crawler import crawl_and_save, url_filter  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
+    _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
     admitted_networks,
@@ -30,8 +32,25 @@ LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128")
 NAT64 = ipaddress.ip_network("64:ff9b::/96")
 SLOW_PAGES = 40
 SLOW_DELAY_S = 0.3
-SSRF_REFUSAL = "ssrf_policy_violation"
 CANCEL_BOUND_S = 2.0
+
+
+QUERY_LINKS = (
+    "/query/item?id=1",
+    "/query/item?id=2",
+    "/query/promo?utm_source=news",
+    "/query/ad?gclid=abc&utm_term=spring",
+    "/query/blog?p=42",
+    "/moved",
+)
+
+
+def _query_page(path: str, filler: str) -> str:
+    """The query listing, or a page whose text names the path and query it was served for."""
+    if path == "/query/":
+        links = "".join(f'<a href="{link}">{link}</a> ' for link in QUERY_LINKS)
+        return f"<html><head><title>Listing</title></head><body>{links}{filler}</body></html>"
+    return f"<html><head><title>T</title></head><body><p>Served {path}.</p>{filler}</body></html>"
 
 
 class _Site:
@@ -58,6 +77,10 @@ class _Site:
 
     def _body(self, path: str) -> tuple[int, str]:
         filler = "<p>" + "Ordinary prose for a real page. " * 6 + "</p>"
+        if path == "/moved":
+            return 301, "/query/target"
+        if path.startswith("/query/"):
+            return 200, _query_page(path, filler)
         if path in ("/wide/", "/slow/"):
             links = "".join(f'<a href="{path}p{n}">p{n}</a> ' for n in range(SLOW_PAGES))
             special = '<a href="/wiki/Special:Random">random</a><a href="/wiki/Home">home</a>'
@@ -79,6 +102,12 @@ class _Site:
                 with site._lock:
                     site.requests.append((time.monotonic(), self.path))
                 status, body = site._body(self.path)
+                if status == HTTPStatus.MOVED_PERMANENTLY:
+                    self.send_response(status)
+                    self.send_header("Location", body)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 data = body.encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "text/html")
@@ -155,7 +184,7 @@ class TestSsrfBlocklistsAgree:
     @pytest.mark.parametrize("network", CRAWLBERG_DENIED_NETWORKS, ids=str)
     async def test_crawlberg_refuses_each_network_in_the_copied_list(self, network):
         policy = crawlberg.SsrfPolicy(deny_private=True)
-        assert (await _first_error(policy, _representative(network))).startswith(SSRF_REFUSAL)
+        assert (await _first_error(policy, _representative(network))).startswith(_SSRF_ERROR_CODE)
 
     @pytest.mark.parametrize(
         "network",
@@ -166,7 +195,7 @@ class TestSsrfBlocklistsAgree:
         from lilbee.crawler.crawlberg_fetcher import _ssrf_policy
 
         error = await _first_error(_ssrf_policy(), _representative(network))
-        assert error.startswith(SSRF_REFUSAL), error
+        assert error.startswith(_SSRF_ERROR_CODE), error
 
     async def test_built_policy_admits_what_lilbee_admits(self):
         from lilbee.crawler.crawlberg_fetcher import _ssrf_policy
@@ -175,7 +204,7 @@ class TestSsrfBlocklistsAgree:
             ipaddress.ip_network("224.0.0.0/4")
         ]
         error = await _first_error(_ssrf_policy(), "224.0.0.1")
-        assert not error.startswith(SSRF_REFUSAL), error
+        assert not error.startswith(_SSRF_ERROR_CODE), error
 
 
 def _stream(fetcher: CrawlbergFetcher, url: str, **kwargs):
@@ -204,8 +233,9 @@ class TestCancel:
                 cancelled_at = time.monotonic()
         stopped_at = time.monotonic()
         assert stopped_at - cancelled_at < CANCEL_BOUND_S
-        await asyncio.sleep(1.0)
-        assert site.paths_since(stopped_at + SLOW_DELAY_S, "/slow/p") == []
+        # crawlberg keeps fetching briefly after a crawl stops (xberg-io/crawlberg#77).
+        await asyncio.sleep(CANCEL_BOUND_S + 1.0)
+        assert site.paths_since(stopped_at + CANCEL_BOUND_S, "/slow/p") == []
         assert len(received) <= 4
 
 
@@ -245,3 +275,40 @@ class TestCrawlAndSave:
         saved = {p.relative_to(cfg.documents_dir).as_posix() for p in paths}
         assert any(name.endswith("wiki/Home/index.md") for name in saved), saved
         assert not any("Special" in name for name in saved), saved
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestQueryUrlsAndRedirects:
+    async def _saved_text(self, site: _Site) -> str:
+        paths = await crawl_and_save(site.url("/query/"), depth=1, max_pages=0)
+        return "\n".join(p.read_text(encoding="utf-8") for p in paths)
+
+    async def test_pages_that_differ_only_by_query_are_each_saved(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/item?id=1." in saved
+        assert "Served /query/item?id=2." in saved
+
+    async def test_tracking_parameters_are_stripped_before_the_fetch(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/promo." in saved
+        assert site.paths_since(0, "/query/promo") == ["/query/promo"]
+
+    async def test_gclid_and_utm_term_are_stripped(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/ad." in saved
+        assert site.paths_since(0, "/query/ad") == ["/query/ad"]
+
+    async def test_exclude_patterns_see_the_query(self, site):
+        saved = await self._saved_text(site)
+        assert "/query/blog?p=42." not in saved
+        assert site.paths_since(0, "/query/blog") == []
+
+    async def test_a_discovered_link_that_redirects_saves_its_target(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/target." in saved
+
+    async def test_saved_markdown_has_no_frontmatter(self, site):
+        paths = await crawl_and_save(site.url("/query/"), depth=0)
+        text = paths[0].read_text(encoding="utf-8")
+        assert not text.startswith("---")
+        assert "title: Listing" not in text

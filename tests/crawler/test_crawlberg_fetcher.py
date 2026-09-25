@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import threading
 from collections.abc import AsyncIterator
 
@@ -12,8 +13,11 @@ from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawlberg_fetcher as fetcher_mod
 from lilbee.crawler.bootstrap import ChromiumMissingError
 from lilbee.crawler.crawlberg_fetcher import (
+    _CHROME_ENV,
+    _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
+    _ChromeEnv,
     admitted_networks,
     crawler_available,
 )
@@ -77,7 +81,7 @@ class TestAdmittedNetworks:
 
 
 class TestCrawlConfig:
-    async def test_every_oracle_default_is_set_explicitly(self):
+    async def test_every_crawlberg_default_lilbee_relies_on_is_set_explicitly(self):
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_http(), filters=FilterSpec(["/wp-admin"], include_subdomains=True))
@@ -98,8 +102,24 @@ class TestCrawlConfig:
             "remove_forms": False,
             "exclude_selectors": [],
             "preprocessing_preset": "minimal",
+            "extract_metadata": False,
         }
-        assert config["browser"].kwargs == {"mode": "never", "timeout": 12500}
+        assert config["browser"].kwargs == {
+            "mode": "never",
+            "timeout": 12500,
+            "overall_timeout": 25000,
+            "shutdown_timeout": 5000,
+        }
+
+    async def test_query_urls_are_matched_kept_apart_and_stripped_of_tracking(self):
+        stub = StubCrawlberg()
+        with stub.installed():
+            await _recursive(_http())
+        config = stub.config
+        assert config["path_patterns_match_query"] is True
+        assert config["dedup_include_query"] is True
+        assert config["strip_tracking_params"] is True
+        assert config["tracking_params"] == ["utm_*", "fbclid", "gclid", "ref"]
 
     async def test_pacing_and_retries_map_to_crawlberg(self):
         pacing = ConcurrencySpec(
@@ -109,8 +129,41 @@ class TestCrawlConfig:
         with stub.installed():
             await _recursive(_http(), concurrency=pacing)
         assert stub.config["rate_limit_ms"] == 750
+        assert stub.config["rate_limit_jitter_ratio"] == 0.0
         assert stub.config["retry_count"] == 5
         assert stub.config["retry_codes"] == [429, 503]
+
+    @pytest.mark.parametrize(
+        ("mean_delay", "delay_range", "rate_limit_ms", "jitter_ratio"),
+        [(0.5, 0.5, 750, 1 / 3), (0.0, 2.0, 1000, 1.0), (0.0, 0.0, 0, 0.0)],
+        ids=["mean-and-range", "range-only", "no-delay"],
+    )
+    async def test_waits_span_the_mean_delay_plus_the_delay_range(
+        self, mean_delay: float, delay_range: float, rate_limit_ms: int, jitter_ratio: float
+    ):
+        pacing = ConcurrencySpec(mean_delay=mean_delay, max_delay_range=delay_range)
+        stub = StubCrawlberg()
+        with stub.installed():
+            await _recursive(_http(), concurrency=pacing)
+        delay = stub.config["rate_limit_ms"]
+        ratio = stub.config["rate_limit_jitter_ratio"]
+        assert delay == rate_limit_ms
+        assert ratio == pytest.approx(jitter_ratio)
+        assert delay * (1 - ratio) == pytest.approx(mean_delay * 1000)
+        assert delay * (1 + ratio) == pytest.approx((mean_delay + delay_range) * 1000)
+
+    async def test_retry_backoff_starts_mid_range_and_stops_at_the_max_backoff(self):
+        pacing = ConcurrencySpec(
+            retry_on_rate_limit=True,
+            retry_base_delay_min=1.0,
+            retry_base_delay_max=3.0,
+            retry_max_backoff=30.0,
+        )
+        stub = StubCrawlberg()
+        with stub.installed():
+            await _recursive(_http(), concurrency=pacing)
+        assert stub.config["retry_initial_delay_ms"] == 2000
+        assert stub.config["retry_max_delay_ms"] == 30000
 
     async def test_rate_limit_retries_off_disables_retries(self):
         pacing = ConcurrencySpec(retry_on_rate_limit=False, retry_max_attempts=5)
@@ -134,17 +187,35 @@ class TestCrawlConfig:
 
 
 class TestBrowserMode:
-    async def test_points_crawlberg_at_the_headless_shell(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize("before", [None, "/usr/bin/system-chrome"], ids=["unset", "set"])
+    async def test_points_crawlberg_at_the_headless_shell_only_while_it_crawls(
+        self, monkeypatch, tmp_path, before: str | None
+    ):
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
-        monkeypatch.delenv("CHROME", raising=False)
-        stub = StubCrawlberg([page(SEED, depth=0)])
+        if before is None:
+            monkeypatch.delenv(_CHROME_ENV, raising=False)
+        else:
+            monkeypatch.setenv(_CHROME_ENV, before)
+        during: list[str | None] = []
+
+        async def crawl() -> AsyncIterator[Payload]:
+            during.append(os.environ.get(_CHROME_ENV))
+            yield page(SEED, depth=0)
+
+        stub = StubCrawlberg(crawl)
         with stub.installed():
             await CrawlbergFetcher(render_mode=CrawlRenderMode.BROWSER).fetch_single(
                 SEED, timeout=5
             )
-        assert fetcher_mod.os.environ["CHROME"] == str(shell)
-        assert stub.config["browser"].kwargs == {"mode": "always", "timeout": 5000}
+        assert during == [str(shell)]
+        assert os.environ.get(_CHROME_ENV) == before
+        assert stub.config["browser"].kwargs == {
+            "mode": "always",
+            "timeout": 5000,
+            "overall_timeout": 10000,
+            "shutdown_timeout": 5000,
+        }
 
     async def test_missing_shell_raises_before_any_engine_starts(self, monkeypatch):
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: None)
@@ -154,6 +225,23 @@ class TestBrowserMode:
                 SEED, timeout=5
             )
         assert stub.configs == []
+
+
+class TestChromeEnv:
+    def test_overlapping_crawls_keep_it_set_until_the_last_one_ends(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(_CHROME_ENV, "/usr/bin/system-chrome")
+        shell = tmp_path / "chrome-headless-shell"
+        scope = _ChromeEnv()
+        with scope.pointing_at(shell):
+            with scope.pointing_at(shell):
+                pass
+            assert os.environ[_CHROME_ENV] == str(shell)
+        assert os.environ[_CHROME_ENV] == "/usr/bin/system-chrome"
+
+    def test_http_mode_leaves_it_alone(self, monkeypatch):
+        monkeypatch.setenv(_CHROME_ENV, "/usr/bin/system-chrome")
+        with _ChromeEnv().pointing_at(None):
+            assert os.environ[_CHROME_ENV] == "/usr/bin/system-chrome"
 
 
 class TestFetchSingle:
@@ -222,14 +310,14 @@ class TestFetchRecursive:
     async def test_link_refused_by_crawlberg_ssrf_is_dropped(self):
         script = [
             page(SEED, "# Home", depth=0),
-            error("http://10.0.0.5/", "ssrf_policy_violation: http://10.0.0.5/ - denied"),
+            error("http://10.0.0.5/", f"{_SSRF_ERROR_CODE}: http://10.0.0.5/ - denied"),
         ]
         with StubCrawlberg(script).installed():
             fetched = await _recursive(_http())
         assert [f.url for f in fetched] == [SEED]
 
     async def test_seed_refused_by_crawlberg_ssrf_is_a_failed_page(self):
-        refusal = f"ssrf_policy_violation: {SEED} - dns resolution failed"
+        refusal = f"{_SSRF_ERROR_CODE}: {SEED} - dns resolution failed"
         with StubCrawlberg([error(SEED, refusal)]).installed():
             fetched = await _recursive(_http())
         assert fetched == [FetchedPage(url=SEED, success=False, error=refusal)]
