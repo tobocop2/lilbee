@@ -14,6 +14,7 @@ from rich.console import Console
 from textual.widgets import Footer, Input, TabbedContent
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.catalog import CatalogScreen
 from lilbee.cli.tui.screens.chat import ChatScreen
@@ -1554,6 +1555,75 @@ async def test_escape_closes_the_fleet_drawer_that_holds_focus():
         assert await pump_until(pilot, lambda: not app.screen.query(FleetDrawer)), (
             "escape left the fleet drawer open"
         )
+
+
+@pytest.mark.parametrize("close_key", ["escape", "ctrl+g"])
+@pytest.mark.parametrize("insert_mode", [True, False], ids=["insert", "normal"])
+async def test_closing_the_fleet_drawer_returns_focus_so_enter_stays_in_chat(
+    close_key, insert_mode
+):
+    """Closing the focused fleet drawer puts focus back where it was, so Enter stays in chat."""
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        if not insert_mode:
+            await pilot.press("escape")
+            assert await pump_until(pilot, lambda: chat.focused is chat._chat_log)
+        before = chat.focused
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: bool(chat.query(FleetDrawer)))
+        drawer = chat.query_one(FleetDrawer)
+        next(widget for widget in drawer.query("*") if widget.focusable).focus()
+        assert await pump_until(pilot, chat._focus_in_drawer)
+        await pilot.press(close_key)
+        assert await pump_until(pilot, lambda: not chat.query(FleetDrawer))
+        assert chat.focused is before, f"focus went to {chat.focused!r}"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert app.screen is chat
+        assert app.active_view == msg.DEFAULT_VIEW
+
+
+async def test_closing_the_fleet_drawer_from_outside_leaves_focus_alone():
+    """ctrl+g from the model strip closes the drawer without pulling focus back to the prompt."""
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: bool(chat.query(FleetDrawer)))
+        await pilot.press("f6")
+        assert await pump_until(pilot, chat._focus_in_model_bar)
+        strip_member = chat.focused
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: not chat.query(FleetDrawer))
+        assert chat.focused is strip_member, f"focus went to {chat.focused!r}"
+
+
+async def test_closing_the_drawer_skips_a_prior_focus_that_is_gone():
+    """A widget removed while the drawer was open never gets focus back."""
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        doomed = Input(id="doomed")
+        await chat.mount(doomed)
+        doomed.focus()
+        assert await pump_until(pilot, lambda: doomed.has_focus)
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: bool(chat.query(FleetDrawer)))
+        drawer = chat.query_one(FleetDrawer)
+        next(widget for widget in drawer.query("*") if widget.focusable).focus()
+        assert await pump_until(pilot, chat._focus_in_drawer)
+        await doomed.remove()
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: not chat.query(FleetDrawer))
+        assert chat.focused is not doomed
+        assert chat.focused is not None and chat.focused.is_attached
 
 
 async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():

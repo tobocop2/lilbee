@@ -16,7 +16,7 @@ from lilbee.cli.tui.widgets.session_list import SessionListPanel, SessionRow
 from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 from lilbee.sessions import MessageRole, SessionMessage, SessionNotFoundError, TitleSource
 from tests._async_wait import wait_until
-from tests._lilbee_app_test_host import await_chat, send_key_burst, shown_footer_keys
+from tests._lilbee_app_test_host import await_chat, pump_until, send_key_burst, shown_footer_keys
 from tests.conftest import make_mock_services
 
 
@@ -114,9 +114,8 @@ async def test_drawer_toggle_closes_and_restores_bars(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_drawer(app, pilot)
-        await app.action_toggle_sessions()
-        await pilot.pause()
-        assert not app.screen.query(SessionsDrawer)
+        await pilot.press("ctrl+o")
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
         assert not app.screen.has_class("sessions-open")
 
 
@@ -270,7 +269,7 @@ async def test_resume_from_drawer_loads_and_closes(sessions):
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == session_id
-        assert not app.screen.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
 @pytest.mark.parametrize("count", [1, 2])
@@ -289,7 +288,7 @@ async def test_clicking_a_row_resumes_it(sessions, count):
         # which is what made this class take eight rounds to name.
         assert landed, "the click never reached the session row"
         assert app.chat_screen().session_id == clicked_id
-        assert not app.screen.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
 async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
@@ -307,7 +306,7 @@ async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == session_id
-        assert not app.screen.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
 async def _leave_drawer(pilot, chat, key: str) -> None:
@@ -722,7 +721,7 @@ async def test_enter_on_the_focused_list_resumes(sessions):
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == session_id
-        assert not app.screen.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
 async def test_new_chat_from_drawer(sessions):
@@ -736,7 +735,7 @@ async def test_new_chat_from_drawer(sessions):
         await pilot.press("ctrl+n")
         await pilot.pause()
         assert chat.session_id is None
-        assert not app.screen.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
 async def test_rename_in_drawer(sessions):
@@ -854,8 +853,7 @@ async def test_close_drawer_with_escape(sessions):
     async with app.run_test(size=(120, 40)) as pilot:
         await _open_drawer(app, pilot)
         await pilot.press("escape")
-        await pilot.pause()
-        assert not app.screen.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
 
 
 async def test_panel_close_request_removes_drawer(sessions):
@@ -863,9 +861,36 @@ async def test_panel_close_request_removes_drawer(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
-        drawer.query_one(SessionListPanel).action_close()
+        rows = drawer.query_one("#sessions-list", ListView)
+        rows.focus()
+        assert await pump_until(pilot, lambda: rows.has_focus)
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: not app.screen.query(SessionsDrawer))
+
+
+@pytest.mark.parametrize("close_key", ["escape", "ctrl+o"])
+@pytest.mark.parametrize("insert_mode", [True, False], ids=["insert", "normal"])
+async def test_closing_the_drawer_returns_focus_so_enter_stays_in_chat(
+    sessions, close_key, insert_mode
+):
+    """Closing the drawer puts focus back where it was, so the next Enter stays in chat."""
+    _seed(sessions, "Torque specs")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        if not insert_mode:
+            await pilot.press("escape")
+            assert await pump_until(pilot, lambda: chat.focused is chat._chat_log)
+        before = chat.focused
+        await pilot.press("ctrl+o")
+        assert await pump_until(pilot, chat._focus_in_drawer)
+        await pilot.press(close_key)
+        assert await pump_until(pilot, lambda: not chat.query(SessionsDrawer))
+        assert chat.focused is before, f"focus went to {chat.focused!r}"
+        await pilot.press("enter")
         await pilot.pause()
-        assert not app.screen.query(SessionsDrawer)
+        assert app.screen is chat
+        assert app.active_view == msg.DEFAULT_VIEW
 
 
 async def test_active_session_gets_the_filled_dot(sessions):
