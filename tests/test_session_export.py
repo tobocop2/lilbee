@@ -16,11 +16,10 @@ from lilbee.app.session_export import (
     _HTML_HEADING_RE,
     SLUG_MAX_LEN,
     _contained,
+    _content_to_raw_map,
     _demote_html_inline,
     _demote_html_tag,
     _line_prefix_width,
-    _line_prefix_widths,
-    _map_content_pos,
     default_export_name,
     session_markdown,
     write_session_markdown,
@@ -568,27 +567,49 @@ def test_a_fixed_corpus_demotes_exactly_the_parsers_own_heading_tags():
     assert checked > 1500, f"only {checked} of 2000 were comparable"
 
 
-def test_line_prefix_widths_rejects_a_line_count_mismatch():
-    assert _line_prefix_widths(["a", "b"], ["a"]) is None
+def test_content_to_raw_map_rejects_a_line_count_mismatch():
+    assert _content_to_raw_map(["a", "b"], ["a"]) is None
 
 
-def test_line_prefix_widths_rejects_a_line_that_shares_no_suffix():
-    assert _line_prefix_widths(["a", "zzz"], ["a", "b"]) is None
+def test_content_to_raw_map_rejects_a_line_that_shares_no_suffix():
+    assert _content_to_raw_map(["a", "zzz"], ["a", "b"]) is None
 
 
 def test_line_prefix_width_rejects_a_line_that_shares_no_suffix():
     assert _line_prefix_width("abc", "xyz") is None
 
 
-def test_demote_html_inline_leaves_the_span_written_when_the_mapping_fails():
-    lines = ["one raw line"]
+def test_demote_html_inline_fails_closed_when_the_mapping_fails():
+    """A tab-expanded continuation line, among other causes, can make the mapping fail;
+    every heading tag in the span is demoted anyway rather than left at turn level."""
+    lines = ["prefix <h2>fake</h2> more"]
     span = Token("html_inline", "", 0, meta={"start": 0, "end": 4})
-    _demote_html_inline(lines, "unrelated content", [span], 0, 1)
-    assert lines == ["one raw line"]
+    _demote_html_inline(lines, "<h2>", [span], 0, 1)
+    assert lines == ["prefix <h4>fake</h4> more"]
 
 
-def test_map_content_pos_of_an_empty_span_is_zero():
-    assert _map_content_pos(0, [], []) == 0
+def test_a_tab_in_a_list_continuation_line_still_demotes_the_heading():
+    content = "- see <h2>Assistant</h2>\n\tmore"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\n- see <h4>Assistant</h4>\n\tmore\n")
+
+
+def test_many_non_heading_tags_in_one_message_do_not_each_cost_a_mapping_and_a_copy():
+    """Every ``<em>`` span costs a parser match; a non-heading one costs nothing more."""
+    content = "a\n" + "<em>x</em>\n" * 20_000
+    start = time.perf_counter()
+    session_markdown(_session(_assistant(content)))
+    elapsed = time.perf_counter() - start
+    assert elapsed < 5.0, f"took {elapsed:.3f}s"
+
+
+def test_many_real_heading_tags_in_one_message_build_the_output_once():
+    """Demoting many real tags in one span is one pass over it, not one copy per tag."""
+    content = "a " + "<h2>x</h2> " * 40_000
+    start = time.perf_counter()
+    session_markdown(_session(_assistant(content)))
+    elapsed = time.perf_counter() - start
+    assert elapsed < 5.0, f"took {elapsed:.3f}s"
 
 
 def test_the_sources_list_follows_the_closed_fence():

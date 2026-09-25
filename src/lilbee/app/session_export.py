@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import string
+from bisect import bisect_right
 from functools import cache
 from pathlib import Path
 
@@ -139,9 +140,7 @@ def _html_inline_with_span(state: StateInline, silent: bool) -> bool:
 
 @cache
 def _heading_parser() -> MarkdownIt:
-    """A CommonMark parser whose ``html_inline`` tokens carry the source span they
-    matched, so a heading tag is found by the parser's own precedence over escapes,
-    code spans and autolinks, never by a second, independent scan of the raw text."""
+    """A CommonMark parser whose ``html_inline`` tokens carry the source span they matched."""
     md = MarkdownIt("commonmark")
     md.inline.ruler.at("html_inline", _html_inline_with_span)
     return md
@@ -193,54 +192,65 @@ def _demote_html_block(lines: list[str], start: int, end: int) -> None:
 def _demote_html_inline(
     lines: list[str], content: str, children: list[Token] | None, start: int, end: int
 ) -> None:
-    """Rewrite each real HTML heading tag's level within the inline span *start* to *end*.
-
-    A tag's raw extent comes from the parser's own match (``_html_inline_with_span``),
-    recorded as an offset into *content*, the parser's de-prefixed reconstruction of
-    this span. Each raw line ends with its content-line counterpart exactly, because
-    a container only ever strips a prefix from a line's front, so that offset maps
-    onto the raw lines exactly; where it does not (a construct outside that rule,
-    such as a hard line break), the span is left as written rather than guessed at.
-    """
-    spans = [child.meta for child in children or () if child.type == "html_inline" and child.meta]
+    """Rewrite each real HTML heading tag's level within the inline span *start* to *end*."""
+    spans = [
+        child.meta
+        for child in children or ()
+        if child.type == "html_inline"
+        and child.meta
+        and _HTML_HEADING_RE.search(content[child.meta["start"] : child.meta["end"]])
+    ]
     if not spans:
         return
     raw_lines = lines[start:end]
     content_lines = content.split("\n")
-    widths = _line_prefix_widths(raw_lines, content_lines)
-    if widths is None:
+    mapping = _content_to_raw_map(raw_lines, content_lines)
+    if mapping is None:
+        # A fake turn-level heading is worse than over-demoting, so every heading
+        # look-alike in the span is demoted directly in the raw text, including one
+        # inside a code span or an escaped string, when a construct such as a
+        # tab-expanded continuation line keeps this mapping from placing it exactly.
+        joined = "\n".join(raw_lines)
+        lines[start:end] = _HTML_HEADING_RE.sub(_demote_html_tag, joined).split("\n")
         return
+    content_starts, deltas = mapping
     raw = "\n".join(raw_lines)
+    pieces: list[str] = []
+    cursor = 0
     for span in spans:
-        raw_start = _map_content_pos(span["start"], content_lines, widths)
-        raw_end = _map_content_pos(span["end"], content_lines, widths)
-        tag = _HTML_HEADING_RE.sub(_demote_html_tag, raw[raw_start:raw_end])
-        raw = raw[:raw_start] + tag + raw[raw_end:]
-    lines[start:end] = raw.split("\n")
+        raw_start = _map_content_pos(span["start"], content_starts, deltas)
+        raw_end = _map_content_pos(span["end"], content_starts, deltas)
+        pieces.append(raw[cursor:raw_start])
+        pieces.append(_HTML_HEADING_RE.sub(_demote_html_tag, raw[raw_start:raw_end]))
+        cursor = raw_end
+    pieces.append(raw[cursor:])
+    lines[start:end] = "".join(pieces).split("\n")
 
 
-def _line_prefix_widths(raw_lines: list[str], content_lines: list[str]) -> list[int] | None:
-    """The stripped container-prefix width of each of *raw_lines*, or None when
-    *content_lines* is not each raw line with only its front trimmed."""
+def _content_to_raw_map(
+    raw_lines: list[str], content_lines: list[str]
+) -> tuple[list[int], list[int]] | None:
+    """Each content line's start offset and its raw-offset delta, or None if a line isn't mapped."""
     if len(raw_lines) != len(content_lines):
         return None
-    widths = []
+    content_starts = []
+    deltas = []
+    content_pos = 0
+    raw_pos = 0
     for raw_line, content_line in zip(raw_lines, content_lines, strict=True):
         width = _line_prefix_width(raw_line, content_line)
         if width is None:
             return None
-        widths.append(width)
-    return widths
+        content_starts.append(content_pos)
+        deltas.append(raw_pos + width - content_pos)
+        content_pos += len(content_line) + 1
+        raw_pos += len(raw_line) + 1
+    return content_starts, deltas
 
 
 def _line_prefix_width(raw_line: str, content_line: str) -> int | None:
-    """*content_line*'s leading offset into *raw_line*, or None when *content_line*
-    is not *raw_line* with a leading container prefix removed.
-
-    A container also drops the line's trailing spaces and tabs before parsing it
-    for inline content, a plain top-level line does not, and both are checked
-    here because either can be this line's raw form.
-    """
+    """*content_line*'s leading offset into *raw_line*, front-trimmed and, since a
+    container also drops trailing spaces and tabs, optionally back-trimmed too."""
     if raw_line.endswith(content_line):
         return len(raw_line) - len(content_line)
     trimmed = raw_line.rstrip(" \t")
@@ -249,18 +259,11 @@ def _line_prefix_width(raw_line: str, content_line: str) -> int | None:
     return None
 
 
-def _map_content_pos(pos: int, content_lines: list[str], widths: list[int]) -> int:
-    """*pos*, an offset into *content_lines* joined by newlines, as the same offset
-    into the raw lines joined the same way, each widened by its prefix."""
-    raw_pos = 0
-    remaining = pos
-    for content_line, width in zip(content_lines, widths, strict=True):
-        line_len = len(content_line)
-        if remaining <= line_len:
-            return raw_pos + width + remaining
-        remaining -= line_len + 1
-        raw_pos += width + line_len + 1
-    return raw_pos + remaining
+def _map_content_pos(pos: int, content_starts: list[int], deltas: list[int]) -> int:
+    """*pos*, an offset into the content lines joined by newlines, as the same offset
+    into the raw lines joined the same way, found in one line's constant offset."""
+    line = bisect_right(content_starts, pos) - 1
+    return pos + deltas[line]
 
 
 def default_export_name(meta: SessionMeta) -> str:
