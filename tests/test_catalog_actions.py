@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import random
 import sys
+from contextlib import AbstractContextManager
+from unittest.mock import MagicMock, patch
 
 import pytest
 from textual.app import ComposeResult
+from textual.css.query import NoMatches
 from textual.events import Key
 from textual.widgets import Input, TabbedContent
 
@@ -24,6 +27,8 @@ from lilbee.cli.tui.screens.catalog_utils import (
     KeyStatus,
     LocalCatalogRow,
 )
+from lilbee.cli.tui.widgets.catalog_detail import CatalogDetailDrawer
+from lilbee.cli.tui.widgets.discover_rails import DiscoverRails
 from lilbee.runtime.hardware import FitChip, FitLevel, chip_for_size
 from tests._lilbee_app_test_host import LilbeeAppHost
 
@@ -64,6 +69,11 @@ def _row(
         backend="native",
         fit=fit,
     )
+
+
+def _query_misses(screen: CatalogScreen, selector: str) -> AbstractContextManager[MagicMock]:
+    """Patch *screen*'s ``query_one`` to raise NoMatches, as it does when *selector* is gone."""
+    return patch.object(screen, "query_one", side_effect=NoMatches(selector))
 
 
 class _CatalogTestApp(LilbeeAppHost):
@@ -575,14 +585,9 @@ async def test_action_toggle_drawer_swallows_missing_widget() -> None:
     async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
-        drawer = screen.query_one("#catalog-detail-drawer")
-        # Awaited: an unawaited remove leaves the drawer attached with its
-        # children already gone, so the toggle hits a half-removed subtree and
-        # raises NoMatches instead of exercising the no-op branch.
-        await drawer.remove()
-        await pilot.pause()
-        # Should not raise.
-        screen.action_toggle_drawer()
+        with _query_misses(screen, "#catalog-detail-drawer") as query:
+            screen.action_toggle_drawer()
+        query.assert_called_once_with("#catalog-detail-drawer", CatalogDetailDrawer)
 
 
 async def test_focus_list_or_grid_focuses_list_in_list_view() -> None:
@@ -603,13 +608,9 @@ async def test_populate_discover_rails_swallows_missing_widget() -> None:
         await pilot.pause()
         screen = pilot.app.query_one(CatalogScreen)
         screen._activation_settled = True
-        rails = screen.query_one("#discover-rails")
-        # Awaited: the missing-widget branch is only genuinely reached once the
-        # removal has completed.
-        await rails.remove()
-        await pilot.pause()
-        # Should not raise.
-        screen._populate_discover_rails()
+        with _query_misses(screen, "#discover-rails") as query:
+            screen._populate_discover_rails()
+        query.assert_called_once_with("#discover-rails", DiscoverRails)
 
 
 async def test_capture_focused_section_returns_none_when_no_focused_grid() -> None:
@@ -972,16 +973,11 @@ async def test_update_drawer_for_grid_swallows_missing_drawer() -> None:
         screen._activation_settled = True
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
 
-        drawer = screen.query_one("#catalog-detail-drawer")
-        # Awaited: the swallowed-query branch is only genuinely reached once the
-        # removal has completed.
-        await drawer.remove()
-        await pilot.pause()
-        # Build a synthetic grid + call _update_drawer_for_grid; the
-        # try/except branch swallows the missing drawer query.
         grid = ModelGrid()
         grid._rows = [_row("Llama")]
-        screen._update_drawer_for_grid(grid, 0)
+        with _query_misses(screen, "#catalog-detail-drawer") as query:
+            screen._update_drawer_for_grid(grid, 0)
+        query.assert_called_once_with("#catalog-detail-drawer", CatalogDetailDrawer)
 
 
 async def test_maybe_prefetch_on_grid_nav_skips_with_only_empty_grids() -> None:

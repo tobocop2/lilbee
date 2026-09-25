@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ from typing import Any
 import pytest
 from litestar.testing import AsyncTestClient
 
+from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
@@ -306,7 +308,7 @@ class TestWikiEnabled:
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_wiki.return_value = []
-        monkeypatch.setattr("lilbee.app.services.get_services", lambda: mock_svc)
+        set_services(mock_svc)
         wiki_root = isolated_env / "wiki"
         _make_wiki_page(wiki_root, "summaries", "cited")
         async with AsyncTestClient(_create_app()) as client:
@@ -319,7 +321,7 @@ class TestWikiEnabled:
     async def test_page_citations_missing_page(self, monkeypatch: pytest.MonkeyPatch):
         from conftest import make_mock_services
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/summaries/nope/citations", headers=_h())
         assert resp.status_code == 404
@@ -329,7 +331,7 @@ class TestWikiEnabled:
 
         mock_svc = make_mock_services()
         mock_svc.store.get_citations_for_source.return_value = []
-        monkeypatch.setattr("lilbee.app.services.get_services", lambda: mock_svc)
+        set_services(mock_svc)
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get(
                 "/api/wiki/citations", params={"source": "test.txt"}, headers=_h()
@@ -387,7 +389,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         monkeypatch.setattr(
             lint_mod,
             "lint_all",
@@ -410,7 +412,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         linted: list[str] = []
 
         def fake_lint_page(wiki_source, store, config=None):
@@ -447,7 +449,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         on_loop: list[bool] = []
 
         def fake_lint(store, config=None):
@@ -687,7 +689,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import wipe as wipe_mod
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         on_loop: list[bool] = []
 
         def fake_wipe(store):
@@ -706,7 +708,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import prune as prune_mod
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         on_loop: list[bool] = []
 
         def fake_prune(store):
@@ -726,7 +728,7 @@ class TestWikiEnabled:
         from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
+        set_services(make_mock_services())
         _make_wiki_page(isolated_env / "wiki", "summaries", "s1")  # so status reaches lint
         on_loop: list[bool] = []
 
@@ -876,15 +878,10 @@ class TestWikiEnabled:
         assert _sse_events(resp.text) == [("done", {"paths": [], "count": 0})]
 
     async def test_status_empty_wiki(self, monkeypatch, tmp_path):
+        from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
-        def make_mock_services():
-            services = type("S", (), {})()
-            services.store = None
-            return services
-
-        monkeypatch.setattr("lilbee.app.services.get_services", make_mock_services)
-        monkeypatch.setattr("lilbee.server.wiki.svc_mod.get_services", make_mock_services)
+        set_services(dataclasses.replace(make_mock_services(), store=None))
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
@@ -894,6 +891,7 @@ class TestWikiEnabled:
         assert body["pages"] == 0
 
     async def test_status_reports_drafts_but_excludes_them_from_pages(self, monkeypatch, tmp_path):
+        from conftest import make_mock_services
         from lilbee.wiki import lint as lint_mod
 
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -901,12 +899,7 @@ class TestWikiEnabled:
         _make_wiki_page(wiki_root, "summaries", "beta")
         _make_wiki_page(wiki_root, "drafts", "gamma")
 
-        def make_mock_services():
-            services = type("S", (), {})()
-            services.store = None
-            return services
-
-        monkeypatch.setattr("lilbee.server.wiki.svc_mod.get_services", make_mock_services)
+        set_services(dataclasses.replace(make_mock_services(), store=None))
         monkeypatch.setattr(lint_mod, "lint_all", lambda *a, **kw: lint_mod.LintReport())
         async with AsyncTestClient(_create_app()) as client:
             resp = await client.get("/api/wiki/status", headers=_h())
