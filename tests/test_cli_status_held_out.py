@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.status import StatusConfig, StatusResult
 from lilbee.cli.helpers import render_status_result
@@ -27,7 +28,11 @@ def _status(skipped: list[SkippedSource] | None = None, skipped_total: int = 0) 
 
 def _texts(status: StatusResult) -> tuple[list[Table], list[str]]:
     tables = [r for r in render_status_result(status) if isinstance(r, Table)]
-    strings = [r for r in render_status_result(status) if isinstance(r, str)]
+    strings = [
+        r.plain if isinstance(r, Text) else r
+        for r in render_status_result(status)
+        if isinstance(r, (str, Text))
+    ]
     return tables, strings
 
 
@@ -81,3 +86,13 @@ def test_the_embedder_that_built_the_index_is_shown() -> None:
 def test_no_index_line_before_the_first_sync() -> None:
     _tables, strings = _texts(_status())
     assert not any("Index built with" in s for s in strings)
+
+
+def test_a_bracketed_documents_dir_and_model_ref_render_literally() -> None:
+    """Every config value on the status header is user-configured and may carry a bracket."""
+    status = _status()
+    status.config.documents_dir = "notes/[draft]"
+    status.config.chat_model = "org/model[q4].gguf"
+    _tables, strings = _texts(status)
+    assert any("notes/[draft]" in s for s in strings)
+    assert any("org/model[q4].gguf" in s for s in strings)

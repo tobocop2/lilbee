@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console, RenderableType
-from rich.markup import escape
 from rich.table import Table
 from rich.text import Text
 
@@ -47,7 +46,13 @@ def announce_cold_start(role: object, model: str) -> Console | None:
     if get_services().provider.role_ready(role):
         return None
     err = Console(stderr=True)
-    err.print(f"[{theme.MUTED}]Starting {role.value} engine (loading {model})...[/{theme.MUTED}]")
+    err.print(
+        Text.assemble(
+            (f"Starting {role.value} engine (loading ", theme.MUTED),
+            model,
+            (")...", theme.MUTED),
+        )
+    )
     return err
 
 
@@ -64,15 +69,15 @@ def announce_ready(err: Console | None, role: object) -> None:
         return
     failure = _chat_warm_error(role)
     if failure is not None:
-        err.print(f"[{theme.ERROR}]{failure}[/{theme.ERROR}]")
+        err.print(failure, style=theme.ERROR, markup=False)
         return
-    err.print(f"[{theme.MUTED}]{role.value} engine ready.[/{theme.MUTED}]")
+    err.print(f"{role.value} engine ready.", style=theme.MUTED, markup=False)
 
 
 def announce_retrieval_query(query: str) -> None:
     """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
-    line = SEARCHING_FOR.format(query=escape(query))
-    Console(stderr=True).print(f"[{theme.MUTED}]{line}[/{theme.MUTED}]")
+    line = SEARCHING_FOR.format(query=query)
+    Console(stderr=True).print(line, style=theme.MUTED, markup=False)
 
 
 def _chat_warm_error(role: object) -> str | None:
@@ -94,30 +99,36 @@ def _chat_warm_error(role: object) -> str | None:
     return snapshot.error or "The chat model did not finish loading."
 
 
+_LABEL_WIDTH = len("Chat model:")
+
+
+def _label_line(label: str, value: object) -> Text:
+    """An aligned ``Label: value`` line with *value* as literal text."""
+    gap = " " * max(1, _LABEL_WIDTH - len(label))
+    return Text.assemble((f"{label}:", theme.LABEL), gap, str(value))
+
+
 def render_status_result(status: StatusResult) -> Generator[RenderableType, None, None]:
     """Yield Rich renderables for a :class:`StatusResult`."""
-    yield f"[{theme.LABEL}]Documents:[/{theme.LABEL}]  {status.config.documents_dir}"
-    yield f"[{theme.LABEL}]Database:[/{theme.LABEL}]   {status.config.data_dir}"
-    yield f"[{theme.LABEL}]Chat model:[/{theme.LABEL}] {status.config.chat_model}"
-    yield f"[{theme.LABEL}]Embeddings:[/{theme.LABEL}] {status.config.embedding_model}"
+    yield _label_line("Documents", status.config.documents_dir)
+    yield _label_line("Database", status.config.data_dir)
+    yield _label_line("Chat model", status.config.chat_model)
+    yield _label_line("Embeddings", status.config.embedding_model)
     if status.index is not None:
-        yield (
-            f"[{theme.LABEL}]Index built with:[/{theme.LABEL}] {status.index.embedding_model} "
-            f"({status.index.embedding_dim} dims)"
+        yield _label_line(
+            "Index built with",
+            f"{status.index.embedding_model} ({status.index.embedding_dim} dims)",
         )
     vision = status.config.vision_model or "(disabled)"
     reranker = status.config.reranker_model or "(disabled)"
-    yield f"[{theme.LABEL}]Vision:[/{theme.LABEL}]     {vision}"
-    yield f"[{theme.LABEL}]Reranker:[/{theme.LABEL}]   {reranker}"
+    yield _label_line("Vision", vision)
+    yield _label_line("Reranker", reranker)
     if status.config.enable_ocr is not None:
         ocr_label = "enabled" if status.config.enable_ocr else "disabled"
         yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
-        yield (
-            f"[{theme.LABEL}]Entities:[/{theme.LABEL}]   "
-            f"{status.entities.rows} entities extracted ({names})"
-        )
+        yield _label_line("Entities", f"{status.entities.rows} entities extracted ({names})")
     yield ""
 
     if status.skipped:
@@ -125,8 +136,6 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         held.add_column("File", style=theme.ACCENT)
         held.add_column("Reason", style=theme.MUTED)
         for skipped in status.skipped:
-            # Text, not escape(): a Windows path's separator before "[" survives Text
-            # but escape() eats it.
             held.add_row(Text(skipped.filename), Text(skipped.reason))
         yield held
         b = theme.LABEL
@@ -150,7 +159,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     table.add_column("Chunks", justify="right")
     table.add_column("Ingested", style=theme.MUTED)
     for s in status.sources:
-        table.add_row(s.filename, s.file_hash, str(s.chunk_count), s.ingested_at)
+        table.add_row(Text(s.filename), s.file_hash, str(s.chunk_count), s.ingested_at)
     yield table
     b = theme.LABEL
     yield f"\n[{b}]{len(status.sources)}[/{b}] documents, [{b}]{status.total_chunks}[/{b}] chunks"
@@ -176,13 +185,7 @@ SEARCHING_FOR = "Searching for: {query}"
 
 
 def print_prefixed(con: Console, prefix: str, detail: object, *, style: str) -> None:
-    """Print *prefix* in *style*, then *detail* as literal text.
-
-    *detail* often carries a user-controlled value (a path, a name, an
-    exception message). Printing it as text rather than markup keeps a
-    bracket, or a Windows path separator before one, from being parsed as a
-    style tag.
-    """
+    """Print *prefix* in *style*, then *detail* as literal text (never markup)."""
     con.print(Text.assemble((prefix, style), str(detail)), soft_wrap=True)
 
 
@@ -233,7 +236,6 @@ def add_paths(
     if chat_mode:
         print(summary)
     else:
-        # Text, not markup: summary carries user-chosen source names verbatim.
         con.print(Text(summary, style=theme.MUTED), soft_wrap=True)
     if not registration.reached_corpus:
         return
@@ -292,7 +294,7 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
         len(result.skipped),
     )
     if summary:
-        con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
+        con.print(f"Synced: {summary}", style=theme.MUTED, markup=False)
 
 
 @contextmanager

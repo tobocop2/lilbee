@@ -63,7 +63,7 @@ def _count_md_files(directory: Path) -> int:
 
 def _print_build_stats(stats: BuildStatsDict) -> None:
     """Print what a build or synthesize run's quality gates did."""
-    console.print(f"  Gates: {format_summary_line(stats)}")
+    console.print(f"  Gates: {format_summary_line(stats)}", markup=False)
 
 
 def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | None:
@@ -156,7 +156,7 @@ def wiki_lint(
         for issue in issues:
             sev_style = theme.ERROR if issue.severity is IssueSeverity.ERROR else theme.WARNING
             sev_text = f"[{sev_style}]{issue.severity.value}[/{sev_style}]"
-            table.add_row(issue.wiki_source, sev_text, issue.message)
+            table.add_row(Text(issue.wiki_source), sev_text, Text(issue.message))
         console.print(table)
 
     if report.error_count:
@@ -196,7 +196,11 @@ def wiki_list(
     table.add_column("Created", style=theme.MUTED)
     for page in pages:
         table.add_row(
-            page.slug, page.title, page.page_type, str(page.source_count), page.created_at
+            Text(page.slug),
+            Text(page.title),
+            page.page_type,
+            str(page.source_count),
+            page.created_at,
         )
     console.print(table)
 
@@ -217,7 +221,6 @@ def wiki_read(
         if cfg.json_mode:
             json_output({"error": message})
         else:
-            # Text, not markup: a wiki slug is user-typed and carries brackets verbatim.
             console.print(Text(message, style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1)
 
@@ -253,7 +256,7 @@ def wiki_citations(
         if cfg.json_mode:
             json_output({"error": message})
         else:
-            console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+            console.print(message, style=theme.ERROR)
         raise typer.Exit(1)
 
     store = get_services().store
@@ -303,7 +306,6 @@ def _render_citations(
         return
 
     if not records:
-        # Text, not markup: value is a user-supplied source or wiki path.
         console.print(
             Text.assemble("No citations found for ", (value, theme.ACCENT)), soft_wrap=True
         )
@@ -320,7 +322,9 @@ def _render_citations(
             if len(rec["excerpt"]) > _CITATION_EXCERPT_MAX_CHARS
             else rec["excerpt"]
         )
-        table.add_row(rec["citation_key"], column_value(rec), rec["claim_type"], excerpt)
+        table.add_row(
+            Text(rec["citation_key"]), Text(column_value(rec)), rec["claim_type"], Text(excerpt)
+        )
     console.print(table)
 
 
@@ -377,10 +381,14 @@ def wiki_status(
         return
 
     console.print(f"Wiki: [{theme.SUCCESS}]enabled[/{theme.SUCCESS}]")
-    console.print(f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]")
-    console.print(f"  Drafts:    [{theme.LABEL}]{drafts}[/{theme.LABEL}]")
+    console.print(
+        f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]"
+    )  # style-check: allow-markup -- count
+    console.print(
+        f"  Drafts:    [{theme.LABEL}]{drafts}[/{theme.LABEL}]"
+    )  # style-check: allow-markup -- count
     if report.error_count or report.warning_count:
-        console.print(
+        console.print(  # style-check: allow-markup -- counts only
             f"  Lint: [{theme.ERROR}]{report.error_count} error(s)[/{theme.ERROR}], "
             f"[{theme.WARNING}]{report.warning_count} warning(s)[/{theme.WARNING}]"
         )
@@ -408,11 +416,10 @@ def wiki_synthesize(
 
     paths = result["paths"]
     if paths:
-        console.print(
+        console.print(  # style-check: allow-markup -- count
             f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] synthesis pages:"
         )
         for path in paths:
-            # Text, not markup: a generated page path can carry a corpus-derived name.
             console.print(Text.assemble("  ", str(path)), soft_wrap=True)
     else:
         console.print("No synthesis pages generated (need 3+ sources per cluster).")
@@ -456,7 +463,7 @@ def wiki_prune(
     for rec in report.records:
         action_style = theme.ERROR if rec.action.value == "archived" else theme.WARNING
         action_text = f"[{action_style}]{rec.action.value}[/{action_style}]"
-        table.add_row(rec.wiki_source, action_text, rec.reason)
+        table.add_row(Text(rec.wiki_source), action_text, Text(rec.reason))
     console.print(table)
 
 
@@ -479,7 +486,7 @@ def wiki_index(
     if cfg.json_mode:
         json_output({"command": "wiki_index", "entries": len(stubs)})
     else:
-        console.print(f"Wiki index: {len(stubs)} page(s) the corpus names")
+        console.print(f"Wiki index: {len(stubs)} page(s) the corpus names", markup=False)
 
 
 @wiki_app.command(name="generate")
@@ -501,7 +508,7 @@ def wiki_generate(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(str(exc))
+            console.print(str(exc), markup=False)
         raise typer.Exit(1) from exc
 
     if path is None:
@@ -509,7 +516,7 @@ def wiki_generate(
         if cfg.json_mode:
             json_output({"error": message})
         else:
-            console.print(message)
+            console.print(message, markup=False)
         raise typer.Exit(1)
 
     if cfg.json_mode:
@@ -519,7 +526,6 @@ def wiki_generate(
         read_slug = page_slug(path, cfg.data_root / cfg.wiki_dir)
         json_output({"command": "wiki_generate", "slug": read_slug, "path": str(path)})
     else:
-        # Text, not markup: a generated page path can carry a corpus-derived name.
         console.print(Text.assemble("Wrote ", str(path)), soft_wrap=True)
 
 
@@ -542,7 +548,7 @@ def wiki_wipe(
         if cfg.json_mode:
             json_output({"error": msg.CMD_WIKI_WIPE_NEEDS_YES})
             raise typer.Exit(1)
-        console.print(msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root))
+        console.print(msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root), markup=False)
         if not typer.confirm("Delete the wiki?", default=False):
             console.print("Aborted.")
             raise typer.Exit(0)
@@ -603,12 +609,11 @@ def _run_wiki_build(command_name: str) -> None:
 
     pages = result["paths"]
     if pages:
-        console.print(
+        console.print(  # style-check: allow-markup -- counts only
             f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] "
             f"wiki pages from {result['entities']} extracted records:"
         )
         for path in pages:
-            # Text, not markup: a generated page path can carry a corpus-derived name.
             console.print(Text.assemble("  ", str(path)), soft_wrap=True)
     else:
         console.print("No concept or entity pages generated.")
@@ -639,7 +644,7 @@ def _wiki_build_dry_run_output(rows: list[WikiEntityCandidate]) -> None:
 
     if not rows:
         console.print("No candidate entities extracted. Run sync first.")
-        console.print(f"[{theme.MUTED}]{DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+        console.print(DRY_RUN_CONCEPT_NOTE, style=theme.MUTED)
         return
 
     table = Table(title=f"Wiki build dry-run ({len(rows)} NER entity candidates)")
@@ -650,20 +655,22 @@ def _wiki_build_dry_run_output(rows: list[WikiEntityCandidate]) -> None:
     table.add_column("Sources")
     for row in rows:
         sources_list: list[str] = row["sources"]
+        sources_preview = ", ".join(sources_list[:_NER_DRY_RUN_PREVIEW_LIMIT]) + (
+            ", ..." if len(sources_list) > _NER_DRY_RUN_PREVIEW_LIMIT else ""
+        )
         table.add_row(
-            str(row["slug"]),
+            Text(str(row["slug"])),
             str(row["kind"]),
-            str(row["type_hint"]),
+            Text(str(row["type_hint"])),
             str(row["mentions"]),
-            ", ".join(sources_list[:_NER_DRY_RUN_PREVIEW_LIMIT])
-            + (", ..." if len(sources_list) > _NER_DRY_RUN_PREVIEW_LIMIT else ""),
+            Text(sources_preview),
         )
     console.print(table)
-    console.print(
+    console.print(  # style-check: allow-markup -- count
         f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
         "No LLM calls were made."
     )
-    console.print(f"[{theme.MUTED}]{DRY_RUN_CONCEPT_NOTE}[/{theme.MUTED}]")
+    console.print(DRY_RUN_CONCEPT_NOTE, style=theme.MUTED)
 
 
 @wiki_app.command(name="update")
@@ -723,7 +730,7 @@ def wiki_drafts_list(
         drift = f"{d.drift_ratio:.0%}" if d.drift_ratio is not None else "-"
         faith = f"{d.faithfulness_score:.2f}" if d.faithfulness_score is not None else "-"
         published = "yes" if d.published_exists else "no"
-        table.add_row(d.slug, kind, drift, faith, published)
+        table.add_row(Text(d.slug), kind, drift, faith, published)
     console.print(table)
 
 
@@ -733,7 +740,7 @@ def _draft_slug_error() -> None:
     if cfg.json_mode:
         json_output({"error": message})
     else:
-        console.print(f"[{theme.ERROR}]{message}[/{theme.ERROR}]")
+        console.print(message, style=theme.ERROR)
     raise typer.Exit(1) from None
 
 
@@ -754,7 +761,6 @@ def wiki_drafts_diff(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            # Text, not markup: the error carries the draft's path verbatim.
             console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     except PathTraversalError:
@@ -785,7 +791,6 @@ def wiki_drafts_accept(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            # Text, not markup: the error carries the draft's path verbatim.
             console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     except PathTraversalError:
@@ -794,7 +799,6 @@ def wiki_drafts_accept(
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_accept", **result.to_dict()})
         return
-    # Text, not markup: the slug is user-typed and the destination is a path.
     console.print(
         Text.assemble(
             "Accepted ",
@@ -824,7 +828,6 @@ def wiki_drafts_reject(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            # Text, not markup: the error carries the draft's path verbatim.
             console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     except PathTraversalError:
@@ -833,5 +836,4 @@ def wiki_drafts_reject(
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_reject", "slug": slug})
         return
-    # Text, not markup: the slug is user-typed and carries brackets verbatim.
     console.print(Text.assemble("Rejected ", (slug, theme.ACCENT)), soft_wrap=True)

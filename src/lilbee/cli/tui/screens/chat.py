@@ -784,7 +784,6 @@ class ChatScreen(Screen[None]):
             self.notify(
                 msg.CMD_ADD_NOT_FOUND.format(path=", ".join(str(p) for p in missing)),
                 severity="error",
-                markup=False,
             )
             return
         # A file add registers a root labeled by its basename. Prompt before
@@ -806,7 +805,7 @@ class ChatScreen(Screen[None]):
 
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
-                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=names), markup=False)
+                self.notify(msg.CMD_ADD_SKIPPED_DUPLICATE.format(name=names))
                 return
             self._submit_add(paths, force=True)
 
@@ -845,9 +844,7 @@ class ChatScreen(Screen[None]):
         reg_result = register_sources(paths, force=force)
         registered = reg_result.registered
         for name in reg_result.name_taken:
-            call_from_thread(
-                self, self.notify, msg.CMD_ADD_NAME_TAKEN.format(name=name), markup=False
-            )
+            call_from_thread(self, self.notify, msg.CMD_ADD_NAME_TAKEN.format(name=name))
         if reg_result.tracked:
             call_from_thread(
                 self, self.notify, msg.CMD_ADD_TRACKED.format(names=", ".join(reg_result.tracked))
@@ -1153,7 +1150,7 @@ class ChatScreen(Screen[None]):
 
         if not name:
             usage = msg.CMD_DELETE_USAGE.format(names=", ".join(sorted(known)))
-            call_from_thread(self, self.notify, usage, markup=False)
+            call_from_thread(self, self.notify, usage)
             return
 
         if name not in known:
@@ -1161,7 +1158,7 @@ class ChatScreen(Screen[None]):
             suggestion = _closest_source(name, known)
             if suggestion is not None:
                 message = f"{message}. {msg.CMD_DELETE_SUGGESTION.format(name=suggestion)}"
-            call_from_thread(self, self.notify, message, severity="error", markup=False)
+            call_from_thread(self, self.notify, message, severity="error")
             return
 
         from lilbee.app.ingest import remove_documents_durably
@@ -1171,7 +1168,7 @@ class ChatScreen(Screen[None]):
         # non-destructive delete; the file stays on disk).
         remove_documents_durably([name])
         invalidate_document_cache()
-        call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name), markup=False)
+        call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:
         """Enqueue /export as a task so progress shows in the task bar."""
@@ -1196,13 +1193,12 @@ class ChatScreen(Screen[None]):
         try:
             summary = export_to_path(output, "", None)
         except DatasetError as exc:
-            call_from_thread(self, self.notify, str(exc), severity="error", markup=False)
+            call_from_thread(self, self.notify, str(exc), severity="error")
             raise RuntimeError(str(exc)) from exc
         call_from_thread(
             self,
             self.notify,
             msg.CMD_EXPORT_SUCCESS.format(pages=summary.pages, output=output),
-            markup=False,
         )
 
     def _cmd_import(self, args: str) -> None:
@@ -1304,7 +1300,6 @@ class ChatScreen(Screen[None]):
             self.app.title = msg.app_title(cfg.chat_model)
             self.notify(
                 msg.CMD_MODEL_SET.format(name=display_label_for_ref(cfg.chat_model)),
-                markup=False,
             )
             self.apply_model_change()
             self.refresh_model_bar()
@@ -1464,7 +1459,6 @@ class ChatScreen(Screen[None]):
             self.notify(
                 msg.CMD_THEME_UNKNOWN.format(name=args, names=", ".join(DARK_THEMES)),
                 severity="warning",
-                markup=False,
             )
             return
         self.app.set_theme(args)
@@ -1517,9 +1511,9 @@ class ChatScreen(Screen[None]):
         try:
             path = write_session_markdown(session, args.strip() or ".")
         except OSError as exc:
-            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error", markup=False)
+            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error")
             return
-        self.notify(msg.EXPORT_CHAT_DONE.format(path=path), markup=False)
+        self.notify(msg.EXPORT_CHAT_DONE.format(path=path))
 
     def _on_fork_picked(self, source: Session, message_count: int | None) -> None:
         """Fork *source* after the picked answer and switch to the fork with an empty input."""
@@ -1536,7 +1530,7 @@ class ChatScreen(Screen[None]):
             self.notify(msg.FORK_FAILED.format(error=exc), severity="warning")
             return
         fork = self._load_session(fork_id)
-        self.notify(msg.FORK_DONE.format(title=fork.meta.title), markup=False)
+        self.notify(msg.FORK_DONE.format(title=fork.meta.title))
         self._set_input("")
         self._enter_insert_mode()
 
@@ -1647,7 +1641,7 @@ class ChatScreen(Screen[None]):
         """Load a saved session into the chat view, make it the active one, and focus the prompt."""
         session = self._load_session(session_id)
         self.focus_prompt()
-        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title), markup=False)
+        self.notify(msg.SESSIONS_RESUMED.format(title=session.meta.title))
 
     def _load_session(self, session_id: str) -> Session:
         """Replace the conversation with a saved session's transcript and summary."""
@@ -1886,7 +1880,7 @@ class ChatScreen(Screen[None]):
         if not confirmed:
             self.notify(msg.EMBED_ADOPT_CANCELLED)
             return
-        self.notify(msg.EMBED_ADOPTING.format(model=ref), markup=False)
+        self.notify(msg.EMBED_ADOPTING.format(model=ref))
         self._adopt_and_retry(ref, question)
 
     @work(thread=True)
@@ -2343,14 +2337,12 @@ class ChatScreen(Screen[None]):
         from lilbee.catalog.formatting import display_label_for_ref
 
         self.swapping_model = False
-        self.app.notify(
-            msg.MODEL_SWAP_DONE.format(name=display_label_for_ref(cfg.chat_model)), markup=False
-        )
+        self.app.notify(msg.MODEL_SWAP_DONE.format(name=display_label_for_ref(cfg.chat_model)))
 
     def _on_model_swap_failed(self, error: str) -> None:
         """Main-thread failure: unblock the input and surface the error."""
         self.swapping_model = False
-        self.app.notify(msg.MODEL_SWAP_FAILED.format(error=error), severity="error", markup=False)
+        self.app.notify(msg.MODEL_SWAP_FAILED.format(error=error), severity="error")
 
     @on(Markdown.LinkClicked)
     def _open_answer_link(self, event: Markdown.LinkClicked) -> None:

@@ -55,7 +55,6 @@ def _guard(action: Callable[[], PlacementView]) -> None:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            # Text, not markup: the error can carry a spec file path or model ref.
             console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(code=1) from exc
     if cfg.json_mode:
@@ -88,34 +87,37 @@ def _render_view(view: PlacementView) -> None:
             g.label,
             g.name or "(unnamed)",
             f"{free_gib:.0f} / {total_gib:.0f} GiB",
-            ", ".join(placed.get(g.index, [])) or "-",
+            Text(", ".join(placed.get(g.index, [])) or "-"),
         )
     console.print(table)
 
     for role_view in view.roles:
         split_info = f" split={list(role_view.tensor_split)}" if role_view.tensor_split else ""
         console.print(
-            f"  {role_view.role.value}: devices={list(role_view.devices)}"
-            f" replicas={role_view.replicas}{split_info}  {role_view.model}"
+            Text(
+                f"  {role_view.role.value}: devices={list(role_view.devices)}"
+                f" replicas={role_view.replicas}{split_info}  {role_view.model}"
+            ),
+            soft_wrap=True,
         )
 
     if view.co_tenants:
         names = ", ".join(role.value for role in view.co_tenants)
         console.print(
-            f"  [{theme.MUTED}]{names}: share memory, one loaded at a time[/{theme.MUTED}]"
+            f"  {names}: share memory, one loaded at a time", style=theme.MUTED, markup=False
         )
 
     for role in view.unplaceable:
-        console.print(f"  [{theme.ERROR}]{role.value}: does not fit, no server[/{theme.ERROR}]")
+        console.print(f"  {role.value}: does not fit, no server", style=theme.ERROR, markup=False)
 
     for skipped in view.skipped_not_installed:
-        # Text, not markup: skipped.model is a user-configured model reference.
         console.print(
             Text.assemble(
                 (f"  {skipped.role.value}: ", theme.WARNING),
                 skipped.model,
                 (" not downloaded, pull it to place it", theme.WARNING),
-            )
+            ),
+            soft_wrap=True,
         )
 
     if view.rejected_spec_json:

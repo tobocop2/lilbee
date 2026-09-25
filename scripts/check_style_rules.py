@@ -22,11 +22,16 @@ cleanup of pre-existing ones).
    module-level mutable globals) on lines added in ``src/`` vs the base
    branch. Resolving the base is best-effort: when git history is unavailable
    (shallow CI checkout, no ``origin/main``) the check is skipped, not failed.
+6. A ``.print(`` call in ``src/`` whose first argument interpolates a value
+   (an f-string or a ``.format`` call) with markup still on. Rich parses the
+   rendered string as markup, so a bracket in the value is restyled or raises
+   ``MarkupError``. Interpolated ``theme.*`` style names do not count.
 
 Inline opt-out comments: ``# style-check: allow-history`` skips the
 historical-narrative check on that line; ``# style-check: allow-smell`` skips
-the code-smell check on that added line (use it with a written justification
-for genuinely dynamic reflection).
+the code-smell check on that added line; ``# style-check: allow-markup`` skips
+the markup check on that call (use it only when no interpolated value can be
+user text, for example a count).
 
 Exits 0 when clean, 1 with one ``path:line:reason`` per finding when violations
 are found.
@@ -423,6 +428,66 @@ def _check_code_smells(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
             break
 
 
+ALLOW_MARKUP_TAG = "# style-check: allow-markup"
+
+
+def _is_theme_style(value: ast.FormattedValue) -> bool:
+    """True for ``{theme.NAME}``, a fixed style name rather than a value."""
+    expr = value.value
+    return (
+        isinstance(expr, ast.Attribute)
+        and isinstance(expr.value, ast.Name)
+        and expr.value.id == "theme"
+    )
+
+
+def _interpolates_value(arg: ast.expr) -> bool:
+    """True when *arg* renders a runtime value into the string Rich will parse."""
+    if isinstance(arg, ast.JoinedStr):
+        return any(isinstance(v, ast.FormattedValue) and not _is_theme_style(v) for v in arg.values)
+    return (
+        isinstance(arg, ast.Call)
+        and isinstance(arg.func, ast.Attribute)
+        and arg.func.attr == "format"
+    )
+
+
+def _markup_interpolation_hits(path: Path) -> Iterator[int]:
+    """Yield the line of each ``.print(...)`` that parses an interpolated value as markup."""
+    try:
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+    except (OSError, SyntaxError):
+        return
+    lines = source.splitlines()
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "print"
+            and node.args
+            and _interpolates_value(node.args[0])
+        ):
+            continue
+        if any(kw.arg == "markup" for kw in node.keywords):
+            continue
+        end = node.end_lineno or node.lineno
+        if ALLOW_MARKUP_TAG in "\n".join(lines[node.lineno - 1 : end]):
+            continue
+        yield node.lineno
+
+
+def _check_markup_interpolation(paths: Iterable[Path]) -> Iterator[str]:
+    """Yield findings for a ``.print(...)`` that parses an interpolated value as markup."""
+    for path in paths:
+        for lineno in _markup_interpolation_hits(path):
+            yield (
+                f"{path}:{lineno}: print() parses an interpolated value as markup "
+                "(print the value as rich.text.Text, via print_prefixed, or with "
+                f"markup=False; `{ALLOW_MARKUP_TAG}` only when it cannot be user text)"
+            )
+
+
 def main() -> int:
     src_files = list(_iter_python_files(SRC_DIR))
     test_files = list(_iter_python_files(TESTS_DIR))
@@ -432,6 +497,7 @@ def main() -> int:
     findings.extend(_check_divider_comments(src_files))
     findings.extend(_check_historical_narrative(src_files))
     findings.extend(_check_stale_single_file_paths(src_files))
+    findings.extend(_check_markup_interpolation(src_files))
 
     base = _smell_base_ref()
     if base is not None:

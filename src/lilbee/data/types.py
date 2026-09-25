@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel
+from rich.text import Text
 
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
@@ -159,29 +160,7 @@ class SyncResult(BaseModel):
     index_mismatch: IndexMismatch | None = None
 
     def __str__(self) -> str:
-        lines = [
-            f"Added: {len(self.added)}",
-            f"Updated: {len(self.updated)}",
-            f"Removed: {len(self.removed)}",
-            f"Unchanged: {self.unchanged}",
-        ]
-        if self.index_mismatch is not None:
-            lines.append(f"[red]Index mismatch:[/red] {self.index_mismatch.message}")
-        if self.relocated:
-            lines.append(f"Relocated: {len(self.relocated)}")
-        lines += [
-            f"Held out: {len(self.held_out)}",
-            f"Skipped: {len(self.skipped)}",
-            f"Failed: {len(self.failed)}",
-            f"Truncated: {self.truncated}",
-        ]
-        for held in self.held_out:
-            lines.append(f"  [yellow]{held.filename}[/yellow]: {held.reason}")
-        for f in self.skipped:
-            lines.append(f"  [yellow]{f}[/yellow]")
-        for f in self.failed:
-            lines.append(f"  [red]{f}[/red]")
-        return "\n".join(lines)
+        return self.__rich__().markup
 
     def __repr__(self) -> str:
         return (
@@ -191,8 +170,38 @@ class SyncResult(BaseModel):
             f"failed={len(self.failed)}, truncated={self.truncated})"
         )
 
-    def __rich__(self) -> str:
-        return self.__str__()
+    def __rich__(self) -> Text:
+        """Render as literal text: filenames and reasons here are user-controlled."""
+        lines: list[Text] = [
+            Text(f"Added: {len(self.added)}"),
+            Text(f"Updated: {len(self.updated)}"),
+            Text(f"Removed: {len(self.removed)}"),
+            Text(f"Unchanged: {self.unchanged}"),
+        ]
+        if self.index_mismatch is not None:
+            lines.append(
+                Text.assemble(("Index mismatch:", "red"), " ", self.index_mismatch.message)
+            )
+        if self.relocated:
+            lines.append(Text(f"Relocated: {len(self.relocated)}"))
+        lines += [
+            Text(f"Held out: {len(self.held_out)}"),
+            Text(f"Skipped: {len(self.skipped)}"),
+            Text(f"Failed: {len(self.failed)}"),
+            Text(f"Truncated: {self.truncated}"),
+        ]
+        for held in self.held_out:
+            lines.append(Text.assemble("  ", (held.filename, "yellow"), f": {held.reason}"))
+        for name in self.skipped:
+            lines.append(Text.assemble("  ", (name, "yellow")))
+        for name in self.failed:
+            lines.append(Text.assemble("  ", (name, "red")))
+        rendered = Text()
+        for i, line in enumerate(lines):
+            if i:
+                rendered.append("\n")
+            rendered.append_text(line)
+        return rendered
 
 
 @dataclass

@@ -581,6 +581,24 @@ async def test_panel_uses_resolved_theme_tokens(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
+async def test_a_bracketed_probe_failure_renders_as_written(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The failure reason is an exception message; an unbalanced ``[/x]`` must not parse."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as panel_mod
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(panel_mod, "probe_gpu_stats", lambda devices: {})
+    app = _PanelHost()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        panel = app.query_one(GpuFleetPanel)
+        panel.set_probe_failed("driver at C:\\gpu\\[/x] failed")
+        await pilot.pause()
+        assert "driver at C:\\gpu\\[/x] failed" in str(panel.render())
+
+
+@pytest.mark.asyncio
 async def test_badge_role_markup_no_separator(monkeypatch: pytest.MonkeyPatch) -> None:
     """A role string without ' - ' renders without splitting (else branch in _badge_role_markup)."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as pm

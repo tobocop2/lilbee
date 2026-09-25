@@ -332,6 +332,16 @@ class TestListModelsData:
 
 
 class TestListCmd:
+    def test_a_bracketed_name_prints_as_written(self):
+        from lilbee.app.models import ListModelsResult, ModelEntry
+        from lilbee.cli import model as cli_model
+
+        data = ListModelsResult(models=[ModelEntry(name="m[red]x", source="native")], total=1)
+        with patch.object(cli_model, "list_models_data", return_value=data):
+            result = runner.invoke(app, ["model", "list"])
+        assert result.exit_code == 0, result.output
+        assert "m[red]x" in result.output
+
     def test_human_output(self, fake_manager, native_manifests, with_remote_classify):
         result = runner.invoke(app, ["model", "list"])
         assert result.exit_code == 0, result.output
@@ -739,6 +749,12 @@ class TestRmCmd:
         result = runner.invoke(app, ["model", "rm", "--yes", "ghost:1.0"])
         assert result.exit_code == 1
         assert "Not found" in result.output
+
+    def test_not_found_prints_a_bracketed_ref_literally(self, fake_manager, native_manifests):
+        """The ref is user-typed, so it renders literally even with a bracket in it."""
+        result = runner.invoke(app, ["model", "rm", "--yes", "ghost[q4]:1.0"])
+        assert result.exit_code == 1
+        assert "Not found: ghost[q4]:1.0" in result.output
 
     def test_json_output_serializes_remove_result(self, fake_manager, native_manifests):
         result = runner.invoke(app, ["--json", "model", "rm", _CHAT_REF])

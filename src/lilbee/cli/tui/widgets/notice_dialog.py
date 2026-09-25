@@ -49,8 +49,8 @@ class NoticeDialog(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(self._title, id="notice-title")
-            yield Label(self._message, id="notice-message")
+            yield Static(self._title, id="notice-title", markup=False)
+            yield Label(self._message, id="notice-message", markup=False)
             with Center():
                 yield _DismissPill(self._dismiss_label)
 

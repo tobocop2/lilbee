@@ -221,7 +221,8 @@ def _crawl_urls_blocking(
             if crawl and max_pages is None and crawled.get("n", 0) >= default_cap:
                 err_console.print(
                     f"Stopped at the default {default_cap}-page limit; "
-                    f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap)."
+                    f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap).",
+                    markup=False,
                 )
     return all_paths
 
@@ -428,7 +429,7 @@ def rebuild(
     if cfg.json_mode:
         json_output({"command": "rebuild", "ingested": len(result.added)})
         return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested")
+    console.print(f"Rebuilt: {len(result.added)} documents ingested", markup=False)
 
 
 def index(
@@ -482,7 +483,7 @@ def _crawl_urls_step(
 
     if not crawler_available():
         console.print(
-            f"[{theme.ERROR}]Web crawling requires: pip install 'lilbee[crawler]'[/{theme.ERROR}]"
+            "Web crawling requires: pip install 'lilbee[crawler]'", style=theme.ERROR, markup=False
         )
         raise SystemExit(1)
     crawled_paths = _crawl_urls_blocking(
@@ -494,8 +495,9 @@ def _crawl_urls_step(
     )
     if not cfg.json_mode:
         console.print(
-            f"[{theme.MUTED}]Crawled {len(crawled_paths)} page(s)"
-            f" from {len(urls)} URL(s)[/{theme.MUTED}]"
+            f"Crawled {len(crawled_paths)} page(s) from {len(urls)} URL(s)",
+            style=theme.MUTED,
+            markup=False,
         )
     return crawled_paths
 
@@ -608,7 +610,6 @@ def chunks(
         json_output({"command": "chunks", "source": source, "chunks": cleaned})
         return
 
-    # Text, not markup: the source name and chunk text are document content.
     console.print(
         Text.assemble(
             (str(len(cleaned)), theme.LABEL), " chunks from ", (source, theme.ACCENT), "\n"
@@ -620,7 +621,6 @@ def chunks(
         preview = c.get("chunk", "")[:CHUNK_PREVIEW_LEN]
         if len(c.get("chunk", "")) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        # Text, not markup: the preview is document content.
         console.print(Text.assemble(f"  [{idx}] ", preview), soft_wrap=True)
 
 
@@ -668,7 +668,6 @@ def remove(
             raise SystemExit(1)
         return
 
-    # Text, not markup: a source name is user-chosen and carries brackets verbatim.
     for name in result.removed:
         console.print(Text.assemble("Removed ", (name, theme.ACCENT)), soft_wrap=True)
     for name in result.not_found:

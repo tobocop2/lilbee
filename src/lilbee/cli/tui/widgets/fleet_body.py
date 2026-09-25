@@ -240,7 +240,7 @@ class FleetBody(Widget):
     def _render_load_failure(self, reason: str) -> None:
         """Name the placement-load failure in the panel instead of probing forever."""
         self.query_one(_FLEET_PANEL_ID, GpuFleetPanel).set_probe_failed(reason)
-        self.notify(reason, severity="error", markup=False)
+        self.notify(reason, severity="error")
 
     # -- rendering -------------------------------------------------------
 
@@ -452,7 +452,7 @@ class FleetBody(Widget):
         try:
             spec = self._spec_from_editor()
         except PlacementError as exc:
-            self.notify(str(exc), severity="error", markup=False)
+            self.notify(str(exc), severity="error")
             return
         self._preview_worker(spec)
 
@@ -462,7 +462,7 @@ class FleetBody(Widget):
             view = preview_placement(spec)
             call_from_thread(self, self._render_view, view)
         except Exception as exc:
-            call_from_thread(self, self.notify, str(exc), severity="error", markup=False)
+            call_from_thread(self, self.notify, str(exc), severity="error")
 
     def action_apply(self) -> None:
         """Apply the edited placement (persists and reloads the fleet)."""
@@ -471,7 +471,7 @@ class FleetBody(Widget):
         try:
             spec = self._spec_from_editor()
         except PlacementError as exc:
-            self.notify(str(exc), severity="error", markup=False)
+            self.notify(str(exc), severity="error")
             return
         self.applying = True
         self._apply_worker(spec)
@@ -514,5 +514,5 @@ class FleetBody(Widget):
         except Exception as exc:
             error = error or str(exc)
         if error is not None:
-            call_from_thread(self, self.notify, error, severity="error", markup=False)
+            call_from_thread(self, self.notify, error, severity="error")
         call_from_thread(self, setattr, self, "applying", False)

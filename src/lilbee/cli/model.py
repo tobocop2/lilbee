@@ -55,7 +55,7 @@ def _render_list(data: ListModelsResult) -> Table:
     table.add_column("Size", justify="right")
     for entry in data.models:
         size = f"{entry.size_gb:.2f} GB" if entry.size_gb is not None else ""
-        table.add_row(entry.name, entry.source, entry.task or "", size)
+        table.add_row(Text(entry.name), entry.source, entry.task or "", size)
     return table
 
 
@@ -190,7 +190,6 @@ def show_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            # Text, not markup: the error carries a user-typed model ref.
             console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     if cfg.json_mode:
@@ -260,9 +259,7 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
         console=err_console,
         transient=False,
     ) as progress:
-        # escape(), not Text: ref is a model reference (not a filesystem path),
-        # so there is no Windows separator for escape() to eat, and the
-        # Progress task description column only accepts a markup string.
+        # escape(), not Text: the description column only accepts a markup string.
         task_id = progress.add_task(f"Downloading {escape(ref)}", total=100, detail="")
 
         def on_update(p: DownloadProgress) -> None:
@@ -330,7 +327,6 @@ def rm_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            # Text, not markup: the error carries a user-typed model ref.
             console.print(Text(str(exc), style=theme.ERROR), soft_wrap=True)
         raise typer.Exit(1) from None
     if cfg.json_mode:
@@ -339,10 +335,9 @@ def rm_cmd(
             raise typer.Exit(1)
         return
     if not data.deleted:
-        print_prefixed(console, "Not found: ", ref, style=theme.WARNING)
+        console.print(Text(f"Not found: {ref}", style=theme.WARNING))
         raise typer.Exit(1)
     suffix = f" ({data.freed_gb:.2f} GB freed)" if data.freed_gb else ""
-    # Text, not markup: ref is a user-typed model reference.
     console.print(Text.assemble("Removed ", (ref, theme.ACCENT), suffix, "."), soft_wrap=True)
 
 

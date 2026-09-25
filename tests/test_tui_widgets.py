@@ -4778,6 +4778,27 @@ class TestTaskBarAdditional:
             label = bar.query_one("#task-status-label", Label)
             assert "Sync docs" in str(label._Static__content)  # type: ignore[attr-defined]
 
+    @pytest.mark.parametrize("queued_too", [False, True])
+    async def test_a_bracketed_task_name_renders_as_written(self, queued_too: bool) -> None:
+        """Task names carry paths and page titles; ``[/x]`` must not parse as a tag."""
+        from textual.widgets import Label
+
+        from lilbee.cli.tui.widgets.task_bar import TaskBar
+
+        name = "Wiki: C:\\notes\\[/x] [red]draft"
+        app = _TaskBarApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            bar = app.query_one(TaskBar)
+            bar.add_task(name, "wiki")
+            if queued_too:
+                bar.add_task("Sync B", "sync")
+            bar.queue.advance("wiki")
+            bar._refresh_display()
+            await pilot.pause()
+            label = bar.query_one("#task-status-label", Label)
+            assert name in str(label.render())
+
     async def test_multiple_active_tasks_shows_count(self) -> None:
         """Two or more active tasks show a running count instead of a name."""
         from textual.widgets import Label
@@ -5393,6 +5414,29 @@ class TestModelCardBuildStatusDownloads:
         result = _build_status(row)  # type: ignore[arg-type]
         assert result is not None
         assert "1K" in str(result)
+
+
+@pytest.mark.parametrize("kind", ["confirm", "notice"])
+async def test_a_dialog_renders_a_bracketed_title_and_message_as_written(kind: str) -> None:
+    """Dialog text carries session titles, slugs and paths; ``[/x]`` must not parse."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
+    from lilbee.cli.tui.widgets.notice_dialog import NoticeDialog
+
+    dialog_cls = {"confirm": ConfirmDialog, "notice": NoticeDialog}[kind]
+
+    class _App(LilbeeAppHost):
+        def on_mount(self):
+            self.push_screen(dialog_cls("Delete [red]Notes", "Delete C:\\notes\\[/x].md?"))
+
+    app = _App()
+    async with app.run_test(size=(80, 24)) as pilot:
+        await pilot.pause()
+        title = str(app.screen.query_one(f"#{kind}-title", Static).render())
+        message = str(app.screen.query_one(f"#{kind}-message", Static).render())
+    assert "Delete [red]Notes" in title
+    assert "Delete C:\\notes\\[/x].md?" in message
 
 
 class TestConfirmDialog:
@@ -6056,6 +6100,22 @@ class TestSearchHFCtaItem:
             await pilot.pause()
             label = app.query_one("#cta-label", Static)
             assert "phi-3" in str(label.render())
+
+    async def test_a_bracketed_query_renders_as_written(self) -> None:
+        """The query is user-typed; ``[/x]`` must not parse as a closing tag."""
+        from textual.widgets import Static
+
+        from lilbee.cli.tui.widgets.search_hf_cta_item import SearchHFCtaItem
+
+        class _App(LilbeeAppHost):
+            def compose(self) -> ComposeResult:
+                yield SearchHFCtaItem("qwen[/x]")
+
+        app = _App()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            label = app.query_one("#cta-label", Static)
+            assert "qwen[/x]" in str(label.render())
 
 
 def _vgrid_row(name: str = "phi-3") -> LocalCatalogRow:

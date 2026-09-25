@@ -160,9 +160,9 @@ def display_model_picker(
     console.print()
     console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
     console.print(table)
-    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
-    console.print(f"  {FEATURED_STAR} = recommended for your system")
-    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
+    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk", markup=False)
+    console.print(f"  {FEATURED_STAR} = recommended for your system", markup=False)
+    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n", markup=False)
 
     return recommended
 
@@ -235,7 +235,7 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
                 progress.update(ptask, total=total, completed=downloaded)
 
         manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
-    console.print(f"Model '{model}' ready.")
+    console.print(f"Model '{model}' ready.", markup=False)
 
 
 def ensure_chat_model() -> str | None:

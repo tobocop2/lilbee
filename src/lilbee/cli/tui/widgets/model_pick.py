@@ -154,13 +154,12 @@ def _persist(
                 app.notify,
                 msg.MODEL_SWAP_FAILED.format(error=exc),
                 severity="error",
-                markup=False,
             )
             return
         call_from_thread(app, _finish)
 
     def _finish() -> None:
         on_done()
-        app.notify(msg.MODEL_SWAP_DONE.format(name=ref), markup=False)
+        app.notify(msg.MODEL_SWAP_DONE.format(name=ref))
 
     app.run_worker(_runner, thread=True, exit_on_error=False, name=_PERSIST_WORKER_NAME)

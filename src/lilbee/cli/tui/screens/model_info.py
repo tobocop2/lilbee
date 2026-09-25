@@ -31,8 +31,8 @@ class ModelInfoModal(ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="info-root"):
-            yield Static(self._row.name, id="info-title")
-            yield Static(self._row.ref, id="info-ref")
+            yield Static(self._row.name, id="info-title", markup=False)
+            yield Static(self._row.ref, id="info-ref", markup=False)
             with VerticalScroll(id="info-body"):
                 yield Markdown(self._build_markdown(), id="info-md")
             yield Static(msg.MODEL_INFO_HINT, id="info-hint")

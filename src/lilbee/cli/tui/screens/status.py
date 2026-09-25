@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, ClassVar
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
 
+from rich.text import Text
 from textual import work
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -367,7 +368,7 @@ class StatusScreen(Screen[None]):
                 table.add_row(msg.STATUS_HELD_OUT_EMPTY, "")
                 return
             for held in docs.held_out:
-                table.add_row(held.filename, held.reason)
+                table.add_row(Text(held.filename), Text(held.reason))
             hidden = docs.held_out_total - len(docs.held_out)
             if hidden > 0:
                 table.add_row(msg.STATUS_HELD_OUT_MORE.format(count=hidden), "")
@@ -422,7 +423,7 @@ class StatusScreen(Screen[None]):
             batch = self._docs_render_queue[:_DOC_RENDER_BATCH]
             del self._docs_render_queue[:_DOC_RENDER_BATCH]
             for src in batch:
-                table.add_row(src.get("filename", "?"), str(src.get("chunk_count", 0)))
+                table.add_row(Text(src.get("filename", "?")), str(src.get("chunk_count", 0)))
         if self._docs_render_queue:
             self.call_after_refresh(self._render_doc_batch, generation)
 

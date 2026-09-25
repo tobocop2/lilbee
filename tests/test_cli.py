@@ -165,6 +165,13 @@ class TestStatus:
         assert "test.pdf" in result.output
         assert "10" in result.output
 
+    def test_status_prints_a_bracketed_filename_as_written(self, isolated_env, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {"filename": "a[red]b.pdf", "file_hash": "h", "chunk_count": 1, "ingested_at": "t"}
+        ]
+        result = runner.invoke(app, ["status"])
+        assert "a[red]b.pdf" in result.output
+
 
 class TestSync:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -353,6 +360,19 @@ class TestAdd:
         assert result.exit_code == 0
         assert "already tracked: manual.txt" in result.output
         assert "Warning" not in result.output
+
+    def test_add_reports_a_bracketed_tracked_name_literally(self, isolated_env, tmp_path):
+        """The already-tracked summary line carries the source's own basename verbatim."""
+        src_file = tmp_path / "source" / "manual[draft].txt"
+        src_file.parent.mkdir()
+        src_file.write_text("Original content", encoding="utf-8")
+
+        runner.invoke(app, ["add", str(src_file)])
+
+        src_file.write_text("New content", encoding="utf-8")
+        result = runner.invoke(app, ["add", str(src_file)])
+        assert result.exit_code == 0
+        assert "already tracked: manual[draft].txt" in result.output
 
     def test_add_warns_when_the_name_is_taken_by_another_source(self, isolated_env, tmp_path):
         """A different source holding the label is the case --force is for."""
@@ -3421,6 +3441,19 @@ class TestTopicsCommand:
         assert "python" in result.output
 
     @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
+    def test_overview_prints_a_bracketed_concept_as_written(self, _mock_avail, mock_svc):
+        from lilbee.retrieval.concepts import Community
+
+        cfg.concept_graph = True
+        mock_svc.concepts.get_graph.return_value = True
+        mock_svc.concepts.top_communities.return_value = [
+            Community(cluster_id=0, size=1, concepts=["arr[/x]"]),
+        ]
+        result = runner.invoke(app, ["topics"])
+        assert result.exit_code == 0, result.output
+        assert "arr[/x]" in result.output
+
+    @mock.patch("lilbee.retrieval.concepts.concepts_available", return_value=True)
     def test_overview_json_mode(self, _mock_avail, mock_svc):
         from lilbee.retrieval.concepts import Community
 
@@ -4526,6 +4559,16 @@ class TestWikiWipe:
         result = runner.invoke(app, ["wiki", "wipe", "--yes"])
         assert result.exit_code == 1
 
+    def test_the_warning_prints_a_bracketed_wiki_dir_literally(
+        self, mock_svc, isolated_env, mock_wipe
+    ):
+        """The confirmation warning names the wiki path, which is user-configured."""
+        cfg.wiki_dir = "wiki[draft]"
+        result = runner.invoke(app, ["wiki", "wipe"], input="n\n")
+        assert result.exit_code == 0
+        assert "wiki[draft]" in result.output
+        mock_wipe.assert_not_called()
+
 
 class TestWikiPrune:
     def test_prune_no_pages(self, mock_svc, isolated_env):
@@ -4681,6 +4724,7 @@ class TestWikiDraftsCli:
         cfg.wiki_dir = "wiki"
         result = runner.invoke(app, ["wiki", "drafts", "diff", "missing"])
         assert result.exit_code == 1
+        assert "not found" in result.output
 
     def test_diff_missing_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
         cfg.wiki = True
@@ -4688,7 +4732,6 @@ class TestWikiDraftsCli:
         result = runner.invoke(app, ["wiki", "drafts", "diff", "mis[sing]"])
         assert result.exit_code == 1
         assert "draft not found: mis[sing]" in result.output
-        assert "not found" in result.output
 
     def test_diff_missing_slug_json_error(self, mock_svc, isolated_env):
         cfg.wiki = True
@@ -4777,11 +4820,11 @@ class TestWikiDraftsCli:
 
     def test_accept_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
         """A user-typed slug must not go through markup."""
-        self._seed_slug(isolated_env, "x[1]")
+        self._seed_slug(isolated_env, "x[red]")
         with mock.patch("lilbee.wiki.drafts.index_wiki_page", return_value=1):
-            result = runner.invoke(app, ["wiki", "drafts", "accept", "x[1]"])
+            result = runner.invoke(app, ["wiki", "drafts", "accept", "x[red]"])
         assert result.exit_code == 0, result.output
-        assert "Accepted x[1]" in result.output
+        assert "Accepted x[red]" in result.output
 
     def test_accept_json_output(self, mock_svc, isolated_env):
         self._seed(isolated_env)
@@ -4868,10 +4911,10 @@ class TestWikiDraftsCli:
         assert not (isolated_env / "wiki" / "drafts" / "x.md").exists()
 
     def test_reject_bracketed_slug_prints_it_literally(self, mock_svc, isolated_env):
-        self._seed_slug(isolated_env, "x[1]")
-        result = runner.invoke(app, ["wiki", "drafts", "reject", "x[1]"])
+        self._seed_slug(isolated_env, "x[red]")
+        result = runner.invoke(app, ["wiki", "drafts", "reject", "x[red]"])
         assert result.exit_code == 0, result.output
-        assert "Rejected x[1]" in result.output
+        assert "Rejected x[red]" in result.output
 
     def test_reject_json_output(self, mock_svc, isolated_env):
         self._seed(isolated_env)

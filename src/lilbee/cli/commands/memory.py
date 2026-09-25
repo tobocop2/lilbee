@@ -59,7 +59,7 @@ def memory_add(
     if cfg.json_mode:
         json_output({"id": memory_id, "kind": kind.value})
         return
-    console.print(f"Remembered ({kind.value}).")
+    console.print(f"Remembered ({kind.value}).", markup=False)
 
 
 @memory_app.command(name="list")
@@ -95,7 +95,6 @@ def memory_list_cmd(
         return
     table = Table("id", "kind", "shared", "text")
     for m in memories:
-        # Text, not a bare string: memory text is user-authored and carries brackets verbatim.
         table.add_row(
             m.id[:_ID_PREVIEW_CHARS], m.kind.value, "yes" if m.shared else "no", Text(m.text)
         )
@@ -121,8 +120,7 @@ def memory_recall_cmd(
         console.print("No relevant memories.")
         return
     for m in memories:
-        # Text, not markup: memory text is user-authored and carries brackets verbatim.
-        console.print(Text.assemble("- ", m.text))
+        console.print(Text.assemble("- ", m.text), soft_wrap=True)
 
 
 @memory_app.command(name="remove")
@@ -142,7 +140,6 @@ def memory_remove(
         if not deleted:
             raise typer.Exit(1)
         return
-    # Text, not markup: memory_id is a user-supplied CLI argument.
     console.print(
         Text.assemble(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")
     )

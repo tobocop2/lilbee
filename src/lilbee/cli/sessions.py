@@ -101,9 +101,9 @@ def list_cmd(
     for meta in metas:
         table.add_row(
             meta.id[:8],
-            meta.title,
+            Text(meta.title),
             str(meta.message_count),
-            meta.model_ref,
+            Text(meta.model_ref),
             meta.origin.value,
             meta.updated_at[:19],
         )
@@ -137,7 +137,6 @@ def show_cmd(
         return
     console.print(Text(session.meta.title, style=theme.ACCENT), soft_wrap=True)
     for message in session.messages:
-        # Text, not markup: message content is user-authored and carries brackets verbatim.
         console.print(
             Text.assemble((message.role.value, "bold"), ": ", message.content), soft_wrap=True
         )
@@ -163,7 +162,6 @@ def fork_cmd(
     if cfg.json_mode:
         json_output({"meta": asdict(meta)})
         return
-    # Text, not markup: a title is user-chosen and carries brackets verbatim.
     console.print(
         Text.assemble("Forked to ", (meta.title, theme.ACCENT), f" ({fork_id[:8]})."),
         soft_wrap=True,
@@ -215,7 +213,6 @@ def rename_cmd(
     if cfg.json_mode:
         json_output({"id": resolved, "title": title})
         return
-    # Text, not markup: a title is user-chosen and carries brackets verbatim.
     console.print(Text.assemble("Renamed to ", (title, theme.ACCENT), "."), soft_wrap=True)
 
 
@@ -239,4 +236,6 @@ def delete_cmd(
     if cfg.json_mode:
         json_output({"id": resolved, "deleted": True})
         return
-    console.print(f"Deleted [{theme.ACCENT}]{resolved[:8]}[/{theme.ACCENT}].")
+    console.print(
+        f"Deleted [{theme.ACCENT}]{resolved[:8]}[/{theme.ACCENT}]."
+    )  # style-check: allow-markup -- session id

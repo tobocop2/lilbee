@@ -66,7 +66,6 @@ def export_cmd(
     if cfg.json_mode:
         json_output(summary.model_dump())
         return
-    # Text, not markup: the output path is user-chosen and carries brackets verbatim.
     console.print(
         Text.assemble(
             "Wrote ",
@@ -98,7 +97,7 @@ def import_cmd(
     if cfg.json_mode:
         json_output(summary.model_dump())
         return
-    console.print(
+    console.print(  # style-check: allow-markup -- counts only
         f"Imported [{theme.LABEL}]{len(summary.sources)}[/{theme.LABEL}] source(s) "
         f"([{theme.LABEL}]{summary.pages}[/{theme.LABEL}] pages, "
         f"[{theme.LABEL}]{summary.chunks}[/{theme.LABEL}] chunks)"

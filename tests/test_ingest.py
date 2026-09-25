@@ -2778,6 +2778,52 @@ class TestSyncResultStr:
         assert "added=1" in repr(result)
 
 
+class TestSyncResultRich:
+    """``__rich__`` is what ``console.print(result)`` renders; filenames must survive brackets."""
+
+    def test_bracketed_filenames_render_literally(self):
+        from rich.console import Console
+
+        from lilbee.data.ingest import SyncResult
+        from lilbee.data.types import SkippedSource
+
+        result = SyncResult(
+            skipped=["note[draft].pdf"],
+            failed=["bad[x].md"],
+            relocated=["moved.md"],
+            held_out=[SkippedSource(filename="C:\\scans\\[red]scan.pdf", reason="no [/x] text")],
+        )
+        console = Console(force_terminal=False, width=200)
+        with console.capture() as capture:
+            console.print(result)
+        rendered = capture.get()
+        assert "note[draft].pdf" in rendered
+        assert "bad[x].md" in rendered
+        assert "Relocated: 1" in rendered
+        assert "C:\\scans\\[red]scan.pdf: no [/x] text" in rendered
+
+    def test_bracketed_index_mismatch_message_renders_literally(self):
+        from rich.console import Console
+
+        from lilbee.data.ingest import SyncResult
+        from lilbee.data.store import IndexMismatch
+
+        result = SyncResult(
+            index_mismatch=IndexMismatch(
+                persisted_model="old[embedder]",
+                persisted_dim=384,
+                current_model="new-embedder",
+                current_dim=768,
+                adoptable=False,
+                message="index built with [old-embedder]",
+            )
+        )
+        console = Console(force_terminal=False, width=200)
+        with console.capture() as capture:
+            console.print(result)
+        assert "index built with [old-embedder]" in capture.get()
+
+
 class TestCollectResultsSkipped:
     """Verify _collect_results emits BATCH_PROGRESS with status=skipped for 0-chunk files."""
 

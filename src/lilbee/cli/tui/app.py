@@ -18,6 +18,7 @@ from textual.binding import Binding, BindingType
 from textual.command import CommandPalette
 from textual.css.query import NoMatches
 from textual.filter import LineFilter
+from textual.notifications import SeverityLevel
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.signal import Signal
@@ -250,6 +251,18 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
+
+    def notify(
+        self,
+        message: str,
+        *,
+        title: str = "",
+        severity: SeverityLevel = "information",
+        timeout: float | None = None,
+        markup: bool = False,
+    ) -> None:
+        """Show a toast whose message is always literal text, never markup."""
+        super().notify(message, title=title, severity=severity, timeout=timeout, markup=False)
 
     def compose(self) -> ComposeResult:
         yield from ()  # screens compose their own ViewTabs + Footer
@@ -549,9 +562,7 @@ class LilbeeApp(App[None]):
         downloading = self.task_bar.downloading_label_for(value)
         if downloading is None:
             return False
-        self.notify(
-            msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning", markup=False
-        )
+        self.notify(msg.MODEL_BEING_DOWNLOADED.format(name=downloading), severity="warning")
         return True
 
     def set_active_model(self, key: str, value: str) -> None:

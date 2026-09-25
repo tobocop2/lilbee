@@ -285,3 +285,61 @@ class TestSubprocessTextPipes:
     def test_flags_distinctive_names_without_a_receiver(self, tmp_path: Path, source: str) -> None:
         """Popen and check_output mean subprocess wherever they appear."""
         assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+
+class TestCheckMarkupInterpolation:
+    def _findings(self, tmp_path: Path, source: str) -> list[str]:
+        target = tmp_path / "sample.py"
+        target.write_text(source + "\n", encoding="utf-8")
+        return list(csr._check_markup_interpolation([target]))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param(
+                'console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {path}")', id="tag_and_value"
+            ),
+            pytest.param('console.print(f"Initialized at {root}")', id="value_without_tag"),
+            pytest.param("err.print(MSG.format(path=path))", id="format_call"),
+            pytest.param(
+                'con.print(\n    f"Removed {name}",\n    style=theme.ERROR,\n)', id="multiline"
+            ),
+        ],
+    )
+    def test_flags_a_value_parsed_as_markup(self, tmp_path: Path, source: str) -> None:
+        assert self._findings(tmp_path, source), f"should have flagged: {source}"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            pytest.param('console.print(f"Initialized at {root}", markup=False)', id="markup_off"),
+            pytest.param(
+                'console.print(f"[{theme.ERROR}]Chat requires a terminal.[/{theme.ERROR}]")',
+                id="theme_style_only",
+            ),
+            pytest.param('console.print(Text.assemble("Removed ", name))', id="text_object"),
+            pytest.param("console.print(message, style=theme.ERROR)", id="plain_name"),
+            pytest.param('print(f"[{x}]")', id="builtin_print"),
+            pytest.param(
+                'console.print(f"[b]{n}[/b] pages")  # style-check: allow-markup -- count',
+                id="opt_out",
+            ),
+        ],
+    )
+    def test_leaves_literal_and_opted_out_prints_alone(self, tmp_path: Path, source: str) -> None:
+        assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
+
+    def test_a_flagged_value_really_is_restyled_by_rich(self) -> None:
+        """The rule's premise: Rich eats a bracketed value interpolated into markup."""
+        from rich.text import Text
+
+        path = "C:\\notes\\[red]draft.md"
+        assert Text.from_markup(f"[bold]Error:[/bold] {path}").plain != f"Error: {path}"
+
+    def test_an_unparsable_file_yields_nothing(self, tmp_path: Path) -> None:
+        assert not self._findings(tmp_path, "def broken(:")
+
+    def test_the_finding_names_the_file_and_line(self, tmp_path: Path) -> None:
+        findings = self._findings(tmp_path, 'x = 1\nconsole.print(f"Hi {name}")')
+        assert len(findings) == 1
+        assert findings[0].startswith(f"{tmp_path / 'sample.py'}:2: ")

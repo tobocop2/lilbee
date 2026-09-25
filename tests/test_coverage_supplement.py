@@ -909,6 +909,23 @@ class TestModelInfoModal:
         defaults.update(kw)
         return LocalCatalogRow(**defaults)
 
+    async def test_a_bracketed_name_and_ref_render_as_written(self) -> None:
+        """Model names and refs come from HuggingFace; ``[/x]`` must not parse."""
+        from textual.widgets import Static
+
+        from lilbee.cli.tui.screens.model_info import ModelInfoModal
+
+        modal = ModelInfoModal(self._row(name="acme[/x]", ref="acme/[red]gguf"))
+
+        class _Probe(LilbeeAppHost):
+            def on_mount(self) -> None:
+                self.push_screen(modal)
+
+        async with _Probe().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            assert "acme[/x]" in str(modal.query_one("#info-title", Static).render())
+            assert "acme/[red]gguf" in str(modal.query_one("#info-ref", Static).render())
+
     async def test_modal_compose_and_markdown_includes_known_fields(self) -> None:
         from textual.app import ComposeResult
         from textual.widgets import Footer
@@ -2456,7 +2473,7 @@ class TestAppSetActiveModelDownloadGuard:
         assert app._reject_if_downloading(True) is False
         assert app._reject_if_downloading(7) is False
 
-    async def test_reject_if_downloading_toasts_a_bracketed_label_without_markup(self) -> None:
+    async def test_reject_if_downloading_toasts_a_bracketed_label(self) -> None:
         """The in-flight download's label is a user-typed model ref."""
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.task_queue import TaskType
@@ -2474,7 +2491,64 @@ class TestAppSetActiveModelDownloadGuard:
             assert app._reject_if_downloading(ref) is True
         mock_notify.assert_called_once()
         assert "note[draft]" in mock_notify.call_args[0][0]
-        assert mock_notify.call_args.kwargs["markup"] is False
+
+
+class TestAppNotifyForcesMarkupOff:
+    """``LilbeeApp.notify`` is the one choke point every toast passes through."""
+
+    async def test_default_call_disables_markup(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            app.notify("plain [bold]call[/bold]")
+            await pilot.pause()
+            notification = list(app._notifications)[-1]
+            assert notification.message == "plain [bold]call[/bold]"
+            assert notification.markup is False
+
+    async def test_an_explicit_markup_true_is_still_forced_off(self) -> None:
+        """A caller cannot opt back into markup; there is no site that needs to."""
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            app.notify("note[draft]", markup=True)
+            await pilot.pause()
+            notification = list(app._notifications)[-1]
+            assert notification.message == "note[draft]"
+            assert notification.markup is False
+
+    async def test_a_widget_notify_call_routes_through_the_same_override(self) -> None:
+        """Widget.notify forwards to App.notify, so a screen's own call is covered too."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.status import StatusScreen
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            screen = StatusScreen()
+            await app.push_screen(screen)
+            await pilot.pause()
+            screen.notify("source [red]x[/red]", severity="warning")
+            await pilot.pause()
+            notification = list(app._notifications)[-1]
+            assert notification.message == "source [red]x[/red]"
+            assert notification.markup is False
+
+    async def test_an_unbalanced_closing_tag_renders_as_written(self) -> None:
+        """A path with ``[/y]`` raised MarkupError when the toast rendered it as markup."""
+        from textual.widgets._toast import Toast
+
+        from tests._lilbee_app_test_host import LilbeeAppHost, ready_services
+
+        app = LilbeeAppHost()
+        with ready_services():
+            async with app.run_test(size=(120, 40), notifications=True) as pilot:
+                app.notify("Path not found: /nonexistent/x[/y].txt", severity="error")
+                for _ in range(4):
+                    await pilot.pause()
+                rendered = [toast.render().plain for toast in app.query(Toast)]
+        assert rendered == ["Path not found: /nonexistent/x[/y].txt"]
 
 
 class TestModelInfoExceptionBranches:

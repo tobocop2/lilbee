@@ -1975,7 +1975,7 @@ class CatalogScreen(Screen[None]):
             self._install_model(row.catalog_model)
         elif row.remote_model:
             apply_active_model(self.app, _model_field_for_task(row.remote_model.task), row.ref)
-            self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name), markup=False)
+            self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
         """Activate a cloud model, or jump to settings when the key is missing."""
@@ -1983,7 +1983,6 @@ class CatalogScreen(Screen[None]):
             apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
             self.notify(
                 msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider),
-                markup=False,
             )
             return
         key_field = PROVIDER_API_KEY_FIELD.get(row.provider_id, f"{row.provider_id}_api_key")
@@ -2118,9 +2117,7 @@ class CatalogScreen(Screen[None]):
 
     def _install_model(self, model: CatalogModel) -> None:
         if self.app.task_bar.pending_download(model) is not None:
-            self.notify(
-                msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name), markup=False
-            )
+            self.notify(msg.CATALOG_ALREADY_DOWNLOADING.format(name=model.display_name))
             return
         # The row's own size is an approximation off the parameter count; one
         # file is named here, so the check asks HuggingFace what it really costs.
@@ -2129,9 +2126,7 @@ class CatalogScreen(Screen[None]):
             filename = resolve_filename(model)
             dest = cfg.models_dir / filename
             if dest.exists():
-                self.notify(
-                    msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name), markup=False
-                )
+                self.notify(msg.CATALOG_ALREADY_INSTALLED.format(name=model.display_name))
                 return
             needed = download_bytes(model.hf_repo, filename)
         except Exception:
@@ -2142,7 +2137,7 @@ class CatalogScreen(Screen[None]):
         # not stop a second row.
         shortfall = disk_shortfall(cfg.models_dir, model.hf_repo, needed)
         if shortfall is not None:
-            self.notify(shortfall, severity="warning", markup=False)
+            self.notify(shortfall, severity="warning")
             return
 
         self._enqueue_download(model)
@@ -2173,9 +2168,7 @@ class CatalogScreen(Screen[None]):
                 if not verdict:
                     return
                 self.app.task_bar.start_download(model, allow_unsupported=True, on_success=_adopt)
-                self.notify(
-                    msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name), markup=False
-                )
+                self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
             self.app.push_screen(
                 ConfirmDialog(
@@ -2187,7 +2180,7 @@ class CatalogScreen(Screen[None]):
             return
 
         self.app.task_bar.start_download(model, on_success=_adopt)
-        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name), markup=False)
+        self.notify(msg.CATALOG_QUEUED_DOWNLOAD.format(name=model.display_name))
 
     def _adopt_first_download(self, model: CatalogModel) -> None:
         """Make the first model of an unconfigured role the active one.
@@ -2264,7 +2257,6 @@ class CatalogScreen(Screen[None]):
             self.notify(
                 msg.CATALOG_NOT_INSTALLED.format(name=model_name),
                 severity="warning",
-                markup=False,
             )
             return
 
@@ -2273,7 +2265,7 @@ class CatalogScreen(Screen[None]):
             self._run_delete(model_name)
         else:
             self._pending_delete = model_name
-            self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name), markup=False)
+            self.notify(msg.CATALOG_CONFIRM_DELETE.format(name=model_name))
 
     def _row_is_installed(self, model_name: str) -> bool:
         """True if *model_name* names an installed native or remote model.
@@ -2330,9 +2322,7 @@ class CatalogScreen(Screen[None]):
         try:
             removed = get_services().model_manager.remove(delete_ref)
             if removed:
-                call_from_thread(
-                    self, self.notify, msg.CATALOG_DELETED.format(name=model_name), markup=False
-                )
+                call_from_thread(self, self.notify, msg.CATALOG_DELETED.format(name=model_name))
                 call_from_thread(self, self._refresh_after_delete)
             else:
                 call_from_thread(
@@ -2340,7 +2330,6 @@ class CatalogScreen(Screen[None]):
                     self.notify,
                     msg.CATALOG_DELETE_FAILED.format(error=model_name),
                     severity="error",
-                    markup=False,
                 )
         except Exception as exc:
             log.warning("Delete failed for %s", model_name, exc_info=True)
@@ -2349,7 +2338,6 @@ class CatalogScreen(Screen[None]):
                 self.notify,
                 msg.CATALOG_DELETE_FAILED.format(error=exc),
                 severity="error",
-                markup=False,
             )
 
     def _refresh_after_delete(self) -> None:

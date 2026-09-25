@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from textual import work
+from textual.content import Content
 from textual.timer import Timer
 from textual.widgets import Static
 
@@ -207,7 +208,7 @@ class GpuFleetPanel(Static):
         self._probe_error = reason
         theme = self._resolve_theme()
         error = _theme_color(theme, "error")
-        self.update(f"[{error}]  {msg.FLEET_GPU_PROBE_FAILED.format(reason=reason)}[/]")
+        self.update(Content.styled(f"  {msg.FLEET_GPU_PROBE_FAILED.format(reason=reason)}", error))
 
     def on_mount(self) -> None:
         self._timer = self.set_interval(_TICK_INTERVAL_S, self._request_stats)

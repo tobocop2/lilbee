@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -83,7 +84,7 @@ def _post_success(app: LilbeeApp, message: str) -> None:
     No reload here: the WIKI task's done hook rescans the wiki screens, and
     each rescan re-walks every page's frontmatter from disk.
     """
-    call_from_thread(app, app.notify, message, severity="information", markup=False)
+    call_from_thread(app, app.notify, message, severity="information")
 
 
 def _post_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> None:
@@ -100,7 +101,7 @@ def _apply_failure(app: LilbeeApp, message: str, severity: SeverityLevel) -> Non
 
     No done hook fires for a failed task, so this path reloads itself.
     """
-    app.notify(message, severity=severity, markup=False)
+    app.notify(message, severity=severity)
     app.task_bar.reload_wiki_screens()
 
 
@@ -144,7 +145,7 @@ class WikiDraftsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-        table: DataTable[str] = DataTable(id="wiki-drafts-table")
+        table: DataTable[str | Text] = DataTable(id="wiki-drafts-table")
         table.cursor_type = "row"
         yield Horizontal(
             Vertical(
@@ -209,7 +210,7 @@ class WikiDraftsScreen(Screen[None]):
 
         for d in visible:
             table.add_row(
-                d.slug,
+                Text(d.slug),
                 _kind_label(d.pending_kind),
                 _format_drift(d.drift_ratio),
                 _format_faithfulness(d.faithfulness_score),
@@ -291,7 +292,7 @@ class WikiDraftsScreen(Screen[None]):
         if len(self.app.screen_stack) > 1:
             self.app.pop_screen()
 
-    def _table_or_none(self) -> DataTable[str] | None:
+    def _table_or_none(self) -> DataTable[str | Text] | None:
         """Return the drafts table unless an Input is focused."""
         if isinstance(self.focused, Input):
             return None

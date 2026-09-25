@@ -25,7 +25,7 @@ class _Harness(LilbeeAppHost):
 
 def _label_text(bar: TaskBar) -> str:
     label = bar.query_one("#task-status-label", Label)
-    return str(label._Static__content)  # type: ignore[attr-defined]
+    return label._Static__content.markup  # type: ignore[attr-defined]
 
 
 @pytest.mark.asyncio

@@ -46,7 +46,6 @@ def _format_sync_summary(
 def _print_file_start(con: Console, data: ProgressEvent) -> None:
     if not isinstance(data, FileStartEvent):
         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-    # Text, not markup: the file being synced is a user document path.
     con.print(
         Text(
             f"Syncing [{data.current_file}/{data.total_files}]: {data.file}",
@@ -63,7 +62,7 @@ def _print_done(con: Console, data: ProgressEvent) -> None:
         data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
     )
     if summary:
-        con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
+        con.print(f"Synced: {summary}", style=theme.MUTED, markup=False)
 
 
 def _sync_progress_printer(con: Console) -> DetailedProgressCallback:

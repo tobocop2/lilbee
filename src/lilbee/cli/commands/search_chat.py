@@ -72,7 +72,6 @@ def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:
     if cfg.json_mode:
         json_output({"error": str(exc), "hint": hint, "persisted_model": exc.persisted_model})
         raise SystemExit(1)
-    # Text, not markup: the index's persisted embedder model can carry brackets.
     print_prefixed(console, "Error: ", exc, style=theme.ERROR)
     console.print(Text(hint), soft_wrap=True)
     raise SystemExit(1)
@@ -121,7 +120,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
             )
         else:
             notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
-        err.print(notice, style=theme.WARNING)
+        err.print(notice, style=theme.WARNING, markup=False)
 
 
 _MD_FILE_LINK_RE = re.compile(r"\[([^\]]+)\]\((file://[^)]+)\)")
@@ -205,7 +204,7 @@ def _reject_if_empty(value: str, label: str) -> None:
     if cfg.json_mode:
         json_output({"error": msg})
         raise SystemExit(1)
-    console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {msg}")
+    print_prefixed(console, "Error: ", msg, style=theme.ERROR)
     raise SystemExit(1)
 
 
@@ -269,7 +268,7 @@ def search(
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        table.add_row(r["source"], preview, f"{_display_score(r):.4f}")
+        table.add_row(Text(r["source"]), Text(preview), f"{_display_score(r):.4f}")
     console.print(table)
 
 
@@ -386,8 +385,9 @@ def use_embedder(
             {"command": "use-embedder", "model": result.model, "status": result.status.value}
         )
         return
-    # Text, not markup: result.model is a user-typed embedder ref.
-    console.print(Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."))
+    console.print(
+        Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."), soft_wrap=True
+    )
 
 
 def chat(
@@ -444,7 +444,7 @@ def topics(
         if cfg.json_mode:
             json_output({"error": msg})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]{msg}[/{theme.ERROR}]")
+        console.print(msg, style=theme.ERROR, markup=False)
         raise SystemExit(1)
 
     if not cfg.concept_graph:
@@ -483,10 +483,9 @@ def _topics_for_query(query: str) -> None:
     if not all_concepts:
         console.print("No concepts found for this query.")
         return
-    # Text, not markup: query is user-typed and concepts are extracted document content.
-    console.print(Text.assemble("Concepts related to ", (query, theme.ACCENT), ":"))
+    console.print(Text.assemble("Concepts related to ", (query, theme.ACCENT), ":"), soft_wrap=True)
     for c in all_concepts:
-        console.print(Text.assemble("  ", c))
+        console.print(Text.assemble("  ", c), soft_wrap=True)
 
 
 def _topics_overview(top_k: int) -> None:
@@ -508,5 +507,5 @@ def _topics_overview(top_k: int) -> None:
         preview = ", ".join(comm.concepts[:_TOPIC_PREVIEW_LIMIT])
         if len(comm.concepts) > _TOPIC_PREVIEW_LIMIT:
             preview += f" (+{len(comm.concepts) - _TOPIC_PREVIEW_LIMIT} more)"
-        table.add_row(str(comm.cluster_id), str(comm.size), preview)
+        table.add_row(str(comm.cluster_id), str(comm.size), Text(preview))
     console.print(table)

@@ -2228,6 +2228,33 @@ async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
         assert app.screen.query_one("#held-out-section", Collapsible).collapsed is False
 
 
+async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written(
+    mock_svc, monkeypatch
+):
+    """Filenames and reasons are user data; ``[/x]`` must not parse as a closing tag."""
+    from textual.widgets import DataTable
+    from textual.widgets._data_table import default_cell_formatter
+
+    from lilbee.cli.tui.screens import status as status_screen
+    from lilbee.data.types import SkippedSource
+
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "doc[/x].md", "chunk_count": 1, "content_type": "text/markdown"}
+    ]
+    held = [SkippedSource(filename="scan[red].pdf", reason="bad [/x] header")]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        held_table = app.screen.query_one("#held-out-table", DataTable)
+        docs_table = app.screen.query_one("#docs-table", DataTable)
+        await _wait_for_row_count(pilot, held_table, 1)
+        await _wait_for_row_count(pilot, docs_table, 1)
+        held_cells = [default_cell_formatter(c).plain for c in held_table.get_row_at(0)]
+        doc_name = default_cell_formatter(docs_table.get_row_at(0)[0]).plain
+    assert held_cells == ["scan[red].pdf", "bad [/x] header"]
+    assert doc_name == "doc[/x].md"
+
+
 async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_svc, monkeypatch):
     from textual.widgets import Collapsible, DataTable
 
@@ -2791,8 +2818,8 @@ async def test_chat_slash_theme_with_arg():
             assert "dracula" in mock_notify.call_args[0][0].lower()
 
 
-async def test_chat_slash_theme_unknown_bracketed_name_notifies_without_markup():
-    """An unrecognized theme name is user-typed and must not go through markup."""
+async def test_chat_slash_theme_unknown_bracketed_name_notifies_literally():
+    """An unrecognized theme name is user-typed and must render as literal text."""
     from lilbee.cli.tui.app import LilbeeApp
 
     app = LilbeeApp()
@@ -2802,7 +2829,6 @@ async def test_chat_slash_theme_unknown_bracketed_name_notifies_without_markup()
             app.screen._handle_slash("/theme note[draft]")
             mock_notify.assert_called_once()
             assert "note[draft]" in mock_notify.call_args[0][0]
-            assert mock_notify.call_args.kwargs["markup"] is False
 
 
 async def test_chat_slash_theme_no_arg():
@@ -2982,8 +3008,8 @@ async def test_chat_slash_export_writes_file(tmp_path):
     set_services(None)
 
 
-async def test_chat_slash_export_bracketed_path_notifies_without_markup(tmp_path):
-    """A bracketed export path must be shown as text, not markup."""
+async def test_chat_slash_export_bracketed_path_notifies_literally(tmp_path):
+    """A bracketed export path must render as literal text."""
     from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 
     _store, services = _dataset_services(tmp_path)
@@ -2996,7 +3022,6 @@ async def test_chat_slash_export_bracketed_path_notifies_without_markup(tmp_path
             task = await _wait_for_dataset_task(app, _pilot, TaskType.EXPORT)
             assert task.status == TaskStatus.DONE
             assert "note[draft].parquet" in mock_notify.call_args[0][0]
-            assert mock_notify.call_args.kwargs["markup"] is False
     set_services(None)
 
 
@@ -3323,20 +3348,18 @@ async def test_chat_slash_add_nonexistent():
             assert "Not found" in mock_notify.call_args[0][0]
 
 
-async def test_chat_slash_add_nonexistent_bracketed_path_notifies_without_markup():
-    """A bracketed missing path must be shown as text, not markup: Textual's
-    notify() parses markup by default and a bare `[` raises MarkupError."""
+async def test_chat_slash_add_nonexistent_bracketed_path_notifies_literally():
+    """A bracketed missing path must render as literal text, not be parsed as markup."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_add("/nonexistent/note[draft].txt")
             mock_notify.assert_called_once()
             assert "note[draft].txt" in mock_notify.call_args[0][0]
-            assert mock_notify.call_args.kwargs["markup"] is False
 
 
-async def test_do_add_name_taken_notifies_a_bracketed_name_without_markup(tmp_path):
-    """A source label is user-chosen and must not go through markup."""
+async def test_do_add_name_taken_notifies_a_bracketed_name_literally(tmp_path):
+    """A source label is user-chosen and must render as literal text."""
     import threading
     from unittest.mock import MagicMock
 
@@ -3365,11 +3388,10 @@ async def test_do_add_name_taken_notifies_a_bracketed_name_without_markup(tmp_pa
 
         first_call = mock_notify.call_args_list[0]
         assert "note[draft]" in first_call.args[0]
-        assert first_call.kwargs["markup"] is False
 
 
-async def test_prompt_overwrite_declined_notifies_a_bracketed_name_without_markup(tmp_path):
-    """A duplicate's basename is user-chosen and must not go through markup."""
+async def test_prompt_overwrite_declined_notifies_a_bracketed_name_literally(tmp_path):
+    """A duplicate's basename is user-chosen and must render as literal text."""
     dup = tmp_path / "note[draft].txt"
     dup.write_text("x", encoding="utf-8")
     app = ChatTestApp()
@@ -3384,7 +3406,6 @@ async def test_prompt_overwrite_declined_notifies_a_bracketed_name_without_marku
             on_confirm(False)
         mock_notify.assert_called_once()
         assert "note[draft].txt" in mock_notify.call_args[0][0]
-        assert mock_notify.call_args.kwargs["markup"] is False
 
 
 async def test_chat_slash_add_blocked_by_sync(tmp_path):
@@ -9382,6 +9403,17 @@ class TestWikiStubs:
             labels = [str(n.label) for n in _descendants(tree.root)]
             assert any("not written" in label for label in labels)
 
+    async def test_a_bracketed_stub_label_renders_literally(self, tmp_path):
+        """A stub's label comes from extracted entity text and may carry a bracket."""
+        _save_wiki_stubs(tmp_path, ["Ford [red]F-150[/red]"])
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            from textual.widgets import Tree
+
+            tree = app.screen.query_one("#wiki-page-list", Tree)
+            labels = [str(n.label) for n in _descendants(tree.root)]
+            assert any("Ford [red]F-150[/red] (not written)" in label for label in labels)
+
     async def test_a_written_page_is_not_listed_as_a_stub(self, tmp_path):
         self._index(tmp_path)
         wiki_root = cfg.data_root / cfg.wiki_dir
@@ -10533,7 +10565,6 @@ class TestWikiDraftsCancellation:
             fake_app.notify,
             msg.WIKI_DRAFTS_REJECTED.format(slug="some-draft"),
             severity="information",
-            markup=False,
         )
 
     def test_a_failure_toasts_and_reloads_the_table_itself(self) -> None:
@@ -10542,16 +10573,16 @@ class TestWikiDraftsCancellation:
 
         app = MagicMock()
         _apply_failure(app, "accept failed", "error")
-        app.notify.assert_called_once_with("accept failed", severity="error", markup=False)
+        app.notify.assert_called_once_with("accept failed", severity="error")
         app.task_bar.reload_wiki_screens.assert_called_once_with()
 
-    def test_a_bracketed_slug_is_toasted_without_markup(self) -> None:
-        """A wiki slug is user-typed and must not be parsed as markup."""
+    def test_a_bracketed_slug_is_toasted_literally(self) -> None:
+        """A wiki slug is user-typed and must render as literal text."""
         from lilbee.cli.tui.screens.wiki_drafts import _apply_failure
 
         app = MagicMock()
-        _apply_failure(app, "draft not found: x[1]", "error")
-        app.notify.assert_called_once_with("draft not found: x[1]", severity="error", markup=False)
+        _apply_failure(app, "draft not found: x[red]", "error")
+        app.notify.assert_called_once_with("draft not found: x[red]", severity="error")
 
 
 class TestWikiDraftsScreen:
@@ -10585,6 +10616,20 @@ class TestWikiDraftsScreen:
             table = app.screen.query_one("#wiki-drafts-table", DataTable)
             assert table.row_count == 2
 
+    async def test_a_bracketed_slug_renders_as_written(self, tmp_path):
+        """A draft slug comes from a corpus name; ``[red]`` must not restyle it."""
+        from textual.widgets._data_table import default_cell_formatter
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        _write_draft(cfg.data_root / cfg.wiki_dir, "ford-[red]f150")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as _pilot:
+            table = app.screen.query_one("#wiki-drafts-table", DataTable)
+            slug = default_cell_formatter(table.get_row_at(0)[0]).plain
+        assert slug == "ford-[red]f150"
+
     async def test_list_carries_pending_kind(self, tmp_path):
         """PENDING-COLLISION drafts render with the ``collision`` kind label."""
         cfg.wiki = True
@@ -10601,7 +10646,7 @@ class TestWikiDraftsScreen:
             table = app.screen.query_one("#wiki-drafts-table", DataTable)
             # Kind column is index 1 in the row.
             row = table.get_row_at(0)
-            assert row[0] == "collide"
+            assert str(row[0]) == "collide"
             assert row[1] == "collision"
 
     async def test_diff_appears_on_select(self, tmp_path):
@@ -10780,7 +10825,7 @@ class TestWikiDraftsScreen:
             table = screen.query_one("#wiki-drafts-table", DataTable)
             assert table.row_count == 1
             row = table.get_row_at(0)
-            assert row[0] == "alpha"
+            assert str(row[0]) == "alpha"
 
     async def test_search_does_not_re_read_disk(self, tmp_path, monkeypatch):
         """Filtering works off the cached list; every keystroke used to re-read
@@ -11577,6 +11622,30 @@ class TestWikiCoverageEdgeCases:
                 msg.WIKI_NO_MATCHES.format(filter="zzz")
             ]
             assert screen.query_one("#wiki-content", Markdown).source == before
+
+    async def test_bracketed_titles_and_filter_render_as_written(self, tmp_path):
+        """Page titles and the typed filter are user text; ``[/x]`` must not parse."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "ford", "Ford [red]F-150")
+        _create_wiki_page(wiki_root, "summaries", "notes/deep", "Deep [/x] notes")
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            from textual.widgets import Tree
+
+            from lilbee.cli.tui import messages as msg
+
+            screen = app.screen
+            tree = screen.query_one("#wiki-page-list", Tree)
+            labels = [str(n.label) for n in _descendants(tree.root)]
+            assert "Ford [red]F-150" in labels
+            assert "Deep [/x] notes" in labels
+            screen._load_pages(filter_text="zz[/x]")
+            await pilot.pause()
+            assert [str(c.label) for c in tree.root.children] == [
+                msg.WIKI_NO_MATCHES.format(filter="zz[/x]")
+            ]
 
     async def test_on_page_selected_none_id(self, tmp_path):
         """Selecting a branch node (no slug data) is a no-op."""
@@ -14410,12 +14479,9 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
 
-async def test_settings_model_picker_dismissed_reload_failure_notifies_without_markup():
-    """A reload failure in _persist's worker thread toasts the error as plain text.
-
-    ``ref`` and the exception text are both attacker/user-controlled (a model
-    reference or an underlying error message can contain ``[``), so the toast
-    must disable markup or a bracketed ref mangles the notification.
+async def test_settings_model_picker_dismissed_reload_failure_notifies_the_bracketed_error():
+    """A reload failure in _persist's worker thread toasts the error, with the model
+    reference or exception text intact -- both can be user-controlled and contain ``[``.
     """
     from unittest.mock import patch
 
@@ -14427,26 +14493,25 @@ async def test_settings_model_picker_dismissed_reload_failure_notifies_without_m
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
-        notes: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+        notes: list[str] = []
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
-            patch.object(app, "notify", lambda msg, **k: notes.append((msg, k))),
+            patch.object(app, "notify", lambda msg, **_k: notes.append(msg)),
         ):
-            screen._on_model_picker_dismissed("vision_model", "fake/vision[7b].gguf")
+            screen._on_model_picker_dismissed("vision_model", "fake/vision[q4].gguf")
             await app.workers.wait_for_complete()
             await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
-    assert any("Could not switch model: no route to [gpu0]" in n for n, _ in notes)
-    assert any(k.get("markup") is False for _, k in notes)
+    assert any("Could not switch model: no route to [gpu0]" in n for n in notes)
 
 
-async def test_settings_model_picker_dismissed_reload_success_notifies_without_markup():
-    """A successful reload in _persist's worker thread toasts the bracketed ref as plain text."""
+async def test_settings_model_picker_dismissed_reload_success_notifies_the_bracketed_ref():
+    """A successful reload in _persist's worker thread toasts the bracketed ref intact."""
     from unittest.mock import patch
 
     from lilbee.providers.roles import WorkerRole
@@ -14456,22 +14521,21 @@ async def test_settings_model_picker_dismissed_reload_success_notifies_without_m
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
-        notes: list[tuple[str, dict]] = []  # type: ignore[type-arg]
+        notes: list[str] = []
         with (
             patch("lilbee.cli.tui.widgets.model_pick.apply_active_model"),
             patch(
                 "lilbee.cli.tui.widgets.model_pick.get_services",
                 return_value=services_mock,
             ),
-            patch.object(app, "notify", lambda msg, **k: notes.append((msg, k))),
+            patch.object(app, "notify", lambda msg, **_k: notes.append(msg)),
         ):
-            screen._on_model_picker_dismissed("vision_model", "fake/vision[7b].gguf")
+            screen._on_model_picker_dismissed("vision_model", "fake/vision[q4].gguf")
             await app.workers.wait_for_complete()
             await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
 
-    assert any("Now using fake/vision[7b].gguf" in n for n, _ in notes)
-    assert any(k.get("markup") is False for _, k in notes)
+    assert any("Now using fake/vision[q4].gguf" in n for n in notes)
 
 
 async def test_settings_embed_picker_against_populated_store_pushes_confirm():

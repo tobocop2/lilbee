@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
     from lilbee.wiki.browse import WikiPageInfo
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -256,7 +257,7 @@ class WikiScreen(Screen[None]):
         if not pages and not stubs and not shortcuts:
             # Pages exist but none match: leave the content pane untouched
             # rather than rendering the empty-wiki state.
-            tree.root.add_leaf(msg.WIKI_NO_MATCHES.format(filter=filter_text))
+            tree.root.add_leaf(Text(msg.WIKI_NO_MATCHES.format(filter=filter_text)))
             return
 
         self._populate_tree(tree, pages, shortcuts)
@@ -304,7 +305,8 @@ class WikiScreen(Screen[None]):
             return
         group = tree.root.add(msg.WIKI_STUBS_HEADING, expand=expand)
         for stub in stubs:
-            group.add_leaf(msg.WIKI_STUB_LABEL.format(title=stub.label), data=stub.wiki_slug)
+            label = Text.assemble((stub.label, "dim"), " ", (msg.WIKI_STUB_SUFFIX, "dim italic"))
+            group.add_leaf(label, data=stub.wiki_slug)
             self._page_slugs.append(stub.wiki_slug)
 
     def _insert_page(
@@ -322,7 +324,7 @@ class WikiScreen(Screen[None]):
         """
         parts = page.slug.split("/")
         if len(parts) <= 1:
-            group_node.add_leaf(page.title, data=page.slug)
+            group_node.add_leaf(Text(page.title), data=page.slug)
             return
 
         # Skip the leading page-type component since the group node represents it.
@@ -335,12 +337,12 @@ class WikiScreen(Screen[None]):
 
         if leaf_part == _INDEX_STEM:
             # An inner-node index.md file: show its title on the enclosing branch.
-            node.label = page.title
+            node.label = Text(page.title)
             node.data = page.slug
             return
 
         label = _short_label(leaf_part)
-        node.add_leaf(page.title if page.title else label, data=page.slug)
+        node.add_leaf(Text(page.title or label), data=page.slug)
 
     def _show_detail(self, markdown: str) -> None:
         """Clear the breadcrumb and header rows, then render *markdown* alone."""
