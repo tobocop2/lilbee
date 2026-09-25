@@ -23,8 +23,6 @@ from lilbee.sessions import MessageRole, SessionMessage, SessionOrigin, TitleSou
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
-_WAIT_S = 5.0
-
 
 @pytest.fixture(autouse=True)
 def _services():
@@ -343,7 +341,7 @@ class _Reply:
     def _tokens(self):
         yield StreamToken(content=self.first, is_reasoning=False)
         self.started.set()
-        self.release.wait(_WAIT_S)
+        self.release.wait()
         if self.rest:
             yield StreamToken(content=self.rest, is_reasoning=False)
 
@@ -395,7 +393,7 @@ async def test_fork_in_the_gap_before_the_reply_is_saved_is_refused(sessions):
         def slow_add(session_id, message, **kwargs):
             if message.role == MessageRole.ASSISTANT:
                 persist_started.set()
-                release.wait(_WAIT_S)
+                release.wait()
             real_add(session_id, message, **kwargs)
 
         with (
@@ -403,10 +401,12 @@ async def test_fork_in_the_gap_before_the_reply_is_saved_is_refused(sessions):
             patch.object(sessions, "add_message", side_effect=slow_add),
             patch.object(screen, "notify") as notify,
         ):
-            await _submit(pilot, "Q3")
-            assert await pump_until(pilot, persist_started.is_set)
-            await _submit(pilot, "/fork")
-            release.set()
+            try:
+                await _submit(pilot, "Q3")
+                assert await pump_until(pilot, persist_started.is_set)
+                await _submit(pilot, "/fork")
+            finally:
+                release.set()
             await _turn_ends(pilot, screen)
         assert msg.CHAT_BUSY in _notified(notify)
         assert not isinstance(app.screen, ForkPicker)
@@ -530,7 +530,7 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
 
     def slow_summarize(*_args, **_kwargs):
         folding.set()
-        release.wait(_WAIT_S)
+        release.wait()
         return CompactionResult(summary="NOTES", condensed=4, stranded=0)
 
     app = LilbeeApp()
@@ -550,11 +550,13 @@ async def test_fork_during_a_fold_after_cancel_is_refused(sessions):
             patch.object(get_services().searcher, "summarize_history", side_effect=slow_summarize),
             patch.object(screen, "notify") as notify,
         ):
-            await _submit(pilot, "Q3")
-            assert await pump_until(pilot, folding.is_set)
-            await pilot.press("ctrl+c")
-            await _submit(pilot, "/fork")
-            release.set()
+            try:
+                await _submit(pilot, "Q3")
+                assert await pump_until(pilot, folding.is_set)
+                await pilot.press("ctrl+c")
+                await _submit(pilot, "/fork")
+            finally:
+                release.set()
             await _turn_ends(pilot, screen)
         assert msg.CHAT_STOPPING in _notified(notify)
         assert not isinstance(app.screen, ForkPicker)
