@@ -162,6 +162,10 @@ class SessionListPanel(Vertical):
         target = "#sessions-filter" if self._focus_filter else "#sessions-list"
         self.screen.set_focus(self.query_one(target))
 
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """While a rename is open, ctrl+d edits the name instead of deleting the session."""
+        return not (action == "delete" and self._renaming_id is not None)
+
     def _store(self) -> SessionStore:
         return get_services().session_store
 
@@ -301,7 +305,10 @@ class SessionListPanel(Vertical):
         field = self.query_one("#sessions-filter", Input)
         title = field.value.strip()
         if self._renaming_id is not None and title:
-            self._store().set_title(self._renaming_id, title, TitleSource.CUSTOM)
+            try:
+                self._store().set_title(self._renaming_id, title, TitleSource.CUSTOM)
+            except SessionNotFoundError:
+                self.app.notify(msg.SESSIONS_RENAME_GONE, severity="warning")
         self._finish_rename()
 
     def _cancel_rename(self) -> None:
