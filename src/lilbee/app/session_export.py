@@ -38,6 +38,10 @@ _MAX_HEADING_LEVEL = 6
 _ESCAPE = "\\"
 _LINE_BREAK_RE = re.compile(r"\r\n?")
 _ASCII_PUNCTUATION = frozenset(string.punctuation)
+# An HTML heading tag, open or close, any case, with or without attributes:
+# <h2>, </h2>, <H3 class="x">. ``header`` and ``hr`` never match, because a
+# digit must follow the ``h`` directly.
+_HTML_HEADING_RE = re.compile(r"<(?P<slash>/?)(?P<tag>[Hh])(?P<level>[1-6])(?P<rest>[^>]*)>")
 # An ordered-list marker at the start of a name, as in ``2. notes.md``.
 _LIST_NUMBER_RE = re.compile(r"^(\d+)([.)])(?=\s|$)")
 
@@ -123,16 +127,23 @@ def _plain_name(name: str) -> str:
 
 
 def _nest_headings(text: str) -> str:
-    """*text* with no heading at or above the turn level.
+    """*text* with no heading, markdown or HTML, at or above the turn level.
 
     The parser finds the headings, so a ``#`` in code or a ``#tag`` stays as
-    written. A ``#`` heading drops two levels, to at most six; an underlined
-    heading cannot go below level two, so its underline is escaped to text.
+    written, and an HTML heading tag inside a fence or an inline code span
+    stays as written too. A ``#`` heading drops two levels, to at most six;
+    an underlined heading cannot go below level two, so its underline is
+    escaped to text. An HTML heading tag, open or close, drops the same two
+    levels, independently of whether it is ever closed.
     """
     lines = text.split("\n")
     for token in commonmark().parse(text):
         if token.type == "heading_open" and token.map:
             _nest_heading(lines, token.markup, *token.map)
+        elif token.type == "html_block" and token.map:
+            _demote_html_block(lines, *token.map)
+        elif token.type == "inline" and token.map:
+            _demote_html_inline(lines, token.children, *token.map)
     return "\n".join(lines)
 
 
@@ -144,6 +155,44 @@ def _nest_heading(lines: list[str], markup: str, start: int, end: int) -> None:
     else:
         underline = end - 1
         lines[underline] = lines[underline].replace(markup, _ESCAPE + markup, 1)
+
+
+def _demote_html_tag(match: re.Match[str]) -> str:
+    """*match*, an HTML heading tag, with its level raised by the turn offset."""
+    level = min(int(match["level"]) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
+    return f"<{match['slash']}{match['tag']}{level}{match['rest']}>"
+
+
+def _demote_html_block(lines: list[str], start: int, end: int) -> None:
+    """Rewrite any HTML heading tag in the raw HTML block spanning *start* to *end*."""
+    joined = "\n".join(lines[start:end])
+    lines[start:end] = _HTML_HEADING_RE.sub(_demote_html_tag, joined).split("\n")
+
+
+def _demote_html_inline(
+    lines: list[str], children: list[Token] | None, start: int, end: int
+) -> None:
+    """Rewrite each HTML heading tag among *children* within the span *start* to *end*.
+
+    Only tags the parser tokenized as real HTML are candidates, so the same
+    text inside a code span, which the parser tokenizes separately, is never
+    a match. Children are walked in source order and each tag is located from
+    where the previous one ended, so two identical tags in one span each
+    rewrite their own occurrence.
+    """
+    tags = [child.content for child in children or [] if child.type == "html_inline"]
+    if not tags:
+        return
+    joined = "\n".join(lines[start:end])
+    cursor = 0
+    pieces: list[str] = []
+    for tag in tags:
+        index = joined.index(tag, cursor)
+        pieces.append(joined[cursor:index])
+        pieces.append(_HTML_HEADING_RE.sub(_demote_html_tag, tag))
+        cursor = index + len(tag)
+    pieces.append(joined[cursor:])
+    lines[start:end] = "".join(pieces).split("\n")
 
 
 def default_export_name(meta: SessionMeta) -> str:

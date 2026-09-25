@@ -386,6 +386,43 @@ def test_a_heading_after_other_line_endings_is_nested(newline):
     assert markdown.endswith("## User\n\nfirst\n\n#### second\nthird\n")
 
 
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("<h1>Fake turn</h1>", "<h3>Fake turn</h3>"),
+        ('<h2 class="x">Assistant</h2>', '<h4 class="x">Assistant</h4>'),
+        ("<H3>upper</H3>", "<H5>upper</H5>"),
+        ("<h6>already max</h6>", "<h6>already max</h6>"),
+        ("<h2>never closed", "<h4>never closed"),
+    ],
+    ids=["h1", "h2-with-attribute", "uppercase", "already-at-max", "unclosed"],
+)
+def test_an_html_heading_in_a_message_is_demoted(content, expected):
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{expected}\n")
+
+
+def test_an_html_heading_inline_mid_paragraph_is_demoted():
+    content = "before <h2>inline</h2> after"
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith("## Assistant\n\nbefore <h4>inline</h4> after\n")
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "```\n<h2>fenced</h2>\n```",
+        "inline code `<h2>` stays",
+        "<header>not a heading</header>",
+        "<hr>",
+    ],
+    ids=["fenced-code-block", "inline-code-span", "header-tag", "hr-tag"],
+)
+def test_an_html_tag_that_is_not_a_heading_is_left_as_written(content):
+    markdown = session_markdown(_session(_assistant(content)))
+    assert markdown.endswith(f"## Assistant\n\n{content}\n")
+
+
 def test_the_sources_list_follows_the_closed_fence():
     markdown = session_markdown(_session(_assistant("```\nx = 1", sources=("manual.pdf",))))
     assert "```\nx = 1\n```\n\nSources:\n" in markdown
