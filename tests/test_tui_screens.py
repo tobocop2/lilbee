@@ -5230,11 +5230,8 @@ async def test_catalog_install_new_model():
             m = _make_catalog_model(name="new-model")
             mock_mgr = MagicMock()
             mock_mgr.is_installed.return_value = False
+            set_services(MagicMock(model_manager=mock_mgr))
             with (
-                patch(
-                    "lilbee.app.services.get_services",
-                    return_value=MagicMock(model_manager=mock_mgr),
-                ),
                 # Otherwise this asserts on the runner's free space.
                 patch(
                     "lilbee.cli.tui.screens.catalog.disk_shortfall",
@@ -10858,10 +10855,9 @@ class TestWikiDraftsScreen:
             screen = app.screen
             assert isinstance(screen, WikiDraftsScreen)
             search = screen.query_one("#wiki-drafts-search", TextualInput)
-            search.value = "alpha"
-            await pilot.pause()
             table = screen.query_one("#wiki-drafts-table", DataTable)
-            assert table.row_count == 1
+            search.value = "alpha"
+            assert await pump_until(pilot, lambda: table.row_count == 1)
             row = table.get_row_at(0)
             assert str(row[0]) == "alpha"
 
@@ -10892,12 +10888,12 @@ class TestWikiDraftsScreen:
 
             monkeypatch.setattr(drafts_screen_mod, "list_drafts", _counting_list)
             search = screen.query_one("#wiki-drafts-search", TextualInput)
+            table = screen.query_one("#wiki-drafts-table", DataTable)
             search.value = "al"
             await pilot.pause()
             search.value = "alp"
-            await pilot.pause()
+            assert await pump_until(pilot, lambda: table.row_count == 1)
             assert calls == []
-            assert screen.query_one("#wiki-drafts-table", DataTable).row_count == 1
 
     async def test_filtered_empty_is_not_the_empty_wiki_state(self, tmp_path):
         """A filter that matches nothing must not claim there are no drafts."""
@@ -12474,10 +12470,9 @@ async def test_chat_on_chat_input_changed_suppressed():
 
         inp = app.screen.query_one("#chat-input", ChatInput)
         inp.value = "/test"
-        await pilot.pause()
         # The overlay stays as-is (refresh skipped) and the counter is consumed.
+        assert await pump_until(pilot, lambda: app.screen._suppress_refresh == 0)
         assert overlay.is_visible
-        assert app.screen._suppress_refresh == 0
 
 
 # ---------------------------------------------------------------------------

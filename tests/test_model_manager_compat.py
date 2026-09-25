@@ -15,17 +15,17 @@ from lilbee.catalog.types import ModelSource
 from lilbee.modelhub.model_manager import ModelManager
 
 
-def _stub_services(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patch get_services() so enforce_arch_compat doesn't need a real container."""
-    import lilbee.app.services as services_mod
+def _stub_services() -> None:
+    """Set the services singleton so enforce_arch_compat doesn't need a real container."""
+    from lilbee.app.services import set_services
 
     stub = mock.MagicMock()
     stub.hf_client = mock.MagicMock()
-    monkeypatch.setattr(services_mod, "get_services", lambda: stub)
+    set_services(stub)
 
 
 def test_pull_refuses_unsupported_arch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_services(monkeypatch)
+    _stub_services()
     monkeypatch.setattr(
         compat, "resolve_arch_for_pull", lambda _ref, _client: "kimi_k2_unsupported"
     )
@@ -40,7 +40,7 @@ def test_pull_refuses_unsupported_arch(tmp_path: Path, monkeypatch: pytest.Monke
 def test_pull_bypassed_with_allow_unsupported(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    _stub_services(monkeypatch)
+    _stub_services()
     monkeypatch.setattr(
         compat, "resolve_arch_for_pull", lambda _ref, _client: "kimi_k2_unsupported"
     )
@@ -62,7 +62,7 @@ def test_pull_bypassed_with_allow_unsupported(
 
 
 def test_pull_proceeds_for_supported_arch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _stub_services(monkeypatch)
+    _stub_services()
     monkeypatch.setattr(compat, "resolve_arch_for_pull", lambda _ref, _client: "llama")
 
     models_dir = tmp_path / "models"
@@ -82,7 +82,7 @@ def test_pull_proceeds_for_supported_arch(tmp_path: Path, monkeypatch: pytest.Mo
 
 def test_pull_proceeds_for_unknown_arch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """UNKNOWN means we couldn't determine; post-download check is the guard."""
-    _stub_services(monkeypatch)
+    _stub_services()
     monkeypatch.setattr(compat, "resolve_arch_for_pull", lambda _ref, _client: "")
 
     models_dir = tmp_path / "models"
@@ -123,7 +123,7 @@ class TestLoadabilityGate:
 
     @staticmethod
     def _manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> ModelManager:
-        _stub_services(monkeypatch)
+        _stub_services()
         monkeypatch.setattr(compat, "resolve_arch_for_pull", lambda _ref, _client: "llama")
         models_dir = tmp_path / "models"
         models_dir.mkdir()
@@ -198,7 +198,7 @@ class TestLoadabilityGate:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A bare repo ref names no file, so the ref-level guard decides nothing."""
-        _stub_services(monkeypatch)
+        _stub_services()
         monkeypatch.setattr(compat, "resolve_arch_for_pull", lambda _ref, _client: "")
         models_dir = tmp_path / "models"
         models_dir.mkdir()

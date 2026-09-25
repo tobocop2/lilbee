@@ -872,15 +872,15 @@ class TestEmbedReindexRequired:
     @pytest.fixture()
     def real_store(self, tmp_path, monkeypatch):
         from lilbee.app import settings as appset
+        from lilbee.app.services import set_services
         from lilbee.data.store import Store
 
         monkeypatch.setattr(appset.cfg, "lancedb_dir", tmp_path / "lancedb")
         monkeypatch.setattr(appset.cfg, "embedding_model", "acme/built-GGUF/built.gguf")
         monkeypatch.setattr(appset.cfg, "embedding_dim", 4)
         store = Store(appset.cfg)
-        services = mock.MagicMock(store=store)
-        with mock.patch("lilbee.app.services.get_services", return_value=services):
-            yield store
+        set_services(mock.MagicMock(store=store))
+        yield store
 
     @staticmethod
     def _index_one_chunk(store):

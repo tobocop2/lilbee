@@ -1,9 +1,11 @@
 """Tests for cross-encoder reranking (provider-backed, mocked)."""
 
+from contextlib import contextmanager
 from unittest import mock
 
 import pytest
 
+from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
 from lilbee.retrieval.query.searcher import Searcher
@@ -53,12 +55,14 @@ def _chunk(
     )
 
 
+@contextmanager
 def _patch_provider(rerank_fn):
-    """Patch get_services to return a provider whose rerank routes to *rerank_fn*."""
+    """Set the services singleton so its provider's rerank routes to *rerank_fn*."""
     provider = mock.MagicMock()
     provider.rerank.side_effect = rerank_fn
     services = mock.MagicMock(provider=provider)
-    return mock.patch("lilbee.app.services.get_services", return_value=services)
+    set_services(services)
+    yield services
 
 
 class TestPureOrderRerank:

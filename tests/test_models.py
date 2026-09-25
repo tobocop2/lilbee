@@ -238,8 +238,9 @@ class TestValidateDiskAndPull:
 
 
 class TestPullWithProgress:
-    @mock.patch("lilbee.app.services.get_services")
-    def test_calls_manager_pull(self, mock_get_manager):
+    def test_calls_manager_pull(self):
+        from lilbee.app.services import set_services
+
         mock_manager = mock.MagicMock()
 
         def fake_pull(model, source, *, on_bytes=None):
@@ -248,12 +249,13 @@ class TestPullWithProgress:
             return
 
         mock_manager.pull.side_effect = fake_pull
-        mock_get_manager.return_value.model_manager = mock_manager
+        set_services(mock.MagicMock(model_manager=mock_manager))
         models.pull_with_progress("test-model")
         mock_manager.pull.assert_called_once()
 
-    @mock.patch("lilbee.app.services.get_services")
-    def test_handles_zero_total(self, mock_get_manager):
+    def test_handles_zero_total(self):
+        from lilbee.app.services import set_services
+
         mock_manager = mock.MagicMock()
 
         def fake_pull(model, source, *, on_bytes=None):
@@ -262,7 +264,7 @@ class TestPullWithProgress:
             return
 
         mock_manager.pull.side_effect = fake_pull
-        mock_get_manager.return_value.model_manager = mock_manager
+        set_services(mock.MagicMock(model_manager=mock_manager))
         models.pull_with_progress("test-model")
 
 
