@@ -206,6 +206,7 @@ SESSIONS_MODEL_UNAVAILABLE = (
 )
 SESSIONS_NEW = "Started a new chat"
 SESSIONS_DELETED = "Deleted · {title}"
+SESSIONS_GONE = "This conversation was deleted, so it cannot be resumed."
 SESSIONS_DELETE_CONFIRM_TITLE = "Delete session"
 SESSIONS_DELETE_CONFIRM = "Delete “{title}”? This cannot be undone."
 SESSIONS_HINT = "↵ resume   ^n new   ^r rename   ^d delete   esc close"

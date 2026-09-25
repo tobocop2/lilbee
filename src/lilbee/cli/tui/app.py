@@ -839,10 +839,11 @@ class LilbeeApp(App[None]):
             return
         self.push_screen(NoticeDialog(msg.SESSIONS_DISABLED_TITLE, msg.SESSIONS_DISABLED_MESSAGE))
 
-    def action_toggle_sessions(self) -> None:
+    async def action_toggle_sessions(self) -> None:
         """Toggle the Sessions drawer (ctrl+o), or close it if open. No-op on the
         Sessions tab, which already shows the full list. Shows a notice when
-        sessions are turned off."""
+        sessions are turned off. Awaits the mount, so the drawer holds focus
+        before the next key is routed."""
         if not cfg.sessions_enabled:
             self.notify_sessions_disabled()
             return
@@ -854,7 +855,7 @@ class LilbeeApp(App[None]):
             return
         if self._shows_sessions_full_screen():
             return
-        self.screen.mount(SessionsDrawer())
+        await self.screen.mount(SessionsDrawer())
 
     def resume_session(self, session_id: str) -> None:
         """Load a saved session into chat and switch to the chat view."""

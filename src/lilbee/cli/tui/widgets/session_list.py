@@ -2,16 +2,18 @@
 
 Embedded by both the sessions drawer and the full-screen sessions view. The panel
 owns everything self-contained (filtering, inline rename, delete confirmation) and
-posts messages for the actions that need navigation (resume, new chat, close), so
-each container decides how to leave.
+resumes or starts a chat itself. It then posts a message, so each container
+decides how to leave.
 """
 
 from __future__ import annotations
 
+import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -21,8 +23,15 @@ from textual.widgets import Input, ListItem, ListView, Static
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.sessions import HUMAN_ORIGINS, SessionMeta, SessionStore, TitleSource
+from lilbee.sessions import (
+    HUMAN_ORIGINS,
+    SessionMeta,
+    SessionNotFoundError,
+    SessionStore,
+    TitleSource,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -68,6 +77,33 @@ class SessionRow(ListItem):
         yield _RowText(Content.styled(meta_line, "$text-muted"), classes="session-row-meta")
 
 
+class _FilterInput(Input):
+    """The filter box. Its editing keys run in its own queue, in order with the text typed.
+
+    Textual runs a focused Input's bindings (Backspace, ctrl+w, the arrows) only
+    once the key has bubbled back to the app, which is after any row key the app
+    is running. Running them here makes the box's queue hold every key typed into it.
+    """
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Run the box's own binding for the key; a key the box declines goes on up as before."""
+        for binding in self._bindings.key_to_bindings.get(event.key, ()):
+            if await self.app.run_action(binding.action, self):
+                event.stop()
+                return
+
+
+async def _caught_up(widget: Input) -> None:
+    """Return once *widget* has handled every message already queued for it.
+
+    Also returns when the widget's queue stops, so a handler that failed on one of
+    those messages lets the app exit instead of leaving this wait unanswered.
+    """
+    done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    if widget.call_later(done.set_result, None):
+        await asyncio.wait((done, widget.task), return_when=asyncio.FIRST_COMPLETED)
+
+
 class SessionListPanel(Vertical):
     """Filterable session list with resume / rename / delete / new actions."""
 
@@ -75,24 +111,24 @@ class SessionListPanel(Vertical):
 
     DEFAULT_CSS: ClassVar[str] = _ROW_CSS
 
+    # Every key that moves the cursor or acts on a row is a priority binding, so
+    # it runs as the app reads it, before later keys are routed. Each first waits
+    # for the filter box to handle the keys typed into it ahead of the row key.
+    # A focused filter still types j / k / g / G: Textual drops a binding whose
+    # key the focused Input consumes.
     BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "select", "Resume", show=False, priority=True),
         Binding("ctrl+n", "new_chat", "New", show=True, priority=True),
         Binding("ctrl+r", "rename", "Rename", show=False, priority=True),
         Binding("ctrl+d", "delete", "Delete", show=False, priority=True),
         Binding("escape", "close", "Close", show=False, priority=True),
-        Binding("down", "cursor_down", "Down", show=False),
-        Binding("up", "cursor_up", "Up", show=False),
+        Binding("down", "cursor_down", "Down", show=False, priority=True),
+        Binding("up", "cursor_up", "Up", show=False, priority=True),
+        *(replace(binding, priority=True) for binding in BROWSE_LIST_BINDINGS),
     ]
 
-    class Resumed(Message):
-        """A session was chosen to resume."""
-
-        def __init__(self, session_id: str) -> None:
-            super().__init__()
-            self.session_id = session_id
-
-    class NewChat(Message):
-        """The user asked to start a new chat."""
+    class ChatOpened(Message):
+        """A session was resumed or a new chat was started, and chat is showing."""
 
     class CloseRequested(Message):
         """The user asked to close the panel."""
@@ -104,6 +140,9 @@ class SessionListPanel(Vertical):
         # the store replays every event of every session, so it happens on mount
         # and after a mutation only; keystrokes filter this list in memory.
         self._metas: list[SessionMeta] = []
+        # The rows as last rendered, in list order; the selection reads these
+        # rather than the ListView children, which mount a step later.
+        self._shown: list[SessionMeta] = []
         self._query = ""
         # The drawer focuses the filter for immediate type-to-switch. The
         # full-screen tab focuses the list instead, so the nav keys ([ ]) bubble
@@ -112,7 +151,7 @@ class SessionListPanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(id="sessions-title")
-        yield Input(placeholder=msg.SESSIONS_FILTER_PLACEHOLDER, id="sessions-filter")
+        yield _FilterInput(placeholder=msg.SESSIONS_FILTER_PLACEHOLDER, id="sessions-filter")
         yield ListView(id="sessions-list")
         yield Static(id="sessions-empty")
         yield Static(Content.styled(msg.SESSIONS_HINT, "$text-muted"), id="sessions-hint")
@@ -120,7 +159,7 @@ class SessionListPanel(Vertical):
     def on_mount(self) -> None:
         self.refresh_list()
         target = "#sessions-filter" if self._focus_filter else "#sessions-list"
-        self.query_one(target).focus()
+        self.screen.set_focus(self.query_one(target))
 
     def _store(self) -> SessionStore:
         return get_services().session_store
@@ -146,6 +185,7 @@ class SessionListPanel(Vertical):
         needle = self._query.strip().lower()
         active_id = self.app.current_session_id()
         metas = [m for m in self._metas if needle in m.title.lower()]
+        self._shown = metas
         for meta in metas:
             lv.append(SessionRow(meta, active=meta.id == active_id))
         if metas:
@@ -160,56 +200,89 @@ class SessionListPanel(Vertical):
         )
 
     def _selected(self) -> SessionMeta | None:
-        item = self.query_one("#sessions-list", ListView).highlighted_child
-        # highlighted_child is typed ListItem | None; every row we add is a
-        # SessionRow, so narrow to read its meta.
-        return item.meta if isinstance(item, SessionRow) else None
+        """The session under the cursor, or the first one while the rows are still mounting."""
+        index = self.query_one("#sessions-list", ListView).index
+        if not self._shown:
+            return None
+        return self._shown[index if index is not None and index < len(self._shown) else 0]
 
     @on(Input.Changed, "#sessions-filter")
-    def _on_filter(self, event: Input.Changed) -> None:
-        if self._renaming_id is None:
-            self._query = event.value
+    def _on_filter(self, _event: Input.Changed) -> None:
+        self._apply_filter()
+
+    def _apply_filter(self) -> None:
+        """Render for the filter box's current text, unless the rows already show it.
+
+        Reads the box rather than a Changed event's value: a burst leaves older
+        Changed events queued behind a key that has already rendered the newer text.
+        """
+        value = self.query_one("#sessions-filter", Input).value
+        if self._renaming_id is None and value != self._query:
+            self._query = value
             self._render_rows()
 
-    @on(Input.Submitted, "#sessions-filter")
-    def _on_submit(self, _event: Input.Submitted) -> None:
+    async def _filter_caught_up(self) -> None:
+        """Wait for the filter box to apply the keys typed ahead, then render for them.
+
+        The panel's bindings are priority bindings, so they run before the filter
+        box has handled the keys queued for it.
+        """
+        await _caught_up(self.query_one("#sessions-filter", Input))
+        self._apply_filter()
+
+    @on(ListView.Selected, "#sessions-list")
+    def _on_row_selected(self, event: ListView.Selected) -> None:
+        """Resume a clicked row; enter never gets here, the panel's own binding takes it."""
+        if self._renaming_id is None:
+            self._resume(event.item.meta if isinstance(event.item, SessionRow) else None)
+
+    def _resume(self, meta: SessionMeta | None) -> None:
+        """Resume *meta* within this key's step, so focus is on the prompt before the next key."""
+        if meta is None:
+            return
+        try:
+            self.app.resume_session(meta.id)
+        except SessionNotFoundError:
+            self.app.notify(msg.SESSIONS_GONE, severity="warning")
+            self.refresh_list()
+            return
+        self.post_message(self.ChatOpened())
+
+    async def action_select(self) -> None:
+        """Enter: finish a rename, else resume the highlighted session."""
+        await self._filter_caught_up()
         if self._renaming_id is not None:
             self._commit_rename()
             return
         self._resume(self._selected())
 
-    @on(ListView.Selected, "#sessions-list")
-    def _on_row_selected(self, event: ListView.Selected) -> None:
-        """Resume the row the list itself reports as chosen.
-
-        ListView posts this both for a click and for enter while it holds focus,
-        and a click also moves focus off the filter box. Resuming only from the
-        filter's Submitted leaves a click inert and then strands the panel with
-        no working key to resume from.
-        """
-        if self._renaming_id is None:
-            self._resume(event.item.meta if isinstance(event.item, SessionRow) else None)
-
-    def _resume(self, meta: SessionMeta | None) -> None:
-        if meta is not None:
-            self.post_message(self.Resumed(meta.id))
-
-    def action_cursor_down(self) -> None:
+    async def action_cursor_down(self) -> None:
+        await self._filter_caught_up()
         self.query_one("#sessions-list", ListView).action_cursor_down()
 
-    def action_cursor_up(self) -> None:
+    async def action_cursor_up(self) -> None:
+        await self._filter_caught_up()
         self.query_one("#sessions-list", ListView).action_cursor_up()
+
+    async def action_jump_top(self) -> None:
+        await self._filter_caught_up()
+        self.jump_to(0)
+
+    async def action_jump_bottom(self) -> None:
+        await self._filter_caught_up()
+        self.jump_to(-1)
 
     def jump_to(self, index: int) -> None:
         """Move the list cursor to *index* (negative counts from the end)."""
-        lv = self.query_one("#sessions-list", ListView)
-        count = len(lv)
+        count = len(self._shown)
         if not count:
             return
+        lv = self.query_one("#sessions-list", ListView)
         lv.index = count - 1 if index < 0 else min(index, count - 1)
 
     def action_new_chat(self) -> None:
-        self.post_message(self.NewChat())
+        self.app.new_chat()
+        self.post_message(self.ChatOpened())
 
     def action_close(self) -> None:
         if self._renaming_id is not None:
@@ -217,7 +290,8 @@ class SessionListPanel(Vertical):
             return
         self.post_message(self.CloseRequested())
 
-    def action_rename(self) -> None:
+    async def action_rename(self) -> None:
+        await self._filter_caught_up()
         selected = self._selected()
         if selected is None:
             return
@@ -243,7 +317,8 @@ class SessionListPanel(Vertical):
         field.placeholder = msg.SESSIONS_FILTER_PLACEHOLDER
         self.refresh_list()
 
-    def action_delete(self) -> None:
+    async def action_delete(self) -> None:
+        await self._filter_caught_up()
         selected = self._selected()
         if selected is None:
             return

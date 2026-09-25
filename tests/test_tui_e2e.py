@@ -1054,18 +1054,14 @@ class TestChatInteractions:
             assert cfg.markdown_rendering == initial
 
     async def test_normal_mode_enter_re_enters_insert(self, _mock_resolve):
-        """In normal mode, pressing enter via on_key enters insert mode."""
+        """In normal mode, pressing enter enters insert mode."""
         app = ChatTestApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await pilot.pause()
             await pilot.press("escape")
             await pilot.pause()
             assert app.screen._insert_mode is False
-            # Simulate enter key event in normal mode
-            from textual.events import Key
-
-            event = Key("enter", "\r")
-            app.screen.on_key(event)
+            await pilot.press("enter")
             await pilot.pause()
             assert app.screen._insert_mode is True
 

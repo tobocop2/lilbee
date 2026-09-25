@@ -23,6 +23,8 @@ class SessionsScreen(Screen[None]):
 
     CSS_PATH = "sessions.tcss"
 
+    # The panel binds the list keys (j / k / g / G) with priority while focus is
+    # inside it; these copies reach the panel from anywhere else on the screen.
     BINDINGS: ClassVar[list[BindingType]] = [
         *browse_back_bindings(),
         *BROWSE_LIST_BINDINGS,
@@ -46,25 +48,17 @@ class SessionsScreen(Screen[None]):
     def action_go_back(self) -> None:
         self.app.go_back()
 
-    def action_cursor_down(self) -> None:
-        self.query_one(SessionListPanel).action_cursor_down()
+    async def action_cursor_down(self) -> None:
+        await self.query_one(SessionListPanel).action_cursor_down()
 
-    def action_cursor_up(self) -> None:
-        self.query_one(SessionListPanel).action_cursor_up()
+    async def action_cursor_up(self) -> None:
+        await self.query_one(SessionListPanel).action_cursor_up()
 
-    def action_jump_top(self) -> None:
-        self.query_one(SessionListPanel).jump_to(0)
+    async def action_jump_top(self) -> None:
+        await self.query_one(SessionListPanel).action_jump_top()
 
-    def action_jump_bottom(self) -> None:
-        self.query_one(SessionListPanel).jump_to(-1)
-
-    @on(SessionListPanel.Resumed)
-    def _on_resumed(self, event: SessionListPanel.Resumed) -> None:
-        self.app.resume_session(event.session_id)
-
-    @on(SessionListPanel.NewChat)
-    def _on_new_chat(self, _event: SessionListPanel.NewChat) -> None:
-        self.app.new_chat()
+    async def action_jump_bottom(self) -> None:
+        await self.query_one(SessionListPanel).action_jump_bottom()
 
     @on(SessionListPanel.CloseRequested)
     def _on_close(self, _event: SessionListPanel.CloseRequested) -> None:

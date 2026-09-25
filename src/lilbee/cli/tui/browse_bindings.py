@@ -3,15 +3,16 @@
 One fragment so sibling screens cannot drift: q goes back, Escape
 dismisses-or-goes-back, j/k walk the list, g/G jump to the ends. Screens
 spread these into ``BINDINGS`` and implement the actions against their own
-list widget. A focused Input or TextArea consumes printable keys before any
-binding fires, so the letters are typing-safe without focus guards.
+list widget; a widget that owns its list may bind them itself instead. A
+focused Input or TextArea consumes printable keys before any binding fires,
+priority bindings included, so the letters are typing-safe without focus guards.
 """
 
 from __future__ import annotations
 
 from textual.binding import Binding, BindingType
 
-BROWSE_LIST_BINDINGS: list[BindingType] = [
+BROWSE_LIST_BINDINGS: list[Binding] = [
     Binding("j", "cursor_down", "Nav", show=False),
     Binding("k", "cursor_up", "Nav", show=False),
     Binding("g", "jump_top", "Top", show=False),

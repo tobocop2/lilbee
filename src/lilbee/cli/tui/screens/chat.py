@@ -362,9 +362,16 @@ class ChatScreen(Screen[None]):
         # NORMAL mode and only after walking past the log.
         Binding("f6", "focus_model_bar", "Model bar", show=False, priority=True),
         # NORMAL mode walks sideways into the role strip. h / l rather than the
-        # whole of hjkl: the transcript owns j / k for scrolling.
-        Binding("h", "enter_model_strip(-1)", "Prev role", show=False),
-        Binding("l", "enter_model_strip(1)", "Next role", show=False),
+        # whole of hjkl: the transcript owns j / k for scrolling. The NORMAL
+        # mode keys that move focus (h, l, i, a, o and Enter) are priority
+        # bindings, so focus moves in the key's own step and the keys typed
+        # after them follow it.
+        Binding("h", "enter_model_strip(-1)", "Prev role", show=False, priority=True),
+        Binding("l", "enter_model_strip(1)", "Next role", show=False, priority=True),
+        Binding("i", "insert_mode", "Insert", show=False, priority=True),
+        Binding("a", "insert_mode", "Insert", show=False, priority=True),
+        Binding("o", "insert_mode", "Insert", show=False, priority=True),
+        Binding("enter", "insert_or_send", "Insert", show=False, priority=True),
         # The arrows reach here too. The focused transcript is a VerticalScroll
         # and binds Left / Right to horizontal scrolling, but Widget's
         # action_scroll_left raises SkipAction when there is nothing to scroll
@@ -485,7 +492,7 @@ class ChatScreen(Screen[None]):
             if self._insert_mode:
                 self._enter_insert_mode()
             else:
-                self._chat_log.focus()
+                self.set_focus(self._chat_log)
 
     def _embedding_ready(self) -> bool:
         """Quick check if the embedding model resolves (no network calls)."""
@@ -506,7 +513,7 @@ class ChatScreen(Screen[None]):
         """Switch to insert mode: focus input, update border style."""
         self._insert_mode = True
         self._chat_input.can_focus = True
-        self._chat_input.focus()
+        self.set_focus(self._chat_input)
         self._update_input_style()
 
     def focus_prompt(self) -> None:
@@ -549,40 +556,39 @@ class ChatScreen(Screen[None]):
             bar = self.query_one(ViewTabs)
             bar.mode_text = msg.MODE_INSERT if self._insert_mode else msg.MODE_NORMAL
 
-    def on_key(self, event: object) -> None:
-        """Handle key events: vim mode and typing from chat log."""
-        from textual.events import Key
-
-        if not isinstance(event, Key):
-            return
+    def on_key(self, event: events.Key) -> None:
+        """In INSERT mode, type a printable key into the prompt when focus sits elsewhere."""
         inp = self._chat_input
-        if self._insert_mode:
-            if not inp.has_focus and event.is_printable and event.character:
-                inp.focus()
-                inp.insert(event.character)
-                event.prevent_default()
-                event.stop()
-            return
-        if event.key == "enter" or (event.character and event.character in "iao"):
-            # Let a focused Select, or anything on the model strip, handle Enter
-            # itself; i/a/o mean nothing to those widgets, so they always return
-            # to INSERT. Asked of the bar rather than of a list of widget types:
-            # the mode pills were missing from that list and Enter on a pill
-            # dropped to INSERT instead of switching the mode.
-            if event.key == "enter" and (
-                isinstance(self.focused, Select) or self._focus_in_model_bar()
-            ):
-                return
-            if self._focus_in_drawer():
-                return
-            self._enter_insert_mode()
-            if event.key == "enter" and inp.value.strip():
-                # Enter meant "send": submit the draft the user Esc'd over
-                # instead of stranding it invisibly in the dimmed input.
-                self._submit_draft(inp, inp.value)
+        if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
+            self.set_focus(inp)
+            inp.insert(event.character)
             event.prevent_default()
             event.stop()
-            return
+
+    def action_insert_mode(self) -> None:
+        """i / a / o from NORMAL mode: back to INSERT with the prompt focused."""
+        self._enter_insert_mode()
+
+    def action_insert_or_send(self) -> None:
+        """Enter from NORMAL mode: back to INSERT, sending the draft the user Esc'd over."""
+        self._enter_insert_mode()
+        inp = self._chat_input
+        if inp.value.strip():
+            self._submit_draft(inp, inp.value)
+
+    def _leaves_normal_mode(self, action: str) -> bool:
+        """True when a NORMAL mode key should return to INSERT.
+
+        The prompt and a drawer keep their own keys. A focused Select or
+        model-strip member keeps Enter; asked of the bar rather than of a list of
+        widget types, so Enter on a mode pill switches the mode instead of
+        dropping to INSERT.
+        """
+        if self._insert_mode or self._chat_input.has_focus or self._focus_in_drawer():
+            return False
+        if action == "insert_or_send":
+            return not (isinstance(self.focused, Select) or self._focus_in_model_bar())
+        return True
 
     @on(events.DescendantFocus, "#chat-input")
     def _on_chat_input_focused(self, event: events.DescendantFocus) -> None:
@@ -1472,7 +1478,7 @@ class ChatScreen(Screen[None]):
         self.app.switch_view("Wiki")
 
     def _cmd_sessions(self, _args: str) -> None:
-        self.app.action_toggle_sessions()
+        self.app.call_later(self.app.action_toggle_sessions)
 
     def _read_active_session(self, no_session: str, gone: str) -> Session | None:
         """The active session as the store holds it, or None after telling the user why not."""
@@ -2159,6 +2165,8 @@ class ChatScreen(Screen[None]):
         """
         if action == "cancel_stream":
             return self.streaming and not self.stopping and self._insert_mode
+        if action in ("insert_mode", "insert_or_send"):
+            return self._leaves_normal_mode(action)
         if action == "enter_model_strip":
             # NORMAL mode parks the cursor on the transcript, and that is the
             # only place these letters are free. Stated as where they DO apply,
@@ -2196,7 +2204,7 @@ class ChatScreen(Screen[None]):
         # screen pop) cannot land on it. The user re-enters INSERT
         # explicitly via i/a/o/Enter or by clicking the input.
         self._chat_input.can_focus = False
-        self._chat_log.focus()
+        self.set_focus(self._chat_log)
         self._update_input_style()
 
     def action_cancel_stream(self) -> None:
@@ -2282,7 +2290,7 @@ class ChatScreen(Screen[None]):
             else:
                 inp.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
             if not busy and self._insert_mode:
-                inp.focus()
+                self.set_focus(inp)
 
     def watch_swapping_model(self, swapping: bool) -> None:
         self._apply_input_busy_state()
@@ -2525,7 +2533,7 @@ class ChatScreen(Screen[None]):
         inside = focused is not None and drawer in focused.ancestors_with_self
         toggles = drawer.query(".dev-toggle")
         if not inside and toggles:
-            toggles.first().focus()
+            self.set_focus(toggles.first())
             return
         self.screen.focus_next()
 

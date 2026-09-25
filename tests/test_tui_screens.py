@@ -13249,16 +13249,6 @@ def test_chat_embedding_ready_false_when_no_model():
         assert _real_embedding_ready(sentinel) is False
 
 
-async def test_chat_on_key_non_key_event_returns():
-    """on_key returns early for non-Key events."""
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        await _pilot.pause()
-        # Pass a non-Key object
-        app.screen.on_key("not_a_key_event")  # Should not raise
-        assert app.screen._insert_mode is True
-
-
 async def test_chat_vim_scroll_actions_work():
     """Vim scroll actions execute without error in normal mode."""
     app = ChatTestApp()

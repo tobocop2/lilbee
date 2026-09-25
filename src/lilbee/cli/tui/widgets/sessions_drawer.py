@@ -2,23 +2,21 @@
 
 Non-modal, mirroring the Fleet drawer. Docked left so the screen underneath
 reflows to the right and the chat prompt keeps working while the drawer is open.
-Resume, new-chat, and close come from the embedded panel as messages.
+The drawer closes when the embedded panel opens a chat or asks to close.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, ClassVar
+from typing import ClassVar
 
 from textual import on
 from textual.app import ComposeResult
+from textual.message import Message
 from textual.screen import Screen
 
 from lilbee.cli.tui.widgets.drawer import Drawer
 from lilbee.cli.tui.widgets.session_list import SessionListPanel
-
-if TYPE_CHECKING:
-    from lilbee.cli.tui.app import LilbeeApp
 
 _DRAWER_CSS = (Path(__file__).parent / "sessions_drawer.tcss").read_text(encoding="utf-8")
 
@@ -31,8 +29,6 @@ class SessionsDrawer(Drawer):
     """Session switcher as a non-modal left-side drawer; closed with esc or ctrl+o."""
 
     DEFAULT_CSS: ClassVar[str] = _DRAWER_CSS
-
-    app: LilbeeApp  # type: ignore[assignment]
 
     def __init__(self) -> None:
         super().__init__(id="sessions-drawer")
@@ -51,16 +47,7 @@ class SessionsDrawer(Drawer):
         if self._host is not None:
             self._host.remove_class(_HOST_OPEN_CLASS)
 
-    @on(SessionListPanel.Resumed)
-    def _on_resumed(self, event: SessionListPanel.Resumed) -> None:
-        self.app.resume_session(event.session_id)
-        self.remove()
-
-    @on(SessionListPanel.NewChat)
-    def _on_new_chat(self, _event: SessionListPanel.NewChat) -> None:
-        self.app.new_chat()
-        self.remove()
-
+    @on(SessionListPanel.ChatOpened)
     @on(SessionListPanel.CloseRequested)
-    def _on_close(self, _event: SessionListPanel.CloseRequested) -> None:
+    def _on_leave(self, _event: Message) -> None:
         self.remove()
