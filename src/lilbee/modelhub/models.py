@@ -7,14 +7,15 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from rich.console import Console
 from rich.progress import BarColumn, DownloadColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.catalog.query import reclassify_by_name
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config.model import cfg
 from lilbee.modelhub.registry import ModelRegistry
+from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
 log = logging.getLogger(__name__)
@@ -127,10 +128,10 @@ def _model_download_size_gb(model: str) -> float:
 
 
 def display_model_picker(
-    ram_gb: float, free_disk_gb: float, *, console: Console | None = None
+    ram_gb: float, free_disk_gb: float, *, console: PlainConsole | None = None
 ) -> ModelInfo:
     """Show a Rich table of catalog models and return the recommended model."""
-    console = console or Console(stderr=True)
+    console = console or PlainConsole(stderr=True)
     recommended = pick_default_model(ram_gb)
 
     table = Table(title="Available Models", show_lines=False)
@@ -140,30 +141,23 @@ def display_model_picker(
     table.add_column("Description")
 
     for idx, model in enumerate(_get_model_catalog(), 1):
-        num_str = str(idx)
-        label = model.display_name
-        size_str = f"{model.size_gb:.1f} GB"
-        desc = model.description
-
         is_recommended = model == recommended
         disk_too_small = free_disk_gb < model.size_gb + _DISK_HEADROOM_GB
-
-        if is_recommended:
-            label = f"[bold]{label} ★[/bold]"
-            desc = f"[bold]{desc}[/bold]"
-            num_str = f"[bold]{num_str}[/bold]"
-
-        if disk_too_small:
-            size_str = f"[red]{model.size_gb:.1f} GB[/red]"
-
-        table.add_row(num_str, label, size_str, desc)
+        emphasis = "bold" if is_recommended else ""
+        label = f"{model.display_name} ★" if is_recommended else model.display_name
+        table.add_row(
+            Text.assemble((str(idx), emphasis)),
+            Text.assemble((label, emphasis)),
+            Text.assemble((f"{model.size_gb:.1f} GB", "red" if disk_too_small else "")),
+            Text.assemble((model.description, emphasis)),
+        )
 
     console.print()
-    console.print("[bold]No chat model found.[/bold] Pick one to download:\n")
+    console.print(styled(("No chat model found.", "bold"), " Pick one to download:\n"))
     console.print(table)
-    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk", markup=False)
-    console.print(f"  {FEATURED_STAR} = recommended for your system", markup=False)
-    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n", markup=False)
+    console.print(f"\n  System: {ram_gb:.0f} GB RAM, {free_disk_gb:.1f} GB free disk")
+    console.print(f"  {FEATURED_STAR} = recommended for your system")
+    console.print(f"  Browse more models at {MODELS_BROWSE_URL}\n")
 
     return recommended
 
@@ -196,7 +190,7 @@ def prompt_model_choice(ram_gb: float) -> ModelInfo:
 
 
 def validate_disk_and_pull(
-    model_info: ModelInfo, free_gb: float, *, console: Console | None = None
+    model_info: ModelInfo, free_gb: float, *, console: PlainConsole | None = None
 ) -> str:
     """Check disk space and pull the model. Returns the pulled ref; persist via the caller."""
     required_gb = model_info.size_gb + _DISK_HEADROOM_GB
@@ -211,13 +205,13 @@ def validate_disk_and_pull(
     return model_info.ref
 
 
-def pull_with_progress(model: str, *, console: Console | None = None) -> None:
+def pull_with_progress(model: str, *, console: PlainConsole | None = None) -> None:
     """Pull a model via model_manager, showing a Rich progress bar."""
     from lilbee.app.services import get_services
     from lilbee.catalog.types import ModelSource
 
     if console is None:
-        console = Console(file=sys.__stderr__ or sys.stderr)
+        console = PlainConsole(file=sys.__stderr__ or sys.stderr)
     manager = get_services().model_manager
     with Progress(
         SpinnerColumn(),
@@ -236,7 +230,7 @@ def pull_with_progress(model: str, *, console: Console | None = None) -> None:
                 progress.update(ptask, total=total, completed=downloaded)
 
         manager.pull(model, ModelSource.NATIVE, on_bytes=_on_bytes)
-    console.print(f"Model '{model}' ready.", markup=False, soft_wrap=True)
+    console.print(f"Model '{model}' ready.", soft_wrap=True)
 
 
 def ensure_chat_model() -> str | None:

@@ -22,10 +22,15 @@ cleanup of pre-existing ones).
    module-level mutable globals) on lines added in ``src/`` vs the base
    branch. Resolving the base is best-effort: when git history is unavailable
    (shallow CI checkout, no ``origin/main``) the check is skipped, not failed.
-6. A ``.print(`` call in ``src/`` whose first argument interpolates a value
-   (an f-string or a ``.format`` call) with markup still on. Rich parses the
-   rendered string as markup, so a bracket in the value is restyled or raises
-   ``MarkupError``. Interpolated ``theme.*`` style names do not count.
+6. Code in ``src/`` outside the TUI that lets Rich parse text as markup: a
+   rich ``Console`` built anywhere but ``lilbee.runtime.console`` (whose
+   ``PlainConsole`` has markup off), ``markup=`` with any value but ``False``,
+   ``Text.from_markup``, rich's ``print``, ``get_console``, ``inspect``
+   and ``progress.track``, a subclass of rich's ``Console``, star imports
+   from rich, and the rich modules whose constructors parse a string as
+   markup (markup, panel, prompt, spinner, status). Imports and attribute
+   chains resolve to dotted names; a name rebound by plain assignment
+   (``K = Console``) is not followed.
 7. New occurrences in ``tests/`` of a patch or monkeypatch naming the literal
    string ``lilbee.app.services.get_services``. A module first imported while
    that exact attribute is patched binds its own ``from ... import
@@ -38,9 +43,7 @@ cleanup of pre-existing ones).
 Inline opt-out comments: ``# style-check: allow-history`` skips the
 historical-narrative check on that line; ``# style-check: allow-smell`` skips
 the code-smell check on that added line (also used by the ``get_services``
-root-patch check); ``# style-check: allow-markup`` skips the markup check on
-that call (use it only when no interpolated value can be user text, for
-example a count).
+root-patch check).
 
 Exits 0 when clean, 1 with one ``path:line:reason`` per finding when violations
 are found.
@@ -461,63 +464,108 @@ def _check_code_smells(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
             break
 
 
-ALLOW_MARKUP_TAG = "# style-check: allow-markup"
+MARKUP_EXEMPT_DIRS = (SRC_DIR / "lilbee" / "cli" / "tui",)
+PLAIN_CONSOLE_MODULE = SRC_DIR / "lilbee" / "runtime" / "console.py"
+MARKUP_PARSING_MODULES = frozenset(
+    {"rich.markup", "rich.panel", "rich.prompt", "rich.spinner", "rich.status"}
+)
+MARKUP_PARSING_CALLABLES = frozenset(
+    {
+        "rich.console.Console",
+        "rich.get_console",
+        "rich.inspect",
+        "rich.print",
+        "rich.progress.track",
+    }
+)
 
 
-def _is_theme_style(value: ast.FormattedValue) -> bool:
-    """True for ``{theme.NAME}``, a fixed style name rather than a value."""
-    expr = value.value
-    return (
-        isinstance(expr, ast.Attribute)
-        and isinstance(expr.value, ast.Name)
-        and expr.value.id == "theme"
+def _is_markup_parser(dotted: str) -> bool:
+    """True for a rich module or callable that parses strings as markup."""
+    return dotted in MARKUP_PARSING_CALLABLES or any(
+        dotted == module or dotted.startswith(f"{module}.") for module in MARKUP_PARSING_MODULES
     )
 
 
-def _interpolates_value(arg: ast.expr) -> bool:
-    """True when *arg* renders a runtime value into the string Rich will parse."""
-    if isinstance(arg, ast.JoinedStr):
-        return any(isinstance(v, ast.FormattedValue) and not _is_theme_style(v) for v in arg.values)
-    return (
-        isinstance(arg, ast.Call)
-        and isinstance(arg.func, ast.Attribute)
-        and arg.func.attr == "format"
-    )
+def _import_bindings(tree: ast.Module) -> dict[str, str]:
+    """Map each name an import binds to the dotted rich path it stands for."""
+    bindings: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.asname:
+                    bindings[alias.asname] = alias.name
+                else:
+                    top = alias.name.split(".")[0]
+                    bindings[top] = top
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            for alias in node.names:
+                bindings[alias.asname or alias.name] = f"{node.module}.{alias.name}"
+    return bindings
 
 
-def _markup_interpolation_hits(path: Path) -> Iterator[int]:
-    """Yield the line of each ``.print(...)`` that parses an interpolated value as markup."""
+def _dotted_name(expr: ast.expr, bindings: dict[str, str]) -> str | None:
+    """The dotted import path *expr* refers to, or None when it is not an imported name."""
+    if isinstance(expr, ast.Name):
+        return bindings.get(expr.id)
+    if isinstance(expr, ast.Attribute):
+        base = _dotted_name(expr.value, bindings)
+        return f"{base}.{expr.attr}" if base else None
+    return None
+
+
+def _markup_import_hits(node: ast.stmt) -> Iterator[tuple[int, str]]:
+    """Yield a finding for an import of a rich markup parser or a rich star import."""
+    if isinstance(node, ast.Import):
+        targets = [alias.name for alias in node.names]
+    elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+        if node.module.split(".")[0] == "rich" and any(a.name == "*" for a in node.names):
+            yield node.lineno, f"star-imports from {node.module}"
+            return
+        targets = [f"{node.module}.{alias.name}" for alias in node.names]
+    else:
+        return
+    for target in targets:
+        if _is_markup_parser(target) and target != "rich.console.Console":
+            yield node.lineno, f"imports {target}, which parses strings as markup"
+
+
+def _markup_parser_hits(path: Path) -> Iterator[tuple[int, str]]:
+    """Yield ``(line, reason)`` for each way *path* lets Rich parse text as markup."""
     try:
-        source = path.read_text(encoding="utf-8")
-        tree = ast.parse(source)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
     except (OSError, SyntaxError):
         return
-    lines = source.splitlines()
+    bindings = _import_bindings(tree)
     for node in ast.walk(tree):
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "print"
-            and node.args
-            and _interpolates_value(node.args[0])
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            yield from _markup_import_hits(node)
+        if isinstance(node, ast.ClassDef) and any(
+            _dotted_name(base, bindings) == "rich.console.Console" for base in node.bases
         ):
+            yield node.lineno, "subclasses rich.console.Console, which keeps markup on"
+        if not isinstance(node, ast.Call):
             continue
-        if any(kw.arg == "markup" for kw in node.keywords):
-            continue
-        end = node.end_lineno or node.lineno
-        if ALLOW_MARKUP_TAG in "\n".join(lines[node.lineno - 1 : end]):
-            continue
-        yield node.lineno
+        target = _dotted_name(node.func, bindings)
+        if target is not None and _is_markup_parser(target):
+            yield node.lineno, f"calls {target}, which parses strings as markup"
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "from_markup":
+            yield node.lineno, "parses a string as markup with Text.from_markup"
+        for kw in node.keywords:
+            markup_off = isinstance(kw.value, ast.Constant) and kw.value.value is False
+            if kw.arg == "markup" and not markup_off:
+                yield node.lineno, "passes markup= a value other than False"
 
 
-def _check_markup_interpolation(paths: Iterable[Path]) -> Iterator[str]:
-    """Yield findings for a ``.print(...)`` that parses an interpolated value as markup."""
+def _check_markup_parsers(paths: Iterable[Path]) -> Iterator[str]:
+    """Yield findings for code outside the TUI that lets Rich parse text as markup."""
     for path in paths:
-        for lineno in _markup_interpolation_hits(path):
+        if path == PLAIN_CONSOLE_MODULE or any(path.is_relative_to(d) for d in MARKUP_EXEMPT_DIRS):
+            continue
+        for lineno, reason in _markup_parser_hits(path):
             yield (
-                f"{path}:{lineno}: print() parses an interpolated value as markup "
-                "(print the value as rich.text.Text, via print_prefixed, or with "
-                f"markup=False; `{ALLOW_MARKUP_TAG}` only when it cannot be user text)"
+                f"{path}:{lineno}: {reason} (print through lilbee.runtime.console.PlainConsole "
+                "and style with Text, styled() or style=)"
             )
 
 
@@ -530,7 +578,7 @@ def main() -> int:
     findings.extend(_check_divider_comments(src_files))
     findings.extend(_check_historical_narrative(src_files))
     findings.extend(_check_stale_single_file_paths(src_files))
-    findings.extend(_check_markup_interpolation(src_files))
+    findings.extend(_check_markup_parsers(src_files))
 
     base = _smell_base_ref()
     if base is not None:

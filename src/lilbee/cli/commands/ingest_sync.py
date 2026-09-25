@@ -171,9 +171,9 @@ def _crawl_urls_blocking(
 
     cancel_event = threading.Event()
 
-    from rich.console import Console as RichConsole
+    from lilbee.runtime.console import PlainConsole
 
-    err_console = RichConsole(stderr=True)
+    err_console = PlainConsole(stderr=True)
     all_paths: list[Path] = []
     with Progress(
         SpinnerColumn(),
@@ -223,7 +223,6 @@ def _crawl_urls_blocking(
                 err_console.print(
                     f"Stopped at the default {default_cap}-page limit; "
                     f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap).",
-                    markup=False,
                 )
     return all_paths
 
@@ -430,7 +429,7 @@ def rebuild(
     if cfg.json_mode:
         json_output({"command": "rebuild", "ingested": len(result.added)})
         return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested", markup=False)
+    console.print(f"Rebuilt: {len(result.added)} documents ingested")
 
 
 def index(
@@ -486,7 +485,6 @@ def _crawl_urls_step(
         console.print(
             "Web crawling requires: pip install 'lilbee[crawler]'",
             style=theme.ERROR,
-            markup=False,
             soft_wrap=True,
         )
         raise SystemExit(1)
@@ -501,7 +499,6 @@ def _crawl_urls_step(
         console.print(
             f"Crawled {len(crawled_paths)} page(s) from {len(urls)} URL(s)",
             style=theme.MUTED,
-            markup=False,
         )
     return crawled_paths
 
