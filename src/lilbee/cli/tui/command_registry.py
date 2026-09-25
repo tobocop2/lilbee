@@ -84,7 +84,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/rebuild",
         "_cmd_rebuild",
-        help_text="Re-index the documents directory from scratch",
+        help_text="Re-index the documents directory from scratch (asks for confirmation)",
     ),
     SlashCommand(
         "/export",
@@ -147,7 +147,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         allowed_while_streaming=True,
     ),
     SlashCommand("/clear", "_cmd_clear", help_text="Clear the conversation"),
-    SlashCommand("/sessions", "_cmd_sessions", help_text="Open the sessions drawer"),
+    SlashCommand("/sessions", "_cmd_sessions", help_text="Toggle the sessions drawer"),
     SlashCommand(
         "/fork",
         "_cmd_fork",

@@ -12,7 +12,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from lilbee.cli.tui.command_registry import COMMANDS
+from lilbee.cli.tui.command_registry import COMMANDS, get_command
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 USAGE_GUIDE = REPO_ROOT / "docs" / "usage.md"
@@ -26,10 +26,10 @@ _TABLE_SEPARATOR_PREFIX = "|---"
 _ROW_NAME_RE = re.compile(r"^\|\s*`(/\S+?)(?:\s[^`]*)?`\s*\|")
 
 
-def _parse_slash_command_rows(lines: list[str]) -> list[str]:
-    """Return the command name from each data row of the Slash commands table."""
+def _iter_table_rows(lines: list[str]) -> list[tuple[str, str]]:
+    """Return ``(command name, raw line)`` for each data row of the Slash commands table."""
     start = lines.index(_SECTION_HEADING)
-    names: list[str] = []
+    rows: list[tuple[str, str]] = []
     in_table = False
     for line in lines[start + 1 :]:
         if line.startswith("### "):
@@ -44,13 +44,27 @@ def _parse_slash_command_rows(lines: list[str]) -> list[str]:
             break
         match = _ROW_NAME_RE.match(line)
         assert match, f"table row does not match the expected `/command` shape: {line!r}"
-        names.append(match.group(1))
-    return names
+        rows.append((match.group(1), line))
+    return rows
+
+
+def _parse_slash_command_rows(lines: list[str]) -> list[str]:
+    """Return the command name from each data row of the Slash commands table."""
+    return [name for name, _line in _iter_table_rows(lines)]
 
 
 def _slash_command_table_rows() -> list[str]:
     """Return the command name from each row of the committed usage guide's table."""
     return _parse_slash_command_rows(USAGE_GUIDE.read_text(encoding="utf-8").splitlines())
+
+
+def _table_row_line(name: str) -> str:
+    """Return the raw table line documenting *name*, for wording assertions."""
+    lines = USAGE_GUIDE.read_text(encoding="utf-8").splitlines()
+    for row_name, line in _iter_table_rows(lines):
+        if row_name == name:
+            return line
+    raise AssertionError(f"no docs/usage.md table row found for {name}")
 
 
 def test_every_registered_command_has_a_row() -> None:
@@ -78,6 +92,22 @@ def test_table_parser_has_power() -> None:
     names = _slash_command_table_rows()
     assert len(names) > 20
     assert "/help" in names
+
+
+def test_sessions_help_text_describes_toggle_not_open() -> None:
+    """/sessions toggles the drawer open or closed; the help text must say
+    that, not claim it only opens."""
+    help_text = get_command("/sessions").help_text.lower()
+    assert "toggle" in help_text, help_text
+    assert "toggle" in _table_row_line("/sessions").lower()
+
+
+def test_rebuild_help_text_mentions_confirmation() -> None:
+    """/rebuild pushes a confirm dialog before running, like /reset; the help
+    text and the usage guide row must say so."""
+    help_text = get_command("/rebuild").help_text.lower()
+    assert "confirm" in help_text, help_text
+    assert "confirm" in _table_row_line("/rebuild").lower()
 
 
 def test_a_section_with_no_table_yields_no_rows() -> None:
