@@ -1425,7 +1425,7 @@ class TestKnownModelCache:
     @staticmethod
     def _stub_compose(monkeypatch, *, native=None, remote=None, api=None) -> None:
         """Patch the three discovery primitives the cache composes."""
-        from lilbee.app import services as services_mod
+        from lilbee.app.services import set_services
         from lilbee.modelhub.model_manager import discovery
         from lilbee.modelhub.model_manager.types import RemoteModel
 
@@ -1433,9 +1433,7 @@ class TestKnownModelCache:
         registry.list_installed.return_value = [mock.MagicMock(ref=r) for r in (native or [])]
         services_stub = mock.MagicMock()
         services_stub.registry = registry
-        monkeypatch.setattr(services_mod, "get_services", lambda: services_stub)
-        # discovery imports get_services at module load; patch its reference too
-        monkeypatch.setattr(discovery, "get_services", lambda: services_stub)
+        set_services(services_stub)
 
         remote_models = [
             RemoteModel(name=name, task="chat", family="", parameter_size="", provider=prov)

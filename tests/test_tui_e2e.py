@@ -2814,6 +2814,24 @@ class TestChatSlashCommands:
             assert app.screen.is_current
 
 
+async def _set_completion_input(pilot, inp: ChatInput, value: str) -> None:
+    """Assign the chat input, then pump until the overlay reflects *value*.
+
+    Setting ``.value`` posts a ``Changed`` message that bubbles to the screen
+    one hop per ``pilot.pause()``. A key pressed right after the assignment,
+    with no wait at all, can act on a completion list the handler has not
+    refreshed yet.
+    """
+    from lilbee.cli.tui.widgets.autocomplete import _MAX_VISIBLE, CompletionOverlay, get_completions
+
+    overlay = pilot.app.screen.query_one("#completion-overlay", CompletionOverlay)
+    inp.value = value
+    options = get_completions(value)[:_MAX_VISIBLE]
+    await pump_until(
+        pilot, lambda: overlay.options == options and overlay.is_visible == bool(options)
+    )
+
+
 class TestChatCompletions:
     """Test tab completion behavior."""
 
@@ -2824,7 +2842,7 @@ class TestChatCompletions:
             await pilot.pause()
 
             inp = app.screen.query_one("#chat-input", ChatInput)
-            inp.value = "/"
+            await _set_completion_input(pilot, inp, "/")
             await pilot.press("tab")
             await pilot.pause()
             assert app.screen.is_current
@@ -2836,7 +2854,7 @@ class TestChatCompletions:
             await pilot.pause()
 
             inp = app.screen.query_one("#chat-input", ChatInput)
-            inp.value = "/"
+            await _set_completion_input(pilot, inp, "/")
             await pilot.press("ctrl+n")
             await pilot.pause()
             assert app.screen.is_current
@@ -2848,7 +2866,7 @@ class TestChatCompletions:
             await pilot.pause()
 
             inp = app.screen.query_one("#chat-input", ChatInput)
-            inp.value = "/"
+            await _set_completion_input(pilot, inp, "/")
             await pilot.press("ctrl+p")
             await pilot.pause()
             assert app.screen.is_current
@@ -2862,18 +2880,16 @@ class TestChatCompletions:
             from lilbee.cli.tui.widgets.autocomplete import CompletionOverlay
 
             inp = app.screen.query_one("#chat-input", ChatInput)
-            inp.value = "/"
+            await _set_completion_input(pilot, inp, "/")
             await pilot.press("tab")
             await pilot.pause()
 
             overlay = app.screen.query_one("#completion-overlay", CompletionOverlay)
             # Editing to a still-slashy value re-filters but keeps the overlay open.
-            inp.value = "/h"
-            await pilot.pause()
+            await _set_completion_input(pilot, inp, "/h")
             assert overlay.is_visible
             # Editing to plain prose hides it.
-            inp.value = "hello"
-            await pilot.pause()
+            await _set_completion_input(pilot, inp, "hello")
             assert overlay.display is False
 
 
@@ -3213,8 +3229,7 @@ class TestQuestionMarkBehavior:
             inp = app.screen.query_one("#chat-input", ChatInput)
             inp.focus()
             inp.value = "what is this"
-            await pilot.pause()
-            assert app.focused is inp
+            assert await pump_until(pilot, lambda: app.focused is inp)
             await pilot.press("?")
             await pilot.pause()
             assert inp.value == "what is this?", (

@@ -26,12 +26,21 @@ cleanup of pre-existing ones).
    (an f-string or a ``.format`` call) with markup still on. Rich parses the
    rendered string as markup, so a bracket in the value is restyled or raises
    ``MarkupError``. Interpolated ``theme.*`` style names do not count.
+7. New occurrences in ``tests/`` of a patch or monkeypatch naming the literal
+   string ``lilbee.app.services.get_services``. A module first imported while
+   that exact attribute is patched binds its own ``from ... import
+   get_services`` to the stand-in and keeps it for the rest of the xdist
+   worker (bb-25eyz). Use ``set_services()`` from ``lilbee.app.services``
+   instead, which the ``_reset_services_after_test`` conftest fixture clears
+   after every test. A test that asserts ``get_services`` itself was (not)
+   called needs the real patch; opt out with ``# style-check: allow-smell``.
 
 Inline opt-out comments: ``# style-check: allow-history`` skips the
 historical-narrative check on that line; ``# style-check: allow-smell`` skips
-the code-smell check on that added line; ``# style-check: allow-markup`` skips
-the markup check on that call (use it only when no interpolated value can be
-user text, for example a count).
+the code-smell check on that added line (also used by the ``get_services``
+root-patch check); ``# style-check: allow-markup`` skips the markup check on
+that call (use it only when no interpolated value can be user text, for
+example a count).
 
 Exits 0 when clean, 1 with one ``path:line:reason`` per finding when violations
 are found.
@@ -232,6 +241,30 @@ def _check_new_unspecified_encoding(added: Iterable[tuple[str, int, str]]) -> It
         for lineno, name in _unspecified_encoding_hits(REPO_ROOT / rel_path):
             if lineno in linenos:
                 yield _encoding_finding(rel_path, lineno, name)
+
+
+_GET_SERVICES_ROOT_PATCH_RE = re.compile(r"""["']lilbee\.app\.services\.get_services["']""")
+
+
+def _check_get_services_root_patch(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
+    """Yield findings for a new patch of the literal get_services root attribute.
+
+    A module first imported while ``lilbee.app.services.get_services`` is
+    patched binds its own ``from ... import get_services`` to the stand-in
+    and keeps it for the rest of the xdist worker (bb-25eyz). ``set_services``
+    replaces the singleton directly, so every caller's binding resolves
+    through it instead.
+    """
+    for path, lineno, content in added:
+        if not path.endswith(".py") or ALLOW_SMELL_TAG in content:
+            continue
+        if _GET_SERVICES_ROOT_PATCH_RE.search(content) is None:
+            continue
+        yield (
+            f"{path}:{lineno}: patches lilbee.app.services.get_services directly "
+            "(use set_services() from lilbee.app.services instead, or "
+            f"{ALLOW_SMELL_TAG} on a test that asserts the getter itself)"
+        )
 
 
 def _iter_python_files(*roots: Path) -> Iterator[Path]:
@@ -504,6 +537,9 @@ def main() -> int:
         findings.extend(_check_code_smells(_parse_added_lines(_git_diff_src(base))))
         findings.extend(
             _check_new_unspecified_encoding(_parse_added_lines(_git_diff(base, "src", "tests")))
+        )
+        findings.extend(
+            _check_get_services_root_patch(_parse_added_lines(_git_diff(base, "tests")))
         )
 
     for finding in findings:

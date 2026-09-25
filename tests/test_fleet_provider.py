@@ -1493,12 +1493,14 @@ def test_pull_model_not_supported() -> None:
         FleetProvider().pull_model("org/repo/m.gguf")
 
 
-def test_list_models_reads_registry(monkeypatch) -> None:
+def test_list_models_reads_registry() -> None:
+    from lilbee.app.services import set_services
+
     services = MagicMock()
     manifest_a, manifest_b = MagicMock(), MagicMock()
     manifest_a.ref, manifest_b.ref = "z/repo/b.gguf", "a/repo/a.gguf"
     services.registry.list_installed.return_value = [manifest_a, manifest_b]
-    monkeypatch.setattr("lilbee.app.services.get_services", lambda: services)
+    set_services(services)
     assert FleetProvider().list_models() == ["a/repo/a.gguf", "z/repo/b.gguf"]
 
 

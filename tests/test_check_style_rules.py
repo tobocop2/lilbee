@@ -113,6 +113,52 @@ class TestCheckCodeSmells:
         assert list(csr._check_code_smells(added)) == []
 
 
+class TestGetServicesRootPatch:
+    """A module first imported while the root get_services is patched keeps the
+    stand-in for the rest of the xdist worker (bb-25eyz); set_services() is the
+    structural fix."""
+
+    def test_flags_monkeypatch_setattr_string_form(self):
+        line = 'setattr("lilbee.app.services.get_services", f)'  # style-check: allow-smell
+        added = [("tests/test_x.py", 9, line)]
+        findings = list(csr._check_get_services_root_patch(added))
+        assert len(findings) == 1
+        assert "tests/test_x.py:9" in findings[0]
+        assert "set_services()" in findings[0]
+
+    def test_flags_patch_decorator_string_form(self):
+        line = '    @patch("lilbee.app.services.get_services")'  # style-check: allow-smell
+        added = [("tests/test_x.py", 3, line)]
+        findings = list(csr._check_get_services_root_patch(added))
+        assert len(findings) == 1
+
+    def test_allow_smell_tag_opts_out(self):
+        line = 'setattr("lilbee.app.services.get_services", f)  # style-check: allow-smell'
+        added = [("tests/test_x.py", 9, line)]
+        assert list(csr._check_get_services_root_patch(added)) == []
+
+    def test_downstream_consumer_patch_is_not_flagged(self):
+        """Patching a consumer module's own get_services binding cannot leak: only
+        the root attribute is bound fresh by a not-yet-imported module."""
+        added = [
+            (
+                "tests/test_x.py",
+                9,
+                '    patch("lilbee.cli.tui.screens.chat.get_services", return_value=services)',
+            )
+        ]
+        assert list(csr._check_get_services_root_patch(added)) == []
+
+    def test_a_call_to_get_services_is_not_flagged(self):
+        added = [("tests/test_x.py", 4, "    services = get_services()")]
+        assert list(csr._check_get_services_root_patch(added)) == []
+
+    def test_non_python_added_lines_ignored(self):
+        line = '"lilbee.app.services.get_services"'  # style-check: allow-smell
+        added = [("docs/x.md", 1, line)]
+        assert list(csr._check_get_services_root_patch(added)) == []
+
+
 class TestUnspecifiedEncoding:
     """Text file I/O must name its encoding, or it decodes as the locale's.
 
