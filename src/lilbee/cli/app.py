@@ -7,17 +7,17 @@ from pathlib import Path
 from typing import Any
 
 import typer
-from rich.console import Console
 
 from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.core.config import cfg, config_load_error
 from lilbee.core.settings import overlay_persisted_settings
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
 
 app = typer.Typer(help="lilbee: Local RAG knowledge base", invoke_without_command=True)
-console = Console()
+console = PlainConsole()
 
 data_dir_option = typer.Option(
     None,

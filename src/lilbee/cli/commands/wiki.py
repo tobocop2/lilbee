@@ -22,6 +22,7 @@ from lilbee.cli.helpers import json_output, sigint_cancel
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
 from lilbee.wiki.shared import (
     INVALID_DRAFT_SLUG_ERROR,
@@ -63,7 +64,7 @@ def _count_md_files(directory: Path) -> int:
 
 def _print_build_stats(stats: BuildStatsDict) -> None:
     """Print what a build or synthesize run's quality gates did."""
-    console.print(f"  Gates: {format_summary_line(stats)}", markup=False)
+    console.print(f"  Gates: {format_summary_line(stats)}")
 
 
 def _wiki_progress_line(event_type: EventType, data: ProgressEvent) -> str | None:
@@ -87,7 +88,6 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
     the same events the HTTP and TUI surfaces consume. Disabled in json_mode so
     stdout stays a single JSON document.
     """
-    from rich.console import Console as RichConsole
     from rich.progress import Progress, SpinnerColumn
 
     from lilbee.runtime.progress.columns import literal_text_column
@@ -96,7 +96,7 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
         SpinnerColumn(),
         literal_text_column("{task.description}"),
         transient=True,
-        console=RichConsole(stderr=True),
+        console=PlainConsole(stderr=True),
         disable=cfg.json_mode,
     ) as progress:
         task = progress.add_task(msg.WIKI_BUILD_STARTING, total=None)
@@ -157,7 +157,7 @@ def wiki_lint(
         table.add_column("Message")
         for issue in issues:
             sev_style = theme.ERROR if issue.severity is IssueSeverity.ERROR else theme.WARNING
-            sev_text = f"[{sev_style}]{issue.severity.value}[/{sev_style}]"
+            sev_text = Text.assemble((issue.severity.value, sev_style))
             table.add_row(Text(issue.wiki_source), sev_text, Text(issue.message))
         console.print(table)
 
@@ -237,7 +237,7 @@ def wiki_read(
             }
         )
         return
-    console.print(page.content, markup=False)
+    console.print(page.content)
 
 
 @wiki_app.command(name="citations")
@@ -355,7 +355,7 @@ def wiki_status(
             )
             return
         if not cfg.wiki:
-            console.print(f"Wiki: [{theme.ERROR}]disabled[/{theme.ERROR}]")
+            console.print(styled("Wiki: ", ("disabled", theme.ERROR)))
         else:
             console.print("Wiki directory does not exist yet. Run `lilbee wiki build`.")
         return
@@ -382,17 +382,17 @@ def wiki_status(
         )
         return
 
-    console.print(f"Wiki: [{theme.SUCCESS}]enabled[/{theme.SUCCESS}]")
-    console.print(
-        f"  Summaries: [{theme.LABEL}]{summaries}[/{theme.LABEL}]"
-    )  # style-check: allow-markup -- count
-    console.print(
-        f"  Drafts:    [{theme.LABEL}]{drafts}[/{theme.LABEL}]"
-    )  # style-check: allow-markup -- count
+    console.print(styled("Wiki: ", ("enabled", theme.SUCCESS)))
+    console.print(styled("  Summaries: ", (str(summaries), theme.LABEL)))
+    console.print(styled("  Drafts:    ", (str(drafts), theme.LABEL)))
     if report.error_count or report.warning_count:
-        console.print(  # style-check: allow-markup -- counts only
-            f"  Lint: [{theme.ERROR}]{report.error_count} error(s)[/{theme.ERROR}], "
-            f"[{theme.WARNING}]{report.warning_count} warning(s)[/{theme.WARNING}]"
+        console.print(
+            styled(
+                "  Lint: ",
+                (f"{report.error_count} error(s)", theme.ERROR),
+                ", ",
+                (f"{report.warning_count} warning(s)", theme.WARNING),
+            )
         )
     else:
         console.print("  Lint: all clean")
@@ -418,8 +418,8 @@ def wiki_synthesize(
 
     paths = result["paths"]
     if paths:
-        console.print(  # style-check: allow-markup -- count
-            f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] synthesis pages:"
+        console.print(
+            styled("Generated ", (str(result["count"]), theme.LABEL), " synthesis pages:")
         )
         for path in paths:
             console.print(Text.assemble("  ", str(path)), soft_wrap=True)
@@ -464,7 +464,7 @@ def wiki_prune(
     table.add_column("Reason")
     for rec in report.records:
         action_style = theme.ERROR if rec.action.value == "archived" else theme.WARNING
-        action_text = f"[{action_style}]{rec.action.value}[/{action_style}]"
+        action_text = Text.assemble((rec.action.value, action_style))
         table.add_row(Text(rec.wiki_source), action_text, Text(rec.reason))
     console.print(table)
 
@@ -488,7 +488,7 @@ def wiki_index(
     if cfg.json_mode:
         json_output({"command": "wiki_index", "entries": len(stubs)})
     else:
-        console.print(f"Wiki index: {len(stubs)} page(s) the corpus names", markup=False)
+        console.print(f"Wiki index: {len(stubs)} page(s) the corpus names")
 
 
 @wiki_app.command(name="generate")
@@ -510,7 +510,7 @@ def wiki_generate(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(str(exc), markup=False, soft_wrap=True)
+            console.print(str(exc), soft_wrap=True)
         raise typer.Exit(1) from exc
 
     if path is None:
@@ -518,7 +518,7 @@ def wiki_generate(
         if cfg.json_mode:
             json_output({"error": message})
         else:
-            console.print(message, markup=False, soft_wrap=True)
+            console.print(message, soft_wrap=True)
         raise typer.Exit(1)
 
     if cfg.json_mode:
@@ -550,9 +550,7 @@ def wiki_wipe(
         if cfg.json_mode:
             json_output({"error": msg.CMD_WIKI_WIPE_NEEDS_YES})
             raise typer.Exit(1)
-        console.print(
-            msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root), markup=False, soft_wrap=True
-        )
+        console.print(msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root), soft_wrap=True)
         if not typer.confirm("Delete the wiki?", default=False):
             console.print("Aborted.")
             raise typer.Exit(0)
@@ -613,9 +611,12 @@ def _run_wiki_build(command_name: str) -> None:
 
     pages = result["paths"]
     if pages:
-        console.print(  # style-check: allow-markup -- counts only
-            f"Generated [{theme.LABEL}]{result['count']}[/{theme.LABEL}] "
-            f"wiki pages from {result['entities']} extracted records:"
+        console.print(
+            styled(
+                "Generated ",
+                (str(result["count"]), theme.LABEL),
+                f" wiki pages from {result['entities']} extracted records:",
+            )
         )
         for path in pages:
             console.print(Text.assemble("  ", str(path)), soft_wrap=True)
@@ -670,9 +671,12 @@ def _wiki_build_dry_run_output(rows: list[WikiEntityCandidate]) -> None:
             Text(sources_preview),
         )
     console.print(table)
-    console.print(  # style-check: allow-markup -- count
-        f"Dry run: [{theme.LABEL}]{len(rows)}[/{theme.LABEL}] candidate entities. "
-        "No LLM calls were made."
+    console.print(
+        styled(
+            "Dry run: ",
+            (str(len(rows)), theme.LABEL),
+            " candidate entities. No LLM calls were made.",
+        )
     )
     console.print(DRY_RUN_CONCEPT_NOTE, style=theme.MUTED)
 
@@ -773,7 +777,7 @@ def wiki_drafts_diff(
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
         return
-    console.print(diff or "(no differences)", markup=False)
+    console.print(diff or "(no differences)")
 
 
 @drafts_app.command(name="accept")

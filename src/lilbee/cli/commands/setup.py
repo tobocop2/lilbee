@@ -30,6 +30,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.console import styled
 from lilbee.runtime.progress import EventType, SetupProgressEvent
 
 if TYPE_CHECKING:
@@ -66,7 +67,7 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     context = _download_tls_context()
     dest_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     dest = dest_dir / filename
-    console.print(f"Downloading {url}", markup=False, soft_wrap=True)
+    console.print(f"Downloading {url}", soft_wrap=True)
     last_exc: BaseException | None = None
     # Any exit other than a successful return drops the temp dir, so a failed
     # download never leaves an empty/partial dir behind.
@@ -80,9 +81,7 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
                 return dest
             except (OSError, urllib.error.URLError) as exc:
                 last_exc = exc
-                console.print(
-                    f"download attempt {attempt + 1} failed: {exc!r}", markup=False, soft_wrap=True
-                )
+                console.print(f"download attempt {attempt + 1} failed: {exc!r}", soft_wrap=True)
         raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
     except BaseException:
         shutil.rmtree(dest_dir, ignore_errors=True)
@@ -345,9 +344,9 @@ def self_check_cmd(
             payload["embedding_dims"] = embedding_dims
         json_output(payload)
     else:
-        console.print(f"Chat response: {text!r}", markup=False)
+        console.print(f"Chat response: {text!r}")
         if embedding_dims is not None:
-            console.print(f"Embedding dims: {embedding_dims}", markup=False)
+            console.print(f"Embedding dims: {embedding_dims}")
         console.print(
             f"Provider: num_ctx={provider_kwargs['num_ctx']} "
             f"num_ctx_max={provider_kwargs['num_ctx_max']} "
@@ -357,9 +356,8 @@ def self_check_cmd(
             f"n_gpu_layers={provider_kwargs['n_gpu_layers']} "
             f"main_gpu={provider_kwargs['main_gpu']} "
             f"gpu_devices={provider_kwargs['gpu_devices']}",
-            markup=False,
         )
-        console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
+        console.print(styled(("SELF-CHECK PASSED", theme.ACCENT)))
 
 
 _SELF_CHECK_EXTRAS = ("litellm", "crawl4ai", "spacy", "graspologic_native")
@@ -416,16 +414,10 @@ def self_check_extras_cmd() -> None:
     else:
         for name in (*_SELF_CHECK_EXTRAS, _CHARSET_PROBE):
             ok = results.get(name) is True
-            tag = (
-                f"[{theme.ACCENT}]ok[/{theme.ACCENT}]"
-                if ok
-                else f"[{theme.ERROR}]MISSING[/{theme.ERROR}]"
-            )
-            console.print(f"  {name}: {tag}")  # style-check: allow-markup -- fixed extra names
+            tag = ("ok", theme.ACCENT) if ok else ("MISSING", theme.ERROR)
+            console.print(styled(f"  {name}: ", tag))
             if not ok:
-                console.print(
-                    f"    {results.get(f'{name}_error', '')}", markup=False, soft_wrap=True
-                )
+                console.print(f"    {results.get(f'{name}_error', '')}", soft_wrap=True)
 
     if failed:
         raise typer.Exit(1)
@@ -462,7 +454,7 @@ def token(
     if cfg.json_mode:
         json_output({"token": tok})
         return
-    console.print(tok, markup=False, soft_wrap=True)
+    console.print(tok, soft_wrap=True)
 
 
 def login() -> None:

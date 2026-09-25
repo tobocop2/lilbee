@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
-from rich.console import Console
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.text import Text
@@ -38,6 +37,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
+from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress.columns import literal_text_column
 
 if TYPE_CHECKING:
@@ -59,8 +59,8 @@ def _render_list(data: ListModelsResult) -> Table:
     return table
 
 
-def _render_show(data: ShowModelResult) -> str:
-    lines = [f"[{theme.ACCENT}]{data.model}[/{theme.ACCENT}]"]
+def _render_show(data: ShowModelResult) -> Text:
+    lines: list[str] = []
     if data.catalog is not None:
         lines.extend(
             [
@@ -79,7 +79,7 @@ def _render_show(data: ShowModelResult) -> str:
         lines.append(f"  path:         {data.path}")
     if data.manifest is not None:
         lines.append(f"  downloaded:   {data.manifest.downloaded_at}")
-    return "\n".join(lines)
+    return styled((data.model, theme.ACCENT), *(f"\n{line}" for line in lines))
 
 
 model_app = typer.Typer(
@@ -249,7 +249,7 @@ def _pull_json_stream(ref: str, src: ModelSource, *, allow_unsupported: bool) ->
 
 def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported: bool) -> None:
     """Drive Rich's Live progress bar during a native HuggingFace download."""
-    err_console = Console(stderr=True, force_terminal=True)
+    err_console = PlainConsole(stderr=True, force_terminal=True)
     with Progress(
         literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),
@@ -366,7 +366,7 @@ def browse_cmd(
         json_output({"error": "model browse is interactive, not available in --json mode"})
         raise typer.Exit(2)
     if not _is_interactive_terminal():
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] model browse requires a terminal.")
+        console.print(styled(("Error:", theme.ERROR), " model browse requires a terminal."))
         raise typer.Exit(1)
 
     from lilbee.cli.tui import run_tui

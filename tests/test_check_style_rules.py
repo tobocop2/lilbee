@@ -333,59 +333,92 @@ class TestSubprocessTextPipes:
         assert self._findings(tmp_path, source), f"should have flagged: {source}"
 
 
-class TestCheckMarkupInterpolation:
+class TestCheckMarkupParsers:
     def _findings(self, tmp_path: Path, source: str) -> list[str]:
         target = tmp_path / "sample.py"
         target.write_text(source + "\n", encoding="utf-8")
-        return list(csr._check_markup_interpolation([target]))
+        return list(csr._check_markup_parsers([target]))
 
     @pytest.mark.parametrize(
         "source",
         [
+            pytest.param("from rich.console import Console\nc = Console()", id="console"),
             pytest.param(
-                'console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {path}")', id="tag_and_value"
+                "from rich.console import Console as RichConsole\nc = RichConsole(stderr=True)",
+                id="aliased_console",
             ),
-            pytest.param('console.print(f"Initialized at {root}")', id="value_without_tag"),
-            pytest.param("err.print(MSG.format(path=path))", id="format_call"),
+            pytest.param("console.print(value, markup=True)", id="markup_true"),
+            pytest.param('Text.from_markup(f"[b]{name}[/b]")', id="from_markup"),
+            pytest.param("from rich import print", id="rich_print"),
+            pytest.param("from rich.markup import escape", id="rich_markup"),
+            pytest.param("from rich.prompt import Prompt", id="rich_prompt"),
+            pytest.param("from rich.panel import Panel", id="rich_panel"),
+            pytest.param("from rich.status import Status", id="rich_status"),
+            pytest.param("from rich.spinner import Spinner", id="rich_spinner"),
+            pytest.param("import rich\nrich.print(x)", id="module_rich_print"),
+            pytest.param("import rich.console\nrich.console.Console()", id="dotted_console"),
+            pytest.param("from rich import console as rc\nrc.Console()", id="module_alias_console"),
+            pytest.param("from rich import markup", id="from_rich_import_markup"),
+            pytest.param("import rich.markup", id="import_rich_markup"),
+            pytest.param("import rich.panel", id="import_rich_panel"),
+            pytest.param("import rich\nc = rich.get_console()", id="get_console"),
+            pytest.param("from rich import get_console", id="from_rich_import_get_console"),
             pytest.param(
-                'con.print(\n    f"Removed {name}",\n    style=theme.ERROR,\n)', id="multiline"
+                "from rich.progress import track\nfor _ in track(it, description=x): pass",
+                id="progress_track",
             ),
+            pytest.param("import rich.progress\nrich.progress.track(it)", id="dotted_track"),
+            pytest.param("console.print(value, markup=flag)", id="markup_variable"),
+            pytest.param("from rich import *", id="star_import_rich"),
+            pytest.param("import rich.console as rc\nrc.Console()", id="import_module_as_alias"),
+            pytest.param("import rich\nrich.inspect(x, title=t)", id="rich_inspect"),
+            pytest.param("from rich import inspect\ninspect(x)", id="from_rich_import_inspect"),
+            pytest.param(
+                "from rich.console import Console\nclass K(Console): ...", id="console_subclass"
+            ),
+            pytest.param(
+                "import rich.console as rc\nclass K(rc.Console): ...", id="dotted_console_subclass"
+            ),
+            pytest.param("from rich.console import *", id="star_import_rich_console"),
         ],
     )
-    def test_flags_a_value_parsed_as_markup(self, tmp_path: Path, source: str) -> None:
+    def test_flags_a_way_to_parse_markup(self, tmp_path: Path, source: str) -> None:
         assert self._findings(tmp_path, source), f"should have flagged: {source}"
 
     @pytest.mark.parametrize(
         "source",
         [
-            pytest.param('console.print(f"Initialized at {root}", markup=False)', id="markup_off"),
             pytest.param(
-                'console.print(f"[{theme.ERROR}]Chat requires a terminal.[/{theme.ERROR}]")',
-                id="theme_style_only",
+                "from rich.console import Console\ndef f(c: Console) -> None: ...", id="annotation"
             ),
-            pytest.param('console.print(Text.assemble("Removed ", name))', id="text_object"),
-            pytest.param("console.print(message, style=theme.ERROR)", id="plain_name"),
-            pytest.param('print(f"[{x}]")', id="builtin_print"),
+            pytest.param("console = PlainConsole(stderr=True)", id="plain_console"),
+            pytest.param("console.print(value, markup=False)", id="markup_false"),
+            pytest.param('console.print(Text.assemble(("Removed ", "red"), name))', id="text"),
+            pytest.param("from rich.text import Text", id="rich_text"),
             pytest.param(
-                'console.print(f"[b]{n}[/b] pages")  # style-check: allow-markup -- count',
-                id="opt_out",
+                "import rich.console\ndef f(c: rich.console.Console) -> None: ...",
+                id="dotted_annotation",
             ),
+            pytest.param("from rich.progress import Progress", id="rich_progress"),
+            pytest.param("import rich.text\nrich.text.Text(x)", id="other_rich_call"),
+            pytest.param("class K(Base): ...", id="unrelated_subclass"),
+            pytest.param("import inspect\ninspect.signature(f)", id="stdlib_inspect"),
+            pytest.param("print(x)", id="builtin_print"),
+            pytest.param("from .rich import print\nprint(x)", id="relative_import"),
         ],
     )
-    def test_leaves_literal_and_opted_out_prints_alone(self, tmp_path: Path, source: str) -> None:
+    def test_leaves_literal_output_alone(self, tmp_path: Path, source: str) -> None:
         assert not self._findings(tmp_path, source), f"should not have flagged: {source}"
 
-    def test_a_flagged_value_really_is_restyled_by_rich(self) -> None:
-        """The rule's premise: Rich eats a bracketed value interpolated into markup."""
-        from rich.text import Text
-
-        path = "C:\\notes\\[red]draft.md"
-        assert Text.from_markup(f"[bold]Error:[/bold] {path}").plain != f"Error: {path}"
+    def test_the_tui_and_the_console_module_are_exempt(self) -> None:
+        tui_file = csr.MARKUP_EXEMPT_DIRS[0] / "app.py"
+        assert tui_file.exists()
+        assert not list(csr._check_markup_parsers([tui_file, csr.PLAIN_CONSOLE_MODULE]))
 
     def test_an_unparsable_file_yields_nothing(self, tmp_path: Path) -> None:
         assert not self._findings(tmp_path, "def broken(:")
 
     def test_the_finding_names_the_file_and_line(self, tmp_path: Path) -> None:
-        findings = self._findings(tmp_path, 'x = 1\nconsole.print(f"Hi {name}")')
+        findings = self._findings(tmp_path, "x = 1\nconsole.print(v, markup=True)")
         assert len(findings) == 1
         assert findings[0].startswith(f"{tmp_path / 'sample.py'}:2: ")

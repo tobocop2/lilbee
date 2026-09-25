@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 import typer
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -43,6 +44,7 @@ from lilbee.data.store import EmbeddingModelMismatchError, SearchScope, scope_to
 from lilbee.providers.base import ProviderError
 from lilbee.providers.roles import WorkerRole
 from lilbee.retrieval.query.formatting import FILE_LINK_RE
+from lilbee.runtime.console import PlainConsole, styled
 
 # How many top concepts to show inline before truncating with a ``+N more`` tail.
 _TOPIC_PREVIEW_LIMIT = 5
@@ -96,8 +98,6 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
     prints to stderr in every mode: stdout stays answer-only and JSON stays
     parseable.
     """
-    from rich.console import Console
-
     from lilbee.app.settings import apply_ephemeral_model_swap
     from lilbee.modelhub.model_manager import (
         ValidationResult,
@@ -108,7 +108,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
     checks = [(canonicalize_embedding_model(), "embedding_model", "Embedding")]
     if not chat_overridden:
         checks.insert(0, (canonicalize_chat_model(), "chat_model", "Chat"))
-    err = Console(stderr=True)
+    err = PlainConsole(stderr=True)
     for canon, field, label in checks:
         if canon.status == ValidationResult.OK or canon.effective == canon.original:
             continue
@@ -120,7 +120,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
             )
         else:
             notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
-        err.print(notice, style=theme.WARNING, markup=False, soft_wrap=True)
+        err.print(notice, style=theme.WARNING, soft_wrap=True)
 
 
 def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
@@ -151,46 +151,44 @@ def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> Non
                 # Reasoning is not filtered by StreamingCitationFilter, so a
                 # thinking trace drafting a Sources: list must never trip the
                 # marker scan; it prints live and bypasses the buffer.
-                console.print(token.content, end="", markup=False)
+                console.print(token.content, end="")
                 continue
             buf += token.content
             if in_sources:
                 continue
             if SOURCES_BLOCK_MARKER in buf:
                 head, _, buf = buf.partition(SOURCES_BLOCK_MARKER)
-                console.print(head, end="", markup=False)
+                console.print(head, end="")
                 in_sources = True
             elif len(buf) > hold:
-                console.print(buf[:-hold], end="", markup=False)
+                console.print(buf[:-hold], end="")
                 buf = buf[-hold:]
         flushed = True
     finally:
         if not flushed and buf and not in_sources:
             # An exception escaped the stream mid-answer: the held tail is
             # real answer text; print it before the error surfaces.
-            console.print(buf, markup=False)
+            console.print(buf)
     if not in_sources:
-        console.print(buf, markup=False)
+        console.print(buf)
         return
-    console.print(SOURCES_BLOCK_MARKER, end="", markup=False)
+    console.print(SOURCES_BLOCK_MARKER, end="")
     _print_sources_block(buf)
 
 
 def _print_sources_block(block: str) -> None:
     """Render the Sources block, turning ``[label](file://...)`` into terminal links."""
-    from rich.markup import escape
-
     if not console.is_terminal or console.legacy_windows:
-        console.print(block, markup=False, highlight=False)
+        console.print(block, highlight=False)
         return
-    parts: list[str] = []
+    rendered = Text()
     last = 0
     for m in FILE_LINK_RE.finditer(block):
-        parts.append(escape(block[last : m.start()]))
-        parts.append(f"[link={m['url']}]{escape(m['label'])}[/link]")
+        rendered.append(block[last : m.start()])
+        rendered.append(m["label"], Style(link=m["url"]))
         last = m.end()
-    parts.append(escape(block[last:]))
-    console.print("".join(parts), highlight=False)
+    rendered.append(block[last:])
+    console.print(rendered)
 
 
 def _reject_if_empty(value: str, label: str) -> None:
@@ -311,9 +309,7 @@ def ask(
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
             if cfg.json_mode:
-                from rich.console import Console as _QuietConsole
-
-                auto_sync(_QuietConsole(quiet=True))
+                auto_sync(PlainConsole(quiet=True))
             else:
                 auto_sync(console)
 
@@ -418,7 +414,7 @@ def chat(
         json_output({"error": "Chat requires a terminal, not --json"})
         raise SystemExit(1)
     if not sys.stdin.isatty() or not sys.stdout.isatty():
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Chat requires a terminal.")
+        console.print(styled(("Error:", theme.ERROR), " Chat requires a terminal."))
         raise SystemExit(1)
     from lilbee.cli.tui import run_tui
 
@@ -441,7 +437,7 @@ def topics(
         if cfg.json_mode:
             json_output({"error": msg})
             raise SystemExit(1)
-        console.print(msg, style=theme.ERROR, markup=False, soft_wrap=True)
+        console.print(msg, style=theme.ERROR, soft_wrap=True)
         raise SystemExit(1)
 
     if not cfg.concept_graph:
@@ -449,8 +445,10 @@ def topics(
             json_output({"error": "Concept graph is disabled (LILBEE_CONCEPT_GRAPH=false)"})
             raise SystemExit(1)
         console.print(
-            f"[{theme.ERROR}]Concept graph is disabled.[/{theme.ERROR}] "
-            "Enable with LILBEE_CONCEPT_GRAPH=true"
+            styled(
+                ("Concept graph is disabled.", theme.ERROR),
+                " Enable with LILBEE_CONCEPT_GRAPH=true",
+            )
         )
         raise SystemExit(1)
 
@@ -458,7 +456,7 @@ def topics(
         if cfg.json_mode:
             json_output({"error": "Concept graph not available"})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]Concept graph not available.[/{theme.ERROR}]")
+        console.print(styled(("Concept graph not available.", theme.ERROR)))
         raise SystemExit(1)
 
     if query:

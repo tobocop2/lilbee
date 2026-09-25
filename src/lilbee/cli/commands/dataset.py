@@ -14,6 +14,7 @@ from lilbee.cli.app import apply_overrides, console, data_dir_option, global_opt
 from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
 from lilbee.core.config import cfg
 from lilbee.runtime.cancellation import TaskCancelledError
+from lilbee.runtime.console import styled
 
 _export_output_argument = typer.Argument(
     Path("pages.parquet"),
@@ -97,8 +98,14 @@ def import_cmd(
     if cfg.json_mode:
         json_output(summary.model_dump())
         return
-    console.print(  # style-check: allow-markup -- counts only
-        f"Imported [{theme.LABEL}]{len(summary.sources)}[/{theme.LABEL}] source(s) "
-        f"([{theme.LABEL}]{summary.pages}[/{theme.LABEL}] pages, "
-        f"[{theme.LABEL}]{summary.chunks}[/{theme.LABEL}] chunks)"
+    console.print(
+        styled(
+            "Imported ",
+            (str(len(summary.sources)), theme.LABEL),
+            " source(s) (",
+            (str(summary.pages), theme.LABEL),
+            " pages, ",
+            (str(summary.chunks), theme.LABEL),
+            " chunks)",
+        )
     )

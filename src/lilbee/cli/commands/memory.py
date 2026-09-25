@@ -59,7 +59,7 @@ def memory_add(
     if cfg.json_mode:
         json_output({"id": memory_id, "kind": kind.value})
         return
-    console.print(f"Remembered ({kind.value}).", markup=False)
+    console.print(f"Remembered ({kind.value}).")
 
 
 @memory_app.command(name="list")

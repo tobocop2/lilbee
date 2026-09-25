@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from rich.console import Console, RenderableType
+from rich.console import RenderableType
 from rich.table import Table
 from rich.text import Text
 
@@ -19,6 +19,7 @@ from lilbee.app.ingest import RegisterResult, register_sources
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
+from lilbee.runtime.console import PlainConsole, styled
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
@@ -29,7 +30,7 @@ def json_output(data: dict) -> None:
     print(json.dumps(data))
 
 
-def announce_cold_start(role: object, model: str) -> Console | None:
+def announce_cold_start(role: object, model: str) -> PlainConsole | None:
     """Print a "Starting <role> engine (loading <model>)..." stderr line if cold.
 
     Returns a stderr console to print the matching "ready" line through when the
@@ -45,7 +46,7 @@ def announce_cold_start(role: object, model: str) -> Console | None:
         return None
     if get_services().provider.role_ready(role):
         return None
-    err = Console(stderr=True)
+    err = PlainConsole(stderr=True)
     err.print(
         Text.assemble(
             (f"Starting {role.value} engine (loading ", theme.MUTED),
@@ -57,7 +58,7 @@ def announce_cold_start(role: object, model: str) -> Console | None:
     return err
 
 
-def announce_ready(err: Console | None, role: object) -> None:
+def announce_ready(err: PlainConsole | None, role: object) -> None:
     """Print the matching "<role> engine ready." stderr line, if cold-start announced.
 
     A token arriving is not evidence the chat model came up: in RAG mode a grounded
@@ -70,15 +71,15 @@ def announce_ready(err: Console | None, role: object) -> None:
         return
     failure = _chat_warm_error(role)
     if failure is not None:
-        err.print(failure, style=theme.ERROR, markup=False, soft_wrap=True)
+        err.print(failure, style=theme.ERROR, soft_wrap=True)
         return
-    err.print(f"{role.value} engine ready.", style=theme.MUTED, markup=False)
+    err.print(f"{role.value} engine ready.", style=theme.MUTED)
 
 
 def announce_retrieval_query(query: str) -> None:
     """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
     line = SEARCHING_FOR.format(query=query)
-    Console(stderr=True).print(line, style=theme.MUTED, markup=False, soft_wrap=True)
+    PlainConsole(stderr=True).print(line, style=theme.MUTED, soft_wrap=True)
 
 
 def _chat_warm_error(role: object) -> str | None:
@@ -126,7 +127,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     yield _label_line("Reranker", reranker)
     if status.config.enable_ocr is not None:
         ocr_label = "enabled" if status.config.enable_ocr else "disabled"
-        yield f"[{theme.LABEL}]Vision OCR:[/{theme.LABEL}] {ocr_label}"
+        yield _label_line("Vision OCR", ocr_label)
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
         yield _label_line("Entities", f"{status.entities.rows} entities extracted ({names})")
@@ -139,12 +140,11 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         for skipped in status.skipped:
             held.add_row(Text(skipped.filename), Text(skipped.reason))
         yield held
-        b = theme.LABEL
         hidden = status.skipped_total - len(status.skipped)
         more = f" ({hidden} more not shown)" if hidden > 0 else ""
-        yield (
-            f"[{b}]{status.skipped_total}[/{b}] held out{more}; "
-            "run 'lilbee sync --retry-skipped' to try them again"
+        yield styled(
+            (str(status.skipped_total), theme.LABEL),
+            f" held out{more}; run 'lilbee sync --retry-skipped' to try them again",
         )
         yield ""
 
@@ -162,11 +162,16 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     for s in status.sources:
         table.add_row(Text(s.filename), s.file_hash, str(s.chunk_count), s.ingested_at)
     yield table
-    b = theme.LABEL
-    yield f"\n[{b}]{len(status.sources)}[/{b}] documents, [{b}]{status.total_chunks}[/{b}] chunks"
+    yield styled(
+        "\n",
+        (str(len(status.sources)), theme.LABEL),
+        " documents, ",
+        (str(status.total_chunks), theme.LABEL),
+        " chunks",
+    )
 
 
-def render_status(con: Console) -> None:
+def render_status(con: PlainConsole) -> None:
     """Print status info (documents, paths, chunk counts)."""
     from lilbee.app.status import gather_status
 
@@ -185,12 +190,12 @@ SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
 
-def print_prefixed(con: Console, prefix: str, detail: object, *, style: str) -> None:
+def print_prefixed(con: PlainConsole, prefix: str, detail: object, *, style: str) -> None:
     """Print *prefix* in *style*, then *detail* as literal text (never markup)."""
     con.print(Text.assemble((prefix, style), str(detail)), soft_wrap=True)
 
 
-def register_paths(paths: list[Path], con: Console, *, force: bool = False) -> RegisterResult:
+def register_paths(paths: list[Path], con: PlainConsole, *, force: bool = False) -> RegisterResult:
     """Register *paths* as source roots, reporting what happened to each."""
     result = register_sources(paths, force=force)
     for name in result.name_taken:
@@ -218,7 +223,7 @@ def describe_registration(result: RegisterResult) -> str:
 
 def add_paths(
     paths: list[Path],
-    con: Console,
+    con: PlainConsole,
     *,
     force: bool = False,
     background: bool = False,
@@ -267,7 +272,7 @@ def sync_result_to_json(result: object) -> dict:
     return {"command": "sync", **result.model_dump()}
 
 
-def auto_sync(con: Console, *, background: bool = False) -> None:
+def auto_sync(con: PlainConsole, *, background: bool = False) -> None:
     """Run document sync before queries.
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
@@ -295,7 +300,7 @@ def auto_sync(con: Console, *, background: bool = False) -> None:
         len(result.skipped),
     )
     if summary:
-        con.print(f"Synced: {summary}", style=theme.MUTED, markup=False)
+        con.print(f"Synced: {summary}", style=theme.MUTED)
 
 
 @contextmanager

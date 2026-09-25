@@ -32,7 +32,7 @@ def version() -> None:
     if cfg.json_mode:
         json_output({"command": "version", "version": ver})
         return
-    console.print(f"lilbee {ver}", markup=False)
+    console.print(f"lilbee {ver}")
 
 
 def status(
@@ -84,13 +84,11 @@ def reset(
     console.print(
         f"Reset complete: {result.deleted_docs} document(s), "
         f"{result.deleted_data} data item(s) deleted.",
-        markup=False,
     )
     if result.skipped:
         console.print(
             f"{len(result.skipped)} item(s) could not be deleted (locked or permission denied).",
             style=theme.WARNING,
-            markup=False,
         )
 
 
@@ -101,7 +99,7 @@ def init() -> None:
         if cfg.json_mode:
             json_output({"command": "init", "path": str(root), "created": False})
             return
-        console.print(f"Already initialized: {root}", markup=False, soft_wrap=True)
+        console.print(f"Already initialized: {root}", soft_wrap=True)
         return
 
     docs = root / "documents"
@@ -114,4 +112,4 @@ def init() -> None:
     if cfg.json_mode:
         json_output({"command": "init", "path": str(root), "created": True})
         return
-    console.print(f"Initialized local knowledge base at {root}", markup=False, soft_wrap=True)
+    console.print(f"Initialized local knowledge base at {root}", soft_wrap=True)

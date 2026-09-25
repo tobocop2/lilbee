@@ -8,13 +8,13 @@ from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
-from rich.console import Console
 from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.helpers import print_prefixed
 from lilbee.data.ingest import sync
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.progress import (
     EventType,
     ExtractEvent,
@@ -43,7 +43,7 @@ def _format_sync_summary(
     return ", ".join(parts) if parts else None
 
 
-def _print_file_start(con: Console, data: ProgressEvent) -> None:
+def _print_file_start(con: PlainConsole, data: ProgressEvent) -> None:
     if not isinstance(data, FileStartEvent):
         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
     con.print(
@@ -55,19 +55,19 @@ def _print_file_start(con: Console, data: ProgressEvent) -> None:
     )
 
 
-def _print_done(con: Console, data: ProgressEvent) -> None:
+def _print_done(con: PlainConsole, data: ProgressEvent) -> None:
     if not isinstance(data, SyncDoneEvent):
         raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
     summary = _format_sync_summary(
         data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
     )
     if summary:
-        con.print(f"Synced: {summary}", style=theme.MUTED, markup=False)
+        con.print(f"Synced: {summary}", style=theme.MUTED)
 
 
-def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
+def _sync_progress_printer(con: PlainConsole) -> DetailedProgressCallback:
     """Return a callback that prints one-line status for FILE_START and SYNC_DONE events."""
-    handlers: dict[EventType, Callable[[Console, ProgressEvent], None]] = {
+    handlers: dict[EventType, Callable[[PlainConsole, ProgressEvent], None]] = {
         EventType.FILE_START: _print_file_start,
         EventType.SYNC_DONE: _print_done,
     }
@@ -103,7 +103,7 @@ def shutdown_executor() -> None:
     _bg_executor = None
 
 
-def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = False) -> None:
+def _on_sync_done(con: PlainConsole, future: Future[object], *, chat_mode: bool = False) -> None:
     """Callback attached to background sync futures: logs errors."""
     exc = future.exception()
     if exc is None:
@@ -175,7 +175,7 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
 
 
 def run_sync_background(
-    con: Console,
+    con: PlainConsole,
     *,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,

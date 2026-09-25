@@ -22,6 +22,7 @@ from lilbee.cli.helpers import json_output
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
+from lilbee.runtime.console import styled
 
 _PLACEMENT_ERRORS = (PlacementError, ProviderError, OSError)
 
@@ -103,12 +104,10 @@ def _render_view(view: PlacementView) -> None:
 
     if view.co_tenants:
         names = ", ".join(role.value for role in view.co_tenants)
-        console.print(
-            f"  {names}: share memory, one loaded at a time", style=theme.MUTED, markup=False
-        )
+        console.print(f"  {names}: share memory, one loaded at a time", style=theme.MUTED)
 
     for role in view.unplaceable:
-        console.print(f"  {role.value}: does not fit, no server", style=theme.ERROR, markup=False)
+        console.print(f"  {role.value}: does not fit, no server", style=theme.ERROR)
 
     for skipped in view.skipped_not_installed:
         console.print(
@@ -122,8 +121,14 @@ def _render_view(view: PlacementView) -> None:
 
     if view.rejected_spec_json:
         console.print(
-            f"  [{theme.WARNING}]a saved placement does not fit this hardware and is being "
-            f"ignored; run 'lilbee placement clear' or set a new one[/{theme.WARNING}]"
+            styled(
+                "  ",
+                (
+                    "a saved placement does not fit this hardware and is being "
+                    "ignored; run 'lilbee placement clear' or set a new one",
+                    theme.WARNING,
+                ),
+            )
         )
 
 
