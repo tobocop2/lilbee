@@ -466,6 +466,101 @@ async def test_a_filter_change_that_arrives_after_a_cursor_key_keeps_the_cursor(
         assert await wait_until(pilot, lambda: chat.session_id == wanted)
 
 
+def _seed_three(sessions) -> str:
+    """Seed rows that list as Alpha, Gamma two, Gamma one; return Gamma one's id."""
+    wanted = _seed(sessions, "Gamma one")
+    _seed(sessions, "Gamma two")
+    _seed(sessions, "Alpha")
+    return wanted
+
+
+@pytest.mark.parametrize("edit", ["backspace", "ctrl+w"], ids=["backspace", "delete_word"])
+async def test_an_editing_key_in_the_same_burst_as_a_cursor_key_applies_first(sessions, edit):
+    """An edit to the filter typed before Down and Enter changes the rows they act on."""
+    _seed_three(sessions)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+o")
+        rows = chat.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        await pilot.press(*"am")
+        assert await wait_until(pilot, lambda: len(chat.query(SessionRow)) == 2)
+        send_key_burst(app, edit, "down", "enter")
+        await wait_until(pilot, lambda: chat.session_id is not None)
+        assert sessions.get(chat.session_id).meta.title == "Gamma two"
+
+
+async def test_a_key_the_filter_declines_still_reaches_the_chat(sessions):
+    """PageUp in the filter box, which has nothing to scroll, still scrolls the chat behind it."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        assert drawer.query_one("#sessions-filter", Input).has_focus
+        with patch.object(ChatScreen, "action_scroll_up") as scroll_up:
+            await pilot.press("pageup")
+            await pilot.pause()
+        scroll_up.assert_called_once_with()
+
+
+async def test_an_editing_key_in_the_filter_edits_it_once(sessions):
+    """Backspace in the filter box deletes one character, not one per place that binds it."""
+    _seed(sessions, "Gamma")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        field = drawer.query_one("#sessions-filter", Input)
+        await pilot.press(*"amm", "backspace")
+        assert field.value == "am"
+
+
+@pytest.mark.parametrize(
+    ("key", "title"),
+    [("up", "Gamma two"), ("down", "Gamma one"), ("g", "Gamma two"), ("G", "Gamma one")],
+)
+async def test_a_list_key_applies_filter_text_the_list_has_not_shown_yet(sessions, key, title):
+    """A list key first shows the rows for the filter box's text, then moves within them.
+
+    Built deterministically: the filter changes with its Changed event held back.
+    """
+    _seed_three(sessions)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        drawer = await _open_drawer(app, pilot)
+        rows = drawer.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        rows.index = 2
+        field = drawer.query_one("#sessions-filter", Input)
+        with field.prevent(Input.Changed):
+            field.value = "am"
+        rows.focus()
+        await pilot.pause()
+        assert len(drawer.query(SessionRow)) == 3
+        await pilot.press(key)
+        await pilot.pause()
+        assert len(drawer.query(SessionRow)) == 2
+        assert rows.highlighted_child.meta.title == title
+
+
+async def test_rename_in_the_same_burst_as_filter_text_renames_the_filtered_row(sessions):
+    """ctrl+r typed after filter text starts renaming the row the filter narrowed to."""
+    _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+o")
+        rows = chat.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        send_key_burst(app, *"Gam", "ctrl+r")
+        field = chat.query_one("#sessions-filter", Input)
+        assert await wait_until(pilot, lambda: field.placeholder == msg.SESSIONS_RENAME_PLACEHOLDER)
+        assert field.value == "Gamma"
+
+
 async def test_delete_in_the_same_burst_as_filter_text_asks_about_the_filtered_row(sessions):
     """ctrl+d typed after filter text asks about the row the filter narrowed to, not the top row."""
     _seed(sessions, "Gamma")

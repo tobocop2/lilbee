@@ -13,7 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
-from textual import on
+from textual import events, on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical
@@ -77,6 +77,22 @@ class SessionRow(ListItem):
         yield _RowText(Content.styled(meta_line, "$text-muted"), classes="session-row-meta")
 
 
+class _FilterInput(Input):
+    """The filter box. Its editing keys run in its own queue, in order with the text typed.
+
+    Textual runs a focused Input's bindings (Backspace, ctrl+w, the arrows) only
+    once the key has bubbled back to the app, which is after any row key the app
+    is running. Running them here makes the box's queue hold every key typed into it.
+    """
+
+    async def _on_key(self, event: events.Key) -> None:
+        """Run the box's own binding for the key; a key the box declines goes on up as before."""
+        for binding in self._bindings.key_to_bindings.get(event.key, ()):
+            if await self.app.run_action(binding.action, self):
+                event.stop()
+                return
+
+
 async def _caught_up(widget: Input) -> None:
     """Return once *widget* has handled every message already queued for it.
 
@@ -96,9 +112,10 @@ class SessionListPanel(Vertical):
     DEFAULT_CSS: ClassVar[str] = _ROW_CSS
 
     # Every key that moves the cursor or acts on a row is a priority binding, so
-    # the keys apply in the order typed; each first waits for the filter to apply
-    # the text typed ahead of it. A focused filter still types j / k / g / G:
-    # Textual drops a binding whose key the focused Input consumes.
+    # it runs as the app reads it, before later keys are routed. Each first waits
+    # for the filter box to handle the keys typed into it ahead of the row key.
+    # A focused filter still types j / k / g / G: Textual drops a binding whose
+    # key the focused Input consumes.
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Resume", show=False, priority=True),
         Binding("ctrl+n", "new_chat", "New", show=True, priority=True),
@@ -134,7 +151,7 @@ class SessionListPanel(Vertical):
 
     def compose(self) -> ComposeResult:
         yield Static(id="sessions-title")
-        yield Input(placeholder=msg.SESSIONS_FILTER_PLACEHOLDER, id="sessions-filter")
+        yield _FilterInput(placeholder=msg.SESSIONS_FILTER_PLACEHOLDER, id="sessions-filter")
         yield ListView(id="sessions-list")
         yield Static(id="sessions-empty")
         yield Static(Content.styled(msg.SESSIONS_HINT, "$text-muted"), id="sessions-hint")
@@ -257,10 +274,10 @@ class SessionListPanel(Vertical):
 
     def jump_to(self, index: int) -> None:
         """Move the list cursor to *index* (negative counts from the end)."""
-        lv = self.query_one("#sessions-list", ListView)
-        count = len(lv)
+        count = len(self._shown)
         if not count:
             return
+        lv = self.query_one("#sessions-list", ListView)
         lv.index = count - 1 if index < 0 else min(index, count - 1)
 
     def action_new_chat(self) -> None:
