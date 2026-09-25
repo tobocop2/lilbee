@@ -1470,6 +1470,22 @@ async def test_keys_typed_in_one_burst_after_h_then_a_reach_the_prompt():
         assert screen._insert_mode
 
 
+async def test_h_typed_in_the_same_burst_as_escape_enters_the_strip():
+    """Escape parks the cursor on the transcript in its own step, so the h after it walks
+    into the role strip instead of typing into the prompt."""
+    from lilbee.cli.tui.widgets.model_bar import ModelBar
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await await_chat(app, pilot)
+        await pump_until(pilot, lambda: isinstance(app.screen, ChatScreen))
+        bar = screen.query_one("#model-bar", ModelBar)
+        send_key_burst(app, "escape", "h")
+        await pump_until(pilot, lambda: screen._focus_in_model_bar())
+        assert screen.focused in bar.strip
+        assert screen._chat_input.value == ""
+
+
 async def test_typing_h_and_l_in_insert_mode_reaches_the_prompt():
     """The strip keys must not eat two letters out of every prompt.
 

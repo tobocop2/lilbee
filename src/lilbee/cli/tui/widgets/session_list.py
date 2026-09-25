@@ -2,13 +2,14 @@
 
 Embedded by both the sessions drawer and the full-screen sessions view. The panel
 owns everything self-contained (filtering, inline rename, delete confirmation) and
-posts messages for the actions that need navigation (resume, new chat, close), so
-each container decides how to leave.
+resumes or starts a chat itself. It then posts a message, so each container
+decides how to leave.
 """
 
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
@@ -22,8 +23,15 @@ from textual.widgets import Input, ListItem, ListView, Static
 
 from lilbee.app.services import get_services
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
-from lilbee.sessions import HUMAN_ORIGINS, SessionMeta, SessionStore, TitleSource
+from lilbee.sessions import (
+    HUMAN_ORIGINS,
+    SessionMeta,
+    SessionNotFoundError,
+    SessionStore,
+    TitleSource,
+)
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -70,10 +78,14 @@ class SessionRow(ListItem):
 
 
 async def _caught_up(widget: Input) -> None:
-    """Return once *widget* has handled every message already queued for it."""
+    """Return once *widget* has handled every message already queued for it.
+
+    Also returns when the widget's queue stops, so a handler that failed on one of
+    those messages lets the app exit instead of leaving this wait unanswered.
+    """
     done: asyncio.Future[None] = asyncio.get_running_loop().create_future()
     if widget.call_later(done.set_result, None):
-        await done
+        await asyncio.wait((done, widget.task), return_when=asyncio.FIRST_COMPLETED)
 
 
 class SessionListPanel(Vertical):
@@ -83,25 +95,22 @@ class SessionListPanel(Vertical):
 
     DEFAULT_CSS: ClassVar[str] = _ROW_CSS
 
+    # Every key that moves the cursor is a priority binding, like Enter, so the
+    # keys apply in the order typed. A focused filter still types j / k / g / G:
+    # Textual drops a binding whose key the focused Input consumes.
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Resume", show=False, priority=True),
         Binding("ctrl+n", "new_chat", "New", show=True, priority=True),
         Binding("ctrl+r", "rename", "Rename", show=False, priority=True),
         Binding("ctrl+d", "delete", "Delete", show=False, priority=True),
         Binding("escape", "close", "Close", show=False, priority=True),
-        Binding("down", "cursor_down", "Down", show=False),
-        Binding("up", "cursor_up", "Up", show=False),
+        Binding("down", "cursor_down", "Down", show=False, priority=True),
+        Binding("up", "cursor_up", "Up", show=False, priority=True),
+        *(replace(binding, priority=True) for binding in BROWSE_LIST_BINDINGS),
     ]
 
-    class Resumed(Message):
-        """A session was resumed."""
-
-        def __init__(self, session_id: str) -> None:
-            super().__init__()
-            self.session_id = session_id
-
-    class NewChat(Message):
-        """A new chat was started."""
+    class ChatOpened(Message):
+        """A session was resumed or a new chat was started, and chat is showing."""
 
     class CloseRequested(Message):
         """The user asked to close the panel."""
@@ -193,9 +202,15 @@ class SessionListPanel(Vertical):
 
     def _resume(self, meta: SessionMeta | None) -> None:
         """Resume *meta* within this key's step, so focus is on the prompt before the next key."""
-        if meta is not None:
+        if meta is None:
+            return
+        try:
             self.app.resume_session(meta.id)
-            self.post_message(self.Resumed(meta.id))
+        except SessionNotFoundError:
+            self.app.notify(msg.SESSIONS_GONE, severity="warning")
+            self.refresh_list()
+            return
+        self.post_message(self.ChatOpened())
 
     async def action_select(self) -> None:
         """Enter: finish a rename, else resume the highlighted session.
@@ -219,6 +234,12 @@ class SessionListPanel(Vertical):
     def action_cursor_up(self) -> None:
         self.query_one("#sessions-list", ListView).action_cursor_up()
 
+    def action_jump_top(self) -> None:
+        self.jump_to(0)
+
+    def action_jump_bottom(self) -> None:
+        self.jump_to(-1)
+
     def jump_to(self, index: int) -> None:
         """Move the list cursor to *index* (negative counts from the end)."""
         lv = self.query_one("#sessions-list", ListView)
@@ -229,7 +250,7 @@ class SessionListPanel(Vertical):
 
     def action_new_chat(self) -> None:
         self.app.new_chat()
-        self.post_message(self.NewChat())
+        self.post_message(self.ChatOpened())
 
     def action_close(self) -> None:
         if self._renaming_id is not None:

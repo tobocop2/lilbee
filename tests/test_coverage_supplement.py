@@ -1626,9 +1626,10 @@ class TestChatScreenFocusBranches:
         screen._insert_mode = False
         screen._chat_log = mock.MagicMock()
         screen.refresh_model_bar = mock.MagicMock()  # type: ignore[method-assign]
+        screen.set_focus = mock.MagicMock()  # type: ignore[method-assign]
         with mock.patch("lilbee.runtime.splash.dismiss"):
             screen.on_show()
-        screen._chat_log.focus.assert_called_once()
+        screen.set_focus.assert_called_once_with(screen._chat_log)
 
     def test_on_show_insert_mode_re_enters_input(self) -> None:
         from lilbee.cli.tui.screens.chat import ChatScreen

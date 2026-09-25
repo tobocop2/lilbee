@@ -393,6 +393,111 @@ async def test_a_filter_typed_in_the_same_burst_as_enter_picks_the_row(sessions,
         assert chat._chat_input.value == "hello"
 
 
+@pytest.mark.parametrize(
+    ("view", "cursor_key"),
+    [("Chat", "down"), ("Sessions", "down"), ("Sessions", "j")],
+    ids=["drawer_down", "tab_down", "tab_j"],
+)
+async def test_enter_in_the_same_burst_as_a_cursor_key_resumes_the_moved_to_row(
+    sessions, view, cursor_key
+):
+    """Enter resumes the row the cursor key typed before it moved to, not the top row."""
+    wanted = _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        if view == "Chat":
+            await pilot.press("ctrl+o")
+        else:
+            app.switch_view(view)
+            assert await wait_until(pilot, lambda: bool(app.screen.query("#sessions-list")))
+        rows = app.screen.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        assert rows.highlighted_child.meta.title == "Alpha", "the cursor key must change the pick"
+        send_key_burst(app, cursor_key, "enter")
+        await wait_until(pilot, lambda: chat.session_id == wanted)
+        assert chat.session_id == wanted
+
+
+async def test_a_readiness_change_just_before_the_drawer_opens_leaves_focus_in_the_drawer(
+    sessions,
+):
+    """A focus restore that the chat screen asks for must not land after the drawer takes focus.
+
+    The readiness answer arrives from a worker thread while the app is still busy
+    opening the drawer, so both happen inside one step of the app's queue.
+    """
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+
+        async def readiness_lands_while_the_drawer_opens() -> None:
+            app.chat_is_ready = False
+            app.chat_is_ready = True
+            await app.action_toggle_sessions()
+
+        app.call_later(readiness_lands_while_the_drawer_opens)
+        assert await wait_until(pilot, lambda: bool(chat.query(SessionsDrawer)))
+        await pilot.pause()
+        field = chat.query_one("#sessions-filter", Input)
+        assert field.has_focus
+
+
+async def test_enter_after_a_key_that_breaks_the_filter_lets_the_app_exit(sessions, monkeypatch):
+    """Enter waits for the filter to catch up; a filter whose queue has stopped must not hang it."""
+    _seed(sessions, "Torque specs")
+
+    def broken_insert(self, text: str) -> None:
+        raise RuntimeError("the filter broke")
+
+    app = LilbeeApp()
+    with pytest.raises(RuntimeError, match="the filter broke"):
+        async with app.run_test(size=(120, 40)) as pilot:
+            await _open_drawer(app, pilot)
+            monkeypatch.setattr(Input, "insert_text_at_cursor", broken_insert)
+            send_key_burst(app, "x", "enter")
+            await wait_until(pilot, lambda: not app.is_running)
+
+
+async def test_enter_on_a_session_deleted_elsewhere_says_so_and_refreshes(sessions):
+    """Another process deleting the highlighted session must not crash the TUI on Enter."""
+    gone = _seed(sessions, "Gone")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        drawer = await _open_drawer(app, pilot)
+        rows = drawer.query_one("#sessions-list", ListView)
+        assert await wait_until(pilot, lambda: rows.highlighted_child is not None)
+        sessions.delete(gone)
+        with patch.object(app, "notify") as notify:
+            await pilot.press("enter")
+            await pilot.pause()
+        assert app.is_running
+        assert chat.session_id != gone
+        notify.assert_called_once_with(msg.SESSIONS_GONE, severity="warning")
+        assert await wait_until(pilot, lambda: not drawer.query(SessionRow))
+
+
+async def test_enter_uses_the_filter_text_before_the_list_has_caught_up(sessions):
+    """Enter resumes by the text in the filter box even when the list has not re-rendered for it.
+
+    Built deterministically: the filter changes with its Changed message held back,
+    which is the state a burst leaves when Enter overtakes the list's re-render.
+    """
+    wanted = _seed(sessions, "Gamma")
+    _seed(sessions, "Alpha")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        drawer = await _open_drawer(app, pilot)
+        field = drawer.query_one("#sessions-filter", Input)
+        with field.prevent(Input.Changed):
+            field.value = "Gamma"
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: chat.session_id == wanted)
+
+
 async def test_enter_resumes_after_filtering(sessions):
     """Enter must resume the row a filter narrowed to, not just an unfiltered list."""
     _seed(sessions, "Alpha")
@@ -633,6 +738,8 @@ async def test_actions_noop_on_empty_list(sessions):
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
         panel = drawer.query_one(SessionListPanel)
+        # The keys below only reach the panel while focus is inside it.
+        assert drawer.query_one("#sessions-filter", Input).has_focus
         await pilot.press("ctrl+r")  # rename with nothing selected
         await pilot.press("ctrl+d")  # delete with nothing selected
         await pilot.press("enter")  # resume with nothing selected

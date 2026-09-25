@@ -2,7 +2,7 @@
 
 Non-modal, mirroring the Fleet drawer. Docked left so the screen underneath
 reflows to the right and the chat prompt keeps working while the drawer is open.
-The drawer closes when the embedded panel resumes, starts a new chat, or asks to close.
+The drawer closes when the embedded panel opens a chat or asks to close.
 """
 
 from __future__ import annotations
@@ -47,8 +47,7 @@ class SessionsDrawer(Drawer):
         if self._host is not None:
             self._host.remove_class(_HOST_OPEN_CLASS)
 
-    @on(SessionListPanel.Resumed)
-    @on(SessionListPanel.NewChat)
+    @on(SessionListPanel.ChatOpened)
     @on(SessionListPanel.CloseRequested)
     def _on_leave(self, _event: Message) -> None:
         self.remove()

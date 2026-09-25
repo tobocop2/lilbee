@@ -363,8 +363,9 @@ class ChatScreen(Screen[None]):
         Binding("f6", "focus_model_bar", "Model bar", show=False, priority=True),
         # NORMAL mode walks sideways into the role strip. h / l rather than the
         # whole of hjkl: the transcript owns j / k for scrolling. The NORMAL
-        # mode letters that move focus are priority bindings so focus moves in
-        # the key's own step and the keys typed after them follow it.
+        # mode keys that move focus (h, l, i, a, o and Enter) are priority
+        # bindings, so focus moves in the key's own step and the keys typed
+        # after them follow it.
         Binding("h", "enter_model_strip(-1)", "Prev role", show=False, priority=True),
         Binding("l", "enter_model_strip(1)", "Next role", show=False, priority=True),
         Binding("i", "insert_mode", "Insert", show=False, priority=True),
@@ -491,7 +492,7 @@ class ChatScreen(Screen[None]):
             if self._insert_mode:
                 self._enter_insert_mode()
             else:
-                self._chat_log.focus()
+                self.set_focus(self._chat_log)
 
     def _embedding_ready(self) -> bool:
         """Quick check if the embedding model resolves (no network calls)."""
@@ -559,7 +560,7 @@ class ChatScreen(Screen[None]):
         """In INSERT mode, type a printable key into the prompt when focus sits elsewhere."""
         inp = self._chat_input
         if self._insert_mode and not inp.has_focus and event.is_printable and event.character:
-            inp.focus()
+            self.set_focus(inp)
             inp.insert(event.character)
             event.prevent_default()
             event.stop()
@@ -2289,7 +2290,7 @@ class ChatScreen(Screen[None]):
             else:
                 inp.placeholder = msg.CHAT_INPUT_PLACEHOLDER_DEFAULT
             if not busy and self._insert_mode:
-                inp.focus()
+                self.set_focus(inp)
 
     def watch_swapping_model(self, swapping: bool) -> None:
         self._apply_input_busy_state()
@@ -2532,7 +2533,7 @@ class ChatScreen(Screen[None]):
         inside = focused is not None and drawer in focused.ancestors_with_self
         toggles = drawer.query(".dev-toggle")
         if not inside and toggles:
-            toggles.first().focus()
+            self.set_focus(toggles.first())
             return
         self.screen.focus_next()
 
