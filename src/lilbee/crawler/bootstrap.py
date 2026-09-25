@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
-import platform
 import re
 import sys
 from pathlib import Path
@@ -43,14 +42,12 @@ _CHROMIUM_COMPONENT = "chromium"
 # Playwright's name for the headless shell in browsers.json, and its cache directory prefix.
 _HEADLESS_SHELL_BROWSER = "chromium-headless-shell"
 _HEADLESS_SHELL_DIR_PREFIX = "chromium_headless_shell-"
-# (sys.platform, lowercased machine) -> path of the shell executable inside its cache directory.
-_HEADLESS_SHELL_LAYOUT: dict[tuple[str, str], tuple[str, str]] = {
-    ("darwin", "arm64"): ("chrome-headless-shell-mac-arm64", "chrome-headless-shell"),
-    ("darwin", "x86_64"): ("chrome-headless-shell-mac-x64", "chrome-headless-shell"),
-    ("linux", "x86_64"): ("chrome-headless-shell-linux64", "chrome-headless-shell"),
-    ("linux", "aarch64"): ("chrome-linux", "headless_shell"),
-    ("win32", "amd64"): ("chrome-headless-shell-win64", "chrome-headless-shell.exe"),
-}
+# The file Playwright writes into a browser directory once its install has finished.
+_INSTALL_COMPLETE_MARKER = "INSTALLATION_COMPLETE"
+# File names Playwright gives the headless shell executable on each platform.
+_HEADLESS_SHELL_NAMES = frozenset(
+    {"chrome-headless-shell", "chrome-headless-shell.exe", "headless_shell"}
+)
 
 # A Chromium unpack runs into the minutes on a slow link, so a caller queued
 # behind one waits well past any normal request timeout before giving up.
@@ -122,14 +119,25 @@ def _expected_chromium_revision() -> str | None:
     return None
 
 
+def _shell_in(directory: Path) -> Path | None:
+    """The headless shell executable under *directory*, if Playwright finished installing it."""
+    if not (directory / _INSTALL_COMPLETE_MARKER).is_file():
+        return None
+    matches = (
+        path
+        for path in sorted(directory.rglob("*"))
+        if path.name in _HEADLESS_SHELL_NAMES and path.is_file() and os.access(path, os.X_OK)
+    )
+    return next(matches, None)
+
+
 def headless_shell_executable() -> Path | None:
     """The headless shell binary at the revision Playwright expects, or None if absent.
 
     With the revision unknown, any installed revision counts.
     """
-    layout = _HEADLESS_SHELL_LAYOUT.get((sys.platform, platform.machine().lower()))
     root = _browsers_cache_path()
-    if layout is None or not root.is_dir():
+    if not root.is_dir():
         return None
     expected = _expected_chromium_revision()
     if expected is None:
@@ -137,8 +145,8 @@ def headless_shell_executable() -> Path | None:
     else:
         candidates = [root / f"{_HEADLESS_SHELL_DIR_PREFIX}{expected}"]
     for directory in candidates:
-        executable = directory.joinpath(*layout)
-        if executable.is_file():
+        executable = _shell_in(directory)
+        if executable is not None:
             return executable
     return None
 
