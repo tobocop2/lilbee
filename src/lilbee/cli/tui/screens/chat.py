@@ -169,6 +169,9 @@ _CRAWL_FLAG_RENDER = "--render"
 # event loop.
 _MODEL_SWAP_WORKER = "model_swap_reset"
 
+# The NORMAL / INSERT mode keys (esc, i, a, o, enter). A focused drawer keeps them.
+_MODE_ACTIONS = frozenset({"enter_normal_mode", "insert_mode", "insert_or_send"})
+
 
 def _engine_status_text(snapshot: WarmProgress) -> str:
     """One status line for an engine-load snapshot: byte progress or the phase."""
@@ -579,12 +582,12 @@ class ChatScreen(Screen[None]):
     def _leaves_normal_mode(self, action: str) -> bool:
         """True when a NORMAL mode key should return to INSERT.
 
-        The prompt and a drawer keep their own keys. A focused Select or
+        The prompt keeps its own keys. A focused Select or
         model-strip member keeps Enter; asked of the bar rather than of a list of
         widget types, so Enter on a mode pill switches the mode instead of
         dropping to INSERT.
         """
-        if self._insert_mode or self._chat_input.has_focus or self._focus_in_drawer():
+        if self._insert_mode or self._chat_input.has_focus:
             return False
         if action == "insert_or_send":
             return not (isinstance(self.focused, Select) or self._focus_in_model_bar())
@@ -2167,8 +2170,11 @@ class ChatScreen(Screen[None]):
         """
         if action == "cancel_stream":
             return self.streaming and not self.stopping and self._insert_mode
-        if action in ("insert_mode", "insert_or_send"):
-            return self._leaves_normal_mode(action)
+        if action in _MODE_ACTIONS:
+            # A focused drawer keeps the mode keys for its own bindings.
+            if self._focus_in_drawer():
+                return False
+            return action == "enter_normal_mode" or self._leaves_normal_mode(action)
         if action == "enter_model_strip":
             # NORMAL mode parks the cursor on the transcript, and that is the
             # only place these letters are free. Stated as where they DO apply,
@@ -2503,8 +2509,8 @@ class ChatScreen(Screen[None]):
         self._preview_next()
 
     def _focus_in_drawer(self) -> bool:
-        """True when keyboard focus is inside an open drawer, so Enter / i / a / o
-        reach that drawer's own controls instead of entering insert mode.
+        """True when keyboard focus is inside an open drawer, so Esc / Enter / i / a / o
+        reach that drawer's own controls instead of switching the chat mode.
 
         Asked of the Drawer base rather than one drawer class: a drawer that had
         to name itself here would otherwise swallow its own Enter until someone

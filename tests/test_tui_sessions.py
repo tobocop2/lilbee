@@ -113,11 +113,11 @@ async def test_drawer_opens_lists_and_insets_bars(sessions):
 async def test_drawer_toggle_closes_and_restores_bars(sessions):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
+        await _open_drawer(app, pilot)
         await app.action_toggle_sessions()
         await pilot.pause()
-        assert not screen.query(SessionsDrawer)
-        assert not screen.has_class("sessions-open")
+        assert not app.screen.query(SessionsDrawer)
+        assert not app.screen.has_class("sessions-open")
 
 
 async def test_drawer_filters_by_title(sessions):
@@ -266,11 +266,11 @@ async def test_resume_from_drawer_loads_and_closes(sessions):
     session_id = _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
+        await _open_drawer(app, pilot)
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == session_id
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 @pytest.mark.parametrize("count", [1, 2])
@@ -280,8 +280,8 @@ async def test_clicking_a_row_resumes_it(sessions, count):
         _seed(sessions, f"Session {i}")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
-        row = await _laid_out(pilot, screen.query(SessionRow)[0])
+        drawer = await _open_drawer(app, pilot)
+        row = await _laid_out(pilot, drawer.query(SessionRow)[0])
         clicked_id = row.meta.id
         landed = await pilot.click(row)
         await pilot.pause()
@@ -289,7 +289,7 @@ async def test_clicking_a_row_resumes_it(sessions, count):
         # which is what made this class take eight rounds to name.
         assert landed, "the click never reached the session row"
         assert app.chat_screen().session_id == clicked_id
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
@@ -303,11 +303,11 @@ async def test_enter_resumes_while_chat_is_in_normal_mode(sessions):
     async with app.run_test(size=(120, 40)) as pilot:
         chat = await await_chat(app, pilot)
         chat._insert_mode = False
-        screen = await _open_drawer(app, pilot)
+        await _open_drawer(app, pilot)
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == session_id
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 async def _leave_drawer(pilot, chat, key: str) -> None:
@@ -697,11 +697,11 @@ async def test_enter_resumes_after_filtering(sessions):
     wanted = _seed(sessions, "Gamma")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
+        drawer = await _open_drawer(app, pilot)
         for ch in "Gamma":
             await pilot.press(ch)
         await pilot.pause()
-        assert len(screen.query(SessionRow)) == 1
+        assert len(drawer.query(SessionRow)) == 1
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == wanted
@@ -716,13 +716,13 @@ async def test_enter_on_the_focused_list_resumes(sessions):
     session_id = _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
-        screen.query_one("#sessions-list", ListView).focus()
+        drawer = await _open_drawer(app, pilot)
+        drawer.query_one("#sessions-list", ListView).focus()
         await pilot.pause()
         await pilot.press("enter")
         await pilot.pause()
         assert app.chat_screen().session_id == session_id
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 async def test_new_chat_from_drawer(sessions):
@@ -732,11 +732,11 @@ async def test_new_chat_from_drawer(sessions):
         chat = await await_chat(app, pilot)
         chat.resume_session(session_id)
         await pilot.pause()
-        screen = await _open_drawer(app, pilot)
+        await _open_drawer(app, pilot)
         await pilot.press("ctrl+n")
         await pilot.pause()
         assert chat.session_id is None
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 async def test_rename_in_drawer(sessions):
@@ -758,12 +758,46 @@ async def test_rename_cancel_leaves_title(sessions):
     async with app.run_test(size=(120, 40)) as pilot:
         drawer = await _open_drawer(app, pilot)
         field = await _start_rename(pilot, drawer, "Keep me")
-        drawer.query_one(SessionListPanel).action_close()  # cancels the rename, does not close
+        await pilot.press("escape")  # cancels the rename, does not close
         await pilot.pause()
         assert field.placeholder == msg.SESSIONS_FILTER_PLACEHOLDER
         assert field.value == ""
         assert sessions.get(session_id).meta.title == "Keep me"
-        assert drawer.is_mounted
+        assert app.screen.query(SessionsDrawer)
+
+
+async def test_ctrl_d_in_a_rename_deletes_a_character(sessions):
+    """While renaming, ctrl+d edits the name instead of asking to delete the session."""
+    session_id = _seed(sessions, "Keep me")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        field = await _start_rename(pilot, drawer, "Keep me")
+        await pilot.press("home", "ctrl+d")
+        await pilot.pause()
+        assert not isinstance(app.screen, ConfirmDialog)
+        assert field.value == "eep me"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert sessions.get(session_id).meta.title == "eep me"
+
+
+async def test_finishing_a_rename_of_a_deleted_session_refreshes_the_list(sessions):
+    """A session deleted during its rename leaves the list on Enter; the app keeps running."""
+    _seed(sessions, "Keep me")
+    doomed = _seed(sessions, "Doomed")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        field = await _start_rename(pilot, drawer, "Doomed")
+        sessions.delete(doomed)
+        with patch.object(app, "notify") as mock_notify:
+            await pilot.press("x", "enter")
+            await pilot.pause()
+        mock_notify.assert_called_once_with(msg.SESSIONS_RENAME_GONE, severity="warning")
+        assert app.is_running
+        assert field.placeholder == msg.SESSIONS_FILTER_PLACEHOLDER
+        assert [row.meta.title for row in drawer.query(SessionRow)] == ["Keep me"]
 
 
 async def test_delete_confirmed_removes_session(sessions):
@@ -818,20 +852,20 @@ async def test_close_drawer_with_escape(sessions):
     _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
+        await _open_drawer(app, pilot)
         await pilot.press("escape")
         await pilot.pause()
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 async def test_panel_close_request_removes_drawer(sessions):
     _seed(sessions, "Torque specs")
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
-        screen = await _open_drawer(app, pilot)
-        screen.query_one(SessionListPanel).action_close()
+        drawer = await _open_drawer(app, pilot)
+        drawer.query_one(SessionListPanel).action_close()
         await pilot.pause()
-        assert not screen.query(SessionsDrawer)
+        assert not app.screen.query(SessionsDrawer)
 
 
 async def test_active_session_gets_the_filled_dot(sessions):
