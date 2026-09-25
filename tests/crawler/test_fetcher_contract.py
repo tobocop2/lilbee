@@ -75,7 +75,6 @@ def _stub_chromium(monkeypatch, tmp_path: Path):
     shell = tmp_path / "chrome-headless-shell"
     monkeypatch.setattr("lilbee.crawler.bootstrap.headless_shell_executable", lambda: shell)
     monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
-    monkeypatch.delenv("CHROME", raising=False)
 
 
 # Every backend / mode lives in this table; each must pass the suite below.
