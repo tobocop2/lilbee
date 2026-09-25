@@ -1,13 +1,13 @@
 {
-  "version": "0.6.90b446",
+  "version": "0.6.90b447",
   "systems": {
     "x86_64-linux": {
       "asset": "lilbee-linux-x86_64",
-      "sha256": "cd361f4baf90b2897394ac6447a1739acb9e1a8031de3c0c73de21b85fecdacf"
+      "sha256": "c9b340fafb71f69b3c7b726e64f565c5a88c58483e0cfac651f6114b0b3a6bd3"
     },
     "aarch64-darwin": {
       "asset": "lilbee-macos-arm64",
-      "sha256": "5c23e698ff7264fb3da15223bf6eb90ef5afe0aaa8e06050e15163d2dcc79f74"
+      "sha256": "4048f19f7d24ebd24b8f8288ab4fad0458beb14f4d886bbdbdd312d2452e50e8"
     }
   }
 }
