@@ -102,7 +102,7 @@ engine = ["lilbee-engine>=0.6.90b1"]
 litellm = ["litellm>=1.84.0,<1.99"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
-crawler = ["crawlberg>=1.7.1", "playwright>=1.61.0"]
+crawler = ["crawlberg==1.8.0+lilbee.56d9989", "playwright>=1.61.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
@@ -136,12 +136,21 @@ build-backend = "hatchling.build"
 packages = ["src/lilbee"]
 
 [tool.uv]
+# Temporary preview pin: crawlberg 1.8.0 is not on PyPI yet, so this points at
+# the fork's pre-release wheels until it is.
+[[tool.uv.index]]
+name = "crawlberg-preview"
+url = "https://github.com/tobocop2/crawlberg/releases/expanded_assets/v1.8.0%2Blilbee.56d9989"
+format = "flat"
+explicit = true
+
 # Dev resolves the bundled engine from the in-repo wheel package; CI fills its
 # bin/ with the self-contained llama-server + llama-swap + gguf-parser before
 # building. Release installs (`pip install lilbee`) resolve `lilbee-engine` from
 # the index instead -- this source override is workspace metadata, not published deps.
 [tool.uv.sources]
 lilbee-engine = { path = "packaging/engine-wheel" }
+crawlberg = { index = "crawlberg-preview" }
 
 # `uv pip install <checkout>[engine] --extra-index-url ...` applies the source
 # above no matter the specifier (uv drops version bounds on sourced packages),
