@@ -28,6 +28,7 @@ from textual.dom import DOMNode
 from textual.message import Message
 from textual.reactive import reactive
 from textual.screen import Screen
+from textual.widget import Widget
 from textual.widgets import Footer, Markdown, Select, Static
 
 # Cancellation check for @work(thread=True) workers. Import at module level
@@ -522,6 +523,10 @@ class ChatScreen(Screen[None]):
     def focus_prompt(self) -> None:
         """Focus the chat input in INSERT mode so the next keys type a prompt."""
         self._enter_insert_mode()
+
+    def default_focus_target(self) -> Widget:
+        """This mode's own focus target: the prompt in INSERT, the transcript in NORMAL."""
+        return self._chat_input if self._insert_mode else self._chat_log
 
     def action_focus_model_bar(self) -> None:
         """F6: put the cursor on the model strip. Left / Right walk it from there."""

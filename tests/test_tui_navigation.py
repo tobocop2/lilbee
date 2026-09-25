@@ -1646,6 +1646,36 @@ async def test_a_drawer_opened_with_nothing_focused_still_closes():
         assert chat.focused is None or chat.focused.is_attached
 
 
+async def test_closing_the_fleet_drawer_in_normal_mode_falls_back_off_the_prompt():
+    """The drawer's return target is the prompt, recorded while INSERT was
+    active. Chat then switches to NORMAL mode while the drawer stays open, so
+    the prompt can no longer take focus. Closing the drawer must fall back to
+    NORMAL mode's own target (the transcript) rather than whatever widget the
+    drawer's removal happens to leave focus on.
+    """
+    from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(app, pilot)
+        await pilot.press("ctrl+g")
+        assert await pump_until(pilot, lambda: bool(chat.query(FleetDrawer)))
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: chat.focused is chat._chat_log)
+        drawer = chat.query_one(FleetDrawer)
+        target = next(widget for widget in drawer.query("*") if widget.focusable)
+        landed = await pilot.click(target)
+        assert landed, "the click never reached a focusable drawer widget"
+        assert await pump_until(pilot, chat._focus_in_drawer)
+        await pilot.press("escape")
+        assert await pump_until(pilot, lambda: not chat.query(FleetDrawer))
+        assert chat.focused is chat._chat_log, f"focus went to {chat.focused!r}"
+        await pilot.press("enter")
+        await pilot.pause()
+        assert chat._insert_mode
+        assert chat._chat_input.has_focus
+
+
 async def test_enter_on_a_mode_pill_acts_from_normal_mode_too():
     """Walking to a pill must be able to act, not only to arrive.
 
