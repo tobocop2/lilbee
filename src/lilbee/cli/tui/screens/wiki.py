@@ -13,10 +13,12 @@ if TYPE_CHECKING:
     from lilbee.runtime.progress import DetailedProgressCallback, ProgressEvent
     from lilbee.wiki.browse import WikiPageInfo
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.content import Content
 from textual.screen import Screen
 from textual.timer import Timer
 from textual.widgets import Input, Markdown, Static, Tree
@@ -81,18 +83,16 @@ def _format_page_header(
     source_count: int,
     created_at: str,
     faithfulness: float | None,
-) -> str:
-    """Build a header string for the content pane."""
-    parts = [f"[bold]{title}[/]"]
-    parts.append(f"  [dim]{page_type}[/]")
+) -> Content:
+    """Build the header line for the content pane, with the title as literal text."""
+    parts: list[tuple[str, str]] = [(title, "bold"), (f"  {page_type}", "dim")]
     if source_count > 0:
-        parts.append(f"  [dim]{source_count} sources[/]")
+        parts.append((f"  {source_count} sources", "dim"))
     if created_at:
-        parts.append(f"  [dim]{created_at}[/]")
+        parts.append((f"  {created_at}", "dim"))
     if faithfulness is not None:
-        pct = int(faithfulness * 100)
-        parts.append(f"  [dim]faithfulness {pct}%[/]")
-    return "".join(parts)
+        parts.append((f"  faithfulness {int(faithfulness * 100)}%", "dim"))
+    return Content.assemble(*parts)
 
 
 def _short_label(slug_part: str) -> str:
@@ -100,14 +100,14 @@ def _short_label(slug_part: str) -> str:
     return slug_part.replace("-", " ").replace("_", " ").strip()
 
 
-def _breadcrumb_for_slug(slug: str, title: str) -> str:
-    """Build a dim-themed breadcrumb string: chapter > section > page."""
+def _breadcrumb_for_slug(slug: str, title: str) -> Content:
+    """Build the breadcrumb chapter > section > page, with every part as literal text."""
     parts = slug.split("/")
     if len(parts) <= 1:
-        return ""
-    display_parts = [_short_label(p) for p in parts[:-1]]
-    display_parts.append(title)
-    return " [dim]>[/] ".join(display_parts)
+        return Content("")
+    display_parts = [Content(_short_label(p)) for p in parts[:-1]]
+    display_parts.append(Content(title))
+    return Content.assemble(" ", Content.styled(">", "dim"), " ").join(display_parts)
 
 
 class WikiScreen(Screen[None]):
@@ -256,7 +256,7 @@ class WikiScreen(Screen[None]):
         if not pages and not stubs and not shortcuts:
             # Pages exist but none match: leave the content pane untouched
             # rather than rendering the empty-wiki state.
-            tree.root.add_leaf(msg.WIKI_NO_MATCHES.format(filter=filter_text))
+            tree.root.add_leaf(Text(msg.WIKI_NO_MATCHES.format(filter=filter_text)))
             return
 
         self._populate_tree(tree, pages, shortcuts)
@@ -304,7 +304,8 @@ class WikiScreen(Screen[None]):
             return
         group = tree.root.add(msg.WIKI_STUBS_HEADING, expand=expand)
         for stub in stubs:
-            group.add_leaf(msg.WIKI_STUB_LABEL.format(title=stub.label), data=stub.wiki_slug)
+            label = Text.assemble((stub.label, "dim"), " ", (msg.WIKI_STUB_SUFFIX, "dim italic"))
+            group.add_leaf(label, data=stub.wiki_slug)
             self._page_slugs.append(stub.wiki_slug)
 
     def _insert_page(
@@ -322,7 +323,7 @@ class WikiScreen(Screen[None]):
         """
         parts = page.slug.split("/")
         if len(parts) <= 1:
-            group_node.add_leaf(page.title, data=page.slug)
+            group_node.add_leaf(Text(page.title), data=page.slug)
             return
 
         # Skip the leading page-type component since the group node represents it.
@@ -335,12 +336,12 @@ class WikiScreen(Screen[None]):
 
         if leaf_part == _INDEX_STEM:
             # An inner-node index.md file: show its title on the enclosing branch.
-            node.label = page.title
+            node.label = Text(page.title)
             node.data = page.slug
             return
 
         label = _short_label(leaf_part)
-        node.add_leaf(page.title if page.title else label, data=page.slug)
+        node.add_leaf(Text(page.title or label), data=page.slug)
 
     def _show_detail(self, markdown: str) -> None:
         """Clear the breadcrumb and header rows, then render *markdown* alone."""
@@ -677,7 +678,7 @@ def _find_or_add_branch(
     """
     node = branches.get(path)
     if node is None:
-        node = parent.add(_short_label(label_part), expand=True)
+        node = parent.add(Text(_short_label(label_part)), expand=True)
         branches[path] = node
     return node
 

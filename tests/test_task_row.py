@@ -161,6 +161,23 @@ async def test_update_blanks_stale_detail_on_done_keeps_it_on_failed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_bracketed_detail_renders_as_written() -> None:
+    """Sync details carry file names; ``[/y]`` and a backslash before ``[`` stay literal."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        host = app.query_one("#host", VerticalScroll)
+        row = TaskRow("t1")
+        await host.mount(row)
+        for _ in range(3):
+            await pilot.pause()
+        detail = "Syncing C:\\docs\\x[/y].md [red]note"
+        row.update(_task(status=TaskStatus.ACTIVE, progress=42.0, detail=detail), 0)
+        await pilot.pause()
+        rendered = str(row.query_one("#row-meta").render())
+    assert rendered == f"{detail}  42.0%"
+
+
+@pytest.mark.asyncio
 async def test_update_pulse_toggles_on_active_across_ticks() -> None:
     app = _Host()
     async with app.run_test() as pilot:

@@ -148,6 +148,30 @@ async def test_skipped_role_shows_not_downloaded_note(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["local/[b]eta-model.gguf", "org/q[red]x.gguf"])
+async def test_skipped_note_shows_a_bracketed_model_name_as_written(monkeypatch, model):
+    """The skipped model comes from the configured ref; ``[b]`` must not restyle it."""
+    from dataclasses import replace
+
+    from textual.widgets import Static
+
+    from lilbee.app.placement import SkippedRole
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.roles import WorkerRole
+
+    view = replace(
+        _make_view_with_skipped(), skipped_not_installed=(SkippedRole(WorkerRole.CHAT, model),)
+    )
+    monkeypatch.setattr(fbm, "get_placement", lambda: view)
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        rendered = str(app.screen.query_one("#placement-skipped", Static).render())
+    assert f"chat: {fbm._clean_model_name(model)} not downloaded" in rendered
+
+
+@pytest.mark.asyncio
 async def test_no_skipped_note_when_all_models_installed(monkeypatch):
     """With every configured model installed the note stays hidden."""
     from textual.widgets import Static
@@ -713,6 +737,107 @@ async def test_apply_raises_placement_error_from_spec(monkeypatch):
         await pilot.pause()
 
     assert any("needs at least one GPU" in n or "GPU" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_preview_placement_error_notifies_the_bracketed_message(monkeypatch):
+    """action_preview's PlacementError notification carries a bracketed message intact."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **_k: notes.append(msg))
+
+        def _boom() -> object:
+            raise PlacementError("device [0] has [bold]red[/bold] free")
+
+        monkeypatch.setattr(body, "_spec_from_editor", _boom)
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+
+    assert any("device [0] has [bold]red[/bold] free" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_apply_placement_error_notifies_the_bracketed_message(monkeypatch):
+    """action_apply's PlacementError notification carries a bracketed message intact."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+    from lilbee.providers.fleet.placement_spec import PlacementError
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **_k: notes.append(msg))
+
+        def _boom() -> object:
+            raise PlacementError("spec for [role] is invalid")
+
+        monkeypatch.setattr(body, "_spec_from_editor", _boom)
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+
+    assert any("spec for [role] is invalid" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_preview_worker_error_notifies_the_bracketed_message(monkeypatch):
+    """_preview_worker's exception notification carries a bracketed message intact."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+
+    def _boom(spec):  # type: ignore[no-untyped-def]
+        raise RuntimeError("preview failed for org/model[q4].gguf")
+
+    monkeypatch.setattr(fbm, "preview_placement", _boom)
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **_k: notes.append(msg))
+        await pilot.press("ctrl+r")
+        await pilot.pause()
+        await pilot.pause()
+
+    assert any("preview failed for org/model[q4].gguf" in n for n in notes)
+
+
+@pytest.mark.asyncio
+async def test_change_placement_error_notifies_the_bracketed_message(monkeypatch):
+    """_change_placement's exception notification carries a bracketed message intact."""
+    from lilbee.cli.tui.widgets import fleet_body as fbm
+
+    monkeypatch.setattr(fbm, "get_placement", lambda: _make_view())
+
+    def _boom(spec):  # type: ignore[no-untyped-def]
+        raise RuntimeError("apply failed for C:\\models\\[draft].gguf")
+
+    monkeypatch.setattr(fbm, "set_placement", _boom)
+    notes: list[str] = []
+
+    app = FleetTestApp()
+    async with app.run_test(size=(140, 44)) as pilot:
+        await pilot.pause()
+        body = app.screen.query_one("FleetBody")
+        monkeypatch.setattr(body, "notify", lambda msg, **_k: notes.append(msg))
+        await pilot.press("ctrl+s")
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+
+    assert any("apply failed for C:\\models\\[draft].gguf" in n for n in notes)
 
 
 @pytest.mark.asyncio

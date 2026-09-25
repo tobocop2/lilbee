@@ -16,6 +16,7 @@ from types import FrameType
 from typing import TYPE_CHECKING, Any, TypeVar
 
 import typer
+from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import (
@@ -24,7 +25,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output
+from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.crawler import CrawlerBrowserError, bootstrap_chromium, chromium_installed
@@ -65,7 +66,7 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     context = _download_tls_context()
     dest_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     dest = dest_dir / filename
-    console.print(f"Downloading {url}")
+    console.print(f"Downloading {url}", markup=False, soft_wrap=True)
     last_exc: BaseException | None = None
     # Any exit other than a successful return drops the temp dir, so a failed
     # download never leaves an empty/partial dir behind.
@@ -79,7 +80,9 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
                 return dest
             except (OSError, urllib.error.URLError) as exc:
                 last_exc = exc
-                console.print(f"download attempt {attempt + 1} failed: {exc!r}")
+                console.print(
+                    f"download attempt {attempt + 1} failed: {exc!r}", markup=False, soft_wrap=True
+                )
         raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
     except BaseException:
         shutil.rmtree(dest_dir, ignore_errors=True)
@@ -134,7 +137,7 @@ def _self_check_emit_failure(error: str) -> None:
     if cfg.json_mode:
         json_output({"ok": False, "error": error})
     else:
-        console.print(f"[{theme.ERROR}]SELF-CHECK FAILED:[/{theme.ERROR}] {error}")
+        print_prefixed(console, "SELF-CHECK FAILED: ", error, style=theme.ERROR)
 
 
 def _resolved_provider_kwargs() -> dict[str, Any]:
@@ -234,7 +237,7 @@ def _self_check_leg(
         if model_path is None:
             model_path = _download_self_check_model(repo, filename)
             download_dir = model_path.parent
-        console.print(f"Loading {label} model {model_path}")
+        console.print(Text.assemble(f"Loading {label} model ", str(model_path)), soft_wrap=True)
         result = check(model_path)
     except Exception as exc:
         _self_check_emit_failure(repr(exc))
@@ -342,9 +345,9 @@ def self_check_cmd(
             payload["embedding_dims"] = embedding_dims
         json_output(payload)
     else:
-        console.print(f"Chat response: {text!r}")
+        console.print(f"Chat response: {text!r}", markup=False)
         if embedding_dims is not None:
-            console.print(f"Embedding dims: {embedding_dims}")
+            console.print(f"Embedding dims: {embedding_dims}", markup=False)
         console.print(
             f"Provider: num_ctx={provider_kwargs['num_ctx']} "
             f"num_ctx_max={provider_kwargs['num_ctx_max']} "
@@ -353,7 +356,8 @@ def self_check_cmd(
             f"kv_cache_type={provider_kwargs['kv_cache_type']} "
             f"n_gpu_layers={provider_kwargs['n_gpu_layers']} "
             f"main_gpu={provider_kwargs['main_gpu']} "
-            f"gpu_devices={provider_kwargs['gpu_devices']}"
+            f"gpu_devices={provider_kwargs['gpu_devices']}",
+            markup=False,
         )
         console.print(f"[{theme.ACCENT}]SELF-CHECK PASSED[/{theme.ACCENT}]")
 
@@ -417,9 +421,11 @@ def self_check_extras_cmd() -> None:
                 if ok
                 else f"[{theme.ERROR}]MISSING[/{theme.ERROR}]"
             )
-            console.print(f"  {name}: {tag}")
+            console.print(f"  {name}: {tag}")  # style-check: allow-markup -- fixed extra names
             if not ok:
-                console.print(f"    {results.get(f'{name}_error', '')}")
+                console.print(
+                    f"    {results.get(f'{name}_error', '')}", markup=False, soft_wrap=True
+                )
 
     if failed:
         raise typer.Exit(1)
@@ -449,13 +455,14 @@ def token(
             json_output({"error": f"Could not read server.json: {exc}"})
         else:
             console.print(
-                f"[{theme.ERROR}]Error:[/{theme.ERROR}] Could not read server.json: {exc}"
+                Text.assemble(("Error: ", theme.ERROR), f"Could not read server.json: {exc}"),
+                soft_wrap=True,
             )
         raise SystemExit(1) from None
     if cfg.json_mode:
         json_output({"token": tok})
         return
-    console.print(tok)
+    console.print(tok, markup=False, soft_wrap=True)
 
 
 def login() -> None:

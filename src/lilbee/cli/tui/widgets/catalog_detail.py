@@ -44,12 +44,21 @@ class CatalogDetailDrawer(Vertical):
     DEFAULT_CSS: ClassVar[str] = _CSS_FILE.read_text(encoding="utf-8") if _CSS_FILE.exists() else ""
 
     def compose(self) -> ComposeResult:
-        yield Static(_EMPTY_HINT, id="catalog-detail-name", classes="catalog-detail-name")
+        yield Static(
+            _EMPTY_HINT, id="catalog-detail-name", classes="catalog-detail-name", markup=False
+        )
         yield Static("", id="catalog-detail-fit", classes="catalog-detail-fit")
         yield Static("", id="catalog-detail-sizes", classes="catalog-detail-sizes")
-        yield Static("", id="catalog-detail-license", classes="catalog-detail-license")
-        yield Static("", id="catalog-detail-compat", classes="catalog-detail-compat")
-        yield Static("", id="catalog-detail-description", classes="catalog-detail-description")
+        yield Static(
+            "", id="catalog-detail-license", classes="catalog-detail-license", markup=False
+        )
+        yield Static("", id="catalog-detail-compat", classes="catalog-detail-compat", markup=False)
+        yield Static(
+            "",
+            id="catalog-detail-description",
+            classes="catalog-detail-description",
+            markup=False,
+        )
 
     def update_for_row(self, row: CatalogRow | None) -> None:
         """Render the drawer for *row*; clearing back to the empty hint when None."""

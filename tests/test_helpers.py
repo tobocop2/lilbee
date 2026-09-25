@@ -5,7 +5,7 @@ from unittest import mock
 import pytest
 from rich.console import Console
 
-from lilbee.cli.helpers import register_paths
+from lilbee.cli.helpers import print_prefixed, register_paths
 from lilbee.core.config import cfg
 
 
@@ -59,6 +59,23 @@ class TestRegisterPaths:
         mock_print.assert_called_once()
         assert "is taken by another source" in str(mock_print.call_args)
 
+    def test_prints_a_bracketed_name_literally(self, tmp_path):
+        """A bracketed source label in the warning must not go through markup."""
+        from lilbee.core import settings
+
+        one = tmp_path / "a" / "man[ual]"
+        one.mkdir(parents=True)
+        settings.set_value(cfg.data_root, "linked_roots", {"man[ual]": str(one)})
+        two = tmp_path / "b" / "man[ual]"
+        two.mkdir(parents=True)
+        con = Console(quiet=True)
+
+        with mock.patch.object(con, "print") as mock_print:
+            register_paths([two], con)
+
+        printed = mock_print.call_args.args[0]
+        assert "man[ual]" in printed.plain
+
     def test_re_adding_the_same_path_is_tracked_not_warned(self, tmp_path):
         """--force would change nothing here, so the collision warning must not fire."""
         src = tmp_path / "corpus"
@@ -72,3 +89,23 @@ class TestRegisterPaths:
         assert result.tracked == ["corpus"]
         assert result.name_taken == []
         mock_print.assert_not_called()
+
+
+class TestPrintPrefixed:
+    def test_prefix_is_styled_and_detail_is_plain_text(self):
+        """A bracket or a Windows separator in *detail* must survive verbatim."""
+        con = Console(quiet=True)
+        with mock.patch.object(con, "print") as mock_print:
+            print_prefixed(con, "Error: ", "notes\\[draft].txt", style="bold red")
+
+        printed = mock_print.call_args.args[0]
+        assert printed.plain == "Error: notes\\[draft].txt"
+        assert mock_print.call_args.kwargs == {"soft_wrap": True}
+
+    def test_detail_need_not_be_a_string(self):
+        """An exception is str()-ed, not required to already be text."""
+        con = Console(quiet=True)
+        with mock.patch.object(con, "print") as mock_print:
+            print_prefixed(con, "Error: ", ValueError("bad[value]"), style="bold red")
+
+        assert mock_print.call_args.args[0].plain == "Error: bad[value]"

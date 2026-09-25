@@ -1543,6 +1543,7 @@ class CatalogScreen(Screen[None]):
                 Static(
                     msg.CATALOG_SEARCH_HF_CTA.format(query=search),
                     classes="grid-cta search-hf-cta",
+                    markup=False,
                 )
             )
         container.mount_all(ctas)
@@ -1981,7 +1982,9 @@ class CatalogScreen(Screen[None]):
         """Activate a cloud model, or jump to settings when the key is missing."""
         if row.key_status == KeyStatus.READY:
             apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
-            self.notify(msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider))
+            self.notify(
+                msg.CATALOG_USING_FRONTIER.format(name=row.name, provider=row.provider),
+            )
             return
         key_field = PROVIDER_API_KEY_FIELD.get(row.provider_id, f"{row.provider_id}_api_key")
         self.notify(
@@ -2252,7 +2255,10 @@ class CatalogScreen(Screen[None]):
             return
 
         if not self._row_is_installed(model_name):
-            self.notify(msg.CATALOG_NOT_INSTALLED.format(name=model_name), severity="warning")
+            self.notify(
+                msg.CATALOG_NOT_INSTALLED.format(name=model_name),
+                severity="warning",
+            )
             return
 
         if self._pending_delete == model_name:

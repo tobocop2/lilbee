@@ -164,9 +164,12 @@ class TaskRow(Widget, can_focus=True):
         # ("442/610 MB", "Syncing foo.md..."): stale and confusing now that the
         # bar reads 100%. FAILED / CANCELLED keep their detail: it's the reason.
         is_done = task.status == TaskStatus.DONE
-        detail = "" if is_done else (task.detail or "")
-        pct = "" if task.indeterminate or is_done else f"[b]{task.progress:.1f}%[/b]"
-        meta.update("  ".join(p for p in (detail, pct) if p))
+        parts: list[Content] = []
+        if not is_done and task.detail:
+            parts.append(Content(task.detail))
+        if not (task.indeterminate or is_done):
+            parts.append(Content.styled(f"{task.progress:.1f}%", "bold"))
+        meta.update(Content("  ").join(parts))
 
         if task.indeterminate:
             # Terminal rows freeze the bar so a cancelled/failed/done

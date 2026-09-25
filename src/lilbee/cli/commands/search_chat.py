@@ -9,6 +9,7 @@ from typing import Any, NoReturn
 
 import typer
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.search import clean_result
 from lilbee.app.services import get_services
@@ -34,6 +35,7 @@ from lilbee.cli.helpers import (
     announce_retrieval_query,
     auto_sync,
     json_output,
+    print_prefixed,
 )
 from lilbee.cli.log_routing import route_diagnostics_to_log_file
 from lilbee.core.config import cfg
@@ -70,8 +72,8 @@ def _exit_embedding_mismatch(exc: EmbeddingModelMismatchError) -> NoReturn:
     if cfg.json_mode:
         json_output({"error": str(exc), "hint": hint, "persisted_model": exc.persisted_model})
         raise SystemExit(1)
-    console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
-    console.print(hint)
+    print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+    console.print(Text(hint), soft_wrap=True)
     raise SystemExit(1)
 
 
@@ -118,7 +120,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
             )
         else:
             notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
-        err.print(notice, style=theme.WARNING)
+        err.print(notice, style=theme.WARNING, markup=False, soft_wrap=True)
 
 
 def _print_answer_stream(stream: Any, on_first_token: Callable[[], None]) -> None:
@@ -199,7 +201,7 @@ def _reject_if_empty(value: str, label: str) -> None:
     if cfg.json_mode:
         json_output({"error": msg})
         raise SystemExit(1)
-    console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {msg}")
+    print_prefixed(console, "Error: ", msg, style=theme.ERROR)
     raise SystemExit(1)
 
 
@@ -239,7 +241,7 @@ def search(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     cleaned = [clean_result(r) for r in results]
 
@@ -263,7 +265,7 @@ def search(
         preview = chunk_text[:CHUNK_PREVIEW_LEN]
         if len(chunk_text) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        table.add_row(r["source"], preview, f"{_display_score(r):.4f}")
+        table.add_row(Text(r["source"]), Text(preview), f"{_display_score(r):.4f}")
     console.print(table)
 
 
@@ -349,7 +351,7 @@ def ask(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
 
 
@@ -372,7 +374,7 @@ def use_embedder(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
 
     if cfg.json_mode:
@@ -380,7 +382,9 @@ def use_embedder(
             {"command": "use-embedder", "model": result.model, "status": result.status.value}
         )
         return
-    console.print(f"Now embedding with [{theme.ACCENT}]{result.model}[/{theme.ACCENT}].")
+    console.print(
+        Text.assemble("Now embedding with ", (result.model, theme.ACCENT), "."), soft_wrap=True
+    )
 
 
 def chat(
@@ -437,7 +441,7 @@ def topics(
         if cfg.json_mode:
             json_output({"error": msg})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]{msg}[/{theme.ERROR}]")
+        console.print(msg, style=theme.ERROR, markup=False, soft_wrap=True)
         raise SystemExit(1)
 
     if not cfg.concept_graph:
@@ -476,9 +480,9 @@ def _topics_for_query(query: str) -> None:
     if not all_concepts:
         console.print("No concepts found for this query.")
         return
-    console.print(f"Concepts related to [{theme.ACCENT}]{query}[/{theme.ACCENT}]:")
+    console.print(Text.assemble("Concepts related to ", (query, theme.ACCENT), ":"), soft_wrap=True)
     for c in all_concepts:
-        console.print(f"  {c}")
+        console.print(Text.assemble("  ", c), soft_wrap=True)
 
 
 def _topics_overview(top_k: int) -> None:
@@ -500,5 +504,5 @@ def _topics_overview(top_k: int) -> None:
         preview = ", ".join(comm.concepts[:_TOPIC_PREVIEW_LIMIT])
         if len(comm.concepts) > _TOPIC_PREVIEW_LIMIT:
             preview += f" (+{len(comm.concepts) - _TOPIC_PREVIEW_LIMIT} more)"
-        table.add_row(str(comm.cluster_id), str(comm.size), preview)
+        table.add_row(str(comm.cluster_id), str(comm.size), Text(preview))
     console.print(table)

@@ -1818,3 +1818,16 @@ async def test_focus_search_wins_against_an_already_queued_focus() -> None:
         assert isinstance(screen.focused, Input), (
             f"a focus queued before `/` outlived it; cursor ended on {screen.focused}"
         )
+
+
+async def test_grid_search_cta_shows_a_bracketed_query_as_written() -> None:
+    """The query is user-typed; ``[/x]`` must not parse as a closing tag."""
+    async with _CatalogTestApp().run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        screen = pilot.app.query_one(CatalogScreen)
+        screen._activation_settled = True
+        screen._get_search_text = lambda: "qwen[/x]"  # type: ignore[method-assign]
+        screen._mount_grid_ctas(hf_count=0)
+        await pilot.pause()
+        ctas = [str(w.render()) for w in screen._grid_container.query(".search-hf-cta")]
+    assert any("qwen[/x]" in text for text in ctas)

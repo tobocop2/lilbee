@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from textual.app import ComposeResult
+from textual.content import Content
 from textual.timer import Timer
 from textual.widgets import Label, Static
 
@@ -290,7 +291,14 @@ class TaskBar(Static):
             return
         self._last_render_fingerprint = fingerprint
 
-        label_text = f" [{dot_color}]{_DOT_GLYPH}[/]  {summary}    [i dim]{hint_text}[/]"
+        label_text = Content.assemble(
+            " ",
+            Content.from_markup(f"[{dot_color}]{_DOT_GLYPH}[/]"),
+            "  ",
+            summary,
+            "    ",
+            Content.from_markup(f"[i dim]{hint_text}[/]"),
+        )
         with contextlib.suppress(Exception):
             label = self.query_one("#task-status-label", Label)
             label.update(label_text)
@@ -304,14 +312,15 @@ class TaskBar(Static):
         warm_line: str | None,
         *,
         idle: bool,
-    ) -> tuple[str, str]:
+    ) -> tuple[str, Content]:
         """Pick the dot color and summary text for the current bar state."""
         if warm_line is not None:
-            return "$primary", warm_line
+            return "$primary", Content(warm_line)
         if idle and spawning_roles:
-            return "$primary", self._spawning_workers_template(spawning_roles)
+            return "$primary", Content(self._spawning_workers_template(spawning_roles))
         if idle and pending > 0:
-            return "$text-muted", self._pending_sync_template(pending).format(count=pending)
+            template = self._pending_sync_template(pending)
+            return "$text-muted", Content.from_markup(template.format(count=pending))
         return self._compose_segments(active, queued)
 
     def _warm_line(self) -> str | None:
@@ -376,31 +385,32 @@ class TaskBar(Static):
             return msg.TASKBAR_HINT_INPUT
         return msg.TASKBAR_HINT
 
-    def _compose_segments(self, active: list, queued: list) -> tuple[str, str]:
+    def _compose_segments(self, active: list, queued: list) -> tuple[str, Content]:
         """Return (dot color, text summary) for the current state."""
         # Pulsing even/odd cadence, shared with TaskRow's rail pulse.
         on_beat = (self._tick_count // _DOT_PULSE_HALF_TICKS) % 2 == 0
 
         if self._flash_outcome == TaskStatus.DONE:
-            return "$success", msg.TASKBAR_ALL_DONE
+            return "$success", Content.from_markup(msg.TASKBAR_ALL_DONE)
         if self._flash_outcome == TaskStatus.FAILED:
             count = self._flash_failed_count
             key = msg.TASKBAR_FAILED if count == 1 else msg.TASKBAR_FAILED_PLURAL
-            return "$error", key.format(count=count)
+            return "$error", Content.from_markup(key.format(count=count))
 
-        parts: list[str] = []
+        parts: list[Content] = []
         if active:
             count = len(active)
             task = active[0]
             if count == 1 and not queued:
                 pct = "" if task.indeterminate else f"  [b]{task.progress:.1f}%[/b]"
-                parts.append(f"[b]{task.name}[/b]{pct}")
+                parts.append(Content.from_markup(f"[b]$name[/b]{pct}", name=task.name))
             else:
                 key = msg.TASKBAR_ONE if count == 1 else msg.TASKBAR_MULTIPLE
-                parts.append(key.format(count=count))
-                parts.append(f"[b]{task.name}[/b]")
+                parts.append(Content.from_markup(key.format(count=count)))
+                parts.append(Content.from_markup("[b]$name[/b]", name=task.name))
         if queued:
-            parts.append(f"[dim]{msg.TASKBAR_QUEUED_COUNT.format(count=len(queued))}[/dim]")
+            queued_text = msg.TASKBAR_QUEUED_COUNT.format(count=len(queued))
+            parts.append(Content.from_markup(f"[dim]{queued_text}[/dim]"))
 
         dot_color = ("$primary" if on_beat else "$primary-lighten-2") if active else "$text-muted"
-        return dot_color, "  ·  ".join(parts)
+        return dot_color, Content("  ·  ").join(parts)

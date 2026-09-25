@@ -1304,7 +1304,9 @@ class ChatScreen(Screen[None]):
 
             apply_active_model(self.app, "chat_model", args)
             self.app.title = msg.app_title(cfg.chat_model)
-            self.notify(msg.CMD_MODEL_SET.format(name=display_label_for_ref(cfg.chat_model)))
+            self.notify(
+                msg.CMD_MODEL_SET.format(name=display_label_for_ref(cfg.chat_model)),
+            )
             self.apply_model_change()
             self.refresh_model_bar()
         else:
@@ -1515,9 +1517,9 @@ class ChatScreen(Screen[None]):
         try:
             path = write_session_markdown(session, args.strip() or ".")
         except OSError as exc:
-            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error", markup=False)
+            self.notify(msg.EXPORT_CHAT_FAILED.format(error=exc), severity="error")
             return
-        self.notify(msg.EXPORT_CHAT_DONE.format(path=path), markup=False)
+        self.notify(msg.EXPORT_CHAT_DONE.format(path=path))
 
     def _on_fork_picked(self, source: Session, message_count: int | None) -> None:
         """Fork *source* after the picked answer and switch to the fork with an empty input."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import typer
+from rich.text import Text
 
 from lilbee.app.reset import perform_reset
 from lilbee.app.services import reset_store
@@ -31,7 +32,7 @@ def version() -> None:
     if cfg.json_mode:
         json_output({"command": "version", "version": ver})
         return
-    console.print(f"lilbee {ver}")
+    console.print(f"lilbee {ver}", markup=False)
 
 
 def status(
@@ -60,9 +61,12 @@ def reset(
             json_output({"error": "Use --yes to confirm reset in JSON mode"})
             raise SystemExit(1)
         console.print(
-            f"[{theme.ERROR_BOLD}]This will delete ALL documents and data.[/{theme.ERROR_BOLD}]\n"
-            f"  Documents: {cfg.documents_dir}\n"
-            f"  Data:      {cfg.data_dir}"
+            Text.assemble(
+                ("This will delete ALL documents and data.\n", theme.ERROR_BOLD),
+                f"  Documents: {cfg.documents_dir}\n",
+                f"  Data:      {cfg.data_dir}",
+            ),
+            soft_wrap=True,
         )
         confirmed = typer.confirm("Are you sure?", default=False)
         if not confirmed:
@@ -79,12 +83,14 @@ def reset(
 
     console.print(
         f"Reset complete: {result.deleted_docs} document(s), "
-        f"{result.deleted_data} data item(s) deleted."
+        f"{result.deleted_data} data item(s) deleted.",
+        markup=False,
     )
     if result.skipped:
         console.print(
-            f"[{theme.WARNING}]{len(result.skipped)} item(s) could not be deleted "
-            f"(locked or permission denied).[/{theme.WARNING}]"
+            f"{len(result.skipped)} item(s) could not be deleted (locked or permission denied).",
+            style=theme.WARNING,
+            markup=False,
         )
 
 
@@ -95,7 +101,7 @@ def init() -> None:
         if cfg.json_mode:
             json_output({"command": "init", "path": str(root), "created": False})
             return
-        console.print(f"Already initialized: {root}")
+        console.print(f"Already initialized: {root}", markup=False, soft_wrap=True)
         return
 
     docs = root / "documents"
@@ -108,4 +114,4 @@ def init() -> None:
     if cfg.json_mode:
         json_output({"command": "init", "path": str(root), "created": True})
         return
-    console.print(f"Initialized local knowledge base at {root}")
+    console.print(f"Initialized local knowledge base at {root}", markup=False, soft_wrap=True)

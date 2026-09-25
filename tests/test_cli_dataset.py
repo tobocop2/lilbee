@@ -108,6 +108,22 @@ class TestExportCommand:
         assert result.exit_code == 1
         assert "Source not found" in json.loads(result.output)["error"]
 
+    def test_export_bracketed_path_prints_it_literally(self, store, tmp_path):
+        """The output path is user-chosen and must not go through markup."""
+        _seed(store)
+        out = tmp_path / "note[draft].jsonl"
+        result = runner.invoke(app, ["export", str(out)])
+        assert result.exit_code == 0, result.output
+        assert f"to {out}" in result.output
+
+    def test_export_unknown_bracketed_source_prints_it_literally(self, store, tmp_path):
+        _seed(store)
+        result = runner.invoke(
+            app, ["export", str(tmp_path / "p.parquet"), "--source", "mis[sing].pdf"]
+        )
+        assert result.exit_code == 1
+        assert "Error: Source not found: mis[sing].pdf" in result.output
+
 
 class TestImportCommand:
     def test_round_trip(self, store, tmp_path):

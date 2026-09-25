@@ -488,7 +488,7 @@ WIKI_BUILD_PAGE = "{label} ({current}/{total})"
 WIKI_BUILD_DONE = "Wiki build finished: {count} pages"
 WIKI_ALREADY_ACTIVE = "Wiki build in progress, please wait"
 WIKI_STUBS_HEADING = "Not written yet"
-WIKI_STUB_LABEL = "[dim]{title}[/] [dim italic](not written)[/]"
+WIKI_STUB_SUFFIX = "(not written)"
 WIKI_STUB_DETAIL = (
     "# {title}\n\n"
     "*This page has not been written yet.*\n\n"

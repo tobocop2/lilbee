@@ -53,4 +53,6 @@ class SearchHFCtaItem(containers.VerticalGroup, can_focus=True):
         self.post_message(self.Selected(self))
 
     def compose(self) -> ComposeResult:
-        yield widgets.Static(msg.CATALOG_SEARCH_HF_CTA.format(query=self._term), id="cta-label")
+        yield widgets.Static(
+            msg.CATALOG_SEARCH_HF_CTA.format(query=self._term), id="cta-label", markup=False
+        )

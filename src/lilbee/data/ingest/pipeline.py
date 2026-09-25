@@ -29,7 +29,6 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
     TimeElapsedColumn,
 )
 
@@ -128,6 +127,7 @@ from lilbee.runtime.progress import (
     SyncDoneEvent,
     noop_callback,
 )
+from lilbee.runtime.progress.columns import literal_text_column
 
 log = logging.getLogger(__name__)
 
@@ -1901,7 +1901,7 @@ async def _collect_under_bar(
     """Run :func:`_collect_results` under a transient Rich progress bar."""
     with Progress(
         SpinnerColumn(),
-        TextColumn("{task.description}"),
+        literal_text_column("{task.description}"),
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),

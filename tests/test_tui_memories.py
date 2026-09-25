@@ -93,6 +93,18 @@ async def test_loads_memories_into_table(store):
         assert _table(app).row_count == 2
 
 
+async def test_a_bracketed_memory_renders_as_written(store):
+    """Memory text is user-authored; ``[/x]`` must not parse as a closing tag."""
+    from textual.widgets._data_table import default_cell_formatter
+
+    store.get_memories.return_value = [_row("use arr[/x] not [red]arr")]
+    app = MemoriesTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        cells = _table(app).get_row_at(0)
+    assert default_cell_formatter(cells[2]).plain == "use arr[/x] not [red]arr"
+
+
 async def test_empty_notifies(store, notes):
     app = MemoriesTestApp()
     async with app.run_test(size=(120, 40)) as pilot:

@@ -787,6 +787,21 @@ async def test_delete_confirmed_removes_session(sessions):
             sessions.get(session_id)
 
 
+async def test_delete_bracketed_title_notifies_literally(sessions):
+    """A bracketed title must render as literal text, not be parsed as markup."""
+    _seed(sessions, "[red]Delete")
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        drawer = await _open_drawer(app, pilot)
+        panel = drawer.query_one(SessionListPanel)
+        meta = sessions.list()[0]
+        with patch.object(app, "notify") as mock_notify:
+            panel._on_delete_confirmed(meta, confirmed=True)
+            await pilot.pause()
+        mock_notify.assert_called_once()
+        assert "[red]Delete" in mock_notify.call_args[0][0]
+
+
 async def test_delete_declined_keeps_session(sessions):
     _seed(sessions, "Keep me")
     app = LilbeeApp()

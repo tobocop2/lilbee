@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import NoReturn
 
 import typer
+from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.helpers import json_output, sigint_cancel
+from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
 from lilbee.core.config import cfg
 from lilbee.runtime.cancellation import TaskCancelledError
 
@@ -39,7 +40,7 @@ def _fail(message: str) -> NoReturn:
     if cfg.json_mode:
         json_output({"error": message})
     else:
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {message}")
+        print_prefixed(console, "Error: ", message, style=theme.ERROR)
     raise SystemExit(1)
 
 
@@ -66,9 +67,15 @@ def export_cmd(
         json_output(summary.model_dump())
         return
     console.print(
-        f"Wrote [{theme.LABEL}]{summary.pages}[/{theme.LABEL}] pages from "
-        f"[{theme.LABEL}]{summary.sources}[/{theme.LABEL}] source(s) to "
-        f"[{theme.ACCENT}]{output}[/{theme.ACCENT}]"
+        Text.assemble(
+            "Wrote ",
+            (str(summary.pages), theme.LABEL),
+            " pages from ",
+            (str(summary.sources), theme.LABEL),
+            " source(s) to ",
+            (str(output), theme.ACCENT),
+        ),
+        soft_wrap=True,
     )
 
 
@@ -90,7 +97,7 @@ def import_cmd(
     if cfg.json_mode:
         json_output(summary.model_dump())
         return
-    console.print(
+    console.print(  # style-check: allow-markup -- counts only
         f"Imported [{theme.LABEL}]{len(summary.sources)}[/{theme.LABEL}] source(s) "
         f"([{theme.LABEL}]{summary.pages}[/{theme.LABEL}] pages, "
         f"[{theme.LABEL}]{summary.chunks}[/{theme.LABEL}] chunks)"

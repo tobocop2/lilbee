@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from rich.table import Table
+from rich.text import Text
 
 from lilbee.app.status import StatusConfig, StatusResult
 from lilbee.cli.helpers import render_status_result
@@ -27,7 +28,11 @@ def _status(skipped: list[SkippedSource] | None = None, skipped_total: int = 0) 
 
 def _texts(status: StatusResult) -> tuple[list[Table], list[str]]:
     tables = [r for r in render_status_result(status) if isinstance(r, Table)]
-    strings = [r for r in render_status_result(status) if isinstance(r, str)]
+    strings = [
+        r.plain if isinstance(r, Text) else r
+        for r in render_status_result(status)
+        if isinstance(r, (str, Text))
+    ]
     return tables, strings
 
 
@@ -39,6 +44,20 @@ def test_held_out_files_are_listed_with_their_reasons() -> None:
     tables, strings = _texts(status)
     assert any(t.title == "Held out of the index" for t in tables)
     assert any("1" in s and "held out" in s and "--retry-skipped" in s for s in strings)
+
+
+def test_a_bracketed_filename_and_reason_render_literally() -> None:
+    """The held-out table must not treat a filename or reason as markup, and
+    a Windows path's backslash before a bracket must survive."""
+    status = _status(
+        skipped=[SkippedSource(filename="notes\\[draft].md", reason="unsupported: [scan]")],
+        skipped_total=1,
+    )
+    tables, _strings = _texts(status)
+    table = next(t for t in tables if t.title == "Held out of the index")
+    filename_cell, reason_cell = (col._cells[0] for col in table.columns)
+    assert filename_cell.plain == "notes\\[draft].md"
+    assert reason_cell.plain == "unsupported: [scan]"
 
 
 def test_the_held_out_summary_names_what_the_cap_hid() -> None:
@@ -67,3 +86,13 @@ def test_the_embedder_that_built_the_index_is_shown() -> None:
 def test_no_index_line_before_the_first_sync() -> None:
     _tables, strings = _texts(_status())
     assert not any("Index built with" in s for s in strings)
+
+
+def test_a_bracketed_documents_dir_and_model_ref_render_literally() -> None:
+    """Every config value on the status header is user-configured and may carry a bracket."""
+    status = _status()
+    status.config.documents_dir = "notes/[draft]"
+    status.config.chat_model = "org/model[q4].gguf"
+    _tables, strings = _texts(status)
+    assert any("notes/[draft]" in s for s in strings)
+    assert any("org/model[q4].gguf" in s for s in strings)

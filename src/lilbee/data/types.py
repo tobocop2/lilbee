@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel
+from rich.highlighter import ReprHighlighter
+from rich.text import Text
 
 from lilbee.core.vectors import Vector
 from lilbee.data.store import (
@@ -158,30 +160,36 @@ class SyncResult(BaseModel):
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
 
-    def __str__(self) -> str:
-        lines = [
-            f"Added: {len(self.added)}",
-            f"Updated: {len(self.updated)}",
-            f"Removed: {len(self.removed)}",
-            f"Unchanged: {self.unchanged}",
+    def _lines(self) -> list[list[tuple[str, str]]]:
+        """The summary as lines of ``(text, style)`` segments; ``""`` means unstyled."""
+        lines: list[list[tuple[str, str]]] = [
+            [(f"Added: {len(self.added)}", "")],
+            [(f"Updated: {len(self.updated)}", "")],
+            [(f"Removed: {len(self.removed)}", "")],
+            [(f"Unchanged: {self.unchanged}", "")],
         ]
         if self.index_mismatch is not None:
-            lines.append(f"[red]Index mismatch:[/red] {self.index_mismatch.message}")
+            lines.append([("Index mismatch:", "red"), (f" {self.index_mismatch.message}", "")])
         if self.relocated:
-            lines.append(f"Relocated: {len(self.relocated)}")
+            lines.append([(f"Relocated: {len(self.relocated)}", "")])
         lines += [
-            f"Held out: {len(self.held_out)}",
-            f"Skipped: {len(self.skipped)}",
-            f"Failed: {len(self.failed)}",
-            f"Truncated: {self.truncated}",
+            [(f"Held out: {len(self.held_out)}", "")],
+            [(f"Skipped: {len(self.skipped)}", "")],
+            [(f"Failed: {len(self.failed)}", "")],
+            [(f"Truncated: {self.truncated}", "")],
         ]
-        for held in self.held_out:
-            lines.append(f"  [yellow]{held.filename}[/yellow]: {held.reason}")
-        for f in self.skipped:
-            lines.append(f"  [yellow]{f}[/yellow]")
-        for f in self.failed:
-            lines.append(f"  [red]{f}[/red]")
-        return "\n".join(lines)
+        lines += [
+            [("  ", ""), (h.filename, "yellow"), (f": {h.reason}", "")] for h in self.held_out
+        ]
+        lines += [[("  ", ""), (name, "yellow")] for name in self.skipped]
+        lines += [[("  ", ""), (name, "red")] for name in self.failed]
+        return lines
+
+    def __str__(self) -> str:
+        return "\n".join(
+            "".join(f"[{style}]{text}[/{style}]" if style else text for text, style in line)
+            for line in self._lines()
+        )
 
     def __repr__(self) -> str:
         return (
@@ -191,8 +199,10 @@ class SyncResult(BaseModel):
             f"failed={len(self.failed)}, truncated={self.truncated})"
         )
 
-    def __rich__(self) -> str:
-        return self.__str__()
+    def __rich__(self) -> Text:
+        """Render the summary with every filename and reason as literal text."""
+        rendered = Text("\n").join(Text.assemble(*line) for line in self._lines())
+        return ReprHighlighter()(rendered)
 
 
 @dataclass

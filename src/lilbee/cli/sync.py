@@ -9,8 +9,10 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.text import Text
 
 from lilbee.cli import theme
+from lilbee.cli.helpers import print_prefixed
 from lilbee.data.ingest import sync
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.progress import (
@@ -44,8 +46,13 @@ def _format_sync_summary(
 def _print_file_start(con: Console, data: ProgressEvent) -> None:
     if not isinstance(data, FileStartEvent):
         raise TypeError(f"Expected FileStartEvent, got {type(data).__name__}")
-    m = theme.MUTED
-    con.print(f"[{m}]Syncing [{data.current_file}/{data.total_files}]: {data.file}[/{m}]")
+    con.print(
+        Text(
+            f"Syncing [{data.current_file}/{data.total_files}]: {data.file}",
+            style=theme.MUTED,
+        ),
+        soft_wrap=True,
+    )
 
 
 def _print_done(con: Console, data: ProgressEvent) -> None:
@@ -55,7 +62,7 @@ def _print_done(con: Console, data: ProgressEvent) -> None:
         data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
     )
     if summary:
-        con.print(f"[{theme.MUTED}]Synced: {summary}[/{theme.MUTED}]")
+        con.print(f"Synced: {summary}", style=theme.MUTED, markup=False)
 
 
 def _sync_progress_printer(con: Console) -> DetailedProgressCallback:
@@ -108,7 +115,7 @@ def _on_sync_done(con: Console, future: Future[object], *, chat_mode: bool = Fal
     if chat_mode:
         print(f"Background sync error: {exc}")
     else:
-        con.print(f"[{theme.ERROR}]Background sync error:[/{theme.ERROR}] {exc}")
+        print_prefixed(con, "Background sync error: ", exc, style=theme.ERROR)
 
 
 class SyncStatus:

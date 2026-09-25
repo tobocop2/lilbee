@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -144,7 +145,7 @@ class WikiDraftsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-        table: DataTable[str] = DataTable(id="wiki-drafts-table")
+        table: DataTable[str | Text] = DataTable(id="wiki-drafts-table")
         table.cursor_type = "row"
         yield Horizontal(
             Vertical(
@@ -157,7 +158,7 @@ class WikiDraftsScreen(Screen[None]):
             ),
             Vertical(
                 VerticalScroll(
-                    Static(msg.WIKI_DRAFTS_DIFF_EMPTY, id="wiki-drafts-diff"),
+                    Static(msg.WIKI_DRAFTS_DIFF_EMPTY, id="wiki-drafts-diff", markup=False),
                     id="wiki-drafts-diff-scroll",
                 ),
                 id="wiki-drafts-main",
@@ -209,7 +210,7 @@ class WikiDraftsScreen(Screen[None]):
 
         for d in visible:
             table.add_row(
-                d.slug,
+                Text(d.slug),
                 _kind_label(d.pending_kind),
                 _format_drift(d.drift_ratio),
                 _format_faithfulness(d.faithfulness_score),
@@ -291,7 +292,7 @@ class WikiDraftsScreen(Screen[None]):
         if len(self.app.screen_stack) > 1:
             self.app.pop_screen()
 
-    def _table_or_none(self) -> DataTable[str] | None:
+    def _table_or_none(self) -> DataTable[str | Text] | None:
         """Return the drafts table unless an Input is focused."""
         if isinstance(self.focused, Input):
             return None

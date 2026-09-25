@@ -19,7 +19,6 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
-    TextColumn,
     TimeElapsedColumn,
 )
 
@@ -35,6 +34,7 @@ from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
 )
+from lilbee.runtime.progress.columns import literal_text_column
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -290,7 +290,7 @@ def _shard_progress_bar(quiet: bool) -> Progress:
     """The one bar a fan-out reports on, disabled when the caller wants no output."""
     return Progress(
         SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
+        literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),

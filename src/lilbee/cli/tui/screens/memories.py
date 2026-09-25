@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, ClassVar
 
+from rich.text import Text
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
@@ -64,7 +65,7 @@ class MemoriesScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
-        table: DataTable[str] = DataTable(id="memories-table")
+        table: DataTable[str | Text] = DataTable(id="memories-table")
         table.cursor_type = "row"
         yield Vertical(
             Input(placeholder=msg.MEMORIES_SEARCH_PLACEHOLDER, id="memories-search"),
@@ -113,7 +114,7 @@ class MemoriesScreen(Screen[None]):
             table.add_row(
                 m.kind.value,
                 _flag_label(m.shared),
-                m.text,
+                Text(m.text),
                 key=m.id,
             )
 
@@ -170,7 +171,7 @@ class MemoriesScreen(Screen[None]):
         if len(self.app.screen_stack) > 1:
             self.app.pop_screen()
 
-    def _table_or_none(self) -> DataTable[str] | None:
+    def _table_or_none(self) -> DataTable[str | Text] | None:
         """Return the memories table unless an Input is focused."""
         if isinstance(self.focused, Input):
             return None

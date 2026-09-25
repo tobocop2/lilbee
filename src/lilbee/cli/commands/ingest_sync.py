@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import typer
+from rich.text import Text
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -33,6 +34,7 @@ from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
 from lilbee.cli.helpers import (
     add_paths,
     json_output,
+    print_prefixed,
     sync_result_to_json,
 )
 from lilbee.core.config import cfg
@@ -149,7 +151,7 @@ def _crawl_urls_blocking(
     signal flows through as a clean cancel instead of asyncio.run's default
     KeyboardInterrupt-raising (which left browser contexts mid-teardown).
     """
-    from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
+    from rich.progress import Progress, SpinnerColumn, TaskID
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
@@ -158,6 +160,7 @@ def _crawl_urls_blocking(
         EventType,
         ProgressEvent,
     )
+    from lilbee.runtime.progress.columns import literal_text_column
 
     if crawl:
         effective_depth = depth
@@ -174,7 +177,7 @@ def _crawl_urls_blocking(
     all_paths: list[Path] = []
     with Progress(
         SpinnerColumn(),
-        TextColumn("{task.description}"),
+        literal_text_column("{task.description}"),
         transient=True,
         console=err_console,
         disable=cfg.json_mode,
@@ -219,7 +222,8 @@ def _crawl_urls_blocking(
             if crawl and max_pages is None and crawled.get("n", 0) >= default_cap:
                 err_console.print(
                     f"Stopped at the default {default_cap}-page limit; "
-                    f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap)."
+                    f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap).",
+                    markup=False,
                 )
     return all_paths
 
@@ -388,7 +392,7 @@ def sync_cmd(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     if cfg.json_mode:
         json_output(sync_result_to_json(result))
@@ -419,14 +423,14 @@ def rebuild(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
     if not isinstance(result, SyncResult):
         raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
         json_output({"command": "rebuild", "ingested": len(result.added)})
         return
-    console.print(f"Rebuilt: {len(result.added)} documents ingested")
+    console.print(f"Rebuilt: {len(result.added)} documents ingested", markup=False)
 
 
 def index(
@@ -461,7 +465,7 @@ def _validate_file_paths(file_paths: list[Path]) -> None:
         if cfg.json_mode:
             json_output({"error": f"Path not found: {fp}"})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] Path not found: {fp}")
+        print_prefixed(console, "Error: ", f"Path not found: {fp}", style=theme.ERROR)
         raise SystemExit(1)
 
 
@@ -480,7 +484,10 @@ def _crawl_urls_step(
 
     if not crawler_available():
         console.print(
-            f"[{theme.ERROR}]Web crawling requires: pip install 'lilbee[crawler]'[/{theme.ERROR}]"
+            "Web crawling requires: pip install 'lilbee[crawler]'",
+            style=theme.ERROR,
+            markup=False,
+            soft_wrap=True,
         )
         raise SystemExit(1)
     crawled_paths = _crawl_urls_blocking(
@@ -492,8 +499,9 @@ def _crawl_urls_step(
     )
     if not cfg.json_mode:
         console.print(
-            f"[{theme.MUTED}]Crawled {len(crawled_paths)} page(s)"
-            f" from {len(urls)} URL(s)[/{theme.MUTED}]"
+            f"Crawled {len(crawled_paths)} page(s) from {len(urls)} URL(s)",
+            style=theme.MUTED,
+            markup=False,
         )
     return crawled_paths
 
@@ -572,7 +580,7 @@ def add(
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
-        console.print(f"[{theme.ERROR}]Error:[/{theme.ERROR}] {exc}")
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
 
 
@@ -593,7 +601,7 @@ def chunks(
         if cfg.json_mode:
             json_output({"error": f"Source not found: {source}"})
             raise SystemExit(1)
-        console.print(f"[{theme.ERROR}]Source not found:[/{theme.ERROR}] {source}")
+        print_prefixed(console, "Source not found: ", source, style=theme.ERROR)
         raise SystemExit(1)
 
     raw_chunks = store.get_chunks_by_source(source)
@@ -607,15 +615,17 @@ def chunks(
         return
 
     console.print(
-        f"[{theme.LABEL}]{len(cleaned)}[/{theme.LABEL}]"
-        f" chunks from [{theme.ACCENT}]{source}[/{theme.ACCENT}]\n"
+        Text.assemble(
+            (str(len(cleaned)), theme.LABEL), " chunks from ", (source, theme.ACCENT), "\n"
+        ),
+        soft_wrap=True,
     )
     for c in cleaned:
         idx = c.get("chunk_index", "?")
         preview = c.get("chunk", "")[:CHUNK_PREVIEW_LEN]
         if len(c.get("chunk", "")) > CHUNK_PREVIEW_LEN:
             preview += "..."
-        console.print(f"  [{idx}] {preview}")
+        console.print(Text.assemble(f"  [{idx}] ", preview), soft_wrap=True)
 
 
 _remove_names_argument = typer.Argument(
@@ -663,8 +673,8 @@ def remove(
         return
 
     for name in result.removed:
-        console.print(f"Removed [{theme.ACCENT}]{name}[/{theme.ACCENT}]")
+        console.print(Text.assemble("Removed ", (name, theme.ACCENT)), soft_wrap=True)
     for name in result.not_found:
-        console.print(f"[{theme.ERROR}]Not found:[/{theme.ERROR}] {name}")
+        print_prefixed(console, "Not found: ", name, style=theme.ERROR)
     if not result.removed and result.not_found:
         raise SystemExit(1)

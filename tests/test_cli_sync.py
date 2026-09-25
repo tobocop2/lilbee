@@ -153,8 +153,19 @@ class TestOnSyncDone:
 
         con.print.assert_called_once()
         printed = con.print.call_args[0][0]
-        assert theme.ERROR in printed
-        assert "something broke" in printed
+        assert printed.plain == "Background sync error: something broke"
+        assert printed.spans[0].style == theme.ERROR
+
+    def test_other_error_non_chat_mode_bracketed_path_prints_it_literally(self):
+        """A sync error can carry a document path, which must not go through markup."""
+        con = MagicMock()
+        future = MagicMock(spec=Future)
+        future.exception.return_value = ValueError("locked: notes[draft].txt")
+
+        sync_mod._on_sync_done(con, future, chat_mode=False)
+
+        printed = con.print.call_args[0][0]
+        assert printed.plain == "Background sync error: locked: notes[draft].txt"
 
     def test_other_error_chat_mode(self, capsys):
         con = MagicMock()

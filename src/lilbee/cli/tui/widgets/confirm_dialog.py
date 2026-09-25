@@ -66,8 +66,8 @@ class ConfirmDialog(ModalScreen[bool]):
 
     def compose(self) -> ComposeResult:
         with Vertical():
-            yield Static(self._title, id="confirm-title")
-            yield Label(self._message, id="confirm-message")
+            yield Static(self._title, id="confirm-title", markup=False)
+            yield Label(self._message, id="confirm-message", markup=False)
             with Center(), Horizontal(id="confirm-buttons"):
                 yield ConfirmPill(msg.CONFIRM_YES_LABEL, pill_id="confirm-yes", answer=True)
                 yield ConfirmPill(msg.CONFIRM_NO_LABEL, pill_id="confirm-no", answer=False)
