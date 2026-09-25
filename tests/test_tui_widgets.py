@@ -5810,6 +5810,23 @@ async def test_crawl_dialog_invalid_url_shows_error():
             assert "bad url" in str(error.render()).lower()
 
 
+async def test_crawl_dialog_error_shows_a_bracketed_url_as_written():
+    """The validation error quotes the typed URL; ``[/x]`` must not parse as a tag."""
+    app = CrawlDialogTestApp()
+    async with app.run_test(size=(80, 30)) as pilot:
+        await pilot.pause()
+        app.screen.query_one("#crawl-url-input").value = "https://example.com"
+        await pilot.pause()
+        with mock.patch(
+            "lilbee.crawler.require_valid_crawl_url",
+            side_effect=ValueError("bad url https://h/a[/x]"),
+        ):
+            app.screen.query_one("#crawl-submit", Button).press()
+            await pilot.pause()
+            error = str(app.screen.query_one("#crawl-error", Static).render())
+    assert "bad url https://h/a[/x]" in error
+
+
 async def test_crawl_dialog_invalid_depth_shows_error():
     """Non-numeric depth shows validation error."""
     app = CrawlDialogTestApp()

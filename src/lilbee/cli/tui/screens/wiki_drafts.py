@@ -158,7 +158,7 @@ class WikiDraftsScreen(Screen[None]):
             ),
             Vertical(
                 VerticalScroll(
-                    Static(msg.WIKI_DRAFTS_DIFF_EMPTY, id="wiki-drafts-diff"),
+                    Static(msg.WIKI_DRAFTS_DIFF_EMPTY, id="wiki-drafts-diff", markup=False),
                     id="wiki-drafts-diff-scroll",
                 ),
                 id="wiki-drafts-main",

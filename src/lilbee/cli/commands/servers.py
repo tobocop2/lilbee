@@ -122,7 +122,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
 def _refuse_to_start(message: str) -> NoReturn:
     """Report why the server will not start, to the log and the terminal, then exit."""
     logging.getLogger(__name__).error(message)
-    console.print(message, markup=False)
+    console.print(message, markup=False, soft_wrap=True)
     raise typer.Exit(LOCK_REFUSAL_EXIT_CODE)
 
 

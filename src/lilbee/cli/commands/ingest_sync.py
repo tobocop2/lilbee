@@ -151,7 +151,7 @@ def _crawl_urls_blocking(
     signal flows through as a clean cancel instead of asyncio.run's default
     KeyboardInterrupt-raising (which left browser contexts mid-teardown).
     """
-    from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
+    from rich.progress import Progress, SpinnerColumn, TaskID
 
     from lilbee.crawler import crawl_and_save
     from lilbee.runtime.progress import (
@@ -160,6 +160,7 @@ def _crawl_urls_blocking(
         EventType,
         ProgressEvent,
     )
+    from lilbee.runtime.progress.columns import literal_text_column
 
     if crawl:
         effective_depth = depth
@@ -176,7 +177,7 @@ def _crawl_urls_blocking(
     all_paths: list[Path] = []
     with Progress(
         SpinnerColumn(),
-        TextColumn("{task.description}"),
+        literal_text_column("{task.description}"),
         transient=True,
         console=err_console,
         disable=cfg.json_mode,
@@ -483,7 +484,10 @@ def _crawl_urls_step(
 
     if not crawler_available():
         console.print(
-            "Web crawling requires: pip install 'lilbee[crawler]'", style=theme.ERROR, markup=False
+            "Web crawling requires: pip install 'lilbee[crawler]'",
+            style=theme.ERROR,
+            markup=False,
+            soft_wrap=True,
         )
         raise SystemExit(1)
     crawled_paths = _crawl_urls_blocking(

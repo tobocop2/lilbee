@@ -65,7 +65,8 @@ def reset(
                 ("This will delete ALL documents and data.\n", theme.ERROR_BOLD),
                 f"  Documents: {cfg.documents_dir}\n",
                 f"  Data:      {cfg.data_dir}",
-            )
+            ),
+            soft_wrap=True,
         )
         confirmed = typer.confirm("Are you sure?", default=False)
         if not confirmed:
@@ -100,7 +101,7 @@ def init() -> None:
         if cfg.json_mode:
             json_output({"command": "init", "path": str(root), "created": False})
             return
-        console.print(f"Already initialized: {root}", markup=False)
+        console.print(f"Already initialized: {root}", markup=False, soft_wrap=True)
         return
 
     docs = root / "documents"
@@ -113,4 +114,4 @@ def init() -> None:
     if cfg.json_mode:
         json_output({"command": "init", "path": str(root), "created": True})
         return
-    console.print(f"Initialized local knowledge base at {root}", markup=False)
+    console.print(f"Initialized local knowledge base at {root}", markup=False, soft_wrap=True)

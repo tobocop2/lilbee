@@ -45,6 +45,14 @@ def test_list_human(seeded):
     assert "Torque specs" in result.output
 
 
+def test_list_prints_a_bracketed_title_as_written(seeded):
+    tmp_path, session_id = seeded
+    SessionStore().set_title(session_id, "T[red]x", TitleSource.AUTO)
+    result = runner.invoke(app, _args(tmp_path, "list"))
+    assert result.exit_code == 0, result.output
+    assert "T[red]x" in result.output
+
+
 def test_list_is_the_admin_view_and_labels_agent_sessions(seeded):
     """The CLI lists every origin (it is where stray agent sessions get
     cleaned up), so each row says whose it is."""

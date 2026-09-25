@@ -81,7 +81,7 @@ class CrawlDialog(ModalScreen[CrawlParams | None]):
                 placeholder=msg.CRAWL_DIALOG_DEPTH_PLACEHOLDER,
                 id="crawl-depth-input",
             )
-            yield Static("", id="crawl-error")
+            yield Static("", id="crawl-error", markup=False)
             with Center(), Horizontal(id="crawl-buttons"):
                 yield Button(msg.CRAWL_DIALOG_SUBMIT, variant="primary", id="crawl-submit")
                 yield Button(msg.CRAWL_DIALOG_CANCEL, variant="default", id="crawl-cancel")

@@ -574,8 +574,8 @@ async def test_panel_uses_resolved_theme_tokens(monkeypatch: pytest.MonkeyPatch)
         p._request_stats()
         await app.workers.wait_for_complete()
         await pilot.pause()
-        # _Static__content holds the raw markup string passed to update(); render() strips tags.
-        raw_markup = str(p._Static__content)  # isinstance guard: Static name-mangles __content
+        # _Static__content holds the Content passed to update(); .markup keeps its styles.
+        raw_markup = p._Static__content.markup  # type: ignore[attr-defined]
         # The error token color must appear (util 85% >= _UTIL_HOT triggers error heat).
         assert sentinel in raw_markup
 
@@ -599,8 +599,8 @@ async def test_a_bracketed_probe_failure_renders_as_written(
 
 
 @pytest.mark.asyncio
-async def test_badge_role_markup_no_separator(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A role string without ' - ' renders without splitting (else branch in _badge_role_markup)."""
+async def test_badge_without_separator(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A role string without ' - ' renders without splitting."""
     import lilbee.cli.tui.widgets.gpu_fleet_panel as pm
     from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
 
@@ -611,7 +611,6 @@ async def test_badge_role_markup_no_separator(monkeypatch: pytest.MonkeyPatch) -
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         p = app.query_one(GpuFleetPanel)
-        # "chat" has no " - " separator: exercises the else branch in _badge_role_markup
         p.set_devices([_make_device(0)], labels={0: "CUDA0"}, roles={0: "chat"})
         p._request_stats()
         await app.workers.wait_for_complete()
@@ -635,8 +634,11 @@ async def test_resolve_theme_falls_back_on_attribute_error(
         await pilot.pause()
         p = app.query_one(GpuFleetPanel)
         # Make theme_variables raise AttributeError so the except branch runs.
-        type(p.app).theme_variables = property(  # type: ignore[attr-defined]
-            lambda self: (_ for _ in ()).throw(AttributeError("no theme_variables"))
+        monkeypatch.setattr(
+            type(p.app),
+            "theme_variables",
+            property(lambda self: (_ for _ in ()).throw(AttributeError("no theme_variables"))),
+            raising=False,
         )
         result = p._resolve_theme()
         assert result == {}
@@ -680,3 +682,22 @@ async def test_update_fleet_panel_noop_when_panel_not_mounted(
         await pilot.pause()
         # Must not raise; NoMatches is caught and the method returns early.
         body._update_fleet_panel(view)
+
+
+@pytest.mark.asyncio
+async def test_a_bracketed_model_badge_renders_as_written(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The badge names a model ref, which a user can write with ``[/x]``."""
+    import lilbee.cli.tui.widgets.gpu_fleet_panel as pm
+    from lilbee.cli.tui.widgets.gpu_fleet_panel import GpuFleetPanel
+
+    monkeypatch.setattr(pm, "probe_gpu_stats", lambda d: {0: _make_stat(0, utilization_pct=30)})
+    app = _PanelHost()
+    async with app.run_test(size=(160, 24)) as pilot:
+        await pilot.pause()
+        p = app.query_one(GpuFleetPanel)
+        p.set_devices([_make_device(0)], labels={0: "CUDA0"}, roles={0: "chat - odd[/x] [red]m"})
+        p._request_stats()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        rendered = str(p.render())
+    assert "chat - odd[/x] [red]m" in rendered

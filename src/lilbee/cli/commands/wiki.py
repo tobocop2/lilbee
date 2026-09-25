@@ -88,11 +88,13 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
     stdout stays a single JSON document.
     """
     from rich.console import Console as RichConsole
-    from rich.progress import Progress, SpinnerColumn, TextColumn
+    from rich.progress import Progress, SpinnerColumn
+
+    from lilbee.runtime.progress.columns import literal_text_column
 
     with Progress(
         SpinnerColumn(),
-        TextColumn("{task.description}"),
+        literal_text_column("{task.description}"),
         transient=True,
         console=RichConsole(stderr=True),
         disable=cfg.json_mode,
@@ -235,7 +237,7 @@ def wiki_read(
             }
         )
         return
-    console.print(page.content)
+    console.print(page.content, markup=False)
 
 
 @wiki_app.command(name="citations")
@@ -265,7 +267,7 @@ def wiki_citations(
             store.get_citations_for_source(source),
             key="source",
             value=source,
-            title=f"Pages citing: {source}",
+            title=Text(f"Pages citing: {source}"),
             column_header="Page",
             column_value=lambda rec: rec["wiki_source"],
         )
@@ -274,7 +276,7 @@ def wiki_citations(
         store.get_citations_for_wiki(wiki_source),
         key="wiki_source",
         value=wiki_source,
-        title=f"Citations: {wiki_source}",
+        title=Text(f"Citations: {wiki_source}"),
         column_header="Source",
         column_value=lambda rec: rec["source_filename"],
     )
@@ -285,7 +287,7 @@ def _render_citations(
     *,
     key: str,
     value: str,
-    title: str,
+    title: Text,
     column_header: str,
     column_value: Callable[[CitationRecord], str],
 ) -> None:
@@ -508,7 +510,7 @@ def wiki_generate(
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:
-            console.print(str(exc), markup=False)
+            console.print(str(exc), markup=False, soft_wrap=True)
         raise typer.Exit(1) from exc
 
     if path is None:
@@ -516,7 +518,7 @@ def wiki_generate(
         if cfg.json_mode:
             json_output({"error": message})
         else:
-            console.print(message, markup=False)
+            console.print(message, markup=False, soft_wrap=True)
         raise typer.Exit(1)
 
     if cfg.json_mode:
@@ -548,7 +550,9 @@ def wiki_wipe(
         if cfg.json_mode:
             json_output({"error": msg.CMD_WIKI_WIPE_NEEDS_YES})
             raise typer.Exit(1)
-        console.print(msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root), markup=False)
+        console.print(
+            msg.CMD_WIKI_WIPE_WARNING.format(path=wiki_root), markup=False, soft_wrap=True
+        )
         if not typer.confirm("Delete the wiki?", default=False):
             console.print("Aborted.")
             raise typer.Exit(0)
@@ -769,7 +773,7 @@ def wiki_drafts_diff(
     if cfg.json_mode:
         json_output({"command": "wiki_drafts_diff", "slug": slug, "diff": diff})
         return
-    console.print(diff or "(no differences)")
+    console.print(diff or "(no differences)", markup=False)
 
 
 @drafts_app.command(name="accept")

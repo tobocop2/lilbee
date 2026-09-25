@@ -259,3 +259,35 @@ async def test_frontier_row_shows_provider_in_license_slot() -> None:
         await pilot.pause()
         rendered = str(drawer.query_one("#catalog-detail-license", Static).render())
         assert "OpenAI" in rendered
+
+
+async def test_a_bracketed_name_and_description_render_as_written() -> None:
+    """Names and descriptions come from HuggingFace cards; ``[/x]`` must not parse."""
+    from dataclasses import replace
+
+    from lilbee.catalog.models import CatalogModel
+
+    class _App(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            yield CatalogDetailDrawer(id="catalog-detail-drawer")
+
+    card = CatalogModel(
+        hf_repo="acme/m",
+        gguf_filename="m.gguf",
+        size_gb=1.0,
+        min_ram_gb=2.0,
+        description="See [paper](x) and [/x] notes",
+        featured=False,
+        downloads=0,
+        task="chat",
+    )
+    row = replace(_local_row("m[red]x"), catalog_model=card)
+    async with _App().run_test(size=(120, 30)) as pilot:
+        await pilot.pause()
+        drawer = pilot.app.query_one(CatalogDetailDrawer)
+        drawer.update_for_row(row)
+        await pilot.pause()
+        name = str(drawer.query_one("#catalog-detail-name", Static).render())
+        description = str(drawer.query_one("#catalog-detail-description", Static).render())
+    assert "m[red]x" in name
+    assert "See [paper](x) and [/x] notes" in description

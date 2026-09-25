@@ -120,7 +120,7 @@ def _swap_stale_models_to_installed(chat_overridden: bool = False) -> None:
             )
         else:
             notice = f"No {label.lower()} model configured; using installed {canon.effective!r}."
-        err.print(notice, style=theme.WARNING, markup=False)
+        err.print(notice, style=theme.WARNING, markup=False, soft_wrap=True)
 
 
 _MD_FILE_LINK_RE = re.compile(r"\[([^\]]+)\]\((file://[^)]+)\)")
@@ -444,7 +444,7 @@ def topics(
         if cfg.json_mode:
             json_output({"error": msg})
             raise SystemExit(1)
-        console.print(msg, style=theme.ERROR, markup=False)
+        console.print(msg, style=theme.ERROR, markup=False, soft_wrap=True)
         raise SystemExit(1)
 
     if not cfg.concept_graph:

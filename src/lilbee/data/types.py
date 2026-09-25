@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import NamedTuple, NotRequired, TypedDict
 
 from pydantic import BaseModel
+from rich.highlighter import ReprHighlighter
 from rich.text import Text
 
 from lilbee.core.vectors import Vector
@@ -159,8 +160,36 @@ class SyncResult(BaseModel):
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
 
+    def _lines(self) -> list[list[tuple[str, str]]]:
+        """The summary as lines of ``(text, style)`` segments; ``""`` means unstyled."""
+        lines: list[list[tuple[str, str]]] = [
+            [(f"Added: {len(self.added)}", "")],
+            [(f"Updated: {len(self.updated)}", "")],
+            [(f"Removed: {len(self.removed)}", "")],
+            [(f"Unchanged: {self.unchanged}", "")],
+        ]
+        if self.index_mismatch is not None:
+            lines.append([("Index mismatch:", "red"), (f" {self.index_mismatch.message}", "")])
+        if self.relocated:
+            lines.append([(f"Relocated: {len(self.relocated)}", "")])
+        lines += [
+            [(f"Held out: {len(self.held_out)}", "")],
+            [(f"Skipped: {len(self.skipped)}", "")],
+            [(f"Failed: {len(self.failed)}", "")],
+            [(f"Truncated: {self.truncated}", "")],
+        ]
+        lines += [
+            [("  ", ""), (h.filename, "yellow"), (f": {h.reason}", "")] for h in self.held_out
+        ]
+        lines += [[("  ", ""), (name, "yellow")] for name in self.skipped]
+        lines += [[("  ", ""), (name, "red")] for name in self.failed]
+        return lines
+
     def __str__(self) -> str:
-        return self.__rich__().markup
+        return "\n".join(
+            "".join(f"[{style}]{text}[/{style}]" if style else text for text, style in line)
+            for line in self._lines()
+        )
 
     def __repr__(self) -> str:
         return (
@@ -171,37 +200,9 @@ class SyncResult(BaseModel):
         )
 
     def __rich__(self) -> Text:
-        """Render as literal text: filenames and reasons here are user-controlled."""
-        lines: list[Text] = [
-            Text(f"Added: {len(self.added)}"),
-            Text(f"Updated: {len(self.updated)}"),
-            Text(f"Removed: {len(self.removed)}"),
-            Text(f"Unchanged: {self.unchanged}"),
-        ]
-        if self.index_mismatch is not None:
-            lines.append(
-                Text.assemble(("Index mismatch:", "red"), " ", self.index_mismatch.message)
-            )
-        if self.relocated:
-            lines.append(Text(f"Relocated: {len(self.relocated)}"))
-        lines += [
-            Text(f"Held out: {len(self.held_out)}"),
-            Text(f"Skipped: {len(self.skipped)}"),
-            Text(f"Failed: {len(self.failed)}"),
-            Text(f"Truncated: {self.truncated}"),
-        ]
-        for held in self.held_out:
-            lines.append(Text.assemble("  ", (held.filename, "yellow"), f": {held.reason}"))
-        for name in self.skipped:
-            lines.append(Text.assemble("  ", (name, "yellow")))
-        for name in self.failed:
-            lines.append(Text.assemble("  ", (name, "red")))
-        rendered = Text()
-        for i, line in enumerate(lines):
-            if i:
-                rendered.append("\n")
-            rendered.append_text(line)
-        return rendered
+        """Render the summary with every filename and reason as literal text."""
+        rendered = Text("\n").join(Text.assemble(*line) for line in self._lines())
+        return ReprHighlighter()(rendered)
 
 
 @dataclass

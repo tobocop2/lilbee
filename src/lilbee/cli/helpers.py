@@ -51,7 +51,8 @@ def announce_cold_start(role: object, model: str) -> Console | None:
             (f"Starting {role.value} engine (loading ", theme.MUTED),
             model,
             (")...", theme.MUTED),
-        )
+        ),
+        soft_wrap=True,
     )
     return err
 
@@ -69,7 +70,7 @@ def announce_ready(err: Console | None, role: object) -> None:
         return
     failure = _chat_warm_error(role)
     if failure is not None:
-        err.print(failure, style=theme.ERROR, markup=False)
+        err.print(failure, style=theme.ERROR, markup=False, soft_wrap=True)
         return
     err.print(f"{role.value} engine ready.", style=theme.MUTED, markup=False)
 
@@ -77,7 +78,7 @@ def announce_ready(err: Console | None, role: object) -> None:
 def announce_retrieval_query(query: str) -> None:
     """Print the "Searching for: <query>" stderr line for a rewritten follow-up."""
     line = SEARCHING_FOR.format(query=query)
-    Console(stderr=True).print(line, style=theme.MUTED, markup=False)
+    Console(stderr=True).print(line, style=theme.MUTED, markup=False, soft_wrap=True)
 
 
 def _chat_warm_error(role: object) -> str | None:

@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 
 import typer
 from rich.console import Console
-from rich.markup import escape
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 from rich.text import Text
@@ -39,6 +38,7 @@ from lilbee.cli.app import (
 )
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
+from lilbee.runtime.progress.columns import literal_text_column
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -251,16 +251,15 @@ def _pull_interactive_progress(ref: str, src: ModelSource, *, allow_unsupported:
     """Drive Rich's Live progress bar during a native HuggingFace download."""
     err_console = Console(stderr=True, force_terminal=True)
     with Progress(
-        TextColumn("[progress.description]{task.description}"),
+        literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),
         TextColumn("{task.percentage:>3.0f}%"),
-        TextColumn("{task.fields[detail]}"),
+        literal_text_column("{task.fields[detail]}"),
         TimeRemainingColumn(),
         console=err_console,
         transient=False,
     ) as progress:
-        # escape(), not Text: the description column only accepts a markup string.
-        task_id = progress.add_task(f"Downloading {escape(ref)}", total=100, detail="")
+        task_id = progress.add_task(f"Downloading {ref}", total=100, detail="")
 
         def on_update(p: DownloadProgress) -> None:
             progress.update(task_id, completed=p.percent, detail=p.detail)
@@ -335,7 +334,7 @@ def rm_cmd(
             raise typer.Exit(1)
         return
     if not data.deleted:
-        console.print(Text(f"Not found: {ref}", style=theme.WARNING))
+        console.print(Text(f"Not found: {ref}", style=theme.WARNING), soft_wrap=True)
         raise typer.Exit(1)
     suffix = f" ({data.freed_gb:.2f} GB freed)" if data.freed_gb else ""
     console.print(Text.assemble("Removed ", (ref, theme.ACCENT), suffix, "."), soft_wrap=True)

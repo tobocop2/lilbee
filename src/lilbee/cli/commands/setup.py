@@ -66,7 +66,7 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
     context = _download_tls_context()
     dest_dir = Path(tempfile.mkdtemp(prefix="lilbee-self-check-"))
     dest = dest_dir / filename
-    console.print(f"Downloading {url}", markup=False)
+    console.print(f"Downloading {url}", markup=False, soft_wrap=True)
     last_exc: BaseException | None = None
     # Any exit other than a successful return drops the temp dir, so a failed
     # download never leaves an empty/partial dir behind.
@@ -80,7 +80,9 @@ def _download_self_check_model(repo: str, filename: str) -> Path:
                 return dest
             except (OSError, urllib.error.URLError) as exc:
                 last_exc = exc
-                console.print(f"download attempt {attempt + 1} failed: {exc!r}", markup=False)
+                console.print(
+                    f"download attempt {attempt + 1} failed: {exc!r}", markup=False, soft_wrap=True
+                )
         raise RuntimeError(f"GGUF download failed after 3 attempts: {last_exc!r}")
     except BaseException:
         shutil.rmtree(dest_dir, ignore_errors=True)
@@ -421,7 +423,9 @@ def self_check_extras_cmd() -> None:
             )
             console.print(f"  {name}: {tag}")  # style-check: allow-markup -- fixed extra names
             if not ok:
-                console.print(f"    {results.get(f'{name}_error', '')}", markup=False)
+                console.print(
+                    f"    {results.get(f'{name}_error', '')}", markup=False, soft_wrap=True
+                )
 
     if failed:
         raise typer.Exit(1)
@@ -451,13 +455,14 @@ def token(
             json_output({"error": f"Could not read server.json: {exc}"})
         else:
             console.print(
-                Text.assemble(("Error: ", theme.ERROR), f"Could not read server.json: {exc}")
+                Text.assemble(("Error: ", theme.ERROR), f"Could not read server.json: {exc}"),
+                soft_wrap=True,
             )
         raise SystemExit(1) from None
     if cfg.json_mode:
         json_output({"token": tok})
         return
-    console.print(tok, markup=False)
+    console.print(tok, markup=False, soft_wrap=True)
 
 
 def login() -> None:

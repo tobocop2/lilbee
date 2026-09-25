@@ -267,6 +267,21 @@ async def test_bar_flags_a_configured_but_never_installed_model(monkeypatch) -> 
             assert "not installed" in str(btn.tooltip)
 
 
+async def test_bar_shows_a_bracketed_model_name_as_written(monkeypatch) -> None:
+    """A hand-edited model ref can carry ``[/x]``; the pill must not parse it as a tag."""
+    from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
+    from lilbee.core.config import cfg
+
+    monkeypatch.setattr(cfg, "chat_model", "ollama/odd[/x]")
+    app = _BarTestApp()
+    async with app.run_test(size=(160, 40)) as pilot:
+        with patch("lilbee.cli.tui.widgets.model_bar.is_model_installed", return_value=True):
+            btn = app.screen.query_one("#model-pick-chat", ModelPickerButton)
+            btn.repaint()
+            await pilot.pause()
+            assert "[/x]" in str(btn.render())
+
+
 async def test_bar_installed_model_is_not_flagged(monkeypatch) -> None:
     from lilbee.cli.tui.widgets.model_bar import ModelPickerButton
     from lilbee.core.config import cfg

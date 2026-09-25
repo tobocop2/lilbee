@@ -19,13 +19,13 @@ from rich.progress import (
     Progress,
     SpinnerColumn,
     TaskID,
-    TextColumn,
     TimeElapsedColumn,
 )
 
 from lilbee.catalog.formatting import display_label_for_ref
 from lilbee.cli.app import console
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
+from lilbee.runtime.progress.columns import literal_text_column
 
 _WARM_STREAM_PATH = "/api/warm/stream"
 _SSE_DATA_PREFIX = "data:"
@@ -100,10 +100,10 @@ def render_warm(base_url: str, timeout_s: float) -> bool | None:
     """
     columns = (
         SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
+        literal_text_column("{task.description}", style="progress.description"),
         BarColumn(),
         DownloadColumn(),
-        TextColumn("{task.fields[detail]}"),
+        literal_text_column("{task.fields[detail]}"),
         TimeElapsedColumn(),
     )
     saw_event = False

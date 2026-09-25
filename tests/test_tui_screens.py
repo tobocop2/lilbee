@@ -9730,8 +9730,30 @@ class TestWikiScreenWithPages:
             await pilot.pause()
 
             header = app.screen.query_one("#wiki-page-header", Static)
-            header_text = header.content
+            header_text = str(header.render())
             assert "My Page" in header_text
+
+    async def test_bracketed_title_and_folder_render_as_written(self, tmp_path):
+        """Titles and folder names are corpus text; ``[/x]`` must not parse as a tag."""
+        from textual.widgets import Tree
+
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _create_wiki_page(wiki_root, "summaries", "a[red]b/page", "Ford [/x] notes")
+
+        app = WikiTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            screen._display_page("summaries/a[red]b/page")
+            await pilot.pause()
+            header = str(screen.query_one("#wiki-page-header", Static).render())
+            crumb = str(screen.query_one("#wiki-breadcrumb", Static).render())
+            tree = screen.query_one("#wiki-page-list", Tree)
+            labels = [str(n.label) for n in _descendants(tree.root)]
+        assert header.startswith("Ford [/x] notes")
+        assert crumb == "summaries > a[red]b > Ford [/x] notes"
+        assert "a[red]b" in labels
 
     async def test_displays_faithfulness_in_header(self, tmp_path):
         """Page header shows faithfulness score from frontmatter."""
@@ -9750,7 +9772,7 @@ class TestWikiScreenWithPages:
             await pilot.pause()
 
             header = app.screen.query_one("#wiki-page-header", Static)
-            header_text = header.content
+            header_text = str(header.render())
             assert "85%" in header_text
 
 
@@ -10671,6 +10693,22 @@ class TestWikiDraftsScreen:
             diff_widget = screen.query_one("#wiki-drafts-diff", Static)
             assert "Draft body for pairable" in diff_widget.content
 
+    async def test_diff_shows_bracketed_lines_as_written(self, tmp_path):
+        """Draft bodies are corpus text; ``[/x]`` in a diff line must not parse."""
+        cfg.wiki = True
+        cfg.data_root = tmp_path
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        _write_draft(wiki_root, "pairable", drift_pct=20)
+        _write_published(wiki_root, "pairable", "old [red]body[/x]")
+
+        app = WikiDraftsTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = app.screen
+            screen._display_diff("pairable")
+            await pilot.pause()
+            rendered = str(screen.query_one("#wiki-drafts-diff", Static).render())
+        assert "-old [red]body[/x]" in rendered
+
     async def test_diff_missing_draft_resets_pane(self, tmp_path):
         """Selecting a slug with no draft file returns to the empty state."""
         from lilbee.cli.tui import messages as msg
@@ -11290,7 +11328,7 @@ class TestWikiFormatPageHeader:
     def test_basic_header(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "summary", 3, "2025-01-01", 0.85)
+        result = _format_page_header("Title", "summary", 3, "2025-01-01", 0.85).plain
         assert "Title" in result
         assert "summary" in result
         assert "3 sources" in result
@@ -11299,31 +11337,42 @@ class TestWikiFormatPageHeader:
     def test_no_faithfulness(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "synthesis", 0, "", None)
+        result = _format_page_header("Title", "synthesis", 0, "", None).plain
         assert "Title" in result
         assert "%" not in result
 
     def test_no_sources(self):
         from lilbee.cli.tui.screens.wiki import _format_page_header
 
-        result = _format_page_header("Title", "synthesis", 0, "2025-01-01", None)
+        result = _format_page_header("Title", "synthesis", 0, "2025-01-01", None).plain
         assert "sources" not in result
+
+    def test_a_bracketed_title_is_literal(self):
+        from lilbee.cli.tui.screens.wiki import _format_page_header
+
+        result = _format_page_header("C:\\x\\[/y] [red]T", "summary", 0, "", None)
+        assert result.plain == "C:\\x\\[/y] [red]T  summary"
 
 
 class TestWikiBreadcrumb:
     def test_single_part_slug_returns_empty(self):
         from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
 
-        assert _breadcrumb_for_slug("doc", "Title") == ""
+        assert _breadcrumb_for_slug("doc", "Title").plain == ""
 
     def test_multi_part_slug_builds_chain(self):
         from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
 
-        result = _breadcrumb_for_slug("summaries/cv-manual/01-brakes/page-0042", "Page 42")
+        result = _breadcrumb_for_slug("summaries/cv-manual/01-brakes/page-0042", "Page 42").plain
         assert "summaries" in result
         assert "cv manual" in result
         assert "01 brakes" in result
         assert "Page 42" in result
+
+    def test_a_bracketed_title_is_literal(self):
+        from lilbee.cli.tui.screens.wiki import _breadcrumb_for_slug
+
+        assert _breadcrumb_for_slug("summaries/p", "Ford [/x]").plain == "summaries > Ford [/x]"
 
 
 class TestWikiShortLabel:
@@ -15297,3 +15346,27 @@ async def test_settings_leaves_non_credentials_visible():
             key = editor.name or ""
             if not key.endswith("_api_key") and key != "hf_token":
                 assert editor.password is False, f"{key} is masked but is not a credential"
+
+
+async def test_settings_invalid_regex_error_shows_brackets_as_written():
+    """The regex error quotes the typed pattern; ``[/x]`` must not parse as a tag."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.screens.settings_widgets import LIST_ERROR_ID_PREFIX
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        screen.populate_all_panes()
+        await pilot.pause()
+        event = MagicMock()
+        event.control.name = "crawl_exclude_patterns"
+        event.control.text = "(?P<[/x]>a)"
+        with patch.object(screen, "_persist_value"):
+            screen._on_list_blur_save(event)
+        await pilot.pause()
+        error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
+        rendered = str(error.render())
+    assert "bad character in group name '[/x]'" in rendered

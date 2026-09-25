@@ -2770,6 +2770,19 @@ class TestSyncResultStr:
         assert "[yellow]scan.pdf[/yellow]" in text
         assert "[yellow]scan2.pdf[/yellow]" in text
 
+    def test_str_keeps_bracketed_names_unescaped(self):
+        """``str()`` is public through the API; it must not add escape backslashes."""
+        from lilbee.data.ingest import SyncResult
+
+        text = str(SyncResult(skipped=["C:\\n\\[a].pdf"]))
+        assert "  [yellow]C:\\n\\[a].pdf[/yellow]" in text
+
+    def test_rich_output_highlights_counts(self):
+        from lilbee.data.ingest import SyncResult
+
+        rendered = SyncResult(added=["a"]).__rich__()
+        assert any(rendered.plain[span.start : span.end] == "1" for span in rendered.spans)
+
     def test_repr_matches_str(self):
         from lilbee.data.ingest import SyncResult
 

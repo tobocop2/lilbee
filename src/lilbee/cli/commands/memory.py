@@ -141,7 +141,8 @@ def memory_remove(
             raise typer.Exit(1)
         return
     console.print(
-        Text.assemble(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found.")
+        Text.assemble(f"Removed {memory_id}." if deleted else f"No memory {memory_id} found."),
+        soft_wrap=True,
     )
     # Exit non-zero on not-found, matching `model remove` / `remove`.
     if not deleted:

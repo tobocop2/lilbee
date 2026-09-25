@@ -82,15 +82,12 @@ def _bar(fraction: float, width: int, fill_color: str, track_color: str) -> str:
     return f"[{fill_color}]{fill * filled}[/][{track_color}]{track * (width - filled)}[/]"
 
 
-def _badge_role_markup(badge: str, secondary: str, muted: str) -> str:
-    """Return Rich markup for the role portion of a badge.
-
-    Splits "role - model" so the role renders in secondary and the model in muted.
-    """
+def _badge_content(badge: str, secondary: str, muted: str) -> Content:
+    """The "role - model" badge as literal text: role in secondary, model in muted."""
     if _BADGE_SEP in badge:
         role_part, model_part = badge.split(_BADGE_SEP, 1)
-        return f"[{secondary}]{role_part}[/][{muted}]{_BADGE_SEP}{model_part}[/]"
-    return f"[{secondary}]{badge}[/]"
+        return Content.assemble((role_part, secondary), (f"{_BADGE_SEP}{model_part}", muted))
+    return Content.styled(badge, secondary)
 
 
 def _render_row(
@@ -98,7 +95,7 @@ def _render_row(
     label: str,
     badge: str,
     theme: dict[str, str],
-) -> str:
+) -> Content:
     """Render one GPU as a single table row: bullet, label, util bar, vram bar, badge."""
     muted = _theme_color(theme, "text-muted")
     secondary = _theme_color(theme, "secondary")
@@ -125,11 +122,13 @@ def _render_row(
 
     vram_bar = _bar(vram_frac, _BAR_WIDTH, vram_color, panel_color)
     vram_txt = f"[{muted}]{used_gib:>5.1f}/{total_gib:>2.0f}G[/]"
-    badge_txt = f"  {_badge_role_markup(badge, secondary, muted)}" if badge else ""
-    return (
+    row = Content.from_markup(
         f"  [{dot_color}]{_BULLET}[/] [bold {foreground}]{label:<6}[/]"
-        f" {util_bar} {util_pct}  {vram_bar} {vram_txt}{badge_txt}"
+        f" {util_bar} {util_pct}  {vram_bar} {vram_txt}"
     )
+    if not badge:
+        return row
+    return Content.assemble(row, "  ", _badge_content(badge, secondary, muted))
 
 
 def _render_stats(
@@ -139,7 +138,7 @@ def _render_stats(
     theme: dict[str, str],
     *,
     probed: bool,
-) -> str:
+) -> Content:
     """Build the unified GPU table (one row per GPU) from a stat snapshot.
 
     With no stats, ``probed`` picks the placeholder: the empty-GPUs text only
@@ -149,8 +148,8 @@ def _render_stats(
     if not stats:
         muted = _theme_color(theme, "text-muted")
         text = msg.FLEET_NO_GPUS if probed else msg.FLEET_GPU_PROBING
-        return f"[{muted}]  {text}[/]"
-    return "\n".join(
+        return Content.styled(f"  {text}", muted)
+    return Content("\n").join(
         _render_row(stats[idx], labels.get(idx, f"GPU{idx}"), roles.get(idx, ""), theme)
         for idx in sorted(stats)
     )
@@ -268,9 +267,10 @@ class GpuFleetPanel(Static):
             # must not repaint the empty state over the failure message.
             return
         theme = self._resolve_theme()
-        markup = _render_stats(stats, labels, roles, theme, probed=self._probed)
+        content = _render_stats(stats, labels, roles, theme, probed=self._probed)
         hint = intel_util_hint(self._devices, stats)
         if hint:
             muted = _theme_color(theme, "text-muted")
-            markup += f"\n[{muted}]  {msg.intel_util_hint_text(hint)}[/]"
-        self.update(markup)
+            hint_line = Content.styled(f"  {msg.intel_util_hint_text(hint)}", muted)
+            content = Content.assemble(content, "\n", hint_line)
+        self.update(content)

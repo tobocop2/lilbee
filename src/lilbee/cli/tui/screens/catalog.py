@@ -1543,6 +1543,7 @@ class CatalogScreen(Screen[None]):
                 Static(
                     msg.CATALOG_SEARCH_HF_CTA.format(query=search),
                     classes="grid-cta search-hf-cta",
+                    markup=False,
                 )
             )
         container.mount_all(ctas)

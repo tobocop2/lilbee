@@ -3226,7 +3226,7 @@ class TestAddWithUrls:
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = runner.invoke(app, ["add", "https://example.com"])
             assert result.exit_code == 1
-            assert "pip install" in result.output.lower()
+            assert "pip install 'lilbee[crawler]'" in result.output
 
     def test_add_nonexistent_path_fails(self, tmp_path):
         """Adding a nonexistent file path fails with error."""
@@ -4180,6 +4180,19 @@ class TestWikiBrowseCommands:
         assert result.exit_code == 0
         assert "Body text." in result.output
 
+    def test_read_prints_links_and_brackets_as_written(self, mock_svc, isolated_env):
+        """Page content is markdown: link text and a stray ``[/x]`` print as written."""
+        cfg.wiki_dir = "wiki"
+        page_dir = isolated_env / "wiki" / "entities"
+        page_dir.mkdir(parents=True)
+        (page_dir / "guide.md").write_text(
+            "---\ntitle: Guide\n---\n\nSee [docs](docs/guide.md) and [/x].\n",
+            encoding="utf-8",
+        )
+        result = runner.invoke(app, ["wiki", "read", "entities/guide"])
+        assert result.exit_code == 0, result.output
+        assert "See [docs](docs/guide.md) and [/x]." in result.output
+
     def test_read_json_output(self, mock_svc, isolated_env):
         cfg.wiki_dir = "wiki"
         cfg.json_mode = True
@@ -4233,6 +4246,18 @@ class TestWikiCitations:
         assert result.exit_code == 0
         assert "src1" in result.output
         assert "doc.md" in result.output
+
+    def test_citations_title_prints_a_bracketed_path_as_written(self, mock_svc):
+        mock_svc.store.get_citations_for_wiki.return_value = [_citation_row()]
+        result = runner.invoke(app, ["wiki", "citations", "w/n[red]x.md"])
+        assert result.exit_code == 0, result.output
+        assert "Citations: w/n[red]x.md" in result.output
+
+    def test_reverse_lookup_title_prints_a_bracketed_source_as_written(self, mock_svc):
+        mock_svc.store.get_citations_for_source.return_value = [_citation_row()]
+        result = runner.invoke(app, ["wiki", "citations", "--source", "d[/x].md"])
+        assert result.exit_code == 0, result.output
+        assert "Pages citing: d[/x].md" in result.output
 
     def test_citations_long_excerpt_truncated(self, mock_svc):
         long_excerpt = "A" * 80
@@ -4562,11 +4587,11 @@ class TestWikiWipe:
     def test_the_warning_prints_a_bracketed_wiki_dir_literally(
         self, mock_svc, isolated_env, mock_wipe
     ):
-        """The confirmation warning names the wiki path, which is user-configured."""
-        cfg.wiki_dir = "wiki[draft]"
+        """The warning names the user-configured wiki path, unbroken at any width."""
+        cfg.wiki_dir = "wiki-" + "x" * 90 + "[draft]"
         result = runner.invoke(app, ["wiki", "wipe"], input="n\n")
         assert result.exit_code == 0
-        assert "wiki[draft]" in result.output
+        assert cfg.wiki_dir in result.output
         mock_wipe.assert_not_called()
 
 
@@ -4710,6 +4735,15 @@ class TestWikiDraftsCli:
         assert result.exit_code == 0
         assert "-old body" in result.output
         assert "+new body" in result.output
+
+    def test_diff_prints_bracketed_lines_as_written(self, mock_svc, isolated_env):
+        self._seed_slug(isolated_env, "y")
+        (isolated_env / "wiki" / "drafts" / "y.md").write_text(
+            "new [red]body[/x]\n", encoding="utf-8"
+        )
+        result = runner.invoke(app, ["wiki", "drafts", "diff", "y"])
+        assert result.exit_code == 0, result.output
+        assert "+new [red]body[/x]" in result.output
 
     def test_diff_json_output(self, mock_svc, isolated_env):
         self._seed(isolated_env)

@@ -257,7 +257,7 @@ class ModelPickerButton(Static, can_focus=True):
     ]
 
     def __init__(self, *, scope: PickerScope, button_id: str) -> None:
-        super().__init__(id=button_id)
+        super().__init__(id=button_id, markup=False)
         self._scope: PickerScope = scope
         self._key: str = config_key_for_scope(scope)
         self._options: list[ModelOption] = []
