@@ -186,8 +186,15 @@ def _demote_html_inline(
 
 
 def _code_span_ranges(text: str) -> list[tuple[int, int]]:
-    """The ``(start, end)`` character ranges of *text* a backtick code span covers."""
+    """The ``(start, end)`` character ranges of *text* a backtick code span covers.
+
+    Mirrors ``markdown_it``'s own backtick scan (``rules_inline/backticks.py``),
+    including its reject cache: a run of many distinct-length backtick runs that
+    never close would otherwise rescan the remaining text once per run.
+    """
     ranges: list[tuple[int, int]] = []
+    reject: dict[int, int] = {}
+    scanned_to_end = False
     i, length = 0, len(text)
     while i < length:
         if text[i] != "`":
@@ -196,21 +203,25 @@ def _code_span_ranges(text: str) -> list[tuple[int, int]]:
         run_start = i
         while i < length and text[i] == "`":
             i += 1
-        fence = text[run_start:i]
+        opener_length = i - run_start
+        if scanned_to_end and reject.get(opener_length, -1) <= run_start:
+            continue
         probe = i
         while True:
-            close = text.find(fence, probe)
+            close = text.find("`", probe)
             if close == -1:
+                scanned_to_end = True
                 break
-            close_end = close + len(fence)
-            if close_end < length and text[close_end] == "`":
-                probe = close_end
-                while probe < length and text[probe] == "`":
-                    probe += 1
-                continue
-            ranges.append((run_start, close_end))
-            i = close_end
-            break
+            close_end = close
+            while close_end < length and text[close_end] == "`":
+                close_end += 1
+            closer_length = close_end - close
+            if closer_length == opener_length:
+                ranges.append((run_start, close_end))
+                i = close_end
+                break
+            reject[closer_length] = close
+            probe = close_end
     return ranges
 
 

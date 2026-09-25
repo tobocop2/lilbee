@@ -482,6 +482,22 @@ def test_a_large_adversarial_html_block_demotes_in_well_under_a_second():
     assert "<h3 " in markdown
 
 
+def test_many_unclosed_backtick_runs_before_a_real_heading_stay_fast():
+    """Many distinct-length backtick runs that never close must not rescan the rest
+    of the message for each one; an un-memoized scan took 1.2s on 154KB of this shape."""
+    parts = []
+    for k in range(1, 551):
+        parts.append("`" * k)
+        parts.append("x" * 5)
+    parts.append("<h2>x</h2>")
+    content = "".join(parts)
+    start = time.perf_counter()
+    markdown = session_markdown(_session(_assistant(content)))
+    elapsed = time.perf_counter() - start
+    assert elapsed < 1.0, f"took {elapsed:.3f}s"
+    assert "<h4>x</h4>" in markdown
+
+
 def test_the_sources_list_follows_the_closed_fence():
     markdown = session_markdown(_session(_assistant("```\nx = 1", sources=("manual.pdf",))))
     assert "```\nx = 1\n```\n\nSources:\n" in markdown
