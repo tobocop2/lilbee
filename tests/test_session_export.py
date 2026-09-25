@@ -644,6 +644,7 @@ def test_a_tab_in_a_list_continuation_line_still_demotes_the_heading():
         ("- a\n\t\\<h2> <h2>x</h2>", "- a\n\t\\<h2> <h4>x</h4>"),
         ("a `<h2>` <h2>x</h2>\x00", "a `<h2>` <h4>x</h4>\x00"),
         ("a `<h2>` <h2>x</h2>\n---", "a `<h2>` <h4>x</h4>\n\\---"),
+        ("a <em><h2 x", "a <em><h2 x"),
     ],
     ids=[
         "nbsp-first-line",
@@ -654,6 +655,7 @@ def test_a_tab_in_a_list_continuation_line_still_demotes_the_heading():
         "tab-before-an-escape",
         "nul",
         "underlined-heading",
+        "unclosed-tag-right-after-a-real-one",
     ],
 )
 def test_odd_whitespace_leaves_code_spans_and_escapes_as_written(content, expected):

@@ -160,26 +160,45 @@ def _nest_headings(text: str) -> str:
     independently of whether it is ever closed.
     """
     lines = text.split("\n")
-    tokens = _heading_parser().parse(text)
-    paragraph_ends: list[tuple[int, str]] = []
-    for token in tokens:
-        if token.type == "heading_open" and token.map and token.markup.startswith(_ATX_MARKER):
-            level = min(len(token.markup) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
-            start = token.map[0]
-            lines[start] = lines[start].replace(token.markup, _ATX_MARKER * level, 1)
-        elif token.type == "heading_open" and token.map:
-            underline = token.map[1] - 1
-            container, _, rest = lines[underline].partition(token.markup)
-            lines[underline] = container + _ESCAPE + token.markup + rest
-            if token.map[1] < len(lines) and lines[token.map[1]].strip(_MARKDOWN_BLANK):
-                paragraph_ends.append((underline, container.rstrip()))
-        elif token.type == "html_block" and token.map:
-            _demote_html_block(lines, *token.map)
-        elif token.type == "inline" and token.map:
-            _demote_html_inline(lines, token.content, token.children, *token.map)
-    for underline, blank_line in paragraph_ends:
-        lines[underline] += "\n" + blank_line
+    paragraph_ends: list[tuple[int, str | None]] = []
+    for token in _heading_parser().parse(text):
+        if token.map:
+            start, end = token.map
+            paragraph_ends.append((end - 1, _nest_block(lines, token, start, end)))
+    for last_line, blank_line in paragraph_ends:
+        if blank_line is not None:
+            lines[last_line] += "\n" + blank_line
     return "\n".join(lines)
+
+
+def _nest_block(lines: list[str], token: Token, start: int, end: int) -> str | None:
+    """Rewrite *token*'s lines *start* to *end*; the blank line to add after them, if any."""
+    if token.type == "heading_open":
+        return _nest_heading(lines, token.markup, start, end)
+    if token.type == "html_block":
+        _demote_html_block(lines, start, end)
+    elif token.type == "inline":
+        _demote_html_inline(lines, token.content, token.children, start, end)
+    return None
+
+
+def _nest_heading(lines: list[str], markup: str, start: int, end: int) -> str | None:
+    """Rewrite the heading on lines *start* to *end*; the blank line to add after it, if any."""
+    if markup.startswith(_ATX_MARKER):
+        level = min(len(markup) + _TURN_HEADING_LEVEL, _MAX_HEADING_LEVEL)
+        lines[start] = lines[start].replace(markup, _ATX_MARKER * level, 1)
+        return None
+    return _escape_underline(lines, markup, end)
+
+
+def _escape_underline(lines: list[str], markup: str, end: int) -> str | None:
+    """Escape the underline before line *end*; the blank line that keeps the next block, if any."""
+    underline = end - 1
+    container, _, rest = lines[underline].partition(markup)
+    lines[underline] = container + _ESCAPE + markup + rest
+    if end < len(lines) and lines[end].strip(_MARKDOWN_BLANK):
+        return container.rstrip()
+    return None
 
 
 def _demote_html_tag(match: re.Match[str]) -> str:
@@ -207,7 +226,7 @@ def _demote_html_inline(
     raw = "\n".join(lines[start:end])
     pieces: list[str] = []
     cursor = 0
-    # The parser only strips container markers and whitespace, so the matches pair up in order.
+    # The parser strips only markers and whitespace and turns NUL into U+FFFD: matches pair up.
     for match, is_real in zip(_HTML_HEADING_RE.finditer(raw), real, strict=True):
         if is_real:
             pieces += [raw[cursor : match.start()], _demote_html_tag(match)]
