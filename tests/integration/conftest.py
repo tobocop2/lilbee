@@ -47,6 +47,7 @@ def _real_entry(hf_repo: str, gguf_filename: str, task: str, size_gb: float) -> 
 
 CHAT_ENTRY = _real_entry(_CI_CHAT_REPO, _CI_CHAT_FILE, "chat", 0.5)
 EMBED_ENTRY = _real_entry(_EMBED_REPO, _EMBED_FILE, "embedding", 0.3)
+EMBEDDING_DIM = 768
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 DOCS_DIR = FIXTURES_DIR / "docs"
@@ -261,3 +262,13 @@ def wiki_pipeline(tmp_path_factory, _integration_loop):
     reset_provider()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
+
+
+@pytest.fixture(scope="module")
+def crawl_site():
+    """The local fixture website that the end-to-end crawl tests crawl."""
+    # circular: _crawl_site -> conftest via EMBED_ENTRY
+    from tests.integration._crawl_site import RunningSite
+
+    with RunningSite() as site:
+        yield site

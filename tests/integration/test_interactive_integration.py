@@ -161,11 +161,11 @@ def isolated_env(tmp_path, real_models):
 
     cfg.llm_provider = "auto"
     cfg.models_dir = canonical_models_dir()
-    from tests.integration.conftest import _resolve_installed_ref
+    from tests.integration.conftest import EMBEDDING_DIM, _resolve_installed_ref
 
     cfg.chat_model = _resolve_installed_ref(_chat_model_entry().hf_repo)
     cfg.embedding_model = _resolve_installed_ref(_embedding_model_entry().hf_repo)
-    cfg.embedding_dim = 768
+    cfg.embedding_dim = EMBEDDING_DIM
 
     cfg.concept_graph = False
     cfg.query_expansion_count = 0

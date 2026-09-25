@@ -251,6 +251,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.11", "3.12", "3.13"]
+        # Browser-mode and TUI crawl tests run in one cell per OS.
+        include:
+          - python-version: "3.12"
+            full-crawl: true
     steps:
       - uses: actions/checkout@v7
 
@@ -378,22 +382,24 @@ jobs:
       # an unrelated dependency does, and hashing the lock minted a fresh ~300 MB
       # entry per OS on every bump while the old ones sat on the cap until evicted.
       - name: Restore Playwright cache
+        if: matrix.full-crawl
         id: pw-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
           key: playwright-${{ runner.os }}-chromium-v1
 
-      - name: Install Playwright for crawl4ai
-        if: steps.pw-cache.outputs.cache-hit != 'true'
-        run: uv run crawl4ai-setup
-        continue-on-error: true
+      # Always runs in the full-crawl cell: it is a no-op when the cached revision
+      # matches, and installs the expected revision when the cache holds another.
+      - name: Install Chromium for browser-mode crawls
+        if: matrix.full-crawl
+        run: uv run lilbee setup crawler
         env:
           PYTHONIOENCODING: utf-8
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
       - name: Save Playwright cache
-        if: steps.pw-cache.outputs.cache-hit != 'true'
+        if: matrix.full-crawl && steps.pw-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
@@ -418,10 +424,24 @@ jobs:
           bash scripts/ci_retry.sh 3 uv run lilbee model pull nomic-ai/nomic-embed-text-v1.5-GGUF
           bash scripts/ci_retry.sh 3 uv run lilbee model pull Qwen/Qwen3-0.6B-GGUF
 
+      # The subdomain crawl tests need two names that resolve to loopback without DNS.
+      - name: Map the crawl fixture hostnames to loopback
+        shell: bash
+        run: |
+          set -euo pipefail
+          entry="127.0.0.1 site.test docs.site.test"
+          if [ "${RUNNER_OS}" = "Windows" ]; then
+            printf '\r\n%s\r\n' "${entry}" >> /c/Windows/System32/drivers/etc/hosts
+          else
+            printf '\n%s\n' "${entry}" | sudo tee -a /etc/hosts > /dev/null
+          fi
+          uv run python -c "import socket; assert {socket.gethostbyname(n) for n in ('site.test', 'docs.site.test')} == {'127.0.0.1'}"
+
       - name: Run integration tests
         run: make test-integration
         env:
           LILBEE_DATA: ${{ runner.temp }}/lilbee
           LILBEE_LLM_PROVIDER: auto
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
+          LILBEE_TEST_FULL_CRAWL: ${{ matrix.full-crawl && '1' || '' }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
