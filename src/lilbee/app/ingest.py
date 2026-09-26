@@ -12,7 +12,7 @@ from pathlib import Path
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
-from lilbee.data.ingest.discovery import excluded_extension_reasons
+from lilbee.data.ingest.discovery import excluded_extension_reasons, resolve_source_path
 from lilbee.data.store.types import RemoveResult
 
 
@@ -344,6 +344,12 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     write_skip_reasons(config.data_root, reasons)
     forget_removed_from_wiki_index(list(result.removed))
     return result
+
+
+def forget_held_out(names: list[str]) -> None:
+    """Drop the skip records of held-out *names* and un-register any single-file root among them."""
+    _unmark_sources_under([resolve_source_path(name) for name in names])
+    unregister_roots(names)
 
 
 def forget_removed_from_wiki_index(removed: list[str]) -> None:

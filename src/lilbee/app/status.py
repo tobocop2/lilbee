@@ -195,9 +195,14 @@ def gather_status() -> StatusResult:
     )
 
 
+def held_out_names() -> list[str]:
+    """Every held-out source name, sorted."""
+    return sorted(load_skip_markers(cfg.data_root))
+
+
 def held_out_sources() -> tuple[list[SkippedSource], int]:
     """Held-out files with reasons, capped at ``STATUS_SKIPPED_LIMIT``, and the real count."""
-    held_out = sorted(load_skip_markers(cfg.data_root))
+    held_out = held_out_names()
     return describe_skips(cfg.data_root, held_out[:STATUS_SKIPPED_LIMIT]), len(held_out)
 
 

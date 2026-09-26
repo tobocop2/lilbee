@@ -6,7 +6,7 @@ from textual.suggester import Suggester
 
 from lilbee.cli.tui.command_registry import completion_names
 from lilbee.cli.tui.widgets.autocomplete import (
-    _fetch_document_names,
+    _document_options,
     _model_options,
     _setting_options,
     _theme_options,
@@ -68,7 +68,7 @@ class SlashSuggester(Suggester):
         return _setting_options()
 
     def _get_document_names(self) -> list[str]:
-        return _fetch_document_names()
+        return _document_options()
 
     def _get_theme_names(self) -> list[str]:
         return _theme_options()
