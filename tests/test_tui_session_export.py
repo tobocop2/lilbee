@@ -21,8 +21,6 @@ from lilbee.sessions import MessageRole, SessionMessage, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
-_WAIT_S = 5.0
-
 
 @pytest.fixture(autouse=True)
 def _services():
@@ -193,7 +191,7 @@ async def test_export_while_a_turn_is_stopping_waits_for_the_turn_to_end(session
     def held_answer(*_args: object, **_kwargs: object):
         yield StreamToken(content="A2-partial", is_reasoning=False)
         started.set()
-        release.wait(_WAIT_S)
+        release.wait()
         yield StreamToken(content=" more", is_reasoning=False)
 
     app = LilbeeApp()

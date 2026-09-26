@@ -359,7 +359,7 @@ async def test_keys_typed_in_the_same_burst_as_leaving_the_drawer_reach_the_prom
         await wait_until(pilot, lambda: chat._chat_input.value == "hello")
         assert chat._chat_input.value == "hello"
         assert chat._chat_input.has_focus
-        assert not chat.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not chat.query(SessionsDrawer))
         assert (chat.session_id == session_id) is (key == "enter")
 
 
@@ -372,7 +372,7 @@ async def test_enter_in_the_same_burst_as_opening_the_drawer_resumes(sessions):
         send_key_burst(app, "ctrl+o", "enter")
         await wait_until(pilot, lambda: chat.session_id == session_id)
         assert chat.session_id == session_id
-        assert not chat.query(SessionsDrawer)
+        assert await pump_until(pilot, lambda: not chat.query(SessionsDrawer))
 
 
 @pytest.mark.parametrize("opening", [(), ("ctrl+o",)], ids=["drawer_open", "with_ctrl_o"])
