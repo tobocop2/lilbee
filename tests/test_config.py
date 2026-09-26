@@ -14,6 +14,8 @@ from lilbee.core.config import (
     SOURCES_TABLE,
     Config,
     cfg,
+    config_scope,
+    validate_ocr_timeout,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 from lilbee.core.config.model import _TomlSource, value_is_set
@@ -2080,6 +2082,35 @@ class TestActiveConfigScope:
         with config_scope(scoped):
             assert active_config() is scoped
         assert active_config() is cfg
+
+
+class TestValidateOcrTimeout:
+    """validate_ocr_timeout mirrors the ocr_timeout field's own ge=0.0 bound,
+    the rule the CLI already applies through a direct cfg.ocr_timeout assignment."""
+
+    def test_negative_raises(self):
+        with pytest.raises(ValueError, match="ocr_timeout"):
+            validate_ocr_timeout(-5.0)
+
+    def test_non_numeric_raises(self):
+        with pytest.raises(ValueError, match="ocr_timeout"):
+            validate_ocr_timeout("abc")
+
+    def test_zero_is_valid(self):
+        validate_ocr_timeout(0.0)
+
+    def test_huge_is_valid(self):
+        validate_ocr_timeout(1e18)
+
+    def test_none_is_valid(self):
+        validate_ocr_timeout(None)
+
+    def test_does_not_mutate_the_active_config(self):
+        scoped = cfg.model_copy(update={"ocr_timeout": 42.0})
+        with config_scope(scoped):
+            with pytest.raises(ValueError):
+                validate_ocr_timeout(-5.0)
+            assert scoped.ocr_timeout == 42.0
 
 
 class TestBoolVocabularyMatchesPydantic:

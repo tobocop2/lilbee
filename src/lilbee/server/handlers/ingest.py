@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from lilbee.app.ingest import register_sources
 from lilbee.app.services import get_services
-from lilbee.core.config import cfg
+from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.ingest_lock import IngestLockRegistry
@@ -166,13 +166,17 @@ def validate_add_paths(
 
 
 def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
-    """Extract and coerce OCR parameters from a request dict."""
+    """Extract, coerce, and validate OCR parameters from a request dict.
+
+    Raises ValueError on a non-numeric or out-of-bound ocr_timeout.
+    """
     enable_ocr = data.get("enable_ocr")
     ocr_timeout = data.get("ocr_timeout")
     if enable_ocr is not None:
         enable_ocr = bool(enable_ocr)
     if ocr_timeout is not None:
         ocr_timeout = float(ocr_timeout)
+    validate_ocr_timeout(ocr_timeout)
     return enable_ocr, ocr_timeout
 
 

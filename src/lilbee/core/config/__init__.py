@@ -28,6 +28,7 @@ from .defaults import (
 from .context import (
     active_config as active_config,
     config_scope as config_scope,
+    validate_ocr_timeout as validate_ocr_timeout,
 )
 from .enums import (
     ClustererBackend as ClustererBackend,
@@ -66,4 +67,5 @@ __all__ = [
     "cfg",
     "config_load_error",
     "config_scope",
+    "validate_ocr_timeout",
 ]

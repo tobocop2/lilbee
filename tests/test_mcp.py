@@ -393,6 +393,13 @@ class TestSync:
 
         assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
 
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_sync_rejects_negative_ocr_timeout(self, mock_sync):
+        """A negative ocr_timeout is a clean error; sync never runs."""
+        result = await sync(ocr_timeout=-5.0)
+        assert "error" in result
+        mock_sync.assert_not_called()
+
 
 class TestRemove:
     def test_removes_known_file(self, mock_svc):
@@ -879,6 +886,18 @@ class TestAdd:
             await add([str(src)], enable_ocr=True)
 
         assert cfg.enable_ocr == original_ocr
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_rejects_negative_ocr_timeout(self, mock_sync, tmp_path):
+        """A negative ocr_timeout is a clean error; nothing is registered or synced."""
+        src = tmp_path / "file.txt"
+        src.write_text("content", encoding="utf-8")
+
+        result = await add([str(src)], ocr_timeout=-5.0)
+
+        assert "error" in result
+        assert cfg.linked_roots == {}
+        mock_sync.assert_not_called()
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, mock_sync):

@@ -53,7 +53,7 @@ from lilbee.app.settings import (
     reset_settings,
 )
 from lilbee.catalog.types import ModelSource
-from lilbee.core.config import cfg
+from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
@@ -336,6 +336,10 @@ async def sync(
     from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
 
+    try:
+        validate_ocr_timeout(ocr_timeout)
+    except ValueError as exc:
+        return _error(str(exc))
     with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
         return (
             await run_sync(
@@ -361,6 +365,28 @@ async def _sync_after_add(
         return (await run_sync(quiet=True, cancel=cancel)).model_dump()
 
 
+async def _crawl_add_urls(
+    urls: list[str], render_mode: CrawlRenderMode | None
+) -> tuple[int, list[str]]:
+    """Crawl each URL as a single page for ``add``; returns (crawled_count, url_errors)."""
+    from lilbee.crawler import crawl_and_save
+
+    crawled_count = 0
+    errors: list[str] = []
+    for url in urls:
+        try:
+            # URL validation resolves the host (blocking DNS); run it off the
+            # event loop like the sibling crawl tool does.
+            await anyio.to_thread.run_sync(require_valid_crawl_url, url)
+        except ValueError as exc:
+            errors.append(f"{url}: {exc}")
+            continue
+        # add fetches single pages (depth=0); site crawls go through the crawl tool
+        crawled_paths = await crawl_and_save(url, depth=0, render_mode=render_mode)
+        crawled_count += len(crawled_paths)
+    return crawled_count, errors
+
+
 @_tool
 async def add(
     paths: list[str],
@@ -374,6 +400,11 @@ async def add(
     the caller's machine when the server is remote. URLs are fetched as single
     pages; use ``crawl`` for sites."""
     from lilbee.app.ingest import register_sources
+
+    try:
+        validate_ocr_timeout(ocr_timeout)
+    except ValueError as exc:
+        return _error(str(exc))
 
     errors: list[str] = []
     valid: list[Path] = []
@@ -402,19 +433,8 @@ async def add(
 
         if not crawler_available():
             return _error("Web crawling requires: pip install 'lilbee[crawler]'")
-        from lilbee.crawler import crawl_and_save
-
-        for url in urls:
-            try:
-                # URL validation resolves the host (blocking DNS); run it off the
-                # event loop like the sibling crawl tool does.
-                await anyio.to_thread.run_sync(require_valid_crawl_url, url)
-            except ValueError as exc:
-                errors.append(f"{url}: {exc}")
-                continue
-            # add fetches single pages (depth=0); site crawls go through the crawl tool
-            crawled_paths = await crawl_and_save(url, depth=0, render_mode=render_mode)
-            crawled_count += len(crawled_paths)
+        crawled_count, url_errors = await _crawl_add_urls(urls, render_mode)
+        errors.extend(url_errors)
 
     # Registration touches config.toml (a locked read-modify-write); keep the
     # blocking disk I/O off the event loop.

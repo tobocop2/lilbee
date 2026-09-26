@@ -16,6 +16,7 @@ from litestar.params import FromQuery, MultipartBody, QueryParameter
 from litestar.response import Stream
 from pydantic import BaseModel, Field
 
+from lilbee.core.config import validate_ocr_timeout
 from lilbee.server import handlers
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
@@ -50,6 +51,10 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     force_rebuild = data.force_rebuild if data else False
     retry_skipped = data.retry_skipped if data else False
     prune_ignored = data.prune_ignored if data else False
+    try:
+        validate_ocr_timeout(ocr_timeout)
+    except ValueError as exc:
+        raise ValidationException(str(exc)) from exc
     return Stream(
         handlers.sync_stream(
             enable_ocr=enable_ocr,
@@ -97,6 +102,7 @@ async def add_upload_route(
     # full in-memory copy of a payload that was going to be rejected anyway.
     try:
         names = handlers.validate_upload_names([upload.filename for upload in data])
+        validate_ocr_timeout(ocr_timeout)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]

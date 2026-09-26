@@ -792,6 +792,13 @@ class TestSyncRoute:
         )
 
     @mock.patch("lilbee.server.handlers.sync_stream")
+    def test_negative_ocr_timeout_is_rejected(self, mock_stream, client):
+        """A negative ocr_timeout is a 400, mirroring the CLI's ge=0.0 rejection."""
+        resp = client.post("/api/sync", json={"ocr_timeout": -5})
+        assert resp.status_code == 400
+        mock_stream.assert_not_called()
+
+    @mock.patch("lilbee.server.handlers.sync_stream")
     def test_force_rebuild_plumbs_through(self, mock_stream, client):
         """REST callers can request a full rebuild via {"force_rebuild": true}."""
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")

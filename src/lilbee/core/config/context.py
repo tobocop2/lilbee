@@ -15,6 +15,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from lilbee.core.config.model import cfg
 
 if TYPE_CHECKING:
@@ -28,6 +30,23 @@ _active: ContextVar[Config | None] = ContextVar("lilbee_active_config", default=
 def active_config() -> Config:
     """Return the scoped Config if one is active, else the process-global ``cfg``."""
     return _active.get() or cfg
+
+
+def validate_ocr_timeout(ocr_timeout: float | None) -> None:
+    """Raise ``ValueError`` unless *ocr_timeout* satisfies the config field's own bound.
+
+    ``None`` always passes (it means "keep the current setting"). Assigns into
+    a throwaway copy of the active config, so the ``ocr_timeout`` field's own
+    ``validate_assignment`` rule decides, the same rule the CLI already
+    triggers through a direct ``cfg.ocr_timeout = value`` assignment.
+    """
+    if ocr_timeout is None:
+        return
+    scratch = active_config().model_copy()
+    try:
+        scratch.ocr_timeout = ocr_timeout
+    except ValidationError as exc:
+        raise ValueError(f"ocr_timeout: {exc.errors()[0]['msg']}") from exc
 
 
 @contextmanager
