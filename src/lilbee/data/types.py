@@ -114,6 +114,13 @@ class OcrBackendUsed(StrEnum):
     TESSERACT = "tesseract"
     VISION = "vision"
 
+    @classmethod
+    def chosen(cls, enable_ocr: bool | None, vision_model: str) -> OcrBackendUsed:
+        """The backend a configuration picks: OCR off wins, then a set vision model."""
+        if enable_ocr is False:
+            return cls.NONE
+        return cls.VISION if vision_model else cls.TESSERACT
+
 
 class OcrReport(BaseModel, frozen=True):
     """Which OCR backend one extraction ran and how many pages it OCR'd."""

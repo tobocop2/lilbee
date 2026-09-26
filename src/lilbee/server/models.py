@@ -222,6 +222,8 @@ class StatusResponse(BaseModel):
     skipped_total: int = 0
     ocr_warning: str | None = None
     """Set when a vision model is configured but ``enable_ocr`` is false."""
+    ocr_note: str | None = None
+    """Which OCR engine runs for scanned pages; None when OCR is off."""
 
 
 class ShutdownResponse(BaseModel):

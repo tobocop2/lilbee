@@ -21,6 +21,8 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
 | HTTP | `PATCH /api/config` with `{"setting": value}` | See the HTTP column. Persists |
 
+An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
+
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns

@@ -1515,6 +1515,17 @@ the vision model included. A set vision model does not turn OCR back on. With
 OCR off, lilbee skips a PDF that has no text layer, and the skip message says
 that OCR is off. `lilbee status` warns when a vision model is set while OCR is off.
 
+To use Tesseract while a vision model is set, clear `vision_model`. Every
+surface can clear it:
+
+- TUI: pick "(disabled, no model)" in the `vision_model` picker under `/settings`, or run `/set vision_model` with no value.
+- Environment: set `LILBEE_VISION_MODEL=""`. An empty value clears the vision model for that process. An unset variable leaves the `config.toml` value in place.
+- MCP: `lilbee_settings_set({"vision_model": ""})`.
+- HTTP: `PUT /api/models/vision` with `{"model": ""}`.
+
+`lilbee status`, the TUI status screen and the OCR rows of `/settings` say
+which engine runs: the vision model when one is set, otherwise Tesseract.
+
 | | Tesseract | Vision model |
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |

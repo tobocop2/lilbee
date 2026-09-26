@@ -25,7 +25,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from lilbee.app.settings import reset_settings
+from lilbee.app.settings import OCR_SETTING_KEYS, reset_settings
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
@@ -432,7 +432,15 @@ class SettingsScreen(Screen[None]):
             log.debug("Failed to refresh collapsible title for %s", key, exc_info=True)
 
     def _refresh_help(self, key: str, defn: SettingDef) -> None:
-        """Update the help text after a value change."""
+        """Update the help text after a value change; an OCR key refreshes every OCR row."""
+        if key not in OCR_SETTING_KEYS:
+            self._update_help_row(key, defn)
+            return
+        for ocr_key in OCR_SETTING_KEYS:
+            self._update_help_row(ocr_key, SETTINGS_MAP[ocr_key])
+
+    def _update_help_row(self, key: str, defn: SettingDef) -> None:
+        """Re-render one row's help text."""
         try:
             row = self.query_one(f"#{ROW_ID_PREFIX}{key}", VerticalGroup)
             help_widget = row.query_one(".setting-help", Static)
@@ -520,6 +528,7 @@ class SettingsScreen(Screen[None]):
         thread, which is the freeze this path is meant to avoid.
         """
         self._refresh_picker_button(key)
+        self._refresh_help(key, SETTINGS_MAP[key])
 
     def _refresh_picker_button(self, key: str) -> None:
         try:

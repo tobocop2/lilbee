@@ -13,6 +13,7 @@ import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
+from lilbee.core.config.model import env_overrides_field
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
@@ -167,8 +168,7 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, raw in persisted.items():
         if key not in overlayable:
             continue
-        # Non-empty env var wins over config.toml (matches pydantic env_ignore_empty=True).
-        if os.environ.get(f"{env_prefix}{key.upper()}", "") != "":
+        if env_overrides_field(key, os.environ.get(f"{env_prefix}{key.upper()}")):
             continue
         # Legacy: set_setting used to persist None as "". Skip rather than
         # warn so a stale config doesn't spam logs on every CLI invocation.

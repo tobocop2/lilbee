@@ -128,6 +128,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     if status.config.enable_ocr is not None:
         ocr_label = "enabled" if status.config.enable_ocr else "disabled"
         yield _label_line("OCR", ocr_label)
+    if status.ocr_note is not None:
+        yield _label_line("OCR engine", status.ocr_note)
     if status.ocr_warning is not None:
         yield styled((status.ocr_warning, theme.WARNING))
     if status.entities is not None:

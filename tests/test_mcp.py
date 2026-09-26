@@ -278,6 +278,13 @@ class TestStatus:
         result = status()
         assert result["config"]["enable_ocr"] is True
 
+    def test_status_names_the_ocr_engine(self, mock_svc):
+        cfg.enable_ocr = None
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        assert "used instead of Tesseract" in status()["ocr_note"]
+        cfg.vision_model = ""
+        assert "Tesseract runs OCR" in status()["ocr_note"]
+
     def test_status_enable_ocr_none_by_default(self):
         cfg.enable_ocr = None
         result = status()
@@ -1740,6 +1747,15 @@ class TestSettingsMcp:
         assert len(result["warnings"]) == 1
         assert "enable_ocr" in result["warnings"][0]
         assert settings_set({"top_k": 3})["warnings"] == []
+
+    def test_settings_set_empty_vision_model_clears_it_for_tesseract(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        result = settings_set({"vision_model": ""})
+        assert result["updated"] == ["vision_model"]
+        assert cfg.vision_model == ""
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert 'vision_model = ""' in persisted
 
     def test_settings_set_pre_validates_chunk_size(self, isolated_env):
         cfg.data_root = isolated_env

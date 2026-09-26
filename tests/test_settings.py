@@ -671,6 +671,28 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_replicas = original
 
+    def test_empty_vision_model_env_keeps_config_toml_from_restoring_it(
+        self, tmp_path, monkeypatch
+    ):
+        """An empty LILBEE_VISION_MODEL clears the role; config.toml's other keys still apply."""
+        from lilbee.core.config import cfg
+
+        original_vision, original_top_k = cfg.vision_model, cfg.top_k
+        try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+            monkeypatch.setenv("LILBEE_VISION_MODEL", "")
+            cfg.vision_model = ""
+            cfg.top_k = 5
+            (tmp_path / "config.toml").write_text(
+                'vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"\ntop_k = 9\n',
+                encoding="utf-8",
+            )
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_model == ""
+            assert cfg.top_k == 9
+        finally:
+            cfg.vision_model, cfg.top_k = original_vision, original_top_k
+
     def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
         """Without the env var, config.toml is still overlaid onto cfg."""
         from lilbee.core.config import cfg

@@ -220,11 +220,7 @@ def ocr_override(
 
 def _ocr_backend() -> OcrBackendUsed:
     """The OCR backend for this extraction; ``enable_ocr`` False wins over a vision model."""
-    if _effective_enable_ocr() is False:
-        return OcrBackendUsed.NONE
-    if active_config().vision_model:
-        return OcrBackendUsed.VISION
-    return OcrBackendUsed.TESSERACT
+    return OcrBackendUsed.chosen(_effective_enable_ocr(), active_config().vision_model)
 
 
 def _ocr_config(ocr_token: str | None) -> OcrConfig:
