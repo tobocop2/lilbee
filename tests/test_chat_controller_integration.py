@@ -1379,6 +1379,59 @@ def test_do_add_skipped_alongside_indexed_is_partial_success(tmp_path: Path) -> 
     assert any("__init__.py" in str(call) for call in notify_calls)
 
 
+def test_do_add_names_the_tui_log_for_a_scan_vision_could_not_read(tmp_path: Path) -> None:
+    """The /add skip warning names the log the TUI itself writes, not the server's."""
+    import threading
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.log_routing import tui_log_path
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+
+    src = tmp_path / "corpus"
+    src.mkdir()
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    reg_result = RegisterResult(registered=[src.name])
+    captured: list[Exception] = []
+    notify_calls: list[tuple[object, ...]] = []
+
+    def _worker() -> None:
+        try:
+            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+            with (
+                patch("lilbee.app.ingest.register_sources", return_value=reg_result),
+                patch(
+                    "lilbee.runtime.asyncio_loop.run",
+                    new=MagicMock(
+                        return_value=SyncResult(
+                            added=["corpus/store.py"],
+                            skipped=["corpus/scan.pdf"],
+                            skipped_ocr={
+                                "corpus/scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=2)
+                            },
+                        )
+                    ),
+                ),
+                patch("lilbee.cli.tui.screens.chat.unregister_added_roots"),
+                patch(
+                    "lilbee.cli.tui.screens.chat.call_from_thread",
+                    side_effect=lambda *a, **kw: notify_calls.append(a),
+                ),
+            ):
+                screen._do_add([src], reporter)
+        except Exception as e:
+            captured.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert not captured, f"partial success must not raise: {captured}"
+    texts = [str(call) for call in notify_calls]
+    assert any(str(tui_log_path()) in text for text in texts)
+    assert not any("server.log" in text for text in texts)
+
+
 def test_do_add_raises_when_nothing_indexed(tmp_path: Path) -> None:
     """Every file skipped and nothing indexed: the add failed and its roots are dropped."""
     import threading
