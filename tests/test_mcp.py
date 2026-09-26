@@ -377,6 +377,22 @@ class TestSync:
         assert kwargs["force_rebuild"] is False
         assert kwargs["retry_skipped"] is False
 
+    async def test_sync_ocr_options_reach_the_effective_ocr_config(self):
+        """sync(enable_ocr=..., ocr_timeout=...) overrides OCR for this sync only."""
+        from lilbee.data.extract.document import _effective_enable_ocr, _effective_ocr_timeout
+
+        observed: dict[str, object] = {}
+
+        async def fake_sync(*args, **kwargs):
+            observed["enable_ocr"] = _effective_enable_ocr()
+            observed["ocr_timeout"] = _effective_ocr_timeout()
+            return _SYNC_NOOP
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            await sync(enable_ocr=False, ocr_timeout=17.0)
+
+        assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
+
 
 class TestRemove:
     def test_removes_known_file(self, mock_svc):

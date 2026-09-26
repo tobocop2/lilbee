@@ -534,6 +534,33 @@ class TestIngestStreamTerminalEvent:
         assert names[-1] == "done", names
         assert events[-1][1]["copied"] == ["uploaded.txt"]
 
+    async def test_upload_ocr_options_reach_the_extraction_config(
+        self, mock_extract_file, isolated_env
+    ):
+        """POST /api/add/upload?enable_ocr=...&ocr_timeout=... overrides OCR for this upload."""
+        from lilbee.data.extract.document import _effective_enable_ocr, _effective_ocr_timeout
+        from lilbee.server.app import create_app
+
+        observed: dict[str, object] = {}
+
+        async def _capture(*args, **kwargs):
+            observed["enable_ocr"] = _effective_enable_ocr()
+            observed["ocr_timeout"] = _effective_ocr_timeout()
+            return _make_xberg_result()
+
+        mock_extract_file.side_effect = _capture
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                params={"enable_ocr": "false", "ocr_timeout": "17"},
+                files=[("data", ("scan.pdf", b"content", "application/pdf"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
+
 
 class TestAddValidation:
     async def test_empty_paths_returns_400(self, isolated_env):

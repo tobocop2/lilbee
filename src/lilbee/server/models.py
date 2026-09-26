@@ -94,6 +94,7 @@ class SyncRequest(BaseModel):
     """
 
     enable_ocr: bool | None = None
+    ocr_timeout: float | None = None
     force_rebuild: bool = False
     retry_skipped: bool = False
     prune_ignored: bool = False
