@@ -7,13 +7,14 @@ handled by LanceDB's built-in MVCC via ``read_consistency_interval`` in
 data dir.
 """
 
+import asyncio
 import json
 import logging
 import sqlite3
 import threading
 import time
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -167,10 +168,13 @@ def _release_sync_lock(lock: ReadWriteLock | None) -> None:
         lock.close()
 
 
-@contextmanager
-def sync_running(data_root: Path) -> Generator[None, None, None]:
-    """Mark a sync running on *data_root*, across processes; syncs share the mark."""
-    lock = _acquire_sync_lock(data_root, write=False)
+@asynccontextmanager
+async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
+    """Mark a sync running on *data_root*, across processes; syncs share the mark.
+
+    The wait for a reset to finish runs in a worker thread, off the event loop.
+    """
+    lock = await asyncio.to_thread(_acquire_sync_lock, data_root, write=False)
     try:
         yield
     finally:

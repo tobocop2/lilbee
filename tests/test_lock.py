@@ -1,5 +1,6 @@
 """Tests for write locking and file locking."""
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -253,18 +254,16 @@ except SyncRunningError:
 class TestSyncMark:
     """Syncs share the data root's mark; a reset needs it free, in any process."""
 
-    def test_syncs_share_the_mark(self, tmp_path: Path) -> None:
-        with (
-            sync_running(tmp_path),
-            sync_running(tmp_path),
-            pytest.raises(SyncRunningError),
-            no_sync_running(tmp_path),
-        ):
-            pass
+    async def test_syncs_share_the_mark(self, tmp_path: Path) -> None:
+        async with sync_running(tmp_path), sync_running(tmp_path):
+            with pytest.raises(SyncRunningError), no_sync_running(tmp_path):
+                pass
         with no_sync_running(tmp_path):
             pass
 
-    def test_a_reset_in_another_process_is_refused_while_a_sync_runs(self, tmp_path: Path) -> None:
+    async def test_a_reset_in_another_process_is_refused_while_a_sync_runs(
+        self, tmp_path: Path
+    ) -> None:
         import subprocess
         import sys
 
@@ -274,33 +273,46 @@ class TestSyncMark:
                 timeout=60,
             ).returncode
 
-        with sync_running(tmp_path):
-            assert _reset_elsewhere() == 3
-        assert _reset_elsewhere() == 0
+        async with sync_running(tmp_path):
+            assert await asyncio.to_thread(_reset_elsewhere) == 3
+        assert await asyncio.to_thread(_reset_elsewhere) == 0
 
-    def test_a_sync_starts_only_after_a_reset_ends(self, tmp_path: Path) -> None:
-        entered = threading.Event()
+    async def test_a_sync_starts_only_after_a_reset_ends(self, tmp_path: Path) -> None:
+        held = threading.Event()
+        release = threading.Event()
 
-        def _sync() -> None:
-            with sync_running(tmp_path):
+        def _reset() -> None:
+            with no_sync_running(tmp_path):
+                held.set()
+                release.wait(5)
+
+        entered = asyncio.Event()
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
                 entered.set()
 
-        worker = threading.Thread(target=_sync)
-        with no_sync_running(tmp_path):
-            worker.start()
-            assert not entered.wait(0.5)
-        assert entered.wait(5)
-        worker.join(timeout=5)
+        resetter = threading.Thread(target=_reset)
+        resetter.start()
+        assert held.wait(5)
+        sync_task = asyncio.create_task(_sync())
+        started = time.monotonic()
+        await asyncio.sleep(0.3)
+        assert time.monotonic() - started < 2, "the wait for the reset blocked the event loop"
+        assert not entered.is_set()
+        release.set()
+        await asyncio.wait_for(sync_task, 5)
+        assert entered.is_set()
+        resetter.join(timeout=5)
 
-    def test_the_mark_lives_in_a_missing_data_root(self, tmp_path: Path) -> None:
+    async def test_the_mark_lives_in_a_missing_data_root(self, tmp_path: Path) -> None:
         root = tmp_path / "not-yet"
-        with sync_running(root):
+        async with sync_running(root):
             assert root.is_dir()
 
-    @pytest.mark.parametrize("hold", [sync_running, no_sync_running], ids=["sync", "reset"])
     @pytest.mark.parametrize("fails_at", ["open", "acquire"])
-    def test_a_filesystem_that_refuses_the_lock_runs_unmarked(
-        self, tmp_path: Path, caplog, hold, fails_at
+    async def test_a_filesystem_that_refuses_the_lock_runs_unmarked(
+        self, tmp_path: Path, caplog, fails_at
     ) -> None:
         import logging
         import sqlite3
@@ -317,11 +329,13 @@ class TestSyncMark:
         with (
             mock.patch("lilbee.runtime.lock.ReadWriteLock", factory),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-            hold(tmp_path),
         ):
-            ran.append(True)
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with no_sync_running(tmp_path):
+                ran.append("reset")
 
-        assert ran == [True]
+        assert ran == ["sync", "reset"]
         assert "a reset will not see a running sync" in caplog.text
-        assert lock.close.call_count == (fails_at == "acquire")
+        assert lock.close.call_count == 2 * (fails_at == "acquire")
         lock.release.assert_not_called()

@@ -1182,7 +1182,7 @@ def _marks_sync_running(
 
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
-        with sync_running(active_config().data_root):
+        async with sync_running(active_config().data_root):
             return await run(*args, **kwargs)
 
     return _marked
