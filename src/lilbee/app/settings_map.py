@@ -971,12 +971,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "thousand-page manual at a small chunk_size, then retry skipped files"
         ),
     ),
-    "tesseract_timeout": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
-    ),
     "ocr_language": SettingDef(
         list,
         nullable=False,
