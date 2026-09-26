@@ -160,11 +160,11 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         return roots, result
 
     result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-    _unmark_sources_under(paths)
+    unmark_sources_under(paths)
     return result
 
 
-def _unmark_sources_under(paths: list[Path]) -> None:
+def unmark_sources_under(paths: list[Path]) -> None:
     """Drop the skip markers and reasons for every source *paths* covers.
 
     A marker exists to stop *discovery* from resurrecting a source the user
@@ -175,7 +175,8 @@ def _unmark_sources_under(paths: list[Path]) -> None:
     ``retry-skipped`` or ``rebuild``, neither of which the user has any reason
     to reach for after typing the path they want.
 
-    Runs after the registry update so a root this call registered resolves.
+    Each root in *paths* must be registered when this runs: marker keys resolve
+    to files through the live registry.
     """
     from lilbee.data.ingest.skip_marker import (
         load_skip_markers,
