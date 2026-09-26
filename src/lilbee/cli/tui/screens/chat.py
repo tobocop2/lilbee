@@ -1374,6 +1374,10 @@ class ChatScreen(Screen[None]):
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
+            if self._sync_active:
+                # A running sync writes its skip records back after a reset clears them.
+                self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+                return
             from lilbee.app.reset import perform_reset
 
             try:

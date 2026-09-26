@@ -3169,6 +3169,41 @@ async def test_chat_slash_reset_confirm_executes():
             mock_reset.assert_called_once()
 
 
+async def test_chat_slash_reset_refused_while_a_sync_runs():
+    """A reset confirmed mid-sync is refused, so the sync cannot write its records back after it."""
+    import asyncio
+    import threading
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.data.ingest import SyncResult
+
+    started = threading.Event()
+    release = threading.Event()
+
+    async def _blocked_sync(**_kwargs):
+        started.set()
+        await asyncio.to_thread(release.wait, 5)
+        return SyncResult()
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with (
+            patch("lilbee.data.ingest.sync", new=_blocked_sync),
+            patch("lilbee.app.reset.perform_reset") as mock_reset,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._run_sync()
+            assert await pump_until(_pilot, started.is_set)
+            app.screen._handle_slash("/reset")
+            await _pilot.pause()
+            await _pilot.press("y")
+            await _pilot.pause()
+            release.set()
+            await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
+        mock_reset.assert_not_called()
+        mock_notify.assert_any_call(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+
+
 async def test_chat_slash_reset_cancel_does_nothing():
     """Cancelling the reset dialog does not call perform_reset."""
     app = ChatTestApp()
