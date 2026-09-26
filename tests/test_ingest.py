@@ -3702,6 +3702,49 @@ class TestExtractionConfig:
         assert pdf.reading_order is True
 
 
+class TestPageCountConfig:
+    def test_disables_ocr_page_bodies_and_quality_processing(self):
+        """The metadata-only pass reads structure only, nothing that renders a page."""
+        from lilbee.data.extract.document import _page_count_config
+
+        config = _page_count_config()
+        assert config.disable_ocr is True
+        assert config.ocr.enabled is False
+        assert config.pages.extract_pages is False
+        assert config.enable_quality_processing is False
+
+
+class TestKnownPageCount:
+    async def test_returns_the_probes_page_count(self):
+        """The count comes from the metadata-only document's own counts, not a guess."""
+        from lilbee.data.extract.document import _known_page_count
+
+        probe = mock.MagicMock(counts=mock.MagicMock(pages=7))
+        with mock.patch(
+            "lilbee.data.extract.xberg.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=probe,
+        ):
+            assert await _known_page_count(b"pdf bytes", "f.pdf") == 7
+
+    async def test_falls_back_to_zero_when_the_probe_raises(self, caplog):
+        """A probe failure returns 0, the existing 'not known' value, not an exception."""
+        import logging
+
+        from lilbee.data.extract.document import _known_page_count
+
+        with (
+            mock.patch(
+                "lilbee.data.extract.xberg.aextract_document",
+                new_callable=mock.AsyncMock,
+                side_effect=RuntimeError("bad pdf"),
+            ),
+            caplog.at_level(logging.DEBUG, logger="lilbee.data.extract.document"),
+        ):
+            assert await _known_page_count(b"pdf bytes", "f.pdf") == 0
+        assert "f.pdf" in caplog.text
+
+
 class TestOcrPageSelection:
     """cfg.ocr_strategy and cfg.force_ocr_pages reach xberg's ExtractionConfig."""
 
@@ -5010,6 +5053,40 @@ class TestIngestDocumentOcrPath:
         f.write_bytes(b"x")
         await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
         assert 1 in seen and 2 in seen  # two per-page running-count ticks
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_per_page_ticks_carry_the_page_count_read_before_extraction(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        """Each running-count tick carries the real total, not the placeholder 0."""
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        result_obj = _make_xberg_result(num_chunks=1, has_pages=True)
+        probe_result = mock.MagicMock(counts=mock.MagicMock(pages=5))
+
+        async def fake_extract(data, *, filename=None, config):
+            if config.disable_ocr:
+                return probe_result
+            from lilbee.data.extract.backends.vision_ocr import ocr_requests
+
+            token = json.loads(config.ocr.backend_options)["req"]
+            ctx = ocr_requests.get(token)
+            ctx.on_page()
+            ctx.on_page()
+            return result_obj
+
+        mock_kf.side_effect = fake_extract
+        from lilbee.data.ingest import ingest_document
+
+        seen: list[tuple[int, int]] = []
+
+        def on_prog(_et, ev):
+            seen.append((ev.page, ev.total_pages))
+
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
+        assert (1, 5) in seen
+        assert (2, 5) in seen
 
 
 class TestTitleStamping:
