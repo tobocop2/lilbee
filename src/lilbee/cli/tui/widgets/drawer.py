@@ -2,9 +2,18 @@
 
 from __future__ import annotations
 
+from typing import Protocol, runtime_checkable
+
 from textual.await_remove import AwaitRemove
 from textual.containers import Vertical
 from textual.widget import Widget
+
+
+@runtime_checkable
+class _ModeFocusHost(Protocol):
+    """A screen that names its own focus target for whatever mode it is in."""
+
+    def default_focus_target(self) -> Widget: ...
 
 
 class Drawer(Vertical):
@@ -31,11 +40,25 @@ class Drawer(Vertical):
         self._return_focus = focused if holder is None else holder._return_focus
 
     def remove(self) -> AwaitRemove:
-        """Close the drawer, handing focus it holds back to where it was before it opened."""
-        previous = self._return_focus
-        if self.has_focus_within and previous is not None and previous.is_attached:
-            self.screen.set_focus(previous)
+        """Close the drawer, handing focus it holds back to where it was before it
+        opened, or to the host screen's own current-mode target when that widget
+        can no longer take it (removed, disabled, or not focusable in this mode).
+        """
+        if self.has_focus_within:
+            previous = self._return_focus
+            target = (
+                previous
+                if previous is not None and previous.is_attached and previous.focusable
+                else self._fallback_focus_target()
+            )
+            if target is not None:
+                self.screen.set_focus(target)
         return super().remove()
+
+    def _fallback_focus_target(self) -> Widget | None:
+        """The host screen's own focus target, when it names one."""
+        host = self.screen
+        return host.default_focus_target() if isinstance(host, _ModeFocusHost) else None
 
 
 def drawer_holding(widget: Widget | None) -> Drawer | None:
