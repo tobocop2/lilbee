@@ -1722,6 +1722,14 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    def test_settings_set_warns_when_ocr_off_leaves_the_vision_model_unused(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        result = settings_set({"enable_ocr": False})
+        assert len(result["warnings"]) == 1
+        assert "enable_ocr" in result["warnings"][0]
+        assert settings_set({"top_k": 3})["warnings"] == []
+
     def test_settings_set_pre_validates_chunk_size(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.top_k = 5

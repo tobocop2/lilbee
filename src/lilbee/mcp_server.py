@@ -1054,7 +1054,7 @@ def settings_get(key: str) -> dict[str, Any]:
 @_tool
 def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     """Atomically update writable settings; rolls back on validation error.
-    Persists to config.toml; returns ``{updated, reindex_required}``."""
+    Persists to config.toml; returns updated, reindex_required, warnings."""
     if _transport.http_mounted and requires_services_reset(updates):
         return _error(provider_reset_refused_message("Switching"))
     try:
@@ -1067,6 +1067,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
         "command": "settings_set",
         "updated": result.updated,
         "reindex_required": result.reindex_required,
+        "warnings": list(result.warnings),
     }
 
 

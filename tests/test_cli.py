@@ -144,13 +144,12 @@ class TestStatus:
     def test_status_shows_ocr_when_enabled(self):
         cfg.enable_ocr = True
         result = runner.invoke(app, ["status"])
-        assert "Vision OCR:" in result.output
-        assert "enabled" in result.output
+        assert "OCR:        enabled" in result.output
 
     def test_status_hides_ocr_when_none(self):
         cfg.enable_ocr = None
         result = runner.invoke(app, ["status"])
-        assert "Vision OCR:" not in result.output
+        assert "OCR:" not in result.output
 
     def test_status_with_indexed_docs(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
@@ -3058,6 +3057,16 @@ class TestOcrFlags:
         result = runner.invoke(app, ["sync", "--no-ocr"])
         assert result.exit_code == 0
         assert cfg.enable_ocr is False
+
+    def test_ocr_help_says_off_applies_to_every_backend(self):
+        """--no-ocr's help text must say it turns off every OCR backend, vision included,
+        or a reader keeps thinking a vision model overrides it."""
+        result = runner.invoke(app, ["sync", "--help"])
+        assert result.exit_code == 0
+        # Rich wraps the help column across lines behind a box-drawing border;
+        # strip the border and collapse whitespace before matching the phrase.
+        normalized = " ".join(result.output.replace("│", " ").split())
+        assert "off applies to every backend, vision included" in normalized
 
 
 class TestLogLevel:

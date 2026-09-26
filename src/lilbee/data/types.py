@@ -30,6 +30,8 @@ PDF_CONTENT_TYPE = "pdf"
 IMAGE_CONTENT_TYPE = "image"
 MARKDOWN_OUTPUT = "markdown"
 MARKDOWN_MIME = "text/markdown"
+# Sync summary note for a skipped document whose extraction ran with OCR off.
+SKIPPED_OCR_OFF_NOTE = ": OCR is off (enable_ocr = false)"
 
 
 @dataclass(frozen=True)
@@ -71,6 +73,14 @@ class MemberRecords(NamedTuple):
     meta: SourceMeta
 
 
+class DocumentRecords(NamedTuple):
+    """One file's records, its source metadata, and the OCR its extraction ran with."""
+
+    records: list[ChunkRecord]
+    meta: SourceMeta
+    ocr: OcrReport | None = None
+
+
 class SkippedSource(BaseModel):
     """One file a skip marker holds out of the index, and why."""
 
@@ -95,6 +105,21 @@ class OcrBackendName(StrEnum):
 
     TESSERACT = "tesseract"
     LILBEE_VISION = "lilbee-vision"
+
+
+class OcrBackendUsed(StrEnum):
+    """The OCR backend an extraction ran with: none (OCR off), Tesseract, or the vision model."""
+
+    NONE = "none"
+    TESSERACT = "tesseract"
+    VISION = "vision"
+
+
+class OcrReport(BaseModel, frozen=True):
+    """Which OCR backend one extraction ran and how many pages it OCR'd."""
+
+    backend: OcrBackendUsed
+    pages: int = 0
 
 
 class EmbeddingBackendName(StrEnum):
@@ -151,6 +176,8 @@ class SyncResult(BaseModel):
     relocated: list[str] = []
     failed: list[str] = []
     skipped: list[str] = []
+    # The OCR each skipped document ran with; files that never reach OCR are absent.
+    skipped_ocr: dict[str, OcrReport] = {}
     # Files an earlier sync skip-marked, so this run did not attempt them.
     held_out: list[SkippedSource] = []
     # Chunks whose text exceeded the embedder's char budget and were truncated
@@ -181,9 +208,16 @@ class SyncResult(BaseModel):
         lines += [
             [("  ", ""), (h.filename, "yellow"), (f": {h.reason}", "")] for h in self.held_out
         ]
-        lines += [[("  ", ""), (name, "yellow")] for name in self.skipped]
+        lines += [[("  ", ""), (name, "yellow"), self._skip_note(name)] for name in self.skipped]
         lines += [[("  ", ""), (name, "red")] for name in self.failed]
         return lines
+
+    def _skip_note(self, name: str) -> tuple[str, str]:
+        """The OCR-off note for a skipped file, or an empty segment."""
+        report = self.skipped_ocr.get(name)
+        if report is not None and report.backend is OcrBackendUsed.NONE:
+            return (SKIPPED_OCR_OFF_NOTE, "")
+        return ("", "")
 
     def __str__(self) -> str:
         return "\n".join(
@@ -217,7 +251,8 @@ class _IngestResult:
     the file's typed-entity rows, all written by the same flush. ``meta``
     carries the document's extraction-time metadata for the source row.
     ``skip_reason`` is set when the file was refused rather than attempted, and
-    it decides the outcome ahead of the chunk count.
+    it decides the outcome ahead of the chunk count. ``ocr`` is the OCR the
+    document extraction ran with; ``None`` for files that never reach OCR.
     """
 
     name: str
@@ -234,3 +269,4 @@ class _IngestResult:
     entity_rows: list[dict] | None = None
     meta: SourceMeta | None = None
     members: list[MemberRecords] | None = None
+    ocr: OcrReport | None = None

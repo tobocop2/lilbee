@@ -77,7 +77,7 @@ async def models_set_embedding_route(data: SetModelRequest) -> SetModelResponse:
 
 @put("/api/models/vision")
 async def models_set_vision_route(data: SetModelRequest) -> SetModelResponse:
-    """Switch the active vision model for scanned PDF OCR. Empty disables OCR."""
+    """Switch the active vision model for scanned PDF OCR. Empty falls back to Tesseract."""
     try:
         return await handlers.set_vision_model(model=data.model)
     except ValueError as exc:
