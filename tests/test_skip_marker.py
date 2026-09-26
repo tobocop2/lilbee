@@ -19,6 +19,7 @@ from lilbee.data.ingest.skip_marker import (
     describe_skips,
     load_skip_markers,
     load_skip_reasons,
+    update_skip_records,
     write_skip_markers,
     write_skip_reasons,
 )
@@ -181,3 +182,60 @@ class TestDescribeSkips:
         # something, or the user sees a held-out file with a blank explanation.
         described = describe_skips(tmp_path, ["orphan.pdf"])
         assert [(d.filename, d.reason) for d in described] == [("orphan.pdf", DEFAULT_SKIP_REASON)]
+
+
+class TestUpdateSkipRecords:
+    """A read-modify-write of both sidecars as they are on disk, under a lock."""
+
+    def test_changes_both_sidecars_from_what_is_on_disk(self, tmp_path: Path) -> None:
+        write_skip_markers(tmp_path, {"kept.pdf": "h1", "gone.pdf": "h2"})
+        write_skip_reasons(tmp_path, {"kept.pdf": "no text", "gone.pdf": "no text"})
+
+        def _change(markers: dict[str, str], reasons: dict[str, str]) -> None:
+            del markers["gone.pdf"], reasons["gone.pdf"]
+            markers["new.pdf"] = "h3"
+            reasons["new.pdf"] = "decode failure"
+
+        update_skip_records(tmp_path, _change)
+
+        assert load_skip_markers(tmp_path) == {"kept.pdf": "h1", "new.pdf": "h3"}
+        assert load_skip_reasons(tmp_path) == {"kept.pdf": "no text", "new.pdf": "decode failure"}
+
+    def test_an_unchanged_update_writes_nothing(self, tmp_path: Path) -> None:
+        update_skip_records(tmp_path, lambda _markers, _reasons: None)
+        assert not (tmp_path / SKIP_MARKER_FILENAME).exists()
+        assert not (tmp_path / SKIP_REASON_FILENAME).exists()
+
+    @pytest.mark.parametrize(
+        ("operation", "expected"),
+        [
+            pytest.param(
+                lambda root: update_skip_records(
+                    root, lambda markers, _reasons: markers.update({"new.pdf": "h2"})
+                ),
+                {"old.pdf": "h1", "new.pdf": "h2"},
+                id="update",
+            ),
+            pytest.param(clear_skip_markers, {}, id="clear"),
+        ],
+    )
+    def test_waits_for_another_holder_of_the_lock(self, tmp_path: Path, operation, expected):
+        """A second process holding the records lock keeps this change out until it lets go."""
+        import threading
+
+        from filelock import FileLock
+
+        write_skip_markers(tmp_path, {"old.pdf": "h1"})
+        holder = FileLock(str(tmp_path / SKIP_MARKER_FILENAME) + ".lock")
+        holder.acquire()
+        worker = threading.Thread(target=operation, args=(tmp_path,))
+        try:
+            worker.start()
+            worker.join(timeout=0.5)
+            assert worker.is_alive()
+            assert load_skip_markers(tmp_path) == {"old.pdf": "h1"}
+        finally:
+            holder.release()
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert load_skip_markers(tmp_path) == expected

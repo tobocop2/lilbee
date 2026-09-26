@@ -76,9 +76,7 @@ from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     describe_skips,
     load_skip_markers,
-    load_skip_reasons,
-    write_skip_markers,
-    write_skip_reasons,
+    update_skip_records,
 )
 from lilbee.data.offload import (
     embed_inflight_target,
@@ -884,36 +882,33 @@ def _load_sync_skip_markers(*, clear_first: bool) -> dict[str, str]:
     return load_skip_markers(data_root)
 
 
-def _persist_skip_markers(
-    markers: dict[str, str],
+def _persist_skip_records(
     pending_hashes: dict[str, str],
+    reasons: dict[str, str],
     *,
     succeeded: Iterable[str],
     failed: Iterable[str],
 ) -> None:
-    """Mark files that produced no chunks so the next sync skips them, clear the
-    markers for files that ingested cleanly, then write the file back."""
-    for name in succeeded:
-        markers.pop(name, None)
-    for name in failed:
-        fhash = pending_hashes.get(name)
-        if fhash:
-            markers[name] = fhash
-    write_skip_markers(active_config().data_root, markers)
+    """Merge this sync's verdicts into the skip records as they are on disk now.
 
-
-def _persist_skip_reasons(markers: dict[str, str], reasons: dict[str, str]) -> None:
-    """Write the reasons sidecar so it explains exactly the markers that survive.
-
-    Merged onto what is already recorded, not replaced: the reasons for files
-    this sync never touched (a removal, an earlier failure) explain markers that
-    are still in force, and dropping them would leave the user with a file held
-    out of every sync and nothing saying why. Reasons whose marker is gone are
-    dropped in the same step, so the two sidecars cannot drift apart.
+    Only the files this sync decided on change: a clean ingest drops its
+    record, a file that produced no chunks gains one with its reason. Records
+    written or cleared since the sync started (a reset, a removal, a rolled
+    back add) stand. Reasons whose marker is gone are dropped in the same step.
     """
-    data_root = active_config().data_root
-    merged = load_skip_reasons(data_root) | reasons
-    write_skip_reasons(data_root, {name: why for name, why in merged.items() if name in markers})
+    dropped = list(succeeded)
+    held = list(failed)
+    marked = {name: fhash for name in held if (fhash := pending_hashes.get(name))}
+
+    def _merge(markers: dict[str, str], recorded: dict[str, str]) -> None:
+        for name in dropped:
+            markers.pop(name, None)
+        markers.update(marked)
+        recorded.update({name: reasons[name] for name in held if name in reasons})
+        for name in [name for name in recorded if name not in markers]:
+            del recorded[name]
+
+    update_skip_records(active_config().data_root, _merge)
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1307,13 +1302,9 @@ async def sync(
     # A flush failure is a transient store-side problem, not a verdict on the
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
     marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
-    _persist_skip_markers(
-        skip_markers, pending_hashes, succeeded=[*added, *updated], failed=marker_failed
+    _persist_skip_records(
+        pending_hashes, reasons, succeeded=[*added, *updated], failed=marker_failed
     )
-    # Record why each file this run skip-marked was marked (informational; the
-    # hash markers above drive the resume logic). Only marker_failed files, so a
-    # transient flush failure doesn't leave a stale reason behind.
-    _persist_skip_reasons(skip_markers, {n: reasons[n] for n in marker_failed if n in reasons})
 
     if shard is None:
         # A worker's shard is merged before the indexes are built, so the passes

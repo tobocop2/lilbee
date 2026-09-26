@@ -20,9 +20,10 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from lilbee.core.security import file_lock_or_warn
 from lilbee.data.types import SkippedSource
 
 log = logging.getLogger(__name__)
@@ -30,6 +31,8 @@ log = logging.getLogger(__name__)
 SKIP_MARKER_FILENAME = "skipped_sources.json"
 SKIP_REASON_FILENAME = "skip_reasons.json"
 DEFAULT_SKIP_REASON = "held out by an earlier sync"
+# A sync, a /delete, and a reset from another process all change these records.
+_RECORDS_LOCK_TIMEOUT_S = 10.0
 
 
 def _load_str_map(path: Path) -> dict[str, str]:
@@ -86,6 +89,21 @@ def write_skip_reasons(data_root: Path, reasons: dict[str, str]) -> None:
     _write_str_map(data_root / SKIP_REASON_FILENAME, reasons)
 
 
+def update_skip_records(
+    data_root: Path, change: Callable[[dict[str, str], dict[str, str]], None]
+) -> None:
+    """Apply *change* to the markers and reasons as they are on disk, under a cross-process lock."""
+    with file_lock_or_warn(data_root / SKIP_MARKER_FILENAME, _RECORDS_LOCK_TIMEOUT_S):
+        markers = load_skip_markers(data_root)
+        reasons = load_skip_reasons(data_root)
+        before = (dict(markers), dict(reasons))
+        change(markers, reasons)
+        if (markers, reasons) == before:
+            return
+        write_skip_markers(data_root, markers)
+        write_skip_reasons(data_root, reasons)
+
+
 def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]:
     """Pair each name with its recorded reason, in order; ``DEFAULT_SKIP_REASON`` when none."""
     reasons = load_skip_reasons(data_root)
@@ -97,5 +115,6 @@ def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]
 
 def clear_skip_markers(data_root: Path) -> None:
     """Delete both the marker file and the reasons sidecar. No-op if absent."""
-    _unlink(data_root / SKIP_MARKER_FILENAME)
-    _unlink(data_root / SKIP_REASON_FILENAME)
+    with file_lock_or_warn(data_root / SKIP_MARKER_FILENAME, _RECORDS_LOCK_TIMEOUT_S):
+        _unlink(data_root / SKIP_MARKER_FILENAME)
+        _unlink(data_root / SKIP_REASON_FILENAME)
