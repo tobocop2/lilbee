@@ -90,12 +90,12 @@ def _use_selector_loop_on_windows() -> None:
     timeout-minutes (Windows py3.12/3.13; 3.11 is worse and runs serially).
     The selector loop that Linux and macOS already use does not accumulate.
 
-    Safe here because the proactor loop's one hard advantage, asyncio
-    subprocess support, is never exercised by the tests: the sole caller
-    (``crawler.bootstrap``) is monkeypatched to a fake in every test that
-    reaches it. Production Windows keeps the proactor loop for real crawler
-    subprocesses; this touches the test process only. Set at import, before
-    any loop is created, so every xdist worker inherits it.
+    The selector loop cannot start asyncio subprocesses, so the browser-mode
+    crawl tests, which launch Chromium, run their crawl loops on the proactor
+    loop through ``windows_proactor_loop`` in ``tests/integration/_crawl_site.py``.
+    Production Windows keeps the proactor loop; this touches the test process
+    only. Set at import, before any loop is created, so every xdist worker
+    inherits it.
     """
     if sys.platform != "win32":
         return
