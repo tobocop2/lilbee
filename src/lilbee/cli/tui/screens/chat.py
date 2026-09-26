@@ -100,6 +100,7 @@ from lilbee.retrieval.query.compaction import (
 from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
+from lilbee.runtime.lock import SyncRunningError
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
@@ -1374,14 +1375,13 @@ class ChatScreen(Screen[None]):
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
-            if self._sync_active:
-                # A running sync writes its skip records back after a reset clears them.
-                self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
-                return
             from lilbee.app.reset import perform_reset
 
             try:
                 result = perform_reset()
+            except SyncRunningError:
+                self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+                return
             except Exception as exc:
                 log.warning("Reset failed", exc_info=True)
                 self.notify(msg.CMD_RESET_FAILED.format(error=exc), severity="error")

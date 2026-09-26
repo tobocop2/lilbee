@@ -1796,7 +1796,7 @@ class TestSyncMergesItsSkipRecords:
 
     Each writer runs in the gap between the sync's read of the records and its
     write-back, and the sync's own verdict for a file that produced no chunks
-    still lands.
+    still lands. A reset in that gap is refused instead.
     """
 
     @staticmethod
@@ -1825,7 +1825,25 @@ class TestSyncMergesItsSkipRecords:
             result = await sync(quiet=True)
         assert result.skipped == [scan.name]
 
-    async def test_a_reset_during_a_sync_stays_reset(self, isolated_env, mock_svc):
+    async def test_a_file_that_now_ingests_drops_its_record(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        (isolated_env / "fixed.txt").write_text("readable now", encoding="utf-8")
+        write_skip_markers(cfg.data_root, {"fixed.txt": "hash-of-the-unreadable-version"})
+        write_skip_reasons(cfg.data_root, {"fixed.txt": "no text extracted (0 chunks)"})
+
+        assert (await sync(quiet=True)).added == ["fixed.txt"]
+
+        assert load_skip_markers(cfg.data_root) == {}
+        assert load_skip_reasons(cfg.data_root) == {}
+
+    async def test_a_reset_during_a_sync_is_refused(self, isolated_env, mock_svc):
         from lilbee.app.reset import perform_reset
         from lilbee.data.ingest.discovery import file_hash
         from lilbee.data.ingest.skip_marker import (
@@ -1834,20 +1852,32 @@ class TestSyncMergesItsSkipRecords:
             write_skip_markers,
             write_skip_reasons,
         )
+        from lilbee.runtime.lock import SyncRunningError
 
         write_skip_markers(cfg.data_root, {"older.txt": "abc"})
-        write_skip_reasons(cfg.data_root, {"older.txt": "held before the reset"})
+        write_skip_reasons(cfg.data_root, {"older.txt": "held before the sync"})
         scan = isolated_env / "scanned.pdf"
-        hashes: dict[str, str] = {}
+        refused: list[Exception] = []
 
         def _reset() -> None:
-            hashes["scanned.pdf"] = file_hash(scan)
-            perform_reset()
+            with pytest.raises(SyncRunningError) as caught:
+                perform_reset()
+            refused.append(caught.value)
 
         await self._sync_holding_out(scan, _reset)
 
-        assert load_skip_markers(cfg.data_root) == hashes
-        assert load_skip_reasons(cfg.data_root) == {"scanned.pdf": "no text extracted (0 chunks)"}
+        assert len(refused) == 1
+        assert scan.exists()
+        assert load_skip_markers(cfg.data_root) == {
+            "older.txt": "abc",
+            "scanned.pdf": file_hash(scan),
+        }
+        assert load_skip_reasons(cfg.data_root) == {
+            "older.txt": "held before the sync",
+            "scanned.pdf": "no text extracted (0 chunks)",
+        }
+        assert perform_reset().deleted_docs == 1
+        assert load_skip_markers(cfg.data_root) == {}
 
     async def test_a_delete_during_a_sync_stays_deleted(self, isolated_env, mock_svc):
         from lilbee.app.ingest import _REMOVED_SKIP_REASON, remove_documents_durably

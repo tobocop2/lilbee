@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import os
 import threading
@@ -22,7 +23,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, ParamSpec, cast
 
 from rich.progress import (
     BarColumn,
@@ -111,7 +112,7 @@ from lilbee.data.types import (
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
-from lilbee.runtime.lock import LockTimeoutError
+from lilbee.runtime.lock import LockTimeoutError, sync_running
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -1171,6 +1172,23 @@ async def _sync_across_workers(
     return result
 
 
+_SyncParams = ParamSpec("_SyncParams")
+
+
+def _marks_sync_running(
+    run: Callable[_SyncParams, Coroutine[Any, Any, SyncResult]],
+) -> Callable[_SyncParams, Coroutine[Any, Any, SyncResult]]:
+    """Hold the data root's sync mark for the whole run, so a reset refuses meanwhile."""
+
+    @functools.wraps(run)
+    async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
+        with sync_running(active_config().data_root):
+            return await run(*args, **kwargs)
+
+    return _marked
+
+
+@_marks_sync_running
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,

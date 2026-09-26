@@ -3176,10 +3176,12 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
 
     from lilbee.cli.tui import messages as msg
     from lilbee.data.ingest import SyncResult
+    from lilbee.data.ingest.pipeline import _marks_sync_running
 
     started = threading.Event()
     release = threading.Event()
 
+    @_marks_sync_running
     async def _blocked_sync(**_kwargs):
         started.set()
         await asyncio.to_thread(release.wait, 5)
@@ -3189,7 +3191,7 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
     async with app.run_test(size=(120, 40)) as _pilot:
         with (
             patch("lilbee.data.ingest.sync", new=_blocked_sync),
-            patch("lilbee.app.reset.perform_reset") as mock_reset,
+            patch("lilbee.app.reset._clear_dir") as mock_clear,
             patch.object(app.screen, "notify") as mock_notify,
         ):
             app.screen._run_sync()
@@ -3200,7 +3202,7 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
             await _pilot.pause()
             release.set()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
-        mock_reset.assert_not_called()
+        mock_clear.assert_not_called()
         mock_notify.assert_any_call(msg.SYNC_ALREADY_ACTIVE, severity="warning")
 
 

@@ -9,11 +9,14 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     LockTimeoutError,
+    SyncRunningError,
     _lock_path,
     acquire_scope_lock,
     acquire_server_lock,
+    no_sync_running,
     read_scope_owner,
     server_lock_path,
+    sync_running,
     write_lock,
 )
 
@@ -233,3 +236,92 @@ class TestScopeLock:
         hold = acquire_scope_lock(missing, tmp_path / "data", timeout=0.1)
         assert hold is not None
         hold.release()
+
+
+_RESET_IN_ANOTHER_PROCESS = """
+import sys
+from pathlib import Path
+from lilbee.runtime.lock import SyncRunningError, no_sync_running
+try:
+    with no_sync_running(Path(sys.argv[1])):
+        pass
+except SyncRunningError:
+    sys.exit(3)
+"""
+
+
+class TestSyncMark:
+    """Syncs share the data root's mark; a reset needs it free, in any process."""
+
+    def test_syncs_share_the_mark(self, tmp_path: Path) -> None:
+        with (
+            sync_running(tmp_path),
+            sync_running(tmp_path),
+            pytest.raises(SyncRunningError),
+            no_sync_running(tmp_path),
+        ):
+            pass
+        with no_sync_running(tmp_path):
+            pass
+
+    def test_a_reset_in_another_process_is_refused_while_a_sync_runs(self, tmp_path: Path) -> None:
+        import subprocess
+        import sys
+
+        def _reset_elsewhere() -> int:
+            return subprocess.run(
+                [sys.executable, "-c", _RESET_IN_ANOTHER_PROCESS, str(tmp_path)],
+                timeout=60,
+            ).returncode
+
+        with sync_running(tmp_path):
+            assert _reset_elsewhere() == 3
+        assert _reset_elsewhere() == 0
+
+    def test_a_sync_starts_only_after_a_reset_ends(self, tmp_path: Path) -> None:
+        entered = threading.Event()
+
+        def _sync() -> None:
+            with sync_running(tmp_path):
+                entered.set()
+
+        worker = threading.Thread(target=_sync)
+        with no_sync_running(tmp_path):
+            worker.start()
+            assert not entered.wait(0.5)
+        assert entered.wait(5)
+        worker.join(timeout=5)
+
+    def test_the_mark_lives_in_a_missing_data_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "not-yet"
+        with sync_running(root):
+            assert root.is_dir()
+
+    @pytest.mark.parametrize("hold", [sync_running, no_sync_running], ids=["sync", "reset"])
+    @pytest.mark.parametrize("fails_at", ["open", "acquire"])
+    def test_a_filesystem_that_refuses_the_lock_runs_unmarked(
+        self, tmp_path: Path, caplog, hold, fails_at
+    ) -> None:
+        import logging
+        import sqlite3
+        from unittest import mock
+
+        refused = sqlite3.OperationalError("locking protocol")
+        lock = mock.MagicMock()
+        lock.acquire_read.side_effect = refused
+        lock.acquire_write.side_effect = refused
+        factory = (
+            mock.MagicMock(side_effect=refused) if fails_at == "open" else lambda *_a, **_k: lock
+        )
+        ran = []
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", factory),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            hold(tmp_path),
+        ):
+            ran.append(True)
+
+        assert ran == [True]
+        assert "a reset will not see a running sync" in caplog.text
+        assert lock.close.call_count == (fails_at == "acquire")
+        lock.release.assert_not_called()

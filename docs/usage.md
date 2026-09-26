@@ -874,7 +874,7 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
-| `lilbee reset` | Factory reset. Deletes all documents and data |
+| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync runs on the same library |
 
 ### Wiki
 

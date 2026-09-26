@@ -1,4 +1,4 @@
-"""Cross-process locks: LanceDB write locking and the server singleton.
+"""Cross-process locks: LanceDB write locking, the sync mark, and the server singleton.
 
 Write locking combines an in-process mutex with a cross-process file lock
 (filelock) so separate processes also coordinate writes. Read consistency is
@@ -9,6 +9,7 @@ data dir.
 
 import json
 import logging
+import sqlite3
 import threading
 import time
 from collections.abc import Generator
@@ -16,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from filelock import FileLock
+from filelock import FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
@@ -39,6 +40,10 @@ SERVER_LOCK_TIMEOUT = 15.0
 _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
+_SYNC_LOCK_NAME = "sync.lock"
+# Some network and FUSE mounts refuse SQLite's locks; syncs there run unmarked.
+_SYNC_LOCK_ERRORS = (OSError, sqlite3.Error)
+_SYNC_LOCK_REFUSED = "Cannot lock %s; a reset will not see a running sync."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -46,6 +51,13 @@ _MUTEX_MIN_WAIT = 0.1
 
 class LockTimeoutError(TimeoutError):
     """Raised when a lock cannot be acquired within the timeout."""
+
+
+class SyncRunningError(RuntimeError):
+    """Raised when a reset finds a sync running against the same data root."""
+
+    def __init__(self) -> None:
+        super().__init__("A sync is running on this library. Reset again when it finishes.")
 
 
 # In-process write mutex: serializes writers within the same process
@@ -124,6 +136,55 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
         return ScopeOwner(data_dir=str(payload["data_dir"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
+    """Hold the data root's sync lock, or None on a filesystem that cannot hold it."""
+    try:
+        data_root.mkdir(parents=True, exist_ok=True)
+        lock = ReadWriteLock(data_root / _SYNC_LOCK_NAME, is_singleton=False)
+    except _SYNC_LOCK_ERRORS:
+        log.warning(_SYNC_LOCK_REFUSED, data_root, exc_info=True)
+        return None
+    try:
+        if write:
+            lock.acquire_write(blocking=False)
+        else:
+            lock.acquire_read()
+    except FileLockTimeout:
+        lock.close()
+        raise SyncRunningError from None
+    except _SYNC_LOCK_ERRORS:
+        lock.close()
+        log.warning(_SYNC_LOCK_REFUSED, data_root, exc_info=True)
+        return None
+    return lock
+
+
+def _release_sync_lock(lock: ReadWriteLock | None) -> None:
+    if lock is not None:
+        lock.release()
+        lock.close()
+
+
+@contextmanager
+def sync_running(data_root: Path) -> Generator[None, None, None]:
+    """Mark a sync running on *data_root*, across processes; syncs share the mark."""
+    lock = _acquire_sync_lock(data_root, write=False)
+    try:
+        yield
+    finally:
+        _release_sync_lock(lock)
+
+
+@contextmanager
+def no_sync_running(data_root: Path) -> Generator[None, None, None]:
+    """Keep syncs off *data_root* for the block; raise ``SyncRunningError`` if one runs."""
+    lock = _acquire_sync_lock(data_root, write=True)
+    try:
+        yield
+    finally:
+        _release_sync_lock(lock)
 
 
 @contextmanager

@@ -2185,6 +2185,20 @@ class TestReset:
         assert data["command"] == "reset"
         assert data["deleted_docs"] == 1
 
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    def test_reset_refused_while_a_sync_runs(self, isolated_env, json_flag):
+        """A sync holding the data root's mark keeps the reset from deleting anything."""
+        from lilbee.runtime.lock import sync_running
+
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+
+        with sync_running(cfg.data_root):
+            result = runner.invoke(app, [*json_flag, "reset", "--yes"])
+
+        assert result.exit_code == 1
+        assert "A sync is running on this library" in result.output
+        assert (cfg.documents_dir / "doc.txt").exists()
+
     def test_reset_json_without_yes_errors(self):
         """JSON mode without --yes returns error."""
         result = runner.invoke(app, ["--json", "reset"])
