@@ -22,6 +22,7 @@ import json
 import logging
 import ntpath
 import os
+import subprocess
 import sys
 from collections import Counter
 from ctypes import POINTER, byref, c_char, c_char_p, c_uint8, c_uint32, c_uint64, c_void_p
@@ -579,7 +580,7 @@ def _enumerate_vulkan_devices() -> list[VulkanDevice] | None:
 
     try:
         stdout, returncode, stderr = _run_probe_child()
-    except (ProviderError, OSError) as exc:
+    except (ProviderError, OSError, subprocess.SubprocessError) as exc:
         log.debug("Vulkan probe child could not be run: %s", exc)
         return None
     if returncode != 0:

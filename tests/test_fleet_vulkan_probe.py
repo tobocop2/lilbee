@@ -134,6 +134,19 @@ class TestTheChildSpawnItself:
             assert gpu_select._enumerate_vulkan_devices() is None
         assert "could not be run" in caplog.text
 
+    def test_a_child_that_times_out_is_no_opinion(self, monkeypatch, caplog) -> None:
+        # TimeoutExpired is a SubprocessError, not an OSError; it must read as
+        # a probe failure rather than escape to the caller.
+        import subprocess
+
+        def _times_out() -> tuple[str, int, str]:
+            raise subprocess.TimeoutExpired(cmd="vulkan-probe", timeout=10.0)
+
+        monkeypatch.setattr(gpu_select, "_run_probe_child", _times_out)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.providers.fleet.gpu_select"):
+            assert gpu_select._enumerate_vulkan_devices() is None
+        assert "could not be run" in caplog.text
+
     def test_the_spawn_is_bounded_and_names_itself(self, monkeypatch) -> None:
         # A wedged ICD can hang inside vkCreateInstance rather than fault, so the
         # read that asked must not hang with it.
