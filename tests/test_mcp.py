@@ -470,7 +470,7 @@ class TestReset:
         async with sync_running(cfg.data_root):
             result = reset(confirm=True)
 
-        assert "A sync is running on this library" in result["error"]
+        assert "A sync or import is running on this library" in result["error"]
         assert (cfg.documents_dir / "doc.txt").exists()
 
     def test_reset_empty_dirs(self):

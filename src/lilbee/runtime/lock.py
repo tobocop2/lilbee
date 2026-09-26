@@ -55,10 +55,12 @@ class LockTimeoutError(TimeoutError):
 
 
 class SyncRunningError(RuntimeError):
-    """Raised when a reset finds a sync running against the same data root."""
+    """Raised when a reset finds a sync or import running against the same data root."""
 
     def __init__(self) -> None:
-        super().__init__("A sync is running on this library. Reset again when it finishes.")
+        super().__init__(
+            "A sync or import is running on this library. Reset again when it finishes."
+        )
 
 
 # In-process write mutex: serializes writers within the same process
@@ -170,7 +172,7 @@ def _release_sync_lock(lock: ReadWriteLock | None) -> None:
 
 @asynccontextmanager
 async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
-    """Mark a sync running on *data_root*, across processes; syncs share the mark.
+    """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
     The wait for a reset to finish runs in a worker thread, off the event loop.
     """

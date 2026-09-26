@@ -3206,6 +3206,51 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
         mock_notify.assert_any_call(msg.SYNC_ALREADY_ACTIVE, severity="warning")
 
 
+async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
+    """A reset confirmed mid-import is refused, so the import cannot write into a wiped store."""
+    import asyncio
+    import threading
+
+    from lilbee.app.dataset import export_to_path
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+    from lilbee.data.export import ImportResult
+
+    _store, services = _dataset_services(tmp_path)
+    out = tmp_path / "pages.jsonl"
+    set_services(services)
+    export_to_path(out, "", None)
+
+    started = threading.Event()
+    release = threading.Event()
+
+    async def _blocked_import(_store, rows, **_kwargs):
+        started.set()
+        await asyncio.to_thread(release.wait, 5)
+        return ImportResult(sources=["doc.pdf"], pages=len(rows), chunks=1)
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(services)
+        with (
+            patch("lilbee.app.dataset.import_dataset", new=_blocked_import),
+            patch("lilbee.app.reset._clear_dir") as mock_clear,
+            patch.object(app.screen, "notify") as mock_notify,
+        ):
+            app.screen._cmd_import(str(out))
+            assert await pump_until(_pilot, started.is_set)
+            app.screen._handle_slash("/reset")
+            await _pilot.pause()
+            await _pilot.press("y")
+            await _pilot.pause()
+            release.set()
+            task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
+        assert task.status == TaskStatus.DONE
+        mock_clear.assert_not_called()
+        mock_notify.assert_any_call(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+    set_services(None)
+
+
 async def test_chat_slash_reset_cancel_does_nothing():
     """Cancelling the reset dialog does not call perform_reset."""
     app = ChatTestApp()
