@@ -160,7 +160,8 @@ class TestSyncTokenizerBackend:
         monkeypatch.setattr("xberg.unregister_tokenizer_backend", unreg)
         return reg, unreg
 
-    def test_registers_when_enabled_and_absent(self, monkeypatch):
+    def test_sync_leaves_an_enabled_tokenizer_to_the_chunker(self, monkeypatch):
+        """Sync never counts through the provider: services init must not start it."""
         from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
         monkeypatch.setattr(cfg, "token_sizing", True)
@@ -168,19 +169,20 @@ class TestSyncTokenizerBackend:
         provider = MagicMock()
         provider.count_tokens.return_value = 7
         sync_xberg_backend(BackendKind.TOKENIZER, provider)
-        reg.assert_called_once()
+        reg.assert_not_called()
         unreg.assert_not_called()
+        provider.count_tokens.assert_not_called()
 
     def test_rebinds_to_current_provider_when_already_registered(self, monkeypatch):
         """A rebuilt provider must replace the stale binding: unregister then re-register,
         else xberg keeps counting through the shut-down provider after reset_services."""
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, bind_backend
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
         provider = MagicMock()
         provider.count_tokens.return_value = 7
-        sync_xberg_backend(BackendKind.TOKENIZER, provider)
+        bind_backend(BackendKind.TOKENIZER, provider)
         unreg.assert_called_once_with("lilbee")
         reg.assert_called_once()
 
@@ -203,13 +205,13 @@ class TestSyncTokenizerBackend:
         unreg.assert_not_called()
 
     def test_registered_backend_routes_to_provider_count_tokens(self, monkeypatch):
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, bind_backend
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
         provider = MagicMock()
         provider.count_tokens.return_value = 42
-        sync_xberg_backend(BackendKind.TOKENIZER, provider)
+        bind_backend(BackendKind.TOKENIZER, provider)
         backend = reg.call_args.args[0]
         assert backend.name() == "lilbee"
         assert backend.count_tokens("hello") == 42
@@ -259,36 +261,20 @@ class TestSyncTokenizerBackend:
         assert reg.call_count == 2
 
     def test_settings_change_syncs_tokenizer_backend(self, monkeypatch):
-        """Toggling token_sizing via any settings path re-syncs the backend."""
+        """Turning token_sizing off via any settings path unregisters the backend."""
         from lilbee.app.services import set_services
         from lilbee.app.settings import _invalidate_caches
         from tests.conftest import make_mock_services
 
         set_services(make_mock_services())
         try:
-            monkeypatch.setattr(cfg, "token_sizing", True)
-            reg, _unreg = self._patch_xberg(monkeypatch, listed=[])
+            monkeypatch.setattr(cfg, "token_sizing", False)
+            reg, unreg = self._patch_xberg(monkeypatch, listed=["lilbee"])
             _invalidate_caches({"token_sizing"})
-            reg.assert_called_once()
+            unreg.assert_called_once_with("lilbee")
+            reg.assert_not_called()
         finally:
             set_services(None)
-
-    def test_sync_skips_an_unusable_tokenizer_count(self, monkeypatch):
-        """An unbuildable embedder must not crash services init: sync leaves the
-        tokenizer unregistered against the real xberg probe, and chunking rebinds
-        on demand."""
-        import xberg
-
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
-        from lilbee.data.types import TokenizerBackendName
-        from lilbee.providers.base import ProviderError
-
-        monkeypatch.setattr(cfg, "token_sizing", True)
-        provider = MagicMock()
-        provider.count_tokens.side_effect = ProviderError("No embedding model is configured")
-        with _isolated_tokenizer_binding():
-            sync_xberg_backend(BackendKind.TOKENIZER, provider)
-            assert TokenizerBackendName.LILBEE not in xberg.list_tokenizer_backends()
 
     def test_bind_backend_raises_the_real_count_error(self):
         """Mid-ingest binding fails loud with the count error itself, not xberg's
@@ -304,19 +290,19 @@ class TestSyncTokenizerBackend:
         ):
             bind_backend(BackendKind.TOKENIZER, provider)
 
-    def test_sync_registers_an_sdk_backend_on_its_estimate(self, monkeypatch):
+    def test_bind_registers_an_sdk_backend_on_its_estimate(self, monkeypatch):
         """SDK embedders have no local tokenizer; the estimate still passes the
         real xberg probe, so registration succeeds."""
         import xberg
 
-        from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
+        from lilbee.data.extract.backends import BackendKind, bind_backend
         from lilbee.data.types import TokenizerBackendName
 
         monkeypatch.setattr(cfg, "token_sizing", True)
         provider = MagicMock()
         provider.count_tokens.side_effect = NotImplementedError("no local tokenizer")
         with _isolated_tokenizer_binding():
-            sync_xberg_backend(BackendKind.TOKENIZER, provider)
+            bind_backend(BackendKind.TOKENIZER, provider)
             assert TokenizerBackendName.LILBEE in xberg.list_tokenizer_backends()
 
 
@@ -445,6 +431,43 @@ class TestEagerStartBranch:
         finally:
             services_mod.set_services(None)
         provider.warm_up_pool.assert_not_called()
+
+
+class TestFirstBuildUnderTokenSizing:
+    def test_first_build_finishes_when_counting_resolves_through_the_container(self, monkeypatch):
+        """The fleet's count resolves its model through get_services(); counting while
+        the container is first built re-entered its creation lock and never returned."""
+        import threading
+
+        from lilbee.app import services as services_mod
+        from lilbee.providers.engine_params import resolve_model_path
+
+        cfg.token_sizing = True
+        cfg.worker_pool_eager_start = False
+        cfg.embedding_model = "org/embed-GGUF/embed.gguf"
+        provider = MagicMock()
+
+        def count_like_the_fleet(_text: str) -> int:
+            resolve_model_path(cfg.embedding_model)
+            return 7
+
+        provider.count_tokens.side_effect = count_like_the_fleet
+        monkeypatch.setattr(
+            "lilbee.providers.factory.create_provider", lambda _cfg, **_kw: provider
+        )
+        services_mod.set_services(None)
+        built: list[object] = []
+        worker = threading.Thread(
+            target=lambda: built.append(services_mod.get_services()), daemon=True
+        )
+        with _isolated_tokenizer_binding():
+            try:
+                worker.start()
+                worker.join(timeout=10)
+                assert not worker.is_alive(), "get_services() deadlocked on its own build"
+                assert built[0].provider is provider
+            finally:
+                services_mod.set_services(None)
 
 
 class TestBuildServices:

@@ -318,9 +318,8 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
     if "token_sizing" in changed_keys:
-        # Register/unregister lilbee's xberg tokenizer backend when token_sizing is
-        # toggled (via any settings path), so chunk sizing picks up the change
-        # without waiting for a services rebuild.
+        # Unregister lilbee's xberg tokenizer backend when token_sizing is turned
+        # off (via any settings path); the chunker binds it on demand when on.
         from lilbee.app.services import peek_services
         from lilbee.data.extract.backends import BackendKind, sync_xberg_backend
 
