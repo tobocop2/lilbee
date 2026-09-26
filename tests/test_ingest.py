@@ -6129,6 +6129,36 @@ class TestIngestArchive:
         assert "OCR is off (enable_ocr = false)" in caplog.text
         assert "configure a vision model" not in caplog.text
 
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_nested_archive_scanned_member_names_the_backend_that_ran(
+        self, mock_kf, isolated_env, mock_svc, caplog
+    ):
+        """The archive's OCR choice threads through the nested-archive recursion too:
+        a scanned PDF inside an archive inside an archive gets the same backend-aware
+        warning as a member one level deep, so OCR-off still names enable_ocr instead
+        of advising a vision model that never ran."""
+        import logging
+
+        from lilbee.data.extract.document import ingest_archive
+
+        cfg.enable_ocr = False
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        inner = _make_archive_result(
+            [_member("scan.pdf", "application/pdf", _make_xberg_result(num_chunks=0))]
+        )
+        mock_kf.return_value = _make_archive_result(
+            [_member("inner.zip", "application/zip", inner)]
+        )
+        f = isolated_env / "docs.zip"
+        f.write_bytes(b"PK\x03\x04")
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.extract.document"):
+            members = await ingest_archive(f, "docs.zip", "zip")
+
+        assert [m.records for m in members] == [[]]
+        assert "OCR is off (enable_ocr = false)" in caplog.text
+        assert "configure a vision model" not in caplog.text
+
 
 class TestFlushArchiveMembers:
     def test_members_write_as_their_own_sources_and_stale_members_go(self, mock_svc):
