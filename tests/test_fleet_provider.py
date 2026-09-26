@@ -2819,10 +2819,20 @@ class TestEmbedTokenCap:
         assert FleetProvider().embed_token_cap() == 8184
         assert seen == ["org/repo/e.gguf"]
 
-    def test_health_warns_when_the_cap_is_below_the_chunk_budget(self, monkeypatch) -> None:
+    def test_health_is_clean_when_token_sizing_self_corrects(self, monkeypatch) -> None:
+        """The chunker already switches to token sizing on its own below this cap,
+        so health has nothing actionable to report."""
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 504)
+        assert FleetProvider().health_warnings() == []
+
+    def test_health_warns_when_semantic_chunking_will_lose_text(self, monkeypatch) -> None:
         from lilbee.core.health_warnings import WarningCode
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(planning_mod, "planned_embed_token_cap", lambda _r: 504)
         codes = [w.code for w in FleetProvider().health_warnings()]
         assert codes == [WarningCode.EMBED_WINDOW_BELOW_CHUNK]

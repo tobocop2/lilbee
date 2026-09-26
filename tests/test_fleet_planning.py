@@ -3822,18 +3822,29 @@ class TestWarnWhenChatDownsized:
             built_ctx_target=target,
         )
 
-    def test_warns_when_the_embed_window_is_below_the_chunk_budget(
-        self, caplog, monkeypatch
-    ) -> None:
+    def test_stays_quiet_when_token_sizing_self_corrects(self, caplog, monkeypatch) -> None:
+        """The chunker already switches to token sizing on its own below this cap,
+        so there is nothing left for the adoption log to flag."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        launch = self._launch(slots=1, ctx=512, target=0)
+        launch.token_cap = 504
+        with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
+            planning_mod.warn_when_embed_window_below_chunk(launch)
+        assert caplog.records == []
+
+    def test_warns_when_semantic_chunking_will_lose_text(self, caplog, monkeypatch) -> None:
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
         launch = self._launch(slots=1, ctx=512, target=0)
         launch.token_cap = 504
         with caplog.at_level("WARNING", logger="lilbee.providers.fleet.planning"):
             planning_mod.warn_when_embed_window_below_chunk(launch)
         assert len(caplog.records) == 1
         assert "504 tokens" in caplog.records[0].message
-        assert "Token sizing is in effect" in caplog.records[0].message
-        assert not caplog.records[0].message.endswith("None")
+        assert "loses text" in caplog.records[0].message
+        assert "Turn off semantic_chunking" in caplog.records[0].message
 
     def test_stays_quiet_when_the_embed_window_covers_the_chunk_budget(
         self, caplog, monkeypatch

@@ -342,28 +342,73 @@ class TestEmbedTokenCap:
         monkeypatch.setattr(cfg, "chunk_size", 512)
         assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
 
-    def test_binding_window_reports_token_sizing_in_effect(self, monkeypatch) -> None:
-        from lilbee.core.health_warnings import WarningCode
+    def test_no_warning_when_token_sizing_self_corrects(self, monkeypatch) -> None:
+        """cap below chunk_size*4 with token_sizing off already makes the chunker
+        switch to token sizing on its own, so there is nothing left to warn about."""
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        assert ep.embed_window_warning(2040) is None
+        assert ep.embed_window_warning(504) is None
+
+    def test_no_warning_right_at_the_self_correcting_boundary(self, monkeypatch) -> None:
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
 
         monkeypatch.setattr(cfg, "chunk_size", 512)
         monkeypatch.setattr(cfg, "token_sizing", False)
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
+
+    def test_warning_under_token_sizing_names_the_chunk_size_that_matches(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.core.health_warnings import WarningCode
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "token_sizing", True)
+        monkeypatch.setattr(cfg, "semantic_chunking", False)
+        assert ep.embed_window_warning(512) is None
         warning = ep.embed_window_warning(504)
         assert warning is not None
         assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
         assert "504 tokens per input" in warning.message
         assert "chunk_size 512" in warning.message
-        assert "Token sizing is in effect" in warning.message
-        assert "504 tokens" in warning.message
-        assert "cut" not in warning.message
-        assert warning.remedy is None
+        assert warning.remedy == "Set chunk_size to 504 to match the window."
 
-    def test_warning_under_token_sizing_names_the_chunk_size_that_matches(
+    def test_semantic_chunking_warns_when_the_window_binds(self, monkeypatch) -> None:
+        """The semantic chunker sizes by characters and ignores token_sizing, so a
+        bound cap loses text there even though the plain path would self-correct."""
+        from lilbee.core.health_warnings import WarningCode
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        monkeypatch.setattr(cfg, "token_sizing", False)
+        warning = ep.embed_window_warning(2040)
+        assert warning is not None
+        assert warning.code is WarningCode.EMBED_WINDOW_BELOW_CHUNK
+        assert "2040 tokens per input" in warning.message
+        assert "2048 characters" in warning.message
+        assert "semantic" in warning.message.lower()
+        assert "loses text" in warning.message
+        assert warning.remedy == "Turn off semantic_chunking or lower chunk_size."
+
+    def test_semantic_chunking_ignores_token_sizing_when_deciding_to_warn(
         self, monkeypatch
     ) -> None:
+        """token_sizing=True does not save semantic chunking from losing text: the
+        semantic chunker never consults it."""
         monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
         monkeypatch.setattr(cfg, "token_sizing", True)
-        assert ep.embed_window_warning(512) is None
         warning = ep.embed_window_warning(504)
         assert warning is not None
-        assert "Token sizing is in effect" in warning.message
-        assert warning.remedy == "Set chunk_size to 504 to match the window."
+        assert warning.remedy == "Turn off semantic_chunking or lower chunk_size."
+
+    def test_no_warning_when_semantic_chunking_cap_covers_the_char_budget(
+        self, monkeypatch
+    ) -> None:
+        from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+
+        monkeypatch.setattr(cfg, "chunk_size", 512)
+        monkeypatch.setattr(cfg, "semantic_chunking", True)
+        assert ep.embed_window_warning(512 * CHARS_PER_TOKEN) is None
