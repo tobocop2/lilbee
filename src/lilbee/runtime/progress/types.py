@@ -99,9 +99,10 @@ class ExtractEvent(BaseModel):
     """Emitted with page-level extraction progress.
 
     OCR fires one event per page as xberg processes it, as a running count
-    with ``total_pages == 0`` (the total is unknown mid-extraction). Extraction
-    then fires once per file with ``page == total_pages`` so subscribers see
-    "extracted N pages" before the embed phase ticks.
+    against the page total known before extraction for a PDF or image source,
+    or ``0`` when that count could not be read. Extraction then fires once per
+    file with ``page == total_pages`` so subscribers see "extracted N pages"
+    before the embed phase ticks.
     """
 
     file: str

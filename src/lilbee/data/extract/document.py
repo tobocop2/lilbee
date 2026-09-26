@@ -570,6 +570,35 @@ async def _collect_members(
         )
 
 
+def _page_count_config() -> ExtractionConfig:
+    """A metadata-only ExtractionConfig: OCR and page bodies off, structure kept."""
+    from xberg import ExtractionConfig, OcrConfig, PageConfig
+
+    return ExtractionConfig(
+        ocr=OcrConfig(enabled=False),
+        pages=PageConfig(extract_pages=False, insert_page_markers=False),
+        disable_ocr=True,
+        enable_quality_processing=False,
+    )
+
+
+async def _known_page_count(data: bytes, filename: str) -> int:
+    """The page count from a metadata-only xberg pass over *data*, or 0 when unknown.
+
+    Costs a second structural parse of *data* with OCR and page bodies both off.
+    Any failure here returns 0 rather than raising, so the caller's real
+    extraction still runs and reports its own error.
+    """
+    from .xberg import aextract_document
+
+    try:
+        doc = await aextract_document(data, filename=filename, config=_page_count_config())
+    except Exception:
+        log.debug("Page-count probe failed for %s; OCR progress total stays unknown", filename)
+        return 0
+    return doc.counts.pages
+
+
 async def _extract_document(
     path: Path,
     source_name: str,
@@ -580,6 +609,14 @@ async def _extract_document(
     """Run one xberg pass over *path*, with per-page OCR progress and the extraction trace."""
     from .xberg import aextract_document
 
+    data = path.read_bytes()
+    total_pages = 0
+    # content_type_to_mode(content_type), not the *mode* argument: ingest_archive
+    # always requests PAGINATED regardless of the archive's own content_type, and
+    # an archive has no single page count to probe for.
+    if content_type_to_mode(content_type) is ExtractMode.PAGINATED:
+        total_pages = await _known_page_count(data, path.name)
+
     page_seen = 0
 
     def _tick() -> None:
@@ -587,7 +624,7 @@ async def _extract_document(
         page_seen += 1
         on_progress(
             EventType.EXTRACT,
-            ExtractEvent(file=source_name, page=page_seen, total_pages=0),
+            ExtractEvent(file=source_name, page=page_seen, total_pages=total_pages),
         )
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
@@ -595,11 +632,11 @@ async def _extract_document(
     with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
         batcher = active_extract_batcher()
         if batcher is not None:
-            doc = await batcher.submit(mode, path.read_bytes(), path.name, token)
+            doc = await batcher.submit(mode, data, path.name, token)
         else:
             config = extraction_config(mode, ocr_token=token)
             # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
-            doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
+            doc = await aextract_document(data, filename=path.name, config=config)
     elapsed = time.perf_counter() - started
 
     # One trace line per extraction (filename, timing, counts, OCR pages), plus a
