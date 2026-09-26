@@ -220,6 +220,8 @@ class StatusResponse(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
+    ocr_warning: str | None = None
+    """Set when a vision model is configured but ``enable_ocr`` is false."""
 
 
 class ShutdownResponse(BaseModel):

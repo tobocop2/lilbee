@@ -3058,6 +3058,16 @@ class TestOcrFlags:
         assert result.exit_code == 0
         assert cfg.enable_ocr is False
 
+    def test_ocr_help_says_off_applies_to_every_backend(self):
+        """--no-ocr's help text must say it turns off every OCR backend, vision included,
+        or a reader keeps thinking a vision model overrides it."""
+        result = runner.invoke(app, ["sync", "--help"])
+        assert result.exit_code == 0
+        # Rich wraps the help column across lines behind a box-drawing border;
+        # strip the border and collapse whitespace before matching the phrase.
+        normalized = " ".join(result.output.replace("│", " ").split())
+        assert "off applies to every backend, vision included" in normalized
+
 
 class TestLogLevel:
     """Tests for --log-level flag and LILBEE_LOG_LEVEL configuration."""

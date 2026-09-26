@@ -485,12 +485,26 @@ def _document_tables(doc: ExtractedDocument) -> list[_ExtractedTable]:
     return [t for t in (doc.tables or []) if t.markdown and t.markdown.strip()]
 
 
-def _warn_empty_ocr(source_name: str, media: str) -> None:
-    """Warn that extraction yielded no text and point to the vision-model remedy."""
+def _warn_empty_ocr(source_name: str, media: str, backend: OcrBackendUsed) -> None:
+    """Warn that extraction yielded no text, with advice that matches the backend that ran."""
+    if backend is OcrBackendUsed.NONE:
+        log.warning(
+            "Skipped %s: text extraction produced no usable text. "
+            "OCR is off (enable_ocr = false); set it to true to OCR %s.",
+            source_name,
+            media,
+        )
+        return
+    if backend is OcrBackendUsed.VISION:
+        log.warning(
+            "Skipped %s: the vision model returned no usable text for %s.",
+            source_name,
+            media,
+        )
+        return
     log.warning(
         "Skipped %s: text extraction produced no usable text. "
-        "For better results on %s, configure a vision model "
-        "via PUT /api/models/vision or set LILBEE_ENABLE_OCR=true.",
+        "For better results on %s, configure a vision model via PUT /api/models/vision.",
         source_name,
         media,
     )
@@ -519,7 +533,12 @@ async def ingest_document(
         path, source_name, content_type, content_type_to_mode(content_type), on_progress
     )
     records, meta = await _records_from_document(
-        doc, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
+        doc,
+        source_name,
+        content_type,
+        on_progress=on_progress,
+        page_texts_out=page_texts_out,
+        ocr_backend=ocr.backend,
     )
     return DocumentRecords(records, meta, ocr)
 
@@ -537,11 +556,11 @@ async def ingest_archive(
     ``<archive>/<member path>``. xberg unpacks to ``max_archive_depth`` under its
     zip-bomb limits, so depth and size are enforced before this runs.
     """
-    doc, _ = await _extract_document(
+    doc, ocr = await _extract_document(
         path, source_name, content_type, ExtractMode.PAGINATED, on_progress
     )
     members: list[MemberRecords] = []
-    await _collect_members(doc, source_name, members, on_progress)
+    await _collect_members(doc, source_name, members, on_progress, ocr.backend)
     return members
 
 
@@ -550,6 +569,7 @@ async def _collect_members(
     prefix: str,
     members: list[MemberRecords],
     on_progress: DetailedProgressCallback,
+    ocr_backend: OcrBackendUsed,
 ) -> None:
     # circular: document -> ingest.discovery via the ingest package's pipeline import
     from lilbee.data.ingest.discovery import archive_content_types, classify_file
@@ -564,12 +584,17 @@ async def _collect_members(
             unsupported.append(entry.path)
             continue
         if content_type in archive_content_types():
-            await _collect_members(entry.result, name, members, on_progress)
+            await _collect_members(entry.result, name, members, on_progress, ocr_backend)
             continue
         page_texts: list[PageTextRecord] = []
         try:
             records, meta = await _records_from_document(
-                entry.result, name, content_type, on_progress=on_progress, page_texts_out=page_texts
+                entry.result,
+                name,
+                content_type,
+                on_progress=on_progress,
+                page_texts_out=page_texts,
+                ocr_backend=ocr_backend,
             )
         except ChunkLimitError as exc:
             raise ChunkLimitError(exc.count, exc.limit, member=name) from None
@@ -646,6 +671,7 @@ async def _records_from_document(
     *,
     on_progress: DetailedProgressCallback,
     page_texts_out: list[PageTextRecord] | None,
+    ocr_backend: OcrBackendUsed,
 ) -> tuple[list[ChunkRecord], SourceMeta]:
     """Chunk-cap, page-capture, and embed one extracted document into its records."""
     # Derived before the empty-result return so a scan's title/authors survive zero chunks.
@@ -654,7 +680,7 @@ async def _records_from_document(
     tables = _document_tables(doc)
     if not doc.chunks and not tables:
         if content_type in (PDF_CONTENT_TYPE, IMAGE_CONTENT_TYPE):
-            _warn_empty_ocr(source_name, "scanned documents")
+            _warn_empty_ocr(source_name, "scanned documents", ocr_backend)
         return [], meta
 
     enforce_chunk_limit(len(doc.chunks or []) + len(tables))

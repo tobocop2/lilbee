@@ -457,6 +457,36 @@ class TestStatus:
         ]
         assert result.skipped_total == 7
 
+    async def test_status_carries_the_ocr_warning(self):
+        """The OCR warning must survive the StatusResponse mapping; a missing
+        field there drops it from the HTTP surface without any error."""
+        from lilbee.app.status import StatusConfig, StatusResult
+
+        base_config = StatusConfig(
+            documents_dir="docs",
+            data_dir="data",
+            chat_model="test:latest",
+            embedding_model="embed:latest",
+        )
+        warned = StatusResult(
+            document_count=0,
+            config=base_config,
+            sources=[],
+            total_chunks=0,
+            ocr_warning="OCR is off (enable_ocr = false), so the vision model is not used.",
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=warned):
+            result = await handlers.status()
+        assert (
+            result.ocr_warning
+            == "OCR is off (enable_ocr = false), so the vision model is not used."
+        )
+
+        clear = StatusResult(document_count=0, config=base_config, sources=[], total_chunks=0)
+        with patch("lilbee.server.handlers.gather_status", return_value=clear):
+            result = await handlers.status()
+        assert result.ocr_warning is None
+
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
         cfg.vision_model = ""

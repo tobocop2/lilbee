@@ -6103,6 +6103,32 @@ class TestIngestArchive:
             "Skipped 3 member(s) of runs.gz, unsupported format: README, logo.svg, run.rerank.trec"
         ]
 
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_scanned_member_with_no_text_names_the_backend_that_ran(
+        self, mock_kf, isolated_env, mock_svc, caplog
+    ):
+        """A scanned PDF member with no text gets the same backend-aware warning as a
+        top-level scan: the archive's OCR choice threads into each member's warning,
+        so OCR-off names enable_ocr instead of advising a vision model that is unused."""
+        import logging
+
+        from lilbee.data.extract.document import ingest_archive
+
+        cfg.enable_ocr = False
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        mock_kf.return_value = _make_archive_result(
+            [_member("scan.pdf", "application/pdf", _make_xberg_result(num_chunks=0))]
+        )
+        f = isolated_env / "docs.zip"
+        f.write_bytes(b"PK\x03\x04")
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.extract.document"):
+            members = await ingest_archive(f, "docs.zip", "zip")
+
+        assert [m.records for m in members] == [[]]
+        assert "OCR is off (enable_ocr = false)" in caplog.text
+        assert "configure a vision model" not in caplog.text
+
 
 class TestFlushArchiveMembers:
     def test_members_write_as_their_own_sources_and_stale_members_go(self, mock_svc):
@@ -6216,13 +6242,16 @@ class TestSkippedScanReportsTheOcrThatRan:
             result = await sync(quiet=True)
         return result, extract.call_args.kwargs["config"]
 
-    async def test_ocr_off_with_a_vision_model_reports_ocr_off(self, isolated_env, mock_svc):
+    async def test_ocr_off_with_a_vision_model_reports_ocr_off(
+        self, isolated_env, mock_svc, caplog
+    ):
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrBackendUsed, OcrReport
 
         cfg.enable_ocr = False
         cfg.vision_model = self._VISION_MODEL
-        result, config = await self._sync_scan(isolated_env, [None, None, None])
+        with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
+            result, config = await self._sync_scan(isolated_env, [None, None, None])
 
         assert config.ocr.enabled is False  # a set vision model does not turn OCR back on
         assert result.skipped == ["scan.pdf"]
@@ -6231,33 +6260,44 @@ class TestSkippedScanReportsTheOcrThatRan:
         assert "OCR is off" in message and "enable_ocr" in message
         assert "vision OCR returned no text" not in message
         assert "scan.pdf[/yellow]: OCR is off (enable_ocr = false)" in str(result)
+        # the log line names enable_ocr, not the vision model that is set but unused
+        assert "OCR is off (enable_ocr = false)" in caplog.text
+        assert "configure a vision model" not in caplog.text
 
-    async def test_vision_that_returns_no_text_reports_vision(self, isolated_env, mock_svc):
+    async def test_vision_that_returns_no_text_reports_vision(self, isolated_env, mock_svc, caplog):
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrBackendUsed, OcrReport
 
         cfg.enable_ocr = None
         cfg.vision_model = self._VISION_MODEL
-        result, _ = await self._sync_scan(isolated_env, ["lilbee-vision"] * 3)
+        with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
+            result, _ = await self._sync_scan(isolated_env, ["lilbee-vision"] * 3)
 
         assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=3)}
         assert "vision OCR returned no text" in sync_skipped_message(result)
         assert "OCR is off" not in str(result)
+        # the log line does not tell the user to configure a vision model that is already set
+        assert "the vision model returned no usable text" in caplog.text
+        assert "configure a vision model" not in caplog.text
 
     async def test_tesseract_that_returns_no_text_advises_a_vision_model(
-        self, isolated_env, mock_svc
+        self, isolated_env, mock_svc, caplog
     ):
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrBackendUsed, OcrReport
 
         cfg.enable_ocr = True
         cfg.vision_model = ""
-        result, _ = await self._sync_scan(isolated_env, ["tesseract", None])
+        with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
+            result, _ = await self._sync_scan(isolated_env, ["tesseract", None])
 
         assert result.skipped_ocr == {
             "scan.pdf": OcrReport(backend=OcrBackendUsed.TESSERACT, pages=1)
         }
         assert "Configure a vision_model" in sync_skipped_message(result)
+        # OCR already ran (Tesseract); the log line advises a vision model, not enable_ocr
+        assert "configure a vision model via PUT /api/models/vision" in caplog.text
+        assert "OCR is off" not in caplog.text
 
     async def test_trace_line_names_the_backend_and_ocr_pages(self, isolated_env, mock_svc, caplog):
         cfg.enable_ocr = False
