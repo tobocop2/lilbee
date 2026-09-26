@@ -158,6 +158,114 @@ class TestGetServicesRootPatch:
         added = [("docs/x.md", 1, line)]
         assert list(csr._check_get_services_root_patch(added)) == []
 
+    def _findings(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: str, lineno: int
+    ) -> list[str]:
+        """Write *source* as a real file so import-alias resolution can read it."""
+        monkeypatch.setattr(csr, "REPO_ROOT", tmp_path)
+        rel_path = "tests/test_x.py"
+        target = tmp_path / rel_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(source, encoding="utf-8")
+        added = [(rel_path, lineno, source.splitlines()[lineno - 1])]
+        return list(csr._check_get_services_root_patch(added))
+
+    def test_flags_patch_object_on_an_import_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "import lilbee.app.services as svc_mod\n"
+            "from unittest.mock import patch\n\n"
+            "\n"
+            'patch.object(svc_mod, "get_services", return_value=None)\n'
+        )
+        findings = self._findings(tmp_path, monkeypatch, source, 5)
+        assert len(findings) == 1
+        assert "tests/test_x.py:5" in findings[0]
+        assert "set_services()" in findings[0]
+
+    def test_flags_monkeypatch_setattr_on_an_import_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "import lilbee.app.services as svc_mod\n\n"
+            "\n"
+            "def test_x(monkeypatch):\n"
+            '    monkeypatch.setattr(svc_mod, "get_services", lambda: None)\n'
+        )
+        findings = self._findings(tmp_path, monkeypatch, source, 5)
+        assert len(findings) == 1
+        assert "tests/test_x.py:5" in findings[0]
+
+    def test_flags_patch_object_on_a_from_import(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "from lilbee.app import services\n"
+            "from unittest.mock import patch\n\n"
+            "\n"
+            'patch.object(services, "get_services", return_value=None)\n'
+        )
+        findings = self._findings(tmp_path, monkeypatch, source, 5)
+        assert len(findings) == 1
+        assert "tests/test_x.py:5" in findings[0]
+
+    def test_patch_object_on_an_unrelated_module_is_not_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "import lilbee.app.services as svc_mod\n"
+            "from unittest.mock import patch\n\n"
+            "\n"
+            'patch.object(svc_mod, "reset_services", return_value=None)\n'
+        )
+        assert self._findings(tmp_path, monkeypatch, source, 5) == []
+
+    def test_setattr_on_a_module_that_is_not_the_services_alias_is_not_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "import lilbee.core.config as cfg_mod\n\n"
+            "\n"
+            "def test_x(monkeypatch):\n"
+            '    monkeypatch.setattr(cfg_mod, "get_services", lambda: None)\n'
+        )
+        assert self._findings(tmp_path, monkeypatch, source, 5) == []
+
+    def test_alias_form_allow_smell_tag_opts_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "import lilbee.app.services as svc_mod\n"
+            "from unittest.mock import patch\n\n"
+            "\n"
+            'patch.object(svc_mod, "get_services", return_value=None)  # style-check: allow-smell\n'
+        )
+        assert self._findings(tmp_path, monkeypatch, source, 5) == []
+
+    def test_flags_the_builtin_three_argument_setattr_on_an_alias(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        source = (
+            "import lilbee.app.services as svc_mod\n\n"
+            "\n"
+            'setattr(svc_mod, "get_services", lambda: None)\n'
+        )
+        findings = self._findings(tmp_path, monkeypatch, source, 4)
+        assert len(findings) == 1
+        assert "tests/test_x.py:4" in findings[0]
+
+    def test_dot_object_on_a_receiver_that_is_not_patch_is_not_flagged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``.object(...)`` names any method; only a real ``patch.object`` counts."""
+        source = (
+            "import lilbee.app.services as svc_mod\n\n"
+            "\n"
+            'registry.object(svc_mod, "get_services", None)\n'
+        )
+        assert self._findings(tmp_path, monkeypatch, source, 4) == []
+
 
 class TestUnspecifiedEncoding:
     """Text file I/O must name its encoding, or it decodes as the locale's.
@@ -380,6 +488,51 @@ class TestCheckMarkupParsers:
                 "import rich.console as rc\nclass K(rc.Console): ...", id="dotted_console_subclass"
             ),
             pytest.param("from rich.console import *", id="star_import_rich_console"),
+            pytest.param(
+                'from rich.progress import SpinnerColumn\nSpinnerColumn(finished_text="done")',
+                id="spinner_finished_text",
+            ),
+            pytest.param(
+                "from rich.progress import SpinnerColumn\nSpinnerColumn(finished_text=some_text)",
+                id="spinner_finished_text_variable",
+            ),
+            pytest.param(
+                "from rich.progress import TextColumn\nTextColumn(fmt)", id="text_column_dynamic"
+            ),
+            pytest.param(
+                'from rich.progress import TextColumn\nTextColumn(f"{name}: {{task.percentage}}")',
+                id="text_column_fstring",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\nprogress = Progress()\nprogress.print('done')",
+                id="progress_without_console_prints",
+            ),
+            pytest.param(
+                "from rich.live import Live\nwith Live() as live:\n    live.log('status')",
+                id="live_without_console_logs",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\n"
+                "with Progress() as p:\n"
+                "    p.console.print('x')",
+                id="progress_console_attribute_print",
+            ),
+            pytest.param(
+                "from rich.live import Live\nwith Live() as p:\n    p.console.log('x')",
+                id="live_console_attribute_log",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\np: Progress = Progress()\np.print('x')",
+                id="progress_annotated_assign",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\na = b = Progress()\nb.print('x')",
+                id="progress_multi_target_assign",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\np, x = Progress(), 1\np.log('x')",
+                id="progress_tuple_unpacking",
+            ),
         ],
     )
     def test_flags_a_way_to_parse_markup(self, tmp_path: Path, source: str) -> None:
@@ -405,6 +558,44 @@ class TestCheckMarkupParsers:
             pytest.param("import inspect\ninspect.signature(f)", id="stdlib_inspect"),
             pytest.param("print(x)", id="builtin_print"),
             pytest.param("from .rich import print\nprint(x)", id="relative_import"),
+            pytest.param(
+                "from rich.progress import SpinnerColumn\nSpinnerColumn()",
+                id="spinner_column_no_finished_text",
+            ),
+            pytest.param(
+                'from rich.progress import TextColumn\nTextColumn("{task.percentage:>3.0f}%")',
+                id="text_column_constant_format",
+            ),
+            pytest.param(
+                "from rich.progress import TextColumn\nTextColumn(fmt, markup=False)",
+                id="text_column_dynamic_markup_off",
+            ),
+            pytest.param(
+                "from rich.progress import Progress, SpinnerColumn\n"
+                "with Progress(SpinnerColumn()) as progress:\n"
+                "    progress.add_task('working', total=None)\n"
+                "    progress.update(0, completed=1)",
+                id="progress_without_console_never_prints",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\nProgress(console=make_console())",
+                id="progress_with_console",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\n"
+                "with Progress() as p:\n"
+                "    p.console.export_text()",
+                id="progress_console_attribute_non_print_log",
+            ),
+            pytest.param(
+                "from rich.progress import Progress\n"
+                "def emit(prog):\n"
+                "    prog.print('x')\n\n"
+                "\n"
+                "with Progress() as p:\n"
+                "    emit(p)",
+                id="progress_passed_to_a_helper_under_another_name",
+            ),
         ],
     )
     def test_leaves_literal_output_alone(self, tmp_path: Path, source: str) -> None:

@@ -28,17 +28,25 @@ cleanup of pre-existing ones).
    ``Text.from_markup``, rich's ``print``, ``get_console``, ``inspect``
    and ``progress.track``, a subclass of rich's ``Console``, star imports
    from rich, and the rich modules whose constructors parse a string as
-   markup (markup, panel, prompt, spinner, status). Imports and attribute
-   chains resolve to dotted names; a name rebound by plain assignment
-   (``K = Console``) is not followed.
-7. New occurrences in ``tests/`` of a patch or monkeypatch naming the literal
-   string ``lilbee.app.services.get_services``. A module first imported while
-   that exact attribute is patched binds its own ``from ... import
-   get_services`` to the stand-in and keeps it for the rest of the xdist
-   worker (bb-25eyz). Use ``set_services()`` from ``lilbee.app.services``
-   instead, which the ``_reset_services_after_test`` conftest fixture clears
-   after every test. A test that asserts ``get_services`` itself was (not)
-   called needs the real patch; opt out with ``# style-check: allow-smell``.
+   markup (markup, panel, prompt, spinner, status); a ``SpinnerColumn``
+   built with ``finished_text=``; a ``TextColumn`` built from a non-constant
+   format without ``markup=False``; and a ``Progress``/``Live`` built
+   without ``console=`` whose bound result calls ``.print`` or ``.log``
+   (both use rich's global console, which has markup on). Imports and
+   attribute chains resolve to dotted names; a name rebound by plain
+   assignment (``K = Console``) is not followed.
+7. New occurrences in ``tests/`` of a patch or monkeypatch on ``get_services``,
+   whether the target names the literal string
+   ``lilbee.app.services.get_services`` or resolves through an import alias
+   (``patch.object(svc_mod, "get_services", ...)`` /
+   ``monkeypatch.setattr(svc_mod, "get_services", ...)`` where ``svc_mod`` is
+   bound to ``lilbee.app.services``). A module first imported while that
+   attribute is patched binds its own ``from ... import get_services`` to the
+   stand-in and keeps it for the rest of the xdist worker (bb-25eyz). Use
+   ``set_services()`` from ``lilbee.app.services`` instead, which the
+   ``_reset_services_after_test`` conftest fixture clears after every test. A
+   test that asserts ``get_services`` itself was (not) called needs the real
+   patch; opt out with ``# style-check: allow-smell``.
 
 Inline opt-out comments: ``# style-check: allow-history`` skips the
 historical-narrative check on that line; ``# style-check: allow-smell`` skips
@@ -248,9 +256,104 @@ def _check_new_unspecified_encoding(added: Iterable[tuple[str, int, str]]) -> It
 
 _GET_SERVICES_ROOT_PATCH_RE = re.compile(r"""["']lilbee\.app\.services\.get_services["']""")
 
+SERVICES_MODULE_DOTTED = "lilbee.app.services"
+GET_SERVICES_ATTR = "get_services"
+# ``patch.object`` however ``patch`` got imported: bare (``from unittest.mock
+# import patch``), off an imported ``mock``/``unittest.mock`` module, or a
+# dotted ``unittest.mock.patch``.
+_PATCH_OBJECT_RECEIVERS = frozenset({"unittest.mock.patch", "mock.patch"})
+# The receiver and the attribute-name string are always the first two
+# positional arguments, in ``patch.object``, ``monkeypatch.setattr`` and the
+# builtin three-argument ``setattr`` alike.
+_PATCH_TARGET_MIN_ARGS = 2
+
+
+def _get_services_root_patch_finding(path: str, lineno: int) -> str:
+    return (
+        f"{path}:{lineno}: patches lilbee.app.services.get_services directly "
+        "(use set_services() from lilbee.app.services instead, or "
+        f"{ALLOW_SMELL_TAG} on a test that asserts the getter itself)"
+    )
+
+
+def _is_patch_object_call(node: ast.Call, bindings: dict[str, str]) -> bool:
+    """Whether *node* calls ``patch.object(...)``, however ``patch`` was imported."""
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "object"
+        and _dotted_name(func.value, bindings) in _PATCH_OBJECT_RECEIVERS
+    )
+
+
+def _targets_get_services_alias(node: ast.Call, bindings: dict[str, str]) -> bool:
+    """Whether *node* names ``get_services`` on a value bound to the services module.
+
+    Covers ``patch.object(svc_mod, "get_services", ...)`` and
+    ``monkeypatch.setattr(svc_mod, "get_services", ...)`` (and the builtin
+    three-argument ``setattr``) for any import alias of
+    ``lilbee.app.services``: the target's first two positional arguments are
+    the receiver and the attribute name in every one of those call shapes.
+    """
+    if len(node.args) < _PATCH_TARGET_MIN_ARGS:
+        return False
+    attr_name = node.args[1]
+    if not (isinstance(attr_name, ast.Constant) and attr_name.value == GET_SERVICES_ATTR):
+        return False
+    return _dotted_name(node.args[0], bindings) == SERVICES_MODULE_DOTTED
+
+
+def _get_services_alias_hits(path: Path) -> Iterator[int]:
+    """Yield line numbers of a patch/setattr on the services module's alias.
+
+    ``patch.object`` and ``monkeypatch.setattr`` name their target by
+    reference, not by the string the ``get_services`` root-patch regex
+    matches, so this resolves the reference through the file's own imports
+    with rule 6's dotted-name helpers (``_import_bindings`` / `_dotted_name`)
+    instead of duplicating that resolution.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError):
+        return
+    bindings = _import_bindings(tree)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _call_name(node)
+        if name not in ("object", "setattr"):
+            continue
+        if name == "object" and not _is_patch_object_call(node, bindings):
+            continue
+        if _targets_get_services_alias(node, bindings):
+            yield node.lineno
+
+
+def _literal_string_patch_findings(added_by_path: dict[str, dict[int, str]]) -> Iterator[str]:
+    """Yield findings for the literal quoted ``get_services`` root-attribute string."""
+    for path, lines in added_by_path.items():
+        if not path.endswith(".py"):
+            continue
+        for lineno, content in lines.items():
+            if ALLOW_SMELL_TAG in content:
+                continue
+            if _GET_SERVICES_ROOT_PATCH_RE.search(content) is not None:
+                yield _get_services_root_patch_finding(path, lineno)
+
+
+def _alias_patch_findings(added_by_path: dict[str, dict[int, str]]) -> Iterator[str]:
+    """Yield findings for a patch/setattr on an import alias of the services module."""
+    for path, lines in sorted(added_by_path.items()):
+        if not path.endswith(".py"):
+            continue
+        for lineno in _get_services_alias_hits(REPO_ROOT / path):
+            content = lines.get(lineno)
+            if content is not None and ALLOW_SMELL_TAG not in content:
+                yield _get_services_root_patch_finding(path, lineno)
+
 
 def _check_get_services_root_patch(added: Iterable[tuple[str, int, str]]) -> Iterator[str]:
-    """Yield findings for a new patch of the literal get_services root attribute.
+    """Yield findings for a new patch of get_services, by string or by alias.
 
     A module first imported while ``lilbee.app.services.get_services`` is
     patched binds its own ``from ... import get_services`` to the stand-in
@@ -258,16 +361,12 @@ def _check_get_services_root_patch(added: Iterable[tuple[str, int, str]]) -> Ite
     replaces the singleton directly, so every caller's binding resolves
     through it instead.
     """
+    added_by_path: dict[str, dict[int, str]] = {}
     for path, lineno, content in added:
-        if not path.endswith(".py") or ALLOW_SMELL_TAG in content:
-            continue
-        if _GET_SERVICES_ROOT_PATCH_RE.search(content) is None:
-            continue
-        yield (
-            f"{path}:{lineno}: patches lilbee.app.services.get_services directly "
-            "(use set_services() from lilbee.app.services instead, or "
-            f"{ALLOW_SMELL_TAG} on a test that asserts the getter itself)"
-        )
+        added_by_path.setdefault(path, {})[lineno] = content
+
+    yield from _literal_string_patch_findings(added_by_path)
+    yield from _alias_patch_findings(added_by_path)
 
 
 def _iter_python_files(*roots: Path) -> Iterator[Path]:
@@ -478,6 +577,13 @@ MARKUP_PARSING_CALLABLES = frozenset(
         "rich.progress.track",
     }
 )
+SPINNER_COLUMN_DOTTED = "rich.progress.SpinnerColumn"
+SPINNER_FINISHED_TEXT_KW = "finished_text"
+TEXT_COLUMN_DOTTED = "rich.progress.TextColumn"
+PROGRESS_LIVE_DOTTED = frozenset({"rich.progress.Progress", "rich.live.Live"})
+CONSOLE_KW = "console"
+MARKUP_KW = "markup"
+_PRINT_OR_LOG_ATTRS = frozenset({"print", "log"})
 
 
 def _is_markup_parser(dotted: str) -> bool:
@@ -530,6 +636,173 @@ def _markup_import_hits(node: ast.stmt) -> Iterator[tuple[int, str]]:
             yield node.lineno, f"imports {target}, which parses strings as markup"
 
 
+def _spinner_column_hit(node: ast.Call, bindings: dict[str, str]) -> Iterator[tuple[int, str]]:
+    """Yield a finding for a SpinnerColumn built with finished_text=, which renders as markup."""
+    if _dotted_name(node.func, bindings) != SPINNER_COLUMN_DOTTED:
+        return
+    if any(kw.arg == SPINNER_FINISHED_TEXT_KW for kw in node.keywords):
+        yield node.lineno, "builds SpinnerColumn with finished_text=, which parses as markup"
+
+
+def _text_column_hit(node: ast.Call, bindings: dict[str, str]) -> Iterator[tuple[int, str]]:
+    """Yield a finding for a TextColumn built from a non-constant format without markup=False.
+
+    A constant format string is the codebase's own template text, already
+    reviewed; a computed one may embed unreviewed content directly into what
+    TextColumn renders as markup by default.
+    """
+    if _dotted_name(node.func, bindings) != TEXT_COLUMN_DOTTED or not node.args:
+        return
+    fmt = node.args[0]
+    if isinstance(fmt, ast.Constant) and isinstance(fmt.value, str):
+        return
+    markup_off = any(
+        kw.arg == MARKUP_KW and isinstance(kw.value, ast.Constant) and kw.value.value is False
+        for kw in node.keywords
+    )
+    if not markup_off:
+        yield node.lineno, "builds TextColumn from a non-constant format without markup=False"
+
+
+def _print_or_log_receiver(value: ast.expr) -> str | None:
+    """The bound name behind a ``.print``/``.log`` receiver: itself, or its ``.console``.
+
+    ``Progress``/``Live`` without ``console=`` fall back to ``rich.get_console()``,
+    so ``p.console`` names that same global console and ``p.console.print(...)``
+    parses markup exactly like ``p.print(...)`` does.
+    """
+    if isinstance(value, ast.Name):
+        return value.id
+    if (
+        isinstance(value, ast.Attribute)
+        and value.attr == CONSOLE_KW
+        and isinstance(value.value, ast.Name)
+    ):
+        return value.value.id
+    return None
+
+
+def _print_or_log_receiver_names(tree: ast.Module) -> frozenset[str]:
+    """Names that ``.print(``/``.log(`` (directly, or via ``.console``) is called on in *tree*.
+
+    File-scoped, and coarse the same way the module's own name-rebinding
+    blind spot is: it does not confirm a given Progress/Live binding is the
+    one that gets printed through, only that some name spelled the same way
+    does somewhere in the file.
+    """
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _PRINT_OR_LOG_ATTRS
+        ):
+            name = _print_or_log_receiver(node.func.value)
+            if name is not None:
+                names.add(name)
+    return frozenset(names)
+
+
+def _assign_target_names(target: ast.expr) -> Iterator[str]:
+    """Every plain name *target* binds, recursing into tuple/list unpacking."""
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            yield from _assign_target_names(elt)
+
+
+def _named_calls(value: ast.expr, target: ast.expr) -> Iterator[tuple[ast.Call, str | None]]:
+    """Pair each call *value* holds with the name *target* binds it to.
+
+    Walks a tuple/list target against a tuple/list value in lockstep, so
+    ``p, x = Progress(), 1`` pairs the call with ``p`` and not with the whole
+    right-hand side.
+    """
+    if isinstance(value, ast.Call):
+        yield value, next(_assign_target_names(target), None)
+    elif isinstance(value, (ast.Tuple, ast.List)) and isinstance(target, (ast.Tuple, ast.List)):
+        for sub_value, sub_target in zip(value.elts, target.elts, strict=False):
+            yield from _named_calls(sub_value, sub_target)
+
+
+def _progress_or_live_bindings(stmt: ast.stmt) -> Iterator[tuple[ast.Call, str | None]]:
+    """Every (Progress/Live call, bound name) pair one statement produces.
+
+    Covers a plain, annotated, or multi-target assign, tuple/list unpacking
+    where the call is one element, and ``with ... as name:``. A target this
+    cannot name (an attribute, a starred element) still yields the call with
+    ``name=None``, so a console-less construction is seen even when nothing
+    downstream can prove it gets printed through.
+    """
+    if isinstance(stmt, ast.AnnAssign) and stmt.value is not None:
+        yield from _named_calls(stmt.value, stmt.target)
+    elif isinstance(stmt, ast.Assign):
+        for target in stmt.targets:
+            yield from _named_calls(stmt.value, target)
+    elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+        for item in stmt.items:
+            if isinstance(item.context_expr, ast.Call):
+                as_name = item.optional_vars
+                name = next(_assign_target_names(as_name), None) if as_name is not None else None
+                yield item.context_expr, name
+
+
+def _progress_live_hit(
+    call: ast.Call,
+    name: str | None,
+    bindings: dict[str, str],
+    print_or_log_names: frozenset[str],
+) -> Iterator[tuple[int, str]]:
+    """Yield a finding for a console-less Progress/Live whose binding is printed through."""
+    target = _dotted_name(call.func, bindings)
+    if target not in PROGRESS_LIVE_DOTTED:
+        return
+    if any(kw.arg == CONSOLE_KW for kw in call.keywords):
+        return
+    if name is not None and name in print_or_log_names:
+        yield (
+            call.lineno,
+            f"builds {target} without console= and calls .print/.log on it",
+        )
+
+
+def _class_def_hit(node: ast.ClassDef, bindings: dict[str, str]) -> Iterator[tuple[int, str]]:
+    """Yield a finding for a class that subclasses rich's Console."""
+    if any(_dotted_name(base, bindings) == "rich.console.Console" for base in node.bases):
+        yield node.lineno, "subclasses rich.console.Console, which keeps markup on"
+
+
+def _call_hits(node: ast.Call, bindings: dict[str, str]) -> Iterator[tuple[int, str]]:
+    """Yield every finding a single call expression produces on its own terms."""
+    target = _dotted_name(node.func, bindings)
+    if target is not None and _is_markup_parser(target):
+        yield node.lineno, f"calls {target}, which parses strings as markup"
+    if isinstance(node.func, ast.Attribute) and node.func.attr == "from_markup":
+        yield node.lineno, "parses a string as markup with Text.from_markup"
+    for kw in node.keywords:
+        markup_off = isinstance(kw.value, ast.Constant) and kw.value.value is False
+        if kw.arg == MARKUP_KW and not markup_off:
+            yield node.lineno, "passes markup= a value other than False"
+    yield from _spinner_column_hit(node, bindings)
+    yield from _text_column_hit(node, bindings)
+
+
+def _node_hits(
+    node: ast.AST, bindings: dict[str, str], print_or_log_names: frozenset[str]
+) -> Iterator[tuple[int, str]]:
+    """Yield every finding one AST node produces, dispatched by node type."""
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        yield from _markup_import_hits(node)
+    if isinstance(node, ast.ClassDef):
+        yield from _class_def_hit(node, bindings)
+    if isinstance(node, (ast.Assign, ast.AnnAssign, ast.With, ast.AsyncWith)):
+        for call, name in _progress_or_live_bindings(node):
+            yield from _progress_live_hit(call, name, bindings, print_or_log_names)
+    if isinstance(node, ast.Call):
+        yield from _call_hits(node, bindings)
+
+
 def _markup_parser_hits(path: Path) -> Iterator[tuple[int, str]]:
     """Yield ``(line, reason)`` for each way *path* lets Rich parse text as markup."""
     try:
@@ -537,24 +810,9 @@ def _markup_parser_hits(path: Path) -> Iterator[tuple[int, str]]:
     except (OSError, SyntaxError):
         return
     bindings = _import_bindings(tree)
+    print_or_log_names = _print_or_log_receiver_names(tree)
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            yield from _markup_import_hits(node)
-        if isinstance(node, ast.ClassDef) and any(
-            _dotted_name(base, bindings) == "rich.console.Console" for base in node.bases
-        ):
-            yield node.lineno, "subclasses rich.console.Console, which keeps markup on"
-        if not isinstance(node, ast.Call):
-            continue
-        target = _dotted_name(node.func, bindings)
-        if target is not None and _is_markup_parser(target):
-            yield node.lineno, f"calls {target}, which parses strings as markup"
-        if isinstance(node.func, ast.Attribute) and node.func.attr == "from_markup":
-            yield node.lineno, "parses a string as markup with Text.from_markup"
-        for kw in node.keywords:
-            markup_off = isinstance(kw.value, ast.Constant) and kw.value.value is False
-            if kw.arg == "markup" and not markup_off:
-                yield node.lineno, "passes markup= a value other than False"
+        yield from _node_hits(node, bindings, print_or_log_names)
 
 
 def _check_markup_parsers(paths: Iterable[Path]) -> Iterator[str]:
