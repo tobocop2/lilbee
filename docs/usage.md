@@ -946,8 +946,8 @@ lilbee --data-dir ~/kb status          # use an explicit data dir
 
 ### Top-level flags
 
-`--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--vision`,
-`--vision-timeout`, `--log-level`, `--json` / `-j`, `--version` / `-V`.
+`--model` / `-m`, `--data-dir` / `-d`, `--global` / `-g`, `--log-level`,
+`--json` / `-j`, `--version` / `-V`.
 
 ## HTTP server
 
@@ -1603,8 +1603,7 @@ lilbee runs vision OCR in one of two ways:
    vision calls accordingly.
 
 ```bash
-lilbee add report.pdf --vision                # prompts for model if none set
-lilbee add report.pdf --vision-timeout 30     # per-page timeout (default: 120s, 0 = no limit)
+lilbee add report.pdf --ocr-timeout 30        # per-page timeout (default: 300s, 0 = no limit)
 export LILBEE_VISION_MODEL=lightonocr         # persist across runs (GGUF via mtmd)
 ```
 
