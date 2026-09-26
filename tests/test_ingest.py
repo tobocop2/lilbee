@@ -6490,6 +6490,7 @@ class TestSkippedScanReportsTheOcrThatRan:
     async def test_ocr_off_with_a_vision_model_reports_ocr_off(
         self, isolated_env, mock_svc, caplog
     ):
+        from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrBackendUsed, OcrReport
 
@@ -6501,7 +6502,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         assert config.ocr.enabled is False  # a set vision model does not turn OCR back on
         assert result.skipped == ["scan.pdf"]
         assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.NONE)}
-        message = sync_skipped_message(result)
+        message = sync_skipped_message(result, tui_log_path())
         assert "OCR is off" in message and "enable_ocr" in message
         assert "vision OCR returned no text" not in message
         assert "scan.pdf[/yellow]: OCR is off (enable_ocr = false)" in str(result)
@@ -6509,7 +6510,10 @@ class TestSkippedScanReportsTheOcrThatRan:
         assert "OCR is off (enable_ocr = false)" in caplog.text
         assert "configure a vision model" not in caplog.text
 
-    async def test_vision_that_returns_no_text_reports_vision(self, isolated_env, mock_svc, caplog):
+    async def test_vision_that_returns_no_text_names_the_tui_log(
+        self, isolated_env, mock_svc, caplog
+    ):
+        from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrBackendUsed, OcrReport
 
@@ -6519,7 +6523,14 @@ class TestSkippedScanReportsTheOcrThatRan:
             result, _ = await self._sync_scan(isolated_env, ["lilbee-vision"] * 3)
 
         assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=3)}
-        assert "vision OCR returned no text" in sync_skipped_message(result)
+        message = sync_skipped_message(result, tui_log_path())
+        assert "vision OCR returned no text" in message
+        # The TUI names its own log file, not the server's: this is the
+        # process actually running the sync, so it is the file that has
+        # the underlying error.
+        assert str(tui_log_path()) in message
+        assert "tui.log" in message
+        assert "server.log" not in message
         assert "OCR is off" not in str(result)
         # the log line does not tell the user to configure a vision model that is already set
         assert "the vision model returned no usable text" in caplog.text
@@ -6528,6 +6539,7 @@ class TestSkippedScanReportsTheOcrThatRan:
     async def test_tesseract_that_returns_no_text_advises_a_vision_model(
         self, isolated_env, mock_svc, caplog
     ):
+        from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrBackendUsed, OcrReport
 
@@ -6539,7 +6551,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         assert result.skipped_ocr == {
             "scan.pdf": OcrReport(backend=OcrBackendUsed.TESSERACT, pages=1)
         }
-        assert "Configure a vision_model" in sync_skipped_message(result)
+        assert "Configure a vision_model" in sync_skipped_message(result, tui_log_path())
         # OCR already ran (Tesseract); the log line advises a vision model, not enable_ocr
         assert "configure a vision model via PUT /api/models/vision" in caplog.text
         assert "OCR is off" not in caplog.text

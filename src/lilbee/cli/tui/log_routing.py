@@ -14,11 +14,15 @@ _MAX_BYTES = 1_048_576  # 1 MiB
 _BACKUP_COUNT = 5
 
 
+def tui_log_path() -> Path:
+    """Where the TUI's log file is, or will be, at ``cfg.data_root/logs/tui.log``."""
+    return cfg.data_root / _TUI_LOG_DIR_NAME / _TUI_LOG_FILE_NAME
+
+
 def setup_tui_log_file() -> Path:
     """Install a RotatingFileHandler at ``cfg.data_root/logs/tui.log``. Idempotent."""
-    log_dir = cfg.data_root / _TUI_LOG_DIR_NAME
-    log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / _TUI_LOG_FILE_NAME
+    log_path = tui_log_path()
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     attach_rotating_file_handler(
         log_path,
         max_bytes=_MAX_BYTES,

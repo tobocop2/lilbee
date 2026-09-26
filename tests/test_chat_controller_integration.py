@@ -1252,6 +1252,44 @@ def test_do_sync_names_ocr_off_for_a_scan_skipped_with_ocr_off(tmp_path: Path) -
     assert not any("vision OCR returned no text" in text for text in texts)
 
 
+def test_do_sync_names_the_tui_log_for_a_scan_vision_could_not_read(tmp_path: Path) -> None:
+    """The vision-failed skip toast names the log the TUI itself writes.
+
+    The TUI runs sync in-process, so the underlying error is in tui.log, not
+    in server.log, which a standalone ``lilbee serve`` process would write.
+    """
+    import threading
+
+    from lilbee.cli.tui.log_routing import tui_log_path
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+
+    result = SyncResult(
+        skipped=["scan.pdf"],
+        skipped_ocr={"scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=3)},
+    )
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    notify_calls: list[tuple[object, ...]] = []
+
+    def _worker() -> None:
+        with (
+            patch("lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=result)),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda *a, **kw: notify_calls.append(a),
+            ),
+        ):
+            screen._do_sync(reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    texts = [str(call) for call in notify_calls]
+    assert any(str(tui_log_path()) in text for text in texts)
+    assert not any("server.log" in text for text in texts)
+
+
 def test_do_add_names_ocr_off_when_the_only_file_skipped_with_ocr_off(tmp_path: Path) -> None:
     """A failed /add raises the OCR-off message, not the vision one."""
     import threading
