@@ -999,17 +999,10 @@ class TestLitellmAvailable:
     @pytest.mark.real_litellm_probe
     @pytest.mark.parametrize(
         ("versions", "expected"),
-        [
-            ({"litellm": "1.98.0"}, True),
-            ({"litellm": "1.98.0", "unclecode_litellm": "1.81.13"}, True),
-            ({"unclecode_litellm": "1.81.13"}, False),
-            ({}, False),
-        ],
-        ids=["litellm-only", "both", "fork-only", "neither"],
+        [({"litellm": "1.98.0"}, True), ({}, False)],
+        ids=["installed", "absent"],
     )
-    def test_requires_the_real_litellm_distribution(
-        self, versions: dict[str, str], expected: bool
-    ) -> None:
+    def test_reads_the_litellm_distribution(self, versions: dict[str, str], expected: bool) -> None:
         from lilbee.providers.litellm_sdk import litellm_available
 
         with mock.patch("lilbee.providers.litellm_sdk._dist_version", _installed_dists(**versions)):
@@ -1025,7 +1018,7 @@ class TestLitellmAvailable:
         assert ("litellm" in sys.modules) is had_module
 
     @pytest.mark.real_litellm_probe
-    def test_fork_only_reports_the_litellm_extra_missing(self) -> None:
+    def test_absent_litellm_reports_the_extra_missing(self) -> None:
         from lilbee.modelhub.model_manager.validation import (
             REASON_LITELLM_MISSING,
             ValidationResult,
@@ -1033,7 +1026,7 @@ class TestLitellmAvailable:
         )
         from lilbee.providers.local_servers import OLLAMA
 
-        lookup = _installed_dists(unclecode_litellm="1.81.13")
+        lookup = _installed_dists()
         with mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup):
             result = _classify_local_server_ref(OLLAMA)
         assert result == (ValidationResult.UNKNOWN, REASON_LITELLM_MISSING)
@@ -1067,18 +1060,38 @@ class TestRequireLitellm:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.litellm_sdk import _require_litellm
 
-        lookup = _installed_dists(unclecode_litellm="1.81.13")
         with (
-            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", _installed_dists()),
             pytest.raises(ProviderError) as caught,
         ):
             _require_litellm()
         message = str(caught.value)
         assert "run your install command again with litellm added to the extras" in message
-        assert "--excludes https://lilbee.sh/uv-excludes.txt" in message
         assert "pip install 'lilbee[litellm]'" in message
-        assert "unclecode-litellm" in message
         assert "uv tool install --prerelease=allow 'lilbee[" not in message
+
+    def test_real_litellm_alone_loads(self) -> None:
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        fake_litellm = mock.MagicMock()
+        with (
+            mock.patch(
+                "lilbee.providers.litellm_sdk._dist_version", _installed_dists(litellm="1.98.0")
+            ),
+            inject_modules({"litellm": fake_litellm}),
+        ):
+            assert _require_litellm() is fake_litellm
+
+    def test_refuses_without_the_distribution(self) -> None:
+        from lilbee.providers.base import ProviderError
+        from lilbee.providers.litellm_sdk import _require_litellm
+
+        with (
+            mock.patch("lilbee.providers.litellm_sdk._dist_version", _installed_dists()),
+            inject_modules({"litellm": mock.MagicMock()}),
+            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
+        ):
+            _require_litellm()
 
     def test_factory_raises_when_litellm_unavailable(self) -> None:
         from lilbee.providers.base import ProviderError
@@ -1092,9 +1105,6 @@ class TestRequireLitellm:
         ):
             create_provider(cfg)
         assert str(caught.value) == LITELLM_MISSING_MSG
-
-
-_FORK_ERROR = "Both litellm and unclecode-litellm are installed"
 
 
 def _installed_dists(**versions: str) -> Callable[[str], str]:
@@ -1111,95 +1121,16 @@ def _installed_dists(**versions: str) -> Callable[[str], str]:
     return lookup
 
 
-class TestLitellmForkGuard:
-    def test_raises_when_litellm_and_fork_are_both_installed(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.litellm_sdk import _require_litellm
-
-        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
-        with (
-            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
-            inject_modules({"litellm": mock.MagicMock()}),
-            pytest.raises(ProviderError, match=_FORK_ERROR) as caught,
-        ):
-            _require_litellm()
-        message = str(caught.value)
-        assert "pip uninstall -y unclecode-litellm" in message
-        assert "pip install --force-reinstall --no-deps litellm==1.98.0" in message
-        assert (
-            "your install command again with --reinstall --excludes "
-            "https://lilbee.sh/uv-excludes.txt" in message
-        )
-        assert "lilbee[" not in message
-
-    def test_fork_check_runs_before_the_litellm_import(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.litellm_sdk import _require_litellm
-
-        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
-        with (
-            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
-            inject_modules({"litellm": None}),
-            pytest.raises(ProviderError, match=_FORK_ERROR),
-        ):
-            _require_litellm()
-
-    def test_complete_refuses_before_calling_litellm(self) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.litellm_sdk import LitellmSdkBackend
-        from lilbee.providers.model_ref import parse_model_ref
-        from lilbee.providers.sdk_backend import CompletionRequest
-
-        fake_litellm = mock.MagicMock()
-        lookup = _installed_dists(litellm="1.98.0", unclecode_litellm="1.81.13")
-        request = CompletionRequest(
-            ref=parse_model_ref("openai/gpt-4o"), messages=[{"role": "user", "content": "hi"}]
-        )
-        with (
-            mock.patch("lilbee.providers.litellm_sdk._dist_version", lookup),
-            inject_modules({"litellm": fake_litellm}),
-            pytest.raises(ProviderError, match=_FORK_ERROR),
-        ):
-            LitellmSdkBackend().complete(request)
-        fake_litellm.completion.assert_not_called()
-
-    def test_real_litellm_alone_loads(self) -> None:
-        from lilbee.providers.litellm_sdk import _require_litellm
-
-        fake_litellm = mock.MagicMock()
-        with (
-            mock.patch(
-                "lilbee.providers.litellm_sdk._dist_version", _installed_dists(litellm="1.98.0")
-            ),
-            inject_modules({"litellm": fake_litellm}),
-        ):
-            assert _require_litellm() is fake_litellm
-
-    @pytest.mark.parametrize(
-        "versions", [{"unclecode_litellm": "1.81.13"}, {}], ids=["fork-only", "neither"]
-    )
-    def test_refuses_without_the_real_distribution(self, versions: dict[str, str]) -> None:
-        from lilbee.providers.base import ProviderError
-        from lilbee.providers.litellm_sdk import _require_litellm
-
-        with (
-            mock.patch("lilbee.providers.litellm_sdk._dist_version", _installed_dists(**versions)),
-            inject_modules({"litellm": mock.MagicMock()}),
-            pytest.raises(ProviderError, match="lilbee\\[litellm\\] extra"),
-        ):
-            _require_litellm()
-
-
 class TestUvExcludesFile:
-    """The hosted exclude file must stay in step with the code that names it."""
+    """lilbee.sh keeps serving the exclude file that install lines for older releases name."""
 
-    def test_content_and_url_match_the_fork_constants(self) -> None:
-        from lilbee.providers.litellm_sdk import _LITELLM_FORK_DIST, _UV_EXCLUDES_URL
-
-        excludes_file = Path(__file__).resolve().parents[1] / "site" / "uv-excludes.txt"
-        content = excludes_file.read_text(encoding="utf-8").strip()
-        assert content == _LITELLM_FORK_DIST
-        assert _UV_EXCLUDES_URL.endswith(excludes_file.name)
+    def test_the_published_file_excludes_the_litellm_fork(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        content = (root / "site" / "uv-excludes.txt").read_text(encoding="utf-8").strip()
+        assert content == "unclecode-litellm"
+        # site/ is ignored by default; the Pages build publishes only tracked files.
+        gitignore = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+        assert "!site/uv-excludes.txt" in gitignore
 
 
 class TestLiteLLMShowModelCapabilities:

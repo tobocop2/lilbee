@@ -94,10 +94,10 @@ if uv run --no-sync python -c "import lilbee_engine" >/dev/null 2>&1; then
     done
 fi
 
-# chardet ships its detection models as .bin data files that crawl4ai loads on
-# every http fetch. Neither --include-package-data nor --include-data-dir keeps
-# .bin (Nuitka does not classify it as data), so the frozen crawl path dies with
-# a missing models.bin. Force each .bin in explicitly. The package's .py/.so
+# chardet ships its detection models as .bin data files that the
+# self-check-extras charset probe loads. Neither --include-package-data nor
+# --include-data-dir keeps .bin (Nuitka does not classify it as data), so the
+# frozen probe dies with a missing models.bin. Force each .bin in explicitly. The package's .py/.so
 # come from --include-package=chardet above, so only the .bin data is listed.
 CHARDET_FLAGS=()
 CHARDET_MODELS=$(uv run --no-sync python -c "import chardet, pathlib; d = pathlib.Path(chardet.__file__).parent / 'models'; print(d if d.is_dir() else '')" 2>/dev/null || true)
@@ -152,8 +152,7 @@ uv run --no-sync python -m nuitka \
     --include-package-data=numpy \
     --include-package=xberg          --include-package-data=xberg \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
-    --include-package=crawl4ai           --include-package-data=crawl4ai \
-    --include-package=fake_useragent     --include-package-data=fake_useragent \
+    --include-package=crawlberg          --include-package-data=crawlberg \
     --include-package=chardet            --include-package-data=chardet \
     --include-package=playwright \
     --enable-plugin=spacy \
@@ -168,7 +167,6 @@ uv run --no-sync python -m nuitka \
     --include-package=hf_xet \
     --include-distribution-metadata=lilbee \
     --include-distribution-metadata=litellm \
-    --include-distribution-metadata=Crawl4AI \
     --include-distribution-metadata=spacy \
     --include-distribution-metadata=en_core_web_sm \
     --include-distribution-metadata=catalogue \

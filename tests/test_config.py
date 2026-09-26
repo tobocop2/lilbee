@@ -325,6 +325,18 @@ class TestOcrLanguage:
             with pytest.raises(ValidationError):
                 setattr(cfg, field, bad)
 
+    def test_crawl_retry_attempts_stop_at_the_crawler_limit(self):
+        from pydantic import ValidationError
+
+        original = cfg.crawl_retry_max_attempts
+        try:
+            cfg.crawl_retry_max_attempts = 20
+            assert cfg.crawl_retry_max_attempts == 20
+            with pytest.raises(ValidationError):
+                cfg.crawl_retry_max_attempts = 21
+        finally:
+            cfg.crawl_retry_max_attempts = original
+
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
             c = Config()
@@ -547,7 +559,6 @@ class TestTomlConfigFile:
         toml_path.write_text(
             'cors_origins = ["https://a.example", "https://b.example"]\n'
             'crawl_exclude_patterns = [".*/private/.*"]\n'
-            'crawl_browser_extra_args = ["--disable-gpu", "--no-sandbox"]\n'
         )
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
@@ -555,8 +566,6 @@ class TestTomlConfigFile:
             c = Config()
             assert c.cors_origins == ["https://a.example", "https://b.example"]
             assert c.crawl_exclude_patterns == [".*/private/.*"]
-            # No before-validator splitter, so the old str(v) coercion hard-failed here.
-            assert c.crawl_browser_extra_args == ["--disable-gpu", "--no-sandbox"]
 
     def test_empty_string_scalar_in_toml_falls_back_to_default(self, tmp_path):
         """Legacy '' sentinel (set_setting wrote it for None) is dropped, not coerced."""
@@ -1650,32 +1659,22 @@ class TestCrawlExcludePatternsValidator:
         assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
 
 
-class TestCrawlBrowserExtraArgsValidator:
-    def test_newline_separated_string_splits(self):
-        """The persist path joins list values with newlines; reload must split them."""
-        from lilbee.core.config import Config
-
-        result = Config._split_crawl_browser_extra_args("--flag-a\n--flag-b")
-        assert result == ["--flag-a", "--flag-b"]
-
-    def test_list_passes_through_unchanged(self):
-        from lilbee.core.config import Config
-
-        assert Config._split_crawl_browser_extra_args(["--a", "--b"]) == ["--a", "--b"]
-
-    def test_persisted_newline_string_round_trips(self, tmp_path):
-        """A value persisted as a newline-joined string must not crash the whole
-        config load (which would silently discard every other setting)."""
+class TestRemovedCrawlSettings:
+    def test_saved_values_for_removed_crawl_settings_do_not_break_loading(self, tmp_path):
+        """A config.toml written before the crawler settings were removed still loads."""
         toml_path = tmp_path / "config.toml"
         toml_path.write_text(
-            'crawl_browser_extra_args = "--flag-a\\n--flag-b"\nchat_model = "ollama/keep:latest"\n'
+            'crawl_browser_extra_args = "--flag-a\\n--flag-b"\n'
+            "crawl_browser_recycle_pages = 7\n"
+            "crawl_convert_workers = 3\n"
+            'chat_model = "ollama/keep:latest"\n'
         )
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.crawl_browser_extra_args == ["--flag-a", "--flag-b"]
-            assert c.chat_model == "ollama/keep:latest"  # other settings survive
+            assert c.chat_model == "ollama/keep:latest"
+            assert not hasattr(c, "crawl_browser_extra_args")
 
 
 class TestPlainEnvSourceSkipsEmpty:

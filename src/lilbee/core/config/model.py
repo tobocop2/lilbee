@@ -315,10 +315,6 @@ class Config(BaseSettings):
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
     mcp_tool_threads: int = ConfigField(default=40, ge=1, writable=True)
-    # Crawled pages converted to markdown on anyio's thread pool at once. The
-    # conversion is synchronous, so this keeps it off the event loop that serves
-    # requests. 0 converts inline on the loop.
-    crawl_convert_workers: int = ConfigField(default=2, ge=0, writable=True)
     server_host: str = Field(
         default="127.0.0.1",
         description=(
@@ -638,19 +634,6 @@ class Config(BaseSettings):
     # that render content client-side, at a much higher memory cost.
     crawl_render_mode: CrawlRenderMode = ConfigField(default=CrawlRenderMode.HTTP, writable=True)
 
-    # Browser-mode memory levers (only used when crawl_render_mode is browser).
-    # Recycle the Chromium process every N fetched pages to cap RSS growth on a
-    # long recursive crawl; 0 disables recycling. Raise on a roomy machine for
-    # fewer restarts, lower it if memory is tight.
-    crawl_browser_recycle_pages: int = ConfigField(default=50, ge=0, writable=True)
-
-    # Extra Chromium launch flags for browser-mode crawls. Defaults trim shared
-    # memory and GPU use; override to pass site- or environment-specific flags.
-    crawl_browser_extra_args: list[str] = ConfigField(
-        default_factory=lambda: ["--disable-dev-shm-usage", "--disable-gpu"],
-        writable=True,
-    )
-
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
@@ -673,7 +656,7 @@ class Config(BaseSettings):
     # Seconds between periodic syncs during crawl. 0 = sync only at end.
     crawl_sync_interval: int = ConfigField(default=30, ge=0, writable=True)
 
-    # Per-request delay + jitter (defaults chosen to be gentler than crawl4ai's).
+    # Per-request delay + jitter.
     crawl_mean_delay: float = ConfigField(default=0.5, ge=0.0, writable=True)
     crawl_max_delay_range: float = ConfigField(default=0.5, ge=0.0, writable=True)
 
@@ -685,7 +668,8 @@ class Config(BaseSettings):
     crawl_retry_base_delay_min: float = ConfigField(default=1.0, ge=0.0, writable=True)
     crawl_retry_base_delay_max: float = ConfigField(default=3.0, ge=0.0, writable=True)
     crawl_retry_max_backoff: float = ConfigField(default=30.0, ge=0.0, writable=True)
-    crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
+    # crawlberg refuses more than 20 retries.
+    crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, le=20, writable=True)
 
     # Regex patterns dropped at link-discovery time. Defaults block CMS
     # scaffolding (WordPress admin, archives, tracking params, etc.).
@@ -1312,20 +1296,6 @@ class Config(BaseSettings):
     def _split_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
-        return v
-
-    @field_validator("crawl_browser_extra_args", mode="before")
-    @classmethod
-    def _split_crawl_browser_extra_args(cls, v: Any) -> Any:
-        """Accept a newline-separated string, matching how the field is persisted.
-
-        ``app.settings`` joins list values with newlines before writing them to
-        ``config.toml`` as a scalar string. Without this inverse, reload cannot
-        coerce that string to ``list[str]`` and the whole config.toml is dropped.
-        TOML lists and JSON arrays pass through unchanged.
-        """
-        if isinstance(v, str):
-            return [a.strip() for a in v.splitlines() if a.strip()]
         return v
 
     @field_validator("crawl_exclude_patterns", mode="before")

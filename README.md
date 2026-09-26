@@ -190,7 +190,7 @@ The Linux x86_64 wheel and binary bundle the Vulkan loader, so they start on any
 
 ### Optional extras
 
-These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,litellm]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three. See the [install commands in the usage guide](docs/usage.md#optional-extras) for any uv install that has `crawler` in the extras list.
+These only matter for a `pip` or `uv` install: add the name in brackets, e.g. `pip install --pre 'lilbee[engine,crawler,litellm]'` (combine multiple, and `--extra-index-url` still works). The standalone binary and the Homebrew / AUR / Nix / Docker / Flatpak / Snap builds already include all four, which is why they need none of this. `[engine]` is the one that is not really optional; lilbee works fine without the other three.
 
 | Extra       | What it adds                                                                                                                                              |
 | ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -731,7 +731,7 @@ lilbee stands on a stack of established open-source projects, all bundled into o
 - [Hugging Face Hub] (via [huggingface_hub]) hosts the model catalog and handles every download. Search, browse, and pull all route through it.
 - [LanceDB] is the embedded vector store.
 - [tree-sitter] (via [tree-sitter-language-pack]) chunks code across 150+ languages.
-- [crawl4ai] and [Playwright] crawl the web; [Tesseract] is the OCR fallback when no vision model is set.
+- [crawlberg] crawls the web, and [Playwright] installs its headless Chromium; [Tesseract] is the OCR fallback when no vision model is set.
 - [LiteLLM] bridges cloud model providers (the `[litellm]` optional extra).
 - [Textual] draws the terminal; [Litestar] runs the HTTP server.
 - [MCP Python SDK] is the agent surface; [Typer] is the CLI; [Pydantic] is the config + validation backbone.
@@ -762,7 +762,7 @@ MIT. See [LICENSE](LICENSE).
 [gguf-parser]: https://github.com/gpustack/gguf-parser-go
 [Hugging Face Hub]: https://huggingface.co
 [huggingface_hub]: https://github.com/huggingface/huggingface_hub
-[crawl4ai]: https://github.com/unclecode/crawl4ai
+[crawlberg]: https://github.com/xberg-io/crawlberg
 [Playwright]: https://playwright.dev
 [Textual]: https://textual.textualize.io
 [tree-sitter]: https://tree-sitter.github.io/tree-sitter/
