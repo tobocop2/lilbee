@@ -36,9 +36,11 @@ from textual.widgets import Footer, Markdown, Select, Static
 from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.ingest import forget_held_out, remove_documents_durably
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
 from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.status import held_out_names
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
@@ -200,6 +202,14 @@ def _stream_error_text(exc: Exception) -> str:
 def _setting_type_hint(kind: type) -> str:
     """Human phrase for what a settings value must be."""
     return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
+
+
+def _delete_source(name: str, indexed: set[str]) -> None:
+    """Remove an indexed source durably, or forget a held-out one; the file stays on disk."""
+    if name in indexed:
+        remove_documents_durably([name])
+    else:
+        forget_held_out([name])
 
 
 def _closest_source(name: str, known: set[str]) -> str | None:
@@ -1157,7 +1167,8 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
-        known = {s.get("filename", s.get("source", "?")) for s in sources}
+        indexed = {s.get("filename", s.get("source", "?")) for s in sources}
+        known = indexed | set(held_out_names())
         if not known:
             call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
@@ -1175,13 +1186,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, message, severity="error")
             return
 
-        from lilbee.app.ingest import remove_documents_durably
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
-
-        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
-        # non-destructive delete; the file stays on disk).
-        remove_documents_durably([name])
-        invalidate_document_cache()
+        _delete_source(name, indexed)
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:
@@ -1241,7 +1246,6 @@ class ChatScreen(Screen[None]):
     def _do_import(self, raw_path: str, reporter: ProgressReporter) -> None:
         """Import body. Runs on the task worker thread."""
         from lilbee.app.dataset import DatasetError, import_from_path
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
         reporter.update(0, msg.IMPORT_STATUS_LOADING, indeterminate=True)
         try:
@@ -1255,7 +1259,6 @@ class ChatScreen(Screen[None]):
         except DatasetError as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             raise RuntimeError(str(exc)) from exc
-        invalidate_document_cache()
         call_from_thread(
             self,
             self.notify,

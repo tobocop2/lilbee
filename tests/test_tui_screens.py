@@ -2940,6 +2940,93 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
             assert "No documents" in mock_notify.call_args[0][0]
 
 
+async def _tab_complete(app, pilot, typed: str) -> str:
+    """Type *typed* into the chat input, press Tab, and return the input value."""
+    inp = app.screen.query_one("#chat-input", ChatInput)
+    inp.focus()
+    inp.value = typed
+    await pilot.pause()
+    await pilot.press("tab")
+    await pilot.pause()
+    return inp.value
+
+
+async def test_chat_tab_completes_a_held_out_source_for_delete(mock_svc):
+    """``/delete <Tab>`` offers a file ingestion held out when nothing is indexed."""
+    from lilbee.data.ingest.skip_marker import write_skip_markers
+
+    write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        assert await _tab_complete(app, pilot, "/delete sc") == "/delete scan.pdf"
+
+
+async def test_chat_tab_delete_completion_follows_the_store(mock_svc):
+    """A source indexed after the first ``/delete <Tab>`` is offered by the next one."""
+    mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        assert await _tab_complete(app, pilot, "/delete a") == "/delete a.txt"
+        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+        assert await _tab_complete(app, pilot, "/delete b") == "/delete b.md"
+
+
+async def test_chat_slash_delete_forgets_a_held_out_single_file_root(mock_svc, tmp_path):
+    """Deleting a held-out single-file root drops its record, its reason and the root."""
+    from lilbee.app.ingest import register_sources
+    from lilbee.data.ingest.skip_marker import (
+        load_skip_markers,
+        load_skip_reasons,
+        write_skip_markers,
+        write_skip_reasons,
+    )
+
+    scan = tmp_path / "scan.pdf"
+    scan.write_bytes(b"%PDF-1.4")
+    keep = tmp_path / "keep.pdf"
+    keep.write_bytes(b"%PDF-1.4")
+    register_sources([scan, keep])
+    write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "keep.pdf": "h2"})
+    write_skip_reasons(cfg.data_root, {"scan.pdf": "no text", "keep.pdf": "no text"})
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/delete scan.pdf")
+            await app.screen.workers.wait_for_complete()
+            await pilot.pause()
+        assert mock_notify.call_args[0][0] == "Deleted scan.pdf"
+    assert load_skip_markers(cfg.data_root) == {"keep.pdf": "h2"}
+    assert load_skip_reasons(cfg.data_root) == {"keep.pdf": "no text"}
+    assert set(cfg.linked_roots) == {"keep.pdf"}
+    assert scan.exists()
+    mock_svc.store.remove_documents.assert_not_called()
+
+
+async def test_chat_slash_delete_drops_a_held_out_record_under_a_directory_root(mock_svc, tmp_path):
+    """A held-out file under a folder loses its record; the folder stays registered."""
+    from lilbee.app.ingest import register_sources
+    from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    (corpus / "bad.pdf").write_bytes(b"%PDF-1.4")
+    register_sources([corpus])
+    write_skip_markers(cfg.data_root, {"corpus/bad.pdf": "h1", "corpus/other.pdf": "h2"})
+    mock_svc.store.get_sources.return_value = [{"filename": "corpus/good.md"}]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        app.screen._handle_slash("/delete corpus/bad.pdf")
+        await app.screen.workers.wait_for_complete()
+        await pilot.pause()
+    assert load_skip_markers(cfg.data_root) == {"corpus/other.pdf": "h2"}
+    assert set(cfg.linked_roots) == {"corpus"}
+    mock_svc.store.remove_documents.assert_not_called()
+
+
 class _DatasetStubEmbedder:
     truncated_total = 0
 
@@ -3070,17 +3157,11 @@ async def test_chat_slash_import_round_trip(tmp_path):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(services)
-        with (
-            patch.object(app.screen, "notify") as mock_notify,
-            patch(
-                "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
-            ) as mock_invalidate,
-        ):
+        with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_import(str(out))
             task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
             assert task.status == TaskStatus.DONE
             assert "Imported" in mock_notify.call_args[0][0]
-            mock_invalidate.assert_called_once()
     set_services(None)
 
 

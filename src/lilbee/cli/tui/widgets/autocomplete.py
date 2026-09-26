@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import logging
 from collections.abc import Callable
 from pathlib import Path
@@ -18,6 +17,7 @@ from textual.widgets.option_list import Option
 from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
+from lilbee.app.status import held_out_names
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import COMMANDS, completion_names
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
@@ -114,8 +114,8 @@ def _setting_options() -> list[str]:
     return [k for k in SETTINGS_MAP if _is_settable(k)]
 
 
-def _fetch_document_names() -> list[str]:
-    """Uncached indexed-source names; empty on any store error."""
+def _indexed_names() -> list[str]:
+    """Indexed-source names in store order; empty on any store error."""
     try:
         return [s.get("filename", s.get("source", "")) for s in get_services().store.get_sources()]
     except Exception:
@@ -123,21 +123,11 @@ def _fetch_document_names() -> list[str]:
         return []
 
 
-@functools.lru_cache(maxsize=1)
-def _document_options_cached() -> tuple[str, ...]:
-    # Cached for ``/delete`` and ``/reset`` Tab completion; cleared by
-    # invalidate_document_cache on document mutations. Order is stable (fetch
-    # order) so the dropdown is deterministic.
-    return tuple(_fetch_document_names())
-
-
 def _document_options() -> list[str]:
-    return list(_document_options_cached())
-
-
-def invalidate_document_cache() -> None:
-    """Drop the cached document list; the next Tab refetches from the store."""
-    _document_options_cached.cache_clear()
+    """``/delete`` targets: indexed sources, then held-out sources not indexed."""
+    indexed = _indexed_names()
+    seen = set(indexed)
+    return indexed + [name for name in held_out_names() if name not in seen]
 
 
 def _theme_options() -> list[str]:
