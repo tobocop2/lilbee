@@ -23,9 +23,12 @@ from lilbee.data.types import (
     MARKDOWN_OUTPUT,
     PDF_CONTENT_TYPE,
     ChunkRecord,
+    DocumentRecords,
     ExtractMode,
     MemberRecords,
     OcrBackendName,
+    OcrBackendUsed,
+    OcrReport,
 )
 from lilbee.providers.base import aux_options
 from lilbee.runtime.progress import (
@@ -215,19 +218,27 @@ def ocr_override(
             var.reset(token)
 
 
-def _ocr_config(ocr_token: str | None) -> OcrConfig:
-    """Pick the OCR backend for this extraction.
+def _ocr_backend() -> OcrBackendUsed:
+    """The OCR backend for this extraction; ``enable_ocr`` False wins over a vision model."""
+    if _effective_enable_ocr() is False:
+        return OcrBackendUsed.NONE
+    if active_config().vision_model:
+        return OcrBackendUsed.VISION
+    return OcrBackendUsed.TESSERACT
 
-    Mirrors the prior fallback policy: OCR off when ``enable_ocr`` is False; lilbee's
-    vision backend when a vision model is configured; otherwise xberg's tesseract.
+
+def _ocr_config(ocr_token: str | None) -> OcrConfig:
+    """xberg's OcrConfig for the backend ``_ocr_backend`` picks.
+
     xberg auto-OCRs only the pages that lack a text layer.
     """
     from xberg import OcrConfig
 
     config = active_config()
-    if _effective_enable_ocr() is False:
+    backend = _ocr_backend()
+    if backend is OcrBackendUsed.NONE:
         return OcrConfig(enabled=False)
-    if config.vision_model:
+    if backend is OcrBackendUsed.VISION:
         options = backend_options_for(ocr_token) if ocr_token else None
         return OcrConfig(
             backend=OcrBackendName.LILBEE_VISION,
@@ -493,22 +504,24 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> tuple[list[ChunkRecord], SourceMeta]:
+) -> DocumentRecords:
     """Extract, chunk, and embed a document in a single xberg pass, with its metadata.
 
     xberg extracts native text and, where a page has none, OCRs it through the
     registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
     is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
     pipeline call compatibility. The returned metadata carries the document's
-    extraction title/authors/date and is derived even when extraction yields nothing.
+    extraction title/authors/date and is derived even when extraction yields nothing;
+    the OCR report says which backend the extraction ran and how many pages it OCR'd.
     """
     del quiet
-    doc = await _extract_document(
+    doc, ocr = await _extract_document(
         path, source_name, content_type, content_type_to_mode(content_type), on_progress
     )
-    return await _records_from_document(
+    records, meta = await _records_from_document(
         doc, source_name, content_type, on_progress=on_progress, page_texts_out=page_texts_out
     )
+    return DocumentRecords(records, meta, ocr)
 
 
 async def ingest_archive(
@@ -524,7 +537,7 @@ async def ingest_archive(
     ``<archive>/<member path>``. xberg unpacks to ``max_archive_depth`` under its
     zip-bomb limits, so depth and size are enforced before this runs.
     """
-    doc = await _extract_document(
+    doc, _ = await _extract_document(
         path, source_name, content_type, ExtractMode.PAGINATED, on_progress
     )
     members: list[MemberRecords] = []
@@ -576,7 +589,7 @@ async def _extract_document(
     content_type: str,
     mode: ExtractMode,
     on_progress: DetailedProgressCallback,
-) -> ExtractedDocument:
+) -> tuple[ExtractedDocument, OcrReport]:
     """Run one xberg pass over *path*, with per-page OCR progress and the extraction trace."""
     from .xberg import aextract_document
 
@@ -591,6 +604,7 @@ async def _extract_document(
         )
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
+    backend = _ocr_backend()
     started = time.perf_counter()
     with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
         batcher = active_extract_batcher()
@@ -601,6 +615,7 @@ async def _extract_document(
             # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
             doc = await aextract_document(path.read_bytes(), filename=path.name, config=config)
     elapsed = time.perf_counter() - started
+    ocr = OcrReport(backend=backend, pages=_ocr_page_count(doc))
 
     # One trace line per extraction (filename, timing, counts, OCR pages), plus a
     # vision line for scanned files. Emitted for empty results too (a slow file
@@ -612,12 +627,16 @@ async def _extract_document(
             elapsed_s=elapsed,
             page_count=len(doc.pages or []) or len(doc.chunks or []),
             chunk_count=len(doc.chunks or []),
-            ocr_pages=page_seen,
-            vision_configured=bool(active_config().vision_model),
+            ocr=ocr,
         )
     )
 
-    return doc
+    return doc, ocr
+
+
+def _ocr_page_count(doc: ExtractedDocument) -> int:
+    """Pages xberg OCR'd, which are the pages it attaches an OCR confidence to."""
+    return sum(1 for page in doc.pages or [] if page.ocr_confidence is not None)
 
 
 async def _records_from_document(

@@ -3876,6 +3876,18 @@ class TestUpdateConfig:
         assert result.reindex_required is False
         assert cfg.temperature == 0.7
 
+    async def test_update_config_warns_when_ocr_off_leaves_the_vision_model_unused(self, tmp_path):
+        cfg.vision_model = _VISION_REF
+        result = await handlers.update_config({"enable_ocr": False})
+        assert len(result.warnings) == 1
+        assert "enable_ocr" in result.warnings[0] and _VISION_REF in result.warnings[0]
+        assert (await handlers.update_config({"enable_ocr": True})).warnings == []
+
+    async def test_update_config_unrelated_key_carries_no_ocr_warning(self, tmp_path):
+        cfg.vision_model = _VISION_REF
+        cfg.enable_ocr = False
+        assert (await handlers.update_config({"temperature": 0.3})).warnings == []
+
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
         assert result.reindex_required is True
@@ -4336,6 +4348,13 @@ class TestSetVisionModel:
         result = await handlers.set_vision_model(_VISION_REF)
         assert result.model == _VISION_REF
         assert cfg.vision_model == _VISION_REF
+
+    @patch("lilbee.server.handlers.models.get_services")
+    async def test_setting_a_vision_model_with_ocr_off_warns(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
+        cfg.enable_ocr = False
+        result = await handlers.set_vision_model(_VISION_REF)
+        assert len(result.warnings) == 1 and "enable_ocr" in result.warnings[0]
 
     @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")

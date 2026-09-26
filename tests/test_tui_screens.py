@@ -2151,6 +2151,17 @@ async def test_status_screen_config_shows_models(mock_svc):
         assert "OCR" in rendered
 
 
+@pytest.mark.parametrize("enable_ocr", [False, None])
+async def test_status_screen_warns_when_ocr_off_keeps_the_vision_model_unused(mock_svc, enable_ocr):
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    cfg.enable_ocr = enable_ocr
+    app = StatusTestApp()
+    async with app.run_test(size=(160, 40)) as _pilot:
+        rendered = str(app.screen.query_one("#config-info", Static).render())
+        assert "Vision model" in rendered
+        assert ("OCR is off (enable_ocr = false)" in rendered) is (enable_ocr is False)
+
+
 async def test_status_screen_config_pills_render(mock_svc):
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:

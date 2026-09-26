@@ -17,6 +17,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
+from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
 
 
@@ -1216,6 +1217,78 @@ def test_do_sync_notifies_on_skipped(tmp_path: Path) -> None:
     # call_from_thread(self, self.notify, message, severity="warning") was invoked.
     assert notify_calls
     assert any("scan.pdf" in str(call) for call in notify_calls)
+
+
+def test_do_sync_names_ocr_off_for_a_scan_skipped_with_ocr_off(tmp_path: Path) -> None:
+    """With OCR off the skip toast says so, even when a vision model is configured."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = SyncResult(
+        skipped=["scan.pdf"], skipped_ocr={"scan.pdf": OcrReport(backend=OcrBackendUsed.NONE)}
+    )
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    notify_calls: list[tuple[object, ...]] = []
+
+    def _worker() -> None:
+        with (
+            patch("lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=result)),
+            patch(
+                "lilbee.cli.tui.screens.chat.call_from_thread",
+                side_effect=lambda *a, **kw: notify_calls.append(a),
+            ),
+        ):
+            screen._do_sync(reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    texts = [str(call) for call in notify_calls]
+    assert any("OCR is off" in text and "scan.pdf" in text for text in texts)
+    assert not any("vision OCR returned no text" in text for text in texts)
+
+
+def test_do_add_names_ocr_off_when_the_only_file_skipped_with_ocr_off(tmp_path: Path) -> None:
+    """A failed /add raises the OCR-off message, not the vision one."""
+    import threading
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    src = tmp_path / "scan.pdf"
+    src.write_bytes(b"x")
+    result = SyncResult(
+        skipped=["scan.pdf"], skipped_ocr={"scan.pdf": OcrReport(backend=OcrBackendUsed.NONE)}
+    )
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    captured: list[Exception] = []
+
+    def _worker() -> None:
+        try:
+            screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+            with (
+                patch(
+                    "lilbee.app.ingest.register_sources",
+                    return_value=RegisterResult(registered=[src.name]),
+                ),
+                patch("lilbee.runtime.asyncio_loop.run", new=MagicMock(return_value=result)),
+                patch("lilbee.cli.tui.screens.chat.unregister_added_roots"),
+            ):
+                screen._do_add([src], reporter)
+        except Exception as e:
+            captured.append(e)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert captured and "OCR is off" in str(captured[0]) and "scan.pdf" in str(captured[0])
 
 
 def test_do_add_skipped_alongside_indexed_is_partial_success(tmp_path: Path) -> None:

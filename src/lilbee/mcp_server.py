@@ -1067,6 +1067,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
         "command": "settings_set",
         "updated": result.updated,
         "reindex_required": result.reindex_required,
+        "warnings": list(result.warnings),
     }
 
 

@@ -1511,7 +1511,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "empty.txt"
         f.write_text("   ")
-        result, _ = await ingest_document(f, "empty.txt", "text")
+        result, _, _ = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
     async def test_ingest_code_empty_chunks(self, isolated_env, mock_svc):
@@ -1571,7 +1571,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        result, _ = await ingest_document(f, "test.pdf", "pdf")
+        result, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
@@ -1673,8 +1673,9 @@ class TestSkipMarkerLifecycle:
         # Simulate "OCR found no usable text": no records produced, so the file
         # is recorded as skipped.
         from lilbee.data.store import SourceMeta
+        from lilbee.data.types import DocumentRecords
 
-        return [], SourceMeta()
+        return DocumentRecords([], SourceMeta())
 
     async def test_failed_file_is_skipped_on_next_sync(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
@@ -1818,6 +1819,32 @@ class TestStatusExposesTheIndexEmbedder:
         assert gather_status().index is None
 
 
+class TestStatusWarnsWhenOcrOffKeepsTheVisionModelUnused:
+    """Status warns when a vision model is set but enable_ocr is false."""
+
+    def test_status_warns_for_a_vision_model_with_ocr_off(self, mock_svc):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = None
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.enable_ocr = False
+        warning = gather_status().ocr_warning
+        assert warning is not None
+        assert "enable_ocr" in warning and cfg.vision_model in warning
+
+    @pytest.mark.parametrize(
+        ("vision_model", "enable_ocr"),
+        [("org/V-GGUF/v.gguf", None), ("org/V-GGUF/v.gguf", True), ("", False)],
+    )
+    def test_status_has_no_warning_otherwise(self, mock_svc, vision_model, enable_ocr):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = None
+        cfg.vision_model = vision_model
+        cfg.enable_ocr = enable_ocr
+        assert gather_status().ocr_warning is None
+
+
 class TestStatusReportsHeldOutFiles:
     """/api/status and `lilbee status --json` read the skip sidecars, so a client
     can show which files are held out of the index and why."""
@@ -1876,12 +1903,13 @@ class TestZeroChunkPageTextPersistence:
         page_texts_out=None,
     ):
         from lilbee.data.store import SourceMeta
+        from lilbee.data.types import DocumentRecords
 
         if page_texts_out is not None:
             page_texts_out.append(
                 {"source": source_name, "page": 1, "text": " ", "content_type": "pdf"}
             )
-        return [], SourceMeta()
+        return DocumentRecords([], SourceMeta())
 
     async def test_pages_and_source_row_persist_and_replan_stops(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
@@ -3851,7 +3879,7 @@ class TestBatchExtractionRouting:
             try:
                 f = isolated_env / "d.pdf"
                 f.write_bytes(b"fake")
-                records, _ = await ingest_document(f, "d.pdf", "pdf")
+                records, _, _ = await ingest_document(f, "d.pdf", "pdf")
             finally:
                 await batcher.close()
                 reset_active_batcher(token)
@@ -3876,7 +3904,7 @@ class TestBatchExtractionRouting:
         f.write_bytes(make_pdf(pages=1))
         token = set_active_batcher(batcher)
         try:
-            records, _ = await ingest_document(f, "doc.pdf", "pdf")
+            records, _, _ = await ingest_document(f, "doc.pdf", "pdf")
         finally:
             await batcher.close()
             reset_active_batcher(token)
@@ -3895,7 +3923,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert all(r["chunk_type"] == ChunkType.RAW for r in records)
 
@@ -3915,7 +3943,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 3
         table_records = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
         assert len(table_records) == 2
@@ -3943,7 +3971,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert records[-1]["chunk_type"] == ChunkType.TABLE
         assert records[-1]["chunk"] == spanned
 
@@ -3959,7 +3987,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.RAW
 
@@ -3979,7 +4007,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.TABLE
         assert records[0]["chunk_index"] == 0
@@ -4392,7 +4420,7 @@ class TestIngestDocumentEdgeCases:
         empty_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=empty_result)
         with mock.patch("lilbee.data.extract.xberg.aextract_document", mock_extract):
-            result, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
+            result, _, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
@@ -4402,7 +4430,7 @@ class TestIngestDocumentEdgeCases:
         no_chunks_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=no_chunks_result)
         with mock.patch("lilbee.data.extract.xberg.aextract_document", mock_extract):
-            result, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
+            result, _, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
@@ -4979,7 +5007,7 @@ class TestIngestDocumentOcrPath:
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        result, _ = await ingest_document(f, "scan.pdf", "pdf")
+        result, _, _ = await ingest_document(f, "scan.pdf", "pdf")
         assert result == []
         assert "no usable text" in caplog.text
 
@@ -6153,3 +6181,96 @@ class TestArchiveResult:
         assert result.meta.title == "docs"
         assert pages_done == [1]
         assert events[-1][1].chunks == 3
+
+
+def _scan_result(ocr_backends: list[str | None]) -> MagicMock:
+    """An xberg result with no text, one page per entry; a backend name marks an OCR'd page."""
+    result = _make_xberg_result(num_chunks=0)
+    result.pages = [
+        mock.MagicMock(
+            page_number=i + 1,
+            content="",
+            ocr_confidence=None if name is None else mock.MagicMock(backend=name),
+        )
+        for i, name in enumerate(ocr_backends)
+    ]
+    return result
+
+
+class TestSkippedScanReportsTheOcrThatRan:
+    """A scan that yields no text is reported with the OCR its extraction ran, not the config."""
+
+    _VISION_MODEL = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+    async def _sync_scan(self, isolated_env, pages: list[str | None]):
+        from lilbee.app.services import get_services
+        from lilbee.data.ingest import sync
+
+        get_services().provider.vision_slot_capacity.return_value = 1
+        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+        with mock.patch(
+            "lilbee.data.extract.xberg.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=_scan_result(pages),
+        ) as extract:
+            result = await sync(quiet=True)
+        return result, extract.call_args.kwargs["config"]
+
+    async def test_ocr_off_with_a_vision_model_reports_ocr_off(self, isolated_env, mock_svc):
+        from lilbee.cli.tui.messages import sync_skipped_message
+        from lilbee.data.types import OcrBackendUsed, OcrReport
+
+        cfg.enable_ocr = False
+        cfg.vision_model = self._VISION_MODEL
+        result, config = await self._sync_scan(isolated_env, [None, None, None])
+
+        assert config.ocr.enabled is False  # a set vision model does not turn OCR back on
+        assert result.skipped == ["scan.pdf"]
+        assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.NONE)}
+        message = sync_skipped_message(result)
+        assert "OCR is off" in message and "enable_ocr" in message
+        assert "vision OCR returned no text" not in message
+        assert "scan.pdf[/yellow]: OCR is off (enable_ocr = false)" in str(result)
+
+    async def test_vision_that_returns_no_text_reports_vision(self, isolated_env, mock_svc):
+        from lilbee.cli.tui.messages import sync_skipped_message
+        from lilbee.data.types import OcrBackendUsed, OcrReport
+
+        cfg.enable_ocr = None
+        cfg.vision_model = self._VISION_MODEL
+        result, _ = await self._sync_scan(isolated_env, ["lilbee-vision"] * 3)
+
+        assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=3)}
+        assert "vision OCR returned no text" in sync_skipped_message(result)
+        assert "OCR is off" not in str(result)
+
+    async def test_tesseract_that_returns_no_text_advises_a_vision_model(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.cli.tui.messages import sync_skipped_message
+        from lilbee.data.types import OcrBackendUsed, OcrReport
+
+        cfg.enable_ocr = True
+        cfg.vision_model = ""
+        result, _ = await self._sync_scan(isolated_env, ["tesseract", None])
+
+        assert result.skipped_ocr == {
+            "scan.pdf": OcrReport(backend=OcrBackendUsed.TESSERACT, pages=1)
+        }
+        assert "Configure a vision_model" in sync_skipped_message(result)
+
+    async def test_trace_line_names_the_backend_and_ocr_pages(self, isolated_env, mock_svc, caplog):
+        cfg.enable_ocr = False
+        cfg.vision_model = self._VISION_MODEL
+        caplog.set_level("INFO", logger="lilbee.ingest.trace")
+        await self._sync_scan(isolated_env, [None, None])
+        assert "ocr=none ocr_pages=0 vision=no" in caplog.text
+
+    async def test_markdown_never_reaches_ocr_and_has_no_report(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+
+        cfg.enable_ocr = False
+        (isolated_env / "empty.md").write_text("   ", encoding="utf-8")
+        result = await sync(quiet=True)
+        assert result.skipped == ["empty.md"]
+        assert result.skipped_ocr == {}

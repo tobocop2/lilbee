@@ -28,6 +28,13 @@ if TYPE_CHECKING:
 
 _MIN_CHUNK_SIZE = 64
 
+# Keys whose change can leave a vision model set while OCR is off.
+_OCR_WARNING_KEYS = frozenset({"enable_ocr", "vision_model"})
+OCR_OFF_WARNING = (
+    "OCR is off (enable_ocr = false), so the vision model {model} is not used. "
+    "Scanned PDFs without a text layer are skipped. Set enable_ocr to true to OCR them."
+)
+
 # Path-typed writable fields whose pydantic "default" is the unresolved
 # sentinel ``Path()`` (a literal "."). The actual default is computed by
 # the model_validator at process start (data_root/documents, vault_base
@@ -57,6 +64,20 @@ class SettingsUpdateResult:
 
     updated: list[str]
     reindex_required: bool
+    warnings: tuple[str, ...] = ()
+
+
+def ocr_off_warning() -> str | None:
+    """The warning for a set vision model that OCR being off keeps unused, else None."""
+    if cfg.vision_model and cfg.enable_ocr is False:
+        return OCR_OFF_WARNING.format(model=cfg.vision_model)
+    return None
+
+
+def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
+    """Warnings about the configuration an update leaves behind."""
+    warning = ocr_off_warning() if changed_keys & _OCR_WARNING_KEYS else None
+    return (warning,) if warning is not None else ()
 
 
 def _setting_default(key: str) -> Any:
@@ -415,6 +436,7 @@ def apply_settings_update(
     return SettingsUpdateResult(
         updated=sorted(updates),
         reindex_required=reindex_required,
+        warnings=_update_warnings(set(updates)),
     )
 
 

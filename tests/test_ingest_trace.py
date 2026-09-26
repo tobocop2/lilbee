@@ -13,17 +13,19 @@ from lilbee.data.extract.trace import (
     trace_log,
     vision_log,
 )
+from lilbee.data.types import OcrBackendUsed, OcrReport
+
+_VISION = OcrBackendUsed.VISION
 
 
-def _trace(**kw: object) -> ExtractionTrace:
-    base = {
+def _trace(ocr_pages: int = 0, backend: OcrBackendUsed = _VISION, **kw: object) -> ExtractionTrace:
+    base: dict[str, object] = {
         "source": "docs/report.pdf",
         "content_type": "application/pdf",
         "elapsed_s": 1.234,
         "page_count": 10,
         "chunk_count": 42,
-        "ocr_pages": 0,
-        "vision_configured": True,
+        "ocr": OcrReport(backend=backend, pages=ocr_pages),
     }
     base.update(kw)
     return ExtractionTrace(**base)  # type: ignore[arg-type]
@@ -35,14 +37,21 @@ def test_line_carries_filename_timing_and_counts() -> None:
     assert "elapsed_ms=1234" in line
     assert "pages=10" in line
     assert "chunks=42" in line
+    assert "ocr=vision" in line
     assert "ocr_pages=0" in line
     assert "vision=no" in line
 
 
-def test_used_vision_requires_ocr_pages_and_a_configured_model() -> None:
-    assert _trace(ocr_pages=5, vision_configured=True).used_vision is True
-    assert _trace(ocr_pages=5, vision_configured=False).used_vision is False  # tesseract
-    assert _trace(ocr_pages=0, vision_configured=True).used_vision is False  # all native
+def test_line_names_the_ocr_backend_that_ran() -> None:
+    assert "ocr=none ocr_pages=0 vision=no" in _trace(backend=OcrBackendUsed.NONE).as_line()
+    tesseract = _trace(ocr_pages=3, backend=OcrBackendUsed.TESSERACT).as_line()
+    assert "ocr=tesseract ocr_pages=3 vision=no" in tesseract
+
+
+def test_used_vision_requires_ocr_pages_and_the_vision_backend() -> None:
+    assert _trace(ocr_pages=5).used_vision is True
+    assert _trace(ocr_pages=5, backend=OcrBackendUsed.TESSERACT).used_vision is False
+    assert _trace(ocr_pages=0).used_vision is False  # all native
 
 
 def test_native_only_file_emits_no_vision_line(caplog: pytest.LogCaptureFixture) -> None:
@@ -55,7 +64,7 @@ def test_native_only_file_emits_no_vision_line(caplog: pytest.LogCaptureFixture)
 
 def test_scanned_file_emits_a_dedicated_vision_line(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level(logging.INFO, logger="lilbee.ingest.vision")
-    trace_extraction(_trace(ocr_pages=7, vision_configured=True))
+    trace_extraction(_trace(ocr_pages=7))
     vision_records = [r for r in caplog.records if r.name == "lilbee.ingest.vision"]
     assert len(vision_records) == 1
     assert "ocr_pages=7" in vision_records[0].getMessage()
@@ -83,7 +92,7 @@ def test_trace_file_receives_records_when_host_handlers_filter(
     monkeypatch.setenv("LILBEE_INGEST_TRACE_FILE", str(target))
     configure_from_env()
     try:
-        trace_extraction(_trace(ocr_pages=3, vision_configured=True))
+        trace_extraction(_trace(ocr_pages=3))
         for handler in [*trace_log.handlers, *vision_log.handlers]:
             handler.flush()
         text = target.read_text()

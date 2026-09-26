@@ -315,6 +315,7 @@ class SetModelResponse(BaseModel):
 
     model: str
     reindex_required: bool = False
+    warnings: list[str] = []
 
 
 class ConfigUpdateResponse(BaseModel):
@@ -322,6 +323,7 @@ class ConfigUpdateResponse(BaseModel):
 
     updated: list[str]
     reindex_required: bool
+    warnings: list[str] = []
 
 
 class CrawlRequest(BaseModel):

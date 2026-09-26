@@ -40,7 +40,11 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.crawler import is_url
 
-_ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Force vision OCR on/off for scanned PDFs.")
+_ocr_option = typer.Option(
+    None,
+    "--ocr/--no-ocr",
+    help="Turn OCR on/off for scanned PDFs; off applies to every backend, vision included.",
+)
 _retry_skipped_option = typer.Option(
     False,
     "--retry-skipped",
