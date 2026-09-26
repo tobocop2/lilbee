@@ -2199,6 +2199,18 @@ class TestReset:
         assert "A sync or import is running on this library" in result.output
         assert (cfg.documents_dir / "doc.txt").exists()
 
+    def test_reset_refused_while_the_lock_file_is_unreadable(self, isolated_env):
+        """A lock file that is not a database leaves the reset unable to rule out a sync."""
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+        (cfg.data_root / "sync.lock").write_bytes(b"not a lock database " * 8)
+
+        result = runner.invoke(app, ["reset", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Cannot tell whether a sync or import is running" in result.output
+        assert "sync.lock" in result.output
+        assert (cfg.documents_dir / "doc.txt").exists()
+
     def test_reset_json_without_yes_errors(self):
         """JSON mode without --yes returns error."""
         result = runner.invoke(app, ["--json", "reset"])

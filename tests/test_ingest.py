@@ -1852,7 +1852,7 @@ class TestSyncMergesItsSkipRecords:
             write_skip_markers,
             write_skip_reasons,
         )
-        from lilbee.runtime.lock import SyncRunningError
+        from lilbee.runtime.lock import ResetRefusedError
 
         write_skip_markers(cfg.data_root, {"older.txt": "abc"})
         write_skip_reasons(cfg.data_root, {"older.txt": "held before the sync"})
@@ -1860,7 +1860,7 @@ class TestSyncMergesItsSkipRecords:
         refused: list[Exception] = []
 
         def _reset() -> None:
-            with pytest.raises(SyncRunningError) as caught:
+            with pytest.raises(ResetRefusedError, match="A sync or import is running") as caught:
                 perform_reset()
             refused.append(caught.value)
 

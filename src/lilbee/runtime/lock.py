@@ -42,9 +42,17 @@ _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
 _SYNC_LOCK_NAME = "sync.lock"
-# Some network and FUSE mounts refuse SQLite's locks; syncs there run unmarked.
+# What the filesystem raises when the sync lock cannot be created or taken: OSError
+# from making the data root, sqlite3.Error from SQLite (a file that is not a
+# database, or a mount that refuses its locks). A busy lock arrives as filelock's
+# Timeout instead, which is itself an OSError, so it is caught first.
 _SYNC_LOCK_ERRORS = (OSError, sqlite3.Error)
-_SYNC_LOCK_REFUSED = "Cannot lock %s; a reset will not see a running sync."
+_SYNC_LOCK_REFUSED = "Cannot lock %s (%s); a reset refuses until it can."
+_SYNC_RUNNING = "A sync or import is running on this library. Reset again when it finishes."
+_SYNC_LOCK_UNKNOWN = (
+    "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
+    "Stop every lilbee process, delete {path}, and reset again."
+)
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -54,13 +62,8 @@ class LockTimeoutError(TimeoutError):
     """Raised when a lock cannot be acquired within the timeout."""
 
 
-class SyncRunningError(RuntimeError):
-    """Raised when a reset finds a sync or import running against the same data root."""
-
-    def __init__(self) -> None:
-        super().__init__(
-            "A sync or import is running on this library. Reset again when it finishes."
-        )
+class ResetRefusedError(RuntimeError):
+    """Raised when a reset cannot prove that no sync or import runs on the data root."""
 
 
 # In-process write mutex: serializes writers within the same process
@@ -142,12 +145,13 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
 
 
 def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
-    """Hold the data root's sync lock, or None on a filesystem that cannot hold it."""
+    """Hold the data root's sync lock; None lets a sync run unmarked when it cannot lock."""
+    path = data_root / _SYNC_LOCK_NAME
     try:
         data_root.mkdir(parents=True, exist_ok=True)
-        lock = ReadWriteLock(data_root / _SYNC_LOCK_NAME, is_singleton=False)
-    except _SYNC_LOCK_ERRORS:
-        log.warning(_SYNC_LOCK_REFUSED, data_root, exc_info=True)
+        lock = ReadWriteLock(path, is_singleton=False)
+    except _SYNC_LOCK_ERRORS as exc:
+        _sync_lock_unavailable(path, exc, write=write)
         return None
     try:
         if write:
@@ -156,12 +160,19 @@ def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
             lock.acquire_read()
     except FileLockTimeout:
         lock.close()
-        raise SyncRunningError from None
-    except _SYNC_LOCK_ERRORS:
+        raise ResetRefusedError(_SYNC_RUNNING) from None
+    except _SYNC_LOCK_ERRORS as exc:
         lock.close()
-        log.warning(_SYNC_LOCK_REFUSED, data_root, exc_info=True)
+        _sync_lock_unavailable(path, exc, write=write)
         return None
     return lock
+
+
+def _sync_lock_unavailable(path: Path, error: Exception, *, write: bool) -> None:
+    """Refuse a reset that cannot take the lock; warn once and let a sync run unmarked."""
+    if write:
+        raise ResetRefusedError(_SYNC_LOCK_UNKNOWN.format(path=path, error=error)) from error
+    log.warning(_SYNC_LOCK_REFUSED, path, error)
 
 
 def _release_sync_lock(lock: ReadWriteLock | None) -> None:
@@ -185,7 +196,7 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
 
 @contextmanager
 def no_sync_running(data_root: Path) -> Generator[None, None, None]:
-    """Keep syncs off *data_root* for the block; raise ``SyncRunningError`` if one runs."""
+    """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
     lock = _acquire_sync_lock(data_root, write=True)
     try:
         yield

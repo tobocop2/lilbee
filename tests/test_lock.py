@@ -10,7 +10,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     LockTimeoutError,
-    SyncRunningError,
+    ResetRefusedError,
     _lock_path,
     acquire_scope_lock,
     acquire_server_lock,
@@ -239,16 +239,23 @@ class TestScopeLock:
         hold.release()
 
 
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
 _RESET_IN_ANOTHER_PROCESS = """
 import sys
 from pathlib import Path
-from lilbee.runtime.lock import SyncRunningError, no_sync_running
+from lilbee.runtime.lock import ResetRefusedError, no_sync_running
 try:
     with no_sync_running(Path(sys.argv[1])):
         pass
-except SyncRunningError:
+except ResetRefusedError:
     sys.exit(3)
 """
+
+
+def _lock_warnings(caplog) -> int:
+    return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
 
 class TestSyncMark:
@@ -256,7 +263,7 @@ class TestSyncMark:
 
     async def test_syncs_share_the_mark(self, tmp_path: Path) -> None:
         async with sync_running(tmp_path), sync_running(tmp_path):
-            with pytest.raises(SyncRunningError), no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
                 pass
         with no_sync_running(tmp_path):
             pass
@@ -310,15 +317,42 @@ class TestSyncMark:
         async with sync_running(root):
             assert root.is_dir()
 
+    async def test_a_lock_file_that_is_not_a_database_refuses_a_reset(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        import logging
+
+        junk = b"not a lock database " * 8
+        assert not junk.startswith(_SQLITE_HEADER)
+        (tmp_path / "sync.lock").write_bytes(junk)
+        ran = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+                with (
+                    pytest.raises(ResetRefusedError, match="file is not a database") as caught,
+                    no_sync_running(tmp_path),
+                ):
+                    ran.append("reset")
+
+        assert ran == ["sync"]
+        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
+        assert _lock_warnings(caplog) == 1
+        assert "Traceback" not in caplog.text
+        (tmp_path / "sync.lock").unlink()
+        with no_sync_running(tmp_path):
+            ran.append("reset")
+        assert ran == ["sync", "reset"]
+
     @pytest.mark.parametrize("fails_at", ["open", "acquire"])
-    async def test_a_filesystem_that_refuses_the_lock_runs_unmarked(
+    async def test_a_filesystem_that_refuses_the_lock_runs_a_sync_and_refuses_a_reset(
         self, tmp_path: Path, caplog, fails_at
     ) -> None:
         import logging
         import sqlite3
         from unittest import mock
 
-        refused = sqlite3.OperationalError("locking protocol")
+        refused = sqlite3.OperationalError("disk I/O error")
         lock = mock.MagicMock()
         lock.acquire_read.side_effect = refused
         lock.acquire_write.side_effect = refused
@@ -332,10 +366,24 @@ class TestSyncMark:
         ):
             async with sync_running(tmp_path):
                 ran.append("sync")
-            with no_sync_running(tmp_path):
+            with (
+                pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
+                no_sync_running(tmp_path),
+            ):
                 ran.append("reset")
 
-        assert ran == ["sync", "reset"]
-        assert "a reset will not see a running sync" in caplog.text
+        assert ran == ["sync"]
+        assert str(tmp_path / "sync.lock") in str(caught.value)
+        assert _lock_warnings(caplog) == 1
         assert lock.close.call_count == 2 * (fails_at == "acquire")
         lock.release.assert_not_called()
+
+    async def test_an_error_outside_the_filesystem_class_propagates(self, tmp_path: Path) -> None:
+        from unittest import mock
+
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=RuntimeError("bug")),
+            pytest.raises(RuntimeError, match="bug"),
+        ):
+            async with sync_running(tmp_path):
+                pass

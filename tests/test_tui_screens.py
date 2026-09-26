@@ -55,6 +55,9 @@ from lilbee.wiki.shared import PENDING_MARKER_KEYWORD_COLLISION
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
+_RESET_REFUSED_MID_SYNC = (
+    "A sync or import is running on this library. Reset again when it finishes."
+)
 
 # Save a reference to the real _embedding_ready before the autouse fixture
 # replaces it with a mock.  Tests that need the real implementation call this.
@@ -3174,7 +3177,6 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
     import asyncio
     import threading
 
-    from lilbee.cli.tui import messages as msg
     from lilbee.data.ingest import SyncResult
     from lilbee.data.ingest.pipeline import _marks_sync_running
 
@@ -3203,7 +3205,7 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
             release.set()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
         mock_clear.assert_not_called()
-        mock_notify.assert_any_call(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+        mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
 
 
 async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
@@ -3212,7 +3214,6 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
     import threading
 
     from lilbee.app.dataset import export_to_path
-    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.task_queue import TaskStatus, TaskType
     from lilbee.data.export import ImportResult
 
@@ -3247,7 +3248,7 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
             task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
         assert task.status == TaskStatus.DONE
         mock_clear.assert_not_called()
-        mock_notify.assert_any_call(msg.SYNC_ALREADY_ACTIVE, severity="warning")
+        mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
     set_services(None)
 
 

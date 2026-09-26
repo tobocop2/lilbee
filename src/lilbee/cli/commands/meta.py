@@ -22,7 +22,7 @@ from lilbee.cli.helpers import json_output, print_prefixed, render_status
 from lilbee.core.config import cfg
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.data.ingest.ignore import IGNORE_FILENAME, IGNORE_TEMPLATE
-from lilbee.runtime.lock import SyncRunningError
+from lilbee.runtime.lock import ResetRefusedError
 
 _yes_option = typer.Option(False, "--yes", "-y", help="Skip confirmation prompt.")
 
@@ -76,7 +76,7 @@ def reset(
 
     try:
         result = perform_reset()
-    except SyncRunningError as exc:
+    except ResetRefusedError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:

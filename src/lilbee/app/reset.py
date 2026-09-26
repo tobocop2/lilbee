@@ -55,8 +55,9 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
 def perform_reset() -> ResetResult:
     """Delete all documents and data and un-register every linked source.
 
-    Raises ``SyncRunningError`` while a sync or import, in this process or another,
-    runs against the same data root: it would write back what the reset removed.
+    Raises ``ResetRefusedError`` while a sync or import, in this process or another,
+    runs against the same data root, or when the lock that shows one cannot be taken:
+    a running sync or import would write back what the reset removed.
     """
     skipped: list[str] = []
     with no_sync_running(cfg.data_root):

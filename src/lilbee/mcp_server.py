@@ -69,7 +69,7 @@ from lilbee.data.store import (
 )
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
-from lilbee.runtime.lock import SyncRunningError
+from lilbee.runtime.lock import ResetRefusedError
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -782,7 +782,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
 
     try:
         result = perform_reset().model_dump()
-    except SyncRunningError as exc:
+    except ResetRefusedError as exc:
         return _error(str(exc))
     # Reopen LanceDB against the empty data dir; keep providers loaded.
     reset_store()
