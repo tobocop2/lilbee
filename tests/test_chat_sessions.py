@@ -19,8 +19,6 @@ from lilbee.sessions import MessageRole, SessionMessage, TitleSource
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests.conftest import make_mock_services
 
-_FOLD_WAIT_S = 5.0
-
 
 @pytest.fixture(autouse=True)
 def _services():
@@ -535,7 +533,7 @@ async def _fold_then(app, pilot, switch) -> None:
 
     def slow_summarize(*_args, **_kwargs):
         folding.set()
-        release.wait(_FOLD_WAIT_S)
+        release.wait()
         return CompactionResult(summary="OLD NOTES", condensed=4, stranded=0)
 
     screen = app.screen
@@ -546,10 +544,12 @@ async def _fold_then(app, pilot, switch) -> None:
         patch.object(get_services().searcher, "ask_stream", return_value=iter(())),
         patch.object(get_services().searcher, "summarize_history", side_effect=slow_summarize),
     ):
-        screen._send_message("new question")
-        assert await pump_until(pilot, folding.is_set), "the turn must reach the fold"
-        switch()
-        release.set()
+        try:
+            screen._send_message("new question")
+            assert await pump_until(pilot, folding.is_set), "the turn must reach the fold"
+            switch()
+        finally:
+            release.set()
         assert await pump_until(pilot, lambda: not screen.streaming)
 
 
@@ -629,7 +629,7 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
     def stream(*_args, **_kwargs):
         yield StreamToken(content="PARTIAL", is_reasoning=False)
         first_token.set()
-        release.wait(_FOLD_WAIT_S)
+        release.wait()
         yield StreamToken(content=" more", is_reasoning=False)
 
     app = LilbeeApp()
@@ -639,11 +639,13 @@ async def test_resuming_mid_answer_keeps_the_old_answer_out_of_the_resumed_histo
             patch.object(ChatScreen, "_await_chat_engine", return_value=True),
             patch.object(get_services().searcher, "ask_stream", side_effect=stream),
         ):
-            screen._send_message("old question")
-            source = screen._session_id
-            assert await pump_until(pilot, first_token.is_set), "the answer must have started"
-            app.resume_session(other)
-            release.set()
+            try:
+                screen._send_message("old question")
+                source = screen._session_id
+                assert await pump_until(pilot, first_token.is_set), "the answer must have started"
+                app.resume_session(other)
+            finally:
+                release.set()
             assert await pump_until(pilot, lambda: not screen.streaming)
         assert screen._history == [
             {"role": "user", "content": "other q"},
