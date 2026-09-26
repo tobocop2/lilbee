@@ -53,13 +53,13 @@ _UNSET_PATH = Path()
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 
-# Model roles that can be off. An empty LILBEE_<FIELD> clears one of these;
-# on every other field an empty env value counts as unset.
+# Model roles that can be off. An empty LILBEE_<FIELD> or config.toml value
+# clears one of these; on every other field an empty value counts as unset.
 CLEARABLE_MODEL_FIELDS = frozenset({"vision_model", "reranker_model"})
 
 
-def env_overrides_field(field_name: str, raw: str | None) -> bool:
-    """Whether a ``LILBEE_<FIELD>`` value is set: non-empty, or empty on a clearable model role."""
+def value_is_set(field_name: str, raw: object) -> bool:
+    """Whether an env or config.toml value is set: non-empty, or empty on a clearable model role."""
     if raw is None:
         return False
     return raw != "" or field_name in CLEARABLE_MODEL_FIELDS
@@ -1530,7 +1530,7 @@ class _PlainEnvSource:
         result: dict[str, Any] = {}
         for field_name in self._fields:
             raw = os.environ.get(f"{self._prefix}{field_name.upper()}")
-            if env_overrides_field(field_name, raw):
+            if value_is_set(field_name, raw):
                 result[field_name] = raw
         return result
 
@@ -1550,13 +1550,10 @@ class _TomlSource:
         except (ValueError, OSError):
             log.warning("Failed to read %s, ignoring", self._path)
             return {}
-        # Empty strings represent "no persisted value" for nullable scalar
-        # fields (legacy from set_setting writing "" for None). Pydantic
-        # can't coerce "" to int|None, so dropping them here lets the field
-        # default apply rather than crashing the whole Config load. TOML's
-        # native types (lists, ints, bools) pass through untouched: stringifying
-        # turned a list field's ["a", "b"] into the literal "['a', 'b']".
-        return {k: v for k, v in data.items() if v != ""}
+        # An empty string is unset (the field default applies, since pydantic
+        # cannot coerce "" to int|None), except on a clearable model role,
+        # where it clears the model. TOML's native types pass through as-is.
+        return {k: v for k, v in data.items() if value_is_set(k, v)}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:

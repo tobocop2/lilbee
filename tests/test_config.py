@@ -16,7 +16,7 @@ from lilbee.core.config import (
     cfg,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
-from lilbee.core.config.model import env_overrides_field
+from lilbee.core.config.model import _TomlSource, value_is_set
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -1693,8 +1693,8 @@ _TOML_RERANKER = "org/Test-Rerank-GGUF/test-rerank-Q4_K_M.gguf"
 _TOML_CHAT = "ollama/toml-chat:latest"
 
 
-class TestEmptyEnvClearsModelRole:
-    """An empty LILBEE_<FIELD> clears a model role that can be off, and nothing else."""
+class TestEmptyValueClearsModelRole:
+    """An empty env or config.toml value clears a model role that can be off, and nothing else."""
 
     @staticmethod
     def _config(tmp_path: Path, **env_values: str) -> Config:
@@ -1745,10 +1745,24 @@ class TestEmptyEnvClearsModelRole:
             ("chat_model", "", False),
             ("chunk_size", "", False),
             ("chunk_size", "5", True),
+            ("chunk_size", 0, True),
+            ("enable_ocr", False, True),
         ],
     )
-    def test_env_overrides_field(self, field, raw, expected):
-        assert env_overrides_field(field, raw) is expected
+    def test_value_is_set(self, field, raw, expected):
+        assert value_is_set(field, raw) is expected
+
+    def test_config_toml_keeps_an_empty_clearable_role_and_drops_other_empties(self, tmp_path):
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'vision_model = ""\nreranker_model = ""\nchat_model = ""\nchunk_size = ""\ntop_k = 9\n',
+            encoding="utf-8",
+        )
+        assert _TomlSource(Config, toml_path)() == {
+            "vision_model": "",
+            "reranker_model": "",
+            "top_k": 9,
+        }
 
 
 @pytest.fixture()

@@ -17,7 +17,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
-from lilbee.core.config.model import env_overrides_field
+from lilbee.core.config.model import value_is_set
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -143,7 +143,7 @@ def env_var_name(key: str) -> str:
 def env_pill(key: str) -> Content | None:
     """Pill warning that an env var is overriding TUI edits, or None."""
     env_name = env_var_name(key)
-    if not env_overrides_field(key, os.environ.get(env_name)):
+    if not value_is_set(key, os.environ.get(env_name)):
         return None
     return pill(env_name, "$warning", "$text")
 

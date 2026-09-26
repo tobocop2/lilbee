@@ -1086,6 +1086,25 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
+    def test_data_dir_config_toml_clearing_the_vision_model_beats_the_ambient_one(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """An empty vision_model in the data-dir clears it; an empty chat_model does not."""
+        from lilbee.cli import apply_overrides
+
+        cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
+        cfg.chat_model = "ollama/ambient-chat:latest"
+        cfg.top_k = 5
+        (tmp_path / "config.toml").write_text(
+            'vision_model = ""\nchat_model = ""\ntop_k = 9\n', encoding="utf-8"
+        )
+
+        apply_overrides(data_dir=tmp_path)
+
+        assert cfg.vision_model == ""
+        assert cfg.chat_model == "ollama/ambient-chat:latest"
+        assert cfg.top_k == 9
+
     def test_data_dir_without_config_toml_leaves_cfg_unchanged(
         self, tmp_path, overlay_reads_config_toml
     ):

@@ -612,6 +612,21 @@ class TestInit:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
+    def test_init_keeps_a_reranker_model_the_project_cleared(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """An empty reranker_model in the project's config.toml clears the ambient one."""
+        cfg.reranker_model = "org/Ambient-Rerank-GGUF/ambient-Q4_K_M.gguf"
+        cfg.top_k = 5
+        target = tmp_path / "myproject"
+        target.mkdir()
+        (target / "config.toml").write_text('reranker_model = ""\ntop_k = 9\n', encoding="utf-8")
+
+        init(str(target))
+
+        assert cfg.reranker_model == ""
+        assert cfg.top_k == 9
+
 
 class TestHttpDaemonGate:
     """init/reset refuse to run on the shared HTTP daemon (teardown-race guard)."""

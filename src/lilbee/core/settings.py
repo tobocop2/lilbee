@@ -13,7 +13,7 @@ import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
-from lilbee.core.config.model import env_overrides_field
+from lilbee.core.config.model import value_is_set
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
@@ -147,7 +147,8 @@ def overlay_persisted_settings(root: Path) -> None:
 
     An explicit ``LILBEE_<FIELD>`` env var wins over config.toml (the documented
     precedence): cfg already holds the env-loaded value, so a key whose env var is
-    set is left untouched rather than overwritten by the persisted file.
+    set is left untouched rather than overwritten by the persisted file. An empty
+    persisted value is skipped, except on a clearable model role, where it clears it.
 
     ``LILBEE_SKIP_TOML_CONFIG=1`` disables this overlay entirely, matching the
     pydantic-settings source in ``config/model.py`` so the escape hatch is honored
@@ -168,11 +169,9 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, raw in persisted.items():
         if key not in overlayable:
             continue
-        if env_overrides_field(key, os.environ.get(f"{env_prefix}{key.upper()}")):
+        if value_is_set(key, os.environ.get(f"{env_prefix}{key.upper()}")):
             continue
-        # Legacy: set_setting used to persist None as "". Skip rather than
-        # warn so a stale config doesn't spam logs on every CLI invocation.
-        if raw == "":
+        if not value_is_set(key, raw):
             continue
         try:
             setattr(cfg, key, raw)

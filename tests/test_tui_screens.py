@@ -3444,6 +3444,18 @@ async def test_chat_slash_set_vision_model_with_no_value_clears_it():
         assert "read-only" not in mock_notify.call_args[0][0]
 
 
+@pytest.mark.parametrize("word", ["none", "NULL"])
+async def test_chat_slash_set_vision_model_none_clears_it(word):
+    """/set vision_model none clears the model, as none clears any other nullable setting."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set(f"vision_model {word}")
+        assert cfg.vision_model == ""
+        assert mock_notify.call_args.kwargs.get("severity") != "error"
+
+
 async def test_chat_slash_set_vision_model_sets_a_ref():
     ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     app = ChatTestApp()

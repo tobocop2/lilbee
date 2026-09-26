@@ -1419,13 +1419,14 @@ class ChatScreen(Screen[None]):
         if not defn.writable and key not in CLEARABLE_MODEL_FIELDS:
             self.notify(msg.CMD_SET_READONLY.format(key=key), severity="warning")
             return
+        clears = defn.nullable and value.lower() in ("none", "null", "")
         try:
             parsed: object
             if key in CLEARABLE_MODEL_FIELDS:
-                parsed = value
+                parsed = "" if clears else value
             elif defn.type is bool:
                 parsed = value.lower() in ("true", "1", "yes", "on")
-            elif defn.nullable and value.lower() in ("none", "null", ""):
+            elif clears:
                 parsed = None
             else:
                 if defn.choices and value not in defn.choices:

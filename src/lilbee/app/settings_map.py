@@ -9,6 +9,7 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
+from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.config.schema import field_value_set
 
 
@@ -88,14 +89,14 @@ def get_default(key: str) -> object:
 SETTINGS_MAP: dict[str, SettingDef] = {
     "chat_model": SettingDef(
         str,
-        nullable=False,
+        nullable="chat_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
         help_text="LLM used for chat generation (vision and reranking are separate slots)",
     ),
     "vision_model": SettingDef(
         str,
-        nullable=True,
+        nullable="vision_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
         help_text=(
@@ -267,14 +268,14 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     ),
     "embedding_model": SettingDef(
         str,
-        nullable=False,
+        nullable="embedding_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
         help_text="Model used to embed document chunks",
     ),
     "reranker_model": SettingDef(
         str,
-        nullable=True,
+        nullable="reranker_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
         help_text="Cross-encoder model for result reranking (empty = off)",
