@@ -3122,6 +3122,14 @@ class TestOcrFlags:
         normalized = _plain_help_text(result.output)
         assert "off applies to every backend, vision included" in normalized
 
+    def test_ocr_help_says_on_matches_leaving_it_unset(self):
+        """--ocr's help text must say true behaves like leaving the option unset,
+        or a reader keeps thinking --ocr forces vision OCR over enable_ocr=None."""
+        result = runner.invoke(app, ["sync", "--help"])
+        assert result.exit_code == 0
+        normalized = " ".join(result.output.replace("│", " ").split())
+        assert "on behaves the same as leaving this option unset" in normalized
+
 
 class TestLogLevel:
     """Tests for --log-level flag and LILBEE_LOG_LEVEL configuration."""
