@@ -43,7 +43,10 @@ from lilbee.crawler import is_url
 _ocr_option = typer.Option(
     None,
     "--ocr/--no-ocr",
-    help="Turn OCR on/off for scanned PDFs; off applies to every backend, vision included.",
+    help=(
+        "Turn OCR on/off for scanned PDFs; off applies to every backend, vision "
+        "included, and on behaves the same as leaving this option unset."
+    ),
 )
 _retry_skipped_option = typer.Option(
     False,
