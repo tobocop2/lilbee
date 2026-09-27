@@ -1542,6 +1542,24 @@ which engine runs: the vision model when one is set, otherwise Tesseract.
 | **Install** | System package (`brew`/`apt`) | Native GGUF via the built-in mtmd backend, or any vision model reachable via the SDK backend (`pip install --pre 'lilbee[litellm]'` / `uv tool install --prerelease=allow 'lilbee[litellm]'`) |
 | **Best for** | Simple text-only scans | Tables, multi-column layouts, formatted docs |
 
+### Settings for a scanned book
+
+For a scanned book that is mostly running text, use Tesseract. Set
+`enable_ocr = true` and clear `vision_model`.
+
+Leave `extraction_threads` at its default, `0`. A value of `4` measured the
+same speed. A value of `8` made OCR extraction slower, because it
+oversubscribes the CPU. See what the setting controls under
+[Tesseract](#tesseract) below.
+
+On an M1 Pro, with a cold OCR cache, Tesseract indexed a 212-page scanned
+strategy guide in about 7.5 minutes, about 2 seconds per page. A second pass
+over the same file is faster, because xberg caches OCR results.
+
+A local vision model took 10 to 12 seconds per page on the same machine,
+about 35 to 45 minutes for the guide. Its text was not better for search on
+running text. Use a vision model for tables, forms and multi-column layouts.
+
 ### Which PDF pages get OCR
 
 By default (`ocr_strategy = "auto"`), lilbee OCRs only the PDF pages whose
