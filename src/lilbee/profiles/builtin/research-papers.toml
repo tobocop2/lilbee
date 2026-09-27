@@ -1,0 +1,8 @@
+[profile]
+name = "Research papers"
+description = "Academic papers with two-column pages and results tables."
+format = 1
+
+[values]
+layout_detection = true
+table_extraction = true

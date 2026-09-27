@@ -376,7 +376,11 @@ def _ignore_user_global_config(monkeypatch, tmp_path, request):
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data_root"))
     if "integration" not in request.node.nodeid.split("/"):
         global_root = tmp_path / "global_root" / "lilbee"
-        for target in ("lilbee.core.system.default_data_dir", "lilbee.app.status.default_data_dir"):
+        for target in (
+            "lilbee.core.system.default_data_dir",
+            "lilbee.app.status.default_data_dir",
+            "lilbee.core.profile_files.default_data_dir",
+        ):
             monkeypatch.setattr(target, lambda: global_root)
 
 

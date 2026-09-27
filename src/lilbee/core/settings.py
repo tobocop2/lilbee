@@ -15,7 +15,15 @@ from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
-from lilbee.core.config.resolve import ROOT_DERIVED_FIELDS, Resolved, read_layers, resolve_all
+from lilbee.core.config.resolve import (
+    PROFILE_NAME_KEY,
+    PROFILE_TABLE,
+    PROFILE_VALUES_KEY,
+    ROOT_DERIVED_FIELDS,
+    Resolved,
+    read_layers,
+    resolve_all,
+)
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 log = logging.getLogger(__name__)
@@ -129,6 +137,17 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
             return
         for key in present:
             del current[key]
+        save(data_root, current)
+
+
+def write_profile_table(data_root: Path, name: str, values: Mapping[str, Any]) -> None:
+    """Replace the ``[profile]`` table with *name* and *values*; top-level keys stay as they are."""
+    table: dict[str, Any] = {PROFILE_NAME_KEY: name}
+    if values:
+        table[PROFILE_VALUES_KEY] = dict(values)
+    with _config_write_lock(data_root):
+        current = load(data_root)
+        current[PROFILE_TABLE] = table
         save(data_root, current)
 
 
