@@ -4954,12 +4954,19 @@ async def test_command_provider_wipe_wiki_action_with_wiki_off(tmp_path):
 
 
 async def test_command_provider_retry_skipped_action(tmp_path):
-    """Palette 'Retry skipped documents' clears the marker file and starts a sync."""
+    """Palette 'Retry skipped documents' clears the failed markers only and starts a sync."""
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+    from lilbee.cli.tui.messages import retry_skipped_message
+    from lilbee.data.ingest.skip_marker import (
+        SkipKind,
+        load_skip_markers,
+        write_skip_kinds,
+        write_skip_markers,
+    )
 
     cfg.data_root = tmp_path
-    write_skip_markers(tmp_path, {"stuck.pdf": "deadbeef"})
+    write_skip_markers(tmp_path, {"stuck.pdf": "deadbeef", "gone.txt": "cafef00d"})
+    write_skip_kinds(tmp_path, {"stuck.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED})
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -4967,10 +4974,14 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch.object(app, "action_run_sync") as mock_sync:
+        with (
+            patch.object(app, "action_run_sync") as mock_sync,
+            patch.object(app, "notify") as notify,
+        ):
             provider._action_retry_skipped()
             mock_sync.assert_called_once()
-        assert load_skip_markers(tmp_path) == {}
+        notify.assert_called_once_with(retry_skipped_message(1))
+        assert load_skip_markers(tmp_path) == {"gone.txt": "cafef00d"}
 
 
 async def test_command_provider_prune_ignored_dispatches_the_command(mock_svc):

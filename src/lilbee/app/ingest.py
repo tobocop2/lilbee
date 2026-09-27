@@ -182,9 +182,8 @@ def unmark_sources_under(paths: list[Path]) -> None:
     removed, or from re-paying the extract cost on a file that yielded nothing.
     Naming the path outranks it: ``add`` is the user asking for that source
     back, so the marker goes and the sync that follows ingests the file again.
-    Without this a removal would be permanent, undoable only by
-    ``retry-skipped`` or ``rebuild``, neither of which the user has any reason
-    to reach for after typing the path they want.
+    Without this a removal would be permanent, undoable only by ``rebuild``,
+    which the user has no reason to reach for after typing the path they want.
 
     Each root in *paths* must be registered when this runs: marker keys resolve
     to files through the live registry.
@@ -318,7 +317,7 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     current hash, so a held-out failure stays out instead of being retried.
     Removing a registered root un-registers it and drops the skip records under
     it: discovery can no longer find its files. Editing the source (new hash),
-    ``retry-skipped``, ``rebuild`` or adding the path again restores it.
+    ``rebuild`` or adding the path again restores it; ``retry-skipped`` does not.
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
     """

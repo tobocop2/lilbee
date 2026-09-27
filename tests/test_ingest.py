@@ -1780,6 +1780,28 @@ class TestSkipMarkerLifecycle:
             retried = await sync(quiet=True, retry_skipped=True)
             assert "scanned.pdf" in retried.skipped  # attempted again (still 0 chunks)
 
+    async def test_retry_skipped_leaves_a_removal_out(self, isolated_env, mock_svc):
+        """retry-skipped retries failed files only; a removed source stays removed."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
+
+        (isolated_env / "gone.txt").write_text("removed by the user", encoding="utf-8")
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for("scanned.pdf")
+        ):
+            await sync(quiet=True)
+            remove_documents_durably(["gone.txt"])
+            retried = await sync(quiet=True, retry_skipped=True)
+
+        assert "scanned.pdf" in retried.skipped
+        assert "gone.txt" not in [*retried.added, *retried.updated, *retried.skipped]
+        assert load_skip_kinds(cfg.data_root) == {
+            "gone.txt": SkipKind.REMOVED,
+            "scanned.pdf": SkipKind.FAILED,
+        }
+
     async def test_force_rebuild_also_clears_markers(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 

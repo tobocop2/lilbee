@@ -43,7 +43,10 @@ def test_held_out_files_are_listed_with_their_reasons() -> None:
     )
     tables, strings = _texts(status)
     assert any(t.title == "Held out of the index" for t in tables)
-    assert any("1" in s and "held out" in s and "--retry-skipped" in s for s in strings)
+    assert any(
+        "1" in s and "held out" in s and "--retry-skipped' retries failed files" in s
+        for s in strings
+    )
 
 
 def test_a_bracketed_filename_and_reason_render_literally() -> None:

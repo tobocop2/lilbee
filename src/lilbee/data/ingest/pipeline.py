@@ -76,6 +76,7 @@ from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
+    clear_failed_markers,
     clear_skip_markers,
     describe_skips,
     held_out_names,
@@ -873,20 +874,21 @@ def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
         log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
 
 
-def _load_sync_skip_markers(*, clear_first: bool) -> dict[str, str]:
-    """Read the skip-marker file, optionally clearing it first.
+def _load_sync_skip_markers(*, force_rebuild: bool, retry_skipped: bool) -> dict[str, str]:
+    """Read the skip-marker file, after clearing every marker or only the failed ones.
 
     Entries are kept whether or not this pass discovered the file. A marker is
     what holds a removed or unextractable file out of the next sync, so a pass
     that cannot see the file -- its root is unmounted or moved, or this worker
     owns only a shard of the corpus -- must not erase the record and re-offer
     the file the moment it comes back. A marker is dropped when the file
-    ingests cleanly, or by ``retry-skipped`` / ``rebuild``.
+    ingests cleanly, by ``rebuild``, or for a failure by ``retry-skipped``.
     """
     data_root = active_config().data_root
-    if clear_first:
-        # Clearing the markers makes the diff re-include the skipped files.
+    if force_rebuild:
         clear_skip_markers(data_root)
+    elif retry_skipped:
+        clear_failed_markers(data_root)
     return load_skip_markers(data_root)
 
 
@@ -1217,8 +1219,8 @@ async def sync(
     When *cancel* is set mid-run, planning and processing stop between files
     without data loss (completed work is flushed) and CancelledError is raised;
     a cancel already set on entry returns an empty result instead.
-    When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
-    markers are cleared so this sync attempts every file.
+    When *retry_skipped* is set, the failed-file skip markers are cleared so this
+    sync attempts those files again; *force_rebuild* clears removals too.
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
     dropped from the index. Off by default: the patterns govern what sync takes
     in, and removing what a past sync already indexed is the caller's decision.
@@ -1257,7 +1259,7 @@ async def sync(
     disk_files = scan.files
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
-    skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
+    skip_markers = _load_sync_skip_markers(force_rebuild=force_rebuild, retry_skipped=retry_skipped)
 
     failed: dict[str, None] = {}
     # Refused formats start the run skipped; they get no skip marker (no planned hash).

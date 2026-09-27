@@ -173,6 +173,19 @@ def mark_removed(data_root: Path, hashes: Mapping[str, str]) -> None:
     update_skip_records(data_root, _hold)
 
 
+def clear_failed_markers(data_root: Path) -> list[str]:
+    """Drop the record of every file an ingestion failure holds out; removals stay. Returns them."""
+    dropped: list[str] = []
+
+    def _drop(records: SkipRecords) -> None:
+        dropped.extend(name for name, kind in records.kinds.items() if kind is SkipKind.FAILED)
+        for name in dropped:
+            records.markers.pop(name)
+
+    update_skip_records(data_root, _drop)
+    return dropped
+
+
 def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]:
     """Pair each name with its recorded reason, in order; ``DEFAULT_SKIP_REASON`` when none."""
     reasons = load_skip_reasons(data_root)
