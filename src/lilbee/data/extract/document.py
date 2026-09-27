@@ -223,8 +223,8 @@ def ocr_backend() -> OcrBackendUsed:
     return OcrBackendUsed.chosen(_effective_enable_ocr(), active_config().vision_model)
 
 
-def _ocr_config(ocr_token: str | None) -> OcrConfig:
-    """xberg's OcrConfig for the backend ``ocr_backend`` picks.
+def _ocr_config(ocr_token: str | None) -> OcrConfig | None:
+    """xberg's OcrConfig for the backend ``ocr_backend`` picks, or None when OCR is off.
 
     xberg auto-OCRs only the pages that lack a text layer.
     """
@@ -233,7 +233,7 @@ def _ocr_config(ocr_token: str | None) -> OcrConfig:
     config = active_config()
     backend = ocr_backend()
     if backend is OcrBackendUsed.NONE:
-        return OcrConfig(enabled=False)
+        return None
     if backend is OcrBackendUsed.VISION:
         options = backend_options_for(ocr_token) if ocr_token else None
         return OcrConfig(
@@ -329,13 +329,20 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # pages internally, and cross-file concurrency is the pipeline's semaphore.
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
+    # OCR off sends no OCR block (xberg 1.2.7 OCRs page images under any block, even
+    # disabled; 1.2.9 fixes that) and sets disable_ocr (without it, xberg auto-OCRs a
+    # PDF that has no text layer).
+    disable_ocr = ocr is None
     # Defeats xberg's text-layer short-circuit; vision path only (GPU re-OCR lever).
-    force_ocr = _ocr_force_requested() and ocr.backend == OcrBackendName.LILBEE_VISION
+    force_ocr = (
+        _ocr_force_requested() and ocr is not None and ocr.backend == OcrBackendName.LILBEE_VISION
+    )
     if mode is ExtractMode.PAGINATED:
         paginated = ExtractionConfig(
             chunking=chunking,
             pages=PageConfig(extract_pages=True, insert_page_markers=False),
             ocr=ocr,
+            disable_ocr=disable_ocr,
             force_ocr=force_ocr,
             pdf_options=_pdf_options(),
             extraction_timeout_secs=_extraction_timeout_secs(),
@@ -351,6 +358,7 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
         chunking=chunking,
         output_format=MARKDOWN_OUTPUT,
         ocr=ocr,
+        disable_ocr=disable_ocr,
         force_ocr=force_ocr,
         extraction_timeout_secs=_extraction_timeout_secs(),
         ocr_strategy=_ocr_strategy(),
@@ -608,7 +616,8 @@ def _page_count_config() -> ExtractionConfig:
     """A metadata-only ExtractionConfig: OCR and page bodies off, structure kept."""
     from xberg import ExtractionConfig, PageConfig
 
-    # No OCR block at all: xberg OCRs a PDF's page images whenever one is present, even disabled.
+    # No OCR block at all: xberg 1.2.7 OCRs a PDF's page images whenever one is present,
+    # even disabled (fixed in 1.2.9).
     return ExtractionConfig(
         pages=PageConfig(extract_pages=False, insert_page_markers=False),
         disable_ocr=True,
