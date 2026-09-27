@@ -75,8 +75,8 @@ def _apply_data_root(root: Path) -> None:
     cfg.data_root = root
     # An explicit LILBEE_DOCUMENTS_DIR wins over the root-derived default,
     # matching the env precedence a bare ``import lilbee`` applies.
-    documents_env = os.environ.get("LILBEE_DOCUMENTS_DIR", "").strip()
-    cfg.documents_dir = Path(documents_env) if documents_env else root / "documents"
+    documents_env = os.environ.get("LILBEE_DOCUMENTS_DIR", "")
+    cfg.documents_dir = Path(documents_env) if documents_env.strip() else root / "documents"
     cfg.data_dir = root / "data"
     cfg.lancedb_dir = root / "data" / "lancedb"
     os.environ["LILBEE_DATA"] = str(root)

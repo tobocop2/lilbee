@@ -421,8 +421,6 @@ def apply_settings_update(
             )
     _validate(updates)
     embed_in_batch = "embedding_model" in updates
-    # Derived (not user-writable) fields applied alongside the validated batch.
-    effective_updates = dict(updates)
     if embed_in_batch:
         # Pin the OLD ref into store meta before mutation, otherwise the
         # next read lazy-initializes meta from the NEW cfg and silently
@@ -430,15 +428,7 @@ def apply_settings_update(
         # so a legacy meta row is always canonicalized on the first swap
         # attempt.
         _pin_legacy_store_meta()
-        # Track the new embedder's output width so a fresh index is built at
-        # the right dimension (embedding_dim is derived, not in SETTINGS_MAP).
-        dim = _embedder_dim_from_gguf(updates["embedding_model"])
-        if dim is not None:
-            effective_updates["embedding_dim"] = dim
-    to_persist, to_delete, snapshot = _apply_with_rollback(effective_updates)
-    # embedding_dim is derived and applied to cfg in-memory, but the overlay
-    # loader ignores it on reload (it is re-derived), so don't write it to disk.
-    to_persist.pop("embedding_dim", None)
+    to_persist, to_delete, snapshot = _apply_with_rollback(updates)
     try:
         if to_persist:
             persistent_settings.update_values(cfg.data_root, to_persist)
@@ -451,7 +441,8 @@ def apply_settings_update(
         _restore_snapshot(snapshot)
         raise
     persistent_settings.sync_from_resolver(updates)
-    _invalidate_caches(set(effective_updates))
+    _rederive_from_resolved(set(updates))
+    _invalidate_caches(set(updates))
     reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
@@ -521,6 +512,12 @@ def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
     dim = _embedder_dim_from_gguf(cfg.embedding_model, registry)
     if dim is not None and dim != cfg.embedding_dim:
         cfg.embedding_dim = dim
+
+
+def _rederive_from_resolved(keys: set[str]) -> None:
+    """Recompute each setting derived from one of *keys*, from that key's resolved value."""
+    if "embedding_model" in keys:
+        reconcile_embedding_dim()
 
 
 def _inert_reindex_keys() -> set[str]:

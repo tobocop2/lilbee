@@ -155,14 +155,14 @@ def test_embed_and_rerank_model_change_reloads_only_those_roles():
 
 
 def test_embedding_model_change_derives_embedding_dim(monkeypatch):
-    """Switching embedding_model also persists the model's output width (from its
-    GGUF header), so a fresh index is built at the right dimension instead of the
-    768 default -- the gap that broke a Qwen3-Embedding (4096) corpus build."""
+    """Switching embedding_model re-derives the model's output width from its GGUF header."""
     from lilbee.app import settings as settings_mod
 
     _install_recording_provider()
     try:
-        monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref: 4096)
+        monkeypatch.setattr(
+            settings_mod, "_embedder_dim_from_gguf", lambda _ref, _registry=None: 4096
+        )
         apply_settings_update({"embedding_model": "Qwen/Qwen3-Embedding-8B-GGUF/x.gguf"})
         assert cfg.embedding_dim == 4096
     finally:
@@ -176,7 +176,9 @@ def test_embedding_model_change_leaves_dim_when_unreadable(monkeypatch):
     _install_recording_provider()
     cfg.embedding_dim = 768
     try:
-        monkeypatch.setattr(settings_mod, "_embedder_dim_from_gguf", lambda _ref: None)
+        monkeypatch.setattr(
+            settings_mod, "_embedder_dim_from_gguf", lambda _ref, _registry=None: None
+        )
         apply_settings_update({"embedding_model": "some/unreadable.gguf"})
         assert cfg.embedding_dim == 768
     finally:

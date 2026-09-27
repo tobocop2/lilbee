@@ -453,7 +453,6 @@ class TestOcrStrategy:
 class TestTomlConfigFile:
     def test_config_construction_equals_resolver_per_field(self, tmp_path):
         from lilbee.core.config.resolve import (
-            EXPLICIT_SOURCES,
             ROOT_DERIVED_FIELDS,
             read_layers,
             resolve_all,
@@ -469,9 +468,7 @@ class TestTomlConfigFile:
         with mock.patch.dict(os.environ, env, clear=True):
             built = Config()
             resolved = resolve_all(read_layers(tmp_path))
-        probe = Config.model_validate(
-            {k: v.value for k, v in resolved.items() if v.source in EXPLICIT_SOURCES}
-        )
+        probe = Config.model_validate({k: v.value for k, v in resolved.items()})
         keys = sorted(set(Config.model_fields) - ROOT_DERIVED_FIELDS)
         assert len(keys) > 100
         assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()

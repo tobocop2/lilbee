@@ -52,6 +52,10 @@ MODEL_FALLBACK_FAILED = (
     "{label} model {original!r} is unavailable ({reason}) and the fallback {effective!r} was "
     "rejected; keeping {original!r}. Pick a working {label} model in settings."
 )
+MODEL_ENV_PIN_UNUSABLE = (
+    "{label} model {original!r} is unavailable ({reason}). {env_var} sets it, so lilbee keeps it. "
+    "Unset {env_var} or point it at an installed model."
+)
 MODEL_UNUSABLE_NO_FALLBACK = (
     "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
     "to. Pick one from the catalog."
