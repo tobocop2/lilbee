@@ -5,11 +5,16 @@ ApplyProfileDialog, SaveProfileDialog {
 #apply-body {
     width: 90%;
     max-width: 100;
-    height: auto;
-    max-height: 90%;
+    height: 90%;
+    max-height: 34;
     border: $rail-heavy $primary;
     background: $surface;
     padding: 1 2;
+}
+
+#apply-scroll {
+    height: 1fr;
+    min-height: 0;
 }
 
 #save-body {
@@ -50,7 +55,14 @@ ApplyProfileDialog, SaveProfileDialog {
     color: $error;
 }
 
-#apply-actions, #save-actions {
+#apply-actions {
+    height: 1;
+    width: 100%;
+    margin-top: 1;
+    align-horizontal: center;
+}
+
+#save-actions {
     dock: bottom;
     height: 1;
     width: 100%;

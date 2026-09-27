@@ -236,6 +236,15 @@ def sources():
         yield services
 
 
+async def test_profile_line_is_exactly_one_row_tall() -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(100, 30)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        line = screen.query_one("#profile-line")
+        assert line.size.height == 1
+        assert screen.query_one("#settings-tabs").size.height > 1
+
+
 async def test_line_shows_the_profile_and_your_count_on_any_tab_and_jumps_to_the_tab() -> None:
     _on_legal_with_three_changes()
     app = _SettingsApp()
@@ -288,6 +297,23 @@ async def test_profile_tab_is_first_and_lists_your_changes_with_their_cost() -> 
         shown = {p.id for p in screen.query("#profile-actions ConfirmPill") if p.display}
         assert shown == {"profile-update", "profile-save_as", "profile-discard"}
         assert _text(screen.query_one("#profile-update", ConfirmPill)) == "Update legal-discovery"
+
+
+_LONG_NAME = "A" * 40
+
+
+async def test_action_row_fits_80_columns_with_a_long_profile_name() -> None:
+    assert len(_LONG_NAME) == 40
+    _write_global("long-name", f'[profile]\nname = "{_LONG_NAME}"\n\n[values]\nchunk_size = 900\n')
+    profiles.apply(ProfileStore(), _LONG_NAME)
+    _set_yours("chunk_size = 123\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, _LONG_NAME)
+        shown = [p for p in screen.query("#profile-actions ConfirmPill") if p.display]
+        assert {p.id for p in shown} == {"profile-update", "profile-save_as", "profile-discard"}
+        for pill in shown:
+            assert pill.region.x + pill.region.width <= 80, pill.id
 
 
 async def test_a_builtin_profile_offers_no_update() -> None:
@@ -406,6 +432,54 @@ async def test_a_switch_with_nothing_to_change_says_so(sources) -> None:
     sources.store.get_sources.assert_not_called()
 
 
+_BIG = """[profile]
+name = "big-profile"
+description = "A profile tuned for the ten-thousand file corpus."
+authors = [{ name = "Jane Doe", github = "janedoe" }]
+tested_on = "10,000 mixed documents"
+
+[values]
+chunk_size = 900
+chunk_overlap = 50
+max_chunks_per_file = 1500
+top_k = 20
+max_distance = 0.5
+enable_ocr = true
+entity_extraction = true
+semantic_chunking = true
+table_extraction = true
+layout_detection = true
+min_relevance_score = 0.3
+"""
+
+
+async def test_apply_dialog_scrolls_to_fit_a_big_profile_at_80x24(sources) -> None:
+    _write_global("big-profile", _BIG)
+    _set_yours("min_relevance_score = 0.1\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        _pick(screen, "big-profile")
+        await _dialog(app, pilot, ApplyProfileDialog)
+        dialog = app.screen
+        scroll = dialog.query_one("#apply-scroll")
+        # content overflows the visible viewport: this is what makes scrolling necessary
+        assert scroll.virtual_size.height > scroll.size.height
+        screen_region = app.screen.region
+        for pill in dialog.query("#apply-actions ConfirmPill"):
+            assert _inside(pill.region, screen_region), pill.id
+        scroll.scroll_end(animate=False)
+        assert await _until(pilot, lambda: scroll.scroll_offset.y > 0)
+        await pilot.pause()
+        for widget_id in ("apply-kept", "apply-untouched", "apply-summary"):
+            widget = dialog.query_one(f"#{widget_id}", Static)
+            assert _inside(widget.region, screen_region), widget_id
+        assert _text(dialog.query_one("#apply-kept", Static)).startswith("min_relevance_score")
+        assert len(_table_rows(dialog, "#apply-changes")) == 10
+        for pill in dialog.query("#apply-actions ConfirmPill"):
+            assert _inside(pill.region, screen_region), pill.id
+
+
 async def test_a_change_that_needs_no_reindex_shows_no_summary(sources) -> None:
     _write_global("fewer", "[values]\nmax_chunks_per_file = 10\n")
     app = _SettingsApp()
@@ -437,6 +511,39 @@ async def test_a_failed_write_on_apply_toasts_and_changes_nothing(sources) -> No
             )
             assert await _until(pilot, lambda: app.screen is screen)
     assert cfg.table_extraction is False
+    assert profiles.active(ProfileStore()).name == "Default"
+
+
+async def test_a_failed_diff_reloads_the_tab_and_reverts_the_select() -> None:
+    fragile = _write_global("fragile", "[values]\nchunk_size = 900\n")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await app.workers.wait_for_complete()
+        fragile.write_text("not valid toml [[[", encoding="utf-8")
+        select = screen.query_one("#profile-select", Select)
+        _pick(screen, "fragile")
+        assert await _until(pilot, lambda: any("fragile" in n.message for n in app._notifications))
+        await app.workers.wait_for_complete()
+        assert app.screen is screen
+        assert await _until(pilot, lambda: select.value == "Default")
+    assert profiles.active(ProfileStore()).name == "Default"
+
+
+async def test_a_failed_diff_toasts_an_os_error_and_reverts_the_select(sources) -> None:
+    sources.store.get_sources.side_effect = OSError("disk full")
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        screen = await _loaded(app, pilot, "Default")
+        await app.workers.wait_for_complete()
+        select = screen.query_one("#profile-select", Select)
+        _pick(screen, "Research papers")
+        assert await _until(
+            pilot, lambda: any("disk full" in n.message for n in app._notifications)
+        )
+        await app.workers.wait_for_complete()
+        assert app.screen is screen
+        assert await _until(pilot, lambda: select.value == "Default")
     assert profiles.active(ProfileStore()).name == "Default"
 
 
@@ -477,6 +584,7 @@ async def test_save_as_refuses_a_builtin_name_then_saves_to_this_project() -> No
 
 
 async def test_save_as_refuses_a_reserved_route_or_device_name() -> None:
+    reason = "This name already names a lilbee page or a Windows device."
     app = _SettingsApp()
     async with app.run_test(size=(80, 24)) as pilot:
         screen = await _loaded(app, pilot, "Default")
@@ -485,14 +593,10 @@ async def test_save_as_refuses_a_reserved_route_or_device_name() -> None:
         dialog = app.screen
         error = dialog.query_one("#save-error", Static)
         await pilot.press(*"active")
-        assert await _until(
-            pilot, lambda: _text(error) == "Reserved name: this cannot name a profile."
-        )
+        assert await _until(pilot, lambda: _text(error) == reason)
         assert dialog.query_one("#save-save", ConfirmPill).has_class("-disabled")
         dialog.query_one("#save-name", Input).value = "CON"
-        assert await _until(
-            pilot, lambda: _text(error) == "Reserved name: this cannot name a profile."
-        )
+        assert await _until(pilot, lambda: _text(error) == reason)
         assert dialog.query_one("#save-save", ConfirmPill).has_class("-disabled")
 
 

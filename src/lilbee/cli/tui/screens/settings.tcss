@@ -75,6 +75,11 @@ SettingsScreen {
         margin-top: 1;
     }
 
+    #profile-update, #profile-reapply {
+        max-width: 26;
+        text-overflow: ellipsis;
+    }
+
     #profile-actions ConfirmPill {
         width: auto;
         padding: 0 2;
