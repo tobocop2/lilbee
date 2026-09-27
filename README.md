@@ -49,7 +49,7 @@
 
 lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
 
-And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry, needs no account, and makes no cloud call unless you configure a cloud model yourself.
+And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry and needs no account. It contacts a cloud provider only when you set an API key for it, in lilbee's settings or in the provider's own environment variable. Then it checks once that the key works, and sends your questions only to a cloud model you pick.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
@@ -275,7 +275,7 @@ Retrieval defaults are sane, and every setting is tunable from env vars or `conf
 
 ## Highlights
 
-- **Private by default.** The models, the index, and every question and answer stay on your machine. No telemetry, no account, no cloud calls unless you add a cloud model yourself.
+- **Private by default.** The models, the index, and every question and answer stay on your machine. No telemetry, no account. lilbee contacts a cloud provider only when you set its API key: once to check the key, then only for a cloud model you pick.
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line; when the answer isn't in your library, lilbee says so instead of inventing one.
 - **It works, and the demos prove it.** Every GIF and reel here is recorded live on real hardware, nothing staged, backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
 - **One command to running.** Install, run `lilbee`, pick a model that fits your machine from the catalog, and you're chatting.
