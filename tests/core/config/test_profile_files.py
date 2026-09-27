@@ -427,3 +427,10 @@ def test_frozen_binary_ships_the_package_profiles_folder():
     source = PACKAGE_PROFILES_DIR.relative_to(repo).as_posix()
     shipped = PACKAGE_PROFILES_DIR.relative_to(repo / "src").as_posix()
     assert f"--include-data-dir={source}={shipped}" in build
+
+
+@pytest.mark.parametrize("text", ["[values\n", "x = " + "[" * 1000 + "]" * 1000 + "\n"])
+def test_text_that_is_not_toml_is_refused_before_any_write(tmp_path, text):
+    with pytest.raises(profile_files.ProfileFileError, match=r"^Not valid TOML: "):
+        profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, text, stem="x")
+    assert list(tmp_path.iterdir()) == []
