@@ -3127,7 +3127,7 @@ class TestOcrFlags:
         or a reader keeps thinking --ocr forces vision OCR over enable_ocr=None."""
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
-        normalized = " ".join(result.output.replace("│", " ").split())
+        normalized = _plain_help_text(result.output)
         assert "on behaves the same as leaving this option unset" in normalized
 
 
