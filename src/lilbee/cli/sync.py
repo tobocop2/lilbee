@@ -144,7 +144,7 @@ def _tesseract_status(data: ProgressEvent) -> str:
     """The status line for an OCR_START event: Tesseract running on the file's pages."""
     if not isinstance(data, OcrStartEvent):
         raise TypeError(f"Expected OcrStartEvent, got {type(data).__name__}")
-    return f"⟳ Tesseract OCR on scanned pages: {data.file} ({data.total_pages} pages)"
+    return f"⟳ {data.status_text}"
 
 
 def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
@@ -167,7 +167,7 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
             if not isinstance(data, ExtractEvent):
                 raise TypeError(f"Expected ExtractEvent, got {type(data).__name__}")
             status.text = (
-                f"⟳ Vision OCR [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
+                f"⟳ {data.step} [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
             )
         elif event_type == EventType.OCR_START:
             status.text = _tesseract_status(data) + queue_suffix

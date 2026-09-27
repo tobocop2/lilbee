@@ -18,7 +18,8 @@ import pytest
 
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
-from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+from lilbee.data.types import OcrReport, SyncResult
+from lilbee.runtime.progress import OcrBackendUsed
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 

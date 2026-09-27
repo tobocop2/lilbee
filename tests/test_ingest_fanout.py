@@ -12,13 +12,14 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
-from lilbee.data.types import OcrBackendUsed, OcrReport, ShardId, SkippedSource, SyncResult
+from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
     EventType,
     FileDoneEvent,
     FileStartEvent,
+    OcrBackendUsed,
     SyncDoneEvent,
 )
 

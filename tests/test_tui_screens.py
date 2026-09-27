@@ -8515,11 +8515,12 @@ def test_build_sync_progress_callback_routes_extract_event() -> None:
 
     from lilbee.cli.tui.screens.chat import build_sync_progress_callback
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-    from lilbee.runtime.progress import EventType, ExtractEvent
+    from lilbee.runtime.progress import EventType, ExtractEvent, OcrBackendUsed
 
     reporter = MagicMock(spec=ProgressReporter)
     callback = build_sync_progress_callback(reporter)
-    callback(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=2, total_pages=5))
+    event = ExtractEvent(file="scan.pdf", page=2, total_pages=5, ocr_backend=OcrBackendUsed.VISION)
+    callback(EventType.EXTRACT, event)
     reporter.update.assert_called_once()
     args, kwargs = reporter.update.call_args
     # Second positional is the status string; assert page-progress shape.
@@ -8541,7 +8542,9 @@ def test_add_and_sync_progress_callbacks_show_tesseract_ocr() -> None:
     from lilbee.runtime.progress import EventType, OcrStartEvent
 
     expected = msg.SYNC_TESSERACT_OCR.format(total=212, file="scan.pdf")
-    assert expected == "Running Tesseract OCR on the scanned pages of scan.pdf (212 pages)"
+    assert expected == (
+        "Running Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file)"
+    )
     for build in (build_add_progress_callback, build_sync_progress_callback):
         reporter = MagicMock(spec=ProgressReporter)
         build(reporter)(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
@@ -8572,11 +8575,14 @@ def test_build_import_progress_callback_throttles_and_ignores_other_events() -> 
 
     from lilbee.cli.tui.screens.chat import build_import_progress_callback
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
+    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent, OcrBackendUsed
 
     reporter = MagicMock(spec=ProgressReporter)
     callback = build_import_progress_callback(reporter)
-    callback(EventType.EXTRACT, ExtractEvent(file="doc.pdf", page=1, total_pages=3))
+    callback(
+        EventType.EXTRACT,
+        ExtractEvent(file="doc.pdf", page=1, total_pages=3, ocr_backend=OcrBackendUsed.NONE),
+    )
     reporter.update.assert_not_called()
     callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=1, total_chunks=10))
     callback(EventType.EMBED, EmbedEvent(file="doc.pdf", chunk=2, total_chunks=10))
@@ -8599,7 +8605,7 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
     from lilbee.data.ingest import SyncResult
-    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
+    from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent, OcrBackendUsed
 
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -8612,7 +8618,9 @@ async def test_do_add_callback_routes_embed_and_extract_events(tmp_path):
             assert on_progress is not None
             on_progress(
                 EventType.EXTRACT,
-                ExtractEvent(file="scan.pdf", page=12, total_pages=12),
+                ExtractEvent(
+                    file="scan.pdf", page=12, total_pages=12, ocr_backend=OcrBackendUsed.VISION
+                ),
             )
             on_progress(
                 EventType.EMBED,

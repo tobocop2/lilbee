@@ -5268,11 +5268,14 @@ class TestChatSyncCallback:
     def test_extract_updates_status(self):
         """Background sync callback updates status on EXTRACT."""
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
-        from lilbee.runtime.progress import EventType, ExtractEvent
+        from lilbee.runtime.progress import EventType, ExtractEvent, OcrBackendUsed
 
         status = SyncStatus()
         cb = _chat_sync_callback(status)
-        cb(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=2, total_pages=5))
+        event = ExtractEvent(
+            file="scan.pdf", page=2, total_pages=5, ocr_backend=OcrBackendUsed.VISION
+        )
+        cb(EventType.EXTRACT, event)
         assert "Vision OCR" in status.text
         assert "scan.pdf" in status.text
 
@@ -5285,7 +5288,9 @@ class TestChatSyncCallback:
         status.pending = 2
         cb = _chat_sync_callback(status)
         cb(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
-        assert status.text == "⟳ Tesseract OCR on scanned pages: scan.pdf (212 pages) (+2 queued)"
+        assert status.text == (
+            "⟳ Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file) (+2 queued)"
+        )
 
     def test_ocr_start_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback

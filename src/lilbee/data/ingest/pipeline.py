@@ -1411,15 +1411,10 @@ def _phase_progress_callback(
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
         if event_type is EventType.EXTRACT and isinstance(data, ExtractEvent):
             progress.update(
-                ptask, description=f"OCR {data.file} (page {data.page}/{data.total_pages})"
+                ptask, description=f"{data.step} {data.file} (page {data.page}/{data.total_pages})"
             )
         elif event_type is EventType.OCR_START and isinstance(data, OcrStartEvent):
-            progress.update(
-                ptask,
-                description=(
-                    f"Tesseract OCR on scanned pages of {data.file} ({data.total_pages} pages)"
-                ),
-            )
+            progress.update(ptask, description=data.status_text)
         elif event_type is EventType.EMBED and isinstance(data, EmbedEvent):
             progress.update(
                 ptask, description=f"Embedding {data.file} ({data.chunk}/{data.total_chunks})"

@@ -22,7 +22,7 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.schema import field_type_name
-from lilbee.data.types import OcrBackendUsed
+from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry

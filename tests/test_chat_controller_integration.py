@@ -1224,7 +1224,8 @@ def test_do_sync_names_ocr_off_for_a_scan_skipped_with_ocr_off(tmp_path: Path) -
     import threading
 
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+    from lilbee.data.types import OcrReport, SyncResult
+    from lilbee.runtime.progress import OcrBackendUsed
 
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     result = SyncResult(
@@ -1262,7 +1263,8 @@ def test_do_sync_names_the_tui_log_for_a_scan_vision_could_not_read(tmp_path: Pa
 
     from lilbee.cli.tui.log_routing import tui_log_path
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+    from lilbee.data.types import OcrReport, SyncResult
+    from lilbee.runtime.progress import OcrBackendUsed
 
     result = SyncResult(
         skipped=["scan.pdf"],
@@ -1299,7 +1301,8 @@ def test_do_add_names_ocr_off_when_the_only_file_skipped_with_ocr_off(tmp_path: 
 
     from lilbee.app.ingest import RegisterResult
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+    from lilbee.data.types import OcrReport, SyncResult
+    from lilbee.runtime.progress import OcrBackendUsed
 
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     src = tmp_path / "scan.pdf"
@@ -1389,7 +1392,8 @@ def test_do_add_names_the_tui_log_for_a_scan_vision_could_not_read(tmp_path: Pat
     from lilbee.app.ingest import RegisterResult
     from lilbee.cli.tui.log_routing import tui_log_path
     from lilbee.cli.tui.screens.chat import ChatScreen
-    from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
+    from lilbee.data.types import OcrReport, SyncResult
+    from lilbee.runtime.progress import OcrBackendUsed
 
     src = tmp_path / "corpus"
     src.mkdir()

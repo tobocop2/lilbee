@@ -27,7 +27,6 @@ from lilbee.data.types import (
     ExtractMode,
     MemberRecords,
     OcrBackendName,
-    OcrBackendUsed,
     OcrReport,
 )
 from lilbee.providers.base import aux_options
@@ -35,6 +34,7 @@ from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
     ExtractEvent,
+    OcrBackendUsed,
     OcrStartEvent,
     noop_callback,
 )
@@ -693,7 +693,12 @@ async def _extract_document(
         page_seen += 1
         on_progress(
             EventType.EXTRACT,
-            ExtractEvent(file=source_name, page=page_seen, total_pages=probe.pages),
+            ExtractEvent(
+                file=source_name,
+                page=page_seen,
+                total_pages=probe.pages,
+                ocr_backend=OcrBackendUsed.VISION,
+            ),
         )
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
@@ -757,9 +762,10 @@ async def _records_from_document(
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
     # before embedding; result.pages, or the chunk count for non-paginated docs.
     page_count = len(doc.pages or []) or len(doc.chunks or [])
+    ran = ocr_backend if _ocr_page_count(doc) else OcrBackendUsed.NONE
     on_progress(
         EventType.EXTRACT,
-        ExtractEvent(file=source_name, page=page_count, total_pages=page_count),
+        ExtractEvent(file=source_name, page=page_count, total_pages=page_count, ocr_backend=ran),
     )
 
     # Content chunks and table serializations share one embed batch; the vector

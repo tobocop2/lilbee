@@ -13,7 +13,8 @@ from lilbee.data.extract.trace import (
     trace_log,
     vision_log,
 )
-from lilbee.data.types import OcrBackendUsed, OcrReport
+from lilbee.data.types import OcrReport
+from lilbee.runtime.progress import OcrBackendUsed
 
 _VISION = OcrBackendUsed.VISION
 

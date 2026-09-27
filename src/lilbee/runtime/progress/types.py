@@ -96,6 +96,28 @@ class BatchProgressEvent(BaseModel):
     total: int
 
 
+class OcrBackendUsed(StrEnum):
+    """The OCR backend an extraction ran with: none (OCR off), Tesseract, or the vision model."""
+
+    NONE = "none"
+    TESSERACT = "tesseract"
+    VISION = "vision"
+
+    @classmethod
+    def chosen(cls, enable_ocr: bool | None, vision_model: str) -> "OcrBackendUsed":
+        """The backend a configuration picks: OCR off wins, then a set vision model."""
+        if enable_ocr is False:
+            return cls.NONE
+        return cls.VISION if vision_model else cls.TESSERACT
+
+
+_EXTRACT_STEP_NAMES: dict[OcrBackendUsed, str] = {
+    OcrBackendUsed.NONE: "Extracted",
+    OcrBackendUsed.TESSERACT: "Tesseract OCR",
+    OcrBackendUsed.VISION: "Vision OCR",
+}
+
+
 class ExtractEvent(BaseModel):
     """Emitted with page-level extraction progress.
 
@@ -103,12 +125,19 @@ class ExtractEvent(BaseModel):
     count against the page total known before extraction for a PDF or image
     source, or ``0`` when that count could not be read. Extraction then fires
     once per file with ``page == total_pages`` so subscribers see "extracted N
-    pages" before the embed phase ticks.
+    pages" before the embed phase ticks. ``ocr_backend`` is the OCR backend
+    that produced the pages, or ``none`` when no page was OCR'd.
     """
 
     file: str
     page: int
     total_pages: int
+    ocr_backend: OcrBackendUsed
+
+    @property
+    def step(self) -> str:
+        """The step that produced these pages, as a progress line names it."""
+        return _EXTRACT_STEP_NAMES[self.ocr_backend]
 
 
 class OcrStartEvent(BaseModel):
@@ -120,6 +149,14 @@ class OcrStartEvent(BaseModel):
 
     file: str
     total_pages: int
+
+    @property
+    def status_text(self) -> str:
+        """The progress line for this event, naming the file's page count."""
+        return (
+            f"Tesseract OCR on the scanned pages of {self.file} "
+            f"({self.total_pages} pages in the file)"
+        )
 
 
 class EmbedEvent(BaseModel):
