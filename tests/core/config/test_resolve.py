@@ -146,3 +146,29 @@ def test_resolve_reads_only_the_layers_it_is_given():
     layers = SettingLayers(env={}, user={"top_k": 7}, profile={"top_k": 3})
     assert resolve("top_k", layers).value == 7
     assert resolve("top_k", SettingLayers(env={}, user={}, profile={"top_k": 3})).value == 3
+
+
+def test_blank_env_var_is_not_a_source(tmp_path, monkeypatch):
+    root = _write(tmp_path / "root", "top_k = 7\n")
+    monkeypatch.setenv("LILBEE_TOP_K", " \t ")
+    layers = read_layers(root)
+    assert "top_k" not in layers.env
+    assert resolve("top_k", layers).source is SettingSource.USER
+
+
+def test_blank_env_var_clears_a_model_role_that_can_be_off(tmp_path, monkeypatch):
+    root = _write(tmp_path / "root", 'vision_model = "org/Toml-GGUF/toml-Q4_K_M.gguf"\n')
+    monkeypatch.setenv("LILBEE_VISION_MODEL", " \t ")
+    resolved = resolve("vision_model", read_layers(root))
+    assert resolved.source is SettingSource.ENV
+    assert resolved.value.strip() == ""
+
+
+def test_host_computed_default_is_auto(tmp_path):
+    layers = read_layers(tmp_path / "absent")
+    assert resolve("chat_n_ctx_target", layers).source is SettingSource.AUTO
+
+
+def test_fixed_default_is_built_in(tmp_path):
+    layers = read_layers(tmp_path / "absent")
+    assert resolve("main_gpu", layers).source is SettingSource.BUILT_IN

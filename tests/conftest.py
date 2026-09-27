@@ -362,16 +362,22 @@ def _join_fleet_background_threads():
 
 
 @pytest.fixture(autouse=True)
-def _ignore_user_global_config(monkeypatch, tmp_path):
+def _ignore_user_global_config(monkeypatch, tmp_path, request):
     """Point every config.toml read at the test's own data root, never the developer's.
 
     ``LILBEE_DATA`` matches the ``cfg.data_root`` that ``_isolate_cfg`` sets, so a
     fresh ``Config()``, the CLI overlay and the settings resolver all read the same
-    scratch directory. The skip flag set at import is cleared: a settings write must
-    read back the config.toml it just wrote.
+    scratch directory. The platform default root (``--global``) is a second scratch
+    directory. Integration tests keep the real one, which holds their models. The
+    skip flag set at import is cleared: a settings write must read back the
+    config.toml it just wrote.
     """
     monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data_root"))
+    if "integration" not in request.node.nodeid.split("/"):
+        global_root = tmp_path / "global_root" / "lilbee"
+        for target in ("lilbee.core.system.default_data_dir", "lilbee.app.status.default_data_dir"):
+            monkeypatch.setattr(target, lambda: global_root)
 
 
 @pytest.fixture(scope="session")

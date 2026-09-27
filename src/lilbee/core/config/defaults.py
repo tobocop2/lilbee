@@ -43,6 +43,8 @@ DEFAULT_HTTP_TIMEOUT = 30.0
 # Safe default + cap for chat-mode n_ctx; full 128K+ training contexts OOM laptops.
 DEFAULT_NUM_CTX = 8192
 CONFIG_FILE_NAME = "config.toml"
+ENV_PREFIX = "LILBEE_"
+SKIP_TOML_ENV = "LILBEE_SKIP_TOML_CONFIG"
 
 CHUNKS_TABLE = "chunks"
 SOURCES_TABLE = "_sources"

@@ -16,24 +16,18 @@ from typing import Any
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
-from .defaults import CONFIG_FILE_NAME
+from .defaults import CONFIG_FILE_NAME, ENV_PREFIX, SKIP_TOML_ENV
 from .enums import SettingSource
 from .model import Config, value_is_set
 
 log = logging.getLogger(__name__)
 
-ENV_PREFIX = "LILBEE_"
-SKIP_TOML_ENV = "LILBEE_SKIP_TOML_CONFIG"
 PROFILE_TABLE = "profile"
 PROFILE_VALUES_KEY = "values"
 
 # Built from data_root at construction; their pydantic default is an unresolved sentinel.
 ROOT_DERIVED_FIELDS: frozenset[str] = frozenset(
     {"data_root", "documents_dir", "data_dir", "lancedb_dir", "models_dir"}
-)
-
-EXPLICIT_SOURCES: frozenset[SettingSource] = frozenset(
-    {SettingSource.ENV, SettingSource.USER, SettingSource.PROFILE}
 )
 
 
@@ -55,11 +49,11 @@ class Resolved:
 
 
 def _env_layer() -> dict[str, str]:
-    """The set ``LILBEE_<FIELD>`` values, keyed by field name."""
+    """The set ``LILBEE_<FIELD>`` values, keyed by field name; a blank value counts as empty."""
     layer: dict[str, str] = {}
     for name in Config.model_fields:
         raw = os.environ.get(f"{ENV_PREFIX}{name.upper()}")
-        if raw is not None and value_is_set(name, raw):
+        if raw is not None and value_is_set(name, raw.strip()):
             layer[name] = raw
     return layer
 

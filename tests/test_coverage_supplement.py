@@ -572,6 +572,45 @@ class TestAppCanonicalizeFallbackNotice:
         finally:
             cfg.chat_model = snapshot_chat
 
+    async def test_env_pinned_unusable_model_is_named_not_swapped(self, monkeypatch) -> None:
+        """An unusable model pinned by LILBEE_CHAT_MODEL stays pinned; the toast names the var."""
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+
+        app = LilbeeApp()
+        monkeypatch.setenv("LILBEE_CHAT_MODEL", "missing/model")
+        monkeypatch.setattr(cfg, "chat_model", "missing/model")
+        chat_canon = CanonicalRef(
+            original="missing/model",
+            effective="fallback/model",
+            status=ValidationResult.NOT_INSTALLED,
+            reason="it isn't installed",
+        )
+        embed_canon = CanonicalRef(
+            original="ok/embed", effective="ok/embed", status=ValidationResult.OK
+        )
+        notifications: list[Any] = []
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_chat_model", return_value=chat_canon
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_embedding_model",
+                return_value=embed_canon,
+            ),
+            mock.patch.object(app, "notify", side_effect=lambda *a, **kw: notifications.append(a)),
+            mock.patch(
+                "lilbee.cli.tui.app.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            app.canonicalize_persisted_models()
+        assert cfg.chat_model == "missing/model"
+        assert "chat_model" not in persistent_settings.load(cfg.data_root)
+        toast = notifications[0][0]
+        assert "LILBEE_CHAT_MODEL" in toast and "isn't installed" in toast
+        assert "fallback/model" not in toast
+
     async def test_swap_rejection_does_not_crash_startup(self, caplog) -> None:
         """A rejected fallback swap is logged and skipped, never fatal.
 
