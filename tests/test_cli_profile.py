@@ -293,6 +293,12 @@ def test_the_profile_group_is_registered_on_the_cli():
         assert command in result.output
 
 
+def test_sharing_is_export_and_import_with_no_share_command(project):
+    result = runner.invoke(app, ["profile", "share", "Default", "--data-dir", str(project)])
+    assert result.exit_code == 2
+    assert "No such command 'share'" in result.output
+
+
 def test_list_names_a_profile_a_higher_folder_hides(project):
     _write(_global_dir(), "court-filings", CREDITED)
     _write(project / PROFILES_DIRNAME, "court-filings", CREDITED)
