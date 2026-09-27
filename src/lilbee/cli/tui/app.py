@@ -6,7 +6,7 @@ import contextlib
 import logging
 import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
@@ -623,7 +623,7 @@ class LilbeeApp(App[None]):
         if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
             return
         self._notify_update_warnings(apply_settings_update({key: value}))
-        self._publish_setting(key)
+        self.publish_settings([key])
         if key == "wiki" and cfg.wiki is False:
             self._offer_wiki_wipe()
 
@@ -635,19 +635,23 @@ class LilbeeApp(App[None]):
         wiki_was_on = cfg.wiki
         result = reset_settings(keys, skip_unresettable=skip_unresettable)
         self._notify_update_warnings(result)
-        for key in result.updated:
-            self._publish_setting(key)
+        self.publish_settings(result.updated)
         if wiki_was_on and cfg.wiki is False:
             self._offer_wiki_wipe()
         return result.updated
 
-    def _publish_setting(self, key: str) -> None:
-        """Apply a changed theme and tell subscribers *key* now holds its cfg value."""
-        normalized = getattr(cfg, key)
-        if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
-            self.theme = normalized
-            self._sync_theme_index_to_current()
-        self.settings_changed_signal.publish((key, normalized))
+    def publish_settings(self, keys: Iterable[str]) -> None:
+        """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value."""
+        for key in keys:
+            normalized = getattr(cfg, key)
+            if (
+                key == "theme"
+                and isinstance(normalized, str)
+                and normalized in self.available_themes
+            ):
+                self.theme = normalized
+                self._sync_theme_index_to_current()
+            self.settings_changed_signal.publish((key, normalized))
 
     def _offer_wiki_wipe(self) -> None:
         """Ask whether to delete what the wiki generated, now that it is off.
@@ -977,13 +981,13 @@ class LilbeeApp(App[None]):
 
         The TaskBar hint is rendered globally, so the trigger must work
         everywhere. Routes to the registered ChatScreen which owns the
-        ``_run_sync`` orchestration; switches to the Chat view first if
+        ``run_sync`` orchestration; switches to the Chat view first if
         not already there so the user can watch progress.
         """
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         if isinstance(self.screen, ChatScreen):
-            self.screen._run_sync()
+            self.screen.run_sync()
             return
         chat = self.chat_screen()
         if chat is None:
@@ -996,13 +1000,19 @@ class LilbeeApp(App[None]):
             if not self.screen_stack:
                 return  # the app is tearing down; nothing left to sync
             if isinstance(self.screen, ChatScreen):
-                chat._run_sync()
+                chat.run_sync()
                 return
             if attempts > 0:
                 self.switch_view(msg.DEFAULT_VIEW)
                 self.set_timer(0.05, lambda: _start(attempts - 1))
 
         self.call_later(_start)
+
+    def start_rebuild(self) -> None:
+        """Queue a full reindex on the chat screen's task bar without leaving this view."""
+        chat = self.chat_screen()
+        if chat is not None:
+            chat.run_sync(force_rebuild=True)
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""
