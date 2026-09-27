@@ -278,7 +278,7 @@ def _written(planned: PlannedWrite) -> ProfileLocation:
     return _location(planned)
 
 
-def _owned(store: ProfileStore, name: str, instead: str = "duplicate it") -> ProfileEntry:
+def owned(store: ProfileStore, name: str, instead: str = "duplicate it") -> ProfileEntry:
     """The project or global profile *name* picks; raises for one that ships with lilbee."""
     entry = show(store, name)
     if entry.folder is ProfileFolder.BUILTIN:
@@ -289,7 +289,7 @@ def _owned(store: ProfileStore, name: str, instead: str = "duplicate it") -> Pro
 def _owned_file(
     store: ProfileStore, name: str, instead: str = "duplicate it"
 ) -> tuple[ProfileEntry, ProfileFile]:
-    entry = _owned(store, name, instead)
+    entry = owned(store, name, instead)
     return entry, _valid_file(entry)
 
 
@@ -495,7 +495,7 @@ def rename(store: ProfileStore, name: str, new_name: str) -> ProfileLocation:
 
 def delete(store: ProfileStore, name: str) -> ProfileLocation:
     """Remove a project or global profile file; projects keep their recorded copy of it."""
-    entry = _owned(store, name)
+    entry = owned(store, name)
     entry.path.unlink()
     return ProfileLocation(entry.name, entry.folder, entry.path)
 

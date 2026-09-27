@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from textual import on
@@ -12,7 +13,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
-from textual.screen import ModalScreen
+from textual.screen import ModalScreen, Screen
 from textual.widget import Widget
 from textual.widgets import DataTable, Input, Select, Static
 
@@ -32,6 +33,7 @@ from lilbee.core.profile_files import (
     ProfileFolder,
     ProfileStore,
     name_problem,
+    profile_folders,
 )
 
 if TYPE_CHECKING:
@@ -74,6 +76,14 @@ class SaveRequest:
     folder: ProfileFolder
 
 
+@dataclass(frozen=True)
+class PathRequest:
+    """What the path dialog asks for: a path, and a folder when it offers one."""
+
+    path: Path
+    folder: ProfileFolder | None
+
+
 def value_text(value: object) -> str:
     """A setting value as the profile surfaces show it: on/off, none, or a comma list."""
     # values are raw Config or TOML values of any setting type
@@ -104,6 +114,36 @@ def credit_text(profile: ProfileFile) -> str:
     if profile.tested_on is not None:
         parts.append(msg.PROFILE_TESTED_ON.format(text=profile.tested_on))
     return ". ".join(part for part in parts if part)
+
+
+def has_project_folder() -> bool:
+    """Whether the current data root has a project profile folder."""
+    return ProfileFolder.PROJECT in dict(profile_folders(cfg.data_root))
+
+
+def save_folders(has_project: bool) -> tuple[ProfileFolder, ...]:
+    """The folders a new profile can go to, the default first."""
+    if has_project:
+        return (ProfileFolder.GLOBAL, ProfileFolder.PROJECT)
+    return (ProfileFolder.GLOBAL,)
+
+
+def _folder_choice(select_id: str, folders: Sequence[ProfileFolder]) -> ComposeResult:
+    """The "Save to" Select; nothing when there is no choice to make."""
+    if len(folders) <= 1:
+        return
+    yield Static(msg.PROFILE_SAVE_TO, classes="profile-section-title")
+    options = [(msg.PROFILE_SAVE_FOLDER_TEXT[folder], folder) for folder in folders]
+    yield Select(options, value=next(iter(folders)), allow_blank=False, id=select_id)
+
+
+def _chosen_folder(
+    screen: Screen[Any], select_id: str, folders: Sequence[ProfileFolder]
+) -> ProfileFolder:
+    default, *others = folders
+    if not others:
+        return default
+    return ProfileFolder(str(screen.query_one(f"#{select_id}", Select).value))
 
 
 def run_profile_op(
@@ -222,7 +262,7 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         )
         table.add_columns(msg.PROFILE_COL_SETTING, msg.PROFILE_COL_NOW, msg.PROFILE_COL_AFTER)
         add_cost_column(table)
-        table.add_rows(_diff_cells(row) for row in self._plan.diff.changes)
+        table.add_rows(diff_cells(row) for row in self._plan.diff.changes)
         yield table
 
     def _compose_kept(self) -> ComposeResult:
@@ -263,7 +303,8 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         self.dismiss(ApplyChoice.CANCEL)
 
 
-def _diff_cells(row: DiffRow) -> Sequence[str | Content]:
+def diff_cells(row: DiffRow) -> Sequence[str | Content]:
+    """A diff row's cells: the setting, its value now and after, and the cost."""
     return (row.key, value_text(row.current), value_text(row.new), effect_cell(row.effect))
 
 
@@ -277,29 +318,28 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
     ]
 
     def __init__(
-        self, *, active_name: str, change_count: int, catalog: ProfileCatalog, has_project: bool
+        self,
+        *,
+        title: str,
+        explain: str,
+        catalog: ProfileCatalog,
+        folders: Sequence[ProfileFolder],
+        initial: str = "",
     ) -> None:
         super().__init__()
-        self._active_name = active_name
-        self._change_count = change_count
+        self._title = title
+        self._explain = explain
         self._catalog = catalog
-        self._has_project = has_project
+        self._folders = folders
+        self._initial = initial
 
     def compose(self) -> ComposeResult:
-        folders = [(msg.PROFILE_SAVE_GLOBAL, ProfileFolder.GLOBAL)]
-        if self._has_project:
-            folders.append((msg.PROFILE_SAVE_PROJECT, ProfileFolder.PROJECT))
         with Vertical(id="save-body"):
-            yield Static(msg.PROFILE_SAVE_TITLE, id="save-title")
-            yield Input(placeholder=msg.PROFILE_SAVE_PLACEHOLDER, id="save-name")
+            yield Static(self._title, id="save-title", markup=False)
+            yield Input(self._initial, placeholder=msg.PROFILE_SAVE_PLACEHOLDER, id="save-name")
             yield Static("", id="save-error", markup=False)
-            yield Static(msg.PROFILE_SAVE_TO, classes="profile-section-title")
-            yield Select(folders, value=ProfileFolder.GLOBAL, allow_blank=False, id="save-folder")
-            yield Static(
-                msg.PROFILE_SAVE_EXPLAIN.format(name=self._active_name, count=self._change_count),
-                id="save-explain",
-                markup=False,
-            )
+            yield from _folder_choice("save-folder", self._folders)
+            yield Static(self._explain, id="save-explain", markup=False)
             with Horizontal(id="save-actions"):
                 yield ConfirmPill(
                     msg.PROFILE_SAVE_LABEL, pill_id="save-save", answer=_SaveAnswer.SAVE
@@ -314,8 +354,7 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
 
     def _request(self) -> SaveRequest:
         name = self.query_one("#save-name", Input).value.strip()
-        folder = ProfileFolder(str(self.query_one("#save-folder", Select).value))
-        return SaveRequest(name, folder)
+        return SaveRequest(name, _chosen_folder(self, "save-folder", self._folders))
 
     def _problem(self) -> NameProblem | None:
         request = self._request()
@@ -347,6 +386,88 @@ class SaveProfileDialog(ModalScreen[SaveRequest | None]):
 
     def _save(self) -> None:
         if self._problem() is None:
+            self.dismiss(self._request())
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ProfilePathDialog(ModalScreen[PathRequest | None]):
+    """Asks for a path, and for a folder when it offers a choice."""
+
+    CSS_PATH = "profile_dialogs.tcss"
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(
+        self,
+        *,
+        title: str,
+        explain: str,
+        action_label: str,
+        initial: str = "",
+        folders: Sequence[ProfileFolder] = (),
+    ) -> None:
+        super().__init__()
+        self._title = title
+        self._explain = explain
+        self._action_label = action_label
+        self._initial = initial
+        self._folders = folders
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="path-body"):
+            yield Static(self._title, id="path-title", markup=False)
+            with VerticalScroll(id="path-fields"):
+                yield Static(self._explain, id="path-explain", markup=False)
+                yield Input(
+                    self._initial, placeholder=msg.PROFILE_PATH_PLACEHOLDER, id="path-input"
+                )
+                yield from _folder_choice("path-folder", self._folders)
+                yield Static("", id="path-error", markup=False)
+            with Horizontal(id="path-actions"):
+                yield ConfirmPill(self._action_label, pill_id="path-ok", answer=_SaveAnswer.SAVE)
+                yield ConfirmPill(
+                    msg.PROFILE_CANCEL_LABEL, pill_id="path-cancel", answer=_SaveAnswer.CANCEL
+                )
+
+    def on_mount(self) -> None:
+        self._check()
+        self.query_one("#path-input", Input).focus()
+
+    def _path(self) -> str:
+        return self.query_one("#path-input", Input).value.strip()
+
+    def _check(self) -> None:
+        """Say when the path is empty, and turn the action off while it is."""
+        empty = not self._path()
+        self.query_one("#path-error", Static).update(msg.PROFILE_PATH_EMPTY if empty else "")
+        self.query_one("#path-ok", ConfirmPill).set_class(empty, DISABLED_CLASS)
+
+    def _request(self) -> PathRequest:
+        folder = _chosen_folder(self, "path-folder", self._folders) if self._folders else None
+        return PathRequest(Path(self._path()).expanduser(), folder)
+
+    @on(Input.Changed, "#path-input")
+    def _on_edit(self) -> None:
+        self._check()
+
+    @on(Input.Submitted, "#path-input")
+    def _on_submit(self) -> None:
+        self._confirm()
+
+    @on(ConfirmPill.Picked)
+    def _on_picked(self, event: ConfirmPill.Picked) -> None:
+        event.stop()
+        if event.answer is _SaveAnswer.SAVE:
+            self._confirm()
+        else:
+            self.dismiss(None)
+
+    def _confirm(self) -> None:
+        if self._path():
             self.dismiss(self._request())
 
     def action_cancel(self) -> None:

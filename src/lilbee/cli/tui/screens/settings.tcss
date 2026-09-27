@@ -80,7 +80,12 @@ SettingsScreen {
         text-overflow: ellipsis;
     }
 
-    #profile-actions ConfirmPill {
+    #profile-manage-row {
+        height: 1;
+        margin-top: 1;
+    }
+
+    #profile-actions ConfirmPill, #profile-manage-row ConfirmPill {
         width: auto;
         padding: 0 2;
         margin-right: 2;

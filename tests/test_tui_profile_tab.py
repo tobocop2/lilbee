@@ -24,6 +24,7 @@ from lilbee.cli.tui.command_registry import get_command
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.screens.profile_dialogs import (
     ApplyProfileDialog,
+    ProfilePathDialog,
     SaveProfileDialog,
     value_text,
 )
@@ -624,8 +625,10 @@ async def test_save_as_offers_no_project_folder_on_the_global_root() -> None:
         screen = await _loaded(app, pilot, "Default")
         await _press(pilot, screen.query_one("#profile-save_as", ConfirmPill))
         await _dialog(app, pilot, SaveProfileDialog)
-        folder = app.screen.query_one("#save-folder", Select)
-        assert [value for _label, value in folder._options] == [ProfileFolder.GLOBAL]
+        assert not app.screen.query("#save-folder")
+        await pilot.press(*"Mine", "enter")
+        await _loaded(app, pilot, "Mine")
+    assert (_global_dir() / "mine.toml").is_file()
 
 
 async def test_update_writes_your_values_into_the_profile_file() -> None:
@@ -780,7 +783,7 @@ async def test_a_profile_tab_mounted_after_the_state_loaded_still_fills() -> Non
 
 
 def test_profile_dialogs_bind_no_printable_single_key() -> None:
-    for dialog in (ApplyProfileDialog, SaveProfileDialog):
+    for dialog in (ApplyProfileDialog, SaveProfileDialog, ProfilePathDialog):
         keys = [binding.key for binding in dialog.BINDINGS]
         assert keys, dialog.__name__
         assert all(len(key) > 1 for key in keys), (dialog.__name__, keys)
