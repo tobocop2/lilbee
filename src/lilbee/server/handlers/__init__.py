@@ -29,6 +29,7 @@ from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
     get_config_schema,
+    get_config_sources,
     reset_config,
     update_config,
 )
@@ -330,6 +331,7 @@ __all__ = [
     "get_config",
     "get_config_defaults",
     "get_config_schema",
+    "get_config_sources",
     "get_source_content",
     "gpu_stats_stream",
     "gpus",
