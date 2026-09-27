@@ -660,6 +660,13 @@ def _isolate_cfg(tmp_path, request):
     cfg.clear_model_defaults()
 
 
+@pytest.fixture
+def monkeypatch(_isolate_cfg: None) -> Iterator[pytest.MonkeyPatch]:
+    """pytest's ``monkeypatch``, undone before ``_isolate_cfg`` restores cfg."""
+    with pytest.MonkeyPatch.context() as patcher:
+        yield patcher
+
+
 def _default_provider_mock():
     """Return a ``LLMProvider``-spec'd MagicMock whose ``chat`` yields a ``ChatResult``.
 
