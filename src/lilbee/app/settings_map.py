@@ -5,10 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 
-from pydantic_core import PydanticUndefined
-
 from lilbee.app.themes import DARK_THEMES
-from lilbee.core.config import cfg
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.config.schema import field_value_set
 
@@ -74,16 +71,6 @@ class SettingDef:
     # Credentials: the TUI masks the editor so the value is never on screen in
     # plain text, including while it is being pasted.
     secret: bool = False
-
-
-def get_default(key: str) -> object:
-    """Return the cfg default for a setting key."""
-    field_info = type(cfg).model_fields[key]
-    if field_info.default_factory is not None:
-        return field_info.default_factory()  # type: ignore[call-arg]
-    if field_info.default is PydanticUndefined:
-        return None
-    return field_info.default
 
 
 SETTINGS_MAP: dict[str, SettingDef] = {

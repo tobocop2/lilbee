@@ -25,7 +25,12 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services, peek_services
-from lilbee.app.settings import SettingsUpdateResult, apply_settings_update, setting_sources
+from lilbee.app.settings import (
+    SettingsUpdateResult,
+    apply_settings_update,
+    reset_settings,
+    setting_sources,
+)
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
@@ -618,13 +623,30 @@ class LilbeeApp(App[None]):
         if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
             return
         self._notify_update_warnings(apply_settings_update({key: value}))
+        self._publish_setting(key)
+        if key == "wiki" and cfg.wiki is False:
+            self._offer_wiki_wipe()
+
+    def reset_settings(self, keys: list[str], *, skip_unresettable: bool = False) -> list[str]:
+        """Reset *keys* through the boundary, fan each out to the UI, and return the reset keys.
+
+        Raises ``ValueError`` or ``OSError`` from the boundary; nothing changes on either.
+        """
+        wiki_was_on = cfg.wiki
+        result = reset_settings(keys, skip_unresettable=skip_unresettable)
+        for key in result.updated:
+            self._publish_setting(key)
+        if wiki_was_on and cfg.wiki is False:
+            self._offer_wiki_wipe()
+        return result.updated
+
+    def _publish_setting(self, key: str) -> None:
+        """Apply a changed theme and tell subscribers *key* now holds its cfg value."""
         normalized = getattr(cfg, key)
         if key == "theme" and isinstance(normalized, str) and normalized in self.available_themes:
             self.theme = normalized
             self._sync_theme_index_to_current()
         self.settings_changed_signal.publish((key, normalized))
-        if key == "wiki" and normalized is False:
-            self._offer_wiki_wipe()
 
     def _offer_wiki_wipe(self) -> None:
         """Ask whether to delete what the wiki generated, now that it is off.

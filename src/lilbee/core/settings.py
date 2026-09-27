@@ -121,11 +121,14 @@ def update_values(data_root: Path, updates: dict[str, Any]) -> None:
 
 
 def delete_values(data_root: Path, keys: list[str]) -> None:
-    """Batch delete multiple keys from config.toml (single write)."""
+    """Batch delete multiple keys from config.toml (single write, none when no key is present)."""
     with _config_write_lock(data_root):
         current = load(data_root)
-        for key in keys:
-            current.pop(key, None)
+        present = [key for key in keys if key in current]
+        if not present:
+            return
+        for key in present:
+            del current[key]
         save(data_root, current)
 
 
