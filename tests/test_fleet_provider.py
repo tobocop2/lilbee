@@ -1471,8 +1471,7 @@ def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatc
         prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
     assert str(info.value) == (
         "The model server process exited and is being restarted. No other replica "
-        "is available to take the request. The engine log is "
-        "/engine/logs/llama-swap-embed.log."
+        f"is available to take the request. The engine log is {log}."
     )
     assert info.value.kind is ProviderErrorKind.CONNECTION
 
@@ -1519,7 +1518,7 @@ def test_lone_vision_replica_whose_engine_exited_names_the_death() -> None:
             [prov_mod._VisionReplica(lone, 1)],
             lambda c: c.chat([], options={}, stream=False),
         )
-    assert "/engine/logs/llama-swap-vision.log" in str(info.value)
+    assert f"The engine log is {lone.engine_log}." in str(info.value)
 
 
 def test_embed_through_the_fleet_names_the_group_engine_log(monkeypatch) -> None:
@@ -1546,7 +1545,7 @@ def test_embed_through_the_fleet_names_the_group_engine_log(monkeypatch) -> None
     with pytest.raises(ProviderError) as info:
         FleetProvider().embed(["a"])
     assert "process exited and is being restarted" in str(info.value)
-    assert str(info.value).endswith("The engine log is /engine/logs/llama-swap-embed.log.")
+    assert str(info.value).endswith(f"The engine log is {swap.log_path}.")
 
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
