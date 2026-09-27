@@ -1,7 +1,6 @@
 """Remote model discovery and task classification."""
 
 import logging
-import os
 import time
 from collections.abc import Callable
 from functools import lru_cache
@@ -16,10 +15,11 @@ from lilbee.catalog.query import (
     RERANKER_NAME_PATTERNS,
     VISION_NAME_PATTERNS,
 )
-from lilbee.catalog.types import ModelTask
-from lilbee.core.config.model import cfg
-from lilbee.modelhub.model_manager.types import RemoteModel
+from lilbee.catalog.types import KeyStatus, ModelTask
+from lilbee.modelhub.model_manager.types import ApiModelGroup, RemoteModel
 from lilbee.providers.backend_names import BackendName
+from lilbee.providers.base import LLMProvider
+from lilbee.providers.key_check import provider_key_set, provider_key_statuses
 from lilbee.providers.local_servers import (
     LM_STUDIO,
     OLLAMA,
@@ -181,45 +181,49 @@ _DISCOVERY_BY_KEY: dict[str, Callable[[str, BackendName, float], list[RemoteMode
 }
 
 
-def _has_provider_key(cfg_field: str, env_var: str) -> bool:
-    """Return True if a usable API key exists via env var or lilbee config."""
-    if os.environ.get(env_var):
-        return True
-    return bool(getattr(cfg, cfg_field, ""))
+def _chat_models_for(provider: LLMProvider, prov: str, display_name: str) -> list[RemoteModel]:
+    """The backend's chat models for hosted provider *prov*, labeled *display_name*."""
+    return [
+        RemoteModel(
+            name=model_name,
+            task=ModelTask.CHAT,
+            family="",
+            parameter_size="",
+            provider=display_name,
+        )
+        for model_name in provider.list_chat_models(prov)
+    ]
+
+
+def discover_api_model_groups() -> list[ApiModelGroup]:
+    """Hosted chat models for every provider with a key set, with the key's status.
+
+    Short-circuits before touching the SDK when no keys are present. Only
+    providers that list models have their key checked.
+    """
+    keyed = [(prov, label) for prov, _cfg, _env, label in PROVIDER_KEYS if provider_key_set(prov)]
+    if not keyed:
+        return []
+    provider = get_services().provider
+    listed = [
+        (prov, label, models)
+        for prov, label in keyed
+        if (models := _chat_models_for(provider, prov, label))
+    ]
+    statuses = provider_key_statuses([prov for prov, _label, _models in listed])
+    return [
+        ApiModelGroup(provider=prov, display_name=label, key_status=statuses[prov], models=models)
+        for prov, label, models in listed
+    ]
 
 
 def discover_api_models() -> dict[str, list[RemoteModel]]:
-    """Return frontier chat models grouped by provider.
-
-    Returns whatever the active provider's backend exposes for each
-    configured API key, no curation. Short-circuits before touching
-    the SDK when no keys are present.
-    """
-    active = [
-        (prov, cfg_f, env, label)
-        for prov, cfg_f, env, label in PROVIDER_KEYS
-        if _has_provider_key(cfg_f, env)
-    ]
-    if not active:
-        return {}
-
-    provider = get_services().provider
-
-    result: dict[str, list[RemoteModel]] = {}
-    for prov, _cfg_field, _env_var, display_name in active:
-        chat_models = [
-            RemoteModel(
-                name=model_name,
-                task=ModelTask.CHAT,
-                family="",
-                parameter_size="",
-                provider=display_name,
-            )
-            for model_name in provider.list_chat_models(prov)
-        ]
-        if chat_models:
-            result[display_name] = chat_models
-    return result
+    """Hosted chat models grouped by provider display name, for accepted keys only."""
+    return {
+        group.display_name: group.models
+        for group in discover_api_model_groups()
+        if group.key_status is KeyStatus.READY
+    }
 
 
 def detect_remote_embedding_models() -> list[str]:

@@ -85,7 +85,7 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.top_bars import TopBars
 from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import RemoteModel, classify_all_remote_models
-from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, get_provider_api_key
+from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 from lilbee.runtime.hardware import available_memory_for_fit, chip_for_size
 
 log = logging.getLogger(__name__)
@@ -108,6 +108,12 @@ _TASK_TO_MODEL_FIELD: dict[ModelTask, str] = {
     ModelTask.EMBEDDING: "embedding_model",
     ModelTask.VISION: "vision_model",
     ModelTask.RERANK: "reranker_model",
+}
+
+# Warning shown when a frontier row whose key is not usable is selected.
+_KEY_PROBLEM_MESSAGE: dict[KeyStatus, str] = {
+    KeyStatus.MISSING_KEY: msg.CATALOG_NEEDS_KEY,
+    KeyStatus.INVALID_KEY: msg.CATALOG_KEY_REJECTED,
 }
 
 
@@ -888,28 +894,23 @@ class CatalogScreen(Screen[None]):
     def _fetch_frontier_models(self) -> list[FrontierCatalogRow]:
         """Discover cloud chat models off the UI thread.
 
-        ``discover_api_models`` imports litellm (heavy, >50ms) and probes
-        every provider key, totaling several hundred ms even when no
-        keys are set. Running it on the main thread froze the catalog
-        on mount and on every signal-driven refresh; the worker keeps
-        the screen responsive."""
-        from lilbee.modelhub.model_manager import discover_api_models
+        ``discover_api_model_groups`` imports litellm (heavy, >50ms) and
+        checks every configured provider key over the network. Running it on
+        the main thread froze the catalog on mount and on every
+        signal-driven refresh; the worker keeps the screen responsive."""
+        from lilbee.modelhub.model_manager import discover_api_model_groups
 
         try:
-            groups = discover_api_models()
+            groups = discover_api_model_groups()
         except Exception:
-            log.debug("discover_api_models failed in worker", exc_info=True)
+            log.debug("discover_api_model_groups failed in worker", exc_info=True)
             return []
 
-        rows: list[FrontierCatalogRow] = []
-        for display_name, models in groups.items():
-            provider_id = display_name.lower()
-            has_key = get_provider_api_key(provider_id) is not None
-            status = KeyStatus.READY if has_key else KeyStatus.MISSING_KEY
-            for rm in models:
-                rows.append(
-                    frontier_row_from_remote(rm, provider_id=provider_id, key_status=status)
-                )
+        rows = [
+            frontier_row_from_remote(rm, provider_id=group.provider, key_status=group.key_status)
+            for group in groups
+            for rm in group.models
+        ]
         rows.sort(key=lambda r: (r.provider, r.name.lower()))
         return rows
 
@@ -1979,7 +1980,7 @@ class CatalogScreen(Screen[None]):
             self.notify(msg.CATALOG_USING_REMOTE.format(name=row.remote_model.name))
 
     def _select_frontier_row(self, row: FrontierCatalogRow) -> None:
-        """Activate a cloud model, or jump to settings when the key is missing."""
+        """Activate a cloud model, or jump to settings when its key is missing or rejected."""
         if row.key_status == KeyStatus.READY:
             apply_active_model(self.app, _model_field_for_task(row.task), row.ref)
             self.notify(
@@ -1988,7 +1989,7 @@ class CatalogScreen(Screen[None]):
             return
         key_field = PROVIDER_API_KEY_FIELD.get(row.provider_id, f"{row.provider_id}_api_key")
         self.notify(
-            msg.CATALOG_NEEDS_KEY.format(provider=row.provider, key_field=key_field),
+            _KEY_PROBLEM_MESSAGE[row.key_status].format(provider=row.provider, key_field=key_field),
             severity="warning",
             timeout=10,
         )

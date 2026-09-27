@@ -17,7 +17,6 @@ from lilbee.modelhub.model_manager import (
     RemoteModel,
     discover_api_models,
 )
-from lilbee.modelhub.model_manager.discovery import _has_provider_key
 from lilbee.providers.sdk_backend import detect_backend_name
 from tests._sys_modules import inject_modules
 from tests._unreadable import POSIX_DENIES_READS, unreadable
@@ -1265,30 +1264,6 @@ class TestRemoteModelProvider:
             "llama3:latest": "Ollama",
             "qwen2.5-7b": "LM Studio",
         }
-
-
-class TestHasProviderKey:
-    def test_env_var_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        assert _has_provider_key("openai_api_key", "OPENAI_API_KEY") is True
-
-    def test_env_var_absent_config_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.core.config import cfg
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        cfg.openai_api_key = "sk-from-config"
-        assert _has_provider_key("openai_api_key", "OPENAI_API_KEY") is True
-
-    def test_neither_present(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.core.config import cfg
-
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        cfg.anthropic_api_key = ""
-        assert _has_provider_key("anthropic_api_key", "ANTHROPIC_API_KEY") is False
-
-    def test_unknown_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("SOME_KEY", raising=False)
-        assert _has_provider_key("nonexistent_field", "SOME_KEY") is False
 
 
 class TestDiscoverApiModels:

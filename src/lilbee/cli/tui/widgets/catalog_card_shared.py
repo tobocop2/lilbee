@@ -12,6 +12,7 @@ from __future__ import annotations
 from textual.content import Content
 
 from lilbee.catalog.types import ModelCompat
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.screens.catalog_utils import (
     NATIVE_BACKEND,
@@ -30,6 +31,19 @@ _FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
     FitLevel.FITS: "$success",
     FitLevel.TIGHT: "$warning",
     FitLevel.WONT_RUN: "$error",
+}
+
+# Label and color per hosted-provider key status, shared by the cards and the list.
+KEY_STATUS_LABEL: dict[KeyStatus, str] = {
+    KeyStatus.READY: msg.KEY_STATUS_READY,
+    KeyStatus.MISSING_KEY: msg.KEY_STATUS_NEEDS_KEY,
+    KeyStatus.INVALID_KEY: msg.KEY_STATUS_KEY_REJECTED,
+}
+
+KEY_STATUS_COLOR: dict[KeyStatus, str] = {
+    KeyStatus.READY: "$success",
+    KeyStatus.MISSING_KEY: "$warning",
+    KeyStatus.INVALID_KEY: "$error",
 }
 
 _FIT_LEVEL_LABEL_COMPACT: dict[FitLevel, str] = {
@@ -61,8 +75,6 @@ def _fit_pill_compact(fit: FitChip) -> Content:
 
 def _compat_label(compat: ModelCompat) -> str | None:
     """Compat text for non-SUPPORTED rows, or None for SUPPORTED."""
-    from lilbee.cli.tui import messages as msg
-
     if compat is ModelCompat.SUPPORTED:
         return None
     if compat is ModelCompat.UNSUPPORTED:
@@ -88,9 +100,7 @@ def _truncate_name(name: str) -> str:
 
 
 def _key_status_pill(status: KeyStatus) -> Content:
-    if status == KeyStatus.READY:
-        return pill("ready", "$success", "$text")
-    return pill("needs key", "$warning", "$text")
+    return pill(KEY_STATUS_LABEL[status], KEY_STATUS_COLOR[status], "$text")
 
 
 def _spec_strip(params: str, quant: str, size: str) -> str:
@@ -124,8 +134,6 @@ def _local_card_lines(
     (auto-height). *body_width* selects the grid presentation: the compact fit
     pill and the inline size-variant strip, both sized to the card column.
     """
-    from lilbee.cli.tui import messages as msg
-
     bg = TASK_COLORS.get(row.task, "$primary")
     name = Content.styled(_truncate_name(row.name), "bold")
     # Two pill rows so wide secondary chips (fit + 'unsupported') don't push

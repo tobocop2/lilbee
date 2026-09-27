@@ -46,10 +46,11 @@ class ModelSource(StrEnum):
 
 
 class KeyStatus(StrEnum):
-    """Whether a hosted provider's API key is configured."""
+    """Whether a hosted provider's API key is configured and accepted."""
 
     READY = "ready"
     MISSING_KEY = "missing_key"
+    INVALID_KEY = "invalid_key"
 
 
 class CatalogSize(StrEnum):

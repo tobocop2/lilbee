@@ -333,6 +333,12 @@ CATALOG_GRID_ALL_LOADED = "All {count} models loaded"
 CATALOG_GRID_LOADING_MORE = "{frame} loading more models…"
 CATALOG_USING_FRONTIER = "Using {name} via the {provider} API"
 CATALOG_NEEDS_KEY = "{provider} needs an API key. Set {key_field} in Settings to enable this model."
+CATALOG_KEY_REJECTED = (
+    "{provider} rejected the API key. Set a valid {key_field} in Settings to enable this model."
+)
+KEY_STATUS_READY = "ready"
+KEY_STATUS_NEEDS_KEY = "needs key"
+KEY_STATUS_KEY_REJECTED = "key rejected"
 CATALOG_USING_REMOTE = "Using {name} (remote)"
 CATALOG_ALREADY_INSTALLED = "{name} is already installed"
 CATALOG_ALREADY_DOWNLOADING = "{name} is already downloading, press t to watch it"

@@ -49,7 +49,7 @@
 
 lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, [launches your coding agents on local models](#launch-your-coding-agent-on-local-models), and hands any [MCP-aware agent](#a-reference-for-ai-agents) cited answers from everything you've indexed. The same engine backs the [Obsidian community plugin](https://obsidian.lilbee.sh/), so your vault gets all of it without a terminal. Ask in plain English. No containers, no networking, nothing else to install or set up.
 
-And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry, needs no account, and makes no cloud call unless you configure a cloud model yourself.
+And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry and needs no account. It contacts a cloud provider only when you set an API key for it, in lilbee's settings or in the provider's own environment variable. Then it checks once that the key works, and sends your questions only to a cloud model you pick.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 
@@ -243,7 +243,7 @@ is a step you have to take.
 
 ## Hardware requirements
 
-Standalone mode runs entirely on your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+ (older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)), or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
+Standalone mode needs nothing but your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+ (older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)), or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
 
 <details>
 <summary>Full platform and resource breakdown</summary>
@@ -275,7 +275,7 @@ Retrieval defaults are sane, and every setting is tunable from env vars or `conf
 
 ## Highlights
 
-- **Private by default.** The models, the index, and every question and answer stay on your machine. No telemetry, no account, no cloud calls unless you add a cloud model yourself.
+- **Private by default.** The models, the index, and every question and answer stay on your machine. No telemetry, no account. lilbee contacts a cloud provider only when you set its API key: once to check the key, then only for a cloud model you pick.
 - **Answers cite the source line.** Click a citation, jump to the file at the exact line; when the answer isn't in your library, lilbee says so instead of inventing one.
 - **It works, and the demos prove it.** Every GIF and reel here is recorded live on real hardware, nothing staged, backed by 100% test coverage, full typing, and CI on macOS, Linux, and Windows.
 - **One command to running.** Install, run `lilbee`, pick a model that fits your machine from the catalog, and you're chatting.
@@ -519,7 +519,7 @@ https://github.com/user-attachments/assets/b42effc3-a7f6-4391-904c-3ac897712172
 
 ### Cloud models, when you want them
 
-lilbee runs entirely on your machine by default. Two ways to use a cloud model when you want one:
+lilbee runs entirely on your machine until you set a cloud provider's API key. Two ways to use a cloud model when you want one:
 
 - **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
@@ -532,7 +532,7 @@ lilbee serves your coding agents two ways, both local: it runs the models they t
 
 ### Launch your coding agent on local models
 
-`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
+`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine, except a check of any provider API key you have set. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
 One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
 

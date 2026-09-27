@@ -332,9 +332,11 @@ class TestFrontierTabBehavior:
 class TestFetchFrontierWorker:
     """The frontier worker reads provider keys from cfg and emits rows."""
 
-    def test_emits_rows_with_ready_status_when_key_set(self, monkeypatch) -> None:
+    def test_emits_rows_with_the_group_key_status(self, monkeypatch) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.screens.catalog_utils import KeyStatus
         from lilbee.modelhub.model_manager import RemoteModel
+        from lilbee.modelhub.model_manager.types import ApiModelGroup
 
         screen = CatalogScreen.__new__(CatalogScreen)
         screen._frontier_rows = []
@@ -346,20 +348,16 @@ class TestFetchFrontierWorker:
             parameter_size="--",
             family="gpt",
         )
-        monkeypatch.setattr(
-            "lilbee.modelhub.model_manager.discover_api_models",
-            lambda: {"OpenAI": [rm]},
+        group = ApiModelGroup(
+            provider="openai", display_name="OpenAI", key_status=KeyStatus.READY, models=[rm]
         )
-        from lilbee.core.config import cfg as _cfg
-
-        old_key = _cfg.openai_api_key
-        _cfg.openai_api_key = "sk-test"
-        try:
-            rows = screen._fetch_frontier_models.__wrapped__(screen)
-        finally:
-            _cfg.openai_api_key = old_key
-        assert rows
-        assert rows[0].provider == "OpenAI"
+        monkeypatch.setattr(
+            "lilbee.modelhub.model_manager.discover_api_model_groups", lambda: [group]
+        )
+        rows = screen._fetch_frontier_models.__wrapped__(screen)
+        assert [(r.provider, r.provider_id, r.key_status) for r in rows] == [
+            ("OpenAI", "openai", KeyStatus.READY)
+        ]
 
     def test_returns_empty_list_when_discover_raises(self, monkeypatch) -> None:
         from lilbee.cli.tui.screens.catalog import CatalogScreen
@@ -367,11 +365,11 @@ class TestFetchFrontierWorker:
         screen = CatalogScreen.__new__(CatalogScreen)
         screen._frontier_rows = []
 
-        def _boom() -> dict:
+        def _boom() -> list:
             raise RuntimeError("provider discovery is down")
 
         monkeypatch.setattr(
-            "lilbee.modelhub.model_manager.discover_api_models",
+            "lilbee.modelhub.model_manager.discover_api_model_groups",
             _boom,
         )
         rows = screen._fetch_frontier_models.__wrapped__(screen)

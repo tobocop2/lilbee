@@ -284,6 +284,25 @@ def _sealed_gguf_header_probe(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sealed_provider_key_check(monkeypatch):
+    """Answer every hosted-provider key check with 200 so no unit test reaches a provider.
+
+    Tests of the check itself patch ``key_check._http_get`` again, which wins.
+    """
+    import httpx
+
+    from lilbee.providers import key_check
+
+    def _accepted(url: str, *, headers: dict[str, str]) -> httpx.Response:
+        return httpx.Response(200, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(key_check, "_http_get", _accepted)
+    key_check._checked_key_status.cache_clear()
+    yield
+    key_check._checked_key_status.cache_clear()
+
+
+@pytest.fixture(autouse=True)
 def _reset_services_after_test():
     """Drop any Services container ``set_services()`` left around.
 
