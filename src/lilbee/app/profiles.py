@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -31,6 +31,7 @@ from lilbee.core.profile_files import (
     PROFILE_SUFFIX,
     VALUES_TABLE,
     PlannedWrite,
+    ProfileAuthor,
     ProfileCatalog,
     ProfileEntry,
     ProfileFile,
@@ -45,10 +46,20 @@ from lilbee.core.profile_files import (
     profile_text,
     read_profile_text,
     validate_file,
+    validate_text,
 )
 
 _OVERRIDE_SOURCES = frozenset({SettingSource.ENV, SettingSource.USER})
 _SAVE_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
+
+MCP_PROFILES_DISABLED_HINT = (
+    "The profile tools are off. Turn them on with settings_set mcp_profiles_enabled true, "
+    "then reconnect the MCP server."
+)
+
+
+class ProfileNotFoundError(ValueError):
+    """No profile has the name asked for."""
 
 
 class ProfileEffect(StrEnum):
@@ -97,6 +108,7 @@ class ActiveProfile:
     values: Mapping[str, Any]
     status: ProfileStatus
     error: str | None = None
+    entry: ProfileEntry | None = None
 
 
 @dataclass(frozen=True)
@@ -150,7 +162,7 @@ def show(store: ProfileStore, name: str) -> ProfileEntry:
     """The entry *name* picks; raises ``ValueError`` when no profile has that name."""
     entry = store.scan().find(name)
     if entry is None:
-        raise ValueError(f"No profile named {name!r}")
+        raise ProfileNotFoundError(f"No profile named {name!r}")
     return entry
 
 
@@ -180,11 +192,11 @@ def active(store: ProfileStore) -> ActiveProfile:
     """The applied profile and whether its file is current, changed, gone or broken."""
     table = read_profile_table(cfg.data_root)
     name = table.name or DEFAULT_PROFILE_NAME
-    if profile_key(name) == profile_key(DEFAULT_PROFILE_NAME):
-        return ActiveProfile(name, table.values, ProfileStatus.CURRENT)
     entry = store.scan().find(name)
+    if profile_key(name) == profile_key(DEFAULT_PROFILE_NAME):
+        return ActiveProfile(name, table.values, ProfileStatus.CURRENT, entry=entry)
     error = entry.error if entry is not None else None
-    return ActiveProfile(name, table.values, _file_status(entry, table.values), error)
+    return ActiveProfile(name, table.values, _file_status(entry, table.values), error, entry)
 
 
 def _diff(profile: ProfileFile) -> ProfileDiff:
@@ -360,10 +372,16 @@ def save_as(name: str, target: ProfileFolder = ProfileFolder.GLOBAL) -> SaveResu
     return _switch_to(plan_write(_target_dir(target), target, text, stem=name), yours)
 
 
-def update(store: ProfileStore) -> SaveResult:
-    """Write the project's profile values plus yours into the active profile's own file."""
+def update(store: ProfileStore, name: str | None = None) -> SaveResult:
+    """Write the project's profile values plus yours into the active profile's own file.
+
+    A given *name* must pick the active profile.
+    """
     table = read_profile_table(cfg.data_root)
-    name = table.name or DEFAULT_PROFILE_NAME
+    active_name = table.name or DEFAULT_PROFILE_NAME
+    if name is not None and profile_key(name) != profile_key(active_name):
+        raise ValueError(f"{name} is not this project's profile; {active_name} is")
+    name = active_name
     entry, profile = _owned_file(store, name, "save your settings as a new profile")
     if dict(profile.values) != dict(table.values):
         raise ValueError(
@@ -412,16 +430,33 @@ def delete(store: ProfileStore, name: str) -> ProfileLocation:
     return ProfileLocation(entry.name, entry.folder, entry.path)
 
 
-def export(store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False) -> Path:
-    """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder."""
+@dataclass(frozen=True)
+class ExportedProfile:
+    """A profile as the text of a clean file, and the file name it goes under."""
+
+    filename: str
+    folder: ProfileFolder
+    profile: ProfileFile
+    text: str
+
+
+def export_text(store: ProfileStore, name: str) -> ExportedProfile:
+    """The profile *name* picks as the text of a clean file named by its slug."""
     entry = show(store, name)
     profile = _valid_file(entry)
-    path = dest / f"{profile_key(entry.name)}{PROFILE_SUFFIX}" if dest.is_dir() else dest
+    filename = f"{profile_key(entry.name)}{PROFILE_SUFFIX}"
+    return ExportedProfile(filename, entry.folder, profile, profile_text(profile))
+
+
+def export(store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False) -> Path:
+    """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder."""
+    exported = export_text(store, name)
+    path = dest / exported.filename if dest.is_dir() else dest
     if path.exists() and not overwrite:
         raise ValueError(f"{path} already exists")
-    text = profile_text(profile)
+    text = exported.text
     return PlannedWrite(
-        path, entry.folder, parse_text(text, path.stem, entry.folder), text, None
+        path, exported.folder, parse_text(text, path.stem, exported.folder), text, None
     ).write()
 
 
@@ -444,9 +479,20 @@ def import_profile(
 
     A file that names no profile takes the slug of its file name as its name.
     """
-    text = read_profile_text(source)
+    return import_text(store, read_profile_text(source), source.name, target, overwrite=overwrite)
+
+
+def import_text(
+    store: ProfileStore,
+    text: str,
+    filename: str,
+    target: ProfileFolder = ProfileFolder.GLOBAL,
+    *,
+    overwrite: bool = False,
+) -> ProfileLocation:
+    """Validate *text*, a profile file named *filename*, and copy it into *target*."""
     directory = _target_dir(target)
-    stem = profile_key(source.stem)
+    stem = profile_key(Path(filename).stem)
     profile = parse_text(text, stem, target)
     replacing = _same_name_in(store, target, profile.name) if overwrite else None
     return _written(plan_write(directory, target, text, stem=stem, replacing=replacing))
@@ -455,3 +501,36 @@ def import_profile(
 def validate(path: Path, folder: ProfileFolder = ProfileFolder.GLOBAL) -> ProfileValidation:
     """Every problem with the file at *path* as a profile in *folder*."""
     return validate_file(path, folder)
+
+
+def validate_content(
+    text: str, filename: str, folder: ProfileFolder = ProfileFolder.GLOBAL
+) -> ProfileValidation:
+    """Every problem with *text*, a profile file named *filename*, as a profile in *folder*."""
+    return validate_text(text, Path(filename), folder)
+
+
+_STATUS_NOTES = {
+    ProfileStatus.CURRENT: None,
+    ProfileStatus.CHANGED: "Its file changed since it was applied; apply it again to use the file.",
+    ProfileStatus.MISSING: "Its file is gone; the copy recorded on apply stays in use.",
+    ProfileStatus.BROKEN: "Its file is broken; the copy recorded on apply stays in use.",
+}
+
+
+def status_note(status: ProfileStatus) -> str | None:
+    """What an applied profile's file state means for the project; None when it is current."""
+    return _STATUS_NOTES[status]
+
+
+def credit_line(authors: Sequence[ProfileAuthor]) -> str | None:
+    """The authors as "by Jane Doe (@janedoe), Sam Roe"; None when the profile names none."""
+    if not authors:
+        return None
+    names = [f"{a.name} (@{a.github})" if a.github else a.name for a in authors]
+    return f"by {', '.join(names)}"
+
+
+def file_failure_message(exc: OSError) -> str:
+    """User-facing text for a profile or config file lilbee could not write or remove."""
+    return f"Could not save the change: {exc}"

@@ -483,6 +483,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "stays off unless you want an agent owning conversations."
         ),
     ),
+    "mcp_profiles_enabled": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.GENERATION,
+        help_text=(
+            "Off (default): the profile tools are not offered over MCP. On: a connected "
+            "agent can list, compare, apply, save and manage profiles. The tools cost "
+            "context on every request, so this stays off unless you want an agent tuning "
+            "a project's settings through profiles."
+        ),
+    ),
     "chat_mode": SettingDef(
         str,
         nullable=False,

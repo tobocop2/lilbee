@@ -15,6 +15,7 @@ from lilbee.cli.commands import (
     ingest_sync,
     memory,
     meta,
+    profile,
     search_chat,
     servers,
     wiki,
@@ -55,5 +56,6 @@ app.add_typer(wiki.wiki_app, name="wiki")
 app.add_typer(agent_config.agent_config_app, name="agent-config")
 app.add_typer(launch_app, name="launch")
 app.add_typer(memory.memory_app, name="memory")
+app.add_typer(profile.profile_app, name="profile")
 
 __all__ = ["app"]

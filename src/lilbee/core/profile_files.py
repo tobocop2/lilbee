@@ -477,7 +477,16 @@ def builtin_keys() -> frozenset[str]:
 def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:
     """Every problem with *path* as a profile file in *folder*."""
     try:
-        data = _load_toml(path)
+        text = read_profile_text(path)
+    except ProfileFileError as exc:
+        return ProfileValidation(path, path.stem, (str(exc),))
+    return validate_text(text, path, folder)
+
+
+def validate_text(text: str, path: Path, folder: ProfileFolder) -> ProfileValidation:
+    """Every problem with *text*, the content of the file at *path*, as a profile in *folder*."""
+    try:
+        data = _parse_toml(text)
     except ProfileFileError as exc:
         return ProfileValidation(path, path.stem, (str(exc),))
     name = _entry_name(data, path.stem)

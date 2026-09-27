@@ -11,10 +11,22 @@ from pydantic import BaseModel, Field, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
+from lilbee.app.profiles import (
+    ActiveProfile,
+    ApplyResult,
+    DiffRow,
+    ProfileDiff,
+    ProfileEffect,
+    ProfileLocation,
+    ProfileStatus,
+    SaveResult,
+    credit_line,
+)
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode, KvCacheType, SettingSource
 from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.profile_files import ProfileEntry, ProfileFolder, ProfileValidation
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -1021,3 +1033,230 @@ class AgentConfigResponse(BaseModel):
             content=document.content,
             stdio_config=document.stdio_config,
         )
+
+
+class ProfileAuthorResponse(BaseModel):
+    """One credited author of a profile."""
+
+    name: str
+    github: str | None
+
+
+class ProfileEntryResponse(BaseModel):
+    """One profile file; ``error`` names why a broken file cannot be used."""
+
+    name: str
+    folder: ProfileFolder
+    path: str
+    valid: bool
+    error: str | None
+    shadowed_by: ProfileFolder | None
+    description: str | None
+    authors: list[ProfileAuthorResponse]
+    credit: str | None
+    tested_on: str | None
+    evidence: str | None
+    min_lilbee: str | None
+    values: dict[str, Any]
+
+    @classmethod
+    def from_entry(cls, entry: ProfileEntry) -> ProfileEntryResponse:
+        """The canonical serialized profile, shared by the HTTP, MCP, and CLI surfaces."""
+        profile = entry.file
+        authors = profile.authors if profile is not None else ()
+        return cls(
+            name=entry.name,
+            folder=entry.folder,
+            path=entry.path.as_posix(),
+            valid=profile is not None,
+            error=entry.error,
+            shadowed_by=entry.shadowed_by,
+            description=profile.description if profile is not None else None,
+            authors=[ProfileAuthorResponse(name=a.name, github=a.github) for a in authors],
+            credit=credit_line(authors),
+            tested_on=profile.tested_on if profile is not None else None,
+            evidence=profile.evidence if profile is not None else None,
+            min_lilbee=profile.min_lilbee if profile is not None else None,
+            values=dict(profile.values) if profile is not None else {},
+        )
+
+
+class ProfileListResponse(BaseModel):
+    """Response for GET /api/profiles: every profile file, highest precedence first."""
+
+    profiles: list[ProfileEntryResponse]
+
+
+class ActiveProfileResponse(BaseModel):
+    """The project's applied profile, the values recorded on apply, and its file's state."""
+
+    name: str
+    status: ProfileStatus
+    error: str | None
+    values: dict[str, Any]
+    profile: ProfileEntryResponse | None
+
+    @classmethod
+    def from_active(cls, current: ActiveProfile) -> ActiveProfileResponse:
+        """The canonical serialized active profile, shared by every surface."""
+        entry = current.entry
+        return cls(
+            name=current.name,
+            status=current.status,
+            error=current.error,
+            values=dict(current.values),
+            profile=ProfileEntryResponse.from_entry(entry) if entry is not None else None,
+        )
+
+
+class ProfileDiffRowResponse(BaseModel):
+    """One setting a profile apply changes, and when the change takes effect."""
+
+    key: str
+    current: Any
+    current_source: SettingSource
+    new: Any
+    effect: ProfileEffect
+
+    @classmethod
+    def from_row(cls, row: DiffRow) -> ProfileDiffRowResponse:
+        """One serialized diff row."""
+        return cls(
+            key=row.key,
+            current=row.current,
+            current_source=row.current_source,
+            new=row.new,
+            effect=row.effect,
+        )
+
+
+class ProfileDiffResponse(BaseModel):
+    """Response for GET /api/profiles/{name}/diff."""
+
+    name: str
+    changes: list[ProfileDiffRowResponse]
+    kept: list[str]
+    untouched_count: int
+
+    @classmethod
+    def from_diff(cls, diff: ProfileDiff) -> ProfileDiffResponse:
+        """The canonical serialized diff, shared by every surface."""
+        return cls(
+            name=diff.name,
+            changes=[ProfileDiffRowResponse.from_row(row) for row in diff.changes],
+            kept=list(diff.kept),
+            untouched_count=diff.untouched_count,
+        )
+
+
+class ProfileApplyResponse(BaseModel):
+    """Response for POST /api/profiles/{name}/apply."""
+
+    name: str
+    changes: list[ProfileDiffRowResponse]
+    reindex_required: bool
+    new_files_only: list[str]
+
+    @classmethod
+    def from_result(cls, result: ApplyResult) -> ProfileApplyResponse:
+        """The canonical serialized apply result, shared by every surface."""
+        return cls(
+            name=result.name,
+            changes=[ProfileDiffRowResponse.from_row(row) for row in result.changes],
+            reindex_required=result.reindex_required,
+            new_files_only=list(result.new_files_only),
+        )
+
+
+class ProfileLocationResponse(BaseModel):
+    """A profile file an operation wrote or removed."""
+
+    name: str
+    folder: ProfileFolder
+    path: str
+
+    @classmethod
+    def from_location(cls, location: ProfileLocation) -> ProfileLocationResponse:
+        """One serialized profile location."""
+        return cls(name=location.name, folder=location.folder, path=location.path.as_posix())
+
+
+class ProfileSaveResponse(ProfileLocationResponse):
+    """A saved profile file and the settings of yours it took over from config.toml."""
+
+    absorbed: list[str]
+
+    @classmethod
+    def from_save(cls, result: SaveResult) -> ProfileSaveResponse:
+        """The canonical serialized save or update result, shared by every surface."""
+        location = result.location
+        return cls(
+            name=location.name,
+            folder=location.folder,
+            path=location.path.as_posix(),
+            absorbed=list(result.absorbed),
+        )
+
+
+class ProfileDiscardResponse(BaseModel):
+    """Response for POST /api/profiles/discard: the settings of yours removed."""
+
+    dropped: list[str]
+
+
+class ProfileValidationResponse(BaseModel):
+    """Every problem found in one profile file; ``valid`` when there is none."""
+
+    name: str
+    valid: bool
+    problems: list[str]
+
+    @classmethod
+    def from_validation(cls, result: ProfileValidation) -> ProfileValidationResponse:
+        """The canonical serialized validation, shared by every surface."""
+        return cls(name=result.name, valid=result.valid, problems=list(result.problems))
+
+
+class ProfileSaveRequest(BaseModel):
+    """Request body for POST /api/profiles: save the project's settings as a new profile."""
+
+    name: str
+    target: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class ProfileNewRequest(BaseModel):
+    """Request body for POST /api/profiles/new: a template, optionally from a profile."""
+
+    name: str
+    from_profile: str | None = None
+    target: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class ProfileDuplicateRequest(BaseModel):
+    """Request body for POST /api/profiles/{name}/duplicate."""
+
+    new_name: str
+    target: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class ProfileRenameRequest(BaseModel):
+    """Request body for PATCH /api/profiles/{name}."""
+
+    new_name: str
+
+
+class ProfileImportRequest(BaseModel):
+    """Request body for POST /api/profiles/import: a profile file's text and its file name."""
+
+    content: str
+    filename: str
+    target: ProfileFolder = ProfileFolder.GLOBAL
+    overwrite: bool = False
+
+
+class ProfileValidateRequest(BaseModel):
+    """Request body for POST /api/profiles/validate: a profile file's text and its file name."""
+
+    content: str
+    filename: str
+    folder: ProfileFolder = ProfileFolder.GLOBAL

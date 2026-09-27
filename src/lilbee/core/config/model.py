@@ -867,6 +867,9 @@ class Config(BaseSettings):
     # tools cost schema on every request whether or not anything uses them.
     mcp_sessions_enabled: bool = ConfigField(default=False, writable=True)
 
+    # The profile tools over MCP, off by default for the same schema cost.
+    mcp_profiles_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM

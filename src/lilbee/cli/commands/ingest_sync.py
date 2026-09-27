@@ -13,6 +13,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from lilbee.data.ingest import SyncResult
     from lilbee.runtime.progress import DetailedProgressCallback
 
 from lilbee.app.ingest import (
@@ -408,6 +409,23 @@ def sync_cmd(
     console.print(result)
 
 
+def run_rebuild() -> SyncResult:
+    """Drop the index and re-ingest every document; a refused rebuild exits 1 with its reason."""
+    from lilbee.data.ingest import SyncResult
+
+    try:
+        result = _run_sync_with_signal_cancel(force_rebuild=True)
+    except RuntimeError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+            raise SystemExit(1) from None
+        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    return result
+
+
 def rebuild(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
@@ -423,18 +441,7 @@ def rebuild(
         cfg.ingest_workers = max_cpus
     if processes is not None:
         cfg.ingest_processes = processes
-    from lilbee.data.ingest import SyncResult
-
-    try:
-        result = _run_sync_with_signal_cancel(force_rebuild=True)
-    except RuntimeError as exc:
-        if cfg.json_mode:
-            json_output({"error": str(exc)})
-            raise SystemExit(1) from None
-        print_prefixed(console, "Error: ", exc, style=theme.ERROR)
-        raise SystemExit(1) from None
-    if not isinstance(result, SyncResult):
-        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    result = run_rebuild()
     if cfg.json_mode:
         json_output(
             {
