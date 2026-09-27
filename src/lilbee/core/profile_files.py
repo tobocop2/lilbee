@@ -73,6 +73,16 @@ class ProfileFolder(StrEnum):
 PACKAGE_FOLDERS = frozenset({ProfileFolder.COMMUNITY, ProfileFolder.BUILTIN})
 
 
+class NameProblem(StrEnum):
+    """Why a name cannot go on a new profile file in a folder."""
+
+    EMPTY = "empty"
+    INVALID = "invalid"
+    RESERVED = "reserved"
+    RESERVED_WORD = "reserved_word"
+    TAKEN = "taken"
+
+
 class ProfileFileError(ValueError):
     """A profile file lilbee cannot use, with the reason as its message."""
 
@@ -120,6 +130,10 @@ class ProfileCatalog:
     """Every profile file found, in precedence order."""
 
     entries: tuple[ProfileEntry, ...]
+
+    def usable_names(self) -> list[str]:
+        """Names a pick can apply: valid profiles that no higher folder hides."""
+        return [e.name for e in self.entries if e.file is not None and e.shadowed_by is None]
 
     def find(self, name: str) -> ProfileEntry | None:
         """The entry a name picks: the highest-precedence one with that lookup key."""
@@ -202,10 +216,14 @@ def _parse_min_lilbee(meta: Mapping[str, Any]) -> str | None:
     return value
 
 
+def _bad_name(name: str) -> bool:
+    return _NAME_PATTERN.fullmatch(name) is None or not profile_key(name)
+
+
 def _check_name(meta: Mapping[str, Any], stem: str) -> str:
     raw = _optional_str(meta, "name")
     name = stem if raw is None else raw
-    if _NAME_PATTERN.fullmatch(name) is None or not profile_key(name):
+    if _bad_name(name):
         raise ProfileFileError(
             f"Bad name {name!r}: use 1 to 40 letters, digits, spaces, hyphens, "
             "underscores or parentheses"
@@ -560,6 +578,25 @@ def _clash(
         if path != replacing and (same_file or profile_key(read_entry(path, folder).name) == key):
             return path
     return None
+
+
+def name_problem(name: str, folder: ProfileFolder, catalog: ProfileCatalog) -> NameProblem | None:
+    """Why ``plan_write`` would refuse *name* in *folder*, judged from *catalog*, or None."""
+    if not name.strip():
+        return NameProblem.EMPTY
+    if _bad_name(name):
+        return NameProblem.INVALID
+    key = profile_key(name)
+    if key in RESERVED_NAME_KEYS:
+        return NameProblem.RESERVED_WORD
+    taken = {
+        (e.folder, k)
+        for e in catalog.entries
+        for k in (profile_key(e.name), e.path.stem.casefold())
+    }
+    if (ProfileFolder.BUILTIN, key) in taken:
+        return NameProblem.RESERVED
+    return NameProblem.TAKEN if (folder, key) in taken else None
 
 
 def plan_write(
