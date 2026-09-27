@@ -128,6 +128,7 @@ class ProfileLibrary(ModalScreen[None]):
         self._on_change = on_change
         self._state: LibraryState | None = None
         self._entries: list[ProfileEntry] = []
+        self._credit: str | None = None
         self._handlers: dict[LibraryAction, Callable[[LibraryState], None]] = {
             LibraryAction.DUPLICATE: self._duplicate,
             LibraryAction.RENAME: self._rename,
@@ -155,6 +156,7 @@ class ProfileLibrary(ModalScreen[None]):
                     )
                     add_cost_column(table)
                     yield table
+            yield Static("", id="library-narrow-credit", classes="library-muted", markup=False)
             yield Static(_hints(), id="library-hints")
 
     def on_mount(self) -> None:
@@ -166,8 +168,9 @@ class ProfileLibrary(ModalScreen[None]):
         self._fit(event.size.width)
 
     def _fit(self, width: int) -> None:
-        """Below WIDE_COLUMNS the library shows the list only."""
+        """Below WIDE_COLUMNS the library shows the list only, plus the selection's credit."""
         self.set_class(width < WIDE_COLUMNS, NARROW_CLASS)
+        self._update_narrow_credit()
 
     @work(thread=True, exclusive=True, group="profile-library-load", exit_on_error=False)
     def reload(self) -> None:
@@ -203,19 +206,27 @@ class ProfileLibrary(ModalScreen[None]):
         problem = entry.error
         if problem is None and shadowed is not None:
             problem = msg.PROFILE_LIBRARY_SHADOWED_NOTE.format(folder=shadowed.value)
+        self._credit = credit_text(profile) if profile is not None else None
         for widget_id, text in (
             ("library-name", entry.name),
             ("library-folder", msg.PROFILE_FOLDER_TEXT[entry.folder]),
             ("library-description", profile.description if profile is not None else None),
-            ("library-credit", credit_text(profile) if profile is not None else None),
+            ("library-credit", self._credit),
             ("library-problem", problem),
         ):
             line = self.query_one(f"#{widget_id}", Static)
             line.update(text or "")
             line.display = bool(text)
+        self._update_narrow_credit()
         self._show_diff(entry.path, None)
         if profile is not None and self._reaches(entry):
             self._load_diff(entry)
+
+    def _update_narrow_credit(self) -> None:
+        """Mirror the selection's credit outside the detail pane, for the list-only layout."""
+        widget = self.query_one("#library-narrow-credit", Static)
+        widget.update(self._credit or "")
+        widget.display = bool(self._credit) and self.has_class(NARROW_CLASS)
 
     @work(thread=True, exclusive=True, group="profile-library-diff", exit_on_error=False)
     def _load_diff(self, entry: ProfileEntry) -> None:

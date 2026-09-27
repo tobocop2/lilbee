@@ -10,7 +10,6 @@ import pytest
 from textual.pilot import Pilot
 from textual.widgets import Input, OptionList, Select, Static
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app import profiles
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.profile_dialogs import (
@@ -23,7 +22,11 @@ from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from tests._lilbee_app_test_host import LilbeeAppHost
-from tests._lilbee_app_test_host import ready_services as _ready_services
+from tests._profile_fixtures import (
+    gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
+    isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
+    sources_totaling,
+)
 from tests.test_tui_profile_tab import (
     _LEGAL,
     _dialog,
@@ -40,32 +43,9 @@ from tests.test_tui_profile_tab import (
 )
 
 
-@pytest.fixture(autouse=True)
-def _gate_releases_at_once():
-    with _ready_services():
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _isolated_cfg(tmp_path):
-    snapshot = cfg.model_copy()
-    cfg.data_root = tmp_path
-    cfg.data_dir = tmp_path / "data"
-    cfg.documents_dir = tmp_path / "documents"
-    cfg.lancedb_dir = tmp_path / "lancedb"
-    cfg.chat_model = TEST_LOCAL_REF
-    cfg.embedding_model = TEST_EMBED_REF
-    yield
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
-
-
 @pytest.fixture
 def sources():
-    """Stand in for the store behind the reindex file count."""
-    services = mock.MagicMock()
-    services.store.get_sources.return_value = [{"source": "a.pdf"}]
-    with mock.patch("lilbee.cli.tui.screens.profile_dialogs.get_services", return_value=services):
+    with sources_totaling(1) as services:
         yield services
 
 
@@ -166,6 +146,17 @@ async def test_the_detail_shows_credit_and_what_applying_changes() -> None:
         assert not table.display
 
 
+async def test_credit_renders_tested_on_through_the_shared_formatter() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    with mock.patch.object(profiles, "tested_on_line", return_value="SENTINEL-TESTED-ON"):
+        async with app.run_test(size=(120, 40)) as pilot:
+            library = await _open(app, pilot)
+            await _highlight(pilot, library, "legal-discovery  global")
+            credit = library.query_one("#library-credit", Static)
+            assert await _until(pilot, lambda: "SENTINEL-TESTED-ON" in _text(credit))
+
+
 async def test_a_diff_that_fails_shows_no_changes() -> None:
     _write_global("legal-discovery", _LEGAL)
     app = _SettingsApp()
@@ -205,6 +196,25 @@ async def test_at_80x24_the_library_shows_the_list_only_and_fits() -> None:
             assert label in hints
         assert "Share" not in hints
         assert "s" not in {binding.key for binding in ProfileLibrary.BINDINGS}
+
+
+async def test_narrow_layout_shows_the_selected_profiles_credit() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        library = await _open(app, pilot)
+        await _highlight(pilot, library, "legal-discovery  global")
+        narrow_credit = library.query_one("#library-narrow-credit", Static)
+        assert await _until(
+            pilot,
+            lambda: (
+                _text(narrow_credit) == "by Jane Doe (@janedoe). Tested on: 4,000 county filings"
+            ),
+        )
+        assert narrow_credit.display
+        assert _inside(narrow_credit.region, library.region)
+        await _highlight(pilot, library, "Default  built-in")
+        assert await _until(pilot, lambda: not narrow_credit.display)
 
 
 async def test_enter_opens_the_apply_dialog_and_the_tab_follows(sources) -> None:
@@ -424,6 +434,35 @@ async def test_escape_closes_the_library_and_the_path_dialog_cancels() -> None:
         assert await _until(pilot, lambda: app.screen is library)
         await pilot.press("escape")
         assert await _until(pilot, lambda: app.screen is _settings(app))
+    assert not _global_dir().exists() or not list(_global_dir().iterdir())
+
+
+async def test_typing_action_letters_into_the_rename_input_does_not_leak() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        library = await _open(app, pilot)
+        await _highlight(pilot, library, "legal-discovery  global")
+        await pilot.press("r")
+        dialog = await _dialog(app, pilot, SaveProfileDialog)
+        name = dialog.query_one("#save-name", Input)
+        name.value = ""
+        await pilot.press(*"dxei")
+        assert name.value == "dxei"
+        assert app.screen is dialog
+    assert (_global_dir() / "legal-discovery.toml").is_file()
+
+
+async def test_typing_action_letters_into_the_import_path_input_does_not_leak() -> None:
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await _open(app, pilot)
+        await pilot.press("i")
+        dialog = await _dialog(app, pilot, ProfilePathDialog)
+        path = dialog.query_one("#path-input", Input)
+        await pilot.press(*"drex")
+        assert path.value == "drex"
+        assert app.screen is dialog
     assert not _global_dir().exists() or not list(_global_dir().iterdir())
 
 
