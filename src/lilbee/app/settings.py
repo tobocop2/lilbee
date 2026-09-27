@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
@@ -62,6 +63,13 @@ _OCR_ENGINE_NOTES = {
 # stays as None). Resetting these via the boundary would corrupt the
 # install, so they are refused at the reset gate.
 _NO_RESET_FIELDS: frozenset[str] = frozenset({"documents_dir"})
+
+
+class _LayerChange(StrEnum):
+    """A change to the setting layers whose resolved values are checked before it is written."""
+
+    RESET = "reset"
+    APPLY = "apply"
 
 
 @dataclass(frozen=True)
@@ -588,7 +596,7 @@ def reset_settings(
             raise ValueError(f"'{key}' has no default to reset to; set a folder path instead.")
     targets = [key for key in keys if key not in _NO_RESET_FIELDS]
     fallbacks = _values_after_reset(targets)
-    _refuse_invalid_fallbacks(fallbacks)
+    _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
     _validate({key: entry.value for key, entry in fallbacks.items()})
     embed_in_batch = "embedding_model" in targets
     if embed_in_batch:
@@ -606,7 +614,7 @@ def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
     return {key: resolve(key, remaining) for key in keys}
 
 
-def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: str = "reset") -> None:
+def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: _LayerChange) -> None:
     """Refuse an *action* when a key would resolve to a value its field rejects."""
     trial = cfg.model_copy()
     for key, entry in fallbacks.items():
@@ -614,7 +622,7 @@ def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: str = "res
             setattr(trial, key, entry.value)
         except ValueError as exc:
             raise ValueError(
-                f"Cannot {action} '{key}': its {entry.source.value} value {entry.value!r} is "
+                f"Cannot {action.value} '{key}': its {entry.source.value} value {entry.value!r} is "
                 "invalid. Fix or remove that value first."
             ) from exc
 
@@ -632,7 +640,7 @@ def apply_profile_layer(name: str, values: Mapping[str, Any]) -> SettingsUpdateR
     after = replace(layers, profile=dict(values))
     keys = set(layers.profile) | set(values)
     resolved = {key: resolve(key, after) for key in sorted(keys)}
-    _refuse_invalid_fallbacks(resolved, action="apply")
+    _refuse_invalid_fallbacks(resolved, _LayerChange.APPLY)
     _validate({key: entry.value for key, entry in resolved.items()})
     persistent_settings.write_profile_table(cfg.data_root, name, values)
     return _settle(keys, embed_in_batch=False)
