@@ -1231,6 +1231,35 @@ async def test_settings_list_editor_saves_on_blur():
         assert cfg.crawl_exclude_patterns == ["foo", "bar"]
 
 
+async def test_settings_list_editor_blur_without_edit_leaves_config_untouched(tmp_path):
+    """Blurring a list-typed editor with no edit must not write config.toml.
+
+    Mirrors the scalar mount-baseline fix: a list editor's blur handler used
+    to persist unconditionally, so tabbing past crawl_exclude_patterns
+    without editing it rewrote config.toml on every visit.
+    """
+    from textual.widgets import Input
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+    from lilbee.core import settings as settings_store
+
+    cfg.data_root = tmp_path
+    # A baseline write unrelated to the field under test, so "byte-identical"
+    # proves no write happened at all, not just that this key stayed absent.
+    settings_store.update_values(tmp_path, {"top_k": 99})
+    baseline = (tmp_path / "config.toml").read_bytes()
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        app.screen.query_one("#ed-top_k", Input).focus()
+        await pilot.pause()
+
+    assert (tmp_path / "config.toml").read_bytes() == baseline
+
+
 async def test_settings_list_editor_strips_blanks():
     """Blank lines and surrounding whitespace are stripped during parsing."""
 
@@ -1691,6 +1720,37 @@ async def test_settings_persist_invalid_int():
         assert cfg.top_k == original
 
 
+async def test_settings_repeated_identical_invalid_blur_notifies_twice():
+    """Two identical invalid blurs on the same field must both notify.
+
+    The mount-display baseline updates only when ``_persist_value``
+    succeeds, so an unparseable value never gets treated as the field's
+    shown text; without that, the baseline picked up the invalid text on
+    the first blur and a second identical invalid blur compared equal to it
+    and stayed silent.
+    """
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        original = cfg.top_k
+        editor = app.screen.query_one("#ed-top_k", Input)
+        with patch.object(app.screen, "notify") as mock_notify:
+            editor.focus()
+            editor.value = "abc"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert mock_notify.call_count == 1
+
+            editor.focus()
+            editor.value = "abc"
+            await pilot.press("enter")
+            await pilot.pause()
+            assert mock_notify.call_count == 2
+
+        assert cfg.top_k == original
+
+
 async def test_settings_select_save():
     """_on_select_save routes through _persist_value correctly."""
     from lilbee.app.settings_map import SettingDef
@@ -1713,6 +1773,33 @@ async def test_settings_select_save():
         ):
             screen._on_select_save(event)
             mock_persist.assert_called_once_with("test_select", defn, "chosen")
+
+
+async def test_settings_select_save_compares_against_mount_baseline_not_cfg():
+    """A Select save compares the new value to the mount baseline, not to cfg.
+
+    No live Select-backed setting has a model default today, so the two
+    always agree in practice; this manufactures the divergence to prove
+    which one the comparison actually uses, the same way the scalar
+    mount-baseline bug only showed up once a model default made the two
+    disagree there.
+    """
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        key = "wiki_clusterer"
+        assert screen._mount_display.get(key) is not None
+        screen._mount_display[key] = "concepts"
+        cfg.wiki_clusterer = "embedding"
+        event = MagicMock()
+        event.select.name = key
+        event.value = "concepts"
+        with patch.object(screen, "_persist_value") as mock_pv:
+            screen._on_select_save(event)
+            mock_pv.assert_not_called()
 
 
 def test_get_default_for_scalar():
@@ -1981,6 +2068,29 @@ async def test_refresh_editor_updates_textarea_none(monkeypatch):
         defn = SettingDef(type=str, nullable=True, group="General")
         screen._refresh_editor("fake_str", defn, None)
         fake.load_text.assert_called_once_with("")
+
+
+async def test_refresh_editor_guard_skips_untracked_key():
+    """_refresh_editor must not seed a baseline for a key not already tracked.
+
+    Every writable key with a real editor is seeded into ``_mount_display``
+    at row construction, so the ``key in self._mount_display`` guard here is
+    always satisfied today; it exists to stop a future editor kind from
+    gaining a baseline through a plain refresh before its own construction
+    path starts tracking it. Clearing an already-tracked key's entry stands
+    in for that "never tracked" case.
+    """
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        assert "top_k" in screen._mount_display
+        del screen._mount_display["top_k"]
+        screen._refresh_editor("top_k", SETTINGS_MAP["top_k"], cfg.top_k)
+        assert "top_k" not in screen._mount_display
 
 
 async def test_reset_to_default_ignores_readonly_keys():
@@ -13156,6 +13266,16 @@ def test_settings_make_select_value_no_match():
     sel = make_select("test_key", defn, "unknown")
     assert sel.name == "test_key"
     assert sel.id == "ed-test_key"
+
+
+def test_settings_select_shown_value_matches_and_no_match():
+    """select_shown_value returns the value when it is a choice, else blank."""
+    from lilbee.app.settings_map import SettingDef
+    from lilbee.cli.tui.screens.settings_widgets import select_shown_value
+
+    defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
+    assert select_shown_value(defn, "auto") == "auto"
+    assert select_shown_value(defn, "unknown") == ""
 
 
 async def test_settings_on_input_save_name_none():
