@@ -10,11 +10,12 @@ from lilbee.app.profiles import ProfileEffect, ProfileStatus
 from lilbee.app.services import get_services, set_services
 from lilbee.app.settings import apply_profile_layer, apply_settings_update
 from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core import profile_files, settings
+from lilbee.core import settings
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import OcrPageStrategy, SettingSource
 from lilbee.core.config.resolve import PROFILE_FIELDS, ROOT_DERIVED_FIELDS
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
+from lilbee.core.system import default_data_dir
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
 from tests.conftest import make_mock_services
 
@@ -43,7 +44,7 @@ def _write_config(text: str) -> None:
 
 
 def _global_profile(stem: str, text: str) -> Path:
-    folder = profile_files.default_data_dir() / PROFILES_DIRNAME
+    folder = default_data_dir() / PROFILES_DIRNAME
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{stem}.toml"
     path.write_text(text, encoding="utf-8")
