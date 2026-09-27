@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -17,7 +16,8 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
-from lilbee.core.config.model import value_is_set
+from lilbee.core.config.defaults import ENV_PREFIX
+from lilbee.core.config.enums import SettingSource
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -178,17 +178,24 @@ def type_pill(defn: SettingDef) -> Content:
     return pill(type_name, bg, fg)
 
 
-def env_var_name(key: str) -> str:
-    """Return the LILBEE_* env var name for a config key."""
-    return f"LILBEE_{key.upper()}"
+def _user_pill(_key: str) -> Content:
+    return pill(msg.SETTINGS_SOURCE_USER_PILL, "$accent", "$text")
 
 
-def env_pill(key: str) -> Content | None:
-    """Pill warning that an env var is overriding TUI edits, or None."""
-    env_name = env_var_name(key)
-    if not value_is_set(key, os.environ.get(env_name)):
-        return None
-    return pill(env_name, "$warning", "$text")
+def _env_pill(key: str) -> Content:
+    return pill(f"{ENV_PREFIX}{key.upper()}", "$warning", "$text")
+
+
+_SOURCE_PILLS: dict[SettingSource, Callable[[str], Content]] = {
+    SettingSource.USER: _user_pill,
+    SettingSource.ENV: _env_pill,
+}
+
+
+def source_pill(key: str, source: SettingSource) -> Content | None:
+    """Pill for a value the user or an env var overrides; None for any other source."""
+    build = _SOURCE_PILLS.get(source)
+    return None if build is None else build(key)
 
 
 def help_content(key: str, defn: SettingDef) -> Content:
@@ -203,13 +210,13 @@ def help_content(key: str, defn: SettingDef) -> Content:
     return help_text if note is None else Content.assemble(help_text, "\n", note)
 
 
-def title_content(key: str, defn: SettingDef) -> Content:
-    """Assemble the setting-row title: key name, type pill, and env pill when set."""
+def title_content(key: str, defn: SettingDef, source: SettingSource) -> Content:
+    """Assemble the setting-row title: key name, type pill, and the source pill for an override."""
     parts: list[Content] = [Content(key + "  "), type_pill(defn)]
-    env_badge = env_pill(key)
-    if env_badge is not None:
+    source_badge = source_pill(key, source)
+    if source_badge is not None:
         parts.append(Content("  "))
-        parts.append(env_badge)
+        parts.append(source_badge)
     return Content.assemble(*parts)
 
 

@@ -427,6 +427,7 @@ CHAT_RENDERING = "Rendering: {label}"
 SETTINGS_READ_ONLY = "read-only"
 SETTINGS_INVALID_VALUE = "Invalid value: {error}"
 SETTINGS_RESET_TO_DEFAULT_TOOLTIP = "Reset to default"
+SETTINGS_SOURCE_USER_PILL = "set by you"
 
 EMBED_SWAP_CONFIRM_TITLE = "Switch embedding model?"
 EMBED_SWAP_CONFIRM_MESSAGE = (

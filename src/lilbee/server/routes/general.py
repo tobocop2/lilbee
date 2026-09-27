@@ -28,6 +28,7 @@ from lilbee.server.models import (
     ConfigResetRequest,
     ConfigResponse,
     ConfigSchemaResponse,
+    ConfigSourcesResponse,
     ConfigUpdateResponse,
     HealthResponse,
     ShutdownResponse,
@@ -104,6 +105,12 @@ async def config_reset_route(data: ConfigResetRequest) -> ConfigUpdateResponse:
 async def config_schema_route() -> ConfigSchemaResponse:
     """Return type, choices, writability and reindex metadata for every public field."""
     return await handlers.get_config_schema()
+
+
+@get("/api/config/sources")
+async def config_sources_route() -> ConfigSourcesResponse:
+    """Return the layer that supplies each configuration value."""
+    return await handlers.get_config_sources()
 
 
 @patch("/api/config")
