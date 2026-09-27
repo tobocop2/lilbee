@@ -14,14 +14,13 @@ from textual.content import Content
 from textual.widgets import OptionList
 from textual.widgets.option_list import Option
 
+from lilbee.app.ingest import removable_names
 from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui.command_registry import COMMANDS, completion_names
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
-from lilbee.core.config import cfg
-from lilbee.data.ingest.skip_marker import held_out_names
 
 log = logging.getLogger(__name__)
 
@@ -126,9 +125,7 @@ def _indexed_names() -> list[str]:
 
 def _document_options() -> list[str]:
     """``/delete`` targets: indexed sources, then held-out sources not indexed."""
-    indexed = _indexed_names()
-    seen = set(indexed)
-    return indexed + [name for name in held_out_names(cfg.data_root) if name not in seen]
+    return removable_names(_indexed_names())
 
 
 def _theme_options() -> list[str]:

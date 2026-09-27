@@ -367,8 +367,11 @@ class DocumentListResponse(BaseModel):
 class DocumentRemoveResponse(BaseModel):
     """Response for POST /api/documents/remove."""
 
-    removed: list[str]
-    not_found: list[str]
+    removed: list[str] = Field(
+        description="Names removed: indexed sources, files an ingestion failure held out, "
+        "and registered root labels."
+    )
+    not_found: list[str] = Field(description="Names that matched nothing removable.")
 
 
 class ConfigResponse(BaseModel):

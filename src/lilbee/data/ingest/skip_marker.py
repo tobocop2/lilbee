@@ -1,21 +1,13 @@
 """Sidecar records of files a sync holds out: ingestion failures and user removals.
 
-A file that yields zero chunks (Tesseract timeout, decode failure, no usable
-text) gets a marker here keyed by the file hash that failed.
+``skipped_sources.json`` maps a filename to the file hash it is held out at.
 ``_plan_file_changes`` treats a file whose current hash matches its marker as
-unchanged, so the per-file extract cost (30-60s for a stubborn scanned PDF) is
-paid once, not on every sync. The marker is a small JSON file in
-``cfg.data_root``; editing the file changes its hash and re-arms it, and
-``retry_skipped`` / ``force_rebuild`` drop the file from the marker set.
-
-A second sidecar (``skip_reasons.json``) records filename → human-readable
-reason, so a report can say WHY a file was skipped (the exception message, or
-"no text extracted"), not just that it was. It is informational only -- the
-hash-keyed markers above drive the resume logic -- and is cleared alongside them.
-
-A third sidecar (``skip_kinds.json``) records filename → ``SkipKind``: whether
-the marker holds out an ingestion failure or a source the user removed. A record
+unchanged, so a failed extract is paid once and a removal stays out. Editing the
+file changes its hash and re-arms it. ``skip_reasons.json`` records why each
+file is held out, and ``skip_kinds.json`` records its ``SkipKind``. A record
 with no stored kind reads as a removal when its reason is ``REMOVED_SKIP_REASON``.
+Production writes go through ``update_skip_records`` and ``clear_skip_markers``,
+both under one cross-process lock.
 """
 
 from __future__ import annotations

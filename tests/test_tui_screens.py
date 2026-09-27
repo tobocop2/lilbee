@@ -2996,6 +2996,7 @@ async def test_chat_slash_delete_forgets_a_held_out_single_file_root(mock_svc, t
         write_skip_markers,
         write_skip_reasons,
     )
+    from lilbee.data.store import RemoveResult
 
     scan = tmp_path / "scan.pdf"
     scan.write_bytes(b"%PDF-1.4")
@@ -3004,6 +3005,9 @@ async def test_chat_slash_delete_forgets_a_held_out_single_file_root(mock_svc, t
     register_sources([scan, keep])
     write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "keep.pdf": "h2"})
     write_skip_reasons(cfg.data_root, {"scan.pdf": "no text", "keep.pdf": "no text"})
+    mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        removed=[], not_found=list(names)
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
@@ -3016,29 +3020,51 @@ async def test_chat_slash_delete_forgets_a_held_out_single_file_root(mock_svc, t
     assert load_skip_reasons(cfg.data_root) == {"keep.pdf": "no text"}
     assert set(cfg.linked_roots) == {"keep.pdf"}
     assert scan.exists()
-    mock_svc.store.remove_documents.assert_not_called()
 
 
-async def test_chat_slash_delete_drops_a_held_out_record_under_a_directory_root(mock_svc, tmp_path):
-    """A held-out file under a folder loses its record; the folder stays registered."""
+async def test_chat_slash_delete_turns_a_failure_under_a_directory_root_into_a_removal(
+    mock_svc, tmp_path
+):
+    """A held-out file under a folder stays out as a removal; the folder stays registered."""
     from lilbee.app.ingest import register_sources
-    from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+    from lilbee.data.ingest.discovery import file_hash
+    from lilbee.data.ingest.skip_marker import (
+        SkipKind,
+        held_out_names,
+        load_skip_kinds,
+        load_skip_markers,
+        write_skip_markers,
+    )
+    from lilbee.data.store import RemoveResult
 
     corpus = tmp_path / "corpus"
     corpus.mkdir()
-    (corpus / "bad.pdf").write_bytes(b"%PDF-1.4")
+    bad = corpus / "bad.pdf"
+    bad.write_bytes(b"%PDF-1.4")
     register_sources([corpus])
     write_skip_markers(cfg.data_root, {"corpus/bad.pdf": "h1", "corpus/other.pdf": "h2"})
     mock_svc.store.get_sources.return_value = [{"filename": "corpus/good.md"}]
+    mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        removed=[], not_found=list(names)
+    )
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         set_services(mock_svc)
-        app.screen._handle_slash("/delete corpus/bad.pdf")
-        await app.screen.workers.wait_for_complete()
-        await pilot.pause()
-    assert load_skip_markers(cfg.data_root) == {"corpus/other.pdf": "h2"}
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/delete corpus/bad.pdf")
+            await app.screen.workers.wait_for_complete()
+            await pilot.pause()
+        assert mock_notify.call_args[0][0] == "Deleted corpus/bad.pdf"
+    assert load_skip_markers(cfg.data_root) == {
+        "corpus/bad.pdf": file_hash(bad),
+        "corpus/other.pdf": "h2",
+    }
+    assert load_skip_kinds(cfg.data_root) == {
+        "corpus/bad.pdf": SkipKind.REMOVED,
+        "corpus/other.pdf": SkipKind.FAILED,
+    }
+    assert held_out_names(cfg.data_root) == ["corpus/other.pdf"]
     assert set(cfg.linked_roots) == {"corpus"}
-    mock_svc.store.remove_documents.assert_not_called()
 
 
 class _DatasetStubEmbedder:

@@ -1804,6 +1804,36 @@ class TestConfigLoadWarning:
 class TestRemove:
     """Test remove command."""
 
+    def test_remove_holds_a_failed_file_out_as_a_removal(self, isolated_env, mock_svc):
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            write_skip_markers,
+        )
+        from lilbee.data.store import RemoveResult
+
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "scan.pdf").write_bytes(b"%PDF-1.4")
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=[], not_found=list(names)
+        )
+
+        result = runner.invoke(app, ["remove", "scan.pdf"])
+
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert load_skip_kinds(cfg.data_root) == {"scan.pdf": SkipKind.REMOVED}
+
+    def test_remove_folder_counts_failed_files_in_the_prompt(self, isolated_env, mock_svc):
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        write_skip_markers(cfg.data_root, {"docs/a.pdf": "h1", "docs/b.pdf": "h2"})
+
+        result = runner.invoke(app, ["remove", "docs"], input="n\n")
+
+        assert "Remove 2 document(s)?" in result.output
+
     def test_remove_existing_source(self, isolated_env, mock_svc):
         from lilbee.data.store import RemoveResult
 

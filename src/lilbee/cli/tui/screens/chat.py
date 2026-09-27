@@ -36,7 +36,7 @@ from textual.widgets import Footer, Markdown, Select, Static
 from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee.app.ingest import forget_held_out, remove_documents_durably
+from lilbee.app.ingest import removable_names, remove_documents_durably
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
 from lilbee.app.settings_map import SETTINGS_MAP
@@ -80,7 +80,6 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.ingest.skip_marker import held_out_names
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -203,14 +202,6 @@ def _stream_error_text(exc: Exception) -> str:
 def _setting_type_hint(kind: type) -> str:
     """Human phrase for what a settings value must be."""
     return _SETTING_TYPE_HINTS.get(kind, f"a valid {kind.__name__} value")
-
-
-def _delete_source(name: str, indexed: set[str]) -> None:
-    """Remove an indexed source durably, or forget a held-out one; the file stays on disk."""
-    if name in indexed:
-        remove_documents_durably([name])
-    else:
-        forget_held_out([name])
 
 
 def _closest_source(name: str, known: set[str]) -> str | None:
@@ -1168,8 +1159,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
-        indexed = {s.get("filename", s.get("source", "?")) for s in sources}
-        known = indexed | set(held_out_names(cfg.data_root))
+        known = set(removable_names([s.get("filename", s.get("source", "?")) for s in sources]))
         if not known:
             call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
@@ -1187,7 +1177,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, message, severity="error")
             return
 
-        _delete_source(name, indexed)
+        remove_documents_durably([name])
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:

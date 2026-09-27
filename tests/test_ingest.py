@@ -1879,11 +1879,11 @@ class TestSkipMarkerLifecycle:
         assert [held.filename for held in result.held_out] == []
 
     @classmethod
-    def _zero_for(cls, target: str):
+    def _zero_for(cls, *targets: str):
         from lilbee.data.ingest.pipeline import produce_records as orig
 
         async def _produce(path, name, content_type, **kwargs):
-            if name == target:
+            if name in targets:
                 return cls._zero_chunks()
             return await orig(path, name, content_type, **kwargs)
 
@@ -5142,6 +5142,216 @@ class TestRemovalHoldsAcrossSyncs:
         await sync(quiet=True)
 
         assert "gone.txt" in load_skip_reasons(cfg.data_root)
+
+
+class TestRemovingHeldOutFiles:
+    """A file an ingestion failure holds out is a remove target, on the one removal rule."""
+
+    @staticmethod
+    async def _fail_under_corpus(tmp_path, *failing: str):
+        """Register ``corpus`` with good.txt plus each failing file, and sync it."""
+        from lilbee.app.ingest import register_sources
+        from lilbee.data.ingest import sync
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "good.txt").write_text("plenty of text", encoding="utf-8")
+        for name in failing:
+            (corpus / name).write_text(f"unreadable {name}", encoding="utf-8")
+        register_sources([corpus])
+        producer = TestSkipMarkerLifecycle._zero_for(*(f"corpus/{n}" for n in failing))
+        with mock.patch("lilbee.data.ingest.pipeline.produce_records", side_effect=producer):
+            await sync(quiet=True)
+        return corpus
+
+    async def test_a_failure_under_a_directory_root_stays_out_after_removal(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, load_skip_markers
+
+        corpus = await self._fail_under_corpus(tmp_path, "bad.txt")
+        assert load_skip_kinds(cfg.data_root) == {"corpus/bad.txt": SkipKind.FAILED}
+
+        result = remove_documents_durably(["corpus/bad.txt"])
+        again = await sync(quiet=True)  # nothing patched: the file would ingest now
+
+        assert result.removed == ["corpus/bad.txt"]
+        assert result.not_found == []
+        assert load_skip_kinds(cfg.data_root) == {"corpus/bad.txt": SkipKind.REMOVED}
+        assert load_skip_markers(cfg.data_root) == {"corpus/bad.txt": file_hash(corpus / "bad.txt")}
+        assert "corpus/bad.txt" not in again.added
+        assert "corpus/bad.txt" not in _indexed(mock_svc)
+        assert again.held_out == []
+        assert "corpus" in cfg.linked_roots
+        assert "corpus/good.txt" in _indexed(mock_svc)
+
+    async def test_a_folder_covers_the_failures_beneath_it(self, isolated_env, mock_svc, tmp_path):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
+
+        corpus = await self._fail_under_corpus(tmp_path)
+        sub = corpus / "sub"
+        sub.mkdir()
+        (sub / "bad.txt").write_text("unreadable", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records",
+            side_effect=TestSkipMarkerLifecycle._zero_for("corpus/sub/bad.txt"),
+        ):
+            await sync(quiet=True)
+
+        result = remove_documents_durably(["corpus/sub"])
+
+        assert result.removed == ["corpus/sub/bad.txt"]
+        assert load_skip_kinds(cfg.data_root) == {"corpus/sub/bad.txt": SkipKind.REMOVED}
+
+    def test_an_unreachable_failure_keeps_its_hash_as_a_removal(self, isolated_env, mock_svc):
+        """A failed file that is not on disk now stays out when it comes back."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            load_skip_markers,
+            write_skip_markers,
+        )
+
+        write_skip_markers(cfg.data_root, {"away.pdf": "h1"})
+
+        result = remove_documents_durably(["away.pdf"])
+
+        assert result.removed == ["away.pdf"]
+        assert load_skip_markers(cfg.data_root) == {"away.pdf": "h1"}
+        assert load_skip_kinds(cfg.data_root) == {"away.pdf": SkipKind.REMOVED}
+
+    def test_a_failed_single_file_root_is_forgotten(self, isolated_env, mock_svc, tmp_path):
+        """A single-file root is un-registered and its records dropped, not converted."""
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_kinds,
+            load_skip_markers,
+            write_skip_markers,
+        )
+
+        scan = tmp_path / "scan.pdf"
+        scan.write_bytes(b"%PDF-1.4")
+        register_sources([scan])
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+
+        result = remove_documents_durably(["scan.pdf"])
+
+        assert result.removed == ["scan.pdf"]
+        assert load_skip_markers(cfg.data_root) == {}
+        assert load_skip_kinds(cfg.data_root) == {}
+        assert "scan.pdf" not in cfg.linked_roots
+        assert scan.exists()
+
+    async def test_removing_a_root_drops_the_records_under_it(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+        )
+
+        await self._fail_under_corpus(tmp_path, "bad.txt")
+        write_skip_markers(
+            cfg.data_root, load_skip_markers(cfg.data_root) | {"elsewhere.txt": "h9"}
+        )
+
+        result = remove_documents_durably(["corpus"])
+
+        assert result.removed == ["corpus/good.txt", "corpus/bad.txt"]
+        assert "corpus" not in cfg.linked_roots
+        assert load_skip_markers(cfg.data_root) == {"elsewhere.txt": "h9"}
+        assert load_skip_reasons(cfg.data_root) == {}
+
+    async def test_a_root_whose_files_all_failed_can_be_removed(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        corpus = await self._fail_under_corpus(tmp_path, "bad.txt")
+        mock_svc.store.remove_documents(["corpus/good.txt"])  # nothing of it indexed
+
+        result = remove_documents_durably(["corpus"])
+
+        assert result.removed == ["corpus/bad.txt"]
+        assert result.not_found == []
+        assert "corpus" not in cfg.linked_roots
+        assert load_skip_markers(cfg.data_root) == {}
+        assert (corpus / "bad.txt").exists()
+
+    def test_removing_a_root_marks_no_owned_file_of_the_same_path(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        """A name under the removed root never marks the documents_dir file it now resolves to."""
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_text("linked", encoding="utf-8")
+        register_sources([corpus])
+        owned = isolated_env / "corpus" / "a.txt"
+        owned.parent.mkdir()
+        owned.write_text("owned", encoding="utf-8")
+        mock_svc.store.upsert_source("corpus/a.txt", "hash", 1)
+
+        result = remove_documents_durably(["corpus"])
+
+        assert result.removed == ["corpus/a.txt"]
+        assert "corpus" not in cfg.linked_roots
+        assert load_skip_markers(cfg.data_root) == {}
+
+    @pytest.mark.parametrize("name", ["empty", "empty/"])
+    def test_an_empty_root_can_be_removed(self, isolated_env, mock_svc, tmp_path, name):
+        """A shell completes a directory with a trailing slash; the root is still removed."""
+        from lilbee.app.ingest import register_sources, remove_documents_durably
+
+        empty = tmp_path / "empty"
+        empty.mkdir()
+        register_sources([empty])
+
+        result = remove_documents_durably([name, "nope/"])
+
+        assert result.removed == [name]
+        assert result.not_found == ["nope/"]
+        assert "empty" not in cfg.linked_roots
+
+    def test_a_removed_source_is_not_a_target_again(self, isolated_env, mock_svc):
+        """Only failures are held-out targets; a removal already holds and is not found."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            mark_removed,
+            write_skip_markers,
+        )
+
+        mark_removed(cfg.data_root, {"gone.txt": "h1"})
+        write_skip_markers(cfg.data_root, {"gone.txt": "h1", "x.txt": "h2"})
+
+        result = remove_documents_durably(["gone.txt", "nope.txt"])
+
+        assert result.removed == []
+        assert result.not_found == ["gone.txt", "nope.txt"]
+        assert load_skip_kinds(cfg.data_root)["gone.txt"] is SkipKind.REMOVED
+
+    def test_removable_names_lists_indexed_then_failures(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import removable_names
+        from lilbee.data.ingest.skip_marker import SkipKind, write_skip_kinds, write_skip_markers
+
+        mock_svc.store.upsert_source("a.txt", "hash", 1)
+        write_skip_markers(cfg.data_root, {"a.txt": "h0", "b.pdf": "h1", "gone.txt": "h2"})
+        write_skip_kinds(cfg.data_root, {"gone.txt": SkipKind.REMOVED})
+
+        assert removable_names() == ["a.txt", "b.pdf"]
 
 
 class TestOcrConfigSelection:
