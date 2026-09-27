@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from functools import lru_cache
 from importlib.util import find_spec
+from pathlib import Path
 
 from lilbee.core.config import cfg
 from lilbee.data.types import OcrBackendUsed, SyncResult
@@ -88,18 +89,18 @@ CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
 CMD_PRUNE_IGNORED_SOME = "Dropped {count} document(s) your ignore patterns exclude."
 
 
-def sync_skipped_message(result: SyncResult) -> str:
+def sync_skipped_message(result: SyncResult, log_path: Path) -> str:
     """The skipped-files message for the OCR the skipped files' extraction ran with.
 
-    OCR off names the setting; vision OCR that returned nothing points at the
-    log; otherwise (Tesseract, or no OCR involved) the advice is a vision model.
+    OCR off names the setting; vision OCR that returned nothing points at
+    *log_path* (the running process's own log file); otherwise (Tesseract, or
+    no OCR involved) the advice is a vision model.
     """
     files = ", ".join(result.skipped)
     backends = {report.backend for report in result.skipped_ocr.values()}
     if OcrBackendUsed.NONE in backends:
         return SYNC_SKIPPED_OCR_OFF.format(files=files)
     if OcrBackendUsed.VISION in backends:
-        log_path = cfg.data_root / "logs" / "server.log"
         return SYNC_SKIPPED_VISION_FAILED.format(files=files, log_path=log_path)
     return SYNC_SKIPPED_NO_VISION.format(files=files)
 

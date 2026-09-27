@@ -1371,7 +1371,8 @@ class TestSettingsTabNavFallbacks:
 
 
 class TestSyncSkippedMessageBranches:
-    """`sync_skipped_message` picks its text from the OCR the skipped files ran, not config."""
+    """`sync_skipped_message` picks its text from the OCR the skipped files ran,
+    not config, and names whatever log path its caller passes, not a literal."""
 
     @staticmethod
     def _result(backend: OcrBackendUsed | None) -> SyncResult:
@@ -1379,36 +1380,64 @@ class TestSyncSkippedMessageBranches:
         return SyncResult(skipped=["a.pdf"], skipped_ocr=reports)
 
     def test_ocr_off_names_the_setting_even_with_a_vision_model(self) -> None:
+        from pathlib import Path
+
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
-        msg = sync_skipped_message(self._result(OcrBackendUsed.NONE))
+        msg = sync_skipped_message(self._result(OcrBackendUsed.NONE), Path("unused.log"))
         assert "OCR is off" in msg and "enable_ocr" in msg and "a.pdf" in msg
         assert "vision OCR returned no text" not in msg
 
-    def test_returns_vision_failed_when_vision_ran(self) -> None:
+    def test_returns_vision_failed_naming_the_tui_log(self) -> None:
+        from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = ""
-        msg = sync_skipped_message(self._result(OcrBackendUsed.VISION))
+        log_path = tui_log_path()
+        msg = sync_skipped_message(self._result(OcrBackendUsed.VISION), log_path)
         assert "vision OCR returned no text" in msg
-        # The log path must be the resolved, per-platform location (not a
-        # hardcoded macOS string), so it's correct on Linux/Windows too.
-        assert str(cfg.data_root / "logs" / "server.log") in msg
+        assert str(log_path) in msg
+
+    def test_returns_vision_failed_naming_the_server_log(self) -> None:
+        from lilbee.cli.commands.serve_logging import _SERVER_LOG_FILE_NAME
+        from lilbee.cli.tui.messages import sync_skipped_message
+
+        cfg.vision_model = ""
+        log_path = cfg.data_root / "logs" / _SERVER_LOG_FILE_NAME
+        msg = sync_skipped_message(self._result(OcrBackendUsed.VISION), log_path)
+        assert "vision OCR returned no text" in msg
+        assert str(log_path) in msg
+
+    def test_returns_vision_failed_naming_the_cli_log(self) -> None:
+        from lilbee.cli.log_routing import _CLI_LOG_FILE_NAME
+        from lilbee.cli.tui.messages import sync_skipped_message
+
+        cfg.vision_model = ""
+        log_path = cfg.data_root / "logs" / _CLI_LOG_FILE_NAME
+        msg = sync_skipped_message(self._result(OcrBackendUsed.VISION), log_path)
+        assert "vision OCR returned no text" in msg
+        assert str(log_path) in msg
 
     def test_returns_no_vision_when_tesseract_ran(self) -> None:
+        from pathlib import Path
+
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
         assert "Configure a vision_model" in sync_skipped_message(
-            self._result(OcrBackendUsed.TESSERACT)
+            self._result(OcrBackendUsed.TESSERACT), Path("unused.log")
         )
 
     def test_returns_no_vision_when_no_file_reached_ocr(self) -> None:
+        from pathlib import Path
+
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
-        assert "Configure a vision_model" in sync_skipped_message(self._result(None))
+        assert "Configure a vision_model" in sync_skipped_message(
+            self._result(None), Path("unused.log")
+        )
 
 
 class TestChattyDependencyFilters:
