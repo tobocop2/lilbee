@@ -1548,8 +1548,9 @@ For a scanned book that is mostly running text, use Tesseract. Set
 `enable_ocr = true` and clear `vision_model`.
 
 Leave `extraction_threads` at its default, `0`. A value of `4` measured the
-same speed. A value of `8` was slower, because it oversubscribes the CPU.
-See what the setting controls under [Tesseract](#tesseract) below.
+same speed. A value of `8` made OCR extraction slower, because it
+oversubscribes the CPU. See what the setting controls under
+[Tesseract](#tesseract) below.
 
 On an M1 Pro, with a cold OCR cache, Tesseract indexed a 212-page scanned
 strategy guide in about 7.5 minutes, about 2 seconds per page. A second pass
