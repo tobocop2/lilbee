@@ -13,6 +13,7 @@ from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
 from lilbee.data.ingest.discovery import excluded_extension_reasons
+from lilbee.data.ingest.skip_marker import update_skip_records
 from lilbee.data.store.types import RemoveResult
 
 
@@ -160,11 +161,11 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         return roots, result
 
     result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-    _unmark_sources_under(paths)
+    unmark_sources_under(paths)
     return result
 
 
-def _unmark_sources_under(paths: list[Path]) -> None:
+def unmark_sources_under(paths: list[Path]) -> None:
     """Drop the skip markers and reasons for every source *paths* covers.
 
     A marker exists to stop *discovery* from resurrecting a source the user
@@ -175,23 +176,16 @@ def _unmark_sources_under(paths: list[Path]) -> None:
     ``retry-skipped`` or ``rebuild``, neither of which the user has any reason
     to reach for after typing the path they want.
 
-    Runs after the registry update so a root this call registered resolves.
+    Each root in *paths* must be registered when this runs: marker keys resolve
+    to files through the live registry.
     """
-    from lilbee.data.ingest.skip_marker import (
-        load_skip_markers,
-        load_skip_reasons,
-        write_skip_markers,
-        write_skip_reasons,
-    )
 
-    config = active_config()
-    markers = load_skip_markers(config.data_root)
-    covered = _markers_covering(markers, paths)
-    if not covered:
-        return
-    write_skip_markers(config.data_root, {k: v for k, v in markers.items() if k not in covered})
-    reasons = load_skip_reasons(config.data_root)
-    write_skip_reasons(config.data_root, {k: v for k, v in reasons.items() if k not in covered})
+    def _drop_covered(markers: dict[str, str], reasons: dict[str, str]) -> None:
+        for name in _markers_covering(markers, paths):
+            markers.pop(name)
+            reasons.pop(name, None)
+
+    update_skip_records(active_config().data_root, _drop_covered)
 
 
 def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
@@ -315,22 +309,14 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     already expanded for a confirmation prompt passes it to avoid re-expanding.
     """
     from lilbee.data.ingest.discovery import file_hash, resolve_source_path
-    from lilbee.data.ingest.skip_marker import (
-        load_skip_markers,
-        load_skip_reasons,
-        write_skip_markers,
-        write_skip_reasons,
-    )
 
-    config = active_config()
     if targets is None:
         targets = expand_remove_targets(names)
     result = get_services().store.remove_documents(targets)
     if not result.removed:
         return result
     unregistered = unregister_roots(names)
-    markers = load_skip_markers(config.data_root)
-    reasons = load_skip_reasons(config.data_root)
+    held: dict[str, str] = {}
     for name in result.removed:
         if any(name == root or name.startswith(root + "/") for root in unregistered):
             continue  # the root is gone; discovery won't resurrect these
@@ -338,10 +324,13 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
         # Imported sources have no file on disk; sync never re-ingests them, so a
         # marker is only needed for a real file that would otherwise be re-found.
         if path.exists():
-            markers[name] = file_hash(path)
-            reasons[name] = _REMOVED_SKIP_REASON
-    write_skip_markers(config.data_root, markers)
-    write_skip_reasons(config.data_root, reasons)
+            held[name] = file_hash(path)
+
+    def _hold(markers: dict[str, str], reasons: dict[str, str]) -> None:
+        markers.update(held)
+        reasons.update(dict.fromkeys(held, _REMOVED_SKIP_REASON))
+
+    update_skip_records(active_config().data_root, _hold)
     forget_removed_from_wiki_index(list(result.removed))
     return result
 

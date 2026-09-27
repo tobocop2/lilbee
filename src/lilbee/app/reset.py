@@ -11,6 +11,7 @@ from pydantic import BaseModel
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest.skip_marker import clear_skip_markers
+from lilbee.runtime.lock import no_sync_running
 
 
 class ResetResult(BaseModel):
@@ -52,19 +53,25 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
 
 
 def perform_reset() -> ResetResult:
-    """Delete all documents and data and un-register every linked source."""
-    skipped: list[str] = []
-    deleted_docs = _clear_dir(cfg.documents_dir, skipped)
-    deleted_data = _clear_dir(cfg.data_dir, skipped)
+    """Delete all documents and data and un-register every linked source.
 
-    # config.toml and the skip sidecars live at data_root, next to (not inside)
-    # the two cleared dirs. Without un-registering the roots here, in the file
-    # AND in this process, the next sync walks every linked root and re-indexes
-    # it, so content reappears after a "factory reset". Other settings survive:
-    # reset deletes data, not configuration.
-    settings.delete_value(cfg.data_root, "linked_roots")
-    cfg.linked_roots = {}
-    clear_skip_markers(cfg.data_root)
+    Raises ``ResetRefusedError`` while a sync or import, in this process or another,
+    runs against the same data root, or when the lock that shows one cannot be taken:
+    a running sync or import would write back what the reset removed.
+    """
+    skipped: list[str] = []
+    with no_sync_running(cfg.data_root):
+        deleted_docs = _clear_dir(cfg.documents_dir, skipped)
+        deleted_data = _clear_dir(cfg.data_dir, skipped)
+
+        # config.toml and the skip sidecars live at data_root, next to (not inside)
+        # the two cleared dirs. Without un-registering the roots here, in the file
+        # AND in this process, the next sync walks every linked root and re-indexes
+        # it, so content reappears after a "factory reset". Other settings survive:
+        # reset deletes data, not configuration.
+        settings.delete_value(cfg.data_root, "linked_roots")
+        cfg.linked_roots = {}
+        clear_skip_markers(cfg.data_root)
 
     return ResetResult(
         deleted_docs=deleted_docs,

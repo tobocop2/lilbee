@@ -1791,6 +1791,144 @@ class TestSkipMarkerLifecycle:
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
 
 
+class TestSyncMergesItsSkipRecords:
+    """A writer that changes the skip records while a sync runs keeps its change.
+
+    Each writer runs in the gap between the sync's read of the records and its
+    write-back, and the sync's own verdict for a file that produced no chunks
+    still lands. A reset in that gap is refused instead.
+    """
+
+    @staticmethod
+    def _writer_in_the_gap(writer):
+        from lilbee.data.ingest import pipeline
+
+        real = pipeline.ingest_stream
+
+        async def _run_writer_then_ingest(*args, **kwargs):
+            writer()
+            return await real(*args, **kwargs)
+
+        return mock.patch.object(pipeline, "ingest_stream", _run_writer_then_ingest)
+
+    async def _sync_holding_out(self, scan: Path, writer) -> None:
+        from lilbee.data.ingest import sync
+
+        scan.write_bytes(b"%PDF-1.4 not really text")
+        with (
+            mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records",
+                side_effect=TestSkipMarkerLifecycle._zero_chunks,
+            ),
+            self._writer_in_the_gap(writer),
+        ):
+            result = await sync(quiet=True)
+        assert result.skipped == [scan.name]
+
+    async def test_a_file_that_now_ingests_drops_its_record(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        (isolated_env / "fixed.txt").write_text("readable now", encoding="utf-8")
+        write_skip_markers(cfg.data_root, {"fixed.txt": "hash-of-the-unreadable-version"})
+        write_skip_reasons(cfg.data_root, {"fixed.txt": "no text extracted (0 chunks)"})
+
+        assert (await sync(quiet=True)).added == ["fixed.txt"]
+
+        assert load_skip_markers(cfg.data_root) == {}
+        assert load_skip_reasons(cfg.data_root) == {}
+
+    async def test_a_reset_during_a_sync_is_refused(self, isolated_env, mock_svc):
+        from lilbee.app.reset import perform_reset
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+        from lilbee.runtime.lock import ResetRefusedError
+
+        write_skip_markers(cfg.data_root, {"older.txt": "abc"})
+        write_skip_reasons(cfg.data_root, {"older.txt": "held before the sync"})
+        scan = isolated_env / "scanned.pdf"
+        refused: list[Exception] = []
+
+        def _reset() -> None:
+            with pytest.raises(ResetRefusedError, match="A sync or import is running") as caught:
+                perform_reset()
+            refused.append(caught.value)
+
+        await self._sync_holding_out(scan, _reset)
+
+        assert len(refused) == 1
+        assert scan.exists()
+        assert load_skip_markers(cfg.data_root) == {
+            "older.txt": "abc",
+            "scanned.pdf": file_hash(scan),
+        }
+        assert load_skip_reasons(cfg.data_root) == {
+            "older.txt": "held before the sync",
+            "scanned.pdf": "no text extracted (0 chunks)",
+        }
+        assert perform_reset().deleted_docs == 1
+        assert load_skip_markers(cfg.data_root) == {}
+
+    async def test_a_delete_during_a_sync_stays_deleted(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import _REMOVED_SKIP_REASON, remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import load_skip_markers, load_skip_reasons
+
+        stay = isolated_env / "stay.txt"
+        stay.write_text("indexed before the delete", encoding="utf-8")
+        assert "stay.txt" in (await sync(quiet=True)).added
+        scan = isolated_env / "scanned.pdf"
+
+        await self._sync_holding_out(scan, lambda: remove_documents_durably(["stay.txt"]))
+
+        assert load_skip_markers(cfg.data_root) == {
+            "stay.txt": file_hash(stay),
+            "scanned.pdf": file_hash(scan),
+        }
+        assert load_skip_reasons(cfg.data_root) == {
+            "stay.txt": _REMOVED_SKIP_REASON,
+            "scanned.pdf": "no text extracted (0 chunks)",
+        }
+
+    async def test_an_add_rolled_back_during_a_sync_stays_rolled_back(
+        self, isolated_env, mock_svc, tmp_path
+    ):
+        from lilbee.app.ingest import register_sources
+        from lilbee.cli.tui.screens.chat_helpers import unregister_added_roots
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_bytes(b"")
+        register_sources([corpus])
+        write_skip_markers(cfg.data_root, {"corpus/a.txt": file_hash(corpus / "a.txt")})
+        write_skip_reasons(cfg.data_root, {"corpus/a.txt": "no text extracted (0 chunks)"})
+        scan = isolated_env / "scanned.pdf"
+
+        await self._sync_holding_out(scan, lambda: unregister_added_roots(["corpus"]))
+
+        assert load_skip_markers(cfg.data_root) == {"scanned.pdf": file_hash(scan)}
+        assert load_skip_reasons(cfg.data_root) == {"scanned.pdf": "no text extracted (0 chunks)"}
+        assert cfg.linked_roots == {}
+
+
 class TestStatusExposesTheIndexEmbedder:
     """A client can tell a stale index from the configured model before the
     first search refuses it."""

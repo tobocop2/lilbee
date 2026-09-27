@@ -2185,6 +2185,32 @@ class TestReset:
         assert data["command"] == "reset"
         assert data["deleted_docs"] == 1
 
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    async def test_reset_refused_while_a_sync_runs(self, isolated_env, json_flag):
+        """A sync holding the data root's mark keeps the reset from deleting anything."""
+        from lilbee.runtime.lock import sync_running
+
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+
+        async with sync_running(cfg.data_root):
+            result = runner.invoke(app, [*json_flag, "reset", "--yes"])
+
+        assert result.exit_code == 1
+        assert "A sync or import is running on this library" in result.output
+        assert (cfg.documents_dir / "doc.txt").exists()
+
+    def test_reset_refused_while_the_lock_file_is_unreadable(self, isolated_env):
+        """A lock file that is not a database leaves the reset unable to rule out a sync."""
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+        (cfg.data_root / "sync.lock").write_bytes(b"not a lock database " * 8)
+
+        result = runner.invoke(app, ["reset", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Cannot tell whether a sync or import is running" in result.output
+        assert "sync.lock" in result.output
+        assert (cfg.documents_dir / "doc.txt").exists()
+
     def test_reset_json_without_yes_errors(self):
         """JSON mode without --yes returns error."""
         result = runner.invoke(app, ["--json", "reset"])

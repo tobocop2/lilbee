@@ -63,6 +63,36 @@ class TestUnregisterAddedRoots:
         unregister_added_roots([])
         assert "keep" in cfg.linked_roots
 
+    def test_drops_skip_records_under_the_root(self, isolated_documents, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        scan = tmp_path / "scan.pdf"
+        scan.write_bytes(b"")
+        corpus = tmp_path / "corpus"
+        corpus.mkdir()
+        (corpus / "a.txt").write_bytes(b"")
+        register_sources([scan, corpus])
+        other = cfg.documents_dir / "other.md"
+        other.write_bytes(b"")
+        write_skip_markers(
+            cfg.data_root, {"scan.pdf": "h1", "corpus/a.txt": "h2", "other.md": "h3"}
+        )
+        write_skip_reasons(
+            cfg.data_root, {"scan.pdf": "no text", "corpus/a.txt": "no text", "other.md": "x"}
+        )
+
+        unregister_added_roots(["scan.pdf", "corpus"])
+
+        assert load_skip_markers(cfg.data_root) == {"other.md": "h3"}
+        assert load_skip_reasons(cfg.data_root) == {"other.md": "x"}
+        assert cfg.linked_roots == {}
+
 
 class TestDoAddCancelCleanup:
     """When the sync under /add raises (cancel or crash), the root it registered
@@ -169,6 +199,43 @@ class TestDoAddCancelCleanup:
 
         assert "corpus" not in cfg.linked_roots
         assert (source / "a.txt").exists()
+
+    def test_failed_add_leaves_no_skip_record(self, isolated_documents, tmp_path):
+        """The skip record the failed sync wrote for the added file goes with its root."""
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.app.status import held_out_sources
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.data.ingest import SyncResult
+        from lilbee.data.ingest.skip_marker import (
+            load_skip_markers,
+            load_skip_reasons,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        screen = ChatScreen.__new__(ChatScreen)
+        source = tmp_path / "scan.pdf"
+        source.write_bytes(b"")
+
+        def _sync_that_skips(coro):
+            coro.close()
+            write_skip_markers(cfg.data_root, {"scan.pdf": "e3b0"})
+            write_skip_reasons(cfg.data_root, {"scan.pdf": "no text extracted (0 chunks)"})
+            return SyncResult(skipped=["scan.pdf"])
+
+        with (
+            patch("lilbee.runtime.asyncio_loop.run", side_effect=_sync_that_skips),
+            patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+            pytest.raises(RuntimeError, match=r"scan\.pdf"),
+        ):
+            screen._do_add([source], MagicMock())
+
+        assert cfg.linked_roots == {}
+        assert load_skip_markers(cfg.data_root) == {}
+        assert load_skip_reasons(cfg.data_root) == {}
+        assert held_out_sources() == ([], 0)
+        assert source.exists()
 
 
 @pytest.mark.parametrize(

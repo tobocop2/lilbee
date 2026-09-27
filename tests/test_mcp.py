@@ -462,6 +462,17 @@ class TestReset:
         assert list(cfg.documents_dir.iterdir()) == []
         assert list(cfg.data_dir.iterdir()) == []
 
+    async def test_reset_refused_while_a_sync_runs(self):
+        from lilbee.runtime.lock import sync_running
+
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+
+        async with sync_running(cfg.data_root):
+            result = reset(confirm=True)
+
+        assert "A sync or import is running on this library" in result["error"]
+        assert (cfg.documents_dir / "doc.txt").exists()
+
     def test_reset_empty_dirs(self):
         result = reset(confirm=True)
         assert result["command"] == "reset"

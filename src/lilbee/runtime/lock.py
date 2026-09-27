@@ -1,4 +1,4 @@
-"""Cross-process locks: LanceDB write locking and the server singleton.
+"""Cross-process locks: LanceDB write locking, the sync mark, and the server singleton.
 
 Write locking combines an in-process mutex with a cross-process file lock
 (filelock) so separate processes also coordinate writes. Read consistency is
@@ -7,16 +7,18 @@ handled by LanceDB's built-in MVCC via ``read_consistency_interval`` in
 data dir.
 """
 
+import asyncio
 import json
 import logging
+import sqlite3
 import threading
 import time
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
-from filelock import FileLock
+from filelock import FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
@@ -39,6 +41,18 @@ SERVER_LOCK_TIMEOUT = 15.0
 _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
+_SYNC_LOCK_NAME = "sync.lock"
+# What the filesystem raises when the sync lock cannot be created or taken: OSError
+# from making the data root, sqlite3.Error from SQLite (a file that is not a
+# database, or a mount that refuses its locks). A busy lock arrives as filelock's
+# Timeout instead, which is itself an OSError, so it is caught first.
+_SYNC_LOCK_ERRORS = (OSError, sqlite3.Error)
+_SYNC_LOCK_REFUSED = "Cannot lock %s (%s); a reset refuses until it can."
+_SYNC_RUNNING = "A sync or import is running on this library. Reset again when it finishes."
+_SYNC_LOCK_UNKNOWN = (
+    "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
+    "Stop every lilbee process, delete {path}, and reset again."
+)
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -46,6 +60,10 @@ _MUTEX_MIN_WAIT = 0.1
 
 class LockTimeoutError(TimeoutError):
     """Raised when a lock cannot be acquired within the timeout."""
+
+
+class ResetRefusedError(RuntimeError):
+    """Raised when a reset cannot prove that no sync or import runs on the data root."""
 
 
 # In-process write mutex: serializes writers within the same process
@@ -124,6 +142,66 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
         return ScopeOwner(data_dir=str(payload["data_dir"]))
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
+    """Hold the data root's sync lock; None lets a sync run unmarked when it cannot lock."""
+    path = data_root / _SYNC_LOCK_NAME
+    try:
+        data_root.mkdir(parents=True, exist_ok=True)
+        lock = ReadWriteLock(path, is_singleton=False)
+    except _SYNC_LOCK_ERRORS as exc:
+        _sync_lock_unavailable(path, exc, write=write)
+        return None
+    try:
+        if write:
+            lock.acquire_write(blocking=False)
+        else:
+            lock.acquire_read()
+    except FileLockTimeout:
+        lock.close()
+        raise ResetRefusedError(_SYNC_RUNNING) from None
+    except _SYNC_LOCK_ERRORS as exc:
+        lock.close()
+        _sync_lock_unavailable(path, exc, write=write)
+        return None
+    return lock
+
+
+def _sync_lock_unavailable(path: Path, error: Exception, *, write: bool) -> None:
+    """Refuse a reset that cannot take the lock; warn once and let a sync run unmarked."""
+    if write:
+        raise ResetRefusedError(_SYNC_LOCK_UNKNOWN.format(path=path, error=error)) from error
+    log.warning(_SYNC_LOCK_REFUSED, path, error)
+
+
+def _release_sync_lock(lock: ReadWriteLock | None) -> None:
+    if lock is not None:
+        lock.release()
+        lock.close()
+
+
+@asynccontextmanager
+async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
+    """Mark a sync or import running on *data_root*, across processes; they share the mark.
+
+    The wait for a reset to finish runs in a worker thread, off the event loop.
+    """
+    lock = await asyncio.to_thread(_acquire_sync_lock, data_root, write=False)
+    try:
+        yield
+    finally:
+        _release_sync_lock(lock)
+
+
+@contextmanager
+def no_sync_running(data_root: Path) -> Generator[None, None, None]:
+    """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
+    lock = _acquire_sync_lock(data_root, write=True)
+    try:
+        yield
+    finally:
+        _release_sync_lock(lock)
 
 
 @contextmanager

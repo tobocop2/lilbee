@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
+import subprocess
+import sys
+from unittest.mock import patch
 
 import pytest
 
@@ -15,7 +20,7 @@ from lilbee.app.dataset import (
     import_from_path,
 )
 from lilbee.core.config import cfg
-from lilbee.data.export import DatasetFormat
+from lilbee.data.export import DatasetFormat, ImportResult
 from lilbee.data.store import Store
 from tests.conftest import make_mock_services
 
@@ -206,3 +211,49 @@ class TestImportFromBytes:
         events = []
         await import_from_bytes(payload.data, "jsonl", on_progress=lambda et, d: events.append(et))
         assert EventType.EMBED in events
+
+
+def _cli_reset(data_root) -> subprocess.CompletedProcess[str]:
+    """Run a real ``lilbee reset --yes`` in its own process against *data_root*."""
+    return subprocess.run(
+        [sys.executable, "-m", "lilbee", "reset", "--yes"],
+        env={**os.environ, "LILBEE_DATA": str(data_root)},
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+
+
+class TestImportHoldsTheSyncMark:
+    """An import holds the data root's sync mark, so a reset in any process refuses."""
+
+    async def test_a_cli_reset_in_another_process_is_refused_mid_import(self, store, tmp_path):
+        _seed(store)
+        out = tmp_path / "pages.jsonl"
+        export_to_path(out, "", None)
+        kept = cfg.data_root / "documents" / "kept.txt"
+        kept.parent.mkdir(parents=True)
+        kept.write_text("stays through the refused reset", encoding="utf-8")
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _blocked_import(_store, rows, **_kwargs):
+            started.set()
+            await release.wait()
+            return ImportResult(sources=["doc.pdf"], pages=len(rows), chunks=1)
+
+        with patch("lilbee.app.dataset.import_dataset", new=_blocked_import):
+            importing = asyncio.create_task(import_from_path(out, ""))
+            await asyncio.wait_for(started.wait(), 5)
+            refused = await asyncio.to_thread(_cli_reset, cfg.data_root)
+            release.set()
+            summary = await asyncio.wait_for(importing, 5)
+
+        assert refused.returncode == 1, refused.stderr
+        assert "A sync or import is running on this library" in refused.stdout
+        assert kept.exists()
+        assert summary.pages == 2
+        after = await asyncio.to_thread(_cli_reset, cfg.data_root)
+        assert after.returncode == 0, after.stderr
+        assert not kept.exists()

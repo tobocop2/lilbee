@@ -1,5 +1,6 @@
 """Tests for write locking and file locking."""
 
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -9,11 +10,14 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     LockTimeoutError,
+    ResetRefusedError,
     _lock_path,
     acquire_scope_lock,
     acquire_server_lock,
+    no_sync_running,
     read_scope_owner,
     server_lock_path,
+    sync_running,
     write_lock,
 )
 
@@ -233,3 +237,153 @@ class TestScopeLock:
         hold = acquire_scope_lock(missing, tmp_path / "data", timeout=0.1)
         assert hold is not None
         hold.release()
+
+
+_SQLITE_HEADER = b"SQLite format 3\x00"
+
+
+_RESET_IN_ANOTHER_PROCESS = """
+import sys
+from pathlib import Path
+from lilbee.runtime.lock import ResetRefusedError, no_sync_running
+try:
+    with no_sync_running(Path(sys.argv[1])):
+        pass
+except ResetRefusedError:
+    sys.exit(3)
+"""
+
+
+def _lock_warnings(caplog) -> int:
+    return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
+
+
+class TestSyncMark:
+    """Syncs share the data root's mark; a reset needs it free, in any process."""
+
+    async def test_syncs_share_the_mark(self, tmp_path: Path) -> None:
+        async with sync_running(tmp_path), sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
+                pass
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_reset_in_another_process_is_refused_while_a_sync_runs(
+        self, tmp_path: Path
+    ) -> None:
+        import subprocess
+        import sys
+
+        def _reset_elsewhere() -> int:
+            return subprocess.run(
+                [sys.executable, "-c", _RESET_IN_ANOTHER_PROCESS, str(tmp_path)],
+                timeout=60,
+            ).returncode
+
+        async with sync_running(tmp_path):
+            assert await asyncio.to_thread(_reset_elsewhere) == 3
+        assert await asyncio.to_thread(_reset_elsewhere) == 0
+
+    async def test_a_sync_starts_only_after_a_reset_ends(self, tmp_path: Path) -> None:
+        held = threading.Event()
+        release = threading.Event()
+
+        def _reset() -> None:
+            with no_sync_running(tmp_path):
+                held.set()
+                release.wait(5)
+
+        entered = asyncio.Event()
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
+                entered.set()
+
+        resetter = threading.Thread(target=_reset)
+        resetter.start()
+        assert held.wait(5)
+        sync_task = asyncio.create_task(_sync())
+        started = time.monotonic()
+        await asyncio.sleep(0.3)
+        assert time.monotonic() - started < 2, "the wait for the reset blocked the event loop"
+        assert not entered.is_set()
+        release.set()
+        await asyncio.wait_for(sync_task, 5)
+        assert entered.is_set()
+        resetter.join(timeout=5)
+
+    async def test_the_mark_lives_in_a_missing_data_root(self, tmp_path: Path) -> None:
+        root = tmp_path / "not-yet"
+        async with sync_running(root):
+            assert root.is_dir()
+
+    async def test_a_lock_file_that_is_not_a_database_refuses_a_reset(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        import logging
+
+        junk = b"not a lock database " * 8
+        assert not junk.startswith(_SQLITE_HEADER)
+        (tmp_path / "sync.lock").write_bytes(junk)
+        ran = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+                with (
+                    pytest.raises(ResetRefusedError, match="file is not a database") as caught,
+                    no_sync_running(tmp_path),
+                ):
+                    ran.append("reset")
+
+        assert ran == ["sync"]
+        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
+        assert _lock_warnings(caplog) == 1
+        assert "Traceback" not in caplog.text
+        (tmp_path / "sync.lock").unlink()
+        with no_sync_running(tmp_path):
+            ran.append("reset")
+        assert ran == ["sync", "reset"]
+
+    @pytest.mark.parametrize("fails_at", ["open", "acquire"])
+    async def test_a_filesystem_that_refuses_the_lock_runs_a_sync_and_refuses_a_reset(
+        self, tmp_path: Path, caplog, fails_at
+    ) -> None:
+        import logging
+        import sqlite3
+        from unittest import mock
+
+        refused = sqlite3.OperationalError("disk I/O error")
+        lock = mock.MagicMock()
+        lock.acquire_read.side_effect = refused
+        lock.acquire_write.side_effect = refused
+        factory = (
+            mock.MagicMock(side_effect=refused) if fails_at == "open" else lambda *_a, **_k: lock
+        )
+        ran = []
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", factory),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with (
+                pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
+                no_sync_running(tmp_path),
+            ):
+                ran.append("reset")
+
+        assert ran == ["sync"]
+        assert str(tmp_path / "sync.lock") in str(caught.value)
+        assert _lock_warnings(caplog) == 1
+        assert lock.close.call_count == 2 * (fails_at == "acquire")
+        lock.release.assert_not_called()
+
+    async def test_an_error_outside_the_filesystem_class_propagates(self, tmp_path: Path) -> None:
+        from unittest import mock
+
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=RuntimeError("bug")),
+            pytest.raises(RuntimeError, match="bug"),
+        ):
+            async with sync_running(tmp_path):
+                pass

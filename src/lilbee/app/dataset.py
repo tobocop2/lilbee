@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
+from lilbee.core.config import active_config
 from lilbee.data.export import (
     DatasetFormat,
     build_page_dataset,
@@ -22,6 +23,7 @@ from lilbee.data.export import (
     write_dataset,
 )
 from lilbee.data.store import EmbeddingModelMismatchError, PageTextRecord
+from lilbee.runtime.lock import sync_running
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 if TYPE_CHECKING:
@@ -124,12 +126,13 @@ def export_to_bytes(fmt_value: str, source: str | None) -> ExportPayload:
 async def _run_import(
     rows: list[PageTextRecord], on_progress: DetailedProgressCallback
 ) -> ImportSummary:
-    """Re-embed *rows* into the store, mapping the mismatch error for surfaces."""
+    """Re-embed *rows* into the store under the sync mark, so a reset refuses meanwhile."""
     if not rows:
         raise DatasetError("Dataset has no pages to import.")
     store = get_services().store
     try:
-        result = await import_dataset(store, rows, on_progress=on_progress)
+        async with sync_running(active_config().data_root):
+            result = await import_dataset(store, rows, on_progress=on_progress)
     except EmbeddingModelMismatchError as exc:
         raise DatasetError(str(exc)) from None
     return ImportSummary(sources=result.sources, pages=result.pages, chunks=result.chunks)
