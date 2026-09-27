@@ -23,6 +23,7 @@ from lilbee.core.profile_files import (
     read_entry,
     scan,
 )
+from lilbee.core.system import default_data_dir
 
 _LANGUAGE_KEYS = {"ocr_language", "fts_language"}
 
@@ -378,8 +379,8 @@ def test_global_root_has_no_project_folder(tmp_path):
     project = profile_folders(tmp_path / "proj" / ".lilbee")
     assert [f for f, _ in project] == list(ProfileFolder)
     assert project[0][1] == tmp_path / "proj" / ".lilbee" / PROFILES_DIRNAME
-    assert project[1][1] == profile_files.default_data_dir() / PROFILES_DIRNAME
-    on_global = profile_folders(profile_files.default_data_dir())
+    assert project[1][1] == default_data_dir() / PROFILES_DIRNAME
+    on_global = profile_folders(default_data_dir())
     assert [f for f, _ in on_global] == [
         ProfileFolder.GLOBAL,
         ProfileFolder.COMMUNITY,
