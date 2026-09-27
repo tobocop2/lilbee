@@ -13,14 +13,9 @@ import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
+from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
-from lilbee.core.config.resolve import (
-    ROOT_DERIVED_FIELDS,
-    SKIP_TOML_ENV,
-    Resolved,
-    read_layers,
-    resolve_all,
-)
+from lilbee.core.config.resolve import ROOT_DERIVED_FIELDS, Resolved, read_layers, resolve_all
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 log = logging.getLogger(__name__)

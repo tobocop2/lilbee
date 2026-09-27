@@ -1034,6 +1034,27 @@ class TestResolverIsTheOnlyWriter:
         assert cfg.chunk_size == 900
         assert settings.load(cfg.data_root)["top_k"] == 7
 
+    @pytest.mark.parametrize("env_model", ["acme/a-GGUF/a.gguf", None])
+    def test_embed_swap_keeps_the_width_of_the_live_model(self, monkeypatch, env_model):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        widths = {"acme/a-GGUF/a.gguf": 768, "acme/b-GGUF/b.gguf": 1024}
+        if env_model is not None:
+            monkeypatch.setenv("LILBEE_EMBEDDING_MODEL", env_model)
+        cfg.embedding_model = "acme/a-GGUF/a.gguf"
+        cfg.embedding_dim = 768
+        monkeypatch.setattr(
+            appset, "_embedder_dim_from_gguf", lambda ref, registry=None: widths[ref]
+        )
+        monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
+        monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
+        monkeypatch.setattr(appset, "_embed_reindex_required", lambda: False)
+        appset.apply_settings_update({"embedding_model": "acme/b-GGUF/b.gguf"})
+        expected_model = env_model or "acme/b-GGUF/b.gguf"
+        assert (cfg.embedding_model, cfg.embedding_dim) == (expected_model, widths[expected_model])
+        assert settings.load(cfg.data_root)["embedding_model"] == "acme/b-GGUF/b.gguf"
+
     def test_null_update_resolves_to_profile_value(self):
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg

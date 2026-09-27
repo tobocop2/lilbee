@@ -25,7 +25,7 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services, peek_services
-from lilbee.app.settings import SettingsUpdateResult, apply_settings_update
+from lilbee.app.settings import SettingsUpdateResult, apply_settings_update, setting_sources
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
@@ -42,6 +42,8 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
+from lilbee.core.config.defaults import ENV_PREFIX
+from lilbee.core.config.enums import SettingSource
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -468,6 +470,7 @@ class LilbeeApp(App[None]):
 
         chat_canon = canonicalize_chat_model()
         embedding_canon = canonicalize_embedding_model()
+        sources = setting_sources()
         for canon, field, label in (
             (chat_canon, "chat_model", "Chat"),
             (embedding_canon, "embedding_model", "Embedding"),
@@ -491,6 +494,18 @@ class LilbeeApp(App[None]):
                     )
                 continue
 
+            if sources[field] is SettingSource.ENV:
+                # The env var outranks any swap, so name it instead of claiming one.
+                self._warn_with_toast(
+                    msg.MODEL_ENV_PIN_UNUSABLE.format(
+                        label=label,
+                        original=canon.original,
+                        reason=reason,
+                        env_var=f"{ENV_PREFIX}{field.upper()}",
+                    )
+                )
+                continue
+
             # A rejected swap (validation or disk error) must not be fatal at startup.
             try:
                 apply_settings_update({field: canon.effective})
@@ -511,14 +526,19 @@ class LilbeeApp(App[None]):
                 # fallback worth a warning toast.
                 log.info(msg.MODEL_ADOPTED_LOG.format(label=label, effective=canon.effective))
                 continue
-            notice = msg.MODEL_FALLBACK_NOTICE.format(
-                label=label, original=canon.original, effective=canon.effective, reason=reason
-            )
-            log.warning(notice)
-            call_from_thread(
-                self, self.notify, notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S
+            self._warn_with_toast(
+                msg.MODEL_FALLBACK_NOTICE.format(
+                    label=label, original=canon.original, effective=canon.effective, reason=reason
+                )
             )
         call_from_thread(self, self._refresh_title)
+
+    def _warn_with_toast(self, notice: str) -> None:
+        """Log *notice* at WARNING and toast it from the worker thread."""
+        log.warning(notice)
+        call_from_thread(
+            self, self.notify, notice, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S
+        )
 
     def _refresh_title(self) -> None:
         """Re-derive the window title after canonicalization may have swapped the ref."""

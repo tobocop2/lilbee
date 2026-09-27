@@ -24,6 +24,7 @@ from .defaults import (
     DEFAULT_GENERAL_SYSTEM_PROMPT,
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
+    SKIP_TOML_ENV,
 )
 from .enums import (
     ChatMode,
@@ -765,6 +766,7 @@ class Config(BaseSettings):
         default_factory=scaled_chat_ctx_target_default,
         ge=512,
         writable=True,
+        derived=True,
     )
 
     # Condense turns that outgrow chat_n_ctx_target into carried notes instead
@@ -845,7 +847,7 @@ class Config(BaseSettings):
     # when multiple devices remain visible after ``gpu_devices``; with
     # a single visible device, llama.cpp ignores this. ``None``
     # (default) lets llama.cpp pick (index 0).
-    main_gpu: int | None = ConfigField(default=None, writable=True, derived=True)
+    main_gpu: int | None = ConfigField(default=None, writable=True)
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
@@ -1514,7 +1516,7 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
 
 
 class _ResolvedSource:
-    """pydantic-settings source: the env, user and profile values the resolver picks for a root.
+    """pydantic-settings source: the value the resolver picks for each field under a root.
 
     Values are raw strings or TOML types, so field validators handle parsing.
     """
@@ -1524,12 +1526,9 @@ class _ResolvedSource:
 
     def __call__(self) -> dict[str, Any]:
         # circular: resolve -> model via Config
-        from .resolve import EXPLICIT_SOURCES, read_layers, resolve_all
+        from .resolve import read_layers, resolve_all
 
-        resolved = resolve_all(read_layers(self._root))
-        return {
-            key: value.value for key, value in resolved.items() if value.source in EXPLICIT_SOURCES
-        }
+        return {key: value.value for key, value in resolve_all(read_layers(self._root)).items()}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
@@ -1544,11 +1543,11 @@ def _build_cfg() -> tuple[Config, Exception | None]:
     try:
         return Config(), None
     except Exception as exc:
-        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        os.environ[SKIP_TOML_ENV] = "1"
         try:
             return Config(), exc
         finally:
-            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+            os.environ.pop(SKIP_TOML_ENV, None)
 
 
 cfg, config_load_error = _build_cfg()

@@ -1047,6 +1047,21 @@ class TestApplyOverrides:
         apply_overrides(data_dir=root)
         assert cfg.documents_dir == docs_dir
 
+    @pytest.mark.parametrize("persisted", [True, False])
+    def test_blank_lilbee_documents_dir_is_unset(self, tmp_path, monkeypatch, persisted):
+        from lilbee.cli import apply_overrides
+
+        root = tmp_path / "root"
+        root.mkdir()
+        persisted_dir = tmp_path / "persisted"
+        if persisted:
+            (root / "config.toml").write_text(
+                f'documents_dir = "{persisted_dir.as_posix()}"\n', encoding="utf-8"
+            )
+        monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", "  ")
+        apply_overrides(data_dir=root)
+        assert cfg.documents_dir == (persisted_dir if persisted else root / "documents")
+
     def test_generation_option_overrides(self):
         from lilbee.cli import apply_overrides
 
