@@ -2392,6 +2392,16 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert phase in drained
 
+    async def test_analyze_progress_sheds_under_backpressure(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(10):
+            queue.put_event_nowait(f'event: analyze\ndata: {{"done": {i}}}\n\n', EventType.ANALYZE)
+        assert queue.qsize() == 2
+        assert queue.dropped_events == 8
+
     @pytest.mark.parametrize(
         "event_type",
         ["SYNC_DONE", "CRAWL_DONE", "WIKI_PHASE"],

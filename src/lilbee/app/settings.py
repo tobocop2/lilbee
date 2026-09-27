@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import logging
 from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
@@ -31,11 +32,14 @@ from lilbee.core.config.resolve import (
     resolve_all,
 )
 from lilbee.core.config.schema import field_type_name
+from lilbee.core.project_state import dismiss_tip
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
+
+log = logging.getLogger(__name__)
 
 _MIN_CHUNK_SIZE = 64
 
@@ -633,6 +637,7 @@ def apply_profile_layer(
     Every key the old or new profile holds is validated at the value it resolves to
     under the new profile before anything is written; user and env values keep winning.
     Each *absorb* key, which *values* must hold, leaves config.toml in the same write.
+    Applying a profile hides the analyze tip.
     *write_first* runs once validation passes, before config.toml changes.
     """
     refused = sorted(set(values) - set(PROFILE_FIELDS))
@@ -651,4 +656,13 @@ def apply_profile_layer(
     if write_first is not None:
         write_first()
     persistent_settings.write_profile_table(cfg.data_root, name, values, drop=absorb)
+    _hide_analyze_tip()
     return _settle(keys, embed_in_batch=False)
+
+
+def _hide_analyze_tip() -> None:
+    """Hide the analyze tip once a profile is applied; a failed write must not fail the apply."""
+    try:
+        dismiss_tip(cfg.data_root)
+    except OSError as exc:
+        log.warning("Could not record that the analyze tip is hidden: %s", exc)
