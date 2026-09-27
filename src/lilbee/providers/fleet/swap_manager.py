@@ -350,6 +350,11 @@ class SwapManager:
         }
         _atomic_write(self._state_path, json.dumps(state))
 
+    @property
+    def log_path(self) -> Path:
+        """The llama-swap log for this group, which records each member's exit."""
+        return self._log_path
+
     def endpoint(self) -> str:
         """Base URL of the llama-swap OpenAI-compatible proxy."""
         if self._port is None:

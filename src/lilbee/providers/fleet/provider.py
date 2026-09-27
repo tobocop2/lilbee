@@ -110,6 +110,16 @@ if TYPE_CHECKING:
 
 # User-facing name for this engine in error messages.
 _PROVIDER_NAME = "llama-server"
+# No-healthy-replica messages: the server stopped answering, or its process exited
+# and the proxy restarts it on the next request.
+_NOT_RESPONDING_MESSAGE = (
+    "The model server is not responding and no healthy replica is available. "
+    "It may be restarting; try again in a moment."
+)
+_ENGINE_EXITED_MESSAGE = (
+    "The model server process exited and is being restarted. "
+    "No other replica is available to take the request."
+)
 # Tokens held back from the served context for the model's own generation when the
 # request does not cap it, plus a margin for chat-template overhead and estimate drift.
 # Minimal input used to pre-load a role's upstream during warm-up (llama-swap
@@ -355,7 +365,7 @@ def _retry_on_other_replica(
     """Retry *call* once on a replica other than *failed*, marking its health."""
     others = [c for c in clients if c is not failed]
     if not others:
-        raise _no_healthy_replica_error() from cause
+        raise _no_healthy_replica_error(failed, cause) from cause
     retry = _reserve_least_in_flight(others)
     try:
         retry_result = call(retry)
@@ -370,14 +380,20 @@ def _retry_on_other_replica(
         retry.release()
 
 
-def _no_healthy_replica_error() -> ProviderError:
-    """User-facing error for a call with no healthy replica left to retry on."""
-    return ProviderError(
-        "The model server is not responding and no healthy replica is available. "
-        "It may be restarting; try again in a moment.",
-        provider=_PROVIDER_NAME,
-        kind=ProviderErrorKind.CONNECTION,
-    )
+def _no_healthy_replica_error(failed: LlamaServerClient, cause: Exception) -> ProviderError:
+    """User-facing error for a call with no healthy replica left to retry on.
+
+    A CONNECTION-kind ProviderError is the engine process exiting under the
+    proxy (a transport error has no kind), so the message says so and names
+    the log that records the exit.
+    """
+    if isinstance(cause, ProviderError) and cause.kind is ProviderErrorKind.CONNECTION:
+        message = _ENGINE_EXITED_MESSAGE
+        if failed.engine_log is not None:
+            message = f"{message} The engine log is {failed.engine_log}."
+    else:
+        message = _NOT_RESPONDING_MESSAGE
+    return ProviderError(message, provider=_PROVIDER_NAME, kind=ProviderErrorKind.CONNECTION)
 
 
 # Env vars a launch pins its devices with, one per backend (Metal has none).
@@ -570,7 +586,7 @@ def _dispatch_vision(pool: Sequence[_VisionReplica], call: Callable[[LlamaServer
             return result
     others = [replica for replica in pool if replica.client is not failed]
     if not others:
-        raise _no_healthy_replica_error() from cause
+        raise _no_healthy_replica_error(failed, cause) from cause
     with _VISION_DISPATCHER.slot(others) as retry_client:
         try:
             retry_result = call(retry_client)
@@ -1252,6 +1268,7 @@ class FleetProvider:
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
+                    engine_log=swap.log_path,
                     # A cold embed replica 429s bulk ingest until its slots load; wait
                     # out the same cold-load budget llama-swap keeps it alive for so a
                     # burst never drops files while the server is legitimately warming.

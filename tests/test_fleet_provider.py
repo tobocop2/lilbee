@@ -17,8 +17,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
@@ -67,6 +69,7 @@ class _FakeSwap:
         self.running = True
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
         self.bound_lifetime = True  # spawned with the crash-orphan death binding
+        self.log_path = Path("/engine/logs/llama-swap-fake.log")
 
     def reap_stale(self) -> None:
         self.reaps += 1
@@ -1441,6 +1444,109 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
             [prov_mod._VisionReplica(lone, 1)],
             lambda c: c.chat([], options={}, stream=False),
         )
+
+
+_EXITED_BODY = "llama-swap-error: [embed-0] upstream command exited prematurely"
+
+
+def _exited_embed_client(engine_log: Path | None) -> LlamaServerClient:
+    """A real client whose proxy answers every embed with llama-swap's exit body."""
+    import httpx as _httpx
+
+    def _handler(_request: _httpx.Request) -> _httpx.Response:
+        return _httpx.Response(500, text=_EXITED_BODY)
+
+    http = _httpx.Client(transport=_httpx.MockTransport(_handler), base_url="http://swap")
+    return LlamaServerClient("http://swap", "embed-0", http=http, engine_log=engine_log)
+
+
+def test_lone_replica_whose_engine_exited_names_the_death_and_the_log(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    log = Path("/engine/logs/llama-swap-embed.log")
+    client = _exited_embed_client(log)
+    with pytest.raises(ProviderError) as info:
+        prov_mod._call_with_failover([client], lambda c: c.embed(["a"]))
+    assert str(info.value) == (
+        "The model server process exited and is being restarted. No other replica "
+        "is available to take the request. The engine log is "
+        "/engine/logs/llama-swap-embed.log."
+    )
+    assert info.value.kind is ProviderErrorKind.CONNECTION
+
+
+def test_exited_engine_without_a_known_log_still_names_the_death(monkeypatch) -> None:
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    with pytest.raises(ProviderError) as info:
+        prov_mod._call_with_failover([_exited_embed_client(None)], lambda c: c.embed(["a"]))
+    assert str(info.value) == (
+        "The model server process exited and is being restarted. "
+        "No other replica is available to take the request."
+    )
+
+
+def test_lone_unreachable_replica_keeps_the_not_responding_text() -> None:
+    import httpx as _httpx
+
+    from lilbee.providers.base import ProviderError
+
+    lone = _fake_client()
+    lone.engine_log = Path("/engine/logs/llama-swap-embed.log")
+    lone.embed.side_effect = _httpx.ConnectError("refused")
+    with pytest.raises(ProviderError) as info:
+        prov_mod._call_with_failover([lone], lambda c: c.embed(["a"]))
+    assert str(info.value) == (
+        "The model server is not responding and no healthy replica is available. "
+        "It may be restarting; try again in a moment."
+    )
+
+
+def test_lone_vision_replica_whose_engine_exited_names_the_death() -> None:
+    from lilbee.providers.base import ProviderError
+
+    lone = _fake_client()
+    lone.engine_log = Path("/engine/logs/llama-swap-vision.log")
+    lone.chat.side_effect = ProviderError(
+        "llama-server returned HTTP 500", kind=ProviderErrorKind.CONNECTION
+    )
+    with pytest.raises(ProviderError, match=r"process exited and is being restarted") as info:
+        prov_mod._dispatch_vision(
+            [prov_mod._VisionReplica(lone, 1)],
+            lambda c: c.chat([], options={}, stream=False),
+        )
+    assert "/engine/logs/llama-swap-vision.log" in str(info.value)
+
+
+def test_embed_through_the_fleet_names_the_group_engine_log(monkeypatch) -> None:
+    # The product path: the fleet builds the embed client from its swap group, so
+    # the error a failed ingest records names that group's llama-swap log.
+    from lilbee.providers.base import ProviderError
+    from lilbee.providers.fleet import client as client_mod
+
+    monkeypatch.setattr(client_mod, "_fetch_log_tail", lambda _url: "")
+    launch = _fake_launch(WorkerRole.EMBED, weights_bytes=_GB)
+    launch.model_id = "embed-0"
+    launch.rerank_mode = None
+    swap = _FakeSwap()
+    swap.log_path = Path("/engine/logs/llama-swap-embed.log")
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: swap)
+    monkeypatch.setattr(
+        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan((launch,))
+    )
+    monkeypatch.setattr(
+        prov_mod,
+        "LlamaServerClient",
+        lambda _endpoint, _model, **kwargs: _exited_embed_client(kwargs["engine_log"]),
+    )
+    with pytest.raises(ProviderError) as info:
+        FleetProvider().embed(["a"])
+    assert "process exited and is being restarted" in str(info.value)
+    assert str(info.value).endswith("The engine log is /engine/logs/llama-swap-embed.log.")
 
 
 def test_dispatch_vision_marks_second_replica_unhealthy_on_retry_failure() -> None:
