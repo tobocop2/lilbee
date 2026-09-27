@@ -263,14 +263,13 @@ def test_validate_reports_every_problem_without_writing(client):
     assert not _global_dir().exists()
 
 
-def test_validate_applies_the_community_evidence_rule_when_asked(client):
-    body = {
-        "content": '[profile]\ntested_on = "our corpus"\n[values]\ntop_k = 13\n',
-        "filename": "c.toml",
-    }
+def test_validate_applies_the_builtin_evidence_rule_when_asked(client):
+    body = {"content": "[values]\ntop_k = 13\n", "filename": "c.toml"}
     assert client.post("/api/profiles/validate", json=body).json()["valid"] is True
+    builtin = client.post("/api/profiles/validate", json={**body, "folder": "builtin"})
+    assert builtin.json()["problems"] == ["Sets retrieval setting top_k without evidence"]
     community = client.post("/api/profiles/validate", json={**body, "folder": "community"})
-    assert community.json()["problems"] == ["Sets retrieval setting top_k without evidence"]
+    assert community.status_code == 400
 
 
 @pytest.mark.parametrize(

@@ -14,7 +14,6 @@ from lilbee.core.config.enums import ProfileScope
 from lilbee.core.config.resolve import PROFILE_FIELDS
 from lilbee.core.profile_files import (
     BUILTIN_DIRNAME,
-    COMMUNITY_DIRNAME,
     DEFAULT_PROFILE_NAME,
     PROFILES_DIRNAME,
     ProfileAuthor,
@@ -111,8 +110,8 @@ def test_overlap_not_below_size_in_file_is_broken(tmp_path):
     assert _entry(tmp_path, "[values]\nchunk_size = 256\nchunk_overlap = 255\n").error is None
 
 
-@pytest.mark.parametrize("folder", [ProfileFolder.COMMUNITY, ProfileFolder.BUILTIN])
-def test_package_retrieval_value_without_evidence_is_broken(tmp_path, folder):
+def test_builtin_retrieval_value_without_evidence_is_broken(tmp_path):
+    folder = ProfileFolder.BUILTIN
     entry = _entry(tmp_path, "[values]\ntop_k = 20\n", folder)
     assert entry.error == "Sets retrieval setting top_k without evidence"
     same_as_builtin = _entry(tmp_path, "[values]\ntop_k = 12\nchunk_size = 768\n", folder)
@@ -127,97 +126,6 @@ def test_user_retrieval_value_without_evidence_is_valid(tmp_path, folder):
     assert entry.error is None
     assert entry.file is not None
     assert entry.file.values["top_k"] == 20
-
-
-def test_community_profile_without_tested_on_is_broken(tmp_path, monkeypatch):
-    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
-    missing = _write(tmp_path / COMMUNITY_DIRNAME, "missing", "[values]\nchunk_size = 900\n")
-    assert validate_file(missing, ProfileFolder.COMMUNITY).problems == (
-        "A community profile needs tested_on",
-    )
-    blank = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "blank",
-        '[profile]\ntested_on = ""\n[values]\nchunk_size = 800\n',
-    )
-    assert validate_file(blank, ProfileFolder.COMMUNITY).problems == (
-        "A community profile needs tested_on",
-    )
-    named = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "named",
-        '[profile]\ntested_on = "100 files"\n[values]\nchunk_size = 700\n',
-    )
-    assert validate_file(named, ProfileFolder.COMMUNITY).valid
-
-
-def test_community_profile_boolean_tested_on_is_one_problem(tmp_path, monkeypatch):
-    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
-    path = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "boolish",
-        "[profile]\ntested_on = false\n[values]\nchunk_size = 800\n",
-    )
-    assert validate_file(path, ProfileFolder.COMMUNITY).problems == ("tested_on must be text",)
-
-
-@pytest.mark.parametrize(
-    "folder", [ProfileFolder.BUILTIN, ProfileFolder.PROJECT, ProfileFolder.GLOBAL]
-)
-def test_only_community_profiles_need_tested_on(tmp_path, monkeypatch, folder):
-    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
-    path = _write(tmp_path / folder.value, "mine", "[values]\nchunk_size = 900\n")
-    assert validate_file(path, folder).valid
-
-
-def test_community_profile_duplicating_builtin_values_is_broken(tmp_path, monkeypatch):
-    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
-    _write(tmp_path / BUILTIN_DIRNAME, "default", '[profile]\nname = "Default"\n[values]\n')
-    duplicate = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "mine",
-        '[profile]\nname = "Mine"\ntested_on = "100 files"\n[values]\n',
-    )
-    unique = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "other",
-        '[profile]\nname = "Other"\ntested_on = "100 files"\n[values]\nchunk_size = 900\n',
-    )
-    assert validate_file(duplicate, ProfileFolder.COMMUNITY).problems == (
-        "Duplicates the values of the Default profile",
-    )
-    # a file's own distinct values are not mistaken for a duplicate of itself
-    assert validate_file(unique, ProfileFolder.COMMUNITY).valid
-
-
-def test_community_profile_duplicating_a_sibling_is_broken(tmp_path, monkeypatch):
-    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
-    _write(tmp_path / BUILTIN_DIRNAME, "default", '[profile]\nname = "Default"\n[values]\n')
-    _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "first",
-        '[profile]\nname = "First"\ntested_on = "100 files"\n[values]\nchunk_size = 900\n',
-    )
-    second = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "second",
-        '[profile]\nname = "Second"\ntested_on = "200 files"\n[values]\nchunk_size = 900\n',
-    )
-    assert validate_file(second, ProfileFolder.COMMUNITY).problems == (
-        "Duplicates the values of the First profile",
-    )
-
-
-def test_duplicate_check_skips_a_file_whose_own_values_are_invalid(tmp_path, monkeypatch):
-    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
-    bad = _write(
-        tmp_path / COMMUNITY_DIRNAME,
-        "bad",
-        '[profile]\ntested_on = "100 files"\n[values]\nchunk_size = 10\n',
-    )
-    assert validate_file(bad, ProfileFolder.COMMUNITY).problems == (
-        "Bad value for chunk_size: Input should be greater than or equal to 64",
-    )
 
 
 def test_validate_file_reports_an_unreadable_file(tmp_path):
@@ -366,23 +274,20 @@ def _folders(tmp_path: Path) -> list[tuple[ProfileFolder, Path]]:
     return [
         (ProfileFolder.PROJECT, tmp_path / "project"),
         (ProfileFolder.GLOBAL, tmp_path / "global"),
-        (ProfileFolder.COMMUNITY, tmp_path / "community"),
         (ProfileFolder.BUILTIN, profile_files.PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME),
     ]
 
 
-def test_project_beats_global_beats_community_beats_builtin_and_losers_are_shadowed(tmp_path):
+def test_project_beats_global_beats_builtin_and_losers_are_shadowed(tmp_path):
     body = '[profile]\nname = "Court filings"\n[values]\nchunk_size = {}\n'
     _write(tmp_path / "project", "court", body.format(900))
     _write(tmp_path / "global", "court", body.format(800))
-    _write(tmp_path / "community", "court", body.format(700))
     _write(tmp_path / "global", "only-global", "[values]\nchunk_size = 600\n")
     catalog = scan(_folders(tmp_path))
     court = [e for e in catalog.entries if e.name == "Court filings"]
     assert [(e.folder, e.shadowed_by) for e in court] == [
         (ProfileFolder.PROJECT, None),
         (ProfileFolder.GLOBAL, ProfileFolder.PROJECT),
-        (ProfileFolder.COMMUNITY, ProfileFolder.PROJECT),
     ]
     winner = catalog.find("court filings")
     assert winner is not None and winner.file is not None
@@ -404,9 +309,7 @@ def test_broken_higher_file_still_takes_the_name(tmp_path):
     )
 
 
-@pytest.mark.parametrize(
-    "folder", [ProfileFolder.PROJECT, ProfileFolder.GLOBAL, ProfileFolder.COMMUNITY]
-)
+@pytest.mark.parametrize("folder", [ProfileFolder.PROJECT, ProfileFolder.GLOBAL])
 def test_builtin_name_in_any_other_folder_is_broken_reserved(tmp_path, folder):
     body = '[profile]\nname = "default"\n[values]\nchunk_size = 900\n'
     _write(tmp_path / folder.value, "mine", body)
@@ -490,11 +393,7 @@ def test_global_root_has_no_project_folder(tmp_path):
     assert project[0][1] == tmp_path / "proj" / ".lilbee" / PROFILES_DIRNAME
     assert project[1][1] == default_data_dir() / PROFILES_DIRNAME
     on_global = profile_folders(default_data_dir())
-    assert [f for f, _ in on_global] == [
-        ProfileFolder.GLOBAL,
-        ProfileFolder.COMMUNITY,
-        ProfileFolder.BUILTIN,
-    ]
+    assert [f for f, _ in on_global] == [ProfileFolder.GLOBAL, ProfileFolder.BUILTIN]
 
 
 def test_missing_folders_are_empty(tmp_path):
