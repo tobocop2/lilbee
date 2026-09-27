@@ -11,6 +11,83 @@ SettingsScreen {
         margin-top: 1;
     }
 
+    #profile-line {
+        height: 1;
+        padding: 0 1;
+    }
+
+    #profile-line-label {
+        width: auto;
+        color: $text-muted;
+        margin-right: 2;
+    }
+
+    #profile-line-name {
+        width: auto;
+        padding: 0 1;
+        background: $primary 20%;
+        color: $text;
+
+        &:focus, &:hover {
+            background: $accent;
+        }
+    }
+
+    #profile-line-count {
+        width: auto;
+        color: $text-muted;
+        margin-left: 2;
+    }
+
+    #profile-line-status {
+        width: auto;
+        padding: 0 1;
+        margin-left: 2;
+        background: $warning;
+        color: $text;
+    }
+
+    #profile-tab {
+        height: auto;
+    }
+
+    #profile-description, #profile-credit, #profile-folder, #profile-changes-help {
+        padding: 0 0 0 1;
+        color: $text-muted;
+    }
+
+    #profile-status-note {
+        padding: 0 0 0 1;
+        color: $warning;
+    }
+
+    .profile-section {
+        margin-top: 1;
+    }
+
+    #profile-changes {
+        height: auto;
+        margin: 1 0 0 1;
+    }
+
+    #profile-actions {
+        height: 1;
+        margin-top: 1;
+    }
+
+    #profile-actions ConfirmPill {
+        width: auto;
+        padding: 0 2;
+        margin-right: 2;
+        background: $boost;
+        color: $text;
+        text-style: bold;
+
+        &:focus, &:hover {
+            background: $accent;
+        }
+    }
+
     /* TabbedContent's inner ContentSwitcher and TabPane default to
      * height: auto. With a tall settings group (Ingest, Generation) that
      * pushes the docked BottomBars off-screen. Force flex so the

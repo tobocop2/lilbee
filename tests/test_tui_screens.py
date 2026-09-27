@@ -662,6 +662,8 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
     """Clicking the picker runs discovery in a worker, then pushes the modal."""
     from unittest.mock import patch
 
+    from textual.widgets import TabbedContent
+
     from lilbee.catalog.types import ModelTask
     from lilbee.cli.tui.screens.model_picker import ModelPickerModal
     from lilbee.cli.tui.widgets.model_bar import ModelOption
@@ -674,6 +676,8 @@ async def test_settings_model_picker_button_pushes_modal_after_worker():
     }
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
+        app.screen.query_one("#settings-tabs", TabbedContent).active = "settings-tab-models"
+        await pilot.pause()
         with patch(
             "lilbee.cli.tui.widgets.model_bar.classify_installed_models_full",
             return_value=fake_buckets,
@@ -744,7 +748,7 @@ async def test_settings_cycle_pane_wraps_through_strip():
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
         tabs = screen.query_one("#settings-tabs", TabbedContent)
-        pane_ids = list(screen._pane_groups)
+        pane_ids = screen._pane_ids
         assert len(pane_ids) >= 2
         # Start on the first pane.
         first = pane_ids[0]
@@ -846,37 +850,29 @@ async def test_settings_cycle_pane_handles_missing_tabs():
         SettingsScreen.action_cycle_pane(screen, 1)
 
 
-async def test_settings_cycle_pane_no_panes_short_circuits():
-    """When ``_pane_groups`` is empty (compose hasn't run), cycle_pane returns
-    cleanly without indexing an empty list."""
+async def test_settings_cycle_pane_before_compose_stays_on_the_profile_pane():
+    """Before compose adds the group panes, cycling has only the Profile pane to land on."""
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
+
+    screen = SettingsScreen()
+    fake_tabs = MagicMock(spec=TabbedContent)
+    fake_tabs.active = "settings-tab-models"
+    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
+        SettingsScreen.action_cycle_pane(screen, 1)
+    assert fake_tabs.active == PROFILE_PANE_ID
+
+
+async def test_settings_cycle_pane_unknown_active_starts_from_zero():
+    """ValueError fallback: if tabs.active isn't in ``_pane_ids`` (stale id
+    from a hot-reload / refactor), cycle starts from index 0."""
     from textual.widgets import TabbedContent
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     screen = SettingsScreen.__new__(SettingsScreen)
-    screen._pane_groups = {}
-    fake_tabs = MagicMock(spec=TabbedContent)
-    fake_tabs.active = "settings-tab-models"
-    with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
-        SettingsScreen.action_cycle_pane(screen, 1)
-
-
-async def test_settings_cycle_pane_unknown_active_starts_from_zero():
-    """ValueError fallback: if tabs.active isn't in ``_pane_groups`` (stale id
-    from a hot-reload / refactor), cycle starts from index 0."""
-    from textual.widgets import TabbedContent
-
-    from lilbee.cli.tui.screens.settings import SettingsScreen, _PaneGroup
-
-    screen = SettingsScreen.__new__(SettingsScreen)
-    screen._pane_groups = {
-        "settings-tab-models": _PaneGroup(
-            pane_id="settings-tab-models", group_name="Models", items=[]
-        ),
-        "settings-tab-ingest": _PaneGroup(
-            pane_id="settings-tab-ingest", group_name="Ingest", items=[]
-        ),
-    }
+    screen._pane_ids = ["settings-tab-models", "settings-tab-ingest"]
     fake_tabs = MagicMock(spec=TabbedContent)
     fake_tabs.active = "not-in-pane-groups"
     with patch.object(SettingsScreen, "query_one", return_value=fake_tabs):
