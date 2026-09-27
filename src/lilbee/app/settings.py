@@ -22,6 +22,7 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.schema import field_type_name
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
@@ -287,20 +288,22 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
 
     A model-role change (chat_model/embedding_model/reranker_model/vision_model)
     respawns only that role's server via the per-role reload, so unrelated roles
-    keep serving uninterrupted. A genuinely role-agnostic load key (num_ctx,
-    kv_cache_type) has no single owning role, so it falls back to dropping the
-    whole fleet. Both paths run off the caller's thread, so the settings write
-    never blocks on a slow stop-and-respawn.
+    keep serving uninterrupted; so does a setting that gates a role (enable_ocr).
+    A genuinely role-agnostic load key (num_ctx, kv_cache_type) has no single
+    owning role, so it falls back to dropping the whole fleet. Both paths run off
+    the caller's thread, so the settings write never blocks on a slow
+    stop-and-respawn.
     """
     from lilbee.app.services import peek_services
-    from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
 
     services = peek_services()
     if services is None:
         return
     changed_role_fields = changed_keys & MODEL_ROLE_FIELDS
-    for field in changed_role_fields:
-        services.reload_role(MODEL_FIELD_TO_ROLE[field])
+    field_to_role = MODEL_FIELD_TO_ROLE | ROLE_GATE_FIELD_TO_ROLE
+    reloaded = {field_to_role[field] for field in changed_keys & field_to_role.keys()}
+    for role in sorted(reloaded):
+        services.reload_role(role)
     if "vision_model" in changed_role_fields:
         # Register/unregister lilbee's xberg OCR backend on any vision-model
         # change (REST/MCP/TUI/CLI all funnel here), not just the REST route.
@@ -353,7 +356,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
-    if changed_keys & LOAD_AFFECTING_KEYS:
+    if changed_keys & (LOAD_AFFECTING_KEYS | ROLE_GATE_FIELD_TO_ROLE.keys()):
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
     if "token_sizing" in changed_keys:
