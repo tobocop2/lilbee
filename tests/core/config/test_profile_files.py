@@ -151,6 +151,16 @@ def test_community_profile_without_tested_on_is_broken(tmp_path, monkeypatch):
     assert validate_file(named, ProfileFolder.COMMUNITY).valid
 
 
+def test_community_profile_boolean_tested_on_is_one_problem(tmp_path, monkeypatch):
+    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
+    path = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "boolish",
+        "[profile]\ntested_on = false\n[values]\nchunk_size = 800\n",
+    )
+    assert validate_file(path, ProfileFolder.COMMUNITY).problems == ("tested_on must be text",)
+
+
 @pytest.mark.parametrize(
     "folder", [ProfileFolder.BUILTIN, ProfileFolder.PROJECT, ProfileFolder.GLOBAL]
 )
