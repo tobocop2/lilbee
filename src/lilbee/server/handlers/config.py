@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import functools
 from typing import Any
@@ -119,4 +120,5 @@ async def get_config_schema() -> ConfigSchemaResponse:
     ``settings_list`` reads, so a new setting appears here with no route
     change and no restated value set.
     """
-    return ConfigSchemaResponse(fields=[_field_schema(info) for info in list_settings()])
+    infos = await asyncio.to_thread(list_settings)
+    return ConfigSchemaResponse(fields=[_field_schema(info) for info in infos])

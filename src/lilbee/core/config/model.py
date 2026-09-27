@@ -18,7 +18,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from lilbee.core.system import scaled_chat_ctx_target_default
 
 from .defaults import (
-    CONFIG_FILE_NAME,
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CORS_ORIGIN_REGEX,
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
@@ -183,14 +182,14 @@ class Config(BaseSettings):
     # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
     # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
     # not the GPU-fed extract/embed batch.
-    ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
+    ingest_workers: int = ConfigField(default=0, ge=0, writable=True, derived=True)
     # Worker PROCESSES for a bulk ingest (distinct from ingest_workers, which sizes
     # the planning pass's threads). Each owns a GPU, a private store and its own
     # slice of the corpus, and the shards are folded into one index at the end.
     # 0 = auto: one worker per visible card, used once the corpus is big enough to
     # pay for them. N pins the count; worker i takes card i % card_count, so more
     # workers than cards share a card's engine rather than double-booking it.
-    ingest_processes: int = ConfigField(default=0, ge=0, writable=True)
+    ingest_processes: int = ConfigField(default=0, ge=0, writable=True, derived=True)
     # Passages packed into one embed request. Larger batches keep a GPU's
     # continuous-batching slots full: small per-passage requests leave the card
     # batch-starved (~96% util, low throughput). The engine still re-splits to
@@ -254,7 +253,7 @@ class Config(BaseSettings):
     # None = auto-detect (use OCR if chat model is vision-capable).
     # True = force OCR regardless of detection.
     # False = disable OCR entirely.
-    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+    enable_ocr: bool | None = ConfigField(default=None, writable=True, derived=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
     # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
     # needs matching headroom here.
@@ -318,7 +317,7 @@ class Config(BaseSettings):
     # what free memory holds. 0 = auto, runtime.cpu.cpu_quota() (half the usable
     # CPUs). The rayon pool is fixed at the first extraction, so a change takes
     # full effect after a restart.
-    extraction_threads: int = ConfigField(default=0, ge=0, writable=True)
+    extraction_threads: int = ConfigField(default=0, ge=0, writable=True, derived=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
@@ -366,7 +365,7 @@ class Config(BaseSettings):
     # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
-    num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
+    num_ctx: int | None = ConfigField(default=None, ge=1, writable=True, derived=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
@@ -563,7 +562,9 @@ class Config(BaseSettings):
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
-    reranker_type: RerankerType = ConfigField(default=RerankerType.AUTO, writable=True, public=True)
+    reranker_type: RerankerType = ConfigField(
+        default=RerankerType.AUTO, writable=True, public=True, derived=True
+    )
     # Relevance prompt for LLM rerankers; empty uses the built-in generic template.
     # A format string with {query} and {document} placeholders.
     reranker_prompt: str = ConfigField(default="", writable=True, public=True)
@@ -724,8 +725,8 @@ class Config(BaseSettings):
     # vision) is reserved. A positive value pins the count. The extra replicas are
     # ingest-only and reclaimed when ingest ends; the persistent query embedder /
     # vision (replica 0) always exists if its model fits.
-    embed_replicas: int = ConfigField(default=0, ge=0, writable=True)
-    vision_replicas: int = ConfigField(default=0, ge=0, writable=True)
+    embed_replicas: int = ConfigField(default=0, ge=0, writable=True, derived=True)
+    vision_replicas: int = ConfigField(default=0, ge=0, writable=True, derived=True)
 
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
@@ -789,7 +790,7 @@ class Config(BaseSettings):
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM
     # to back it. Set explicitly to cap below the model's training_ctx.
-    num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
+    num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True, derived=True)
 
     # Flash attention. None (default) = on, True = force on, False = off
     # for backends or models where it misbehaves.
@@ -838,13 +839,13 @@ class Config(BaseSettings):
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the
     # Vulkan-loader's default ordering in place.
-    gpu_devices: str | None = ConfigField(default=None, writable=True)
+    gpu_devices: str | None = ConfigField(default=None, writable=True, derived=True)
 
     # Primary GPU index passed to ``Llama(main_gpu=...)``. Only matters
     # when multiple devices remain visible after ``gpu_devices``; with
     # a single visible device, llama.cpp ignores this. ``None``
     # (default) lets llama.cpp pick (index 0).
-    main_gpu: int | None = ConfigField(default=None, writable=True)
+    main_gpu: int | None = ConfigField(default=None, writable=True, derived=True)
 
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
@@ -856,6 +857,7 @@ class Config(BaseSettings):
         default=None,
         writable=True,
         public=False,
+        derived=True,
         description=(
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
             "each active role pins to the listed device indices. Edit it with the "
@@ -976,7 +978,7 @@ class Config(BaseSettings):
     )
 
     # Neighborhood size for the mutual-kNN graph. 0 = auto-scale from corpus size.
-    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True)
+    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True, derived=True)
 
     # LazyGraphRAG-style concept graph. Requires the [graph] extra.
     concept_graph: bool = ConfigField(default=True, writable=True)
@@ -1459,13 +1461,7 @@ class Config(BaseSettings):
             toml_dir = local if local else default_data_dir()
         # Same call as the root itself, so this looks where the root resolves to;
         # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
-        toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
-
-        plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_")
-        sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
-            sources.append(_TomlSource(settings_cls, toml_path))
-        return tuple(sources)
+        return (init_settings, _ResolvedSource(canonical_data_root(toml_dir)))
 
     @property
     def model_defaults(self) -> Any:
@@ -1517,41 +1513,23 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     }
 
 
-class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
+class _ResolvedSource:
+    """pydantic-settings source: the env, user and profile values the resolver picks for a root.
 
-    def __init__(self, settings_cls: type[BaseSettings], env_prefix: str) -> None:
-        self._prefix = env_prefix
-        self._fields = set(settings_cls.model_fields)
+    Values are raw strings or TOML types, so field validators handle parsing.
+    """
 
-    def __call__(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for field_name in self._fields:
-            raw = os.environ.get(f"{self._prefix}{field_name.upper()}")
-            if value_is_set(field_name, raw):
-                result[field_name] = raw
-        return result
-
-
-class _TomlSource:
-    """Custom pydantic-settings source that reads config.toml."""
-
-    def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
-        self._path = path
+    def __init__(self, root: Path) -> None:
+        self._root = root
 
     def __call__(self) -> dict[str, Any]:
-        import tomllib
+        # circular: resolve -> model via Config
+        from .resolve import EXPLICIT_SOURCES, read_layers, resolve_all
 
-        try:
-            with self._path.open("rb") as f:
-                data = tomllib.load(f)
-        except (ValueError, OSError):
-            log.warning("Failed to read %s, ignoring", self._path)
-            return {}
-        # An empty string is unset (the field default applies, since pydantic
-        # cannot coerce "" to int|None), except on a clearable model role,
-        # where it clears the model. TOML's native types pass through as-is.
-        return {k: v for k, v in data.items() if value_is_set(k, v)}
+        resolved = resolve_all(read_layers(self._root))
+        return {
+            key: value.value for key, value in resolved.items() if value.source in EXPLICIT_SOURCES
+        }
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:

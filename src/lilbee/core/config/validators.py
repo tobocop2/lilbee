@@ -11,12 +11,18 @@ def ConfigField(  # noqa: N802  pydantic Field wrapper; matches Field's PascalCa
     reindex: bool = False,
     write_only: bool = False,
     public: bool = True,
+    derived: bool = False,
     **kwargs: Any,
 ) -> Any:
-    """Wrap pydantic ``Field`` and attach metadata via ``json_schema_extra``."""
+    """Wrap pydantic ``Field`` and attach metadata via ``json_schema_extra``.
+
+    ``derived`` marks a field whose default means lilbee computes the value at runtime.
+    """
     extra: dict[str, bool] = {}
     if writable:
         extra["writable"] = True
+    if derived:
+        extra["derived"] = True
     if reindex:
         extra["reindex"] = True
     if write_only:

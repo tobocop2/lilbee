@@ -4135,12 +4135,20 @@ class TestUpdateConfig:
         cfg.temperature = 0.5
         result = await handlers.update_config({"temperature": None})
         assert result.updated == ["temperature"]
-        assert cfg.temperature is None
+        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
         # Verify delete_value was called (file should not contain temperature)
         from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert "temperature" not in stored
+
+    async def test_config_schema_reads_settings_off_the_event_loop(self):
+        from lilbee.server.handlers import config as config_handlers
+
+        with patch.object(asyncio, "to_thread", wraps=asyncio.to_thread) as spy:
+            result = await config_handlers.get_config_schema()
+        spy.assert_called_once_with(config_handlers.list_settings)
+        assert any(entry.key == "top_k" for entry in result.fields)
 
     async def test_update_config_unknown_field(self):
         with pytest.raises(ValueError, match="Unknown or read-only setting"):

@@ -6,8 +6,6 @@ import errno
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from pydantic_core import PydanticUndefined
-
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS,
@@ -16,11 +14,13 @@ from lilbee.config_meta import (
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_API_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.resolve import builtin_value, read_layers, resolve_all
 from lilbee.core.config.schema import field_type_name
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
@@ -68,6 +68,7 @@ class SettingInfo:
     help_text: str
     choices: tuple[str, ...] | None
     reindex_required: bool
+    source: SettingSource
 
 
 @dataclass(frozen=True)
@@ -99,16 +100,6 @@ def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
     return (warning,) if warning is not None else ()
 
 
-def _setting_default(key: str) -> Any:
-    """Return the pydantic default for ``key``, or ``None`` if unset."""
-    info = Config.model_fields[key]
-    if info.default_factory is not None:
-        return info.default_factory()  # type: ignore[call-arg]
-    if info.default is PydanticUndefined:
-        return None
-    return info.default
-
-
 def _is_write_only(key: str) -> bool:
     """Return True for fields persisted but never read back (API keys, hf_token)."""
     extra = Config.model_fields[key].json_schema_extra
@@ -134,7 +125,13 @@ def _setting_help(key: str, definition: SettingDef | None) -> str:
     return Config.model_fields[key].description or ""
 
 
-def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
+def setting_sources() -> dict[str, SettingSource]:
+    """The source of every Config field's effective value, from one read of config.toml."""
+    resolved = resolve_all(read_layers(cfg.data_root))
+    return {key: entry.source for key, entry in resolved.items()}
+
+
+def _setting_info(key: str, definition: SettingDef | None, source: SettingSource) -> SettingInfo:
     nullable = _is_nullable(key)
     group = definition.group if definition else SettingGroup.MODELS
     help_text = _setting_help(key, definition)
@@ -142,13 +139,14 @@ def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     return SettingInfo(
         key=key,
         value=getattr(cfg, key),
-        default=_setting_default(key),
+        default=builtin_value(key),
         type=field_type_name(key),
         nullable=nullable,
         group=group,
         help_text=help_text,
         choices=choices,
         reindex_required=key in REINDEX_FIELDS,
+        source=source,
     )
 
 
@@ -168,7 +166,10 @@ def _parse_group(group: SettingGroup | str) -> SettingGroup:
 
 def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
     """List every writable non-secret setting, optionally filtered by group (case-insensitive)."""
-    infos = [_setting_info(key, SETTINGS_MAP.get(key)) for key in _public_writable_keys()]
+    sources = setting_sources()
+    infos = [
+        _setting_info(key, SETTINGS_MAP.get(key), sources[key]) for key in _public_writable_keys()
+    ]
     if group is not None:
         wanted = _parse_group(group)
         infos = [info for info in infos if info.group == wanted]
@@ -181,7 +182,7 @@ def get_setting(key: str) -> SettingInfo:
         raise KeyError(f"Unknown or read-only setting: {key}")
     if _is_write_only(key):
         raise KeyError(f"Setting '{key}' is write-only and cannot be read back")
-    return _setting_info(key, SETTINGS_MAP.get(key))
+    return _setting_info(key, SETTINGS_MAP.get(key), setting_sources()[key])
 
 
 def _is_settable(key: str) -> bool:
@@ -449,6 +450,7 @@ def apply_settings_update(
         # in-memory snapshot must be restored so cfg matches what was persisted.
         _restore_snapshot(snapshot)
         raise
+    persistent_settings.sync_from_resolver(updates)
     _invalidate_caches(set(effective_updates))
     reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
     if embed_in_batch:
@@ -563,7 +565,7 @@ def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> Setti
     for key in keys:
         if key in _NO_RESET_FIELDS:
             continue
-        default = _setting_default(key)
+        default = builtin_value(key)
         if default is None and _is_nullable(key):
             updates[key] = None
         else:
