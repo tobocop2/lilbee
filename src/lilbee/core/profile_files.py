@@ -36,6 +36,7 @@ _META_KEYS = frozenset({*_STRING_META_KEYS, "authors", "format"})
 _AUTHOR_KEYS = frozenset({"name", "github"})
 
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9 _()-]{1,40}")
+_KEY_DROPPED = re.compile(r"[()]")
 _KEY_SEPARATORS = re.compile(r"[\s_-]+")
 
 
@@ -105,8 +106,9 @@ class ProfileCatalog:
 
 
 def profile_key(name: str) -> str:
-    """The lookup key of a name: case, hyphens, underscores and repeated spaces ignored."""
-    return _KEY_SEPARATORS.sub(" ", name.casefold()).strip()
+    """The lookup key of a name and the stem of a file lilbee writes for it: a lowercase slug."""
+    words = _KEY_DROPPED.sub("", name.casefold())
+    return _KEY_SEPARATORS.sub("-", words).strip("-")
 
 
 def profile_folders(data_root: Path) -> list[tuple[ProfileFolder, Path]]:
@@ -199,6 +201,9 @@ def normalized_values(values: Mapping[str, Any]) -> dict[str, Any]:
             setattr(trial, key, value)
         except ValidationError as exc:
             raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
+        # A validator's own TypeError reaches here unwrapped; a bad value costs only its file
+        except Exception as exc:
+            raise ProfileFileError(f"Bad value for {key}: {exc}") from None
     return {key: getattr(trial, key) for key in values}
 
 
@@ -270,6 +275,8 @@ def read_entry(path: Path, folder: ProfileFolder) -> ProfileEntry:
         profile = parse_profile(data, path.stem, folder)
     except tomllib.TOMLDecodeError as exc:
         return ProfileEntry(path.stem, folder, path, None, f"Not valid TOML: {exc}")
+    except UnicodeDecodeError:
+        return ProfileEntry(path.stem, folder, path, None, "Not UTF-8 text")
     except OSError as exc:
         return ProfileEntry(path.stem, folder, path, None, f"Cannot read the file: {exc}")
     except ProfileFileError as exc:

@@ -38,6 +38,15 @@ class ProfileEffect(StrEnum):
     NOW = "now"
 
 
+class ProfileStatus(StrEnum):
+    """How the applied profile's file compares with the copy recorded on apply."""
+
+    CURRENT = "current"
+    CHANGED = "changed"
+    MISSING = "missing"
+    BROKEN = "broken"
+
+
 @dataclass(frozen=True)
 class DiffRow:
     """One setting a profile apply changes."""
@@ -61,12 +70,12 @@ class ProfileDiff:
 
 @dataclass(frozen=True)
 class ActiveProfile:
-    """The project's applied profile and its recorded values."""
+    """The project's applied profile, its recorded values, and the state of its file."""
 
     name: str
     values: Mapping[str, Any]
-    changed: bool
-    missing: bool
+    status: ProfileStatus
+    error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -108,17 +117,25 @@ def _usable(store: ProfileStore, name: str) -> ProfileFile:
     return entry.file
 
 
+def _file_status(entry: ProfileEntry | None, recorded: Mapping[str, Any]) -> ProfileStatus:
+    if entry is None:
+        return ProfileStatus.MISSING
+    if entry.file is None:
+        return ProfileStatus.BROKEN
+    if dict(entry.file.values) != dict(recorded):
+        return ProfileStatus.CHANGED
+    return ProfileStatus.CURRENT
+
+
 def active(store: ProfileStore) -> ActiveProfile:
-    """The applied profile, whether its file changed since apply, and whether it is gone."""
+    """The applied profile and whether its file is current, changed, gone or broken."""
     table = read_profile_table(cfg.data_root)
     name = table.name or DEFAULT_PROFILE_NAME
     if profile_key(name) == profile_key(DEFAULT_PROFILE_NAME):
-        return ActiveProfile(name, table.values, changed=False, missing=False)
+        return ActiveProfile(name, table.values, ProfileStatus.CURRENT)
     entry = store.scan().find(name)
-    if entry is None:
-        return ActiveProfile(name, table.values, changed=False, missing=True)
-    changed = entry.file is not None and dict(entry.file.values) != dict(table.values)
-    return ActiveProfile(name, table.values, changed=changed, missing=False)
+    error = entry.error if entry is not None else None
+    return ActiveProfile(name, table.values, _file_status(entry, table.values), error)
 
 
 def _diff(profile: ProfileFile) -> ProfileDiff:

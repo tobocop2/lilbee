@@ -1,5 +1,6 @@
 """Profile files: the format, validation, the built-ins, and discovery across folders."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -165,6 +166,76 @@ def test_unreadable_file_is_broken(tmp_path):
     assert entry.error.startswith("Cannot read the file")
 
 
+def test_non_utf8_file_is_broken_and_costs_only_itself():
+    folder = cfg.data_root / PROFILES_DIRNAME
+    _write(folder, "good", "[values]\nchunk_size = 900\n")
+    raw = b"# caf\xe9\n[values]\nchunk_size = 800\n"
+    with pytest.raises(UnicodeDecodeError):
+        raw.decode("utf-8")
+    (folder / "latin.toml").write_bytes(raw)
+    catalog = ProfileStore().scan()
+    latin = catalog.find("latin")
+    assert latin is not None and latin.file is None
+    assert latin.error == "Not UTF-8 text"
+    good = catalog.find("good")
+    assert good is not None and good.file is not None
+
+
+def test_value_whose_validator_raises_a_type_error_is_broken(tmp_path):
+    entry = _entry(tmp_path, "[values]\nocr_language = 5\n")
+    assert entry.file is None
+    assert entry.error is not None
+    assert entry.error.startswith("Bad value for ocr_language: ")
+
+
+_TOML_VALUES = (
+    "5",
+    "-3",
+    "0.5",
+    "true",
+    '"banana"',
+    '""',
+    "[]",
+    '[1, "a"]',
+    "{ a = 1 }",
+    "1979-05-27T07:32:00Z",
+    "1979-05-27",
+    "07:32:00",
+)
+
+
+def test_every_profile_field_with_every_toml_type_is_listed_never_raised():
+    folder = cfg.data_root / PROFILES_DIRNAME
+    cases = [(key, value) for key in sorted(PROFILE_FIELDS) for value in _TOML_VALUES]
+    for index, (key, value) in enumerate(cases):
+        _write(folder, f"case-{index:04d}", f"[values]\n{key} = {value}\n")
+    _write(folder, "keeper", "[values]\nchunk_size = 900\n")
+    project = [e for e in ProfileStore().scan().entries if e.folder is ProfileFolder.PROJECT]
+    assert len(cases) > 300
+    assert len(project) == len(cases) + 1
+    broken = [e for e in project if e.file is None]
+    assert all(e.error for e in broken)
+    assert all(e.error is None for e in project if e.file is not None)
+    assert 0 < len(broken) < len(project)
+    keeper = next(e for e in project if e.name == "keeper")
+    assert keeper.file is not None
+
+
+@pytest.mark.parametrize(
+    ("running", "min_lilbee", "error"),
+    [
+        ("0.6.90b447", "0.6.90", "Needs lilbee 0.6.90 or newer"),
+        ("0.6.90b447", "0.6.90b1", "Unknown setting: future_key"),
+        ("0.6.9", "0.6.10", "Needs lilbee 0.6.10 or newer"),
+        ("0.6.10", "0.6.9", "Unknown setting: future_key"),
+    ],
+)
+def test_min_lilbee_compares_as_pep440_versions(tmp_path, monkeypatch, running, min_lilbee, error):
+    monkeypatch.setattr(profile_files, "installed_version", lambda _dist: running)
+    text = f'[profile]\nmin_lilbee = "{min_lilbee}"\n[values]\nfuture_key = 1\n'
+    assert _entry(tmp_path, text).error == error
+
+
 def _folders(tmp_path: Path) -> list[tuple[ProfileFolder, Path]]:
     return [
         (ProfileFolder.PROJECT, tmp_path / "project"),
@@ -207,10 +278,14 @@ def test_broken_higher_file_still_takes_the_name(tmp_path):
     )
 
 
-def test_builtin_name_in_global_folder_is_broken_reserved(tmp_path):
-    _write(tmp_path / "global", "mine", '[profile]\nname = "default"\n[values]\nchunk_size = 900\n')
+@pytest.mark.parametrize(
+    "folder", [ProfileFolder.PROJECT, ProfileFolder.GLOBAL, ProfileFolder.COMMUNITY]
+)
+def test_builtin_name_in_any_other_folder_is_broken_reserved(tmp_path, folder):
+    body = '[profile]\nname = "default"\n[values]\nchunk_size = 900\n'
+    _write(tmp_path / folder.value, "mine", body)
     catalog = scan(_folders(tmp_path))
-    reserved = [e for e in catalog.entries if e.folder is ProfileFolder.GLOBAL]
+    reserved = [e for e in catalog.entries if e.folder is folder]
     assert len(reserved) == 1
     assert reserved[0].file is None
     assert reserved[0].error == "Reserved name: default is a built-in profile"
@@ -239,7 +314,39 @@ def test_lookup_ignores_case_hyphens_and_underscores(tmp_path):
         assert entry is not None, spelling
         assert entry.name == "Court filings"
     assert catalog.find("court filing") is None
-    assert profile_key("Scanned  Archive (city-records)") == "scanned archive (city records)"
+
+
+@pytest.mark.parametrize(
+    ("names", "key"),
+    [
+        (("Court (A)", "Court A", "court-a", "COURT_(A)"), "court-a"),
+        (("a_b", "a b", "A-B", " a - _ b "), "a-b"),
+        (
+            ("Scanned  Archive (city-records)", "Scanned archive city records"),
+            "scanned-archive-city-records",
+        ),
+    ],
+)
+def test_key_is_the_file_slug_and_spellings_of_one_name_share_it(names, key):
+    assert {profile_key(name) for name in names} == {key}
+    assert profile_key(key) == key
+    assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", key)
+
+
+def test_names_sharing_a_slug_are_duplicates_in_a_folder_and_shadowed_across(tmp_path):
+    _write(tmp_path / "project", "one", '[profile]\nname = "Court (A)"\n[values]\n')
+    _write(tmp_path / "global", "two", '[profile]\nname = "Court A"\n[values]\n')
+    _write(tmp_path / "global", "three", '[profile]\nname = "court_a"\n[values]\n')
+    catalog = scan(_folders(tmp_path))
+    court = [(e.name, e.folder, e.error, e.shadowed_by) for e in catalog.entries[:3]]
+    duplicate = "Duplicate name in the global folder"
+    assert court == [
+        ("Court (A)", ProfileFolder.PROJECT, None, None),
+        ("court_a", ProfileFolder.GLOBAL, duplicate, ProfileFolder.PROJECT),
+        ("Court A", ProfileFolder.GLOBAL, duplicate, ProfileFolder.PROJECT),
+    ]
+    picked = catalog.find("court-a")
+    assert picked is not None and picked.name == "Court (A)"
 
 
 def test_rescan_sees_file_added_after_first_scan(tmp_path):
