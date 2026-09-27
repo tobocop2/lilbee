@@ -318,9 +318,12 @@ class Config(BaseSettings):
     )
     # Typed entity table for exact counting/cross-referencing; corpus-scale pass, off by default.
     entity_extraction: bool = ConfigField(default=False, writable=True, profile=ProfileScope.INGEST)
-    semantic_chunking: bool = ConfigField(default=False, writable=True, profile=ProfileScope.INGEST)
+    semantic_chunking: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
+    # Boundary-similarity threshold; only applied when semantic_chunking is on.
     topic_threshold: float = ConfigField(
-        default=0.75, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST
+        default=0.75, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST, reindex=True
     )
     # Size chunks in real tokens via the embedder's tokenizer backend, not the
     # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
