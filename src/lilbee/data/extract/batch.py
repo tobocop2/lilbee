@@ -46,7 +46,7 @@ class ExtractBatcher:
         *,
         size: int,
         config_fn: Callable[[ExtractMode], ExtractionConfig],
-        ocr_fn: Callable[[str], OcrConfig],
+        ocr_fn: Callable[[str], OcrConfig | None],
         batch_fn: Callable[
             [list[BatchItem], ExtractionConfig], Awaitable[list[ExtractedDocument | Exception]]
         ],
