@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import errno
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
@@ -22,6 +22,7 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.resolve import (
+    PROFILE_FIELDS,
     Resolved,
     SettingLayers,
     builtin_value,
@@ -605,14 +606,33 @@ def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
     return {key: resolve(key, remaining) for key in keys}
 
 
-def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved]) -> None:
-    """Refuse a reset when a key would fall back to a value its field rejects."""
+def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: str = "reset") -> None:
+    """Refuse an *action* when a key would resolve to a value its field rejects."""
     trial = cfg.model_copy()
     for key, entry in fallbacks.items():
         try:
             setattr(trial, key, entry.value)
         except ValueError as exc:
             raise ValueError(
-                f"Cannot reset '{key}': its {entry.source.value} value {entry.value!r} is "
+                f"Cannot {action} '{key}': its {entry.source.value} value {entry.value!r} is "
                 "invalid. Fix or remove that value first."
             ) from exc
+
+
+def apply_profile_layer(name: str, values: Mapping[str, Any]) -> SettingsUpdateResult:
+    """Record *name* and *values* as the project's profile and set cfg from the new layers.
+
+    Every key the old or new profile holds is validated at the value it resolves to
+    under the new profile before anything is written; user and env values keep winning.
+    """
+    refused = sorted(set(values) - set(PROFILE_FIELDS))
+    if refused:
+        raise ValueError(f"Profiles cannot set {refused[0]}")
+    layers = read_layers(cfg.data_root)
+    after = replace(layers, profile=dict(values))
+    keys = set(layers.profile) | set(values)
+    resolved = {key: resolve(key, after) for key in sorted(keys)}
+    _refuse_invalid_fallbacks(resolved, action="apply")
+    _validate({key: entry.value for key, entry in resolved.items()})
+    persistent_settings.write_profile_table(cfg.data_root, name, values)
+    return _settle(keys, embed_in_batch=False)
