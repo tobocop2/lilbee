@@ -239,8 +239,13 @@ def _target_dir(target: ProfileFolder) -> Path:
     return folders[target]
 
 
+def _location(planned: PlannedWrite) -> ProfileLocation:
+    return ProfileLocation(planned.profile.name, planned.folder, planned.path)
+
+
 def _written(planned: PlannedWrite) -> ProfileLocation:
-    return ProfileLocation(planned.profile.name, planned.folder, planned.write())
+    planned.write()
+    return _location(planned)
 
 
 def _owned(store: ProfileStore, name: str, instead: str = "duplicate it") -> ProfileEntry:
@@ -310,9 +315,25 @@ def _project_values() -> tuple[dict[str, Any], tuple[str, ...]]:
 
 
 def _switch_to(planned: PlannedWrite, yours: tuple[str, ...]) -> SaveResult:
-    """Make *planned* the project's profile, taking *yours* out of config.toml, then write it."""
-    apply_profile_layer(planned.profile.name, planned.profile.values, absorb=yours)
-    return SaveResult(_written(planned), yours)
+    """Write *planned*, then make it the project's profile, taking *yours* out of config.toml.
+
+    A failure after the file is written keeps the file and says so.
+    """
+    written: list[Path] = []
+    try:
+        apply_profile_layer(
+            planned.profile.name,
+            planned.profile.values,
+            absorb=yours,
+            write_first=lambda: written.append(planned.write()),
+        )
+    except OSError as exc:
+        if not written:
+            raise
+        raise ValueError(
+            f"Saved the profile to {planned.path}, but switching this project to it failed: {exc}"
+        ) from exc
+    return SaveResult(_location(planned), yours)
 
 
 def _bare(name: str, values: Mapping[str, Any]) -> ProfileFile:
@@ -341,8 +362,14 @@ def save_as(name: str, target: ProfileFolder = ProfileFolder.GLOBAL) -> SaveResu
 
 def update(store: ProfileStore) -> SaveResult:
     """Write the project's profile values plus yours into the active profile's own file."""
-    name = read_profile_table(cfg.data_root).name or DEFAULT_PROFILE_NAME
+    table = read_profile_table(cfg.data_root)
+    name = table.name or DEFAULT_PROFILE_NAME
     entry, profile = _owned_file(store, name, "save your settings as a new profile")
+    if dict(profile.values) != dict(table.values):
+        raise ValueError(
+            f"{entry.name} changed on disk since it was applied; apply it again to use "
+            "the file, or save your settings as a new profile"
+        )
     values, yours = _project_values()
     text = profile_text(replace(profile, values=values))
     directory = entry.path.parent
@@ -413,12 +440,16 @@ def import_profile(
     *,
     overwrite: bool = False,
 ) -> ProfileLocation:
-    """Validate the file at *source* and copy it into *target*; a taken name needs *overwrite*."""
+    """Validate the file at *source* and copy it into *target*; a taken name needs *overwrite*.
+
+    A file that names no profile takes the slug of its file name as its name.
+    """
     text = read_profile_text(source)
     directory = _target_dir(target)
-    profile = parse_text(text, source.stem, target)
+    stem = profile_key(source.stem)
+    profile = parse_text(text, stem, target)
     replacing = _same_name_in(store, target, profile.name) if overwrite else None
-    return _written(plan_write(directory, target, text, stem=source.stem, replacing=replacing))
+    return _written(plan_write(directory, target, text, stem=stem, replacing=replacing))
 
 
 def validate(path: Path, folder: ProfileFolder = ProfileFolder.GLOBAL) -> ProfileValidation:

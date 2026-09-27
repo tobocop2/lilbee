@@ -5,6 +5,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+from tests.conftest import REAL_PACKAGE_PROFILES_DIR
 
 from lilbee.core import profile_files
 from lilbee.core.config import cfg
@@ -14,7 +15,6 @@ from lilbee.core.config.resolve import PROFILE_FIELDS
 from lilbee.core.profile_files import (
     BUILTIN_DIRNAME,
     DEFAULT_PROFILE_NAME,
-    PACKAGE_PROFILES_DIR,
     PROFILES_DIRNAME,
     ProfileAuthor,
     ProfileFolder,
@@ -265,7 +265,7 @@ def _folders(tmp_path: Path) -> list[tuple[ProfileFolder, Path]]:
         (ProfileFolder.PROJECT, tmp_path / "project"),
         (ProfileFolder.GLOBAL, tmp_path / "global"),
         (ProfileFolder.COMMUNITY, tmp_path / "community"),
-        (ProfileFolder.BUILTIN, PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME),
+        (ProfileFolder.BUILTIN, profile_files.PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME),
     ]
 
 
@@ -401,7 +401,7 @@ def test_missing_folders_are_empty(tmp_path):
 
 
 def test_every_builtin_file_validates_and_holds_no_language_or_retrieval_key():
-    catalog = scan([(ProfileFolder.BUILTIN, PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME)])
+    catalog = scan([(ProfileFolder.BUILTIN, profile_files.PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME)])
     names = {e.name: e for e in catalog.entries}
     assert set(names) == {
         "Default",
@@ -424,8 +424,8 @@ def test_every_builtin_file_validates_and_holds_no_language_or_retrieval_key():
 def test_frozen_binary_ships_the_package_profiles_folder():
     repo = Path(__file__).resolve().parents[3]
     build = (repo / "tools" / "wheel-build" / "build_lilbee_binary.sh").read_text(encoding="utf-8")
-    source = PACKAGE_PROFILES_DIR.relative_to(repo).as_posix()
-    shipped = PACKAGE_PROFILES_DIR.relative_to(repo / "src").as_posix()
+    source = REAL_PACKAGE_PROFILES_DIR.relative_to(repo).as_posix()
+    shipped = REAL_PACKAGE_PROFILES_DIR.relative_to(repo / "src").as_posix()
     assert f"--include-data-dir={source}={shipped}" in build
 
 

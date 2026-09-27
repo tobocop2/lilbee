@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import ProfileScope
 from lilbee.core.config.resolve import PROFILE_FIELDS, builtin_value
-from lilbee.core.security import write_private_text
+from lilbee.core.security import write_text_atomically
 from lilbee.core.system import canonical_data_root, default_data_dir
 
 T = TypeVar("T")
@@ -29,6 +29,7 @@ BUILTIN_DIRNAME = "builtin"
 COMMUNITY_DIRNAME = "community"
 PROFILE_SUFFIX = ".toml"
 PACKAGE_PROFILES_DIR = Path(__file__).resolve().parent.parent / PROFILES_DIRNAME
+MAX_PROFILE_BYTES = 256 * 1024
 
 DEFAULT_PROFILE_NAME = "Default"
 PROFILE_FORMAT = 1
@@ -314,18 +315,35 @@ def parse_profile(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> 
     )
 
 
-def _load_toml(path: Path) -> dict[str, Any]:
-    """The parsed TOML at *path*; raises ``ProfileFileError`` when it cannot be read or parsed."""
+def _parse_toml(text: str) -> dict[str, Any]:
+    """The parsed TOML in *text*; raises ``ProfileFileError`` when it is not TOML."""
     try:
-        with path.open("rb") as f:
-            return tomllib.load(f)
+        return tomllib.loads(text)
     # tomllib raises RecursionError on arrays nested a few hundred deep
     except (tomllib.TOMLDecodeError, RecursionError) as exc:
         raise ProfileFileError(f"Not valid TOML: {exc}") from None
-    except UnicodeDecodeError:
-        raise ProfileFileError("Not UTF-8 text") from None
+
+
+def read_profile_text(path: Path) -> str:
+    """The text of the file at *path*; raises ``ProfileFileError`` when it cannot be read."""
+    try:
+        with path.open("rb") as f:
+            data = f.read(MAX_PROFILE_BYTES + 1)
     except OSError as exc:
         raise ProfileFileError(f"Cannot read the file: {exc}") from None
+    if len(data) > MAX_PROFILE_BYTES:
+        raise ProfileFileError(
+            f"The file is over {MAX_PROFILE_BYTES // 1024} KB, too large for a profile file"
+        )
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ProfileFileError("Not UTF-8 text") from None
+
+
+def _load_toml(path: Path) -> dict[str, Any]:
+    """The parsed TOML at *path*; raises ``ProfileFileError`` when it cannot be read or parsed."""
+    return _parse_toml(read_profile_text(path))
 
 
 def read_entry(path: Path, folder: ProfileFolder) -> ProfileEntry:
@@ -430,11 +448,24 @@ class PlannedWrite:
     replacing: Path | None
 
     def write(self) -> Path:
-        """Write the file atomically, then remove the file it replaces when that is another path."""
-        write_private_text(self.path, self.text)
-        if self.replacing is not None and self.replacing != self.path:
-            self.replacing.unlink(missing_ok=True)
+        """Write the file atomically, then remove the file it replaces when that is another file."""
+        stale = (
+            None
+            if self.replacing is None or _same_file(self.replacing, self.path)
+            else self.replacing
+        )
+        write_text_atomically(self.path, self.text)
+        if stale is not None:
+            stale.unlink(missing_ok=True)
         return self.path
+
+
+def _same_file(first: Path, second: Path) -> bool:
+    """True when both paths exist and name one file, whatever their spelling or case."""
+    try:
+        return first.samefile(second)
+    except FileNotFoundError:
+        return False
 
 
 def builtin_keys() -> frozenset[str]:
@@ -477,22 +508,7 @@ def profile_text(profile: ProfileFile) -> str:
 
 def parse_text(text: str, stem: str, folder: ProfileFolder) -> ProfileFile:
     """Validate *text* as a profile file named *stem* when it names none; raises on a problem."""
-    try:
-        data = tomllib.loads(text)
-    # tomllib raises RecursionError on arrays nested a few hundred deep
-    except (tomllib.TOMLDecodeError, RecursionError) as exc:
-        raise ProfileFileError(f"Not valid TOML: {exc}") from None
-    return parse_profile(data, stem, folder)
-
-
-def read_profile_text(path: Path) -> str:
-    """The text of the file at *path*; raises ``ProfileFileError`` when it cannot be read."""
-    try:
-        return path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        raise ProfileFileError("Not UTF-8 text") from None
-    except OSError as exc:
-        raise ProfileFileError(f"Cannot read the file: {exc}") from None
+    return parse_profile(_parse_toml(text), stem, folder)
 
 
 def _clash(
