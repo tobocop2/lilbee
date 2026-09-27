@@ -556,12 +556,25 @@ class TestSearch:
     async def test_chunk_type_passed_to_searcher(self, mock_svc):
         mock_svc.searcher.search.return_value = []
         await handlers.search("test", chunk_type="wiki")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type="wiki")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type="wiki")
 
     async def test_chunk_type_defaults_to_none(self, mock_svc):
         mock_svc.searcher.search.return_value = []
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type=None)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type=None)
+
+    async def test_omitted_top_k_uses_configured_value(self, mock_svc):
+        """Omitting top_k resolves to cfg.top_k read at call time, not a hardcoded default."""
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        await handlers.search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=7, chunk_type=None)
+
+    async def test_explicit_top_k_wins_over_configured_value(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        await handlers.search("test", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
 
 
 class TestAsk:
