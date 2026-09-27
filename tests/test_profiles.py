@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.app import profiles
-from lilbee.app.profiles import ProfileEffect
+from lilbee.app.profiles import ProfileEffect, ProfileStatus
 from lilbee.app.services import get_services, set_services
 from lilbee.app.settings import apply_profile_layer, apply_settings_update
 from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -170,14 +170,14 @@ def test_cfg_matches_fresh_config_after_apply(store, monkeypatch):
 def test_changed_builtin_sets_banner_and_default_never_does(store):
     assert profiles.active(store).name == "Default"
     profiles.apply(store, "Scanned archive")
-    assert profiles.active(store).changed is False
+    assert profiles.active(store).status is ProfileStatus.CURRENT
     settings.write_profile_table(cfg.data_root, "Scanned archive", {"layout_detection": True})
     current = profiles.active(store)
-    assert (current.name, current.changed, current.missing) == ("Scanned archive", True, False)
+    assert (current.name, current.status) == ("Scanned archive", ProfileStatus.CHANGED)
     assert dict(current.values) == {"layout_detection": True}
     settings.write_profile_table(cfg.data_root, "Default", {"chunk_size": 900})
     default = profiles.active(store)
-    assert (default.name, default.changed, default.missing) == ("Default", False, False)
+    assert (default.name, default.status) == ("Default", ProfileStatus.CURRENT)
 
 
 def test_deleted_profile_keeps_recorded_copy(store):
@@ -185,10 +185,20 @@ def test_deleted_profile_keeps_recorded_copy(store):
     profiles.apply(store, "court")
     path.unlink()
     current = profiles.active(store)
-    assert (current.name, current.missing, current.changed) == ("Court", True, False)
+    assert (current.name, current.status, current.error) == ("Court", ProfileStatus.MISSING, None)
     assert dict(current.values) == {"chunk_size": 768}
     settings.overlay_persisted_settings(cfg.data_root)
     assert cfg.chunk_size == 768
+
+
+def test_applied_profile_whose_file_broke_reports_broken_with_the_reason(store):
+    path = _global_profile("court", '[profile]\nname = "Court"\n[values]\nchunk_size = 768\n')
+    profiles.apply(store, "court")
+    path.write_text('[profile]\nname = "Court"\n[values]\nchat_model = "x"\n', encoding="utf-8")
+    current = profiles.active(store)
+    assert (current.name, current.status) == ("Court", ProfileStatus.BROKEN)
+    assert current.error == "Profiles cannot set chat_model"
+    assert dict(current.values) == {"chunk_size": 768}
 
 
 def test_broken_or_missing_profile_refuses_apply(store):
