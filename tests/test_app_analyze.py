@@ -9,6 +9,7 @@ import pytest
 
 from lilbee.app import analyze, profiles
 from lilbee.app.analyze import (
+    _PICK_RULES,
     DEFAULT_FITS_NOTE,
     IMAGE_SCAN_NOTE,
     OCR_LANGUAGE_REASON,
@@ -28,6 +29,7 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import FtsLanguage
 from lilbee.core.profile_files import (
+    DEFAULT_PROFILE_NAME,
     PROFILES_DIRNAME,
     ProfileCatalog,
     ProfileFolder,
@@ -37,6 +39,7 @@ from lilbee.core.profile_files import (
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
 from lilbee.core.system import default_data_dir
 from lilbee.data.analyze import CorpusSignals, LanguageShare, PdfSignals
+from lilbee.data.ingest.ignore import IGNORE_FILENAME
 from lilbee.runtime.cancellation import TaskCancelledError
 
 _PDF = PdfSignals(
@@ -50,6 +53,7 @@ _PDF = PdfSignals(
 )
 _BASE = CorpusSignals(
     files_total=10,
+    documents_total=10,
     files_read=10,
     cap=500,
     failed=(),
@@ -58,7 +62,7 @@ _BASE = CorpusSignals(
     pdf=_PDF,
     median_chars=None,
     languages=(),
-    image_files_read=0,
+    image_files=0,
 )
 
 
@@ -145,10 +149,28 @@ def test_the_most_common_mapped_language_becomes_fts_language(store):
 def test_language_rows_carry_every_share_stemmer_and_tesseract_support():
     rows = language_rows(_signals(languages=_langs(("deu", 0.6), ("zho", 0.3), ("nob", 0.1))))
     assert rows == (
-        LanguageRow("deu", 0.6, FtsLanguage.GERMAN, True),
-        LanguageRow("zho", 0.3, None, False),
-        LanguageRow("nob", 0.1, FtsLanguage.NORWEGIAN, False),
+        LanguageRow("deu", 0.6, FtsLanguage.GERMAN, "deu", True),
+        LanguageRow("zho", 0.3, None, "zho", False),
+        LanguageRow("nob", 0.1, FtsLanguage.NORWEGIAN, "nor", False),
     )
+
+
+@pytest.mark.parametrize(
+    ("detected", "tesseract"), [("nob", "nor"), ("cmn", "chi_sim"), ("pes", "fas")]
+)
+def test_detected_codes_map_to_tesseract_language_names(store, monkeypatch, detected, tesseract):
+    monkeypatch.setattr(analyze, "ocr_language_supported", lambda code: code == tesseract)
+    signals = _signals(pdf=_scanned(0.1), languages=_langs((detected, 1.0)))
+    (row,) = language_rows(signals)
+    assert (row.ocr_code, row.ocr_supported) == (tesseract, True)
+    assert _recommend(store, signals).values["ocr_language"] == [tesseract]
+
+
+def test_a_missing_tesseract_language_is_named_as_tesseract_names_it(store):
+    signals = _signals(pdf=_scanned(0.1), languages=_langs(("nob", 0.5), ("deu", 0.5)))
+    rec = _recommend(store, signals)
+    assert rec.values["ocr_language"] == ["deu"]
+    assert "Tesseract has no language data for nor on this machine." in rec.notes
 
 
 def test_an_unmapped_top_language_keeps_fts_language_and_says_why(store):
@@ -211,7 +233,7 @@ def test_no_scans_means_no_ocr_language(store):
 
 
 def test_an_image_file_counts_as_a_scan_for_ocr_language(store):
-    rec = _recommend(store, _signals(image_files_read=1, languages=_langs(("deu", 1.0))))
+    rec = _recommend(store, _signals(image_files=1, languages=_langs(("deu", 1.0))))
     assert rec.values["ocr_language"] == ["deu"]
     assert IMAGE_SCAN_NOTE in rec.notes
 
@@ -378,6 +400,42 @@ def test_a_directory_is_walked_instead_of_the_corpus(store, monkeypatch, tmp_pat
     _run(store, AnalyzeRequest(directory=folder), monkeypatch=monkeypatch, seen=seen)
     _run(store, AnalyzeRequest(), monkeypatch=monkeypatch, seen=seen)
     assert [sorted(files) for files in seen] == [["sub/a.md"], ["owned.md"]]
+
+
+def test_no_directory_reads_linked_folders_with_the_ignore_rules(store, monkeypatch, tmp_path):
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.documents_dir / "owned.md").write_text("x", encoding="utf-8")
+    (cfg.documents_dir / "draft.md").write_text("x", encoding="utf-8")
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / IGNORE_FILENAME).write_text("draft.md\n", encoding="utf-8")
+    linked = tmp_path / "linked"
+    (linked / "build").mkdir(parents=True)
+    (linked / "paper.md").write_text("x", encoding="utf-8")
+    (linked / "build" / "out.md").write_text("x", encoding="utf-8")
+    (linked / IGNORE_FILENAME).write_text("build/\n", encoding="utf-8")
+    cfg.linked_roots = {"linked": str(linked)}
+    seen: list[dict] = []
+    _run(store, AnalyzeRequest(), monkeypatch=monkeypatch, seen=seen)
+    assert [sorted(files) for files in seen] == [["linked/paper.md", "owned.md"]]
+
+
+def test_a_target_without_apply_or_save_is_refused_before_reading(store, monkeypatch):
+    seen: list[dict] = []
+    with pytest.raises(ValueError, match="target takes effect only with apply or save"):
+        _run(store, AnalyzeRequest(target=ProfileFolder.GLOBAL), monkeypatch=monkeypatch, seen=seen)
+    assert seen == []
+    assert not (cfg.data_root / STATE_FILE_NAME).exists()
+
+
+def test_every_builtin_analyze_can_pick_is_a_shipped_builtin(store):
+    names = {rule.builtin for rule in _PICK_RULES} | {DEFAULT_PROFILE_NAME}
+    assert len(names) == 5
+    catalog = store.scan()
+    for name in names:
+        entry = catalog.find(name)
+        assert entry is not None, name
+        assert entry.folder is ProfileFolder.BUILTIN, name
+        assert entry.file is not None, name
 
 
 def test_a_directory_that_is_not_a_folder_is_refused(store, monkeypatch, tmp_path):

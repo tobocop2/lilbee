@@ -1369,10 +1369,16 @@ class AnalyzeSavedResponse(ProfileLocationResponse):
 
 
 class AnalyzeResponse(BaseModel):
-    """One analyze run: what it read and what it recommends; the shape every surface returns."""
+    """One analyze run: what it read and what it recommends; the shape every surface returns.
+
+    ``files_read`` counts the documents extracted without error, out of ``documents_total``;
+    ``files_counted`` code, image and archive files are counted and never read.
+    """
 
     files_total: int
+    documents_total: int
     files_read: int
+    files_counted: int
     cap: int
     failed: list[AnalyzeFailureResponse]
     file_types: dict[str, int]
@@ -1389,7 +1395,9 @@ class AnalyzeResponse(BaseModel):
         signals = report.signals
         return cls(
             files_total=signals.files_total,
+            documents_total=signals.documents_total,
             files_read=signals.files_read,
+            files_counted=signals.files_counted,
             cap=signals.cap,
             failed=[AnalyzeFailureResponse(file=f.file, error=f.error) for f in signals.failed],
             file_types=dict(signals.file_types),

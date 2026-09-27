@@ -249,9 +249,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Most files lilbee analyze reads; a larger corpus is sampled evenly down to this"
-            " many. Raise it to cover more files for a slower run. The default is not yet"
-            " measured on large corpora"
+            "Most documents lilbee analyze reads; more are sampled evenly down to this many."
+            " Code, image and archive files are counted, not read. Raise it to cover more"
+            " documents for a slower run. The default is not yet measured on large corpora"
         ),
     ),
     "extraction_threads": SettingDef(

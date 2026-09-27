@@ -144,7 +144,7 @@ The TUI marks an override with a pill on the setting's row: `set by you` for a `
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
-| `analyze_max_files` | `LILBEE_ANALYZE_MAX_FILES` | `int` | `500` | yes | yes | yes | no | Most files lilbee analyze reads; a larger corpus is sampled evenly down to this many. Raise it to cover more files for a slower run. The default is not yet measured on large corpora. |
+| `analyze_max_files` | `LILBEE_ANALYZE_MAX_FILES` | `int` | `500` | yes | yes | yes | no | Most documents lilbee analyze reads; more are sampled evenly down to this many. Code, image and archive files are counted, not read. Raise it to cover more documents for a slower run. The default is not yet measured on large corpora. |
 | `auto_sync` | `LILBEE_AUTO_SYNC` | `bool` | `true` | yes | yes | yes | no | Run a sync before `lilbee ask` (disable on large static corpora). |
 | `batch_extraction` | `LILBEE_BATCH_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Coalesce concurrent extractions into one xberg batch call. |
 | `batch_extraction_size` | `LILBEE_BATCH_EXTRACTION_SIZE` | `int` | `8` | yes | yes | yes | no | Max files per extract_batch call when batch extraction is on. |
