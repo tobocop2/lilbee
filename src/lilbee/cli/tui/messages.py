@@ -12,6 +12,7 @@ from functools import lru_cache
 from importlib.util import find_spec
 
 from lilbee.core.config import cfg
+from lilbee.data.types import OcrBackendUsed, SyncResult
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
@@ -68,6 +69,10 @@ SYNC_SKIPPED_NO_VISION = (
     "Skipped (no text extracted): {files}. "
     "Configure a vision_model in Settings to OCR scanned PDFs."
 )
+SYNC_SKIPPED_OCR_OFF = (
+    "Skipped (no text extracted, OCR is off): {files}. "
+    "Set enable_ocr to true in Settings to OCR scanned PDFs."
+)
 SYNC_SKIPPED_VISION_FAILED = (
     "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )
@@ -83,15 +88,17 @@ CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
 CMD_PRUNE_IGNORED_SOME = "Dropped {count} document(s) your ignore patterns exclude."
 
 
-def sync_skipped_message(files: str) -> str:
-    """Pick the right skipped-files message based on whether vision_model is set.
+def sync_skipped_message(result: SyncResult) -> str:
+    """The skipped-files message for the OCR the skipped files' extraction ran with.
 
-    When the user has no vision_model configured the actionable advice is
-    'go set one'; when one IS configured the OCR failed at runtime, so the
-    message points the user at the worker log instead of telling them to
-    do something they have already done.
+    OCR off names the setting; vision OCR that returned nothing points at the
+    log; otherwise (Tesseract, or no OCR involved) the advice is a vision model.
     """
-    if cfg.vision_model:
+    files = ", ".join(result.skipped)
+    backends = {report.backend for report in result.skipped_ocr.values()}
+    if OcrBackendUsed.NONE in backends:
+        return SYNC_SKIPPED_OCR_OFF.format(files=files)
+    if OcrBackendUsed.VISION in backends:
         log_path = cfg.data_root / "logs" / "server.log"
         return SYNC_SKIPPED_VISION_FAILED.format(files=files, log_path=log_path)
     return SYNC_SKIPPED_NO_VISION.format(files=files)

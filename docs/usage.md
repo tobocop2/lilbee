@@ -1510,6 +1510,11 @@ embedding model installed.
 For PDFs without embedded text, lilbee supports two OCR backends. When a
 vision model is configured, it takes precedence.
 
+`enable_ocr = false` (or `lilbee add --no-ocr`) turns off every OCR backend,
+the vision model included. A set vision model does not turn OCR back on. With
+OCR off, lilbee skips a PDF that has no text layer, and the skip message says
+that OCR is off. `lilbee status` warns when a vision model is set while OCR is off.
+
 | | Tesseract | Vision model |
 |---|---|---|
 | **Output** | Plain text | Structured markdown (tables, headings) |

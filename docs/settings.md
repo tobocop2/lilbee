@@ -140,7 +140,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `batch_extraction_size` | `LILBEE_BATCH_EXTRACTION_SIZE` | `int` | `8` | yes | yes | yes | no | Max files per extract_batch call when batch extraction is on. |
 | `chunk_overlap` | `LILBEE_CHUNK_OVERLAP` | `int` | `100` | yes | yes | yes | no | Tokens of overlap between adjacent chunks (preserves context across boundaries). **Reindex** with `lilbee rebuild` after changing. |
 | `chunk_size` | `LILBEE_CHUNK_SIZE` | `int` | `512` | yes | yes | yes | no | Document chunk size in tokens (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
-| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | Vision OCR for scanned PDFs (empty = auto-detect from vision_model). |
+| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | OCR for scanned PDFs: the vision model when one is set, else Tesseract (empty or true = on; false = off for every backend, the vision model included). |
 | `entity_extraction` | `LILBEE_ENTITY_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Extract typed entities automatically at sync (schema induced on first run). |
 | `extraction_threads` | `LILBEE_EXTRACTION_THREADS` | `int` | `0` | yes | yes | yes | no | Threads xberg uses for PDF rendering, OCR and layout models, and the most Tesseract OCR sessions that run at once (0 = auto, half the available cores). Takes full effect after a restart. |
 | `extraction_timeout` | `LILBEE_EXTRACTION_TIMEOUT` | `int` | `0` | yes | yes | yes | no | Wall-clock seconds one file gets to extract before ingest gives up on it (0 = no limit). |

@@ -102,9 +102,11 @@ from lilbee.data.store import (
 from lilbee.data.title import derive_title
 from lilbee.data.types import (
     ChunkRecord,
+    DocumentRecords,
     FileChangePlan,
     FileToProcess,
     MemberRecords,
+    OcrReport,
     ShardId,
     SyncResult,
     _IngestResult,
@@ -264,17 +266,19 @@ async def produce_records(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
-) -> tuple[list[ChunkRecord], SourceMeta]:
-    """Extract, chunk, and embed a single file into (records, source metadata).
+) -> DocumentRecords:
+    """Extract, chunk, and embed a single file into its records, metadata and OCR report.
 
     The LanceDB write is deferred: records are returned to the caller and written
     in a batched flush (see :func:`_flush_writes`), so bulk ingest pays one
     write-lock acquisition per batch instead of one per file. The per-page text
     dataset rows land in ``page_texts_out`` and are written by the same flush.
     The returned metadata (extraction-provided when available, stem-derived title
-    otherwise) stamps every record's ``title`` and updates the source row.
+    otherwise) stamps every record's ``title`` and updates the source row. The OCR
+    report is ``None`` for code and markdown, which never reach OCR.
     """
     records: list[ChunkRecord]
+    ocr: OcrReport | None = None
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
     if content_type == "code":
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
@@ -284,7 +288,7 @@ async def produce_records(
             path, source_name, on_progress, page_texts_out=page_texts
         )
     else:
-        records, meta = await ingest_document(
+        records, meta, ocr = await ingest_document(
             path,
             source_name,
             content_type,
@@ -297,7 +301,7 @@ async def produce_records(
         # NULL (not "") for an absent title, so chunk rows match the migration
         # and the _sources table, which both persist absence as NULL.
         record["title"] = meta.title or None
-    return records, meta
+    return DocumentRecords(records, meta, ocr)
 
 
 def _disk_stat(path: Path) -> SourceStat | None:
@@ -1249,7 +1253,7 @@ async def sync(
 
     failed: dict[str, None] = {}
     # Refused formats start the run skipped; they get no skip marker (no planned hash).
-    skipped: dict[str, None] = dict.fromkeys(scan.excluded)
+    skipped: dict[str, OcrReport | None] = dict.fromkeys(scan.excluded)
     # filename → why it was skipped/failed (for reporting)
     reasons: dict[str, str] = {name: why.value for name, why in scan.excluded.items()}
     flush_failed: set[str] = set()
@@ -1360,6 +1364,7 @@ async def sync(
         relocated=relocated,
         failed=list(failed),
         skipped=list(skipped),
+        skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
         held_out=describe_skips(config.data_root, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
@@ -1548,7 +1553,7 @@ async def ingest_stream(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
-    skipped: dict[str, None],
+    skipped: dict[str, OcrReport | None],
     *,
     plan: _StreamedPlan | None = None,
     quiet: bool = False,
@@ -1607,7 +1612,7 @@ async def ingest_stream(
                 if entry.content_type in archive_content_types():
                     return await _archive_result(entry, on_progress, pages_done)
                 page_texts: list[PageTextRecord] = []
-                records, meta = await produce_records(
+                records, meta, ocr = await produce_records(
                     entry.path,
                     name,
                     entry.content_type,
@@ -1635,6 +1640,7 @@ async def ingest_stream(
                     concept_records=concept_records,
                     entity_rows=entity_rows,
                     meta=meta,
+                    ocr=ocr,
                 )
             except ChunkLimitError as exc:
                 return _over_limit_result(
@@ -1801,7 +1807,7 @@ async def _collect_results(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
-    skipped: dict[str, None],
+    skipped: dict[str, OcrReport | None],
     *,
     window: int,
     on_progress: DetailedProgressCallback = noop_callback,
@@ -1900,7 +1906,7 @@ async def _collect_under_bar(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
-    skipped: dict[str, None],
+    skipped: dict[str, OcrReport | None],
     *,
     window: int,
     on_progress: DetailedProgressCallback = noop_callback,
@@ -1959,7 +1965,7 @@ async def _buffer_and_maybe_flush(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
-    skipped: dict[str, None],
+    skipped: dict[str, OcrReport | None],
     flush_failed: set[str] | None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
@@ -2009,7 +2015,7 @@ def _classify_result(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
-    skipped: dict[str, None],
+    skipped: dict[str, OcrReport | None],
     reasons: dict[str, str] | None = None,
 ) -> BatchStatus:
     """Record a completed file's outcome and return its batch status.
@@ -2043,7 +2049,7 @@ def _classify_result(
         # stops replanning, but it is reported as skipped since search can't see it.
         added.pop(result.name, None)
         updated.pop(result.name, None)
-        skipped[result.name] = None
+        skipped[result.name] = result.ocr
         if reasons is not None:
             reasons[result.name] = (
                 "no text extracted (0 chunks)"
@@ -2173,7 +2179,7 @@ def _flush_writes(
     added: dict[str, None],
     updated: dict[str, None],
     failed: dict[str, None],
-    skipped: dict[str, None],
+    skipped: dict[str, OcrReport | None],
     flush_failed: set[str] | None = None,
 ) -> None:
     """Flush the buffered documents to the store; track a write failure.

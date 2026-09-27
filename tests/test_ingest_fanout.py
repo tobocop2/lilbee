@@ -12,7 +12,7 @@ import pytest
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
-from lilbee.data.types import ShardId, SkippedSource, SyncResult
+from lilbee.data.types import OcrBackendUsed, OcrReport, ShardId, SkippedSource, SyncResult
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -569,6 +569,22 @@ class TestAggregateResults:
         # Each worker owns one slice, so the held-out files of every slice have to
         # reach the one result or a shard's markers go unreported.
         assert [held.filename for held in result.held_out] == ["d.pdf"]
+
+    def test_skipped_ocr_reports_from_every_worker_reach_the_one_result(self):
+        off = OcrReport(backend=OcrBackendUsed.NONE)
+        vision = OcrReport(backend=OcrBackendUsed.VISION, pages=2)
+        verdicts = [
+            fanout.ShardDone(
+                kind="done",
+                index=index,
+                result=SyncResult(skipped=[name], skipped_ocr={name: report}),
+                error=None,
+            )
+            for index, (name, report) in enumerate([("a.pdf", off), ("b.pdf", vision)])
+        ]
+        result = fanout.aggregate_results(verdicts)
+        assert result.skipped == ["a.pdf", "b.pdf"]
+        assert result.skipped_ocr == {"a.pdf": off, "b.pdf": vision}
 
 
 class TestDrain:

@@ -103,7 +103,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=True,
         group=SettingGroup.INGEST,
-        help_text="Vision OCR for scanned PDFs (empty = auto-detect from vision_model)",
+        help_text=(
+            "OCR for scanned PDFs: the vision model when one is set, else Tesseract "
+            "(empty or true = on; false = off for every backend, the vision model included)"
+        ),
     ),
     "ocr_timeout": SettingDef(
         float,

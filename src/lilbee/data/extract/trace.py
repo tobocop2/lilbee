@@ -14,6 +14,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from lilbee.data.types import OcrBackendUsed, OcrReport
+
 trace_log = logging.getLogger("lilbee.ingest.trace")
 vision_log = logging.getLogger("lilbee.ingest.vision")
 
@@ -29,20 +31,19 @@ class ExtractionTrace:
     elapsed_s: float
     page_count: int
     chunk_count: int
-    ocr_pages: int
-    vision_configured: bool
+    ocr: OcrReport
 
     @property
     def used_vision(self) -> bool:
         """A page fell through to OCR and the OCR backend is the vision model."""
-        return self.ocr_pages > 0 and self.vision_configured
+        return self.ocr.pages > 0 and self.ocr.backend is OcrBackendUsed.VISION
 
     def as_line(self) -> str:
         """A stable key=value line, easy to grep, diff, and hand to the xberg author."""
         return (
             f"extract source={self.source!r} type={self.content_type} "
             f"elapsed_ms={self.elapsed_s * 1000:.0f} pages={self.page_count} "
-            f"chunks={self.chunk_count} ocr_pages={self.ocr_pages} "
+            f"chunks={self.chunk_count} ocr={self.ocr.backend} ocr_pages={self.ocr.pages} "
             f"vision={'yes' if self.used_vision else 'no'}"
         )
 
@@ -82,6 +83,6 @@ def trace_extraction(trace: ExtractionTrace) -> None:
         vision_log.info(
             "vision-ocr source=%r ocr_pages=%d elapsed_ms=%.0f",
             trace.source,
-            trace.ocr_pages,
+            trace.ocr.pages,
             trace.elapsed_s * 1000,
         )

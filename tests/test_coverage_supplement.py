@@ -18,6 +18,7 @@ import pytest
 
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
+from lilbee.data.types import OcrBackendUsed, OcrReport, SyncResult
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 
@@ -1370,23 +1371,44 @@ class TestSettingsTabNavFallbacks:
 
 
 class TestSyncSkippedMessageBranches:
-    """`sync_skipped_message` returns vision-failed vs no-vision text."""
+    """`sync_skipped_message` picks its text from the OCR the skipped files ran, not config."""
 
-    def test_returns_vision_failed_when_vision_model_set(self) -> None:
+    @staticmethod
+    def _result(backend: OcrBackendUsed | None) -> SyncResult:
+        reports = {} if backend is None else {"a.pdf": OcrReport(backend=backend)}
+        return SyncResult(skipped=["a.pdf"], skipped_ocr=reports)
+
+    def test_ocr_off_names_the_setting_even_with_a_vision_model(self) -> None:
         from lilbee.cli.tui.messages import sync_skipped_message
 
         cfg.vision_model = "stub/vision"
-        msg = sync_skipped_message("a.pdf")
+        msg = sync_skipped_message(self._result(OcrBackendUsed.NONE))
+        assert "OCR is off" in msg and "enable_ocr" in msg and "a.pdf" in msg
+        assert "vision OCR returned no text" not in msg
+
+    def test_returns_vision_failed_when_vision_ran(self) -> None:
+        from lilbee.cli.tui.messages import sync_skipped_message
+
+        cfg.vision_model = ""
+        msg = sync_skipped_message(self._result(OcrBackendUsed.VISION))
         assert "vision OCR returned no text" in msg
         # The log path must be the resolved, per-platform location (not a
         # hardcoded macOS string), so it's correct on Linux/Windows too.
         assert str(cfg.data_root / "logs" / "server.log") in msg
 
-    def test_returns_no_vision_when_vision_model_unset(self) -> None:
+    def test_returns_no_vision_when_tesseract_ran(self) -> None:
         from lilbee.cli.tui.messages import sync_skipped_message
 
-        cfg.vision_model = ""
-        assert "Configure a vision_model" in sync_skipped_message("a.pdf")
+        cfg.vision_model = "stub/vision"
+        assert "Configure a vision_model" in sync_skipped_message(
+            self._result(OcrBackendUsed.TESSERACT)
+        )
+
+    def test_returns_no_vision_when_no_file_reached_ocr(self) -> None:
+        from lilbee.cli.tui.messages import sync_skipped_message
+
+        cfg.vision_model = "stub/vision"
+        assert "Configure a vision_model" in sync_skipped_message(self._result(None))
 
 
 class TestChattyDependencyFilters:
@@ -2389,6 +2411,47 @@ class TestAppSetActiveModelTaskGuard:
             cfg.embedding_model = embed_default
 
 
+class TestAppToastsOcrOffWarning:
+    """The TUI toasts the warning a settings update reports for OCR off with a vision model."""
+
+    async def test_turning_ocr_off_with_a_vision_model_toasts_the_warning(self) -> None:
+        from lilbee.cli.tui.app import LilbeeApp
+
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        app = LilbeeApp()
+        with (
+            mock.patch.object(
+                app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
+            ),
+            mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+        ):
+            app.set_setting("enable_ocr", False)
+            app.set_setting("enable_ocr", True)
+        assert len(notify_calls) == 1
+        args, kwargs = notify_calls[0]
+        assert "enable_ocr" in args[0] and cfg.vision_model in args[0]
+        assert kwargs.get("severity") == "warning"
+
+    async def test_assigning_a_vision_model_toasts_the_update_warning(self) -> None:
+        from lilbee.app.settings import SettingsUpdateResult
+        from lilbee.cli.tui.app import LilbeeApp
+
+        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+        app = LilbeeApp()
+        result = SettingsUpdateResult(
+            updated=["vision_model"], reindex_required=False, warnings=("OCR is off",)
+        )
+        with (
+            mock.patch.object(
+                app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
+            ),
+            mock.patch("lilbee.cli.tui.app.apply_settings_update", return_value=result),
+        ):
+            app.set_active_model("vision_model", "org/V-GGUF/v.gguf")
+        assert [(a[0], kw.get("severity")) for a, kw in notify_calls] == [("OCR is off", "warning")]
+
+
 class TestAppSetActiveModelDownloadGuard:
     """`set_active_model` refuses a ref whose download is still queued or active."""
 
@@ -2592,3 +2655,10 @@ class TestModelInfoExceptionBranches:
         assert result is info
         # Exception swallowed before the success branch overwrites the field.
         assert info.embed_arch == "sentinel"
+
+
+def test_enable_ocr_help_says_false_turns_off_every_backend() -> None:
+    from lilbee.app.settings import get_setting
+
+    help_text = get_setting("enable_ocr").help_text
+    assert "false = off for every backend, the vision model included" in help_text
