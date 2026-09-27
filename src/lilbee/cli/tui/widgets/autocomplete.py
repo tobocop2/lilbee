@@ -19,7 +19,12 @@ from lilbee.app.services import get_services
 from lilbee.app.settings import _is_settable
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.app.themes import DARK_THEMES
-from lilbee.cli.tui.command_registry import ANALYZE_OFF_ARG, COMMANDS, completion_names
+from lilbee.cli.tui.command_registry import (
+    ANALYZE_OFF_ARG,
+    ANALYZE_REPORT_ARG,
+    COMMANDS,
+    completion_names,
+)
 from lilbee.cli.tui.widgets.clamped_option_list import ClampedOptionList
 from lilbee.core.profile_files import ProfileStore
 
@@ -49,7 +54,7 @@ _MAX_PATH_COMPLETIONS = 20
 # collapse).
 PATH_ARG_COMMANDS = frozenset({"/add", "/import", "/export", "/export-chat", "/analyze"})
 # Words a path-argument command also takes, offered ahead of the paths.
-PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG,)}
+PATH_ARG_WORDS: dict[str, tuple[str, ...]] = {"/analyze": (ANALYZE_OFF_ARG, ANALYZE_REPORT_ARG)}
 
 _CSS_FILE = Path(__file__).parent / "autocomplete.tcss"
 

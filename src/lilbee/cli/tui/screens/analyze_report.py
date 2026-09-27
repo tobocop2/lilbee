@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar, NoReturn
@@ -62,16 +63,39 @@ class ReportAction(StrEnum):
     CLOSE = "close"
 
 
+@dataclass(frozen=True)
+class FinishedAnalysis:
+    """A finished analyze run: its report and the folder it read."""
+
+    report: AnalyzeReport
+    folder: str
+
+
 def start_analysis(app: LilbeeApp, directory: Path | None) -> None:
-    """Queue analyze of *directory*, or of the indexed corpus when None; the report opens after."""
+    """Queue analyze of *directory*, or of the indexed corpus when None; a toast says when done."""
     folder = str(directory) if directory is not None else msg.ANALYZE_YOUR_DOCUMENTS
 
     def _target(reporter: ProgressReporter) -> None:
         report = _analyze(app, directory, reporter)
-        call_from_thread(app, app.push_screen, AnalyzeReportScreen(report, folder))
+        call_from_thread(app, _finished, app, FinishedAnalysis(report, folder))
 
     name = msg.TASK_NAME_ANALYZE.format(folder=folder)
     app.task_bar.start_task(name, TaskType.ANALYZE, _target, indeterminate=True)
+
+
+def _finished(app: LilbeeApp, analysis: FinishedAnalysis) -> None:
+    """Keep the report for /analyze report; it never opens over what the user is typing."""
+    app.last_analysis = analysis
+    app.notify(msg.ANALYZE_DONE.format(folder=analysis.folder))
+
+
+def open_report(app: LilbeeApp) -> None:
+    """Open the last finished analyze report, or say there is none yet."""
+    analysis = app.last_analysis
+    if analysis is None:
+        app.notify(msg.ANALYZE_NO_REPORT, severity="warning")
+        return
+    app.push_screen(AnalyzeReportScreen(analysis.report, analysis.folder))
 
 
 def _analyze(app: LilbeeApp, directory: Path | None, reporter: ProgressReporter) -> AnalyzeReport:
@@ -202,11 +226,10 @@ class AnalyzeReportScreen(Screen[None]):
     """What analyze found and the profile it recommends; nothing changes until Apply or Save."""
 
     CSS_PATH = "analyze_report.tcss"
-    AUTO_FOCUS = "#analyze-apply"
+    # the read-only scroll area: no key acts until the user moves to a pill
+    AUTO_FOCUS = "#analyze-report"
 
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("a", "apply", "Apply"),
-        Binding("s", "save", "Save only", show=False),
         *browse_back_bindings(),
         Binding("left", "app.focus_previous", "Previous", show=False),
         Binding("right", "app.focus_next", "Next", show=False),
@@ -322,8 +345,7 @@ class AnalyzeReportScreen(Screen[None]):
         """Save the recommended profile without switching to it."""
         rec = self._report.recommendation
         name = rec.name
-        if name is None:
-            return
+        assert name is not None  # noqa: S101 -- the Save pill shows only for a derived profile
         values = rec.values
         run_profile_op(
             self,

@@ -53,6 +53,7 @@ from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from lilbee.app.services import Services
+    from lilbee.cli.tui.screens.analyze_report import FinishedAnalysis
     from lilbee.cli.tui.screens.chat import ChatScreen
     from lilbee.cli.tui.screens.startup_gate import StartupGate
 
@@ -258,6 +259,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.widgets.task_bar_controller import TaskBarController
 
         self.task_bar = TaskBarController(self)
+        self.last_analysis: FinishedAnalysis | None = None
 
     def notify(
         self,

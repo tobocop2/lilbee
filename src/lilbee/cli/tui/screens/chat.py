@@ -45,9 +45,13 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
-from lilbee.cli.tui.command_registry import ANALYZE_OFF_ARG, runs_while_streaming
+from lilbee.cli.tui.command_registry import (
+    ANALYZE_OFF_ARG,
+    ANALYZE_REPORT_ARG,
+    runs_while_streaming,
+)
 from lilbee.cli.tui.log_routing import tui_log_path
-from lilbee.cli.tui.screens.analyze_report import start_analysis
+from lilbee.cli.tui.screens.analyze_report import open_report, start_analysis
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -1466,14 +1470,22 @@ class ChatScreen(Screen[None]):
 
     def _cmd_analyze(self, args: str) -> None:
         arg = args.strip()
-        if arg.lower() == ANALYZE_OFF_ARG:
-            run_profile_op(self, lambda: hide_tip(cfg.data_root), self._tip_hidden)
+        words: dict[str, Callable[[], None]] = {
+            ANALYZE_OFF_ARG: self._hide_tip,
+            ANALYZE_REPORT_ARG: lambda: open_report(self.app),
+        }
+        word = words.get(arg.lower())
+        if word is not None:
+            word()
             return
         directory = _whole_path(arg) if arg else None
         if directory is not None and not directory.is_dir():
             self.notify(msg.ANALYZE_NOT_A_FOLDER.format(path=directory), severity="error")
             return
         start_analysis(self.app, directory)
+
+    def _hide_tip(self) -> None:
+        run_profile_op(self, lambda: hide_tip(cfg.data_root), self._tip_hidden)
 
     def _tip_hidden(self, _result: None) -> None:
         self._arg_hint.refresh_tip()
