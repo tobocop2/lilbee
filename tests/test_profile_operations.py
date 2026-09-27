@@ -598,3 +598,34 @@ def test_update_refuses_a_file_changed_since_it_was_applied(store):
         profiles.update(store)
     assert path.read_text(encoding="utf-8") == edited
     assert _stored()["chunk_overlap"] == 50
+
+
+def test_update_with_a_name_needs_the_active_profile(store):
+    path = _write(_global_dir(), "mine", '[profile]\nname = "Mine"\n[values]\n')
+    profiles.apply(store, "mine")
+    _prepend_config("chunk_size = 700\n")
+    with pytest.raises(ValueError, match=r"^Other is not this project's profile; Mine is$"):
+        profiles.update(store, "Other")
+    assert _read(path)["values"] == {}
+    assert profiles.update(store, "MINE").absorbed == ("chunk_size",)
+    assert _read(path)["values"] == {"chunk_size": 700}
+
+
+def test_import_text_names_the_file_by_its_slug_whatever_the_upload_name(store, tmp_path):
+    location = profiles.import_text(store, "[values]\n", "../../Up Load.toml")
+    assert (location.name, location.path) == ("up-load", _global_dir() / "up-load.toml")
+    assert not (tmp_path / "Up Load.toml").exists()
+
+
+def test_a_missing_name_raises_the_not_found_error(store):
+    with pytest.raises(profiles.ProfileNotFoundError, match=r"^No profile named 'nope'$"):
+        profiles.show(store, "nope")
+
+
+def test_credit_line_names_each_author_and_their_github():
+    authors = (
+        profile_files.ProfileAuthor("Jane Doe", "janedoe"),
+        profile_files.ProfileAuthor("Sam Roe", None),
+    )
+    assert profiles.credit_line(authors) == "by Jane Doe (@janedoe), Sam Roe"
+    assert profiles.credit_line(()) is None
