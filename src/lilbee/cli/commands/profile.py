@@ -144,7 +144,8 @@ def _render_active(current: ActiveProfileResponse) -> None:
             _line(line)
 
 
-def _render_changes(rows: list[ProfileDiffRowResponse]) -> None:
+def render_changes(rows: list[ProfileDiffRowResponse]) -> None:
+    """Print the settings a profile apply changes, as a table."""
     if not rows:
         _line("No settings change.")
         return
@@ -158,7 +159,7 @@ def _render_changes(rows: list[ProfileDiffRowResponse]) -> None:
 
 def _render_diff(diff: ProfileDiffResponse) -> None:
     _line(f"Applying {diff.name}:", theme.ACCENT)
-    _render_changes(diff.changes)
+    render_changes(diff.changes)
     if diff.kept:
         _line(f"Keeps your values of: {', '.join(diff.kept)}")
     _line(f"{diff.untouched_count} settings are never touched by profiles.", theme.MUTED)
@@ -253,7 +254,7 @@ def profile_apply(
     result = ProfileApplyResponse.from_result(_run(lambda: profiles.apply(_store(), name)))
     if not cfg.json_mode:
         _line(f"Applied {result.name}.", theme.ACCENT)
-        _render_changes(result.changes)
+        render_changes(result.changes)
     reindexed: int | None = None
     reindex_error: str | None = None
     if reindex and result.reindex_required:

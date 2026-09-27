@@ -33,6 +33,7 @@ from lilbee.cli.app import (
     global_option,
 )
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands.analyze import print_tip_if_shown
 from lilbee.cli.helpers import (
     add_paths,
     json_output,
@@ -574,6 +575,7 @@ def add(
 
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
+    print_tip_if_shown(cfg.data_root)
 
     try:
         crawled_paths = _crawl_urls_step(
