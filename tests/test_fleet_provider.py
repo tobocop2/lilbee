@@ -29,6 +29,7 @@ from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
 from lilbee.providers.roles import RerankMode, WorkerRole
 
 _GB = 1024**3
+_real_plan_all_launches = planning_mod.plan_all_launches
 
 
 def _fake_client(in_flight: int = 0) -> MagicMock:
@@ -1347,6 +1348,135 @@ def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
 def test_vision_slot_capacity_none_before_fleet_up() -> None:
     # No launch snapshot yet: the fan-out keeps its own estimate.
     assert FleetProvider().vision_slot_capacity() is None
+
+
+@pytest.fixture
+def ocr_gated_engine(monkeypatch, tmp_path: Path):
+    """An engine planned by the real plan_all_launches, one fake launch per enrolled role."""
+    swap = _install_engine(monkeypatch, tmp_path, launches=[])
+    by_role = {role: _fake_launch(role) for role in (WorkerRole.CHAT, WorkerRole.VISION)}
+    plans: list[set[WorkerRole]] = []
+
+    def _plan(roles, *_args) -> planning_mod.FleetPlan:
+        plans.append(set(roles))
+        return planning_mod.FleetPlan(tuple(by_role[role] for role in by_role if role in roles))
+
+    ocr_client = _fake_client()
+    ocr_client.chat.return_value = "ocr text"
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: ocr_client)
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _real_plan_all_launches)
+    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
+    )
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+    monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
+    monkeypatch.setattr(planning_mod, "plan_launches", _plan)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    yield SimpleNamespace(swap=swap, plans=plans)
+    planning_mod.revoke_vision_on_request()
+
+
+def _started_roles(swap: _FakeSwap) -> set[WorkerRole]:
+    return {launch.role for launches in swap.started for launch in launches}
+
+
+@pytest.mark.parametrize(("enable_ocr", "vision_warmed"), [(False, False), (None, True)])
+def test_warm_up_starts_and_warms_vision_only_when_ocr_is_on(
+    monkeypatch, ocr_gated_engine, enable_ocr: bool | None, vision_warmed: bool
+) -> None:
+    monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
+    warmed: list[WorkerRole] = []
+    monkeypatch.setattr(prov_mod, "_warm_role", lambda role, _client: warmed.append(role))
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._warm_up_blocking()
+    assert WorkerRole.CHAT in warmed  # the warm ran
+    assert (WorkerRole.VISION in warmed) is vision_warmed
+    assert (WorkerRole.VISION in _started_roles(ocr_gated_engine.swap)) is vision_warmed
+
+
+@pytest.mark.parametrize("enable_ocr", [False, True])
+def test_toggling_ocr_at_runtime_replans_the_vision_role(
+    monkeypatch, ocr_gated_engine, enable_ocr: bool
+) -> None:
+    monkeypatch.setattr(cfg, "enable_ocr", not enable_ocr)
+    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert (WorkerRole.VISION in p._clients) is not enable_ocr
+    monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
+    p.reload_role(WorkerRole.VISION, wait=True)
+    assert (WorkerRole.VISION in p._clients) is enable_ocr
+    assert WorkerRole.CHAT in p._clients
+
+
+def test_vision_ocr_with_ocr_off_starts_vision_for_the_request(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    monkeypatch.setattr(cfg, "enable_ocr", False)
+    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
+    p = FleetProvider()
+    p._ensure_fleet()
+    assert WorkerRole.VISION not in p._clients
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert WorkerRole.VISION in _started_roles(ocr_gated_engine.swap)
+    assert len(ocr_gated_engine.plans) == 3  # demand, build, then one re-plan for vision
+
+
+def test_vision_ocr_with_ocr_on_does_not_replan(monkeypatch, ocr_gated_engine) -> None:
+    monkeypatch.setattr(cfg, "enable_ocr", None)
+    p = FleetProvider()
+    p._ensure_fleet()
+    plans_after_build = len(ocr_gated_engine.plans)
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert len(ocr_gated_engine.plans) == plans_after_build
+
+
+def test_vision_ocr_without_a_vision_model_does_not_replan(monkeypatch, ocr_gated_engine) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "vision_model", "")
+    p = FleetProvider()
+    p._ensure_fleet()
+    plans_after_build = len(ocr_gated_engine.plans)
+    with pytest.raises(ProviderError):
+        p.vision_ocr(b"png", "")
+    assert len(ocr_gated_engine.plans) == plans_after_build
+    assert WorkerRole.CHAT in p._clients  # the fleet came up without vision
+
+
+def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    monkeypatch.setattr(cfg, "enable_ocr", False)
+    p = FleetProvider()
+    p._ensure_fleet()
+    real_thread = threading.Thread
+    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
+    results: list[str] = []
+    workers = [
+        real_thread(target=lambda: results.append(p.vision_ocr(b"png", "org/repo/v.gguf")))
+        for _ in range(4)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=10)
+    assert results == ["ocr text"] * 4
+    assert sum(WorkerRole.VISION in plan for plan in ocr_gated_engine.plans) == 1
+
+
+def test_a_vision_setting_reload_revokes_the_request_grant(monkeypatch, ocr_gated_engine) -> None:
+    monkeypatch.setattr(cfg, "enable_ocr", False)
+    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
+    p = FleetProvider()
+    p._ensure_fleet()
+    p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert WorkerRole.VISION in p._clients
+    p.reload_role(WorkerRole.VISION, wait=True)
+    assert WorkerRole.VISION not in p._clients
 
 
 def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
