@@ -190,13 +190,19 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Opt-in topic-aware chunker (default off; may fragment numbered procedures)",
+        help_text=(
+            "Opt-in topic-aware chunker (default off; may fragment numbered procedures) "
+            "(changes invalidate the index)"
+        ),
     ),
     "topic_threshold": SettingDef(
         float,
         nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on",
+        help_text=(
+            "Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking "
+            "is on (changes invalidate the index)"
+        ),
     ),
     "token_sizing": SettingDef(
         bool,

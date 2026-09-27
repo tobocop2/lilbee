@@ -774,6 +774,76 @@ class TestTableModelSetting:
         assert both.reindex_required is True
 
 
+class TestSemanticChunkingSetting:
+    """The semantic-chunking flag is writable, grouped with ingest, and reindex-marked."""
+
+    def test_semantic_chunking_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP["semantic_chunking"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is bool
+        assert defn.group == "Ingest"
+        assert builtin_value("semantic_chunking") is False
+
+    def test_semantic_chunking_requires_reindex(self):
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        assert "semantic_chunking" in WRITABLE_CONFIG_FIELDS
+        assert "semantic_chunking" in REINDEX_FIELDS
+
+    def test_semantic_chunking_change_flags_a_reindex(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        result = appset.apply_settings_update({"semantic_chunking": True})
+        assert result.updated == ["semantic_chunking"]
+        assert result.reindex_required is True
+
+
+class TestTopicThresholdSetting:
+    """The topic-threshold value is writable, grouped with ingest, reindex-marked, and
+    inert while semantic chunking is off (xberg reads it only inside that chunker)."""
+
+    def test_topic_threshold_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP["topic_threshold"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is float
+        assert defn.group == "Ingest"
+        assert builtin_value("topic_threshold") == 0.75
+
+    def test_topic_threshold_requires_reindex(self):
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        assert "topic_threshold" in WRITABLE_CONFIG_FIELDS
+        assert "topic_threshold" in REINDEX_FIELDS
+
+    def test_topic_threshold_change_flags_no_reindex_while_semantic_chunking_is_off(
+        self, monkeypatch
+    ):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "semantic_chunking", False)
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        result = appset.apply_settings_update({"topic_threshold": 0.5})
+        assert result.updated == ["topic_threshold"]
+        assert result.reindex_required is False
+
+    def test_topic_threshold_change_flags_a_reindex_once_semantic_chunking_is_on(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        monkeypatch.setattr(appset.cfg, "semantic_chunking", True)
+        assert appset.apply_settings_update({"topic_threshold": 0.5}).reindex_required is True
+        monkeypatch.setattr(appset.cfg, "semantic_chunking", False)
+        both = appset.apply_settings_update({"topic_threshold": 0.6, "semantic_chunking": True})
+        assert both.reindex_required is True
+
+
 class TestOcrPageSelectionSettings:
     """The PDF OCR page-selection settings are writable and survive a config.toml reload."""
 
