@@ -296,11 +296,17 @@ def test_a_name_with_path_parts_is_only_ever_looked_up(tmp_path, name):
 
     from lilbee.server.handlers import profiles as handlers
 
-    outside = _write(cfg.data_root, "outside", "[values]\n")
+    _project_dir().mkdir(parents=True)
+    _global_dir().mkdir(parents=True)
+    planted = [
+        _write(folder, "outside", "[values]\n")
+        for folder in (cfg.data_root, tmp_path, _global_dir().parent, _global_dir().parent.parent)
+    ]
     for call in (handlers.delete_profile, handlers.apply_profile, handlers.export_profile):
         with pytest.raises(NotFoundException, match=f"No profile named {name!r}"):
             asyncio.run(call(name))
-    assert outside.exists()
+    assert [path.exists() for path in planted] == [True] * len(planted)
+    assert "profile" not in _stored()
 
 
 def test_an_encoded_name_reaches_the_lookup_decoded(client):
@@ -347,3 +353,115 @@ def test_a_profile_operation_runs_off_the_event_loop(client, monkeypatch):
     monkeypatch.setattr(profiles, "list_profiles", record)
     assert client.get("/api/profiles").status_code == 200
     assert seen == [False]
+
+
+def test_every_fixed_route_segment_is_a_reserved_profile_name():
+    from lilbee.core.profile_files import RESERVED_NAME_KEYS, profile_key
+
+    segments = {
+        path.removeprefix("/api/profiles/").split("/")[0]
+        for path in _profile_route_paths()
+        if path.startswith("/api/profiles/")
+    }
+    fixed = {segment for segment in segments if not segment.startswith("{")}
+    assert fixed >= {"active", "new"}
+    assert {profile_key(segment) for segment in fixed} <= RESERVED_NAME_KEYS
+
+
+def _profile_route_paths() -> list[str]:
+    from lilbee.server.app import create_app
+
+    return [route.path for route in create_app().routes]
+
+
+@pytest.mark.parametrize("name", ["active", "New", "(import)", "validate", "discard", "CON"])
+def test_a_reserved_name_is_refused_on_every_http_write(client, name):
+    from lilbee.core.profile_files import profile_key
+
+    reason = f"Reserved name: {name} cannot name a profile"
+    slug_reason = f"Reserved name: {profile_key(name)} cannot name a profile"
+    writes = [
+        client.post("/api/profiles", json={"name": name}),
+        client.post("/api/profiles/new", json={"name": name}),
+        client.post(_url("Scanned archive", "/duplicate"), json={"new_name": name}),
+        client.post(
+            "/api/profiles/import", json={"content": "[values]\n", "filename": f"{name}.toml"}
+        ),
+    ]
+    assert [(r.status_code, r.json()["detail"]) for r in writes] == [(400, reason)] * 3 + [
+        (400, slug_reason)
+    ]
+    checked = client.post(
+        "/api/profiles/validate", json={"content": "[values]\n", "filename": f"{name}.toml"}
+    )
+    assert checked.json()["problems"] == [reason]
+    assert not _global_dir().exists()
+
+
+def test_a_reserved_file_on_disk_is_listed_broken_and_the_fixed_route_still_answers(client):
+    _write(_global_dir(), "active", "[values]\nchunk_size = 900\n")
+    listed = {p["name"]: p for p in client.get("/api/profiles").json()["profiles"]}
+    assert listed["active"]["valid"] is False
+    assert listed["active"]["error"] == "Reserved name: active cannot name a profile"
+    assert client.get("/api/profiles/active").json()["name"] == "Default"
+
+
+def _padded(size: int) -> str:
+    head = "[values]\n#"
+    return head + "x" * (size - len(head) - 1) + "\n"
+
+
+def test_import_and_validate_refuse_text_over_the_size_cap_and_write_nothing(client):
+    from lilbee.core.profile_files import MAX_PROFILE_BYTES
+
+    reason = "The file is over 256 KB, too large for a profile file"
+    over = {"content": _padded(MAX_PROFILE_BYTES + 1), "filename": "big.toml"}
+    imported = client.post("/api/profiles/import", json=over)
+    assert (imported.status_code, imported.json()["detail"]) == (400, reason)
+    checked = client.post("/api/profiles/validate", json=over).json()
+    assert (checked["valid"], checked["problems"]) == (False, [reason])
+    assert not _global_dir().exists()
+    at_cap = {"content": _padded(MAX_PROFILE_BYTES), "filename": "fits.toml"}
+    assert client.post("/api/profiles/import", json=at_cap).status_code == 200
+    assert (_global_dir() / "fits.toml").exists()
+
+
+@pytest.mark.parametrize("route", ["/api/profiles/import", "/api/profiles/validate"])
+def test_a_body_past_the_route_limit_is_a_413_and_writes_nothing(client, route):
+    from lilbee.server.routes.profiles import PROFILE_BODY_MAX_BYTES
+
+    content = "#" * PROFILE_BODY_MAX_BYTES
+    resp = client.post(route, json={"content": content, "filename": "huge.toml"})
+    assert resp.status_code == 413
+    assert not _global_dir().exists()
+
+
+def test_the_route_limit_admits_a_capped_file_in_its_worst_json_encoding(client):
+    import json
+
+    from lilbee.core.profile_files import MAX_PROFILE_BYTES
+
+    body = json.dumps({"content": "\x01" * MAX_PROFILE_BYTES, "filename": "c.toml"})
+    assert len(body) > 6 * MAX_PROFILE_BYTES
+    resp = client.post(
+        "/api/profiles/validate", content=body, headers={"content-type": "application/json"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["valid"] is False
+
+
+@pytest.mark.parametrize("target", ["project", "global"])
+def test_new_duplicate_and_import_write_to_the_target_folder(client, target):
+    folder = _project_dir() if target == "project" else _global_dir()
+    new = client.post("/api/profiles/new", json={"name": "Fresh", "target": target})
+    dup = client.post(
+        _url("Scanned archive", "/duplicate"), json={"new_name": "Copy", "target": target}
+    )
+    imported = client.post(
+        "/api/profiles/import",
+        json={"content": "[values]\n", "filename": "up.toml", "target": target},
+    )
+    written = [Path(r.json()["path"]) for r in (new, dup, imported)]
+    assert written == [folder / "fresh.toml", folder / "copy.toml", folder / "up.toml"]
+    assert [r.json()["folder"] for r in (new, dup, imported)] == [target] * 3
+    assert all(path.exists() for path in written)
