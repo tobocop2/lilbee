@@ -48,7 +48,7 @@ def _hermetic_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda *a, **k: CatalogResult(total=0, limit=0, offset=0, models=[], has_more=False),
     )
     monkeypatch.setattr("lilbee.cli.tui.screens.catalog.classify_all_remote_models", lambda: [])
-    monkeypatch.setattr("lilbee.modelhub.model_manager.discover_api_models", lambda: {})
+    monkeypatch.setattr("lilbee.modelhub.model_manager.discover_api_model_groups", lambda: [])
 
 
 def _row(

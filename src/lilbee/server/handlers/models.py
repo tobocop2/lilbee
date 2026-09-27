@@ -27,9 +27,10 @@ from lilbee.core.config import cfg
 from lilbee.modelhub.model_manager import classify_all_remote_models, discover_api_models
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
+from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import canonical_local_ref, local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
-from lilbee.providers.sdk_backend import PROVIDER_KEYS, get_provider_api_key
+from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import (
     FitLevel,
@@ -190,17 +191,17 @@ def _resolve_via_parse(model: str, available: set[str]) -> str | None:
 
 
 def _resolve_via_provider_key(model: str) -> str | None:
-    """Accept an API-provider-prefixed ref when that provider's key is configured.
+    """Accept an API-provider-prefixed ref when that provider's key is set and not rejected.
 
     Frontier models surface through ``discover_api_models``, not the default
-    ``list_models()``, so they never appear in *available*. With the key set,
+    ``list_models()``, so they never appear in *available*. With a usable key,
     litellm routes the ref (and validates the model name at call time).
     """
     try:
         parsed = parse_model_ref(model)
     except ValueError:
         return None
-    if parsed.is_api and get_provider_api_key(parsed.provider) is not None:
+    if parsed.is_api and provider_key_status(parsed.provider) is KeyStatus.READY:
         return model
     return None
 

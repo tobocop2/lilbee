@@ -11,7 +11,6 @@ lilbee provider imports beyond the shared base types).
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
@@ -53,8 +52,8 @@ def get_provider_api_key(provider: str) -> str | None:
     *provider* is the lowercase routing key from a parsed model ref (e.g.
     ``"openai"``). Returns ``None`` for unknown providers AND for known
     providers whose key is unconfigured; callers can distinguish via
-    :data:`PROVIDER_API_KEY_FIELD`. Reads only the lilbee config field; use
-    :func:`provider_has_key` to also honor the SDK's own env var.
+    :data:`PROVIDER_API_KEY_FIELD`. Reads only the lilbee config field; the
+    SDK's own env var is honored by :mod:`lilbee.providers.key_check`.
     """
     from lilbee.core.config import cfg
 
@@ -63,14 +62,6 @@ def get_provider_api_key(provider: str) -> str | None:
         return None
     value = getattr(cfg, field)
     return value or None
-
-
-def provider_has_key(provider: str) -> bool:
-    """True if *provider* has a key via its standard env var or the lilbee config field."""
-    env_var = PROVIDER_API_KEY_ENV.get(provider.lower())
-    if env_var and os.environ.get(env_var):
-        return True
-    return get_provider_api_key(provider) is not None
 
 
 # Hosted API providers identified by URL substring. Local OpenAI-compatible

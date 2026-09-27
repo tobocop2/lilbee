@@ -5,6 +5,7 @@ from lilbee.modelhub.model_manager.discovery import (
     classify_all_remote_models,
     classify_remote_models,
     detect_remote_embedding_models,
+    discover_api_model_groups,
     discover_api_models,
 )
 from lilbee.modelhub.model_manager.types import (
@@ -30,6 +31,7 @@ __all__ = [
     "classify_all_remote_models",
     "classify_remote_models",
     "detect_remote_embedding_models",
+    "discover_api_model_groups",
     "discover_api_models",
     "validate_persisted_model",
 ]

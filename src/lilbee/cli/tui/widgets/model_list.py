@@ -24,12 +24,13 @@ from lilbee.cli.tui.screens.catalog_utils import (
     CatalogRow,
     CatalogRowKind,
     FrontierCatalogRow,
-    KeyStatus,
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.catalog_card_shared import (
     _FIT_LEVEL_BACKGROUND,
     _FIT_LEVEL_LABEL_COMPACT,
+    _KEY_STATUS_COLOR,
+    _KEY_STATUS_LABEL,
     _compat_label,
     _spec_strip,
 )
@@ -145,10 +146,12 @@ def _render_frontier(row: FrontierCatalogRow) -> Content:
     # Two-line row mirroring the local layout: name + key-status tag on top,
     # provider strip below. Plain text styling, no colored pills.
     line1: list[Content] = [Content("  "), Content.styled(row.name, "bold")]
-    if row.key_status == KeyStatus.READY:
-        line1.append(Content.styled("    ready", "$success italic"))
-    else:
-        line1.append(Content.styled("    needs key", "$warning italic"))
+    line1.append(
+        Content.styled(
+            f"    {_KEY_STATUS_LABEL[row.key_status]}",
+            f"{_KEY_STATUS_COLOR[row.key_status]} italic",
+        )
+    )
     line2: list[Content] = [Content("   "), Content.styled(row.provider, "dim $text-muted")]
     return Content.assemble(*line1, Content("\n"), *line2, Content("\n"))
 

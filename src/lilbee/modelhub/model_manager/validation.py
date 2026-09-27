@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 
 from lilbee.catalog.query import reclassify_by_name
-from lilbee.catalog.types import ModelTask
+from lilbee.catalog.types import KeyStatus, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.install_state import InstallState, install_state
 from lilbee.modelhub.model_manager.discovery import (
@@ -28,11 +28,12 @@ from lilbee.modelhub.model_manager.discovery import (
 from lilbee.modelhub.model_manager.types import ValidationResult
 from lilbee.modelhub.registry import ModelRegistry
 from lilbee.providers import litellm_sdk
+from lilbee.providers.key_check import provider_key_status
 from lilbee.providers.local_servers import LocalServerSpec
 from lilbee.providers.local_servers.config_urls import base_url_for
 from lilbee.providers.local_servers.registry import LOCAL_SERVER_KEYS, local_server_for_key
 from lilbee.providers.model_ref import ProviderModelRef, format_remote_ref, parse_model_ref
-from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD, provider_has_key
+from lilbee.providers.sdk_backend import PROVIDER_API_KEY_FIELD
 
 log = logging.getLogger(__name__)
 
@@ -40,11 +41,18 @@ log = logging.getLogger(__name__)
 REASON_LITELLM_MISSING = "the litellm extra isn't installed"
 REASON_SERVER_UNREACHABLE = "the model server at {base_url} isn't reachable"
 REASON_NO_API_KEY = "no API key is configured for {provider}"
+REASON_INVALID_API_KEY = "{provider} rejected the configured API key"
 REASON_NOT_INSTALLED = "it isn't installed"
 REASON_UNAVAILABLE = "it isn't available"
 
 # Reachability-probe timeout for ollama/lm_studio refs.
 _PROBE_TIMEOUT_S = 1.0
+
+_KEY_STATUS_VALIDATION: dict[KeyStatus, tuple[ValidationResult, str | None]] = {
+    KeyStatus.READY: (ValidationResult.OK, None),
+    KeyStatus.MISSING_KEY: (ValidationResult.NO_KEY, REASON_NO_API_KEY),
+    KeyStatus.INVALID_KEY: (ValidationResult.INVALID_KEY, REASON_INVALID_API_KEY),
+}
 
 
 @dataclass(frozen=True)
@@ -92,9 +100,8 @@ def _classify_uninstalled_ref(parsed: ProviderModelRef) -> tuple[ValidationResul
             return ValidationResult.UNKNOWN, REASON_UNAVAILABLE
         return _classify_local_server_ref(spec)
     if provider in PROVIDER_API_KEY_FIELD:
-        if provider_has_key(provider):
-            return ValidationResult.OK, None
-        return ValidationResult.NO_KEY, REASON_NO_API_KEY.format(provider=provider)
+        status, reason = _KEY_STATUS_VALIDATION[provider_key_status(provider)]
+        return status, reason and reason.format(provider=provider)
     if not parsed.is_remote:
         # A native GGUF ref that no longer resolves to a file on disk.
         return ValidationResult.NOT_INSTALLED, REASON_NOT_INSTALLED
