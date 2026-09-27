@@ -104,11 +104,13 @@ async def models_catalog_route(
     sort: FromQuery[str] = "featured",
     limit: Annotated[int, QueryParameter(ge=1, le=1000)] = 20,
     offset: Annotated[int, QueryParameter(ge=0)] = 0,
+    source: FromQuery[str | None] = None,
 ) -> ModelsCatalogResponse:
-    """Browse the model catalog with optional filters.
+    """Browse the model catalog with optional filters, applied before paging.
 
     ``max_fit`` is the worst hardware fit to return: ``fits``, ``tight``, or
-    ``wont_run``.
+    ``wont_run``. ``source`` keeps one row source, e.g. ``native`` for local
+    GGUF rows only.
     """
     try:
         return await handlers.models_catalog(
@@ -121,6 +123,7 @@ async def models_catalog_route(
             sort=sort,
             limit=limit,
             offset=offset,
+            source=source,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

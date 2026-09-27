@@ -94,7 +94,10 @@ _HF_EXPAND_FIELDS: list[str] = [
 # space-joined onto the GGUF filter into one param value.
 _HF_GGUF_SEARCH_TERM = "GGUF"
 
-_EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
+# Query parameter carrying the listing position in the ``Link rel=next`` URL.
+_HF_CURSOR_PARAM = "cursor"
+
+_EMPTY_HF_PAGE = HfPage(models=[])
 
 
 def hf_token() -> str | None:
@@ -122,6 +125,15 @@ def hf_headers() -> dict[str, str]:
     if token:
         return {"Authorization": f"Bearer {token}"}
     return {}
+
+
+def _next_cursor(resp: httpx.Response) -> str | None:
+    """The cursor of the page after *resp*, None on the last page."""
+    link = resp.links.get("next")
+    if link is None:
+        return None
+    cursor: str | None = httpx.URL(link["url"]).params.get(_HF_CURSOR_PARAM)
+    return cursor
 
 
 def _hf_search_value(search: str) -> str:
@@ -203,22 +215,22 @@ class HfClient:
         pipeline_tag: str = "text-generation",
         sort: str = "downloads",
         limit: int = 50,
-        offset: int = 0,
         library: str | None = None,
         search: str = "",
+        cursor: str | None = None,
     ) -> HfPage:
-        """Fetch GGUF models from HuggingFace API with TTL cache.
+        """Fetch one page of GGUF models from the HuggingFace API with TTL cache.
 
-        Returns an ``HfPage`` with a ``has_more`` flag derived from the
-        ``Link: <...>; rel="next"`` response header (RFC 5988), the same
-        mechanism the ``huggingface_hub`` library uses internally.
+        *cursor* names the page to fetch (None is the first). The returned page
+        carries the next page's cursor from the ``Link: <...>; rel="next"``
+        response header (RFC 5988), the pagination the HuggingFace API documents.
         """
         # Local import to avoid a cycle: query imports hf_client (this
         # module), and hf_client uses pipeline_to_task from query.
         from lilbee.catalog.query import pipeline_to_task
 
         search_value = _hf_search_value(search)
-        cache_key = f"{pipeline_tag}:{sort}:{limit}:{offset}:{library}:{search_value}"
+        cache_key = f"{pipeline_tag}:{sort}:{limit}:{cursor}:{library}:{search_value}"
         now = time.monotonic()
         with self._cache_lock:
             expired = [k for k, (ts, _) in self._cache.items() if now - ts >= self.CACHE_TTL]
@@ -234,11 +246,12 @@ class HfClient:
             search=search_value,
             sort=sort,
             limit=limit,
-            skip=offset,
             expand=_HF_EXPAND_FIELDS,
         )
         if library:
             params = params.add("library", library)
+        if cursor:
+            params = params.add(_HF_CURSOR_PARAM, cursor)
         try:
             resp = httpx.get(
                 HF_API_URL, params=params, timeout=DEFAULT_TIMEOUT, headers=hf_headers()
@@ -251,7 +264,7 @@ class HfClient:
             self._log_fetch_failure(exc)
             return _EMPTY_HF_PAGE
 
-        has_more = "next" in resp.links
+        next_cursor = _next_cursor(resp)
 
         models: list[CatalogModel] = []
         for raw in data:
@@ -281,7 +294,7 @@ class HfClient:
                 )
             )
             self.cache_arch(item.id, gguf_meta.architecture)
-        page = HfPage(models=models, has_more=has_more)
+        page = HfPage(models=models, next_cursor=next_cursor)
         with self._cache_lock:
             self._cache[cache_key] = (now, page)
             if len(self._cache) > self.CACHE_MAX_ENTRIES:

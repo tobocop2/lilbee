@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
+    CatalogResult,
     ModelFamily,
     enrich_catalog,
     get_catalog,
@@ -414,9 +415,9 @@ def _hosted_cache_key() -> str:
 
 
 async def _collect_hosted_entries(
-    *, task: ModelTask | None, search: str
+    *, task: ModelTask | None, search: str, source: ModelSource | None = None
 ) -> list[CatalogEntryResponse]:
-    """Hosted catalog rows filtered by task/search, off the event loop + TTL-cached."""
+    """Hosted catalog rows filtered by task/search/source, off the event loop + TTL-cached."""
     key = _hosted_cache_key()
     rows = _hosted_cache.get(key)
     if rows is None:
@@ -424,6 +425,8 @@ async def _collect_hosted_entries(
         _hosted_cache[key] = rows
     if task is not None:
         rows = [r for r in rows if r.task == task]
+    if source is not None:
+        rows = [r for r in rows if r.source == source]
     if search:
         needle = search.lower()
         rows = [r for r in rows if needle in r.display_name.lower()]
@@ -440,37 +443,44 @@ async def models_catalog(
     sort: str = "featured",
     limit: int = 20,
     offset: int = 0,
+    source: str | None = None,
 ) -> ModelsCatalogResponse:
-    """Return paginated model catalog with installed status."""
+    """One page of the catalog rows that pass every filter, hosted rows first."""
     # Validate every closed-set param at the HTTP boundary instead of
     # letting unknown values silently short-circuit the filter inside.
     parsed_task = ModelTask(task) if task else None
     parsed_size = CatalogSize(size) if size else None
     parsed_sort = CatalogSort(sort)
     parsed_max_fit = FitLevel(max_fit) if max_fit else None
+    parsed_source = ModelSource.parse(source)
 
-    # Hosted rows (frontier + ollama) lead the listing; none for featured-only
-    # or installed=False.
+    # Hosted rows (frontier + ollama) lead the listing; none for featured-only,
+    # installed=False, or source=native.
     hosted: list[CatalogEntryResponse] = []
-    if not featured and installed is not False:
-        hosted = await _collect_hosted_entries(task=parsed_task, search=search)
+    if not featured and installed is not False and parsed_source is not ModelSource.NATIVE:
+        hosted = await _collect_hosted_entries(
+            task=parsed_task, search=search, source=parsed_source
+        )
     window = page_window(len(hosted), offset, limit)
 
     available_bytes = available_memory_for_fit()
-    # get_catalog resolves the picks, which is HTTP on the first call.
-    result = await asyncio.to_thread(
-        get_catalog,
-        task=parsed_task,
-        search=search,
-        size=parsed_size,
-        installed=installed,
-        featured=featured,
-        fit_filter=make_fit_filter(parsed_max_fit, available_bytes),
-        sort=parsed_sort,
-        limit=window.rest_limit,
-        offset=window.rest_offset,
-        model_manager=get_services().model_manager,
-    )
+    # A listing filtered to one hosted source has no native part.
+    result = CatalogResult(total=0, limit=0, offset=0, models=[])
+    if parsed_source in (None, ModelSource.NATIVE):
+        # get_catalog resolves the picks, which is HTTP on the first call.
+        result = await asyncio.to_thread(
+            get_catalog,
+            task=parsed_task,
+            search=search,
+            size=parsed_size,
+            installed=installed,
+            featured=featured,
+            fit_filter=make_fit_filter(parsed_max_fit, available_bytes),
+            sort=parsed_sort,
+            limit=window.rest_limit,
+            offset=window.rest_offset,
+            model_manager=get_services().model_manager,
+        )
 
     registry = get_services().registry
     installed_refs = {m.ref for m in registry.list_installed()}
@@ -482,13 +492,13 @@ async def models_catalog(
         _build_catalog_entry(e, available_bytes=available_bytes, families_by_repo=families_by_repo)
         for e in enriched
     ]
-
+    has_more = len(hosted) > offset + limit or result.has_more
     return ModelsCatalogResponse(
         total=None if result.total is None else len(hosted) + result.total,
         limit=limit,
         offset=offset,
-        has_more=result.has_more,
-        next_offset=offset + limit if result.has_more else None,
+        has_more=has_more,
+        next_offset=offset + limit if has_more else None,
         models=hosted[offset : offset + limit] + native_rows,
     )
 

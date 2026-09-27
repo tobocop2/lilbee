@@ -72,7 +72,7 @@ def _stub_fetch(monkeypatch, by_task: dict[str, list[CatalogModel]]) -> list[dic
     def fake(**kw):
         calls.append(kw)
         task = pipeline_to_task(kw.get("pipeline_tag", ""))
-        return HfPage(models=list(by_task.get(task, [])), has_more=False)
+        return HfPage(models=list(by_task.get(task, [])))
 
     monkeypatch.setattr(get_services().hf_client, "fetch_models", fake)
     return calls
@@ -353,7 +353,7 @@ class TestMultiTagFanout:
 
         def fake(**kw):
             calls.append(kw)
-            return HfPage(models=list(pages.get(str(kw.get("pipeline_tag")), [])), has_more=False)
+            return HfPage(models=list(pages.get(str(kw.get("pipeline_tag")), [])))
 
         monkeypatch.setattr(get_services().hf_client, "fetch_models", fake)
         return calls

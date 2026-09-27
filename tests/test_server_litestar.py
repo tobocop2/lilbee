@@ -1028,6 +1028,23 @@ class TestModelsCatalogRoute:
         resp = client.get("/api/models/catalog?max_fit=roomy&featured=true")
         assert resp.status_code == 422
 
+    def test_invalid_source_returns_422_with_the_valid_values(self, client):
+        """An unknown row source surfaces as 422 naming the accepted values."""
+        resp = client.get("/api/models/catalog?source=cloud")
+        assert resp.status_code == 422
+        assert "expected one of: native" in resp.json()["detail"]
+
+    def test_source_reaches_the_handler(self, client):
+        """The route forwards the row source instead of dropping it."""
+        with mock.patch(
+            "lilbee.server.handlers.models_catalog",
+            new_callable=AsyncMock,
+            return_value={"total": 0, "limit": 20, "offset": 0, "models": []},
+        ) as mock_cat:
+            resp = client.get("/api/models/catalog?source=native")
+        assert resp.status_code == 200
+        assert mock_cat.call_args.kwargs["source"] == "native"
+
     def test_max_fit_reaches_the_handler(self, client):
         """The route forwards the fit threshold instead of dropping it."""
         with mock.patch(

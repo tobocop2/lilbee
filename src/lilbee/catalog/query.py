@@ -1,7 +1,9 @@
 """Catalog filtering, sorting, lookup, and ad-hoc HF resolution."""
 
+import heapq
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from itertools import islice
 from typing import Any
 
 from huggingface_hub.utils import HFValidationError, validate_repo_id
@@ -10,9 +12,6 @@ from lilbee.app.services import get_services
 from lilbee.catalog.models import (
     CatalogModel,
     CatalogResult,
-    HfPage,
-    PageWindow,
-    dedupe_models,
     page_window,
 )
 from lilbee.catalog.picks import get_picks
@@ -48,6 +47,11 @@ _PARAM_TIER_CEILINGS: tuple[tuple[float, CatalogSize], ...] = (
 
 _PARAMS_PER_BILLION = 1e9
 
+# HuggingFace rows per listing request, and the requests a browse makes per
+# pipeline tag: a filtered page scans at most 2000 rows of each tag.
+_HF_SCAN_PAGE_SIZE = 200
+_HF_SCAN_MAX_PAGES = 10
+
 
 def size_bucket(params: int) -> CatalogSize | None:
     """Bucket a parameter count. None when the repo publishes no count."""
@@ -73,72 +77,72 @@ def get_catalog(
     offset: int = 0,
     model_manager: Any = None,
 ) -> CatalogResult:
-    """One catalog page: the picks lead and the HuggingFace rows fill the rest of the window.
+    """One page of the rows that pass every filter: the picks lead, HuggingFace rows follow.
 
-    A window that ends inside the picks makes no HuggingFace request. The
-    browse total is unknown because HuggingFace exposes no count, so it is
-    None and clients page on has_more.
+    Filters apply before paging, so *offset* counts matching rows and
+    ``has_more`` means another match exists. A page that ends inside the picks
+    makes no HuggingFace request. The browse total is unknown because
+    HuggingFace exposes no count, so it is None.
     """
     picks = get_picks()
-    installed_filter = _installed_filter(installed, model_manager)
-
-    def keep(models: list[CatalogModel]) -> list[CatalogModel]:
-        return _filter_models(
-            models,
-            task=task,
-            search=search,
-            size=size,
-            installed_filter=installed_filter,
-            fit_filter=fit_filter,
-            featured=featured,
-        )
-
-    leading = _sort_models(keep(list(picks)), sort)
-    window = page_window(len(leading), offset, limit)
-    page = leading[offset : offset + limit]
-    hf_models: list[CatalogModel] = []
-    if featured:
-        has_more = offset + limit < len(leading)
-    elif window.rest_limit == 0:
-        has_more = True  # the HuggingFace rows start on the next page
-    else:
-        hf_page = _fetch_hf_page(task, search, window)
-        # Deduplicate: skip HF models already shown as a pick
+    keep = _row_filter(
+        task=task,
+        search=search,
+        size=size,
+        installed_filter=_installed_filter(installed, model_manager),
+        fit_filter=fit_filter,
+        featured=featured,
+    )
+    leading = _sort_models([m for m in picks if keep(m)], sort)
+    wanted = offset + limit + 1 - len(leading)
+    hf_matches: list[CatalogModel] = []
+    if not featured and wanted > 0:
         pick_repos = {m.hf_repo for m in picks}
-        hf_models = keep([m for m in hf_page.models if m.hf_repo not in pick_repos])
-        page.extend(_sort_models(hf_models, sort))
-        has_more = hf_page.has_more
-
+        rows = (m for m in _hf_rows(task, search) if m.hf_repo not in pick_repos)
+        hf_matches = list(islice(filter(keep, rows), wanted))
+    window = page_window(len(leading), offset, limit)
+    hf_page = hf_matches[window.rest_offset : window.rest_offset + window.rest_limit]
     return CatalogResult(
         total=len(leading) if featured else None,
         limit=limit,
         offset=offset,
-        models=page,
-        has_more=has_more,
+        models=leading[offset : offset + limit] + _sort_models(hf_page, sort),
+        has_more=len(leading) + len(hf_matches) > offset + limit,
     )
 
 
-def _fetch_hf_page(task: ModelTask | None, search: str, window: PageWindow) -> HfPage:
-    """The HuggingFace rows that fill the rest of *window*."""
-    hf_tags, hf_library = task_to_pipeline(task)
-    fetch_limit = window.rest_offset + window.rest_limit
-    pages = [
-        get_services().hf_client.fetch_models(
-            pipeline_tag=tag,
-            limit=fetch_limit,
-            offset=0,
-            library=hf_library,
+def _tag_rows(pipeline_tag: str, library: str | None, search: str) -> Iterator[CatalogModel]:
+    """HuggingFace rows for one pipeline tag, most downloaded first, up to the scan bound."""
+    hf_client = get_services().hf_client
+    cursor: str | None = None
+    for _ in range(_HF_SCAN_MAX_PAGES):
+        page = hf_client.fetch_models(
+            pipeline_tag=pipeline_tag,
+            limit=_HF_SCAN_PAGE_SIZE,
+            library=library,
             search=search,
+            cursor=cursor,
         )
-        for tag in hf_tags
-    ]
-    merged = dedupe_models([m for page in pages for m in page.models])
-    merged.sort(key=lambda m: m.downloads, reverse=True)
-    end = window.rest_offset + window.rest_limit
-    return HfPage(
-        models=merged[window.rest_offset : end],
-        has_more=any(page.has_more for page in pages) or len(merged) > end,
-    )
+        yield from page.models
+        if page.next_cursor is None:
+            return
+        cursor = page.next_cursor
+
+
+def _hf_rows(task: ModelTask | None, search: str) -> Iterator[CatalogModel]:
+    """HuggingFace rows for *task* across its pipeline tags, most downloaded first, deduped."""
+    hf_tags, hf_library = task_to_pipeline(task)
+    streams = [_tag_rows(tag, hf_library, search) for tag in hf_tags]
+    seen: set[str] = set()
+    for model in heapq.merge(*streams, key=_by_downloads_desc):
+        if model.hf_repo not in seen:
+            seen.add(model.hf_repo)
+            yield model
+
+
+def _by_downloads_desc(model: CatalogModel) -> int:
+    """Merge key that orders rows by downloads, highest first."""
+    return -model.downloads
 
 
 def _installed_filter(
@@ -152,8 +156,7 @@ def _installed_filter(
     return lambda m: (m.hf_repo in installed_repos) == installed
 
 
-def _filter_models(
-    models: list[CatalogModel],
+def _row_filter(
     *,
     task: ModelTask | None,
     search: str,
@@ -161,22 +164,17 @@ def _filter_models(
     installed_filter: Callable[[CatalogModel], bool] | None,
     fit_filter: Callable[[CatalogModel], bool] | None,
     featured: bool | None,
-) -> list[CatalogModel]:
-    """The rows of *models* that pass every requested filter."""
-    if task:
-        models = [m for m in models if m.task == task]
-    if search:
-        search_lower = search.lower()
-        models = [m for m in models if search_lower in _search_blob(m)]
-    if size is not None:
-        models = [m for m in models if size_bucket(m.params) == size]
-    if installed_filter is not None:
-        models = [m for m in models if installed_filter(m)]
-    if fit_filter is not None:
-        models = [m for m in models if fit_filter(m)]
-    if featured is not None:
-        models = [m for m in models if m.featured == featured]
-    return models
+) -> Callable[[CatalogModel], bool]:
+    """Row predicate that passes a row only when it passes every requested filter."""
+    search_lower = search.lower()
+    checks: list[Callable[[CatalogModel], bool]] = [
+        lambda m: task is None or m.task == task,
+        lambda m: not search_lower or search_lower in _search_blob(m),
+        lambda m: size is None or size_bucket(m.params) == size,
+        lambda m: featured is None or m.featured == featured,
+    ]
+    checks.extend(f for f in (installed_filter, fit_filter) if f is not None)
+    return lambda m: all(check(m) for check in checks)
 
 
 def task_to_pipeline(task: ModelTask | None) -> tuple[tuple[str, ...], str | None]:

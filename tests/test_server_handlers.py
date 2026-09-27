@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import replace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -3604,6 +3605,104 @@ class TestModelsCatalog:
             result = await handlers.models_catalog()
         assert result.models[0].source == "remote"
         assert result.models[0].fit is None
+
+
+class TestModelsCatalogFiltersBeforePaging:
+    """The route pages over matching rows, hosted rows first, with an optional source filter."""
+
+    @pytest.fixture(autouse=True)
+    def _catalog(self, mock_svc, monkeypatch):
+        """Two Gemini chat rows, one Ollama chat row, and a sparse native listing."""
+        import lilbee.server.handlers.models as h
+        from conftest import make_test_catalog_model, stub_hf_listing
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager.types import RemoteModel
+
+        def _remote(name: str, provider: str) -> RemoteModel:
+            return RemoteModel(
+                name=name, task=ModelTask.CHAT, family="", parameter_size="", provider=provider
+            )
+
+        h._hosted_cache.clear()
+        monkeypatch.setattr(
+            h,
+            "discover_api_models",
+            lambda: {"Gemini": [_remote("g1", "Gemini"), _remote("g2", "Gemini")]},
+        )
+        monkeypatch.setattr(
+            h, "classify_all_remote_models", lambda *a, **k: [_remote("llama3", "ollama")]
+        )
+        mock_svc.registry.list_installed.return_value = []
+        rows = []
+        for i in range(600):
+            params = 30_000_000_000 if i % 50 == 49 else 1_000_000_000
+            rows.append(replace(make_test_catalog_model(name=f"Hf{i:03d}"), params=params))
+        self.hf_calls = stub_hf_listing(monkeypatch, {"text-generation": rows})
+
+    async def test_sparse_filter_pages_are_full_and_end_cleanly(self) -> None:
+        """size=large holds 3 hosted rows, 2 picks and 12 HF matches: 4 pages, then done."""
+        shown: list[str] = []
+        pages = []
+        for offset in range(0, 600, 5):
+            page = await handlers.models_catalog(task="chat", size="large", limit=5, offset=offset)
+            pages.append(page)
+            shown.extend(m.display_name for m in page.models)
+            if page.next_offset is None:
+                break
+        assert [len(p.models) for p in pages] == [5, 5, 5, 2]
+        assert [p.has_more for p in pages] == [True, True, True, False]
+        assert shown[:3] == ["g1", "g2", "llama3"]
+        assert len(set(shown)) == 17
+
+    async def test_source_native_returns_local_rows_only(self, monkeypatch) -> None:
+        import lilbee.server.handlers.models as h
+        from lilbee.catalog.types import ModelSource
+
+        h._hosted_cache.clear()
+        discovered: list[str] = []
+        monkeypatch.setattr(h, "discover_api_models", lambda: discovered.append("frontier") or {})
+        page = await handlers.models_catalog(
+            task="chat", size="large", source="native", limit=5, offset=0
+        )
+        assert [m.hf_repo for m in page.models] == [
+            "large/Large-27B-GGUF",
+            "large/Large-34B-GGUF",
+            "test/Hf049",
+            "test/Hf099",
+            "test/Hf149",
+        ]
+        assert all(m.source == ModelSource.NATIVE for m in page.models)
+        assert page.next_offset == 5
+        assert discovered == []
+
+    async def test_source_frontier_returns_frontier_rows_only(self) -> None:
+        page = await handlers.models_catalog(task="chat", source="frontier", limit=5)
+        assert [m.display_name for m in page.models] == ["g1", "g2"]
+        assert page.has_more is False
+        assert page.next_offset is None
+        assert self.hf_calls == []
+
+    async def test_source_ollama_returns_ollama_rows_only(self) -> None:
+        page = await handlers.models_catalog(task="chat", source="ollama", limit=5)
+        assert [m.display_name for m in page.models] == ["llama3"]
+        assert page.has_more is False
+
+    async def test_hosted_page_with_no_native_match_ends_the_listing(self) -> None:
+        """A page filled by hosted rows says no more when no native row matches."""
+        page = await handlers.models_catalog(task="chat", search="g1", limit=1, offset=0)
+        assert [m.display_name for m in page.models] == ["g1"]
+        assert page.has_more is False
+        assert page.next_offset is None
+
+    async def test_hosted_rows_past_the_page_keep_the_listing_open(self) -> None:
+        page = await handlers.models_catalog(task="chat", source="frontier", limit=1)
+        assert [m.display_name for m in page.models] == ["g1"]
+        assert page.has_more is True
+        assert page.next_offset == 1
+
+    async def test_invalid_source_names_the_valid_values(self) -> None:
+        with pytest.raises(ValueError, match="invalid source 'cloud'; expected one of: native"):
+            await handlers.models_catalog(source="cloud")
 
 
 class TestModelsInstalled:
