@@ -96,10 +96,13 @@ def test_build_head_renders_setup_pill() -> None:
     assert "active" in plain
 
 
-def test_every_task_type_has_its_own_pill_color() -> None:
+def test_every_task_type_has_a_pill_color_and_analyze_has_its_own() -> None:
     types = {task_type.value for task_type in TaskType}
     assert TaskType.ANALYZE.value in types
     assert types - set(_TASK_TYPE_BG) == set()
+    others = {bg for kind, bg in _TASK_TYPE_BG.items() if kind != TaskType.ANALYZE.value}
+    assert others
+    assert _TASK_TYPE_BG[TaskType.ANALYZE.value] not in others
 
 
 def test_build_head_omits_elapsed_when_empty() -> None:

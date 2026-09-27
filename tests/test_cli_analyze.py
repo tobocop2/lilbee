@@ -15,6 +15,7 @@ from lilbee.app.analyze import IMAGE_SCAN_NOTE, TIP_TEXT
 from lilbee.cli.app import app
 from lilbee.cli.commands.analyze import CANCELLED_MESSAGE, OFF_ALONE_MESSAGE
 from lilbee.cli.helpers import json_output
+from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME
 from lilbee.core.project_state import STATE_FILE_NAME, read_state
@@ -341,6 +342,31 @@ def test_add_prints_the_tip_before_ingest_starts(project, notes):
     flat = " ".join(result.output.split())
     assert TIP_TEXT in flat
     assert flat.index(TIP_TEXT) < flat.index("INGEST STARTED")
+
+
+def test_a_second_add_prints_no_tip(project, notes, tmp_path):
+    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
+        first = runner.invoke(app, ["add", str(notes), "--data-dir", str(project)])
+    assert TIP_TEXT in " ".join(first.output.split())
+    more = tmp_path / "more"
+    more.mkdir()
+    (more / "c.md").write_text("# C\n", encoding="utf-8")
+    settings.set_value(project, "linked_roots", {"notes": str(notes)})
+    with mock.patch("lilbee.cli.commands.ingest_sync.add_paths", _fake_add_paths):
+        second = runner.invoke(app, ["add", str(more), "--data-dir", str(project)])
+    assert second.exit_code == 0, second.output
+    assert "INGEST STARTED" in second.output
+    assert "lilbee analyze" not in second.output
+
+
+def test_init_of_a_project_with_documents_prints_no_tip(tmp_path):
+    documents = tmp_path / ".lilbee" / "documents"
+    documents.mkdir(parents=True)
+    (documents / "a.md").write_text("# A\n", encoding="utf-8")
+    with mock.patch("pathlib.Path.cwd", return_value=tmp_path):
+        result = runner.invoke(app, ["init"])
+    assert "Already initialized" in result.output
+    assert "lilbee analyze" not in result.output
 
 
 def test_add_after_analyze_prints_no_tip(project, notes):
