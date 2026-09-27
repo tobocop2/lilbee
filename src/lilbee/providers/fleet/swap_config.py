@@ -14,6 +14,7 @@ import sys
 from typing import TYPE_CHECKING
 
 from lilbee.providers.fleet.readback import MEMORY_FLAG, engine_log_env
+from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -24,8 +25,16 @@ if TYPE_CHECKING:
 # One group holds this process's members. Swap disabled keeps them co-resident (a
 # role's replicas); enabled makes llama-swap evict one to load another.
 _GROUP_NAME = "lilbee"
-# Cold-load ceiling floor; the heaviest member's weights scale it up from here.
-_HEALTH_CHECK_TIMEOUT_FLOOR_S = 600
+# Cold-load ceiling floor per role; the member's weights scale it up from here.
+# An embedder's weights stream in seconds, so its floor covers only process start
+# and backend init: waiting out a chat-sized ten minutes on a crash-looping or
+# wedged embed server holds every ingest caller for that long.
+_COLD_LOAD_FLOOR_S: dict[WorkerRole, int] = {
+    WorkerRole.CHAT: 600,
+    WorkerRole.VISION: 600,
+    WorkerRole.RERANK: 600,
+    WorkerRole.EMBED: 120,
+}
 # Conservative cold-load disk rate; a slow network volume streams well under this.
 _COLD_LOAD_BYTES_PER_S = 150 * 1024 * 1024
 _LOG_LEVEL = "info"
@@ -108,21 +117,23 @@ def build_swap_config(
     return json.dumps(config, indent=2)
 
 
-def cold_load_timeout_s(weights_bytes: int) -> int:
-    """Cold-load ceiling for one member's weights at a conservative disk rate, floored.
+def cold_load_timeout_s(weights_bytes: int, role: WorkerRole) -> int:
+    """Cold-load ceiling for one member's weights at a conservative disk rate, floored per role.
 
     The single source of the scaling formula: llama-swap's health-check timeout
     and the provider's per-client request timeout both derive from it, so a model
     whose load llama-swap would wait out can never time out the client first.
     """
-    return max(_HEALTH_CHECK_TIMEOUT_FLOOR_S, weights_bytes // _COLD_LOAD_BYTES_PER_S)
+    return max(_COLD_LOAD_FLOOR_S[role], weights_bytes // _COLD_LOAD_BYTES_PER_S)
 
 
 def _health_check_timeout_s(launches: list[InstanceLaunch]) -> int:
-    """Cold-load ceiling of the heaviest member; the timeout is proxy-global in
+    """Slowest member's cold-load ceiling; the timeout is proxy-global in
     llama-swap, so the slowest possible load sets it."""
-    heaviest = max((launch.weights_bytes for launch in launches), default=0)
-    return cold_load_timeout_s(heaviest)
+    return max(
+        (cold_load_timeout_s(launch.weights_bytes, launch.role) for launch in launches),
+        default=max(_COLD_LOAD_FLOOR_S.values()),
+    )
 
 
 def _command_line(argv: list[str], port: int) -> str:

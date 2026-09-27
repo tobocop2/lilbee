@@ -24,6 +24,7 @@ from lilbee.modelhub.registry import ModelRegistry
 from lilbee.parent_monitor import PARENT_PID_ENV
 from lilbee.providers.fleet.child_guard import spawn_bound_child
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+from lilbee.providers.roles import WorkerRole
 from lilbee.server.auth import server_json_path
 
 log = logging.getLogger(__name__)
@@ -214,7 +215,7 @@ def chat_warm_budget_s() -> float:
     except (KeyError, ValueError):
         return _WARM_TIMEOUT_S
     total_bytes = sum(shard.stat().st_size for shard in shards)
-    return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes)))
+    return max(_WARM_TIMEOUT_S, float(cold_load_timeout_s(total_bytes, WorkerRole.CHAT)))
 
 
 def wait_for_chat_warm(port: int, timeout_s: float | None = None) -> bool:

@@ -782,7 +782,8 @@ touching the running fleet.
   server runs in its own process group and claims
   its port at spawn (no racy batch allocation). Readiness is `/health` (200 only once
   the model loads); the cold-load health timeout scales with the heaviest member's
-  weights at a conservative disk rate (ten-minute floor), so a multi-hundred-GB model
+  weights at a conservative disk rate (a ten-minute floor, two minutes for the embedder,
+  whose small weights load in seconds), so a multi-hundred-GB model
   on a slow volume isn't killed mid-load. Each owner lilbee writes one state file per swap group
   (named with the group and its pid, written atomically so a concurrent scan never reads a torn
   file) recording that group's llama-swap pid, process group, and create time, the

@@ -99,6 +99,16 @@ def _launch(role: WorkerRole) -> InstanceLaunch:
 
 
 class TestStart:
+    def test_log_path_is_the_file_the_proxy_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _patch_spawn(monkeypatch, _FakeProc(poll_result=None))
+        _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
+        mgr = SwapManager(tmp_path, _GROUP)
+        mgr.start([_launch(WorkerRole.CHAT)])
+        assert mgr.log_path == tmp_path / "logs" / "llama-swap-chat.log"
+        assert mgr.log_path.is_file()
+
     def test_writes_config_and_becomes_ready(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

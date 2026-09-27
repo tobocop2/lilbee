@@ -992,6 +992,7 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
 
     from lilbee.cli.launchers import server as launch_mod
     from lilbee.providers.fleet.swap_config import cold_load_timeout_s
+    from lilbee.providers.roles import WorkerRole
 
     models_dir = tmp_path / "models"
     cache = models_dir / "models--org--Big-GGUF"
@@ -1014,7 +1015,9 @@ def test_chat_warm_budget_scales_with_split_giant_weights(tmp_path):
     cfg.chat_model = f"org/Big-GGUF/{shards[0]}"
 
     budget = launch_mod.chat_warm_budget_s()
-    assert budget == max(launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total)))
+    assert budget == max(
+        launch_mod._WARM_TIMEOUT_S, float(cold_load_timeout_s(total, WorkerRole.CHAT))
+    )
 
 
 class TestOpencodeConfigDir:

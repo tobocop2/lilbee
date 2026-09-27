@@ -12,6 +12,7 @@ import threading
 import time
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, Literal, TypedDict, TypeVar, overload
 
 import httpx
@@ -536,8 +537,12 @@ class LlamaServerClient:
         inline_reasoning: bool = False,
         embed_busy_deadline_s: float | None = None,
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
+        engine_log: Path | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
+        # The proxy log that records this server's exits; None for a client no
+        # swap manager fronts (the one-off self-check).
+        self.engine_log = engine_log
         self._model = model
         # Prefill observer: called with (processed, total) per engine progress
         # frame during a streamed chat's prompt processing, then None once the
