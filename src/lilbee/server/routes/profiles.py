@@ -6,6 +6,7 @@ from litestar import Response, Router, delete, get, patch, post, put
 from litestar.params import FromPath
 from litestar.status_codes import HTTP_200_OK
 
+from lilbee.core.profile_files import MAX_PROFILE_BYTES
 from lilbee.server.content_disposition import CONTENT_DISPOSITION, attachment_disposition
 from lilbee.server.handlers import profiles as handlers
 from lilbee.server.models import (
@@ -27,6 +28,8 @@ from lilbee.server.models import (
 )
 
 PROFILE_MEDIA_TYPE = "application/toml"
+# JSON escapes one byte of a file to at most six characters; the rest covers the other fields
+PROFILE_BODY_MAX_BYTES = 6 * MAX_PROFILE_BYTES + 64 * 1024
 
 
 @get("/api/profiles")
@@ -59,13 +62,15 @@ async def profiles_new_route(data: ProfileNewRequest) -> ProfileLocationResponse
     return await handlers.new_profile(data)
 
 
-@post("/api/profiles/import", status_code=HTTP_200_OK)
+@post("/api/profiles/import", status_code=HTTP_200_OK, request_max_body_size=PROFILE_BODY_MAX_BYTES)
 async def profiles_import_route(data: ProfileImportRequest) -> ProfileLocationResponse:
     """Validate an uploaded profile file and copy it into a profile folder."""
     return await handlers.import_profile(data)
 
 
-@post("/api/profiles/validate", status_code=HTTP_200_OK)
+@post(
+    "/api/profiles/validate", status_code=HTTP_200_OK, request_max_body_size=PROFILE_BODY_MAX_BYTES
+)
 async def profiles_validate_route(data: ProfileValidateRequest) -> ProfileValidationResponse:
     """Every problem with an uploaded profile file."""
     return await handlers.validate_profile(data)

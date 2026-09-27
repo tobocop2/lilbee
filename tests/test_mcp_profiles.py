@@ -187,3 +187,16 @@ async def test_the_tools_are_off_the_wire_by_default_and_on_when_enabled():
     assert sorted(n for n in tools if n.startswith("profile")) == PROFILE_TOOLS
     actions = tools["profile_manage"].input_schema["$defs"]["ProfileAction"]["enum"]
     assert sorted(actions) == sorted(a.value for a in ProfileAction)
+
+
+def test_manage_duplicate_writes_to_the_folder_it_names():
+    dup = profile_manage(
+        ProfileAction.DUPLICATE,
+        name="Scanned archive",
+        new_name="My scans",
+        folder=ProfileFolder.PROJECT,
+    )
+    written = cfg.data_root / PROFILES_DIRNAME / "my-scans.toml"
+    assert (Path(dup["path"]), dup["folder"]) == (written, "project")
+    assert written.exists()
+    assert not _global_dir().exists()

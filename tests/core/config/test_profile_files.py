@@ -434,3 +434,74 @@ def test_text_that_is_not_toml_is_refused_before_any_write(tmp_path, text):
     with pytest.raises(profile_files.ProfileFileError, match=r"^Not valid TOML: "):
         profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, text, stem="x")
     assert list(tmp_path.iterdir()) == []
+
+
+RESERVED_SPELLINGS = ["active", "Active", "(new)", "_import_", "Validate", "discard"]
+DEVICE_SPELLINGS = ["CON", "prn", "Aux", "nul", "com1", "COM9", "Lpt1", "lpt9", "com0"]
+
+
+@pytest.mark.parametrize("name", RESERVED_SPELLINGS + DEVICE_SPELLINGS)
+def test_a_reserved_name_is_broken_on_disk_and_refused_on_write(tmp_path, name):
+    reason = f"Reserved name: {name} cannot name a profile"
+    named = _entry(tmp_path, f'[profile]\nname = "{name}"\n[values]\n')
+    assert (named.file, named.error) == (None, reason)
+    target = tmp_path / "w"
+    with pytest.raises(profile_files.ProfileFileError, match=re.escape(reason)):
+        profile_files.plan_write(target, ProfileFolder.GLOBAL, "[values]\n", stem=name)
+    checked = profile_files.validate_text("[values]\n", Path(f"{name}.toml"), ProfileFolder.GLOBAL)
+    assert checked.problems == (reason,)
+    assert not target.exists()
+
+
+@pytest.mark.parametrize("name", ["Active scans", "newer", "console", "com10", "lpt", "con-1"])
+def test_a_name_that_only_contains_a_reserved_word_is_valid(tmp_path, name):
+    entry = _entry(tmp_path, f'[profile]\nname = "{name}"\n[values]\n')
+    assert (entry.name, entry.error) == (name, None)
+
+
+def test_reserved_profile_files_are_listed_as_broken(tmp_path):
+    folder = cfg.data_root / PROFILES_DIRNAME
+    _write(folder, "active", "[values]\nchunk_size = 900\n")
+    _write(folder, "court-filings", '[profile]\nname = "CON"\n[values]\n')
+    catalog = ProfileStore().scan()
+    for name in ("active", "CON"):
+        listed = catalog.find(name)
+        assert listed is not None and listed.folder is ProfileFolder.PROJECT
+        assert listed.error == f"Reserved name: {name} cannot name a profile"
+
+
+def _padded(size: int) -> str:
+    head = "[values]\n#"
+    return head + "x" * (size - len(head) - 1) + "\n"
+
+
+def test_text_at_the_size_cap_is_written_and_one_byte_over_is_refused(tmp_path):
+    at_cap = _padded(profile_files.MAX_PROFILE_BYTES)
+    assert len(at_cap.encode("utf-8")) == profile_files.MAX_PROFILE_BYTES
+    planned = profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, at_cap, stem="fits")
+    assert planned.path == tmp_path / "fits.toml"
+    over = _padded(profile_files.MAX_PROFILE_BYTES + 1)
+    reason = "The file is over 256 KB, too large for a profile file"
+    with pytest.raises(profile_files.ProfileFileError, match=reason):
+        profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, over, stem="big")
+    checked = profile_files.validate_text(over, Path("big.toml"), ProfileFolder.GLOBAL)
+    assert checked.problems == (reason,)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_the_size_cap_counts_utf8_bytes_not_characters(tmp_path):
+    wide = "[values]\n#" + "é" * (profile_files.MAX_PROFILE_BYTES // 2) + "\n"
+    assert len(wide) < profile_files.MAX_PROFILE_BYTES < len(wide.encode("utf-8"))
+    with pytest.raises(profile_files.ProfileFileError, match="too large for a profile file"):
+        profile_files.plan_write(tmp_path, ProfileFolder.GLOBAL, wide, stem="wide")
+
+
+def test_a_file_over_the_cap_is_too_large_even_when_the_cut_splits_a_character(tmp_path):
+    raw = _padded(profile_files.MAX_PROFILE_BYTES).encode() + "é".encode()
+    with pytest.raises(UnicodeDecodeError):
+        raw[: profile_files.MAX_PROFILE_BYTES + 1].decode("utf-8")
+    path = tmp_path / "p" / "big.toml"
+    path.parent.mkdir()
+    path.write_bytes(raw)
+    entry = read_entry(path, ProfileFolder.GLOBAL)
+    assert entry.error == "The file is over 256 KB, too large for a profile file"

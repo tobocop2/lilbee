@@ -298,3 +298,26 @@ def test_diff_says_when_nothing_changes_and_names_the_values_it_keeps(project):
     )
     kept = _invoke(project, "diff", "research-papers")
     assert "Keeps your values of: layout_detection" in kept.output
+
+
+def test_duplicate_writes_to_the_project_folder_when_told(project):
+    result = _invoke(project, "duplicate", "Scanned archive", "My scans", "--target", "project")
+    assert result.exit_code == 0, result.output
+    assert (project / PROFILES_DIRNAME / "my-scans.toml").exists()
+    assert not _global_dir().exists()
+    shown = _json(project, "duplicate", "Scanned archive", "Other", "--target", "project")
+    assert (Path(shown["path"]), shown["folder"]) == (
+        project / PROFILES_DIRNAME / "other.toml",
+        "project",
+    )
+
+
+def test_show_without_a_name_prints_the_active_profiles_credit(project):
+    _write(_global_dir(), "court-filings", CREDITED)
+    assert _invoke(project, "apply", "Court filings").exit_code == 0
+    result = _invoke(project, "show")
+    assert result.exit_code == 0, result.output
+    assert "Profile: Court filings" in result.output
+    assert "Scanned court PDFs." in result.output
+    assert "by Jane Doe (@janedoe)" in result.output
+    assert "Tested on 4,000 county court filings" in result.output
