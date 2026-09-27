@@ -13120,6 +13120,21 @@ async def test_chat_on_chat_input_changed_suppressed():
 # ---------------------------------------------------------------------------
 
 
+def test_settings_make_multiline_editor_strips_model_default_marker():
+    """make_multiline_editor strips the "(model default)" suffix, matching make_input.
+
+    No writable multi-line setting is nullable with a model default today, so
+    this exercises the display function directly rather than through a real
+    SettingDef; the two functions shared the "None" -> "" rule before this fix
+    and only make_input stripped the marker, an asymmetry future settings
+    could hit silently.
+    """
+    from lilbee.cli.tui.screens.settings_widgets import make_multiline_editor
+
+    editor = make_multiline_editor("test_key", "0.7 (model default)")
+    assert editor.text == "0.7"
+
+
 def test_settings_make_select_value_matches_choice():
     """make_select returns Select with value preset when it matches choices."""
     from lilbee.app.settings_map import SettingDef
