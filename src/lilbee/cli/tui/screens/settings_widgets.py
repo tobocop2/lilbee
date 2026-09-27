@@ -37,6 +37,7 @@ _TYPE_COLORS: dict[str, tuple[str, str]] = {
 }
 
 _DEFAULTS_REMAP: dict[str, str] = {"top_k_sampling": "top_k"}
+MODEL_DEFAULT_MARKER = " (model default)"
 
 LIST_RESTORE_PREFIX = "list-restore-"
 LIST_ERROR_ID_PREFIX = "err-"
@@ -94,16 +95,43 @@ def set_widget_value(widget: Widget, value: object) -> None:
 def displayed_text(widget: Widget) -> str | None:
     """The raw text a settings editor currently shows, or None for an untracked type.
 
-    Mirrors :func:`set_widget_value`: an Input or multi-line TextArea round-trips
-    through plain text, so this is what a blur-save handler compares a new value
-    against to tell an edit from a field that was never touched (whether it
-    shows a real cfg value or an unset field's model-default text).
+    Covers every editor kind a save handler compares a new value against to
+    tell an edit from a field that was never touched (whether it shows a
+    real cfg value or an unset field's model-default text): an Input or
+    multi-line TextArea round-trips through plain text, and a Select's
+    blank sentinel maps to the empty string the same way a save handler
+    treats it.
     """
     if isinstance(widget, Input):
         return widget.value
     if isinstance(widget, TextArea):
         return widget.text
+    if isinstance(widget, Select):
+        return "" if widget.value == Select.BLANK else str(widget.value)
     return None
+
+
+def list_editor_text(key: str) -> str:
+    """The newline-joined text a list setting's editor shows for the current cfg value."""
+    return "\n".join(str(item) for item in (getattr(cfg, key, None) or []))
+
+
+def select_shown_value(defn: SettingDef, value: str) -> str:
+    """The value a Select actually shows for *value*: the matching choice, else blank.
+
+    Computed from *value* and *defn* rather than read off the widget: a
+    ``Select``'s ``value`` reactive is not populated from its constructor
+    kwarg until the widget mounts, so reading it beforehand (e.g. right after
+    construction) sees the pre-mount default, not what it will display.
+    """
+    if value in (defn.choices or ()):
+        return value
+    return ""
+
+
+def strip_model_default_marker(value: str) -> str:
+    """Drop the model-default marker and the sentinel "None" display text."""
+    return "" if value == "None" else value.replace(MODEL_DEFAULT_MARKER, "")
 
 
 def model_picker_label(key: str) -> str:
@@ -131,7 +159,7 @@ def effective_value(key: str) -> str:
     defaults_key = _DEFAULTS_REMAP.get(key, key)
     default_val = getattr(defaults, defaults_key, None)
     if default_val is not None:
-        return f"{default_val} (model default)"
+        return f"{default_val}{MODEL_DEFAULT_MARKER}"
     return "None"
 
 
@@ -248,7 +276,7 @@ def make_editor(key: str, defn: SettingDef) -> Widget:
 
 def make_multiline_editor(key: str, value: str) -> ListTextArea:
     """Create a multi-line editor for string settings (system prompts, etc.)."""
-    display = "" if value == "None" else value.replace(" (model default)", "")
+    display = strip_model_default_marker(value)
     return ListTextArea(
         text=display,
         show_line_numbers=False,
@@ -264,7 +292,7 @@ def make_list_editor(key: str) -> Collapsible:
     current = getattr(cfg, key, None) or []
     title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
     editor = ListTextArea(
-        text="\n".join(str(item) for item in current),
+        text=list_editor_text(key),
         show_line_numbers=True,
         name=key,
         id=f"{EDITOR_ID_PREFIX}{key}",
@@ -291,10 +319,10 @@ def make_list_editor(key: str) -> Collapsible:
 def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     """Create a Select widget for choice-based settings."""
     choices = [(c, c) for c in (defn.choices or ())]
-    if value in {c[1] for c in choices}:
+    if value in (defn.choices or ()):
         return Select(
             choices,
-            value=value,
+            value=select_shown_value(defn, value),
             name=key,
             classes="setting-editor",
             id=f"{EDITOR_ID_PREFIX}{key}",
@@ -317,7 +345,7 @@ def make_input(key: str, value: str, *, secret: bool = False) -> Input:
     the real value is still submitted and saved, and text pasted into a masked
     field never appears on screen.
     """
-    display = "" if value == "None" else value.replace(" (model default)", "")
+    display = strip_model_default_marker(value)
     return Input(
         value=display,
         name=key,

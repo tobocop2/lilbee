@@ -42,12 +42,15 @@ from lilbee.cli.tui.screens.settings_widgets import (
     ROW_ID_PREFIX,
     config_toml_path,
     displayed_text,
+    effective_value,
     group_settings,
     help_content,
+    list_editor_text,
     make_editor,
     model_field_to_picker_scope,
     model_picker_label,
     picker_scope_to_task,
+    select_shown_value,
     set_widget_value,
     stringify_default,
     title_content,
@@ -161,13 +164,13 @@ class SettingsScreen(Screen[None]):
         # pane); the rest fill in on first activation.
         self._pane_groups: dict[str, _PaneGroup] = {}
         self._eagerly_populate: str | None = None
-        # Text each Input/multi-line editor showed the moment it was last
-        # built or refreshed (a field showing a model default renders that
-        # default's text, not a user value). Blur saves only when the raw
-        # text differs from this, not from cfg's stored value, so an
-        # untouched field showing a model default is never mistaken for an
-        # edit. Keyed by setting key; kept in sync by ``_build_setting_row``
-        # and ``_refresh_editor``.
+        # Text each editor showed the moment it was last built or refreshed
+        # (a field showing a model default renders that default's text, not
+        # a user value). A save handler acts only when the new value differs
+        # from this, not from cfg's stored value, so an untouched field
+        # showing a model default is never mistaken for an edit, and only a
+        # successful save updates it. Keyed by setting key; kept in sync by
+        # ``_build_setting_row`` and ``_refresh_editor``.
         self._mount_display: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
@@ -272,7 +275,7 @@ class SettingsScreen(Screen[None]):
             children.append(self._build_model_picker_row(key))
         elif defn.writable:
             editor = make_editor(key, defn)
-            baseline = displayed_text(editor)
+            baseline = self._mount_baseline(key, defn, editor)
             if baseline is not None:
                 self._mount_display[key] = baseline
             editor_row = Horizontal(
@@ -291,6 +294,22 @@ class SettingsScreen(Screen[None]):
             classes="setting-row",
             id=f"{ROW_ID_PREFIX}{key}",
         )
+
+    @staticmethod
+    def _mount_baseline(key: str, defn: SettingDef, editor: Widget) -> str | None:
+        """The text a freshly built editor will show once mounted, or None if untracked.
+
+        A ``Select``'s ``value`` reactive is not populated from its
+        constructor kwarg until the widget mounts, so reading it off
+        *editor* here (right after construction, before it is ever mounted)
+        would see the pre-mount default rather than what it will display;
+        this recomputes the same choice match ``make_select`` used instead.
+        """
+        if defn.type is list:
+            return list_editor_text(key)
+        if defn.choices:
+            return select_shown_value(defn, effective_value(key))
+        return displayed_text(editor)
 
     def _build_model_picker_row(self, key: str) -> Horizontal:
         """A button-style row that opens the same ModelPickerModal as the chat bar."""
@@ -316,8 +335,8 @@ class SettingsScreen(Screen[None]):
         raw = event.value.strip()
         if self._mount_display.get(name) == raw:
             return
-        self._mount_display[name] = raw
-        self._persist_value(name, defn, raw)
+        if self._persist_value(name, defn, raw):
+            self._mount_display[name] = raw
 
     @on(ListTextArea.Blurred, ".setting-multiline-editor")
     def _on_multiline_save(self, event: ListTextArea.Blurred) -> None:
@@ -332,8 +351,8 @@ class SettingsScreen(Screen[None]):
         raw = ta.text
         if self._mount_display.get(name) == raw:
             return
-        self._mount_display[name] = raw
-        self._persist_value(name, defn, raw)
+        if self._persist_value(name, defn, raw):
+            self._mount_display[name] = raw
 
     @on(Checkbox.Changed, ".setting-editor")
     def _on_checkbox_save(self, event: Checkbox.Changed) -> None:
@@ -348,7 +367,7 @@ class SettingsScreen(Screen[None]):
 
     @on(Select.Changed, ".setting-editor")
     def _on_select_save(self, event: Select.Changed) -> None:
-        """Save select choice on change."""
+        """Save select choice on change, but only if it differs from the mount baseline."""
         name = event.select.name
         if name is None:
             return
@@ -356,19 +375,24 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         value = str(event.value) if event.value != Select.BLANK else ""
-        current = str(getattr(cfg, name, ""))
-        if value == current:
+        if self._mount_display.get(name) == value:
             return
-        self._persist_value(name, defn, value)
+        if self._persist_value(name, defn, value):
+            self._mount_display[name] = value
 
-    def _persist_value(self, key: str, defn: SettingDef, raw: str) -> None:
-        """Parse, apply, and persist a setting value. Success is silent; errors toast."""
+    def _persist_value(self, key: str, defn: SettingDef, raw: str) -> bool:
+        """Parse, apply, and persist a setting value. Returns whether it succeeded.
+
+        Success is silent; a parse or apply error toasts and returns False.
+        """
         try:
             parsed = self._parse_value(defn, raw)
             self.app.set_setting(key, parsed)
             self._refresh_help(key, defn)
+            return True
         except (ValueError, TypeError) as exc:
             self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
+            return False
 
     def _parse_value(self, defn: SettingDef, raw: str) -> object:
         """Convert a raw string to the setting's target type."""
@@ -392,7 +416,7 @@ class SettingsScreen(Screen[None]):
 
     @on(ListTextArea.Blurred, ".setting-list-editor")
     def _on_list_blur_save(self, event: ListTextArea.Blurred) -> None:
-        """Validate and save list values when a ListTextArea loses focus."""
+        """Validate and save list values when a ListTextArea loses focus, but only if changed."""
         ta = event.control
         key = ta.name
         if key is None:
@@ -401,6 +425,8 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         raw = ta.text
+        if self._mount_display.get(key) == raw:
+            return
         parsed = self._parse_value(defn, raw)
         assert isinstance(parsed, list)  # noqa: S101 -- mypy narrowing, defn.type is list above
         err = self._validate_regex_list(parsed) if defn.validate_regex else None
@@ -413,7 +439,8 @@ class SettingsScreen(Screen[None]):
             error_widget.add_class(LIST_ERROR_VISIBLE_CLASS)
             return
         error_widget.remove_class(LIST_ERROR_VISIBLE_CLASS)
-        self._persist_value(key, defn, raw)
+        if self._persist_value(key, defn, raw):
+            self._mount_display[key] = raw
         self._refresh_list_title(key, len(parsed))
 
     @on(Button.Pressed, ".setting-list-restore")
@@ -431,7 +458,8 @@ class SettingsScreen(Screen[None]):
         text = "\n".join(str(item) for item in defaults)
         ta = self.query_one(f"#{EDITOR_ID_PREFIX}{key}", ListTextArea)
         ta.load_text(text)
-        self._persist_value(key, defn, text)
+        if self._persist_value(key, defn, text):
+            self._mount_display[key] = text
         error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
         error_widget.remove_class(LIST_ERROR_VISIBLE_CLASS)
         self._refresh_list_title(key, len(defaults))
@@ -612,9 +640,10 @@ class SettingsScreen(Screen[None]):
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
         set_widget_value(widget, value)
-        # Only keys already tracked from row construction (Input / multi-line
-        # editors); a list editor's widget is also a TextArea but its blur
-        # handler doesn't consult this baseline, so it must not gain one here.
+        # Every writable key with a trackable editor is already seeded into
+        # _mount_display at row construction, list-typed keys included; this
+        # guard only stops a future editor kind from gaining a baseline here
+        # before its construction path starts tracking it too.
         if key in self._mount_display:
             baseline = displayed_text(widget)
             if baseline is not None:
