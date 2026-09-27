@@ -11,6 +11,9 @@ from lilbee.core import settings
 from lilbee.core.config.resolve import builtin_value
 from lilbee.core.project_state import ProjectState
 
+# The analyze settings that are genuine Config; every other analyze or profile name is state.
+ANALYZE_SETTINGS = {"analyze_max_files"}
+
 
 class TestChunkSizeOverlapInvariant:
     def test_lowering_chunk_size_below_existing_overlap_is_rejected(self, monkeypatch):
@@ -1149,7 +1152,8 @@ class TestResolverIsTheOnlyWriter:
         assert state_keys == {"analyzed_at", "tip_dismissed"}
         assert not state_keys & fields
         assert PROFILE_TABLE not in fields
-        assert not any(name.startswith("profile") for name in fields)
+        prefixed = {name for name in fields if name.startswith(("profile", "analyze"))}
+        assert prefixed == ANALYZE_SETTINGS
         assert PROFILE_TABLE not in WRITABLE_CONFIG_FIELDS
 
 

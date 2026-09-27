@@ -58,6 +58,7 @@ OCR_LANGUAGE_REASON = "assumed from the text pages"
 OCR_MODEL_NOTE = "The catalog lists OCR models that fit this machine."
 DEFAULT_FITS_NOTE = "Default fits this corpus."
 IMAGE_SCAN_NOTE = "Each image file counts as one scanned page."
+TARGET_WITHOUT_SAVE_MESSAGE = "target takes effect only with apply or save; nothing was read."
 TIP_TEXT = (
     "This project uses the Default profile. Run lilbee analyze to get a profile "
     "recommendation, or lilbee analyze --off to hide this tip."
@@ -87,16 +88,24 @@ FTS_LANGUAGE_BY_CODE: Mapping[str, FtsLanguage] = {
     "tur": FtsLanguage.TURKISH,
 }
 
+# ISO 639-3 codes xberg detects whose Tesseract language data goes by another name.
+TESSERACT_LANGUAGE_BY_CODE: Mapping[str, str] = {
+    "cmn": "chi_sim",
+    "nob": "nor",
+    "pes": "fas",
+}
+
 _NAME_UNSAFE = re.compile(r"[^A-Za-z0-9 _-]+")
 
 
 @dataclass(frozen=True)
 class LanguageRow:
-    """A detected language, its share of text files, its stemmer, and whether Tesseract has it."""
+    """A detected language, its share, its stemmer, and its Tesseract name and support."""
 
     code: str
     share: float
     fts_language: FtsLanguage | None
+    ocr_code: str
     ocr_supported: bool
 
 
@@ -195,17 +204,16 @@ def pick_builtin(signals: CorpusSignals) -> tuple[str, Reason | None]:
     return DEFAULT_PROFILE_NAME, None
 
 
+def _language_row(code: str, share: float) -> LanguageRow:
+    ocr_code = TESSERACT_LANGUAGE_BY_CODE.get(code, code)
+    return LanguageRow(
+        code, share, FTS_LANGUAGE_BY_CODE.get(code), ocr_code, ocr_language_supported(ocr_code)
+    )
+
+
 def language_rows(signals: CorpusSignals) -> tuple[LanguageRow, ...]:
     """Each detected language with its stemmer and Tesseract support."""
-    return tuple(
-        LanguageRow(
-            lang.code,
-            lang.share,
-            FTS_LANGUAGE_BY_CODE.get(lang.code),
-            ocr_language_supported(lang.code),
-        )
-        for lang in signals.languages
-    )
+    return tuple(_language_row(lang.code, lang.share) for lang in signals.languages)
 
 
 def project_label(data_root: Path) -> str:
@@ -257,14 +265,14 @@ def _plan_fts(plan: _Plan, rows: tuple[LanguageRow, ...]) -> None:
 
 
 def _plan_ocr_language(plan: _Plan, signals: CorpusSignals, rows: tuple[LanguageRow, ...]) -> None:
-    scans = signals.pdf.scanned_pages + signals.image_files_read
+    scans = signals.pdf.scanned_pages + signals.image_files
     if scans == 0 or plan.baseline("enable_ocr") is False:
         return
     common = [row for row in rows if row.share >= OCR_LANGUAGE_FLOOR][:MAX_OCR_LANGUAGES]
     for row in common:
         if not row.ocr_supported:
-            plan.notes.append(f"Tesseract has no language data for {row.code} on this machine.")
-    supported = [row.code for row in common if row.ocr_supported]
+            plan.notes.append(f"Tesseract has no language data for {row.ocr_code} on this machine.")
+    supported = [row.ocr_code for row in common if row.ocr_supported]
     if supported:
         plan.adjust("ocr_language", supported, OCR_LANGUAGE_REASON)
 
@@ -291,7 +299,7 @@ def recommend(
     _plan_fts(plan, rows)
     _plan_ocr_language(plan, signals, rows)
     _plan_ocr_model(plan, signals)
-    if signals.image_files_read:
+    if signals.image_files:
         plan.notes.append(IMAGE_SCAN_NOTE)
     values = {**builtin_values, **plan.adjustments}
     fits_default = builtin == DEFAULT_PROFILE_NAME and not plan.adjustments
@@ -355,8 +363,11 @@ async def run_analysis(
     """Read the corpus, recommend a profile, save it when asked, and record the run.
 
     Raises ``TaskCancelledError`` on cancel, before anything is saved or recorded;
-    raises ``ValueError`` when *directory* is not a folder or the save is refused.
+    raises ``ValueError`` when *directory* is not a folder, a *target* comes without
+    *apply* or *save*, or the save is refused.
     """
+    if request.target is not None and not request.apply and request.save is None:
+        raise ValueError(TARGET_WITHOUT_SAVE_MESSAGE)
     files = await asyncio.to_thread(_files, request.directory)
     signals = await collect_signals(files, on_progress=on_progress, cancel=cancel)
     return await asyncio.to_thread(_finish, store, signals, request)
