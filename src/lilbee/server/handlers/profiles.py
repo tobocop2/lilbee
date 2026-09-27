@@ -98,8 +98,7 @@ async def update_profile(name: str) -> ProfileSaveResponse:
 
 async def discard_changes() -> ProfileDiscardResponse:
     """Remove your settings of profile keys so the profile's values show through."""
-    result = await _run(profiles.discard)
-    return ProfileDiscardResponse(dropped=list(result.dropped))
+    return ProfileDiscardResponse.from_result(await _run(profiles.discard))
 
 
 async def new_profile(data: ProfileNewRequest) -> ProfileLocationResponse:

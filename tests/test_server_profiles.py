@@ -176,8 +176,47 @@ def test_discard_drops_your_profile_settings(client):
     (cfg.data_root / "config.toml").write_text("chunk_size = 700\n", encoding="utf-8")
     resp = client.post("/api/profiles/discard")
     assert resp.status_code == 200
-    assert resp.json() == {"dropped": ["chunk_size"]}
+    assert resp.json() == {"dropped": ["chunk_size"], "reindex_required": True, "warnings": []}
     assert _stored() == {}
+
+
+def test_discard_of_a_setting_that_needs_no_rebuild_reports_no_reindex(client):
+    cfg.data_root.mkdir(parents=True)
+    (cfg.data_root / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+    assert client.post("/api/profiles/discard").json() == {
+        "dropped": ["top_k"],
+        "reindex_required": False,
+        "warnings": [],
+    }
+
+
+def test_discard_warns_when_it_leaves_ocr_off_with_a_vision_model(client):
+    cfg.data_root.mkdir(parents=True)
+    (cfg.data_root / "config.toml").write_text(
+        "enable_ocr = true\n[profile.values]\nenable_ocr = false\n", encoding="utf-8"
+    )
+    cfg.enable_ocr = True
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    resp = client.post("/api/profiles/discard")
+    warnings = resp.json()["warnings"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0] and cfg.vision_model in warnings[0]
+    assert cfg.enable_ocr is False
+
+
+def test_active_lists_your_changes_with_the_value_and_source_they_fall_back_to(client):
+    assert client.get("/api/profiles/active").json()["changes"] == []
+    cfg.data_root.mkdir(parents=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 700\n", encoding="utf-8")
+    assert client.get("/api/profiles/active").json()["changes"] == [
+        {
+            "key": "chunk_size",
+            "yours": 700,
+            "profile_value": 512,
+            "profile_source": "built_in",
+            "effect": "reindex",
+        }
+    ]
 
 
 def test_new_writes_a_template_from_a_profile(client):

@@ -49,7 +49,7 @@ class ProfileLine(Horizontal):
         """Fill the line from *snapshot*."""
         self.query_one("#profile-line-name", ProfileLinePill).update(snapshot.active.name)
         count = self.query_one("#profile-line-count", Static)
-        count.update(msg.profile_count_text(len(snapshot.changes)))
+        count.update(msg.profile_count_text(len(snapshot.active.changes)))
         status = self.query_one("#profile-line-status", Static)
         status_text = msg.PROFILE_STATUS_PILL[snapshot.active.status]
         status.update(status_text)

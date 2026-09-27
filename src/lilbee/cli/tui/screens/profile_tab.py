@@ -15,7 +15,7 @@ from textual.message import Message
 from textual.widgets import DataTable, Select, Static
 
 from lilbee.app import profiles
-from lilbee.app.profiles import ActiveProfile, ChangeRow, ProfileStatus
+from lilbee.app.profiles import ActiveProfile, ChangeRow, DiscardResult, ProfileStatus
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.profile_dialogs import (
     SaveProfileDialog,
@@ -31,7 +31,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 )
 from lilbee.cli.tui.screens.profile_library import ProfileLibrary
 from lilbee.cli.tui.screens.settings_widgets import user_pill
-from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.core.profile_files import ProfileCatalog, ProfileFolder, ProfileStore
 
 if TYPE_CHECKING:
@@ -61,11 +61,10 @@ _ROW_ACTIONS = (
 
 @dataclass(frozen=True)
 class ProfileSnapshot:
-    """The active profile, all profiles, your changes, and whether there is a project folder."""
+    """The active profile and your changes, every profile, and whether a project folder exists."""
 
     active: ActiveProfile
     catalog: ProfileCatalog
-    changes: tuple[ChangeRow, ...]
     has_project: bool
 
 
@@ -75,7 +74,6 @@ def load_snapshot() -> ProfileSnapshot:
     return ProfileSnapshot(
         active=profiles.active(store),
         catalog=profiles.list_profiles(store),
-        changes=profiles.your_changes(),
         has_project=has_project_folder(),
     )
 
@@ -162,21 +160,22 @@ class ProfileTab(Vertical):
 
     def _show_changes(self, snapshot: ProfileSnapshot) -> None:
         name = snapshot.active.name
-        text = msg.PROFILE_CHANGES_HELP if snapshot.changes else msg.PROFILE_CHANGES_NONE
+        changes = snapshot.active.changes
+        text = msg.PROFILE_CHANGES_HELP if changes else msg.PROFILE_CHANGES_NONE
         self.query_one("#profile-changes-help", Static).update(text.format(name=name))
         table = self.query_one("#profile-changes", DataTable)
-        table.display = bool(snapshot.changes)
+        table.display = bool(changes)
         table.clear()
-        table.add_rows(_change_cells(row) for row in snapshot.changes)
+        table.add_rows(_change_cells(row) for row in changes)
 
     def _show_actions(self, snapshot: ProfileSnapshot) -> None:
         active = snapshot.active
         owned = active.entry is not None and active.entry.folder in _OWNED_FOLDERS
         current = active.status is ProfileStatus.CURRENT
         shown = {
-            ProfileAction.UPDATE: owned and current and bool(snapshot.changes),
+            ProfileAction.UPDATE: owned and current and bool(active.changes),
             ProfileAction.SAVE_AS: True,
-            ProfileAction.DISCARD: bool(snapshot.changes),
+            ProfileAction.DISCARD: bool(active.changes),
             ProfileAction.REAPPLY: active.status is ProfileStatus.CHANGED,
         }
         labels = {
@@ -224,7 +223,7 @@ class ProfileTab(Vertical):
         dialog = SaveProfileDialog(
             title=msg.PROFILE_SAVE_TITLE,
             explain=msg.PROFILE_SAVE_EXPLAIN.format(
-                name=snapshot.active.name, count=len(snapshot.changes)
+                name=snapshot.active.name, count=len(snapshot.active.changes)
             ),
             catalog=snapshot.catalog,
             folders=save_folders(snapshot.has_project),
@@ -244,12 +243,25 @@ class ProfileTab(Vertical):
         run_profile_op(self, lambda: profiles.save_as(request.name, request.folder), _done)
 
     def _discard(self, snapshot: ProfileSnapshot) -> None:
-        def _done(result: profiles.DiscardResult) -> None:
+        name = snapshot.active.name
+
+        def _done(result: DiscardResult) -> None:
             self.app.publish_settings(result.dropped)
-            self.notify(msg.PROFILE_DISCARDED.format(name=snapshot.active.name))
+            self.notify(msg.PROFILE_DISCARDED.format(name=name))
+            self.app.notify_warnings(result.warnings)
             self._stale()
+            if result.reindex_required:
+                self._offer_rebuild(name)
 
         run_profile_op(self, profiles.discard, _done)
+
+    def _offer_rebuild(self, name: str) -> None:
+        def _answered(rebuild: bool | None) -> None:
+            if rebuild:
+                self.app.start_rebuild()
+
+        message = msg.PROFILE_DISCARD_REINDEX_MESSAGE.format(name=name)
+        self.app.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 
     def _reapply(self, snapshot: ProfileSnapshot) -> None:
         start_profile_switch(self.app, self, snapshot.active.name, self._stale)

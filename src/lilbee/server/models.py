@@ -14,7 +14,9 @@ from lilbee.app.models import ModelEntry
 from lilbee.app.profiles import (
     ActiveProfile,
     ApplyResult,
+    ChangeRow,
     DiffRow,
+    DiscardResult,
     ProfileDiff,
     ProfileEffect,
     ProfileLocation,
@@ -1095,13 +1097,35 @@ class ProfileListResponse(BaseModel):
     profiles: list[ProfileEntryResponse]
 
 
+class ProfileChangeRowResponse(BaseModel):
+    """A profile setting you set, and the value and source it falls back to without you."""
+
+    key: str
+    yours: Any
+    profile_value: Any
+    profile_source: SettingSource
+    effect: ProfileEffect
+
+    @classmethod
+    def from_row(cls, row: ChangeRow) -> ProfileChangeRowResponse:
+        """One serialized change row."""
+        return cls(
+            key=row.key,
+            yours=row.yours,
+            profile_value=row.profile_value,
+            profile_source=row.profile_source,
+            effect=row.effect,
+        )
+
+
 class ActiveProfileResponse(BaseModel):
-    """The project's applied profile, the values recorded on apply, and its file's state."""
+    """The project's applied profile, its recorded values, your changes, and its file's state."""
 
     name: str
     status: ProfileStatus
     error: str | None
     values: dict[str, Any]
+    changes: list[ProfileChangeRowResponse]
     profile: ProfileEntryResponse | None
 
     @classmethod
@@ -1113,6 +1137,7 @@ class ActiveProfileResponse(BaseModel):
             status=current.status,
             error=current.error,
             values=dict(current.values),
+            changes=[ProfileChangeRowResponse.from_row(row) for row in current.changes],
             profile=ProfileEntryResponse.from_entry(entry) if entry is not None else None,
         )
 
@@ -1207,9 +1232,21 @@ class ProfileSaveResponse(ProfileLocationResponse):
 
 
 class ProfileDiscardResponse(BaseModel):
-    """Response for POST /api/profiles/discard: the settings of yours removed."""
+    """Response for POST /api/profiles/discard: your settings removed, whether to rebuild,
+    and any setting the discard leaves in conflict."""
 
     dropped: list[str]
+    reindex_required: bool
+    warnings: list[str] = []
+
+    @classmethod
+    def from_result(cls, result: DiscardResult) -> ProfileDiscardResponse:
+        """The canonical serialized discard result, shared by every surface."""
+        return cls(
+            dropped=list(result.dropped),
+            reindex_required=result.reindex_required,
+            warnings=list(result.warnings),
+        )
 
 
 class ProfileValidationResponse(BaseModel):

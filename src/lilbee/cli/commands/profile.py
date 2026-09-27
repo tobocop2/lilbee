@@ -24,8 +24,10 @@ if TYPE_CHECKING:
     from lilbee.server.models import (
         ActiveProfileResponse,
         ProfileApplyResponse,
+        ProfileChangeRowResponse,
         ProfileDiffResponse,
         ProfileDiffRowResponse,
+        ProfileDiscardResponse,
         ProfileEntryResponse,
         ProfileLocationResponse,
         ProfileSaveResponse,
@@ -35,6 +37,7 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 _CURRENT_DIR = Path()
+_REBUILD_HINT = "Run lilbee rebuild so the index uses the new values."
 
 profile_app = typer.Typer(
     help="Manage profiles: named sets of ingest, OCR, chunking and retrieval settings."
@@ -143,6 +146,19 @@ def _render_active(current: ActiveProfileResponse) -> None:
     if current.profile is not None:
         for line in _about(current.profile):
             _line(line)
+    if current.changes:
+        _render_your_changes(current.changes)
+
+
+def _render_your_changes(rows: list[ProfileChangeRowResponse]) -> None:
+    _line("Your changes:", theme.ACCENT)
+    table = Table("Setting", "Yours", "Without yours", "Takes effect")
+    for row in rows:
+        source = row.profile_source.value.replace("_", " ")
+        fallback = f"{_shown(row.profile_value)} ({source})"
+        effect = row.effect.value.replace("_", " ")
+        table.add_row(row.key, Text(_shown(row.yours)), Text(fallback), effect)
+    console.print(table)
 
 
 def render_changes(rows: list[ProfileDiffRowResponse]) -> None:
@@ -174,6 +190,17 @@ def _render_save(verb: str, result: ProfileSaveResponse) -> None:
     _render_location(verb, result)
     if result.absorbed:
         _line(f"It now holds your settings of: {', '.join(result.absorbed)}")
+
+
+def _render_discard(result: ProfileDiscardResponse) -> None:
+    if not result.dropped:
+        _line("You have no values of profile settings to remove.")
+        return
+    _line(f"Removed your values of: {', '.join(result.dropped)}")
+    if result.reindex_required:
+        _line(_REBUILD_HINT, theme.WARNING)
+    for warning in result.warnings:
+        _line(warning, theme.WARNING)
 
 
 @profile_app.command(name="show")
@@ -270,7 +297,7 @@ def profile_apply(
     elif reindexed is not None:
         _line(f"Rebuilt: {reindexed} documents ingested")
     elif result.reindex_required:
-        _line("Run lilbee rebuild so the index uses the new values.", theme.WARNING)
+        _line(_REBUILD_HINT, theme.WARNING)
     if reindex_error is not None:
         raise typer.Exit(1)
 
@@ -333,15 +360,11 @@ def profile_discard(
 ) -> None:
     """Remove your values of profile settings so the profile's values show through."""
     from lilbee.app import profiles
+    from lilbee.server.models import ProfileDiscardResponse
 
     _setup(data_dir, use_global)
-    dropped = list(_run(profiles.discard).dropped)
-    if cfg.json_mode:
-        json_output({"dropped": dropped})
-    elif dropped:
-        _line(f"Removed your values of: {', '.join(dropped)}")
-    else:
-        _line("You have no values of profile settings to remove.")
+    result = ProfileDiscardResponse.from_result(_run(profiles.discard))
+    _emit(result, lambda: _render_discard(result))
 
 
 @profile_app.command(name="duplicate")
