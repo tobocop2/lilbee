@@ -671,6 +671,50 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_replicas = original
 
+    def test_empty_vision_model_env_keeps_config_toml_from_restoring_it(
+        self, tmp_path, monkeypatch
+    ):
+        """An empty LILBEE_VISION_MODEL clears the role; config.toml's other keys still apply."""
+        from lilbee.core.config import cfg
+
+        original_vision, original_top_k = cfg.vision_model, cfg.top_k
+        try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+            monkeypatch.setenv("LILBEE_VISION_MODEL", "")
+            cfg.vision_model = ""
+            cfg.top_k = 5
+            (tmp_path / "config.toml").write_text(
+                'vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"\ntop_k = 9\n',
+                encoding="utf-8",
+            )
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_model == ""
+            assert cfg.top_k == 9
+        finally:
+            cfg.vision_model, cfg.top_k = original_vision, original_top_k
+
+    def test_empty_persisted_vision_model_clears_the_ambient_one(self, tmp_path, monkeypatch):
+        """A vision_model cleared into config.toml stays cleared; an empty chat_model is skipped."""
+        from lilbee.core.config import cfg
+
+        originals = cfg.vision_model, cfg.chat_model, cfg.top_k
+        try:
+            monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+            monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+            monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
+            cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
+            cfg.chat_model = "ollama/ambient-chat:latest"
+            cfg.top_k = 5
+            (tmp_path / "config.toml").write_text(
+                'vision_model = ""\nchat_model = ""\ntop_k = 9\n', encoding="utf-8"
+            )
+            settings.overlay_persisted_settings(tmp_path)
+            assert cfg.vision_model == ""
+            assert cfg.chat_model == "ollama/ambient-chat:latest"
+            assert cfg.top_k == 9
+        finally:
+            cfg.vision_model, cfg.chat_model, cfg.top_k = originals
+
     def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
         """Without the env var, config.toml is still overlaid onto cfg."""
         from lilbee.core.config import cfg
@@ -701,6 +745,14 @@ class TestOverlayPersistedSettings:
             assert cfg.vision_replicas == 1  # config.toml ignored while skipping
         finally:
             cfg.vision_replicas = original
+
+
+def test_the_model_roles_that_can_be_off_are_the_clearable_ones():
+    from lilbee.config_meta import MODEL_ROLE_FIELDS
+    from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
+
+    nullable_roles = {key for key in MODEL_ROLE_FIELDS if SETTINGS_MAP[key].nullable}
+    assert nullable_roles == CLEARABLE_MODEL_FIELDS == {"vision_model", "reranker_model"}
 
 
 class TestAutoSyncConfig:

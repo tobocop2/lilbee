@@ -21,6 +21,8 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
 | HTTP | `PATCH /api/config` with `{"setting": value}` | See the HTTP column. Persists |
 
+An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
+
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
@@ -48,10 +50,10 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `chat_model` | `LILBEE_CHAT_MODEL` | `str` | *(empty)* | picker | yes | role API | no | LLM used for chat generation (vision and reranking are separate slots). |
 | `embedding_model` | `LILBEE_EMBEDDING_MODEL` | `str` | *(empty)* | picker | yes | role API | `lilbee use-embedder REF` | Model used to embed document chunks. |
 | `include_uncensored` | `LILBEE_INCLUDE_UNCENSORED` | `bool` | `false` | yes | yes | yes | no | Recommend safety-stripped models in Picks and Discover (browse and search always list them). |
-| `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Cross-encoder model for result reranking. |
+| `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Cross-encoder model for result reranking (empty = off). |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `str` | `auto` | yes | yes | yes | no | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
-| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Vision model for scanned PDF OCR (empty = disabled; Tesseract only). |
+| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Vision model for scanned PDF OCR; when set it is used instead of Tesseract. Clear it (empty value, including an empty LILBEE_VISION_MODEL) to use Tesseract. |
 
 ## Retrieval
 

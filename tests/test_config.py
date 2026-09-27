@@ -16,6 +16,7 @@ from lilbee.core.config import (
     cfg,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.model import _TomlSource, value_is_set
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -1685,6 +1686,83 @@ class TestPlainEnvSourceSkipsEmpty:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
         assert c.chat_model == ""  # default, not empty
+
+
+_TOML_VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+_TOML_RERANKER = "org/Test-Rerank-GGUF/test-rerank-Q4_K_M.gguf"
+_TOML_CHAT = "ollama/toml-chat:latest"
+
+
+class TestEmptyValueClearsModelRole:
+    """An empty env or config.toml value clears a model role that can be off, and nothing else."""
+
+    @staticmethod
+    def _config(tmp_path: Path, **env_values: str) -> Config:
+        (tmp_path / "config.toml").write_text(
+            f'vision_model = "{_TOML_VISION}"\n'
+            f'reranker_model = "{_TOML_RERANKER}"\n'
+            f'chat_model = "{_TOML_CHAT}"\n'
+            "chunk_size = 777\n",
+            encoding="utf-8",
+        )
+        env = clean_env(tmp_path)
+        env.update(env_values)
+        with mock.patch.dict(os.environ, env, clear=True):
+            return Config()
+
+    def test_unset_env_keeps_the_config_toml_vision_model(self, tmp_path):
+        assert self._config(tmp_path).vision_model == _TOML_VISION
+
+    def test_empty_env_clears_the_vision_model_and_keeps_other_toml_fields(self, tmp_path):
+        c = self._config(tmp_path, LILBEE_VISION_MODEL="")
+        assert c.vision_model == ""
+        assert c.reranker_model == _TOML_RERANKER
+        assert c.chunk_size == 777
+
+    def test_whitespace_env_clears_the_vision_model(self, tmp_path):
+        assert self._config(tmp_path, LILBEE_VISION_MODEL="   ").vision_model == ""
+
+    def test_a_valid_env_ref_wins_over_config_toml(self, tmp_path):
+        ref = "org/Other-Vision-GGUF/other-Q4_K_M.gguf"
+        assert self._config(tmp_path, LILBEE_VISION_MODEL=ref).vision_model == ref
+
+    def test_empty_env_clears_the_reranker_model(self, tmp_path):
+        c = self._config(tmp_path, LILBEE_RERANKER_MODEL="")
+        assert c.reranker_model == ""
+        assert c.vision_model == _TOML_VISION
+
+    def test_empty_env_on_a_required_role_or_number_still_counts_as_unset(self, tmp_path):
+        c = self._config(tmp_path, LILBEE_CHAT_MODEL="", LILBEE_CHUNK_SIZE="")
+        assert c.chat_model == _TOML_CHAT
+        assert c.chunk_size == 777
+
+    @pytest.mark.parametrize(
+        ("field", "raw", "expected"),
+        [
+            ("vision_model", None, False),
+            ("vision_model", "", True),
+            ("reranker_model", "", True),
+            ("chat_model", "", False),
+            ("chunk_size", "", False),
+            ("chunk_size", "5", True),
+            ("chunk_size", 0, True),
+            ("enable_ocr", False, True),
+        ],
+    )
+    def test_value_is_set(self, field, raw, expected):
+        assert value_is_set(field, raw) is expected
+
+    def test_config_toml_keeps_an_empty_clearable_role_and_drops_other_empties(self, tmp_path):
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            'vision_model = ""\nreranker_model = ""\nchat_model = ""\nchunk_size = ""\ntop_k = 9\n',
+            encoding="utf-8",
+        )
+        assert _TomlSource(Config, toml_path)() == {
+            "vision_model": "",
+            "reranker_model": "",
+            "top_k": 9,
+        }
 
 
 @pytest.fixture()

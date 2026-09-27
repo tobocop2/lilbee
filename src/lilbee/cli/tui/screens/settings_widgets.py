@@ -11,11 +11,13 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
+from lilbee.app.settings import OCR_SETTING_KEYS, ocr_engine_note, ocr_off_warning
 from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
+from lilbee.core.config.model import value_is_set
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -141,16 +143,21 @@ def env_var_name(key: str) -> str:
 def env_pill(key: str) -> Content | None:
     """Pill warning that an env var is overriding TUI edits, or None."""
     env_name = env_var_name(key)
-    if os.environ.get(env_name) is None:
+    if not value_is_set(key, os.environ.get(env_name)):
         return None
     return pill(env_name, "$warning", "$text")
 
 
-def help_content(_key: str, defn: SettingDef) -> Content:
-    """Build help text; the editor widget already shows the current value."""
-    if defn.help_text:
-        return Content(defn.help_text)
-    return Content("")
+def help_content(key: str, defn: SettingDef) -> Content:
+    """Build help text, plus which OCR engine runs on an OCR row; the editor shows the value."""
+    help_text = Content(defn.help_text)
+    if key not in OCR_SETTING_KEYS:
+        return help_text
+    warning = ocr_off_warning()
+    if warning is not None:
+        return Content.assemble(help_text, "\n", Content.styled(warning, "$warning"))
+    note = ocr_engine_note()
+    return help_text if note is None else Content.assemble(help_text, "\n", note)
 
 
 def title_content(key: str, defn: SettingDef) -> Content:

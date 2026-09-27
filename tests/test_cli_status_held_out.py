@@ -104,3 +104,11 @@ def test_the_ocr_off_warning_is_printed_when_status_carries_one() -> None:
     _tables, strings = _texts(status)
     assert any("OCR is off" in s for s in strings)
     assert not any("OCR is off" in s for s in _texts(_status())[1])
+
+
+def test_the_ocr_engine_note_is_printed_when_status_carries_one() -> None:
+    status = _status()
+    status.ocr_note = "A vision model is set (v), so it is used instead of Tesseract."
+    _tables, strings = _texts(status)
+    assert any("used instead of Tesseract" in s for s in strings)
+    assert not any("used instead of Tesseract" in s for s in _texts(_status())[1])

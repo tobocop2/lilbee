@@ -14,6 +14,7 @@ from xberg import Metadata
 import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
+from lilbee.data.types import OcrBackendUsed
 from tests.conftest import make_pdf
 
 
@@ -1981,6 +1982,58 @@ class TestStatusWarnsWhenOcrOffKeepsTheVisionModelUnused:
         cfg.vision_model = vision_model
         cfg.enable_ocr = enable_ocr
         assert gather_status().ocr_warning is None
+
+
+class TestStatusSaysWhichOcrEngineRuns:
+    """Status names the OCR engine: the vision model when one is set, else Tesseract."""
+
+    @pytest.mark.parametrize("enable_ocr", [None, True])
+    def test_a_set_vision_model_is_used_instead_of_tesseract(self, mock_svc, enable_ocr):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = None
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.enable_ocr = enable_ocr
+        note = gather_status().ocr_note
+        assert note is not None
+        assert "used instead of Tesseract" in note and cfg.vision_model in note
+
+    def test_tesseract_runs_when_no_vision_model_is_set(self, mock_svc):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = None
+        cfg.vision_model = ""
+        cfg.enable_ocr = None
+        note = gather_status().ocr_note
+        assert note is not None
+        assert "Tesseract runs OCR" in note
+
+    @pytest.mark.parametrize("vision_model", ["", "org/V-GGUF/v.gguf"])
+    def test_no_engine_note_when_ocr_is_off(self, mock_svc, vision_model):
+        from lilbee.app.status import gather_status
+
+        mock_svc.store.get_meta.return_value = None
+        cfg.vision_model = vision_model
+        cfg.enable_ocr = False
+        assert gather_status().ocr_note is None
+
+
+class TestOcrBackendChosen:
+    """OCR off wins over a vision model, which wins over Tesseract."""
+
+    @pytest.mark.parametrize(
+        ("enable_ocr", "vision_model", "expected"),
+        [
+            (False, "org/V-GGUF/v.gguf", OcrBackendUsed.NONE),
+            (False, "", OcrBackendUsed.NONE),
+            (None, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
+            (True, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
+            (None, "", OcrBackendUsed.TESSERACT),
+            (True, "", OcrBackendUsed.TESSERACT),
+        ],
+    )
+    def test_chosen(self, enable_ocr, vision_model, expected):
+        assert OcrBackendUsed.chosen(enable_ocr, vision_model) is expected
 
 
 class TestStatusReportsHeldOutFiles:

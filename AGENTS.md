@@ -76,7 +76,9 @@ All settings override via environment variables:
 - `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.9`). Higher = more results, lower = stricter filtering
 - `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
 - `LILBEE_AUTO_SYNC` — run a sync before `lilbee ask` (default: `true`); set to `false` on large static corpora to skip the pre-answer re-hash
-- `LILBEE_VISION_MODEL` — vision OCR model (default: none)
+- `LILBEE_VISION_MODEL` — vision OCR model, used instead of Tesseract when set (default: none).
+- `LILBEE_RERANKER_MODEL`: cross-encoder model for result reranking (default: none, reranking off).
+- For `LILBEE_VISION_MODEL` and `LILBEE_RERANKER_MODEL`, an empty value (in the env var or in `config.toml`) clears the model, and an unset variable leaves `config.toml` in place.
 - `LILBEE_RERANKER_TYPE` — reranker serving mode: `auto` (default), `cross_encoder`, or `llm`.
 - `LILBEE_RERANKER_PROMPT` — relevance prompt for LLM rerankers (blank uses the built-in template).
 - `LILBEE_OCR_TIMEOUT` — per-page vision OCR timeout in seconds (default: `300`, `0` = no limit)

@@ -2165,6 +2165,23 @@ async def test_status_screen_warns_when_ocr_off_keeps_the_vision_model_unused(mo
         assert ("OCR is off (enable_ocr = false)" in rendered) is (enable_ocr is False)
 
 
+@pytest.mark.parametrize(
+    ("vision_model", "enable_ocr", "expected"),
+    [
+        ("org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", None, "used instead of Tesseract"),
+        ("", True, "Tesseract runs OCR"),
+    ],
+)
+async def test_status_screen_names_the_ocr_engine(mock_svc, vision_model, enable_ocr, expected):
+    cfg.vision_model = vision_model
+    cfg.enable_ocr = enable_ocr
+    app = StatusTestApp()
+    async with app.run_test(size=(160, 40)) as _pilot:
+        rendered = str(app.screen.query_one("#config-info", Static).render())
+        assert "Vision model" in rendered
+        assert expected in rendered
+
+
 async def test_status_screen_config_pills_render(mock_svc):
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -3406,7 +3423,7 @@ async def test_chat_slash_set_no_value():
 
 
 async def test_chat_slash_set_readonly_key():
-    """Read-only keys (chat_model, vision_model, ...) must be rejected."""
+    """Read-only keys (chat_model, embedding_model, wiki_dir) must be rejected."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
@@ -3414,6 +3431,46 @@ async def test_chat_slash_set_readonly_key():
             mock_notify.assert_called_once()
             assert "read-only" in mock_notify.call_args[0][0]
         assert cfg.chat_model == TEST_LOCAL_REF
+
+
+async def test_chat_slash_set_vision_model_with_no_value_clears_it():
+    """/set vision_model with no value clears the vision model so Tesseract runs."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("vision_model")
+        assert cfg.vision_model == ""
+        assert "read-only" not in mock_notify.call_args[0][0]
+
+
+@pytest.mark.parametrize("word", ["none", "NULL"])
+async def test_chat_slash_set_vision_model_none_clears_it(word):
+    """/set vision_model none clears the model, as none clears any other nullable setting."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set(f"vision_model {word}")
+        assert cfg.vision_model == ""
+        assert mock_notify.call_args.kwargs.get("severity") != "error"
+
+
+async def test_chat_slash_set_vision_model_sets_a_ref():
+    ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        cfg.vision_model = ""
+        app.screen._cmd_set(f"vision_model {ref}")
+        assert cfg.vision_model == ref
+
+
+async def test_chat_slash_set_reranker_model_with_no_value_clears_it():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        cfg.reranker_model = "org/Test-Rerank-GGUF/test-rerank-Q4_K_M.gguf"
+        app.screen._cmd_set("reranker_model")
+        assert cfg.reranker_model == ""
 
 
 async def test_chat_slash_add_empty_args():
@@ -14467,6 +14524,31 @@ def test_settings_env_pill_when_env_set(monkeypatch):
     assert "LILBEE_CHAT_MODEL" in pill_content.plain
 
 
+@pytest.mark.parametrize("key", ["enable_ocr", "vision_model"])
+def test_settings_help_content_names_the_ocr_engine_on_ocr_rows(key):
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings_widgets import help_content
+
+    cfg.enable_ocr = None
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    assert "used instead of Tesseract" in help_content(key, SETTINGS_MAP[key]).plain
+    cfg.vision_model = ""
+    assert "Tesseract runs OCR" in help_content(key, SETTINGS_MAP[key]).plain
+    cfg.enable_ocr = False
+    assert help_content(key, SETTINGS_MAP[key]).plain == SETTINGS_MAP[key].help_text
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    assert "OCR is off" in help_content(key, SETTINGS_MAP[key]).plain
+
+
+def test_settings_help_content_has_no_ocr_note_on_other_rows():
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings_widgets import help_content
+
+    cfg.enable_ocr = None
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    assert help_content("top_k", SETTINGS_MAP["top_k"]).plain == SETTINGS_MAP["top_k"].help_text
+
+
 def test_settings_help_content_blank_when_no_help_text():
     """help_content returns empty Content when the setting has no help text."""
     from lilbee.app.settings_map import SettingDef
@@ -14475,6 +14557,20 @@ def test_settings_help_content_blank_when_no_help_text():
     defn = SettingDef(type=str, nullable=False, group="Test", help_text="")
     content = help_content("anon", defn)
     assert content.plain == ""
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "shown"),
+    [("vision_model", "", True), ("chat_model", "", False), ("top_k", "", False)],
+)
+def test_settings_env_pill_follows_whether_an_empty_env_value_overrides(
+    monkeypatch, key, value, shown
+):
+    """An empty LILBEE_* value shows the pill only where it clears the setting."""
+    from lilbee.cli.tui.screens.settings_widgets import env_pill
+
+    monkeypatch.setenv(f"LILBEE_{key.upper()}", value)
+    assert (env_pill(key) is not None) is shown
 
 
 def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
@@ -14628,6 +14724,48 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
             await app.workers.wait_for_complete()
             await pilot.pause()
             services_mock.reload_role.assert_called_once_with(WorkerRole.VISION, wait=True)
+
+
+def _ocr_help_texts(screen) -> dict[str, str]:
+    return {
+        key: str(screen.query_one(f"#row-{key} .setting-help", Static).render())
+        for key in ("enable_ocr", "vision_model")
+    }
+
+
+async def test_settings_clearing_the_vision_model_updates_both_ocr_notes():
+    """Picking no vision model re-renders the OCR rows to say Tesseract runs."""
+    from unittest.mock import patch
+
+    services_mock = MagicMock()
+    services_mock.store.has_chunks.return_value = False
+    cfg.enable_ocr = None
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        before = _ocr_help_texts(screen)
+        assert all("used instead of Tesseract" in text for text in before.values())
+        with patch("lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock):
+            screen._on_model_picker_dismissed("vision_model", "")
+            await app.workers.wait_for_complete()
+            await pilot.pause()
+        assert cfg.vision_model == ""
+        after = _ocr_help_texts(screen)
+        assert all("Tesseract runs OCR" in text for text in after.values())
+
+
+async def test_settings_turning_ocr_off_updates_the_vision_model_row():
+    from lilbee.app.settings_map import SETTINGS_MAP
+
+    cfg.enable_ocr = None
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        screen._persist_value("enable_ocr", SETTINGS_MAP["enable_ocr"], "false")
+        await pilot.pause()
+        assert "OCR is off" in _ocr_help_texts(screen)["vision_model"]
 
 
 async def test_settings_model_picker_dismissed_reload_failure_notifies_the_bracketed_error():

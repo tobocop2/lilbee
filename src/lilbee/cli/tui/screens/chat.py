@@ -78,6 +78,7 @@ from lilbee.cli.tui.widgets.task_bar import TaskBar
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
+from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.store import (
     ChunkType,
@@ -1415,13 +1416,17 @@ class ChatScreen(Screen[None]):
             return
 
         defn = SETTINGS_MAP[key]
-        if not defn.writable:
+        if not defn.writable and key not in CLEARABLE_MODEL_FIELDS:
             self.notify(msg.CMD_SET_READONLY.format(key=key), severity="warning")
             return
+        clears = defn.nullable and value.lower() in ("none", "null", "")
         try:
-            if defn.type is bool:
+            parsed: object
+            if key in CLEARABLE_MODEL_FIELDS:
+                parsed = "" if clears else value
+            elif defn.type is bool:
                 parsed = value.lower() in ("true", "1", "yes", "on")
-            elif defn.nullable and value.lower() in ("none", "null", ""):
+            elif clears:
                 parsed = None
             else:
                 if defn.choices and value not in defn.choices:

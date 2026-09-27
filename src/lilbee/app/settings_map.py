@@ -9,6 +9,7 @@ from pydantic_core import PydanticUndefined
 
 from lilbee.app.themes import DARK_THEMES
 from lilbee.core.config import cfg
+from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.core.config.schema import field_value_set
 
 
@@ -43,7 +44,8 @@ class SettingDef:
 
     ``writable`` is a TUI rendering hint: fields marked ``writable=False``
     (the model role slots) get a dedicated picker rather than an inline
-    editor, and the ``/set`` slash command refuses them. The actual
+    editor, and the ``/set`` slash command refuses them, except that it
+    sets or clears a model role that can be off. The actual
     write contract for HTTP / MCP / programmatic surfaces lives in
     ``config_meta.WRITABLE_CONFIG_FIELDS`` + ``MODEL_ROLE_FIELDS`` and
     is enforced by ``app.settings.apply_settings_update``.
@@ -87,17 +89,20 @@ def get_default(key: str) -> object:
 SETTINGS_MAP: dict[str, SettingDef] = {
     "chat_model": SettingDef(
         str,
-        nullable=False,
+        nullable="chat_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
         help_text="LLM used for chat generation (vision and reranking are separate slots)",
     ),
     "vision_model": SettingDef(
         str,
-        nullable=True,
+        nullable="vision_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
-        help_text="Vision model for scanned PDF OCR (empty = disabled; Tesseract only)",
+        help_text=(
+            "Vision model for scanned PDF OCR; when set it is used instead of Tesseract. "
+            "Clear it (empty value, including an empty LILBEE_VISION_MODEL) to use Tesseract"
+        ),
     ),
     "enable_ocr": SettingDef(
         bool,
@@ -263,17 +268,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     ),
     "embedding_model": SettingDef(
         str,
-        nullable=False,
+        nullable="embedding_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
         help_text="Model used to embed document chunks",
     ),
     "reranker_model": SettingDef(
         str,
-        nullable=True,
+        nullable="reranker_model" in CLEARABLE_MODEL_FIELDS,
         writable=False,
         group=SettingGroup.MODELS,
-        help_text="Cross-encoder model for result reranking",
+        help_text="Cross-encoder model for result reranking (empty = off)",
     ),
     "reranker_type": SettingDef(
         str,

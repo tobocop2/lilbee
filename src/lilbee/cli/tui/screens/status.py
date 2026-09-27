@@ -23,7 +23,8 @@ from textual.widgets import Collapsible, DataTable, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
-from lilbee.app.status import held_out_sources, ocr_off_warning
+from lilbee.app.settings import ocr_engine_note, ocr_off_warning
+from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
@@ -125,6 +126,9 @@ def _build_config_content() -> Content:
         _kv_line("Reranker", cfg.reranker_model or "(disabled)", _model_pill(cfg.reranker_model)),
         _kv_line("OCR", _ocr_label(), _ocr_pill()),
     ]
+    note = ocr_engine_note()
+    if note is not None:
+        lines.append(Content(note))
     warning = ocr_off_warning()
     if warning is not None:
         lines.append(Content.styled(warning, "$warning"))

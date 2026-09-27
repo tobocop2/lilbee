@@ -278,6 +278,13 @@ class TestStatus:
         result = status()
         assert result["config"]["enable_ocr"] is True
 
+    def test_status_names_the_ocr_engine(self, mock_svc):
+        cfg.enable_ocr = None
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        assert "used instead of Tesseract" in status()["ocr_note"]
+        cfg.vision_model = ""
+        assert "Tesseract runs OCR" in status()["ocr_note"]
+
     def test_status_enable_ocr_none_by_default(self):
         cfg.enable_ocr = None
         result = status()
@@ -604,6 +611,21 @@ class TestInit:
 
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
+
+    def test_init_keeps_a_reranker_model_the_project_cleared(
+        self, tmp_path, overlay_reads_config_toml
+    ):
+        """An empty reranker_model in the project's config.toml clears the ambient one."""
+        cfg.reranker_model = "org/Ambient-Rerank-GGUF/ambient-Q4_K_M.gguf"
+        cfg.top_k = 5
+        target = tmp_path / "myproject"
+        target.mkdir()
+        (target / "config.toml").write_text('reranker_model = ""\ntop_k = 9\n', encoding="utf-8")
+
+        init(str(target))
+
+        assert cfg.reranker_model == ""
+        assert cfg.top_k == 9
 
 
 class TestHttpDaemonGate:
@@ -1740,6 +1762,15 @@ class TestSettingsMcp:
         assert len(result["warnings"]) == 1
         assert "enable_ocr" in result["warnings"][0]
         assert settings_set({"top_k": 3})["warnings"] == []
+
+    def test_settings_set_empty_vision_model_clears_it_for_tesseract(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        result = settings_set({"vision_model": ""})
+        assert result["updated"] == ["vision_model"]
+        assert cfg.vision_model == ""
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert 'vision_model = ""' in persisted
 
     def test_settings_set_pre_validates_chunk_size(self, isolated_env):
         cfg.data_root = isolated_env

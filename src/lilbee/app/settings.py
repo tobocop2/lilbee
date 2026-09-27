@@ -22,18 +22,29 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.schema import field_type_name
+from lilbee.data.types import OcrBackendUsed
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
 
 _MIN_CHUNK_SIZE = 64
 
-# Keys whose change can leave a vision model set while OCR is off.
-_OCR_WARNING_KEYS = frozenset({"enable_ocr", "vision_model"})
+# Keys that decide which OCR engine runs, and whether a set vision model goes unused.
+OCR_SETTING_KEYS = frozenset({"enable_ocr", "vision_model"})
 OCR_OFF_WARNING = (
     "OCR is off (enable_ocr = false), so the vision model {model} is not used. "
     "Scanned PDFs without a text layer are skipped. Set enable_ocr to true to OCR them."
 )
+_OCR_ENGINE_NOTES = {
+    OcrBackendUsed.VISION: (
+        "A vision model is set ({model}), so it is used instead of Tesseract. "
+        "Clear vision_model to use Tesseract."
+    ),
+    OcrBackendUsed.TESSERACT: (
+        "No vision model is set, so Tesseract runs OCR. "
+        "Set vision_model to use a vision model instead."
+    ),
+}
 
 # Path-typed writable fields whose pydantic "default" is the unresolved
 # sentinel ``Path()`` (a literal "."). The actual default is computed by
@@ -74,9 +85,16 @@ def ocr_off_warning() -> str | None:
     return None
 
 
+def ocr_engine_note() -> str | None:
+    """Which OCR engine runs for scanned pages, or None when OCR is off."""
+    backend = OcrBackendUsed.chosen(cfg.enable_ocr, cfg.vision_model)
+    note = _OCR_ENGINE_NOTES.get(backend)
+    return note.format(model=cfg.vision_model) if note is not None else None
+
+
 def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
     """Warnings about the configuration an update leaves behind."""
-    warning = ocr_off_warning() if changed_keys & _OCR_WARNING_KEYS else None
+    warning = ocr_off_warning() if changed_keys & OCR_SETTING_KEYS else None
     return (warning,) if warning is not None else ()
 
 
