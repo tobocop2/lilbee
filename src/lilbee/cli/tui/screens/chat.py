@@ -1005,7 +1005,7 @@ class ChatScreen(Screen[None]):
                     include_subdomains=include_subdomains,
                     render_mode=mode,
                 ),
-                on_success=lambda: call_from_thread(self, self._run_sync),
+                on_success=lambda: call_from_thread(self, self.run_sync),
             )
 
         self.notify(msg.CMD_CRAWL_STARTED.format(url=url))
@@ -1145,7 +1145,7 @@ class ChatScreen(Screen[None]):
     def _cmd_prune_ignored(self, args: str) -> None:
         """Sync with pruning on, dropping indexed documents the patterns now exclude."""
         del args
-        self._run_sync(prune_ignored=True)
+        self.run_sync(prune_ignored=True)
 
     def _cmd_delete(self, args: str) -> None:
         """Run /delete in a worker so the chat screen stays interactive."""
@@ -1352,7 +1352,7 @@ class ChatScreen(Screen[None]):
         def _on_confirm(confirmed: bool | None) -> None:
             if not confirmed:
                 return
-            self._run_sync(force_rebuild=True)
+            self.run_sync(force_rebuild=True)
 
         self.app.push_screen(
             ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, msg.CMD_REBUILD_CONFIRM_MESSAGE),
@@ -2386,7 +2386,7 @@ class ChatScreen(Screen[None]):
         label = "Markdown" if use_md else "Plain text"
         self.notify(msg.CHAT_RENDERING.format(label=label))
 
-    def _run_sync(self, *, force_rebuild: bool = False, prune_ignored: bool = False) -> None:
+    def run_sync(self, *, force_rebuild: bool = False, prune_ignored: bool = False) -> None:
         """Enqueue a document sync (or full rebuild) in the task bar."""
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")

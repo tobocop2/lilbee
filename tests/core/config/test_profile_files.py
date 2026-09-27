@@ -505,3 +505,45 @@ def test_a_file_over_the_cap_is_too_large_even_when_the_cut_splits_a_character(t
     path.write_bytes(raw)
     entry = read_entry(path, ProfileFolder.GLOBAL)
     assert entry.error == "The file is over 256 KB, too large for a profile file"
+
+
+@pytest.mark.parametrize(
+    ("name", "folder", "problem"),
+    [
+        ("", ProfileFolder.GLOBAL, profile_files.NameProblem.EMPTY),
+        ("   ", ProfileFolder.GLOBAL, profile_files.NameProblem.EMPTY),
+        ("court/filings", ProfileFolder.GLOBAL, profile_files.NameProblem.INVALID),
+        ("x" * 41, ProfileFolder.GLOBAL, profile_files.NameProblem.INVALID),
+        ("()", ProfileFolder.GLOBAL, profile_files.NameProblem.INVALID),
+        ("Research papers", ProfileFolder.GLOBAL, profile_files.NameProblem.RESERVED),
+        ("research_PAPERS", ProfileFolder.PROJECT, profile_files.NameProblem.RESERVED),
+        ("active", ProfileFolder.GLOBAL, profile_files.NameProblem.RESERVED_WORD),
+        ("CON", ProfileFolder.PROJECT, profile_files.NameProblem.RESERVED_WORD),
+        ("court filings", ProfileFolder.GLOBAL, profile_files.NameProblem.TAKEN),
+        ("Oddly Named", ProfileFolder.GLOBAL, profile_files.NameProblem.TAKEN),
+        ("court filings", ProfileFolder.PROJECT, None),
+        ("Tax returns", ProfileFolder.GLOBAL, None),
+    ],
+)
+def test_name_problem_agrees_with_plan_write(tmp_path, name, folder, problem):
+    _write(tmp_path / "global", "court", '[profile]\nname = "Court filings"\n[values]\n')
+    _write(tmp_path / "global", "oddly-named", '[profile]\nname = "Else"\n[values]\n')
+    catalog = scan(_folders(tmp_path))
+    assert profile_files.name_problem(name, folder, catalog) is problem
+    directory = dict(_folders(tmp_path))[folder]
+    text = f"[profile]\nname = {name!r}\n[values]\n".replace("'", '"')
+    if problem is None:
+        profile_files.plan_write(directory, folder, text, stem="x")
+    else:
+        with pytest.raises(profile_files.ProfileFileError, match=r"\S"):
+            profile_files.plan_write(directory, folder, text, stem="x")
+
+
+def test_usable_names_leave_out_broken_and_shadowed_profiles(tmp_path):
+    _write(tmp_path / "project", "court", '[profile]\nname = "Court"\n[values]\n')
+    _write(tmp_path / "global", "court", '[profile]\nname = "Court"\n[values]\n')
+    _write(tmp_path / "global", "busted", "not toml [")
+    names = scan(_folders(tmp_path)).usable_names()
+    assert names.count("Court") == 1
+    assert "busted" not in names
+    assert "Research papers" in names

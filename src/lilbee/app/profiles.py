@@ -145,7 +145,18 @@ class ApplyResult:
     new_files_only: tuple[str, ...]
 
 
-def _effect(key: str) -> ProfileEffect:
+@dataclass(frozen=True)
+class ChangeRow:
+    """A profile setting config.toml sets, next to the value the profile gives it."""
+
+    key: str
+    yours: Any
+    profile_value: Any
+    effect: ProfileEffect
+
+
+def effect_of(key: str) -> ProfileEffect:
+    """When a change to the profile setting *key* takes effect."""
     if key in REINDEX_FIELDS:
         return ProfileEffect.REINDEX
     if PROFILE_FIELDS[key] is ProfileScope.INGEST:
@@ -207,7 +218,7 @@ def _diff(profile: ProfileFile) -> ProfileDiff:
     open_keys = [key for key in PROFILE_FIELDS if current[key].source not in _OVERRIDE_SOURCES]
     new_values = normalized_values({key: resolve(key, after).value for key in open_keys})
     changes = tuple(
-        DiffRow(key, getattr(cfg, key), current[key].source, new_values[key], _effect(key))
+        DiffRow(key, getattr(cfg, key), current[key].source, new_values[key], effect_of(key))
         for key in open_keys
         if new_values[key] != getattr(cfg, key)
     )
@@ -317,6 +328,17 @@ def new(
 def _your_profile_keys(layers: SettingLayers) -> tuple[str, ...]:
     """The profile settings config.toml sets, in profile-field order."""
     return tuple(key for key in PROFILE_FIELDS if key in layers.user)
+
+
+def your_changes() -> tuple[ChangeRow, ...]:
+    """Your config.toml values of profile settings against the profile's; env-set keys stay out."""
+    layers = read_layers(cfg.data_root)
+    underneath = replace(layers, user={})
+    return tuple(
+        ChangeRow(key, layers.user[key], resolve(key, underneath).value, effect_of(key))
+        for key in _your_profile_keys(layers)
+        if key not in layers.env
+    )
 
 
 def _project_values() -> tuple[dict[str, Any], tuple[str, ...]]:

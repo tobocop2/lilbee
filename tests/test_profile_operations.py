@@ -634,3 +634,27 @@ def test_credit_line_names_each_author_and_their_github():
     )
     assert profiles.credit_line(authors) == "by Jane Doe (@janedoe), Sam Roe"
     assert profiles.credit_line(()) is None
+
+
+@pytest.mark.parametrize(
+    ("key", "effect"),
+    [
+        ("chunk_size", profiles.ProfileEffect.REINDEX),
+        ("max_chunks_per_file", profiles.ProfileEffect.NEW_FILES_ONLY),
+        ("top_k", profiles.ProfileEffect.NOW),
+    ],
+)
+def test_effect_of_names_when_a_profile_setting_takes_effect(key, effect):
+    assert profiles.effect_of(key) is effect
+
+
+def test_your_changes_lists_your_profile_settings_against_the_profile(store, monkeypatch):
+    monkeypatch.setenv("LILBEE_CHUNK_OVERLAP", "40")
+    profiles.apply(store, "Notes and markdown")
+    _prepend_config("chunk_size = 900\ntop_k = 7\nchunk_overlap = 50\nauto_sync = false\n")
+    assert profiles.your_changes() == (
+        profiles.ChangeRow("chunk_size", 900, 384, profiles.ProfileEffect.REINDEX),
+        profiles.ChangeRow("top_k", 7, 12, profiles.ProfileEffect.NOW),
+    )
+    profiles.discard()
+    assert profiles.your_changes() == ()

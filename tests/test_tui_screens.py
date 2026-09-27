@@ -3155,7 +3155,7 @@ async def test_chat_slash_rebuild_confirms_before_running():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         chat_screen = app.screen
-        with patch.object(chat_screen, "_run_sync") as mock_run_sync:
+        with patch.object(chat_screen, "run_sync") as mock_run_sync:
             chat_screen._handle_slash("/rebuild")
             await pilot.pause()
             assert isinstance(app.screen, ConfirmDialog)
@@ -3172,7 +3172,7 @@ async def test_chat_slash_rebuild_cancel_leaves_run_sync_unfired():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         chat_screen = app.screen
-        with patch.object(chat_screen, "_run_sync") as mock_run_sync:
+        with patch.object(chat_screen, "run_sync") as mock_run_sync:
             chat_screen._handle_slash("/rebuild")
             await pilot.pause()
             assert isinstance(app.screen, ConfirmDialog)
@@ -3794,7 +3794,7 @@ async def test_chat_slash_reset_refused_while_a_sync_runs():
             patch("lilbee.app.reset._clear_dir") as mock_clear,
             patch.object(app.screen, "notify") as mock_notify,
         ):
-            app.screen._run_sync()
+            app.screen.run_sync()
             assert await pump_until(_pilot, started.is_set)
             app.screen._handle_slash("/reset")
             await _pilot.pause()
@@ -5534,7 +5534,7 @@ async def test_prune_ignored_command_syncs_with_pruning_on(mock_svc):
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as pilot:
         chat = await await_chat(app, pilot)
-        with patch.object(chat, "_run_sync") as run_sync:
+        with patch.object(chat, "run_sync") as run_sync:
             chat._cmd_prune_ignored("")
             run_sync.assert_called_once_with(prune_ignored=True)
 
@@ -7838,7 +7838,7 @@ async def test_chat_stream_response_inner_exception(mock_svc):
 
 
 async def test_chat_run_sync_worker():
-    """Cover _run_sync lines 356-376 via actual worker."""
+    """Cover run_sync lines 356-376 via actual worker."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from lilbee.runtime.progress import EventType, FileStartEvent
@@ -7852,7 +7852,7 @@ async def test_chat_run_sync_worker():
             return {"added": 3}
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
-            app.screen._run_sync()
+            app.screen.run_sync()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
@@ -7869,7 +7869,7 @@ async def test_chat_sync_file_done_bad_type():
             return {"added": 0}
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
-            app.screen._run_sync()
+            app.screen.run_sync()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
@@ -7891,7 +7891,7 @@ async def test_chat_sync_file_start_bad_type():
             return {"added": 0}
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
-            app.screen._run_sync()
+            app.screen.run_sync()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             await pump_until(_pilot, lambda: app.screen._sync_active is False)
             # Worker catches the TypeError via the except Exception handler
@@ -7910,7 +7910,7 @@ async def test_chat_sync_embed_bad_type():
             return {"added": 0}
 
         with patch("lilbee.data.ingest.sync", new=fake_sync):
-            app.screen._run_sync()
+            app.screen.run_sync()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
@@ -7924,7 +7924,7 @@ async def test_chat_run_sync_error_worker():
             raise Exception("sync failed")
 
         with patch("lilbee.data.ingest.sync", new=failing_sync):
-            app.screen._run_sync()
+            app.screen.run_sync()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
             assert app.screen._sync_active is False
 
@@ -9234,7 +9234,7 @@ async def test_sync_called_with_quiet_true():
             return {"added": 0}
 
         with patch("lilbee.data.ingest.sync", new=capturing_sync):
-            app.screen._run_sync()
+            app.screen.run_sync()
             await _wait_for_dataset_task(app, _pilot, TaskType.SYNC)
 
         assert len(sync_kwargs) >= 1
@@ -9693,11 +9693,11 @@ async def test_chat_sync_gating_rejects_add(tmp_path):
 
 
 async def test_chat_sync_gating_rejects_sync():
-    """B3: /sync (/add synonym via _run_sync) is rejected when _sync_active is True."""
+    """B3: /sync (/add synonym via run_sync) is rejected when _sync_active is True."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         app.screen._sync_active = True
-        app.screen._run_sync()
+        app.screen.run_sync()
         await pilot.pause()
         task_bar = app.task_bar
         # No new sync task should be queued
@@ -14214,13 +14214,13 @@ async def test_chat_action_toggle_markdown():
 
 
 async def test_chat_run_sync_when_already_active():
-    """_run_sync notifies when sync is already active."""
+    """run_sync notifies when sync is already active."""
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         await _pilot.pause()
         app.screen._sync_active = True
         with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._run_sync()
+            app.screen.run_sync()
             mock_notify.assert_called_once()
 
 
