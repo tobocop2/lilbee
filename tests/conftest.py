@@ -4,6 +4,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import warnings
 from importlib.metadata import PackageNotFoundError
@@ -37,6 +38,8 @@ from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.app import clear_overrides
 from lilbee.core.config import cfg
+from lilbee.core.profile_files import profile_folders
+from lilbee.core.system import default_data_dir
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
@@ -51,6 +54,9 @@ _PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 pytest_plugins = ["tests._hang_watchdog"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# The developer's platform data root, read before any test redirects it.
+REAL_GLOBAL_ROOT = default_data_dir()
 
 
 def _patch_executor_daemon_threads() -> None:
@@ -368,7 +374,7 @@ def _ignore_user_global_config(monkeypatch, tmp_path, request):
     ``LILBEE_DATA`` matches the ``cfg.data_root`` that ``_isolate_cfg`` sets, so a
     fresh ``Config()``, the CLI overlay and the settings resolver all read the same
     scratch directory. The platform default root (``--global``) is a second scratch
-    directory, patched in every loaded lilbee module that imported it by name.
+    directory, reached by redirecting the environment it derives from.
     Integration tests keep the real one, which holds their models. The
     skip flag set at import is cleared: a settings write must read back the
     config.toml it just wrote.
@@ -376,10 +382,30 @@ def _ignore_user_global_config(monkeypatch, tmp_path, request):
     monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
     monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data_root"))
     if "integration" not in request.node.nodeid.split("/"):
-        global_root = tmp_path / "global_root" / "lilbee"
-        for name, module in list(sys.modules.items()):
-            if name.startswith("lilbee") and "default_data_dir" in vars(module):
-                monkeypatch.setattr(module, "default_data_dir", lambda: global_root)
+        redirect_global_root(monkeypatch, tmp_path / "home")
+
+
+def redirect_global_root(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    """Point every variable the platform data root derives from under *home*."""
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+
+
+def profile_folders_under_real_root(data_root: Path) -> list[Path]:
+    """The profile folders for *data_root* that resolve under the real global root."""
+    folders = [path for _, path in profile_folders(data_root)]
+    return [path for path in folders if path.is_relative_to(REAL_GLOBAL_ROOT)]
+
+
+def pytest_sessionstart(session: pytest.Session) -> None:
+    """Stop before any test runs when a profile folder escapes the redirect."""
+    with pytest.MonkeyPatch.context() as monkeypatch, tempfile.TemporaryDirectory() as scratch:
+        redirect_global_root(monkeypatch, Path(scratch) / "home")
+        leaks = profile_folders_under_real_root(Path(scratch) / "data_root")
+    if leaks:
+        raise pytest.UsageError(f"Profile folders resolve under the real global root: {leaks}")
 
 
 @pytest.fixture(scope="session")
