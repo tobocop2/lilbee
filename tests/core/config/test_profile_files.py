@@ -8,6 +8,7 @@ import pytest
 
 from lilbee.core import profile_files
 from lilbee.core.config import cfg
+from lilbee.core.config import model as config_model
 from lilbee.core.config.enums import ProfileScope
 from lilbee.core.config.resolve import PROFILE_FIELDS
 from lilbee.core.profile_files import (
@@ -203,6 +204,12 @@ def test_value_whose_validator_raises_a_type_error_is_broken(tmp_path):
     assert entry.file is None
     assert entry.error is not None
     assert entry.error.startswith("Bad value for ocr_language: ")
+
+
+def test_validator_error_other_than_a_type_error_propagates(tmp_path):
+    with pytest.MonkeyPatch.context() as patch, pytest.raises(AttributeError, match="fullmatch"):
+        patch.setattr(config_model, "_TESSERACT_LANGUAGE_CODE", None)
+        _entry(tmp_path, '[values]\nocr_language = "eng"\n')
 
 
 _TOML_VALUES = (

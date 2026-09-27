@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import warnings
+from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -57,6 +58,10 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # The developer's platform data root, read before any test redirects it.
 REAL_GLOBAL_ROOT = default_data_dir()
+# The variables that root derives from, with their real values.
+HOME_VARIABLES = ("HOME", "USERPROFILE", "XDG_DATA_HOME", "LOCALAPPDATA")
+REAL_HOME_ENVIRONMENT = {name: os.environ.get(name) for name in HOME_VARIABLES}
+_SESSION_SCRATCH = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
 
 
 def _patch_executor_daemon_threads() -> None:
@@ -393,19 +398,43 @@ def redirect_global_root(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
     monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
 
 
+def restore_real_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give back the real value of every variable the platform data root derives from."""
+    for name, value in REAL_HOME_ENVIRONMENT.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
 def profile_folders_under_real_root(data_root: Path) -> list[Path]:
     """The profile folders for *data_root* that resolve under the real global root."""
     folders = [path for _, path in profile_folders(data_root)]
     return [path for path in folders if path.is_relative_to(REAL_GLOBAL_ROOT)]
 
 
-def pytest_sessionstart(session: pytest.Session) -> None:
-    """Stop before any test runs when a profile folder escapes the redirect."""
-    with pytest.MonkeyPatch.context() as monkeypatch, tempfile.TemporaryDirectory() as scratch:
-        redirect_global_root(monkeypatch, Path(scratch) / "home")
-        leaks = profile_folders_under_real_root(Path(scratch) / "data_root")
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionstart(session: pytest.Session) -> Iterator[None]:
+    """Redirect the global root before collection; stop when a profile folder escapes it.
+
+    Runs after xdist starts its workers, so each worker reads the real root at import.
+    """
+    yield
+    scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    session.config.stash[_SESSION_SCRATCH] = scratch
+    redirect_global_root(pytest.MonkeyPatch(), Path(scratch.name) / "home")
+    leaks = profile_folders_under_real_root(Path(scratch.name) / "data_root")
     if leaks:
         raise pytest.UsageError(f"Profile folders resolve under the real global root: {leaks}")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
+    """Run an integration test, and the fixtures it sets up at any scope, on the real root."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        if "integration" in item.nodeid.split("/"):
+            restore_real_home(monkeypatch)
+        yield
 
 
 @pytest.fixture(scope="session")
