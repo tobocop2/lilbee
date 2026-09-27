@@ -254,10 +254,9 @@ class Config(BaseSettings):
     # per-page expectation that drives the total budget.
     vision_load_budget_s: float = ConfigField(default=300.0, ge=0.0, writable=True)
     # Hard cap on tokens generated per OCR page. A real page is well under this;
-    # the cap bounds the occasional runaway repetition loop (a page that loops to
-    # tens of thousands of chars) which otherwise dominates a scan's OCR time.
-    # Raising it lengthens per-page generation on dense scans, so give ocr_timeout
-    # matching headroom.
+    # the vision request's repeat penalty stops a page looping one line, and the cap
+    # bounds any loop that still escapes it. Raising it lengthens per-page
+    # generation on dense scans, so give ocr_timeout matching headroom.
     vision_ocr_max_tokens: int = ConfigField(default=4096, ge=256, writable=True)
     # Pages OCR'd concurrently, and the vision server's continuous-batching slots.
     # A single-page decode underutilizes a modern GPU (~half SM); batching several

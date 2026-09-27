@@ -137,6 +137,10 @@ _TOOL_TEMPLATE_PATTERN = re.compile(r"\{[%{][^}]*\b(?:tools|tool_calls|functions
 # forever. A page with a deadline retries until that deadline instead (see
 # _ocr_dispatch), so the count doesn't bound the common case.
 _VISION_BUSY_RETRIES = 18
+# llama.cpp's repeat penalty on every vision OCR request: it damps tokens seen in
+# the last window, which stops a page looping one line to the token cap.
+_VISION_REPEAT_PENALTY = 1.1
+_VISION_REPEAT_LAST_N = 64
 # How often a waiter blocked on full replicas re-polls their health: an
 # unhealthy replica re-admits itself by cool-down expiry, which notifies nobody.
 _DISPATCH_HEALTH_RECHECK_S = 0.5
@@ -579,14 +583,17 @@ def _vision_call(
 ) -> str:
     """Run a vision chat on *client*, enforcing *timeout* like the in-process OCR.
 
-    Caps generation at ``cfg.vision_ocr_max_tokens`` so a runaway repetition loop
-    on one page (seen looping to tens of thousands of chars) can't dominate a
-    scan's OCR time; a real page stays well under the cap. A timeout surfaces as
-    a ``ProviderError`` so the page-level OCR caller can fail just that page.
+    The repeat penalty stops a page looping one line; ``cfg.vision_ocr_max_tokens``
+    caps generation if a loop still escapes it. A timeout surfaces as a
+    ``ProviderError`` so the page-level OCR caller can fail just that page.
     Callers hold a dispatcher slot, so queue time isn't billed against the timeout.
     """
 
-    options = {"max_tokens": cfg.vision_ocr_max_tokens}
+    options = {
+        "max_tokens": cfg.vision_ocr_max_tokens,
+        "repeat_penalty": _VISION_REPEAT_PENALTY,
+        "repeat_last_n": _VISION_REPEAT_LAST_N,
+    }
     if timeout and timeout > 0:
         return _bounded_vision_chat(client, messages, options, timeout)
     return client.chat(messages, options=options, stream=False)

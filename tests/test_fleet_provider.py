@@ -1148,14 +1148,29 @@ def test_vision_call_enforces_timeout() -> None:
     client.chat.assert_not_called()  # the timed path streams via chat_bounded, not chat
 
 
-def test_vision_call_caps_output_tokens(monkeypatch) -> None:
-    # A runaway OCR page can loop to tens of thousands of chars and dominate a
-    # scan's time; the call must cap generation at cfg.vision_ocr_max_tokens.
+def test_vision_call_caps_output_tokens_and_sets_repeat_penalty(monkeypatch) -> None:
+    # The repeat penalty stops a page looping one line; the token cap backstops it.
     monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 4096)
     client = _fake_client()
     client.chat.return_value = "OCR text"
     prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
-    assert client.chat.call_args.kwargs["options"] == {"max_tokens": 4096}
+    assert client.chat.call_args.kwargs["options"] == {
+        "max_tokens": 4096,
+        "repeat_penalty": 1.1,
+        "repeat_last_n": 64,
+    }
+
+
+def test_vision_ocr_timed_request_carries_repeat_penalty(monkeypatch) -> None:
+    # The ingest path runs with ocr_timeout set, so the options go out via chat_bounded.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 1024)
+    client = _fake_client()
+    client.chat_bounded.return_value = "ocr text"
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
+    sent = client.chat_bounded.call_args.kwargs["options"]
+    assert sent == {"max_tokens": 1024, "repeat_penalty": 1.1, "repeat_last_n": 64}
 
 
 def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
