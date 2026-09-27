@@ -49,7 +49,6 @@ from lilbee.core.profile_files import (
     validate_file,
     validate_text,
 )
-from lilbee.core.security import write_text_atomically
 
 _OVERRIDE_SOURCES = frozenset({SettingSource.ENV, SettingSource.USER})
 _SAVE_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
@@ -520,19 +519,29 @@ def export_text(store: ProfileStore, name: str) -> ExportedProfile:
     return ExportedProfile(filename, entry.folder, profile, profile_text(profile))
 
 
+def _write_export(
+    text: str, filename: str, folder: ProfileFolder, dest: Path, *, overwrite: bool
+) -> ProfileLocation:
+    """Write *text*, a clean profile file named *filename*, to *dest* or inside it as a folder.
+
+    Refuses when the destination file exists unless *overwrite*. Not a project or global save:
+    there is no name-clash check against the profile store, only against the destination itself.
+    """
+    path = dest / filename if dest.is_dir() else dest
+    if path.exists() and not overwrite:
+        raise ValueError(f"{path} already exists")
+    planned = PlannedWrite(path, folder, parse_text(text, path.stem, folder), text, None)
+    return _written(planned)
+
+
 def export(
     store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False
 ) -> ProfileLocation:
     """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder."""
     exported = export_text(store, name)
-    path = dest / exported.filename if dest.is_dir() else dest
-    if path.exists() and not overwrite:
-        raise ValueError(f"{path} already exists")
-    text = exported.text
-    planned = PlannedWrite(
-        path, exported.folder, parse_text(text, path.stem, exported.folder), text, None
+    return _write_export(
+        exported.text, exported.filename, exported.folder, dest, overwrite=overwrite
     )
-    return _written(planned)
 
 
 def missing_for_share(profile: ProfileFile) -> tuple[str, ...]:
@@ -578,11 +587,7 @@ def share(
     validation = validate_content(text, filename, ProfileFolder.COMMUNITY)
     if not validation.valid:
         raise ValueError("; ".join(validation.problems))
-    path = dest / filename if dest.is_dir() else dest
-    if path.exists() and not overwrite:
-        raise ValueError(f"{path} already exists")
-    write_text_atomically(path, text)
-    return ProfileLocation(profile.name, ProfileFolder.COMMUNITY, path)
+    return _write_export(text, filename, ProfileFolder.COMMUNITY, dest, overwrite=overwrite)
 
 
 def _same_name_in(store: ProfileStore, folder: ProfileFolder, name: str) -> Path | None:

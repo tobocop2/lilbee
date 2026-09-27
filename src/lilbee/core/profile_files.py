@@ -550,6 +550,20 @@ def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:
     return validate_text(text, path, folder)
 
 
+def _missing_tested_on(meta: Any) -> bool:
+    """True when a community profile still needs tested_on.
+
+    A present value of the wrong type already has its own "must be text" problem, so it does
+    not also count as missing here.
+    """
+    # untyped TOML: a non-table [profile] already has its own problem
+    if not isinstance(meta, dict):
+        return True
+    tested_on = meta.get("tested_on")
+    # untyped TOML: a non-text tested_on already has its own "must be text" problem
+    return isinstance(tested_on, str | type(None)) and not tested_on
+
+
 def validate_text(text: str, path: Path, folder: ProfileFolder) -> ProfileValidation:
     """Every problem with *text*, the content of the file at *path*, as a profile in *folder*."""
     try:
@@ -561,9 +575,7 @@ def validate_text(text: str, path: Path, folder: ProfileFolder) -> ProfileValida
     if folder is not ProfileFolder.BUILTIN and profile_key(name) in builtin_keys():
         problems.append(_reserved_reason(name))
     if folder is ProfileFolder.COMMUNITY:
-        meta = data.get(META_TABLE)
-        # untyped TOML: a non-table [profile] already has its own problem
-        if not (isinstance(meta, dict) and meta.get("tested_on")):
+        if _missing_tested_on(data.get(META_TABLE)):
             problems.append("A community profile needs tested_on")
         raw_values = data.get(VALUES_TABLE)
         # untyped TOML: a missing or malformed [values] table already has its own problem
