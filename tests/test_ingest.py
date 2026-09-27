@@ -2231,6 +2231,33 @@ class TestFanoutReadsTheCorpusSkipRecords:
         assert result.added == ["fixed.txt"]
         assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.REMOVED}
 
+    async def test_a_rebuild_clears_the_records_once_and_keeps_new_verdicts(
+        self, isolated_env, fan_out, monkeypatch
+    ):
+        """A worker clearing the shared records would erase a sibling's fresh verdict."""
+        from lilbee.data.ingest import pipeline, sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
+
+        cleared = []
+        real_clear = pipeline.clear_skip_markers
+        monkeypatch.setattr(
+            pipeline, "clear_skip_markers", lambda root: cleared.append(root) or real_clear(root)
+        )
+        gone = isolated_env / "gone.txt"
+        gone.write_text("removed, then restored by the rebuild", encoding="utf-8")
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        mark_removed(cfg.data_root, {"gone.txt": file_hash(gone)})
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records",
+            side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
+        ):
+            result = await sync(quiet=True, force_rebuild=True)
+
+        assert cleared == [cfg.data_root]
+        assert result.added == ["gone.txt"]
+        assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
+
 
 class TestStatusExposesTheIndexEmbedder:
     """A client can tell a stale index from the configured model before the
