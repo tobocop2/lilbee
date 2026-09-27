@@ -694,28 +694,27 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_model, cfg.top_k = original_vision, original_top_k
 
-    def test_empty_persisted_vision_model_beats_the_profile(self, tmp_path, monkeypatch):
-        """A vision_model cleared into config.toml stays cleared; an empty chat_model is unset."""
+    def test_empty_persisted_vision_model_clears_the_ambient_one(self, tmp_path, monkeypatch):
+        """A vision_model cleared into config.toml stays cleared; an empty chunk_size is unset."""
         from lilbee.core.config import cfg
 
-        originals = cfg.vision_model, cfg.chat_model, cfg.top_k
+        originals = cfg.vision_model, cfg.chunk_size, cfg.top_k
         try:
             monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
             monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
-            monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
+            monkeypatch.delenv("LILBEE_CHUNK_SIZE", raising=False)
+            cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
             (tmp_path / "config.toml").write_text(
-                'vision_model = ""\nchat_model = ""\ntop_k = 9\n'
-                "[profile.values]\n"
-                'vision_model = "org/Profile-Vision-GGUF/profile-Q4_K_M.gguf"\n'
-                'chat_model = "ollama/profile-chat:latest"\n',
+                'vision_model = ""\nchunk_size = ""\ntop_k = 9\n'
+                "[profile.values]\nchunk_size = 900\n",
                 encoding="utf-8",
             )
             settings.overlay_persisted_settings(tmp_path)
             assert cfg.vision_model == ""
-            assert cfg.chat_model == "ollama/profile-chat:latest"
+            assert cfg.chunk_size == 900
             assert cfg.top_k == 9
         finally:
-            cfg.vision_model, cfg.chat_model, cfg.top_k = originals
+            cfg.vision_model, cfg.chunk_size, cfg.top_k = originals
 
     def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
         """Without the env var, config.toml is still overlaid onto cfg."""
@@ -1005,14 +1004,14 @@ class TestResolverIsTheOnlyWriter:
 
         root = self._write_config(
             'top_k = 7\n[profile]\nname = "x"\n[profile.values]\n'
-            "temperature = 0.7\nchunk_overlap = 50\n"
+            "rerank_min_score = 0.7\nchunk_overlap = 50\n"
         )
         monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
         settings.overlay_persisted_settings(root)
         appset.apply_settings_update(
-            {"top_k": 9, "temperature": 0.3, "max_tokens": 1000, "seed": 5}
+            {"top_k": 9, "rerank_min_score": 0.3, "max_tokens": 1000, "seed": 5}
         )
-        appset.apply_settings_update({"temperature": None, "seed": None})
+        appset.apply_settings_update({"rerank_min_score": None, "seed": None})
 
         fresh = Config()
         keys = sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - ROOT_DERIVED_FIELDS)
@@ -1020,7 +1019,7 @@ class TestResolverIsTheOnlyWriter:
         diverged = {k: (getattr(cfg, k), getattr(fresh, k)) for k in keys}
         diverged = {k: pair for k, pair in diverged.items() if pair[0] != pair[1]}
         assert diverged == {}
-        assert (cfg.top_k, cfg.temperature, cfg.max_tokens, cfg.seed) == (9, 0.7, 2048, None)
+        assert (cfg.top_k, cfg.rerank_min_score, cfg.max_tokens, cfg.seed) == (9, 0.7, 2048, None)
         assert cfg.chunk_overlap == 50
 
     def test_update_under_env_keeps_env_value_in_cfg(self, monkeypatch):
@@ -1060,12 +1059,12 @@ class TestResolverIsTheOnlyWriter:
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
 
-        self._write_config("[profile.values]\ntemperature = 0.7\n")
-        appset.apply_settings_update({"temperature": 0.3})
-        assert cfg.temperature == 0.3
-        appset.apply_settings_update({"temperature": None})
-        assert cfg.temperature == 0.7
-        assert "temperature" not in settings.load(cfg.data_root)
+        self._write_config("[profile.values]\nrerank_min_score = 0.7\n")
+        appset.apply_settings_update({"rerank_min_score": 0.3})
+        assert cfg.rerank_min_score == 0.3
+        appset.apply_settings_update({"rerank_min_score": None})
+        assert cfg.rerank_min_score == 0.7
+        assert "rerank_min_score" not in settings.load(cfg.data_root)
 
     def test_blank_string_update_clears_a_sampling_field_like_null(self):
         """REST and MCP forward raw JSON with no blank-stripping of their own;
@@ -1084,11 +1083,11 @@ class TestResolverIsTheOnlyWriter:
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
 
-        self._write_config("[profile.values]\ntemperature = -5.0\n")
+        self._write_config('[profile.values]\nrerank_min_score = "banana"\n')
         with caplog.at_level("WARNING", logger="lilbee.core.settings"):
-            appset.apply_settings_update({"temperature": None})
-        assert cfg.temperature is None
-        assert any("temperature" in record.getMessage() for record in caplog.records)
+            appset.apply_settings_update({"rerank_min_score": None})
+        assert cfg.rerank_min_score is None
+        assert any("rerank_min_score" in record.getMessage() for record in caplog.records)
 
     def test_overlay_resets_key_absent_from_new_root(self, tmp_path):
         from lilbee.core.config import cfg
@@ -1165,12 +1164,12 @@ class TestResetRemovesTheUserValue:
         from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
         root = self._write_config(
-            "top_k = 7\ntemperature = 0.3\nmax_tokens = 1000\nchunk_size = 900\n"
-            "[profile.values]\ntemperature = 0.7\n"
+            "top_k = 7\nmax_distance = 0.3\nmax_tokens = 1000\nchunk_size = 900\n"
+            "[profile.values]\nmax_distance = 0.7\n"
         )
         monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
         settings.overlay_persisted_settings(root)
-        appset.reset_settings(["top_k", "temperature", "max_tokens", "seed"])
+        appset.reset_settings(["top_k", "max_distance", "max_tokens", "seed"])
 
         fresh = Config()
         keys = sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - ROOT_DERIVED_FIELDS)
@@ -1178,10 +1177,10 @@ class TestResetRemovesTheUserValue:
         diverged = {k: (getattr(cfg, k), getattr(fresh, k)) for k in keys}
         diverged = {k: pair for k, pair in diverged.items() if pair[0] != pair[1]}
         assert diverged == {}
-        assert (cfg.top_k, cfg.temperature, cfg.max_tokens) == (12, 0.7, 2048)
+        assert (cfg.top_k, cfg.max_distance, cfg.max_tokens) == (12, 0.7, 2048)
         assert settings.load(root) == {
             "chunk_size": 900,
-            "profile": {"values": {"temperature": 0.7}},
+            "profile": {"values": {"max_distance": 0.7}},
         }
 
     def test_reset_under_env_pin_keeps_env_and_removes_user_key(self, monkeypatch):
@@ -1201,17 +1200,17 @@ class TestResetRemovesTheUserValue:
         from lilbee.core.config import cfg
 
         root = self._write_config(
-            "temperature = 0.3\ntop_k = 7\n[profile.values]\ntemperature = 0.7\n"
+            "max_distance = 0.3\ntop_k = 7\n[profile.values]\nmax_distance = 0.7\n"
         )
-        cfg.temperature = 0.3
+        cfg.max_distance = 0.3
         cfg.top_k = 7
-        appset.reset_settings(["temperature"])
-        assert cfg.temperature == 0.7
+        appset.reset_settings(["max_distance"])
+        assert cfg.max_distance == 0.7
         assert cfg.top_k == 7
         stored = settings.load(root)
-        assert "temperature" not in stored
+        assert "max_distance" not in stored
         assert stored["top_k"] == 7
-        assert stored["profile"] == {"values": {"temperature": 0.7}}
+        assert stored["profile"] == {"values": {"max_distance": 0.7}}
 
     def test_reset_of_a_key_not_in_config_toml_writes_nothing(self):
         from lilbee.app import settings as appset
@@ -1299,14 +1298,14 @@ class TestResetRemovesTheUserValue:
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
 
-        root = self._write_config("temperature = 0.3\n[profile.values]\ntemperature = -5.0\n")
-        cfg.temperature = 0.3
+        root = self._write_config("max_distance = 0.3\n[profile.values]\nmax_distance = -5.0\n")
+        cfg.max_distance = 0.3
         with pytest.raises(
-            ValueError, match=r"Cannot reset 'temperature': its profile value -5\.0 is invalid"
+            ValueError, match=r"Cannot reset 'max_distance': its profile value -5\.0 is invalid"
         ):
-            appset.reset_settings(["temperature"])
-        assert cfg.temperature == 0.3
-        assert settings.load(root)["temperature"] == 0.3
+            appset.reset_settings(["max_distance"])
+        assert cfg.max_distance == 0.3
+        assert settings.load(root)["max_distance"] == 0.3
 
     def test_reset_with_duplicate_keys_removes_the_key_once(self):
         from lilbee.app import settings as appset

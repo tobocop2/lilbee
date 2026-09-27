@@ -11,24 +11,51 @@ import tomllib
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
 from .defaults import CONFIG_FILE_NAME, ENV_PREFIX, SKIP_TOML_ENV
-from .enums import SettingSource
+from .enums import ProfileScope, SettingSource
 from .model import Config, value_is_set
 
 log = logging.getLogger(__name__)
 
 PROFILE_TABLE = "profile"
+PROFILE_NAME_KEY = "name"
 PROFILE_VALUES_KEY = "values"
 
 # Built from data_root at construction; their pydantic default is an unresolved sentinel.
 ROOT_DERIVED_FIELDS: frozenset[str] = frozenset(
     {"data_root", "documents_dir", "data_dir", "lancedb_dir", "models_dir"}
 )
+
+
+def _profile_scope(info: FieldInfo) -> ProfileScope | None:
+    extra = info.json_schema_extra
+    # pydantic types json_schema_extra as a dict or a callable; ConfigField always sets a dict
+    scope = extra.get("profile") if isinstance(extra, dict) else None
+    return None if scope is None else ProfileScope(str(scope))
+
+
+# The settings a profile may hold, each with the part of lilbee it tunes.
+PROFILE_FIELDS: Mapping[str, ProfileScope] = MappingProxyType(
+    {
+        name: scope
+        for name, info in Config.model_fields.items()
+        if (scope := _profile_scope(info)) is not None
+    }
+)
+
+
+@dataclass(frozen=True)
+class ProfileTable:
+    """The ``[profile]`` table of config.toml: the applied profile's name and recorded values."""
+
+    name: str | None
+    values: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -75,16 +102,40 @@ def _read_toml(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _profile_table(data: Mapping[str, Any], path: Path) -> ProfileTable:
+    """The ``[profile]`` table in *data*, keeping only the values a profile may hold."""
+    table = data.get(PROFILE_TABLE)
+    # untyped TOML: a hand edit can put any type under [profile], its name or its values
+    if not isinstance(table, dict):
+        return ProfileTable(name=None, values={})
+    name = table.get(PROFILE_NAME_KEY)
+    values = table.get(PROFILE_VALUES_KEY)
+    kept: dict[str, Any] = {}
+    for key, value in (values if isinstance(values, dict) else {}).items():
+        if key in PROFILE_FIELDS:
+            kept[key] = value
+        else:
+            log.warning(
+                "Ignoring %s in the [profile] values of %s: profiles cannot set it", key, path
+            )
+    return ProfileTable(name=name if isinstance(name, str) else None, values=kept)
+
+
+def read_profile_table(root: Path) -> ProfileTable:
+    """The ``[profile]`` table of ``root/config.toml``."""
+    path = root / CONFIG_FILE_NAME
+    return _profile_table(_read_toml(path), path)
+
+
 def read_layers(root: Path) -> SettingLayers:
     """Read the env vars and ``root/config.toml`` once."""
-    data = _read_toml(root / CONFIG_FILE_NAME)
-    table = data.get(PROFILE_TABLE)
-    values = table.get(PROFILE_VALUES_KEY) if isinstance(table, dict) else None
+    path = root / CONFIG_FILE_NAME
+    data = _read_toml(path)
     user = {key: value for key, value in data.items() if key != PROFILE_TABLE}
     return SettingLayers(
         env=_env_layer(),
         user=_present(user),
-        profile=_present(values) if isinstance(values, dict) else {},
+        profile=_present(_profile_table(data, path).values),
     )
 
 

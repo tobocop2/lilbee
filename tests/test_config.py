@@ -460,7 +460,7 @@ class TestTomlConfigFile:
 
         (tmp_path / "config.toml").write_text(
             'top_k = 7\nchunk_size = 900\n[profile]\nname = "x"\n[profile.values]\n'
-            "top_k = 3\nchunk_overlap = 50\ntemperature = 0.7\n",
+            "top_k = 3\nchunk_overlap = 50\nrerank_min_score = 0.7\n",
             encoding="utf-8",
         )
         env = clean_env(tmp_path)
@@ -473,7 +473,7 @@ class TestTomlConfigFile:
         assert len(keys) > 100
         assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()
         assert (built.top_k, built.chunk_size, built.chunk_overlap) == (7, 1024, 50)
-        assert built.temperature == 0.7
+        assert built.rerank_min_score == 0.7
         assert built.top_p == 0.9
 
     def test_toml_values_loaded(self, tmp_path):
