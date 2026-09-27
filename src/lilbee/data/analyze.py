@@ -42,7 +42,7 @@ class FileFailure:
 
 @dataclass(frozen=True)
 class PdfSignals:
-    """PDF pages, scans and tables; each image file counts as one scanned page."""
+    """PDF pages, scans and tables; ``scanned_share`` also counts image files at the sample rate."""
 
     files: int
     pages: int

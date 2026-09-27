@@ -37,7 +37,13 @@ from lilbee.wiki.entity_extractor import EntityKind
 if TYPE_CHECKING:
     from lilbee.app.agent_configs.detect import ClientDetection
     from lilbee.app.agent_configs.document import AgentConfigDocument
-    from lilbee.app.analyze import AnalyzeReport, LanguageRow, Recommendation, SavedProfile
+    from lilbee.app.analyze import (
+        AnalyzeReport,
+        LanguageRow,
+        Recommendation,
+        SavedProfile,
+        TipState,
+    )
     from lilbee.app.placement import PlacementView
     from lilbee.data.analyze import PdfSignals
 
@@ -1272,7 +1278,7 @@ class AnalyzeFailureResponse(BaseModel):
 
 
 class AnalyzePdfResponse(BaseModel):
-    """PDF pages, scans and tables; ``scanned_share`` counts each image file as one scanned page."""
+    """PDF pages, scans and tables; ``scanned_share`` also counts image files at the sample rate."""
 
     files: int
     pages: int
@@ -1402,4 +1408,33 @@ class AnalyzeResponse(BaseModel):
             languages=[AnalyzeLanguageResponse.from_row(row) for row in report.languages],
             recommendation=AnalyzeRecommendationResponse.from_recommendation(report.recommendation),
             saved=None if report.saved is None else AnalyzeSavedResponse.from_saved(report.saved),
+        )
+
+
+class AnalyzeRequestBody(BaseModel):
+    """Request body for POST /api/analyze.
+
+    No ``directory`` reads the corpus; otherwise an absolute folder on the server.
+    ``save`` names the saved profile, ``apply`` also switches to it, and ``target``
+    (project or global) needs one of them.
+    """
+
+    directory: str | None = None
+    apply: bool = False
+    save: str | None = None
+    target: ProfileFolder | None = None
+
+
+class AnalyzeStateResponse(BaseModel):
+    """Whether the project was analyzed, hid the analyze tip, and would see the tip now."""
+
+    analyzed: bool
+    tip_dismissed: bool
+    tip_shows: bool
+
+    @classmethod
+    def from_state(cls, state: TipState) -> AnalyzeStateResponse:
+        """The tip state as sent over HTTP and MCP."""
+        return cls(
+            analyzed=state.analyzed, tip_dismissed=state.tip_dismissed, tip_shows=state.tip_shows
         )
