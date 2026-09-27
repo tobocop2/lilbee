@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
+    from lilbee.core.profile_files import ProfileStore
     from lilbee.data.store import Store
     from lilbee.modelhub.model_manager import ModelManager
     from lilbee.modelhub.model_manager.discovery import KnownModelCache
@@ -66,6 +67,14 @@ def _default_session_store() -> SessionStore:
     from lilbee.sessions import SessionStore
 
     return SessionStore()
+
+
+def _default_profile_store() -> ProfileStore:
+    """Build the profile store, importing it lazily."""
+    # circular: core.config -> catalog (model-ref validator) -> app.services -> core.profile_files
+    from lilbee.core.profile_files import ProfileStore
+
+    return ProfileStore()
 
 
 @dataclass
@@ -102,6 +111,7 @@ class Services:
     crawler_sync_state: CrawlerSyncState
     known_models: KnownModelCache
     session_store: SessionStore = field(default_factory=_default_session_store)
+    profile_store: ProfileStore = field(default_factory=_default_profile_store)
 
     def cancel_inference(self) -> None:
         """Interrupt any in-flight generation. Idempotent.
