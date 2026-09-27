@@ -297,6 +297,19 @@ class TestMaxConcurrent:
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 6
 
+    def test_ocr_off_sizes_to_cpu_quota_despite_a_vision_model(self, monkeypatch) -> None:
+        # enable_ocr=false means no page reaches the vision server, so its slots do not bound
+        # admission and the fleet is never asked for them.
+        from lilbee.data.ingest import pipeline
+
+        self._stub_vision_capacity(monkeypatch, 5)
+        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 6)
+        monkeypatch.setattr(cfg, "enable_ocr", False)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
+        monkeypatch.setattr(cfg, "embed_replicas", 1)
+        assert pipeline._max_concurrent() == 6
+        pipeline.get_services().provider.vision_slot_capacity.assert_not_called()
+
     def test_scales_to_total_vision_slots_when_replicated(self, monkeypatch) -> None:
         # Before the fleet is up (capacity None) the estimate stands: 8 vision replicas
         # x 4 OCR slots each = 32, which must outvote a 4-core quota so GPUs aren't starved.
