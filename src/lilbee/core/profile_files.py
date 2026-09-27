@@ -202,7 +202,7 @@ def normalized_values(values: Mapping[str, Any]) -> dict[str, Any]:
         except ValidationError as exc:
             raise ProfileFileError(f"Bad value for {key}: {exc.errors()[0]['msg']}") from None
         # A validator's own TypeError reaches here unwrapped; a bad value costs only its file
-        except Exception as exc:
+        except TypeError as exc:
             raise ProfileFileError(f"Bad value for {key}: {exc}") from None
     return {key: getattr(trial, key) for key in values}
 
@@ -273,7 +273,8 @@ def read_entry(path: Path, folder: ProfileFolder) -> ProfileEntry:
         with path.open("rb") as f:
             data = tomllib.load(f)
         profile = parse_profile(data, path.stem, folder)
-    except tomllib.TOMLDecodeError as exc:
+    # tomllib raises RecursionError on arrays nested a few hundred deep
+    except (tomllib.TOMLDecodeError, RecursionError) as exc:
         return ProfileEntry(path.stem, folder, path, None, f"Not valid TOML: {exc}")
     except UnicodeDecodeError:
         return ProfileEntry(path.stem, folder, path, None, "Not UTF-8 text")
