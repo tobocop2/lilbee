@@ -519,6 +519,28 @@ def builtin_keys() -> frozenset[str]:
     return frozenset(profile_key(e.name) for e in _read_folder(ProfileFolder.BUILTIN, folder))
 
 
+_PACKAGE_FOLDER_DIRS = (
+    (ProfileFolder.BUILTIN, BUILTIN_DIRNAME),
+    (ProfileFolder.COMMUNITY, COMMUNITY_DIRNAME),
+)
+
+
+def _duplicate_of(values: Mapping[str, Any], path: Path) -> str | None:
+    """The name of another built-in or community profile whose values equal *values*, or None."""
+    try:
+        normalized = normalized_values(values)
+    except ProfileFileError:
+        return None
+    for folder, dirname in _PACKAGE_FOLDER_DIRS:
+        for entry in _read_folder(folder, PACKAGE_PROFILES_DIR / dirname):
+            if entry.file is None or _same_file(entry.path, path):
+                continue
+            # entry.file already passed value validation, so its own values always normalize
+            if normalized_values(entry.file.values) == normalized:
+                return entry.name
+    return None
+
+
 def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:
     """Every problem with *path* as a profile file in *folder*."""
     try:
@@ -538,6 +560,17 @@ def validate_text(text: str, path: Path, folder: ProfileFolder) -> ProfileValida
     problems = profile_problems(data, path.stem, folder)
     if folder is not ProfileFolder.BUILTIN and profile_key(name) in builtin_keys():
         problems.append(_reserved_reason(name))
+    if folder is ProfileFolder.COMMUNITY:
+        meta = data.get(META_TABLE)
+        # untyped TOML: a non-table [profile] already has its own problem
+        if not (isinstance(meta, dict) and meta.get("tested_on")):
+            problems.append("A community profile needs tested_on")
+        raw_values = data.get(VALUES_TABLE)
+        # untyped TOML: a missing or malformed [values] table already has its own problem
+        if isinstance(raw_values, dict):
+            duplicate_of = _duplicate_of(raw_values, path)
+            if duplicate_of is not None:
+                problems.append(f"Duplicates the values of the {duplicate_of} profile")
     return ProfileValidation(path, name, tuple(problems))
 
 

@@ -268,6 +268,46 @@ def test_export_then_import_round_trips_a_profile(project, tmp_path):
     assert "Exported Court filings" in shown.output
 
 
+def test_share_writes_a_community_file_when_already_credited(project, tmp_path):
+    _write(_global_dir(), "court-filings", CREDITED)
+    out = tmp_path / "out"
+    out.mkdir()
+    result = _invoke(project, "share", "Court filings", "--out", str(out))
+    assert result.exit_code == 0, result.output
+    assert "Wrote Court filings" in result.output
+    assert "Add it to profiles/community/" in result.output
+    written = tomllib.loads((out / "court-filings.toml").read_text(encoding="utf-8"))
+    assert written["profile"]["tested_on"] == "4,000 county court filings"
+    as_json = _json(project, "share", "Court filings", "--out", str(out), "--overwrite")
+    assert as_json["folder"] == "community"
+
+
+def test_share_refuses_when_missing_and_not_interactive(project, tmp_path):
+    _write(_global_dir(), "mine", '[profile]\nname = "Mine"\n[values]\nchunk_size = 900\n')
+    result = _invoke(project, "share", "mine")
+    assert result.exit_code == 1
+    assert "Missing for a community submission: authors, tested_on" in result.output
+    as_json = _json(project, "share", "mine")
+    assert as_json == {"error": "Missing for a community submission: authors, tested_on"}
+
+
+def test_share_prompts_for_missing_fields_when_interactive(project, tmp_path, monkeypatch):
+    monkeypatch.setattr("lilbee.cli.commands.profile._interactive", lambda: True)
+    _write(_global_dir(), "mine", '[profile]\nname = "Mine"\n[values]\nchunk_size = 900\n')
+    out = tmp_path / "out"
+    out.mkdir()
+    result = runner.invoke(
+        app,
+        ["profile", "share", "mine", "--out", str(out), "--data-dir", str(project)],
+        input="Jane Doe\njanedoe\n100 filings\n",
+    )
+    assert result.exit_code == 0, result.output
+    written = tomllib.loads((out / "mine.toml").read_text(encoding="utf-8"))
+    assert written["profile"]["authors"] == [{"name": "Jane Doe", "github": "janedoe"}]
+    assert written["profile"]["tested_on"] == "100 filings"
+    assert "Add it to profiles/community/" in result.output
+
+
 def test_validate_lists_every_problem_and_exits_1(project, tmp_path):
     bad = _write(tmp_path, "bad", "[values]\nchat_model = 'x'\nchunk_size = -1\n")
     result = _invoke(project, "validate", str(bad))

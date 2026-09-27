@@ -132,6 +132,34 @@ rules through a `commit-msg` hook and in CI. It reads `committed.toml`. The
 4. CI runs lint, format-check, typecheck, and the test suite on macOS, Linux, and Windows. All checks must pass, and coverage must stay at 100%.
 5. A maintainer reviews and merges. Address review feedback by pushing follow-up commits to the same branch.
 
+## Share a profile
+
+A profile is a named set of ingest and retrieval settings, saved as one TOML file:
+
+```toml
+[profile]
+name = "Court filings"
+authors = [{ name = "Jane Doe", github = "janedoe" }]
+tested_on = "4,000 scanned county court filings, 1990-2010"
+
+[values]
+table_extraction = true
+chunk_size = 768
+```
+
+A name is 1 to 40 characters: letters, digits, spaces, hyphens, underscores, and parentheses. Names are unique regardless of case, and a name a built-in profile already uses is reserved.
+
+`lilbee profile new <name>` writes a template that lists every settable key, commented out. `lilbee profile share <name>` validates a profile you already have, asks for `authors` and `tested_on` when they are missing and the command runs in a terminal, and writes a clean file named after the profile's slug.
+
+Add the file to `profiles/community/` and open a pull request. CI runs `lilbee profile validate` on every file there; a maintainer checks the rest by hand. The bar:
+
+- `lilbee profile validate` passes, the name is unique, and the file does not duplicate an existing profile's values.
+- `tested_on` names the corpus: what it is and roughly how large.
+- A profile that changes a retrieval value from Default shows measured evidence in the pull request: the datasets it was run on, the metric, and the numbers against Default, reproducible by a reviewer.
+- An ingest-only profile (chunking, OCR, layout) shows that ingest runs cleanly on the named corpus.
+
+By opening the pull request you agree the file is licensed under the same [MIT License](LICENSE) as the rest of the project.
+
 ## License
 
 By contributing, you agree that your contributions are licensed under the [MIT License](LICENSE).

@@ -14,6 +14,7 @@ from lilbee.core.config.enums import ProfileScope
 from lilbee.core.config.resolve import PROFILE_FIELDS
 from lilbee.core.profile_files import (
     BUILTIN_DIRNAME,
+    COMMUNITY_DIRNAME,
     DEFAULT_PROFILE_NAME,
     PROFILES_DIRNAME,
     ProfileAuthor,
@@ -23,6 +24,7 @@ from lilbee.core.profile_files import (
     profile_key,
     read_entry,
     scan,
+    validate_file,
 )
 from lilbee.core.system import default_data_dir
 
@@ -125,6 +127,96 @@ def test_user_retrieval_value_without_evidence_is_valid(tmp_path, folder):
     assert entry.error is None
     assert entry.file is not None
     assert entry.file.values["top_k"] == 20
+
+
+def test_community_profile_without_tested_on_is_broken(tmp_path, monkeypatch):
+    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
+    missing = _write(tmp_path / COMMUNITY_DIRNAME, "missing", "[values]\nchunk_size = 900\n")
+    assert validate_file(missing, ProfileFolder.COMMUNITY).problems == (
+        "A community profile needs tested_on",
+    )
+    blank = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "blank",
+        '[profile]\ntested_on = ""\n[values]\nchunk_size = 800\n',
+    )
+    assert validate_file(blank, ProfileFolder.COMMUNITY).problems == (
+        "A community profile needs tested_on",
+    )
+    named = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "named",
+        '[profile]\ntested_on = "100 files"\n[values]\nchunk_size = 700\n',
+    )
+    assert validate_file(named, ProfileFolder.COMMUNITY).valid
+
+
+@pytest.mark.parametrize(
+    "folder", [ProfileFolder.BUILTIN, ProfileFolder.PROJECT, ProfileFolder.GLOBAL]
+)
+def test_only_community_profiles_need_tested_on(tmp_path, monkeypatch, folder):
+    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
+    path = _write(tmp_path / folder.value, "mine", "[values]\nchunk_size = 900\n")
+    assert validate_file(path, folder).valid
+
+
+def test_community_profile_duplicating_builtin_values_is_broken(tmp_path, monkeypatch):
+    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
+    _write(tmp_path / BUILTIN_DIRNAME, "default", '[profile]\nname = "Default"\n[values]\n')
+    duplicate = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "mine",
+        '[profile]\nname = "Mine"\ntested_on = "100 files"\n[values]\n',
+    )
+    unique = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "other",
+        '[profile]\nname = "Other"\ntested_on = "100 files"\n[values]\nchunk_size = 900\n',
+    )
+    assert validate_file(duplicate, ProfileFolder.COMMUNITY).problems == (
+        "Duplicates the values of the Default profile",
+    )
+    # a file's own distinct values are not mistaken for a duplicate of itself
+    assert validate_file(unique, ProfileFolder.COMMUNITY).valid
+
+
+def test_community_profile_duplicating_a_sibling_is_broken(tmp_path, monkeypatch):
+    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
+    _write(tmp_path / BUILTIN_DIRNAME, "default", '[profile]\nname = "Default"\n[values]\n')
+    _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "first",
+        '[profile]\nname = "First"\ntested_on = "100 files"\n[values]\nchunk_size = 900\n',
+    )
+    second = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "second",
+        '[profile]\nname = "Second"\ntested_on = "200 files"\n[values]\nchunk_size = 900\n',
+    )
+    assert validate_file(second, ProfileFolder.COMMUNITY).problems == (
+        "Duplicates the values of the First profile",
+    )
+
+
+def test_duplicate_check_skips_a_file_whose_own_values_are_invalid(tmp_path, monkeypatch):
+    monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path)
+    bad = _write(
+        tmp_path / COMMUNITY_DIRNAME,
+        "bad",
+        '[profile]\ntested_on = "100 files"\n[values]\nchunk_size = 10\n',
+    )
+    assert validate_file(bad, ProfileFolder.COMMUNITY).problems == (
+        "Bad value for chunk_size: Input should be greater than or equal to 64",
+    )
+
+
+def test_validate_file_reports_an_unreadable_file(tmp_path):
+    folder = tmp_path / "dir.toml"
+    folder.mkdir()
+    result = validate_file(folder, ProfileFolder.GLOBAL)
+    assert result.name == "dir"
+    assert len(result.problems) == 1
+    assert result.problems[0].startswith("Cannot read the file")
 
 
 @pytest.mark.parametrize(
