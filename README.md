@@ -532,7 +532,7 @@ lilbee serves your coding agents two ways, both local: it runs the models they t
 
 ### Launch your coding agent on local models
 
-`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
+`lilbee launch opencode`, `lilbee launch hermes`, and `lilbee launch claude` set up lilbee's local models in your agent in one command. For opencode and hermes, lilbee registers itself as a provider and an MCP server in the agent's own config and leaves your existing setup intact; for Claude Code, lilbee serves an Anthropic-compatible API and points the session at it by env, without touching Claude Code's settings. Each launch warms a model and opens the agent pointed at it. No API keys, no provider setup, and nothing leaves your machine, except a check of any provider API key you have set. Tool-calling works across many GGUF families; [docs/agent-models.md](docs/agent-models.md) has the verified list and how the QA harness measures it.
 
 One model serves as many agents as you want to run. These reels show four working at once against a single local model, each in its own worktree, reading and searching this repository through lilbee.
 

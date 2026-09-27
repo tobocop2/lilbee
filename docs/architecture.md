@@ -2,7 +2,7 @@
 
 ## What is lilbee?
 
-lilbee is a local search engine for your own documents. It runs entirely on your machine: no cloud, no API keys, no data leaving your computer.
+lilbee is a local search engine for your own documents. It runs on your machine and needs no cloud and no API key. It contacts a cloud provider only when you set an API key for it: once to check the key, then only for a cloud model you pick. Your documents and the index stay on your computer.
 
 You point it at a folder (markdown, code, PDFs, Office docs, ebooks, images, anything), it indexes them, and then you can search them, chat with a model that answers from them, or let lilbee auto-build a wiki of the concepts and entities they contain. Every answer comes with citations linked back to the source chunk.
 
