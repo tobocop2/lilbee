@@ -4897,6 +4897,22 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     holder.release_and_check_last()
 
 
+def test_a_services_reset_drops_the_request_vision_grant(monkeypatch, ocr_gated_engine) -> None:
+    from lilbee.app.services import reset_services, set_services
+
+    monkeypatch.setattr(cfg, "enable_ocr", False)
+    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
+    p = FleetProvider()
+    p._ensure_fleet()
+    p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert planning_mod.vision_role_wanted("org/repo/v.gguf")  # the request granted vision
+    services = MagicMock()
+    services.provider = p
+    set_services(services)
+    reset_services()
+    assert not planning_mod.vision_role_wanted("org/repo/v.gguf")
+
+
 def test_ladder_rebuilds_a_pin_equal_engine_that_lacks_the_vision_role(
     monkeypatch, tmp_path: Path
 ) -> None:

@@ -2669,4 +2669,6 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
+        # The on-request vision grant is process-wide; the next provider starts from the setting.
+        planning.revoke_vision_on_request()
         self._shutdown_swap()
