@@ -240,7 +240,7 @@ def test_analysis_config_turns_ocr_off_and_languages_and_tables_on():
     cfg.extraction_timeout = 30
     config = analysis_config()
     assert config.disable_ocr is True
-    assert config.ocr is not None and config.ocr.enabled is False
+    assert config.ocr is None
     assert config.language_detection is not None
     assert (config.language_detection.enabled, config.language_detection.detect_multiple) == (
         True,
