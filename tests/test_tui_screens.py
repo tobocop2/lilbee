@@ -1529,6 +1529,142 @@ async def test_settings_effective_value_no_defaults():
         object.__setattr__(cfg, "_model_defaults", old_defaults)
 
 
+async def test_settings_generation_tab_blur_without_edit_leaves_config_untouched(tmp_path):
+    """Tabbing through the Generation tab without typing must not write config.toml.
+
+    Several Generation fields are nullable and display a per-model default
+    (e.g. temperature shows "0.7 (model default)" stripped to "0.7") when the
+    user hasn't set a value. Losing focus on an untouched field must not save
+    that displayed text as if the user had typed it.
+    """
+    from dataclasses import dataclass
+
+    from textual.widgets import TabbedContent
+
+    from lilbee.core import settings as settings_store
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = 0.95
+        top_k: int | None = 50
+        repeat_penalty: float | None = 1.05
+        num_ctx: int | None = 8192
+        max_tokens: int | None = 2048
+
+    cfg.data_root = tmp_path
+    # A baseline write unrelated to the fields under test, so "byte-identical"
+    # proves no write happened at all, not just that these keys stayed absent.
+    settings_store.update_values(tmp_path, {"top_k": 99})
+    baseline = (tmp_path / "config.toml").read_bytes()
+
+    cfg.apply_model_defaults(FakeDefaults())
+    cfg.temperature = None
+    cfg.top_p = None
+    cfg.top_k_sampling = None
+    cfg.repeat_penalty = None
+    cfg.num_ctx = None
+    cfg.max_tokens = None
+    cfg.seed = None
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 60)) as pilot:
+        tabs = app.screen.query_one("#settings-tabs", TabbedContent)
+        tabs.active = "settings-tab-generation"
+        await pilot.pause()
+        body = app.screen.query_one("#settings-tab-generation-body")
+        # Same selector _move_focus_within_pane uses: editors AND their
+        # reset buttons are all in the keyboard tab order.
+        focusables = [w for w in body.query("*") if w.focusable]
+        assert focusables, "Generation tab must expose focusable rows"
+        focusables[0].focus()
+        await pilot.pause()
+        last = focusables[-1]
+        for _ in range(len(focusables)):
+            await pilot.press("tab")
+            await pilot.pause()
+        from tests._async_wait import wait_until
+
+        settled = await wait_until(pilot, lambda: app.screen.focused is not last)
+        assert settled, "focus never left the last Generation field"
+
+    assert (tmp_path / "config.toml").read_bytes() == baseline
+    assert cfg.temperature is None
+    assert cfg.top_p is None
+    assert cfg.top_k_sampling is None
+    assert cfg.repeat_penalty is None
+    assert cfg.num_ctx is None
+    assert cfg.max_tokens is None
+    assert cfg.seed is None
+
+
+async def test_settings_edit_over_model_default_saves(tmp_path):
+    """Typing a new value into a field showing a model default saves the override."""
+    from dataclasses import dataclass
+
+    from textual.widgets import Input
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = None
+        max_tokens: int | None = None
+
+    cfg.data_root = tmp_path
+    cfg.apply_model_defaults(FakeDefaults())
+    cfg.temperature = None
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-temperature", Input)
+        assert editor.value == "0.7"  # the model default, marker stripped
+        editor.focus()
+        editor.value = "0.85"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert cfg.temperature == 0.85
+
+
+async def test_settings_retyping_model_default_text_is_not_saved(tmp_path):
+    """Retyping the model default's own displayed text keeps deferring to it.
+
+    A blur save compares against what the row showed at mount, so it cannot
+    tell "never touched" from "edited back to the exact same text"; retyping
+    "0.7" over a displayed "0.7" default is a no-op, and the field stays
+    unset (still deferring to the model, not pinned to that number). Editing
+    to a different value and back, or to any other value, does save.
+    """
+    from dataclasses import dataclass
+
+    from textual.widgets import Input
+
+    @dataclass(frozen=True)
+    class FakeDefaults:
+        temperature: float | None = 0.7
+        top_p: float | None = None
+        top_k: int | None = None
+        repeat_penalty: float | None = None
+        num_ctx: int | None = None
+        max_tokens: int | None = None
+
+    cfg.data_root = tmp_path
+    cfg.apply_model_defaults(FakeDefaults())
+    cfg.temperature = None
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-temperature", Input)
+        assert editor.value == "0.7"
+        editor.focus()
+        editor.value = "0.7"
+        await pilot.press("enter")
+        await pilot.pause()
+    assert cfg.temperature is None
+
+
 async def test_settings_is_writable():
     """is_writable correctly identifies writable vs read-only fields."""
     from lilbee.cli.tui.screens.settings_widgets import is_writable
@@ -12881,19 +13017,44 @@ async def test_settings_on_input_save_defn_none():
 
 
 async def test_settings_on_input_save_same_value_skip():
-    """_on_input_save skips persist when value matches current."""
+    """_on_input_save skips persist when the value matches what the row showed at mount."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)):
         screen = app.screen
         assert isinstance(screen, SettingsScreen)
+        assert screen._mount_display["top_k"] == str(cfg.top_k)
         event = MagicMock()
         event.input.name = "top_k"
         event.value = str(cfg.top_k)
         with patch.object(screen, "_persist_value") as mock_pv:
             screen._on_input_save(event)
             mock_pv.assert_not_called()
+
+
+async def test_settings_on_input_save_different_value_persists():
+    """_on_input_save persists when the value differs from what the row showed at mount.
+
+    Guards the fix for the mount-display baseline: comparing against cfg's
+    stored value instead cannot tell a field showing an unset model default
+    from one the user actually edited, so an untouched field with a default
+    on display got saved on every blur.
+    """
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)):
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        new_value = str(cfg.top_k + 1)
+        event = MagicMock()
+        event.input.name = "top_k"
+        event.value = new_value
+        with patch.object(screen, "_persist_value") as mock_pv:
+            screen._on_input_save(event)
+            mock_pv.assert_called_once_with("top_k", SETTINGS_MAP["top_k"], new_value)
 
 
 async def test_settings_on_checkbox_save_name_none():

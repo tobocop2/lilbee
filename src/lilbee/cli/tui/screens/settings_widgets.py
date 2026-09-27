@@ -91,6 +91,21 @@ def set_widget_value(widget: Widget, value: object) -> None:
             widget.load_text("" if value is None else str(value))
 
 
+def displayed_text(widget: Widget) -> str | None:
+    """The raw text a settings editor currently shows, or None for an untracked type.
+
+    Mirrors :func:`set_widget_value`: an Input or multi-line TextArea round-trips
+    through plain text, so this is what a blur-save handler compares a new value
+    against to tell an edit from a field that was never touched (whether it
+    shows a real cfg value or an unset field's model-default text).
+    """
+    if isinstance(widget, Input):
+        return widget.value
+    if isinstance(widget, TextArea):
+        return widget.text
+    return None
+
+
 def model_picker_label(key: str) -> str:
     """Render the picker button label as the human-friendly model name."""
     from lilbee.catalog.formatting import display_label_for_ref
@@ -233,7 +248,7 @@ def make_editor(key: str, defn: SettingDef) -> Widget:
 
 def make_multiline_editor(key: str, value: str) -> ListTextArea:
     """Create a multi-line editor for string settings (system prompts, etc.)."""
-    display = "" if value == "None" else value
+    display = "" if value == "None" else value.replace(" (model default)", "")
     return ListTextArea(
         text=display,
         show_line_numbers=False,
