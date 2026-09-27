@@ -1,6 +1,7 @@
 """Analyze rules, the recommended profile, saving it, and the analyze tip."""
 
 import asyncio
+import threading
 import tomllib
 from dataclasses import replace
 from pathlib import Path
@@ -23,7 +24,9 @@ from lilbee.app.analyze import (
     project_label,
     recommend,
     run_analysis,
+    server_directory,
     tip_shows,
+    tip_state,
 )
 from lilbee.core import settings
 from lilbee.core.config import cfg
@@ -499,3 +502,41 @@ def test_a_missing_builtin_profile_is_an_error_not_a_guess():
 def test_an_empty_save_name_is_refused_not_ignored(store, monkeypatch):
     with pytest.raises(ValueError, match="Bad name"):
         _run(store, AnalyzeRequest(save=""), monkeypatch=monkeypatch)
+
+
+def test_a_cancel_after_reading_saves_and_records_nothing(store, monkeypatch):
+    cancel = threading.Event()
+
+    async def _collect(files, *, on_progress, cancel):
+        cancel.set()
+        return _signals(pdf=_scanned(0.4))
+
+    monkeypatch.setattr(analyze, "collect_signals", _collect)
+    with pytest.raises(TaskCancelledError):
+        asyncio.run(run_analysis(store, AnalyzeRequest(apply=True), cancel=cancel))
+    assert not (cfg.data_root / PROFILES_DIRNAME).exists()
+    assert "profile" not in _stored()
+    assert not (cfg.data_root / STATE_FILE_NAME).exists()
+
+
+def test_a_server_directory_must_be_absolute(tmp_path):
+    assert server_directory(None) is None
+    assert server_directory(str(tmp_path)) == tmp_path
+    for value in ("notes", "", "../notes"):
+        with pytest.raises(ValueError, match="must be an absolute path on the lilbee server"):
+            server_directory(value)
+    with pytest.raises(ValueError, match="'notes'"):
+        server_directory("notes")
+
+
+def test_tip_state_follows_analyze_dismiss_and_the_active_profile(store, monkeypatch):
+    root = cfg.data_root
+    assert tip_state(root) == analyze.TipState(analyzed=False, tip_dismissed=False, tip_shows=True)
+    analyze.hide_tip(root)
+    assert tip_state(root) == analyze.TipState(analyzed=False, tip_dismissed=True, tip_shows=False)
+    (root / STATE_FILE_NAME).unlink()
+    _run(store, monkeypatch=monkeypatch)
+    assert tip_state(root) == analyze.TipState(analyzed=True, tip_dismissed=False, tip_shows=False)
+    (root / STATE_FILE_NAME).unlink()
+    _write_config('[profile]\nname = "Research papers"\n')
+    assert tip_state(root) == analyze.TipState(analyzed=False, tip_dismissed=False, tip_shows=False)

@@ -28,6 +28,7 @@ from lilbee.server.routes.agent_config import (
     agent_config_index_route,
     agent_config_route,
 )
+from lilbee.server.routes.analyze import analyze_router
 from lilbee.server.routes.crawl import crawl_route
 from lilbee.server.routes.documents import (
     add_route,
@@ -335,6 +336,7 @@ def create_app() -> Litestar:
             export_route,
             import_route,
             profiles_router,
+            analyze_router,
             placement_route,
             placement_preview_route,
             placement_set_route,
