@@ -1285,9 +1285,12 @@ def test_do_sync_names_the_tui_log_for_a_scan_vision_could_not_read(tmp_path: Pa
     t = threading.Thread(target=_worker, daemon=True)
     t.start()
     t.join(timeout=5)
-    texts = [str(call) for call in notify_calls]
-    assert any(str(tui_log_path()) in text for text in texts)
-    assert not any("server.log" in text for text in texts)
+    # The message is call_from_thread's third positional arg. str() of the
+    # whole call tuple reprs it, which doubles backslashes in a Windows path
+    # and breaks a raw substring check; read the message argument itself.
+    messages = [str(call[2]) for call in notify_calls]
+    assert any(str(tui_log_path()) in message for message in messages)
+    assert not any("server.log" in message for message in messages)
 
 
 def test_do_add_names_ocr_off_when_the_only_file_skipped_with_ocr_off(tmp_path: Path) -> None:
@@ -1427,9 +1430,12 @@ def test_do_add_names_the_tui_log_for_a_scan_vision_could_not_read(tmp_path: Pat
     t.start()
     t.join(timeout=5)
     assert not captured, f"partial success must not raise: {captured}"
-    texts = [str(call) for call in notify_calls]
-    assert any(str(tui_log_path()) in text for text in texts)
-    assert not any("server.log" in text for text in texts)
+    # The message is call_from_thread's third positional arg. str() of the
+    # whole call tuple reprs it, which doubles backslashes in a Windows path
+    # and breaks a raw substring check; read the message argument itself.
+    messages = [str(call[2]) for call in notify_calls]
+    assert any(str(tui_log_path()) in message for message in messages)
+    assert not any("server.log" in message for message in messages)
 
 
 def test_do_add_raises_when_nothing_indexed(tmp_path: Path) -> None:
