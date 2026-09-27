@@ -209,7 +209,7 @@
     <section>
       <h2 class="label">questions</h2>
       <div class="faq">
-        <details><summary>What is local RAG?</summary><p>Local RAG means the model reads your own documents before it answers, and all of it runs on your own machine. lilbee finds the passages that answer your question and writes a reply that cites them. Nothing is sent to a cloud service.</p></details>
+        <details><summary>What is local RAG?</summary><p>Local RAG means the model reads your own documents before it answers, and all of it runs on your own machine. lilbee finds the passages that answer your question and writes a reply that cites them. Nothing is sent to a cloud service, except a check of any provider API key you set.</p></details>
         <details><summary>Does lilbee need a separate vector database?</summary><p>No. The vector index (LanceDB) runs inside lilbee, so there is no database server to stand up or keep alive.</p></details>
         <details><summary>Can it run fully offline?</summary><p>Yes. lilbee downloads and runs local models, so once your models are in place it answers with no internet connection. A cloud model is used only if you pick one.</p></details>
         <details><summary>What can it index?</summary><p>Text and markdown, code, PDFs, office documents, ebooks, and scanned images through OCR, plus whole websites you crawl into markdown. Over 150 file types.</p></details>
