@@ -913,7 +913,6 @@ PROFILE_FOLDER_TEXT: dict[ProfileFolder, str] = {
 PROFILE_FOLDER_TAG: dict[ProfileFolder, str] = {
     ProfileFolder.PROJECT: "project",
     ProfileFolder.GLOBAL: "global",
-    ProfileFolder.COMMUNITY: "community",
     ProfileFolder.BUILTIN: "built-in",
 }
 PROFILE_SAVE_FOLDER_TEXT: dict[ProfileFolder, str] = {

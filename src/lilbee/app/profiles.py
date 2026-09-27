@@ -611,6 +611,11 @@ def credit_line(authors: Sequence[ProfileAuthor]) -> str | None:
     return f"by {', '.join(names)}"
 
 
+def tested_on_line(tested_on: str | None, template: str) -> str | None:
+    """*template* filled with *tested_on*; None when there is nothing to show."""
+    return template.format(text=tested_on) if tested_on else None
+
+
 def file_failure_message(exc: OSError) -> str:
     """User-facing text for a profile or config file lilbee could not write or remove."""
     return f"Could not save the change: {exc}"

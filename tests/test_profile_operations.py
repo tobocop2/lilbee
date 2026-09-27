@@ -635,6 +635,14 @@ def test_credit_line_names_each_author_and_their_github():
     assert profiles.credit_line(()) is None
 
 
+def test_tested_on_line_fills_the_template_or_is_absent():
+    assert profiles.tested_on_line("4,000 filings", "Tested on: {text}") == (
+        "Tested on: 4,000 filings"
+    )
+    assert profiles.tested_on_line(None, "Tested on: {text}") is None
+    assert profiles.tested_on_line("", "Tested on: {text}") is None
+
+
 @pytest.mark.parametrize(
     ("key", "effect"),
     [

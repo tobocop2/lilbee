@@ -101,9 +101,10 @@ def _line(text: str, style: str | None = None) -> None:
 
 def _about(entry: ProfileEntryResponse) -> list[str]:
     """The description, credit, tested-on and problem lines shown for a profile."""
-    lines = [entry.description, entry.credit]
-    if entry.tested_on:
-        lines.append(f"Tested on {entry.tested_on}")
+    from lilbee.app import profiles
+
+    tested_on = profiles.tested_on_line(entry.tested_on, "Tested on {text}")
+    lines = [entry.description, entry.credit, tested_on]
     if entry.error:
         lines.append(f"Broken: {entry.error}")
     if entry.shadowed_by is not None:

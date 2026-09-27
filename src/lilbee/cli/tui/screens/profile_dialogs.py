@@ -110,9 +110,10 @@ def effect_cell(effect: ProfileEffect) -> Content:
 
 def credit_text(profile: ProfileFile) -> str:
     """The credit line: the authors, then what the profile was tested on."""
-    parts = [profiles.credit_line(profile.authors)]
-    if profile.tested_on is not None:
-        parts.append(msg.PROFILE_TESTED_ON.format(text=profile.tested_on))
+    parts = [
+        profiles.credit_line(profile.authors),
+        profiles.tested_on_line(profile.tested_on, msg.PROFILE_TESTED_ON),
+    ]
     return ". ".join(part for part in parts if part)
 
 
