@@ -26,7 +26,9 @@ runner = CliRunner()
 GERMAN = "Die Bundesregierung hat heute beschlossen, dass die neuen Regeln für alle gelten. " * 8
 REPORT_KEYS = {
     "files_total",
+    "documents_total",
     "files_read",
+    "files_counted",
     "cap",
     "failed",
     "file_types",
@@ -84,7 +86,8 @@ def test_json_output_is_one_object_in_the_report_shape(project, notes):
     report = json.loads(result.output)
     assert set(report) == REPORT_KEYS
     assert set(report["recommendation"]) == RECOMMENDATION_KEYS
-    assert (report["files_total"], report["files_read"], report["cap"]) == (3, 3, 500)
+    assert (report["files_total"], report["documents_total"], report["files_read"]) == (3, 3, 3)
+    assert (report["files_counted"], report["cap"]) == (0, 500)
     assert report["file_types"] == {"md": 3}
     assert report["languages"] == [
         {"code": "deu", "share": 1.0, "fts_language": "German", "ocr_supported": False}
@@ -108,7 +111,8 @@ def test_json_output_is_one_object_in_the_report_shape(project, notes):
 def test_text_output_shows_the_reading_and_the_recommendation(project, notes):
     result = _invoke(project, str(notes))
     assert result.exit_code == 0, result.output
-    assert "Read 3 of 3 files." in result.output
+    assert "Read 3 of 3 documents." in result.output
+    assert "counted" not in result.output
     assert "Recommended: Notes and markdown (project)" in result.output
     assert "fts_language" in result.output
     assert "Run lilbee analyze --apply" in result.output
@@ -119,8 +123,43 @@ def test_a_sampled_run_says_so(project, notes):
     cfg_file = project / "config.toml"
     cfg_file.write_text("analyze_max_files = 2\n", encoding="utf-8")
     result = _invoke(project, str(notes))
-    assert "Read 2 of 3 files." in result.output
+    assert "Read 2 of 3 documents." in result.output
     assert "analyze_max_files is 2" in result.output
+
+
+def test_code_and_images_are_counted_and_not_reported_as_read(project, tmp_path):
+    folder = tmp_path / "repo"
+    folder.mkdir()
+    for i in range(3):
+        (folder / f"mod{i}.py").write_text("x = 1\n", encoding="utf-8")
+    (folder / "scan.png").write_bytes(b"\x89PNG\r\n")
+    (folder / "readme.md").write_text(GERMAN, encoding="utf-8")
+    result = _invoke(project, str(folder))
+    assert result.exit_code == 0, result.output
+    assert "Read 1 of 1 documents; counted 4 code, image and archive files." in result.output
+    report = json.loads(_invoke(project, str(folder), json_mode=True).output)
+    assert (report["files_total"], report["documents_total"], report["files_read"]) == (5, 1, 1)
+    assert report["files_counted"] == 4
+
+
+def test_text_output_shows_the_changes_table(project, notes):
+    result = _invoke(project, str(notes))
+    assert result.exit_code == 0, result.output
+    assert "Takes effect" in result.output
+    row = next(
+        line for line in result.output.splitlines() if "fts_language" in line and "│" in line
+    )
+    assert "English" in row
+    assert "German" in row
+
+
+def test_target_without_apply_or_save_is_refused(project, notes):
+    with mock.patch.object(analyze, "collect_signals") as collect:
+        result = _invoke(project, str(notes), "--target", "global")
+    assert result.exit_code == 1
+    assert "target takes effect only with apply or save" in result.output
+    collect.assert_not_called()
+    assert not (project / STATE_FILE_NAME).exists()
 
 
 def test_apply_saves_and_switches(project, notes):
@@ -234,6 +273,8 @@ def test_more_failures_than_shown_are_counted(project, tmp_path):
         (folder / f"bad{i}.pdf").write_bytes(b"%PDF-1.4 not a pdf")
     result = _invoke(project, str(folder))
     assert "7 files could not be read:" in result.output
+    assert "Read 0 of 7 documents." in result.output
+    assert "sampled evenly" not in result.output
     assert "and 2 more; --json lists them all" in result.output
 
 

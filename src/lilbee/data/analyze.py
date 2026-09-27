@@ -63,9 +63,14 @@ class LanguageShare:
 
 @dataclass(frozen=True)
 class CorpusSignals:
-    """What analyze read: type mix and code share over every file, the rest over the sample."""
+    """What analyze read: type mix and code share over every file, the rest over the sample.
+
+    ``files_read`` counts the documents extracted without error; code, image and archive
+    files are counted, never read.
+    """
 
     files_total: int
+    documents_total: int
     files_read: int
     cap: int
     failed: tuple[FileFailure, ...]
@@ -74,7 +79,12 @@ class CorpusSignals:
     pdf: PdfSignals
     median_chars: float | None
     languages: tuple[LanguageShare, ...]
-    image_files_read: int
+    image_files: int
+
+    @property
+    def files_counted(self) -> int:
+        """The code, image and archive files counted without being read."""
+        return self.files_total - self.documents_total
 
 
 @dataclass(frozen=True)
@@ -166,7 +176,7 @@ async def _extract_batch(
     return readings, failures
 
 
-def _share(part: int, whole: int) -> float:
+def _share(part: float, whole: float) -> float:
     return part / whole if whole else 0.0
 
 
@@ -174,7 +184,8 @@ def _median(values: list[int]) -> float | None:
     return float(statistics.median(values)) if values else None
 
 
-def _pdf_signals(readings: list[_Reading], image_files: int) -> PdfSignals:
+def _pdf_signals(readings: list[_Reading], image_weight: float) -> PdfSignals:
+    """PDF signals over the read sample; *image_weight* is the image files at the sample rate."""
     pdfs = [r for r in readings if r.content_type == PDF_CONTENT_TYPE]
     pages = sum(r.pdf_pages for r in pdfs)
     scanned = sum(r.scanned_pages for r in pdfs)
@@ -182,7 +193,7 @@ def _pdf_signals(readings: list[_Reading], image_files: int) -> PdfSignals:
         files=len(pdfs),
         pages=pages,
         scanned_pages=scanned,
-        scanned_share=_share(scanned + image_files, pages + image_files),
+        scanned_share=_share(scanned + image_weight, pages + image_weight),
         files_with_tables=sum(1 for r in pdfs if r.tables > 0),
         tables=sum(r.tables for r in pdfs),
         median_pages=_median([r.pdf_pages for r in pdfs]),
@@ -198,25 +209,29 @@ def _language_shares(readings: list[_Reading]) -> tuple[LanguageShare, ...]:
 
 def _signals(
     types: Mapping[str, str],
+    documents: list[str],
     sample: list[str],
     cap: int,
     readings: list[_Reading],
     failures: list[FileFailure],
 ) -> CorpusSignals:
-    image_files = sum(1 for key in sample if types[key] == IMAGE_CONTENT_TYPE)
-    other_chars = [r.chars for r in readings if r.content_type != PDF_CONTENT_TYPE]
     type_counts = Counter(types.values())
+    image_files = type_counts[IMAGE_CONTENT_TYPE]
+    # images are never read, so they count at the rate the documents were sampled
+    sample_rate = _share(len(sample), len(documents)) if documents else 1.0
+    other_chars = [r.chars for r in readings if r.content_type != PDF_CONTENT_TYPE]
     return CorpusSignals(
         files_total=len(types),
-        files_read=len(sample),
+        documents_total=len(documents),
+        files_read=len(readings),
         cap=cap,
         failed=tuple(failures),
         file_types=dict(type_counts.most_common()),
         code_share=_share(type_counts[CODE_CONTENT_TYPE], len(types)),
-        pdf=_pdf_signals(readings, image_files),
+        pdf=_pdf_signals(readings, image_files * sample_rate),
         median_chars=_median(other_chars),
         languages=_language_shares(readings),
-        image_files_read=image_files,
+        image_files=image_files,
     )
 
 
@@ -231,16 +246,16 @@ async def collect_signals(
     on_progress: DetailedProgressCallback = noop_callback,
     cancel: CancelSignal | None = None,
 ) -> CorpusSignals:
-    """Classify every file, then extract a sample natively with OCR off.
+    """Classify every file, then extract a sample of the documents natively with OCR off.
 
     Raises ``TaskCancelledError`` when *cancel* is set between batches.
     """
     config = active_config()
     cap = config.analyze_max_files
     types = await asyncio.to_thread(_classify, files)
-    sample = sample_keys(list(types), cap)
     counted_only = _counted_only()
-    to_extract = [key for key in sample if types[key] not in counted_only]
+    documents = [key for key, kind in types.items() if kind not in counted_only]
+    to_extract = sample_keys(documents, cap)
     size = config.batch_extraction_size
     readings: list[_Reading] = []
     failures: list[FileFailure] = []
@@ -254,7 +269,7 @@ async def collect_signals(
         event = AnalyzeEvent(done=done, total=len(to_extract), file=batch[-1])
         on_progress(EventType.ANALYZE, event)
     _stop_if_cancelled(cancel)
-    return _signals(types, sample, cap, readings, failures)
+    return _signals(types, documents, to_extract, cap, readings, failures)
 
 
 def ocr_language_supported(code: str) -> bool:

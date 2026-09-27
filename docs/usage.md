@@ -960,9 +960,10 @@ lilbee profile validate court-filings.toml --folder community
 `lilbee analyze` reads your documents and recommends a profile. It
 changes nothing until you pass `--apply` or `--save`. No AI model runs:
 lilbee extracts the files with OCR off and reads the file types, code
-share, scanned pages, tables, lengths and languages. A corpus of more
-than `analyze_max_files` files (500 by default) is sampled evenly, and
-the report says how many files it read.
+share, scanned pages, tables, lengths and languages. Code, image and
+archive files are counted, not read. When there are more than
+`analyze_max_files` documents (500 by default), lilbee reads an evenly
+spaced sample of them, and the report says how many it read.
 
 The recommendation is the closest built-in profile plus corpus
 adjustments, saved as "<built-in> (<project>)". The search language
@@ -975,6 +976,7 @@ lilbee analyze                        # the files lilbee indexes; saves nothing
 lilbee analyze ~/papers               # any folder, before you add it
 lilbee analyze --apply                # save the recommendation and switch to it
 lilbee analyze --save "My papers"     # save it under a name without switching
+lilbee analyze --apply --target global  # save to the global folder; needs --apply or --save
 lilbee analyze --off                  # hide the tip
 lilbee --json analyze                 # the report as one JSON object
 ```

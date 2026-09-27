@@ -75,8 +75,8 @@ def fake(monkeypatch):
 def test_signals_come_from_every_file_and_the_extracted_sample(corpus, fake):
     signals = asyncio.run(collect_signals(corpus))
 
-    assert signals.files_total == 8
-    assert signals.files_read == 8
+    assert (signals.files_total, signals.documents_total, signals.files_counted) == (8, 6, 2)
+    assert signals.files_read == 4
     assert signals.cap == cfg.analyze_max_files
     assert signals.file_types == {"pdf": 3, "md": 2, "txt": 1, "code": 1, "image": 1}
     assert signals.code_share == 1 / 8
@@ -86,7 +86,7 @@ def test_signals_come_from_every_file_and_the_extracted_sample(corpus, fake):
     assert (pdf.files_with_tables, pdf.tables, pdf.median_pages) == (1, 3, 6.0)
     assert signals.median_chars == 200.0
     assert signals.languages == (LanguageShare("eng", 2 / 3), LanguageShare("deu", 1 / 3))
-    assert signals.image_files_read == 1
+    assert signals.image_files == 1
     assert FileFailure("bad.pdf", "Invalid cross-reference table") in signals.failed
 
 
@@ -141,13 +141,37 @@ def test_cancel_after_the_last_batch_still_returns_no_signals(corpus, fake):
     assert len(fake.batches) == 1
 
 
-def test_a_corpus_over_the_cap_reads_an_even_sample(tmp_path, fake):
+def test_the_cap_is_spent_only_on_documents_that_are_extracted(tmp_path, monkeypatch):
+    cfg.analyze_max_files = 2
+    code = {f"src/{i:02}.py": _write(tmp_path, f"src/{i:02}.py") for i in range(12)}
+    docs = {f"docs/d{i}.md": _write(tmp_path, f"docs/d{i}.md") for i in range(4)}
+    fake = _FakeExtract({f"d{i}.md": _doc(content="x") for i in range(4)})
+    monkeypatch.setattr(analyze, "aextract_batch", fake)
+    signals = asyncio.run(collect_signals({**code, **docs}))
+    assert [name for batch in fake.batches for name in batch] == ["d0.md", "d2.md"]
+    assert (signals.files_total, signals.documents_total, signals.files_counted) == (16, 4, 12)
+    assert (signals.files_read, signals.cap) == (2, 2)
+
+
+def test_a_corpus_over_the_cap_extracts_an_even_stride_not_the_first_files(tmp_path, monkeypatch):
     cfg.analyze_max_files = 3
-    files = {
-        f"{root}/{i}.py": _write(tmp_path, f"{root}/{i}.py") for root in "abc" for i in range(4)
-    }
-    signals = asyncio.run(collect_signals(files))
-    assert (signals.files_total, signals.files_read, signals.cap) == (12, 3, 3)
+    names = [f"{root}{i}.md" for root in "abc" for i in range(4)]
+    files = {f"{name[0]}/{name}": _write(tmp_path, f"{name[0]}/{name}") for name in names}
+    fake = _FakeExtract({name: _doc(content="x") for name in names})
+    monkeypatch.setattr(analyze, "aextract_batch", fake)
+    asyncio.run(collect_signals(files))
+    assert [name for batch in fake.batches for name in batch] == ["a0.md", "b0.md", "c0.md"]
+
+
+def test_images_weigh_in_at_the_rate_the_documents_were_sampled(tmp_path, monkeypatch):
+    cfg.analyze_max_files = 2
+    pdfs = {f"p{i}.pdf": _write(tmp_path, f"p{i}.pdf") for i in range(4)}
+    images = {f"i{i}.png": _write(tmp_path, f"i{i}.png") for i in range(4)}
+    fake = _FakeExtract({name: _doc(pdf=(1, [])) for name in pdfs})
+    monkeypatch.setattr(analyze, "aextract_batch", fake)
+    signals = asyncio.run(collect_signals({**pdfs, **images}))
+    assert (signals.pdf.pages, signals.image_files) == (2, 4)
+    assert signals.pdf.scanned_share == 0.5
 
 
 def test_sample_keeps_every_key_at_or_under_the_cap():
@@ -169,6 +193,13 @@ def test_an_empty_corpus_gives_zero_shares_and_no_medians(fake):
     assert signals.pdf.median_pages is None
     assert signals.median_chars is None
     assert signals.languages == ()
+    assert fake.batches == []
+
+
+def test_a_folder_of_images_only_is_all_scans(tmp_path, fake):
+    signals = asyncio.run(collect_signals({"a.png": _write(tmp_path, "a.png")}))
+    assert (signals.documents_total, signals.files_read, signals.image_files) == (0, 0, 1)
+    assert signals.pdf.scanned_share == 1.0
     assert fake.batches == []
 
 

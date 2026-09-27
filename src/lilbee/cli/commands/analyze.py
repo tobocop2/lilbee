@@ -101,10 +101,17 @@ def _line(text: str, style: str | None = None) -> None:
     console.print(Text(text, style=style or ""), soft_wrap=True)
 
 
+def _reading_line(report: AnalyzeResponse) -> str:
+    read = f"Read {report.files_read} of {report.documents_total} documents"
+    if report.files_counted:
+        return f"{read}; counted {report.files_counted} code, image and archive files."
+    return f"{read}."
+
+
 def _render_reading(report: AnalyzeResponse) -> None:
-    _line(f"Read {report.files_read} of {report.files_total} files.", theme.ACCENT)
-    if report.files_read < report.files_total:
-        _line(f"The files are sampled evenly; analyze_max_files is {report.cap}.", theme.MUTED)
+    _line(_reading_line(report), theme.ACCENT)
+    if report.files_read + len(report.failed) < report.documents_total:
+        _line(f"The documents are sampled evenly; analyze_max_files is {report.cap}.", theme.MUTED)
     types = Table("File type", "Files")
     for kind, count in report.file_types.items():
         types.add_row(Text(kind), str(count))
