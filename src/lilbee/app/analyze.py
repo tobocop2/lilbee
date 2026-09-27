@@ -158,7 +158,8 @@ class AnalyzeRequest:
     """What to analyze and what to do with the recommendation.
 
     No *directory* reads the corpus ingest reads. *save* names the saved profile; *apply* also
-    switches to it. No *target* saves to the project folder, else the global one.
+    switches to it. *target* picks the folder and needs *apply* or *save*; without it the
+    profile goes to the project folder when there is one, else the global one.
     """
 
     directory: Path | None = None
