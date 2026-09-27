@@ -131,9 +131,27 @@ class TestSearchRoute:
         assert len(resp.json()) == 1
 
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
-    def test_default_top_k(self, mock_search, client):
+    def test_omitted_top_k_forwarded_as_none(self, mock_search, client):
+        """The route carries no hardcoded default; the handler resolves an omitted top_k."""
         client.get("/api/search", params={"q": "x"})
-        mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
+        mock_search.assert_awaited_once_with("x", top_k=None, chunk_type=None)
+
+    def test_omitted_top_k_uses_configured_value_end_to_end(self, client):
+        """The real route and handler resolve an omitted top_k from cfg, not a hardcoded default."""
+        from lilbee.app.services import set_services
+        from tests.conftest import make_mock_services
+
+        searcher = mock.MagicMock()
+        searcher.search.return_value = []
+        services = make_mock_services(searcher=searcher)
+        cfg.top_k = 7
+        set_services(services)
+        try:
+            resp = client.get("/api/search", params={"q": "x"})
+            assert resp.status_code == 200
+            searcher.search.assert_called_once_with("x", top_k=7, chunk_type=None)
+        finally:
+            set_services(None)
 
     def test_invalid_chunk_type_rejected_with_400(self, client):
         resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
