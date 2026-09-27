@@ -1159,15 +1159,10 @@ class _ManageArgs:
     name: str
     new_name: str
     folder: ProfileFolder
-    path: str
+    content: str
+    filename: str
     from_profile: str
     overwrite: bool
-
-    def file(self) -> Path:
-        """The file an export, import or validate names; raises when none is given."""
-        if not self.path:
-            raise ValueError("path is required to export, import or validate a profile")
-        return Path(self.path)
 
 
 def _profile_call(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
@@ -1205,8 +1200,13 @@ def _validation_dict(result: ProfileValidation) -> dict[str, Any]:
 
 
 def _export_dict(store: ProfileStore, args: _ManageArgs) -> dict[str, Any]:
-    written = profiles.export(store, args.name, args.file(), overwrite=args.overwrite)
-    return {"name": args.name, "path": written.as_posix()}
+    exported = profiles.export_text(store, args.name)
+    return {
+        "name": exported.profile.name,
+        "folder": exported.folder,
+        "filename": exported.filename,
+        "content": exported.text,
+    }
 
 
 _MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[str, Any]]] = {
@@ -1225,10 +1225,10 @@ _MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[
     ProfileAction.DELETE: lambda store, a: _location_dict(profiles.delete(store, a.name)),
     ProfileAction.EXPORT: _export_dict,
     ProfileAction.IMPORT: lambda store, a: _location_dict(
-        profiles.import_profile(store, a.file(), a.folder, overwrite=a.overwrite)
+        profiles.import_text(store, a.content, a.filename, a.folder, overwrite=a.overwrite)
     ),
     ProfileAction.VALIDATE: lambda _store, a: _validation_dict(
-        profiles.validate(a.file(), a.folder)
+        profiles.validate_content(a.content, a.filename, a.folder)
     ),
 }
 
@@ -1288,13 +1288,15 @@ def profile_manage(
     name: str = "",
     new_name: str = "",
     folder: ProfileFolder = ProfileFolder.GLOBAL,
-    path: str = "",
+    content: str = "",
+    filename: str = "",
     from_profile: str = "",
     overwrite: bool = False,
 ) -> dict[str, Any]:
     """Profile files: new, save (as name), update, discard, duplicate/rename (to new_name),
-    delete, export/import/validate (path on the lilbee machine). ``folder``: global or project."""
-    args = _ManageArgs(name, new_name, folder, path, from_profile, overwrite)
+    delete, export (returns its content), import/validate (a file's content and its name).
+    ``folder``: global or project."""
+    args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
     return _profile_call(lambda: _MANAGE_ACTIONS[action](_profile_store(), args))
 
 
