@@ -37,10 +37,15 @@ SKIPPED_OCR_OFF_NOTE = ": OCR is off (enable_ocr = false)"
 
 @dataclass(frozen=True)
 class ShardId:
-    """Which slice of the corpus one ingest worker owns."""
+    """Which slice of the corpus one ingest worker owns.
+
+    *records_root* is the data root holding the corpus's skip records, which
+    every worker reads and writes in place of its own private data root.
+    """
 
     index: int
     count: int
+    records_root: Path
 
     def owns(self, key: str) -> bool:
         """Whether source *key* belongs to this slice.
