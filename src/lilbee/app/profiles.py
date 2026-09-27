@@ -518,29 +518,26 @@ def export_text(store: ProfileStore, name: str) -> ExportedProfile:
     return ExportedProfile(filename, entry.folder, profile, profile_text(profile))
 
 
-def _write_export(
-    text: str, filename: str, folder: ProfileFolder, dest: Path, *, overwrite: bool
+def export(
+    store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False
 ) -> ProfileLocation:
-    """Write *text*, a clean profile file named *filename*, to *dest* or inside it as a folder.
+    """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder.
 
     Refuses when the destination file exists unless *overwrite*. Not a project or global save:
     there is no name-clash check against the profile store, only against the destination itself.
     """
-    path = dest / filename if dest.is_dir() else dest
+    exported = export_text(store, name)
+    path = dest / exported.filename if dest.is_dir() else dest
     if path.exists() and not overwrite:
         raise ValueError(f"{path} already exists")
-    planned = PlannedWrite(path, folder, parse_text(text, path.stem, folder), text, None)
-    return _written(planned)
-
-
-def export(
-    store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False
-) -> ProfileLocation:
-    """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder."""
-    exported = export_text(store, name)
-    return _write_export(
-        exported.text, exported.filename, exported.folder, dest, overwrite=overwrite
+    planned = PlannedWrite(
+        path,
+        exported.folder,
+        parse_text(exported.text, path.stem, exported.folder),
+        exported.text,
+        None,
     )
+    return _written(planned)
 
 
 def _same_name_in(store: ProfileStore, folder: ProfileFolder, name: str) -> Path | None:
