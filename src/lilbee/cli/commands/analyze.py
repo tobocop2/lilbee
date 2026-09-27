@@ -50,7 +50,7 @@ _save_option = typer.Option(
 _target_option = typer.Option(
     None,
     "--target",
-    help="Where to save: project (the default when there is one) or global.",
+    help="Where to save with --apply or --save: project (the default when there is one) or global.",
     show_default=False,
 )
 _off_option = typer.Option(False, "--off", help="Hide the analyze tip; reads no files.")
