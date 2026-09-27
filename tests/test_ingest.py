@@ -14,7 +14,7 @@ from xberg import Metadata
 import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
-from lilbee.data.types import OcrBackendUsed
+from lilbee.data.types import ExtractMode, OcrBackendName, OcrBackendUsed
 from tests.conftest import make_pdf
 
 
@@ -5474,23 +5474,23 @@ class TestRemovingHeldOutFiles:
 class TestOcrConfigSelection:
     """extraction_config picks the OCR backend from enable_ocr + vision_model."""
 
-    @pytest.mark.parametrize("mode_name", ["PAGINATED", "MARKDOWN"])
-    def test_no_ocr_block_when_enable_ocr_false(self, isolated_env, mode_name):
-        from lilbee.data.ingest import ExtractMode, extraction_config
+    @pytest.mark.parametrize("mode", [ExtractMode.PAGINATED, ExtractMode.MARKDOWN])
+    def test_no_ocr_block_when_enable_ocr_false(self, isolated_env, mode):
+        from lilbee.data.ingest import extraction_config
 
         cfg.enable_ocr = False
-        config = extraction_config(getattr(ExtractMode, mode_name))
+        config = extraction_config(mode)
         assert config.ocr is None
         assert config.disable_ocr is True
 
-    @pytest.mark.parametrize("mode_name", ["PAGINATED", "MARKDOWN"])
-    def test_ocr_not_disabled_when_enable_ocr_on(self, isolated_env, mode_name):
-        from lilbee.data.ingest import ExtractMode, extraction_config
+    @pytest.mark.parametrize("mode", [ExtractMode.PAGINATED, ExtractMode.MARKDOWN])
+    def test_ocr_not_disabled_when_enable_ocr_on(self, isolated_env, mode):
+        from lilbee.data.ingest import extraction_config
 
         cfg.enable_ocr = True
         cfg.vision_model = ""
-        config = extraction_config(getattr(ExtractMode, mode_name))
-        assert config.ocr.backend == "tesseract"
+        config = extraction_config(mode)
+        assert config.ocr.backend == OcrBackendName.TESSERACT
         assert config.disable_ocr is False
 
     def test_vision_backend_with_token_when_model_set(self, isolated_env):
@@ -5729,7 +5729,7 @@ class TestIngestDocumentOcrPath:
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_page_count_probe_sends_no_ocr_block(self, mock_kf, isolated_env, mock_svc):
-        """The probe carries no OCR block, since xberg OCRs page images under any OCR block."""
+        """The probe carries no OCR block: xberg 1.2.7 OCRs page images under any OCR block."""
         cfg.vision_model = ""
         cfg.enable_ocr = True
         probe_result = mock.MagicMock(counts=mock.MagicMock(pages=5))
@@ -5763,12 +5763,13 @@ def _ocr_sent(config) -> tuple[str | None, bool]:
 class TestOcrOffSendsNoOcrBlock:
     """With OCR off, the extraction xberg receives has no OCR block and disable_ocr set.
 
-    xberg OCRs every page image under any OCR block, even a disabled one, and
-    auto-OCRs a PDF with no text layer unless disable_ocr is set.
+    xberg 1.2.7 OCRs every page image under any OCR block, even a disabled one
+    (fixed in 1.2.9), and auto-OCRs a PDF with no text layer unless disable_ocr is set.
     """
 
     @pytest.mark.parametrize(
-        ("enable_ocr", "expected"), [(False, (None, True)), (True, ("tesseract", False))]
+        ("enable_ocr", "expected"),
+        [(False, (None, True)), (True, (OcrBackendName.TESSERACT, False))],
     )
     async def test_single_file_extraction(self, isolated_env, enable_ocr, expected):
         from lilbee.data.ingest import ingest_document
@@ -5789,7 +5790,8 @@ class TestOcrOffSendsNoOcrBlock:
         assert [_ocr_sent(c) for c in extractions] == [expected]
 
     @pytest.mark.parametrize(
-        ("enable_ocr", "expected"), [(False, (None, True)), (True, ("tesseract", False))]
+        ("enable_ocr", "expected"),
+        [(False, (None, True)), (True, (OcrBackendName.TESSERACT, False))],
     )
     async def test_batch_extraction(self, isolated_env, enable_ocr, expected):
         from lilbee.data.extract.batch import reset_active_batcher, set_active_batcher

@@ -329,8 +329,9 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # pages internally, and cross-file concurrency is the pipeline's semaphore.
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
-    # OCR off sends no OCR block (xberg OCRs page images under any block, even disabled)
-    # and sets disable_ocr (without it, xberg auto-OCRs a PDF that has no text layer).
+    # OCR off sends no OCR block (xberg 1.2.7 OCRs page images under any block, even
+    # disabled; 1.2.9 fixes that) and sets disable_ocr (without it, xberg auto-OCRs a
+    # PDF that has no text layer).
     disable_ocr = ocr is None
     # Defeats xberg's text-layer short-circuit; vision path only (GPU re-OCR lever).
     force_ocr = (
@@ -615,7 +616,8 @@ def _page_count_config() -> ExtractionConfig:
     """A metadata-only ExtractionConfig: OCR and page bodies off, structure kept."""
     from xberg import ExtractionConfig, PageConfig
 
-    # No OCR block at all: xberg OCRs a PDF's page images whenever one is present, even disabled.
+    # No OCR block at all: xberg 1.2.7 OCRs a PDF's page images whenever one is present,
+    # even disabled (fixed in 1.2.9).
     return ExtractionConfig(
         pages=PageConfig(extract_pages=False, insert_page_markers=False),
         disable_ocr=True,
