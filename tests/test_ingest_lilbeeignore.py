@@ -329,3 +329,26 @@ def test_usage_guide_lists_every_built_in_ignore_directory():
     section = section[: section.index("###", 10)]
     missing = sorted(name for name in DEFAULT_IGNORE_DIRS if f"`{name}`" not in section)
     assert not missing, f"docs/usage.md omits built-in ignore directories: {missing}"
+
+
+class TestDiscoverDir:
+    def test_walks_one_folder_with_corpus_and_tree_ignore_rules(self, isolated_env):
+        from lilbee.data.ingest.discovery import discover_dir
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        _write(isolated_env / IGNORE_FILENAME, "drafts/\n")
+        base = isolated_env / "elsewhere"
+        _write(base / IGNORE_FILENAME, "*.log.txt\n")
+        _write(base / "keep.md")
+        _write(base / "sub" / "deep.txt")
+        _write(base / "drafts" / "hidden.md")
+        _write(base / "noise.log.txt")
+        _write(base / "node_modules" / "dep.md")
+        _write(base / "shape.svg")
+        _write(cfg.documents_dir / "owned.md")
+
+        scan = discover_dir(base)
+
+        assert sorted(scan.files) == ["keep.md", "sub/deep.txt"]
+        assert scan.files["keep.md"] == base / "keep.md"
+        assert sorted(scan.excluded) == ["shape.svg"]

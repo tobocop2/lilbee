@@ -106,6 +106,7 @@ from lilbee.data.store import (
 )
 from lilbee.data.title import derive_title
 from lilbee.data.types import (
+    CODE_CONTENT_TYPE,
     ChunkRecord,
     DocumentRecords,
     FileChangePlan,
@@ -287,7 +288,7 @@ async def produce_records(
     records: list[ChunkRecord]
     ocr: OcrReport | None = None
     page_texts: list[PageTextRecord] = page_texts_out if page_texts_out is not None else []
-    if content_type == "code":
+    if content_type == CODE_CONTENT_TYPE:
         records = await to_ingest_thread(ingest_code_sync, path, source_name, on_progress)
         meta = SourceMeta(title=derive_title(source_name))
     elif path.suffix.lower() == ".md":

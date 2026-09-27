@@ -244,6 +244,16 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text="Max files per extract_batch call when batch extraction is on",
     ),
+    "analyze_max_files": SettingDef(
+        int,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Most files lilbee analyze reads; a larger corpus is sampled evenly down to this"
+            " many. Raise it to cover more files for a slower run. The default is not yet"
+            " measured on large corpora"
+        ),
+    ),
     "extraction_threads": SettingDef(
         int,
         nullable=False,

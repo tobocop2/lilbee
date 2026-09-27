@@ -1,5 +1,6 @@
 """Tests for persistent settings (config.toml)."""
 
+from dataclasses import fields as dataclass_fields
 from unittest import mock
 
 import pytest
@@ -8,6 +9,7 @@ from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 from lilbee.core.config.resolve import builtin_value
+from lilbee.core.project_state import ProjectState
 
 
 class TestChunkSizeOverlapInvariant:
@@ -1142,9 +1144,12 @@ class TestResolverIsTheOnlyWriter:
         from lilbee.core.config.resolve import PROFILE_TABLE
 
         fields = set(Config.model_fields)
+        state_keys = {field.name for field in dataclass_fields(ProjectState)}
         assert "top_k" in fields
+        assert state_keys == {"analyzed_at", "tip_dismissed"}
+        assert not state_keys & fields
         assert PROFILE_TABLE not in fields
-        assert not any(name.startswith(("profile", "analyze")) for name in fields)
+        assert not any(name.startswith("profile") for name in fields)
         assert PROFILE_TABLE not in WRITABLE_CONFIG_FIELDS
 
 

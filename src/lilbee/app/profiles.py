@@ -44,6 +44,7 @@ from lilbee.core.profile_files import (
     profile_folders,
     profile_key,
     profile_text,
+    read_entry,
     read_profile_text,
     validate_file,
     validate_text,
@@ -51,6 +52,8 @@ from lilbee.core.profile_files import (
 
 _OVERRIDE_SOURCES = frozenset({SettingSource.ENV, SettingSource.USER})
 _SAVE_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
+
+ANALYZE_DESCRIPTION = "Recommended by lilbee analyze for this corpus."
 
 MCP_PROFILES_DISABLED_HINT = (
     "The profile tools are off. Turn them on with settings_set mcp_profiles_enabled true, "
@@ -228,6 +231,11 @@ def _diff(profile: ProfileFile) -> ProfileDiff:
         kept=kept,
         untouched_count=len(PUBLIC_CONFIG_FIELDS - set(PROFILE_FIELDS)),
     )
+
+
+def preview(name: str, values: Mapping[str, Any]) -> ProfileDiff:
+    """What applying an unsaved profile of *values* changes and which set values it keeps."""
+    return _diff(_bare(name, values))
 
 
 def diff(store: ProfileStore, name: str) -> ProfileDiff:
@@ -415,6 +423,47 @@ def update(store: ProfileStore, name: str | None = None) -> SaveResult:
     directory = entry.path.parent
     planned = plan_write(directory, entry.folder, text, stem=entry.path.stem, replacing=entry.path)
     return _switch_to(planned, yours)
+
+
+def default_save_folder() -> ProfileFolder:
+    """This project's profile folder, or the global one when lilbee uses the global data folder."""
+    folders = dict(profile_folders(cfg.data_root))
+    return ProfileFolder.PROJECT if ProfileFolder.PROJECT in folders else ProfileFolder.GLOBAL
+
+
+def _analyze_file_to_replace(store: ProfileStore, folder: ProfileFolder, name: str) -> Path | None:
+    """The analyze-made file named *name* in *folder*; raises when a hand-made one has the name."""
+    path = _same_name_in(store, folder, name)
+    if path is None:
+        return None
+    entry = read_entry(path, folder)
+    if entry.file is None or entry.file.description != ANALYZE_DESCRIPTION:
+        raise ValueError(
+            f"A profile named {name} already exists in the {folder.value} folder; "
+            "save the recommendation under another name with --save NAME"
+        )
+    return path
+
+
+def save_recommended(
+    store: ProfileStore,
+    name: str,
+    values: Mapping[str, Any],
+    target: ProfileFolder,
+    *,
+    switch: bool,
+) -> SaveResult:
+    """Save analyze's recommended *values* as *name*; *switch* also makes it this project's.
+
+    An earlier analyze file with the name is replaced; a hand-made one is refused.
+    """
+    directory = _target_dir(target)
+    replacing = _analyze_file_to_replace(store, target, name)
+    text = profile_text(replace(_bare(name, values), description=ANALYZE_DESCRIPTION))
+    planned = plan_write(directory, target, text, stem=name, replacing=replacing)
+    if switch:
+        return _switch_to(planned, ())
+    return SaveResult(_written(planned), ())
 
 
 def discard() -> DiscardResult:
