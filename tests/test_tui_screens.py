@@ -1323,6 +1323,41 @@ async def test_settings_list_editor_restore_defaults():
         assert ta.text == "\n".join(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
 
 
+async def test_settings_list_editor_restore_then_blur_does_not_resave():
+    """Blurring the list editor right after Restore, unedited, must not save again.
+
+    First edit the field so its mount-display baseline diverges from the
+    default; if Restore left that stale baseline in place instead of
+    updating it, the restored (default) text would still look changed on
+    the next blur and get persisted again.
+    """
+    from textual.widgets import Button, Input
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        ta = screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("edited")
+        ta.blur()
+        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns == ["edited"])
+
+        btn = screen.query_one("#list-restore-crawl_exclude_patterns", Button)
+        btn.press()
+        await pump_until(pilot, lambda: cfg.crawl_exclude_patterns != ["edited"])
+        assert screen._mount_display["crawl_exclude_patterns"] == ta.text
+
+        with patch.object(screen, "_persist_value") as mock_pv:
+            ta.focus()
+            await pilot.pause()
+            screen.query_one("#ed-top_k", Input).focus()
+            await pilot.pause()
+            mock_pv.assert_not_called()
+
+
 async def test_settings_parse_value_list_branch():
     """_parse_value splits, strips, and drops blanks for list-typed settings."""
     from lilbee.app.settings_map import SettingDef
