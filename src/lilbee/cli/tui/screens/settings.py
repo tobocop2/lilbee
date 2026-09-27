@@ -41,6 +41,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
     RESET_BUTTON_LABEL,
     ROW_ID_PREFIX,
     config_toml_path,
+    displayed_text,
     group_settings,
     help_content,
     make_editor,
@@ -160,6 +161,14 @@ class SettingsScreen(Screen[None]):
         # pane); the rest fill in on first activation.
         self._pane_groups: dict[str, _PaneGroup] = {}
         self._eagerly_populate: str | None = None
+        # Text each Input/multi-line editor showed the moment it was last
+        # built or refreshed (a field showing a model default renders that
+        # default's text, not a user value). Blur saves only when the raw
+        # text differs from this, not from cfg's stored value, so an
+        # untouched field showing a model default is never mistaken for an
+        # edit. Keyed by setting key; kept in sync by ``_build_setting_row``
+        # and ``_refresh_editor``.
+        self._mount_display: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -262,8 +271,12 @@ class SettingsScreen(Screen[None]):
         if key in model_field_to_picker_scope():
             children.append(self._build_model_picker_row(key))
         elif defn.writable:
+            editor = make_editor(key, defn)
+            baseline = displayed_text(editor)
+            if baseline is not None:
+                self._mount_display[key] = baseline
             editor_row = Horizontal(
-                make_editor(key, defn),
+                editor,
                 Button(
                     RESET_BUTTON_LABEL,
                     id=f"{RESET_BUTTON_ID_PREFIX}{key}",
@@ -293,7 +306,7 @@ class SettingsScreen(Screen[None]):
     @on(Input.Submitted, ".setting-editor")
     @on(Input.Blurred, ".setting-editor")
     def _on_input_save(self, event: Input.Submitted | Input.Blurred) -> None:
-        """Save string/number input on submit or blur."""
+        """Save string/number input on submit or blur, but only if it changed."""
         name = event.input.name
         if name is None:
             return
@@ -301,14 +314,14 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         raw = event.value.strip()
-        current = str(getattr(cfg, name, ""))
-        if raw == current:
+        if self._mount_display.get(name) == raw:
             return
+        self._mount_display[name] = raw
         self._persist_value(name, defn, raw)
 
     @on(ListTextArea.Blurred, ".setting-multiline-editor")
     def _on_multiline_save(self, event: ListTextArea.Blurred) -> None:
-        """Save multi-line string settings (system prompts) on blur."""
+        """Save multi-line string settings (system prompts) on blur, but only if changed."""
         ta = event.control
         name = ta.name
         if name is None:
@@ -317,9 +330,9 @@ class SettingsScreen(Screen[None]):
         if defn is None:
             return
         raw = ta.text
-        current = str(getattr(cfg, name, ""))
-        if raw == current:
+        if self._mount_display.get(name) == raw:
             return
+        self._mount_display[name] = raw
         self._persist_value(name, defn, raw)
 
     @on(Checkbox.Changed, ".setting-editor")
@@ -599,6 +612,13 @@ class SettingsScreen(Screen[None]):
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
         set_widget_value(widget, value)
+        # Only keys already tracked from row construction (Input / multi-line
+        # editors); a list editor's widget is also a TextArea but its blur
+        # handler doesn't consult this baseline, so it must not gain one here.
+        if key in self._mount_display:
+            baseline = displayed_text(widget)
+            if baseline is not None:
+                self._mount_display[key] = baseline
 
     def action_go_back(self) -> None:
         self.app.go_back()
