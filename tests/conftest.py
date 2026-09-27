@@ -1,5 +1,6 @@
 """Shared test helpers."""
 
+import logging
 import os
 import shutil
 import sys
@@ -425,6 +426,27 @@ def _reset_xberg_extract_globals():
     """
     _xberg_extract.extract_document = _PRISTINE_EXTRACT_DOCUMENT
     _xberg_extract.aextract_document = _PRISTINE_AEXTRACT_DOCUMENT
+
+
+@pytest.fixture(autouse=True)
+def _restore_root_logger_after_create_app():
+    """Undo Litestar's root logger reconfiguration from building a test app.
+
+    ``create_app()`` constructs ``Litestar(...)`` with no explicit
+    ``logging_config``, so its default ``LoggingConfig`` runs
+    ``logging.config.dictConfig`` on every call, pinning the root logger's
+    level to INFO and replacing its handlers with Litestar's own. Nothing
+    reverts that, so once one test builds an app, every later logger with no
+    level of its own (``lilbee.ingest.trace`` among them) inherits INFO
+    instead of the suite's default and starts passing records into whatever
+    test's ``caplog`` runs next. (bb-9jbu8)
+    """
+    root = logging.getLogger()
+    level = root.level
+    handlers = list(root.handlers)
+    yield
+    root.setLevel(level)
+    root.handlers[:] = handlers
 
 
 @pytest.fixture(autouse=True)
