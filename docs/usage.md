@@ -938,6 +938,12 @@ or discards them. Picking another profile shows what changes before
 anything is applied. `/profile <name>` does the same from chat, and
 `/profile` alone opens the tab.
 
+Manage profiles, on the same tab, opens the profile library. It lists
+every profile with its folder, and marks shadowed and broken files with
+the reason. Enter applies the highlighted profile, and the keys shown in
+the library duplicate, rename, delete, export or import it.
+Profiles that ship with lilbee cannot be renamed or deleted.
+
 ```bash
 lilbee profile show                           # this project's profile
 lilbee profile list                           # every profile, with credit and broken files
