@@ -153,6 +153,7 @@ TASK_NAME_WIKI_WIPE = "Delete wiki"
 TASK_NAME_REBUILD = "Rebuild index"
 TASK_NAME_IMPORT = "Import {file}"
 TASK_NAME_EXPORT = "Export {file}"
+TASK_NAME_ANALYZE = "Analyze {folder}"
 IMPORT_STATUS_LOADING = "Loading dataset..."
 EXPORT_STATUS_RUNNING = "Exporting..."
 CMD_SET_UNKNOWN = "Unknown setting: {key}"
@@ -932,6 +933,59 @@ PROFILE_NAME_PROBLEM_TEXT: dict[NameProblem, str] = {
     NameProblem.RESERVED_WORD: "This name already names a lilbee page or a Windows device.",
     NameProblem.TAKEN: "A profile in that folder already has this name.",
 }
+
+# /analyze, the analyze report, and the analyze tip on the /add hint
+ANALYZE_STATUS_FINDING = "Finding files..."
+ANALYZE_STATUS_READING = "Reading {done} of {total}: {file}"
+ANALYZE_NOT_A_FOLDER = "{path} is not a folder."
+ANALYZE_FAILED = "Analyze failed: {error}"
+ANALYZE_TIP_HIDDEN = "The analyze tip is hidden for this project."
+ANALYZE_TITLE = "What's in {folder}"
+ANALYZE_YOUR_DOCUMENTS = "your documents"
+ANALYZE_READ = "Read {read} of {total} documents without OCR. No AI model runs."
+ANALYZE_READ_COUNTED = (
+    "Read {read} of {total} documents without OCR and counted {counted} code, image and "
+    "archive files. No AI model runs."
+)
+ANALYZE_SAMPLED = "The documents are sampled evenly; analyze_max_files is {cap}."
+ANALYZE_FOUND = "Found"
+ANALYZE_FACT_TYPES = "File types"
+ANALYZE_FACT_CODE = "Code"
+ANALYZE_FACT_SCANS = "Scanned pages"
+ANALYZE_FACT_TABLES = "Tables"
+ANALYZE_FACT_LANGUAGES = "Languages"
+ANALYZE_FACT_PDF_LENGTH = "Typical PDF length"
+ANALYZE_FACT_TEXT_LENGTH = "Typical length"
+ANALYZE_TYPE_COUNT = "{count} {kind}"
+ANALYZE_SHARE_OF_FILES = "{share:.0%} of files"
+ANALYZE_SHARE_OF_PAGES = "{share:.0%} of pages"
+ANALYZE_TABLES_VALUE = "in {tables} of {files} PDFs"
+ANALYZE_LANGUAGE_SHARE = "{name} {share:.0%}"
+ANALYZE_LANGUAGES_TEXT = "{languages} (text files)"
+ANALYZE_LANGUAGES_NONE = "none detected"
+ANALYZE_PAGES_VALUE = "{pages:g} pages"
+ANALYZE_CHARS_VALUE = "{chars:,.0f} characters"
+ANALYZE_FAILED_TITLE = "Could not read"
+ANALYZE_COL_FILE = "File"
+ANALYZE_COL_REASON = "Reason"
+ANALYZE_COL_WHY = "Why"
+ANALYZE_WHY_BUILTIN = "{builtin} sets it"
+ANALYZE_RECOMMEND_TITLE = "Recommendation: {name}"
+ANALYZE_RECOMMEND_DERIVED = (
+    "{builtin}, with these changes. Apply saves it to your profiles and switches this "
+    "project to it."
+)
+ANALYZE_RECOMMEND_BUILTIN = "{builtin} fits these files. Apply switches this project to it."
+ANALYZE_PICKED = "Picked because {reason}."
+ANALYZE_NO_CHANGES = "Applying it changes nothing."
+ANALYZE_KEEPS = "Keeps your values of {keys}."
+ANALYZE_NOTES_TITLE = "Notes"
+ANALYZE_SAVE_LABEL = "Save only"
+ANALYZE_TIP_LABEL = "tip"
+ANALYZE_TIP = (
+    "This project uses the Default profile. Run /analyze on the same path first to pick "
+    "settings for it, or /analyze off to hide this tip."
+)
 
 
 def profile_count_text(count: int) -> str:

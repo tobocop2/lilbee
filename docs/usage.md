@@ -211,6 +211,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/settings` | | View or change settings |
 | `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
 | `/profile [name]` | | Switch the settings profile. No args opens the Profile tab in Settings |
+| `/analyze [dir\|off]` | | Recommend a profile for your documents or a folder. `off` hides the analyze tip |
 | `/theme <name>` | | Switch theme |
 | `/status` | | Show indexed documents and config |
 | `/login <token>` | | Log in to HuggingFace |
@@ -1011,6 +1012,13 @@ lilbee --json analyze                 # the report as one JSON object
 starts while the project is on the Default profile and was never
 analyzed. Analyzing, applying any profile, or `lilbee analyze --off`
 hides it. Press Ctrl+C to cancel a run; a cancelled run saves nothing.
+
+In the TUI, `/analyze [dir]` (or "Analyze documents" in the command
+palette) runs in the task bar and opens the report when it finishes.
+Apply shows what the profile changes and asks before it switches; Save
+only saves it without switching. While you type `/add`, the argument
+hint shows the same tip before anything is added. `/analyze off` hides
+it.
 
 ### Sessions
 

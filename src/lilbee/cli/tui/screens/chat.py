@@ -36,6 +36,7 @@ from textual.widgets import Footer, Markdown, Select, Static
 from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.analyze import hide_tip
 from lilbee.app.ingest import removable_names, remove_documents_durably
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
@@ -44,8 +45,9 @@ from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp, apply_active_model
-from lilbee.cli.tui.command_registry import runs_while_streaming
+from lilbee.cli.tui.command_registry import ANALYZE_OFF_ARG, runs_while_streaming
 from lilbee.cli.tui.log_routing import tui_log_path
+from lilbee.cli.tui.screens.analyze_report import start_analysis
 from lilbee.cli.tui.screens.chat_helpers import (
     add_indexed_anything,
     build_add_progress_callback,
@@ -56,7 +58,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remember_from_input,
     unregister_added_roots,
 )
-from lilbee.cli.tui.screens.profile_dialogs import start_profile_switch
+from lilbee.cli.tui.screens.profile_dialogs import run_profile_op, start_profile_switch
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
@@ -219,6 +221,11 @@ def _closest_source(name: str, known: set[str]) -> str | None:
     return matches[0] if matches else None
 
 
+def _whole_path(args: str) -> Path:
+    """The whole argument as one path, with surrounding quotes removed and ``~`` expanded."""
+    return Path(args.strip().strip('"').strip("'")).expanduser()
+
+
 def _parse_add_paths(args: str) -> list[Path]:
     """Resolve ``/add`` arguments to filesystem paths.
 
@@ -228,7 +235,7 @@ def _parse_add_paths(args: str) -> list[Path]:
     points at an existing file or directory, take it as one path; otherwise fall
     back to shell-style splitting for multiple, optionally quoted, paths.
     """
-    whole = Path(args.strip().strip('"').strip("'")).expanduser()
+    whole = _whole_path(args)
     if whole.exists():
         return [whole]
     try:
@@ -1463,6 +1470,21 @@ class ChatScreen(Screen[None]):
             self.app.open_profile_tab()
             return
         start_profile_switch(self.app, self, name, on_close=lambda: None)
+
+    def _cmd_analyze(self, args: str) -> None:
+        arg = args.strip()
+        if arg.lower() == ANALYZE_OFF_ARG:
+            run_profile_op(self, lambda: hide_tip(cfg.data_root), self._tip_hidden)
+            return
+        directory = _whole_path(arg) if arg else None
+        if directory is not None and not directory.is_dir():
+            self.notify(msg.ANALYZE_NOT_A_FOLDER.format(path=directory), severity="error")
+            return
+        start_analysis(self.app, directory)
+
+    def _tip_hidden(self, _result: None) -> None:
+        self._arg_hint.refresh_tip()
+        self.notify(msg.ANALYZE_TIP_HIDDEN)
 
     def _cmd_remember(self, args: str) -> None:
         """Run /remember in a worker so embedding the text never blocks the UI."""
