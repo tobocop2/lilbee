@@ -19,6 +19,7 @@ from lilbee.runtime.progress import (
     EventType,
     ExtractEvent,
     FileStartEvent,
+    OcrStartEvent,
     ProgressEvent,
     SyncDoneEvent,
 )
@@ -139,6 +140,13 @@ class SyncStatus:
             self.pending += delta
 
 
+def _tesseract_status(data: ProgressEvent) -> str:
+    """The status line for an OCR_START event: Tesseract running on the file's pages."""
+    if not isinstance(data, OcrStartEvent):
+        raise TypeError(f"Expected OcrStartEvent, got {type(data).__name__}")
+    return f"⟳ {data.status_text}"
+
+
 def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
     """Return a progress callback for chat-mode background sync.
     FILE_START updates *status.text* (rendered by prompt_toolkit's bottom
@@ -159,8 +167,10 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
             if not isinstance(data, ExtractEvent):
                 raise TypeError(f"Expected ExtractEvent, got {type(data).__name__}")
             status.text = (
-                f"⟳ Vision OCR [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
+                f"⟳ {data.step} [{data.page}/{data.total_pages}]: {data.file}{queue_suffix}"
             )
+        elif event_type == EventType.OCR_START:
+            status.text = _tesseract_status(data) + queue_suffix
         elif event_type == EventType.SYNC_DONE:
             status.clear()
             if not isinstance(data, SyncDoneEvent):

@@ -26,6 +26,7 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    OcrStartEvent,
     ProgressEvent,
     SyncDoneEvent,
 )
@@ -178,6 +179,15 @@ def _throttled_embed_tick(reporter: ProgressReporter) -> Callable[[EmbedEvent], 
     return _tick
 
 
+def _show_tesseract_ocr(reporter: ProgressReporter, data: OcrStartEvent) -> None:
+    """Show that Tesseract is OCRing a file; it reports no page count while it runs."""
+    reporter.update(
+        0,
+        msg.SYNC_TESSERACT_OCR.format(total=data.total_pages, file=data.file),
+        indeterminate=True,
+    )
+
+
 def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressCallback:
     """Build the on_progress callback used by /add.
 
@@ -209,6 +219,8 @@ def build_add_progress_callback(reporter: ProgressReporter) -> DetailedProgressC
                 ),
                 indeterminate=True,
             )
+        elif event_type == EventType.OCR_START and isinstance(data, OcrStartEvent):
+            _show_tesseract_ocr(reporter, data)
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
             embed_tick(data)
 
@@ -248,6 +260,8 @@ def build_sync_progress_callback(
                 ),
                 indeterminate=True,
             )
+        elif event_type == EventType.OCR_START and isinstance(data, OcrStartEvent):
+            _show_tesseract_ocr(reporter, data)
         elif event_type == EventType.EMBED and isinstance(data, EmbedEvent):
             embed_tick(data)
         elif event_type == EventType.SYNC_DONE and isinstance(data, SyncDoneEvent):

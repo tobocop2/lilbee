@@ -14,7 +14,8 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-from lilbee.data.types import OcrBackendUsed, OcrReport
+from lilbee.data.types import OcrReport
+from lilbee.runtime.progress import OcrBackendUsed
 
 trace_log = logging.getLogger("lilbee.ingest.trace")
 vision_log = logging.getLogger("lilbee.ingest.vision")

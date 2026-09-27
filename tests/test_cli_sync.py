@@ -6,6 +6,8 @@ import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from lilbee.cli import sync as sync_mod
 from lilbee.cli import theme
 from lilbee.runtime.progress import (
@@ -13,6 +15,7 @@ from lilbee.runtime.progress import (
     EventType,
     ExtractEvent,
     FileStartEvent,
+    OcrBackendUsed,
     SyncDoneEvent,
 )
 
@@ -216,19 +219,39 @@ class TestChatSyncCallback:
     def test_extract_event(self):
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
-        data = ExtractEvent(file="scan.pdf", page=2, total_pages=10)
+        data = ExtractEvent(
+            file="scan.pdf", page=2, total_pages=10, ocr_backend=OcrBackendUsed.VISION
+        )
 
         callback(EventType.EXTRACT, data)
 
-        assert "Vision OCR" in status.text
-        assert "2/10" in status.text
-        assert "scan.pdf" in status.text
+        assert status.text == "⟳ Vision OCR [2/10]: scan.pdf"
+
+    @pytest.mark.parametrize(
+        ("backend", "line"),
+        [
+            (OcrBackendUsed.TESSERACT, "⟳ Tesseract OCR [8/8]: scan.pdf"),
+            (OcrBackendUsed.NONE, "⟳ Extracted [8/8]: scan.pdf"),
+        ],
+    )
+    def test_extract_event_names_the_backend_that_ran(self, backend, line):
+        status = sync_mod.SyncStatus()
+        callback = sync_mod._chat_sync_callback(status)
+
+        callback(
+            EventType.EXTRACT,
+            ExtractEvent(file="scan.pdf", page=8, total_pages=8, ocr_backend=backend),
+        )
+
+        assert status.text == line
 
     def test_extract_event_with_pending(self):
         status = sync_mod.SyncStatus()
         callback = sync_mod._chat_sync_callback(status)
         status.pending = 1
-        data = ExtractEvent(file="scan.pdf", page=1, total_pages=5)
+        data = ExtractEvent(
+            file="scan.pdf", page=1, total_pages=5, ocr_backend=OcrBackendUsed.VISION
+        )
 
         callback(EventType.EXTRACT, data)
 

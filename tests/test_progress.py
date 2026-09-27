@@ -1,5 +1,7 @@
 """Tests for the progress callback protocol module."""
 
+import pytest
+
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     CrawlDoneEvent,
@@ -10,6 +12,8 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    OcrBackendUsed,
+    OcrStartEvent,
     SseEvent,
     SyncDoneEvent,
     noop_callback,
@@ -78,9 +82,31 @@ class TestEventModels:
         assert ev.total == 10
 
     def test_extract_event(self) -> None:
-        ev = ExtractEvent(file="scan.pdf", page=2, total_pages=8)
+        ev = ExtractEvent(file="scan.pdf", page=2, total_pages=8, ocr_backend=OcrBackendUsed.VISION)
         assert ev.page == 2
         assert ev.total_pages == 8
+        assert ev.model_dump()["ocr_backend"] == "vision"
+
+    @pytest.mark.parametrize(
+        ("backend", "step"),
+        [
+            (OcrBackendUsed.VISION, "Vision OCR"),
+            (OcrBackendUsed.TESSERACT, "Tesseract OCR"),
+            (OcrBackendUsed.NONE, "Extracted"),
+        ],
+    )
+    def test_extract_event_step_names_the_backend_that_ran(
+        self, backend: OcrBackendUsed, step: str
+    ) -> None:
+        ev = ExtractEvent(file="a.pdf", page=1, total_pages=1, ocr_backend=backend)
+        assert ev.step == step
+
+    def test_ocr_start_status_text_names_the_file_page_count(self) -> None:
+        ev = OcrStartEvent(file="mixed.pdf", total_pages=3)
+        assert (
+            ev.status_text
+            == "Tesseract OCR on the scanned pages of mixed.pdf (3 pages in the file)"
+        )
 
     def test_embed_event(self) -> None:
         ev = EmbedEvent(file="notes.md", chunk=5, total_chunks=20)

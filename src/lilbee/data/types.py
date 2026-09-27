@@ -22,6 +22,7 @@ from lilbee.data.store import (
     SourceStat,
     SourceStatBackfill,
 )
+from lilbee.runtime.progress import OcrBackendUsed
 
 # PDF and image content types route to paginated extraction; every other format
 # routes to markdown extraction. content_type is derived per-file in
@@ -105,21 +106,6 @@ class OcrBackendName(StrEnum):
 
     TESSERACT = "tesseract"
     LILBEE_VISION = "lilbee-vision"
-
-
-class OcrBackendUsed(StrEnum):
-    """The OCR backend an extraction ran with: none (OCR off), Tesseract, or the vision model."""
-
-    NONE = "none"
-    TESSERACT = "tesseract"
-    VISION = "vision"
-
-    @classmethod
-    def chosen(cls, enable_ocr: bool | None, vision_model: str) -> OcrBackendUsed:
-        """The backend a configuration picks: OCR off wins, then a set vision model."""
-        if enable_ocr is False:
-            return cls.NONE
-        return cls.VISION if vision_model else cls.TESSERACT
 
 
 class OcrReport(BaseModel, frozen=True):

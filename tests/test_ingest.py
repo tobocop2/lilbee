@@ -14,7 +14,8 @@ from xberg import Metadata
 import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
-from lilbee.data.types import ExtractMode, OcrBackendName, OcrBackendUsed
+from lilbee.data.types import ExtractMode, OcrBackendName
+from lilbee.runtime.progress import OcrBackendUsed
 from tests.conftest import make_pdf
 
 
@@ -730,6 +731,85 @@ class TestSync:
         assert "file_done" in event_types
         file_done = next(d for t, d in events if t == "file_done")
         assert file_done.status == "ok"
+
+    async def test_cli_bar_shows_the_per_file_events_of_a_sync(
+        self, mock_extract_file, isolated_env
+    ):
+        """The bar of a non-quiet sync renders the OCR-start, page and chunk events a file emits."""
+        from rich.progress import Progress
+
+        from lilbee.data.ingest import sync
+        from lilbee.data.types import DocumentRecords, OcrReport, SourceMeta
+        from lilbee.runtime.progress import (
+            EmbedEvent,
+            EventType,
+            ExtractEvent,
+            OcrStartEvent,
+        )
+
+        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+
+        async def fake_ingest_document(path, source_name, content_type, *, on_progress, **_kw):
+            on_progress(EventType.OCR_START, OcrStartEvent(file=source_name, total_pages=8))
+            on_progress(
+                EventType.EXTRACT,
+                ExtractEvent(
+                    file=source_name,
+                    page=8,
+                    total_pages=8,
+                    ocr_backend=OcrBackendUsed.TESSERACT,
+                ),
+            )
+            on_progress(EventType.EMBED, EmbedEvent(file=source_name, chunk=3, total_chunks=5))
+            return DocumentRecords(
+                [], SourceMeta(title="scan"), OcrReport(backend=OcrBackendUsed.TESSERACT)
+            )
+
+        descriptions: list[str] = []
+        totals: set[float | None] = set()
+        real_update = Progress.update
+
+        def spy_update(self, task_id, **kwargs):
+            if "description" in kwargs:
+                descriptions.append(kwargs["description"])
+            totals.add(self.tasks[0].total)
+            return real_update(self, task_id, **kwargs)
+
+        forwarded: list[object] = []
+        with (
+            mock.patch(
+                "lilbee.data.ingest.pipeline.ingest_document", side_effect=fake_ingest_document
+            ),
+            mock.patch.object(Progress, "update", spy_update),
+        ):
+            result = await sync(quiet=False, on_progress=lambda et, _d: forwarded.append(et))
+
+        mock_extract_file.assert_not_called()  # the stub replaced the whole extraction
+        assert result.skipped == ["scan.pdf"]  # the stub's zero records mark the file skipped
+        assert totals == {1}  # the bar measures the one-file corpus
+
+        assert descriptions == [
+            "Tesseract OCR on the scanned pages of scan.pdf (8 pages in the file)",
+            "Tesseract OCR scan.pdf (page 8/8)",
+            "Embedding scan.pdf (3/5)",
+            "Ingested scan.pdf",
+        ]
+        # The caller's own callback still receives every per-file event.
+        per_file = (EventType.OCR_START, EventType.EXTRACT, EventType.EMBED)
+        assert tuple(et for et in forwarded if et in per_file) == per_file
+
+    @pytest.mark.parametrize("quiet", [True, False])
+    async def test_sync_draws_the_bar_only_when_not_quiet(
+        self, mock_extract_file, quiet, isolated_env, capsys
+    ):
+        """A quiet sync (JSON output, TUI) writes nothing; a non-quiet one draws the bar."""
+        (isolated_env / "bar.txt").write_text("Bar or no bar.", encoding="utf-8")
+        from lilbee.data.ingest import sync
+
+        result = await sync(quiet=quiet)
+
+        assert "bar.txt" in result.added
+        assert (capsys.readouterr().out == "") is quiet
 
     async def test_batch_progress_measures_the_corpus_not_the_plan_so_far(
         self, mock_extract_file, isolated_env
@@ -4091,30 +4171,30 @@ class TestPageCountConfig:
         assert config.enable_quality_processing is False
 
 
-class TestKnownPageCount:
+class TestProbePages:
     async def test_real_xberg_counts_pages_without_an_ocr_block(self):
         """The OCR-free config still reads the page count from a real PDF."""
-        from lilbee.data.extract.document import _known_page_count
+        from lilbee.data.extract.document import _probe_pages
 
-        assert await _known_page_count(make_pdf(pages=3), "three.pdf") == 3
+        assert (await _probe_pages(make_pdf(pages=3), "three.pdf")).pages == 3
 
     async def test_returns_the_probes_page_count(self):
         """The count comes from the metadata-only document's own counts, not a guess."""
-        from lilbee.data.extract.document import _known_page_count
+        from lilbee.data.extract.document import _probe_pages
 
-        probe = mock.MagicMock(counts=mock.MagicMock(pages=7))
+        probe = mock.MagicMock(counts=mock.MagicMock(pages=7), metadata=Metadata())
         with mock.patch(
             "lilbee.data.extract.xberg.aextract_document",
             new_callable=mock.AsyncMock,
             return_value=probe,
         ):
-            assert await _known_page_count(b"pdf bytes", "f.pdf") == 7
+            assert (await _probe_pages(b"pdf bytes", "f.pdf")).pages == 7
 
-    async def test_falls_back_to_zero_when_the_probe_raises(self, caplog):
-        """A probe failure returns 0, the existing 'not known' value, not an exception."""
+    async def test_falls_back_to_an_empty_probe_when_it_raises(self, caplog):
+        """A probe failure returns 0 pages and no scans, not an exception."""
         import logging
 
-        from lilbee.data.extract.document import _known_page_count
+        from lilbee.data.extract.document import _PageProbe, _probe_pages
 
         with (
             mock.patch(
@@ -4124,8 +4204,34 @@ class TestKnownPageCount:
             ),
             caplog.at_level(logging.DEBUG, logger="lilbee.data.extract.document"),
         ):
-            assert await _known_page_count(b"pdf bytes", "f.pdf") == 0
+            assert await _probe_pages(b"pdf bytes", "f.pdf") == _PageProbe()
         assert "f.pdf" in caplog.text
+
+    async def test_real_scanned_pdf_reports_scanned_pages(self):
+        """A real image-only PDF has scanned pages; a real text PDF has none."""
+        from pathlib import Path
+
+        from lilbee.data.extract.document import _probe_pages
+
+        scan = Path(__file__).parent / "integration" / "fixtures" / "scanned_maintenance.pdf"
+        scanned = await _probe_pages(scan.read_bytes(), scan.name)
+        text = await _probe_pages(make_pdf(pages=3), "three.pdf")
+        assert scanned.pages == 1 and scanned.has_scanned_pages is True
+        assert text.pages == 3 and text.has_scanned_pages is False
+
+
+class TestHasScannedPages:
+    def test_no_format_metadata_has_no_scanned_pages(self):
+        from lilbee.data.extract.document import _has_scanned_pages
+
+        assert _has_scanned_pages(mock.MagicMock(metadata=Metadata())) is False
+
+    def test_non_pdf_format_has_no_scanned_pages(self):
+        """An image's format metadata carries no PDF block."""
+        from lilbee.data.extract.document import _has_scanned_pages
+
+        metadata = mock.MagicMock(format=mock.MagicMock(pdf=None))
+        assert _has_scanned_pages(mock.MagicMock(metadata=metadata)) is False
 
 
 class TestOcrPageSelection:
@@ -4598,14 +4704,26 @@ class TestPhaseProgressCallback:
 
     def test_extract_event_updates_bar_description(self):
         from lilbee.data.ingest.pipeline import _phase_progress_callback
-        from lilbee.runtime.progress import EventType, ExtractEvent
+        from lilbee.runtime.progress import EventType, ExtractEvent, OcrBackendUsed
 
         progress = MagicMock()
         cb = _phase_progress_callback(progress, "task-1", lambda *_: None)
-        cb(EventType.EXTRACT, ExtractEvent(file="scan.pdf", page=3, total_pages=12))
+        event = ExtractEvent(
+            file="scan.pdf", page=3, total_pages=12, ocr_backend=OcrBackendUsed.TESSERACT
+        )
+        cb(EventType.EXTRACT, event)
         desc = progress.update.call_args.kwargs["description"]
-        assert "scan.pdf" in desc
-        assert "3/12" in desc
+        assert desc == "Tesseract OCR scan.pdf (page 3/12)"
+
+    def test_ocr_start_event_updates_bar_description(self):
+        from lilbee.data.ingest.pipeline import _phase_progress_callback
+        from lilbee.runtime.progress import EventType, OcrStartEvent
+
+        progress = MagicMock()
+        cb = _phase_progress_callback(progress, "task-1", lambda *_: None)
+        cb(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
+        desc = progress.update.call_args.kwargs["description"]
+        assert desc == "Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file)"
 
     def test_embed_event_updates_bar_description(self):
         from lilbee.data.ingest.pipeline import _phase_progress_callback
@@ -4621,11 +4739,11 @@ class TestPhaseProgressCallback:
 
     def test_events_forward_to_chained_callback(self):
         from lilbee.data.ingest.pipeline import _phase_progress_callback
-        from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent
+        from lilbee.runtime.progress import EmbedEvent, EventType, ExtractEvent, OcrBackendUsed
 
         seen: list[object] = []
         cb = _phase_progress_callback(MagicMock(), "t", lambda et, d: seen.append((et, d)))
-        extract = ExtractEvent(file="x", page=1, total_pages=2)
+        extract = ExtractEvent(file="x", page=1, total_pages=2, ocr_backend=OcrBackendUsed.NONE)
         embed = EmbedEvent(file="x", chunk=1, total_chunks=2)
         cb(EventType.EXTRACT, extract)
         cb(EventType.EMBED, embed)
@@ -5716,16 +5834,16 @@ class TestIngestDocumentOcrPath:
         mock_kf.side_effect = fake_extract
         from lilbee.data.ingest import ingest_document
 
-        seen: list[tuple[int, int]] = []
+        seen: list[tuple[int, int, OcrBackendUsed]] = []
 
         def on_prog(_et, ev):
-            seen.append((ev.page, ev.total_pages))
+            seen.append((ev.page, ev.total_pages, ev.ocr_backend))
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
         await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
-        assert (1, 5) in seen
-        assert (2, 5) in seen
+        assert (1, 5, OcrBackendUsed.VISION) in seen
+        assert (2, 5, OcrBackendUsed.VISION) in seen
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_page_count_probe_sends_no_ocr_block(self, mock_kf, isolated_env, mock_svc):
@@ -5753,6 +5871,108 @@ class TestIngestDocumentOcrPath:
         assert len(probes) == 1 and len(extractions) == 1
         assert probes[0].ocr is None
         assert extractions[0].ocr.backend == OcrBackendName.TESSERACT
+
+
+class TestTesseractOcrStartEvent:
+    """Tesseract reports no pages while it runs, so its file gets one OCR_START event."""
+
+    @staticmethod
+    def _probe(pages: int, scanned: list[int]) -> mock.MagicMock:
+        from xberg import FormatMetadata, PdfMetadata
+
+        fmt = FormatMetadata.from_pdf(PdfMetadata(page_count=pages, scanned_pages=scanned))
+        return mock.MagicMock(counts=mock.MagicMock(pages=pages), metadata=Metadata(format=fmt))
+
+    async def _ingest(self, mock_kf, isolated_env, probe) -> list[tuple[object, object]]:
+        order: list[tuple[object, object]] = []
+
+        async def fake_extract(data, *, filename=None, config):
+            if config.disable_ocr:
+                return probe
+            order.append(("extract", None))
+            return _make_xberg_result(num_chunks=1, has_pages=True)
+
+        mock_kf.side_effect = fake_extract
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        await ingest_document(
+            f, "scan.pdf", "pdf", on_progress=lambda et, ev: order.append((et, ev))
+        )
+        return order
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_scanned_pdf_announces_ocr_once_before_extraction(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        from lilbee.runtime.progress import EventType, OcrStartEvent
+
+        cfg.vision_model = ""
+        cfg.enable_ocr = True
+        order = await self._ingest(mock_kf, isolated_env, self._probe(8, [1, 2, 3]))
+        starts = [ev for et, ev in order if et is EventType.OCR_START]
+        assert starts == [OcrStartEvent(file="scan.pdf", total_pages=8)]
+        kinds = [et for et, _ in order]
+        assert kinds.index(EventType.OCR_START) < kinds.index("extract")
+        # The per-file "extracted N pages" event follows the extraction and names Tesseract.
+        extracts = [ev for et, ev in order if et is EventType.EXTRACT]
+        assert [ev.ocr_backend for ev in extracts] == [OcrBackendUsed.TESSERACT]
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_extract_event_names_no_backend_when_no_page_was_ocrd(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        """A text-layer PDF under Tesseract reports its pages as extracted, not OCR'd."""
+        from lilbee.runtime.progress import EventType
+
+        cfg.vision_model = ""
+        cfg.enable_ocr = True
+        probe = self._probe(2, [])
+        text_pdf = _make_xberg_result(num_chunks=2, has_pages=True)
+        for page in text_pdf.pages:
+            page.ocr_confidence = None
+
+        async def fake_extract(data, *, filename=None, config):
+            return probe if config.disable_ocr else text_pdf
+
+        mock_kf.side_effect = fake_extract
+        from lilbee.data.ingest import ingest_document
+
+        order: list[tuple[object, object]] = []
+        f = isolated_env / "text.pdf"
+        f.write_bytes(b"x")
+        await ingest_document(
+            f, "text.pdf", "pdf", on_progress=lambda et, ev: order.append((et, ev))
+        )
+        extracts = [ev for et, ev in order if et is EventType.EXTRACT]
+        assert [(ev.page, ev.ocr_backend) for ev in extracts] == [(2, OcrBackendUsed.NONE)]
+
+    @pytest.mark.parametrize(
+        ("vision_model", "enable_ocr", "scanned"),
+        [
+            pytest.param("", True, [], id="text-pdf-needs-no-ocr"),
+            pytest.param(
+                "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf",
+                True,
+                [1, 2],
+                id="vision-ticks-per-page",
+            ),
+            pytest.param("", False, [1, 2], id="ocr-off"),
+        ],
+    )
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_announces_nothing_when_tesseract_does_not_ocr(
+        self, mock_kf, vision_model, enable_ocr, scanned, isolated_env, mock_svc
+    ):
+        """No OCR_START unless Tesseract is the backend and the probe found a scanned page."""
+        from lilbee.runtime.progress import EventType
+
+        cfg.vision_model = vision_model
+        cfg.enable_ocr = enable_ocr
+        order = await self._ingest(mock_kf, isolated_env, self._probe(8, scanned))
+        assert "extract" in [et for et, _ in order]
+        assert EventType.OCR_START not in [et for et, _ in order]
 
 
 def _ocr_sent(config) -> tuple[str | None, bool]:
@@ -7099,7 +7319,8 @@ class TestSkippedScanReportsTheOcrThatRan:
     ):
         from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
-        from lilbee.data.types import OcrBackendUsed, OcrReport
+        from lilbee.data.types import OcrReport
+        from lilbee.runtime.progress import OcrBackendUsed
 
         cfg.enable_ocr = False
         cfg.vision_model = self._VISION_MODEL
@@ -7123,7 +7344,8 @@ class TestSkippedScanReportsTheOcrThatRan:
     ):
         from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
-        from lilbee.data.types import OcrBackendUsed, OcrReport
+        from lilbee.data.types import OcrReport
+        from lilbee.runtime.progress import OcrBackendUsed
 
         cfg.enable_ocr = None
         cfg.vision_model = self._VISION_MODEL
@@ -7149,7 +7371,8 @@ class TestSkippedScanReportsTheOcrThatRan:
     ):
         from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
-        from lilbee.data.types import OcrBackendUsed, OcrReport
+        from lilbee.data.types import OcrReport
+        from lilbee.runtime.progress import OcrBackendUsed
 
         cfg.enable_ocr = True
         cfg.vision_model = ""

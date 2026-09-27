@@ -13,8 +13,9 @@ from importlib.util import find_spec
 from pathlib import Path
 
 from lilbee.core.config import cfg
-from lilbee.data.types import OcrBackendUsed, SyncResult
+from lilbee.data.types import SyncResult
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
+from lilbee.runtime.progress import OcrBackendUsed
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
 
 log = logging.getLogger(__name__)
@@ -292,6 +293,9 @@ SYNC_STATUS_SYNCING = "Syncing..."
 SYNC_STATUS_DONE = "Synced ({count} docs)"
 SYNC_STATUS_FAILED = "Sync failed"
 SYNC_FILE_PROGRESS = "Syncing [{current}/{total}]: {file}"
+SYNC_TESSERACT_OCR = (
+    "Running Tesseract OCR on the scanned pages of {file} ({total} pages in the file)"
+)
 SYNC_ALREADY_ACTIVE = "Sync in progress, please wait"
 EMBEDDING_SET = "Embedding model: {name}"
 CMD_CRAWL_UNAVAILABLE = "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."

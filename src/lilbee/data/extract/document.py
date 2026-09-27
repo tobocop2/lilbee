@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -27,7 +27,6 @@ from lilbee.data.types import (
     ExtractMode,
     MemberRecords,
     OcrBackendName,
-    OcrBackendUsed,
     OcrReport,
 )
 from lilbee.providers.base import aux_options
@@ -35,6 +34,8 @@ from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
     ExtractEvent,
+    OcrBackendUsed,
+    OcrStartEvent,
     noop_callback,
 )
 
@@ -526,9 +527,10 @@ async def ingest_document(
     """Extract, chunk, and embed a document in a single xberg pass, with its metadata.
 
     xberg extracts native text and, where a page has none, OCRs it through the
-    registered backend (lilbee's vision model, or tesseract). Per-page OCR progress
-    is streamed as a running count via ``ocr_request``. ``quiet`` is accepted for
-    pipeline call compatibility. The returned metadata carries the document's
+    registered backend (lilbee's vision model, or tesseract). Vision OCR progress
+    is streamed per page via ``ocr_request``; Tesseract reports no pages, so a
+    scanned file gets one OCR_START event before its extraction. ``quiet`` is
+    accepted for pipeline call compatibility. The returned metadata carries the document's
     extraction title/authors/date and is derived even when extraction yields nothing;
     the OCR report says which backend the extraction ran and how many pages it OCR'd.
     """
@@ -625,12 +627,27 @@ def _page_count_config() -> ExtractionConfig:
     )
 
 
-async def _known_page_count(data: bytes, filename: str) -> int:
-    """The page count from a metadata-only xberg pass over *data*, or 0 when unknown.
+@dataclass(frozen=True)
+class _PageProbe:
+    """What the metadata-only pass read: the page count and whether any page is a scan."""
+
+    pages: int = 0
+    has_scanned_pages: bool = False
+
+
+def _has_scanned_pages(doc: ExtractedDocument) -> bool:
+    """Whether xberg found a PDF page with no usable text layer."""
+    fmt = doc.metadata.format
+    pdf = fmt.pdf if fmt is not None else None
+    return bool(pdf is not None and pdf.scanned_pages)
+
+
+async def _probe_pages(data: bytes, filename: str) -> _PageProbe:
+    """Read *data*'s page count and scanned pages in a metadata-only xberg pass.
 
     Costs a second structural parse of *data* with OCR and page bodies both off.
-    Any failure here returns 0 rather than raising, so the caller's real
-    extraction still runs and reports its own error.
+    Any failure here returns an empty probe rather than raising, so the caller's
+    real extraction still runs and reports its own error.
     """
     from .xberg import aextract_document
 
@@ -638,8 +655,16 @@ async def _known_page_count(data: bytes, filename: str) -> int:
         doc = await aextract_document(data, filename=filename, config=_page_count_config())
     except Exception:
         log.debug("Page-count probe failed for %s; OCR progress total stays unknown", filename)
-        return 0
-    return doc.counts.pages
+        return _PageProbe()
+    return _PageProbe(pages=doc.counts.pages, has_scanned_pages=_has_scanned_pages(doc))
+
+
+def _announce_tesseract_ocr(
+    probe: _PageProbe, source_name: str, on_progress: DetailedProgressCallback
+) -> None:
+    """Emit OCR_START when Tesseract will OCR this file; it reports no per-page progress."""
+    if probe.has_scanned_pages and ocr_backend() is OcrBackendUsed.TESSERACT:
+        on_progress(EventType.OCR_START, OcrStartEvent(file=source_name, total_pages=probe.pages))
 
 
 async def _extract_document(
@@ -653,12 +678,13 @@ async def _extract_document(
     from .xberg import aextract_document
 
     data = path.read_bytes()
-    total_pages = 0
+    probe = _PageProbe()
     # content_type_to_mode(content_type), not the *mode* argument: ingest_archive
     # always requests PAGINATED regardless of the archive's own content_type, and
     # an archive has no single page count to probe for.
     if content_type_to_mode(content_type) is ExtractMode.PAGINATED:
-        total_pages = await _known_page_count(data, path.name)
+        probe = await _probe_pages(data, path.name)
+    _announce_tesseract_ocr(probe, source_name, on_progress)
 
     page_seen = 0
 
@@ -667,7 +693,12 @@ async def _extract_document(
         page_seen += 1
         on_progress(
             EventType.EXTRACT,
-            ExtractEvent(file=source_name, page=page_seen, total_pages=total_pages),
+            ExtractEvent(
+                file=source_name,
+                page=page_seen,
+                total_pages=probe.pages,
+                ocr_backend=OcrBackendUsed.VISION,
+            ),
         )
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
@@ -731,9 +762,10 @@ async def _records_from_document(
     # One EXTRACT event per file so progress subscribers show "extracted N pages"
     # before embedding; result.pages, or the chunk count for non-paginated docs.
     page_count = len(doc.pages or []) or len(doc.chunks or [])
+    ran = ocr_backend if _ocr_page_count(doc) else OcrBackendUsed.NONE
     on_progress(
         EventType.EXTRACT,
-        ExtractEvent(file=source_name, page=page_count, total_pages=page_count),
+        ExtractEvent(file=source_name, page=page_count, total_pages=page_count, ocr_backend=ran),
     )
 
     # Content chunks and table serializations share one embed batch; the vector
