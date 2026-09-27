@@ -856,6 +856,45 @@ class TestBuildFleetWiring:
         monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
         assert WorkerRole.VISION in planning_mod._server_model_inputs()[1]
 
+    @pytest.mark.parametrize(
+        ("enable_ocr", "granted", "planned"),
+        [(False, False, False), (False, True, True), (True, False, True)],
+    )
+    def test_plan_all_launches_plans_vision_only_when_ocr_can_use_it(
+        self, monkeypatch, enable_ocr: bool, granted: bool, planned: bool
+    ) -> None:
+        monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+        monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
+        planned_roles: list[tuple[WorkerRole, ...] | None] = []
+
+        def _plan(roles, *_args) -> planning_mod.FleetPlan:
+            planned_roles.append(roles)
+            return planning_mod.FleetPlan(())
+
+        monkeypatch.setattr(planning_mod, "plan_launches", _plan)
+        monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
+        monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
+        if granted:
+            planning_mod.grant_vision_on_request()
+        try:
+            planning_mod.plan_all_launches()
+        finally:
+            planning_mod.revoke_vision_on_request()
+        (roles,) = planned_roles
+        assert roles is not None and WorkerRole.CHAT in roles  # the other roles plan either way
+        assert (WorkerRole.VISION in roles) is planned
+
+    def test_placement_inputs_keep_vision_with_ocr_off(self, monkeypatch) -> None:
+        # A saved placement edited while OCR is off must still carry the vision pin.
+        monkeypatch.setattr(
+            planning_mod, "_estimate_role", lambda role, ref, **_k: ModelPlacementInput(role, _GB)
+        )
+        monkeypatch.setattr(planning_mod, "_vision_mmproj", lambda _r: Path("/m/mmproj.gguf"))
+        monkeypatch.setattr(cfg, "reranker_model", "")
+        monkeypatch.setattr(cfg, "vision_model", "some/vision.gguf")
+        monkeypatch.setattr(cfg, "enable_ocr", False)
+        assert WorkerRole.VISION in planning_mod._server_model_inputs()[1]
+
     def test_estimate_role_vision_forwards_mmproj(self, tmp_path, monkeypatch) -> None:
         # gguf-parser counts the projector, so the estimator must receive its path.
         model = tmp_path / "v.gguf"

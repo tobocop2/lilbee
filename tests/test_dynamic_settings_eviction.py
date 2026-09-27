@@ -319,6 +319,20 @@ def test_chat_and_vision_model_change_reloads_those_roles(monkeypatch):
         _restore_services()
 
 
+def test_enable_ocr_change_reloads_the_vision_role():
+    """Turning OCR on or off re-plans the vision role without dropping the fleet."""
+    from lilbee.providers.roles import WorkerRole
+
+    provider = _install_recording_provider()
+    try:
+        apply_settings_update({"enable_ocr": False})
+        apply_settings_update({"enable_ocr": True})
+        assert provider.reloaded_roles == [WorkerRole.VISION, WorkerRole.VISION]
+        assert provider.dropped == 0
+    finally:
+        _restore_services()
+
+
 def test_sampling_param_change_does_not_touch_fleet():
     """Temperature, top_p, etc. are read per-call; no reload or drop is needed."""
     provider = _install_recording_provider()
