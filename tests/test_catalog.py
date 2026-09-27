@@ -22,6 +22,7 @@ from conftest import (
     PICKS_VISION,
     SAMPLE_PICKS,
     make_test_catalog_model,
+    stub_hf_listing,
 )
 from lilbee import catalog
 from lilbee.app.services import get_services
@@ -69,7 +70,7 @@ from lilbee.catalog.types import CatalogSize, CatalogSort, ModelTask
 from lilbee.core.config import cfg
 from lilbee.runtime.hardware import FitLevel, fit_for_size, make_fit_filter
 
-_EMPTY_HF_PAGE = HfPage(models=[], has_more=False)
+_EMPTY_HF_PAGE = HfPage(models=[])
 
 
 @pytest.fixture(autouse=True)
@@ -521,7 +522,9 @@ class TestFetchHfModels:
         mock_resp = httpx.Response(
             200,
             json=data,
-            headers={"Link": '<https://huggingface.co/api/models?limit=50&skip=50>; rel="next"'},
+            headers={
+                "Link": '<https://huggingface.co/api/models?limit=50&cursor=next>; rel="next"'
+            },
         )
         monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
         page = get_services().hf_client.fetch_models()
@@ -542,6 +545,82 @@ class TestFetchHfModels:
         page = get_services().hf_client.fetch_models()
         assert page.has_more is False
         assert page.models == []
+
+    def test_next_cursor_read_from_the_link_header(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The next page's cursor comes from the Link rel=next URL."""
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        mock_resp = httpx.Response(
+            200,
+            json=data,
+            headers={
+                "Link": '<https://huggingface.co/api/models?limit=2&cursor=abc123>; rel="next"'
+            },
+        )
+        monkeypatch.setattr(httpx, "get", lambda *a, **kw: mock_resp)
+        page = get_services().hf_client.fetch_models()
+        assert page.next_cursor == "abc123"
+        assert page.has_more is True
+
+    @pytest.mark.parametrize(
+        "link",
+        [
+            pytest.param(
+                '<https://huggingface.co:abc/api/models?cursor=x>; rel="next"', id="bad-port"
+            ),
+            pytest.param(
+                '<https://huggingface.co/api/models?cursor=>; rel="next"', id="empty-cursor"
+            ),
+            pytest.param('<https://huggingface.co/api/models?limit=2>; rel="next"', id="no-cursor"),
+        ],
+    )
+    def test_unusable_next_link_ends_the_listing(
+        self, monkeypatch: pytest.MonkeyPatch, link: str
+    ) -> None:
+        """A next link with no usable cursor is the last page, not an error or a loop."""
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        calls: list[object] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["params"].get("cursor"))
+            return httpx.Response(200, json=data, headers={"Link": link})
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        result = get_catalog(task=ModelTask.CHAT, featured=False, limit=5)
+        assert [m.hf_repo for m in result.models] == ["user/model"]
+        assert result.has_more is False
+        assert result.truncated is False
+        assert calls == [None]
+
+    def test_cursor_is_sent_and_skip_is_not(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A cursor pages the listing; the deprecated skip parameter is never sent."""
+        sent: list[httpx.QueryParams] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            sent.append(kwargs["params"])
+            return httpx.Response(200, json=[])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        get_services().hf_client.fetch_models()
+        get_services().hf_client.fetch_models(cursor="abc123")
+        assert [p.get("cursor") for p in sent] == [None, "abc123"]
+        assert all("skip" not in p for p in sent)
+
+    def test_cache_is_keyed_on_the_cursor(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Two cursors are two pages, so each fetches once and repeats hit the cache."""
+        calls: list[str | None] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            cursor = kwargs["params"].get("cursor")
+            calls.append(cursor)
+            return httpx.Response(200, json=[{"id": f"u/{cursor}", "siblings": []}])
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        client = get_services().hf_client
+        first = client.fetch_models(cursor="a")
+        second = client.fetch_models(cursor="b")
+        client.fetch_models(cursor="a")
+        assert [m.hf_repo for m in first.models + second.models] == ["u/a", "u/b"]
+        assert calls == ["a", "b"]
 
     def test_transport_error_warns_first_then_throttles(
         self, monkeypatch: pytest.MonkeyPatch
@@ -585,53 +664,35 @@ class TestGetCatalog:
         repos2 = {m.hf_repo for m in r2.models}
         assert repos1.isdisjoint(repos2)
 
-    @staticmethod
-    def _record_hf_pages(
-        monkeypatch: pytest.MonkeyPatch, rows: list[CatalogModel], *, has_more: bool = True
-    ) -> list[dict[str, Any]]:
-        """Stub the HF page with *rows*, honoring ``limit``, and record each fetch's arguments."""
-        calls: list[dict[str, Any]] = []
-
-        def _fetch(**kwargs: Any) -> HfPage:
-            calls.append(kwargs)
-            return HfPage(models=rows[: kwargs["limit"]], has_more=has_more)
-
-        monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
-        return calls
-
     def test_picks_count_against_the_page_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The first browse page holds the picks and only as many HF rows as fit after them."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
-        calls = self._record_hf_pages(monkeypatch, upstream)
+        calls = stub_hf_listing(monkeypatch, {"text-generation": upstream})
         result = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
         assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT] + [
             "test/Hf0",
             "test/Hf1",
         ]
-        assert [(c["offset"], c["limit"]) for c in calls] == [(0, 2)]
+        assert [c["cursor"] for c in calls] == [None]
+        assert result.has_more is True
 
     def test_second_page_starts_where_the_first_ended(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Page two shows the HF rows after the ones page one showed."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
-        calls = self._record_hf_pages(monkeypatch, upstream)
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
         first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
         second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
         assert [m.hf_repo for m in first.models if not m.featured] == ["test/Hf0", "test/Hf1"]
         assert [m.hf_repo for m in second.models] == [f"test/Hf{i}" for i in range(2, 10)]
-        first_page_hf_rows = 10 - len(PICKS_CHAT)
-        assert [(c["offset"], c["limit"]) for c in calls] == [
-            (0, first_page_hf_rows),
-            (0, first_page_hf_rows + 10),
-        ]
         assert second.total is None
-        assert second.has_more is True
+        assert second.has_more is False
 
     def test_browse_total_is_none_on_every_page(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """The browse total is unknown, so both pages report none and agree."""
         upstream = [make_test_catalog_model(name=f"Hf{i}") for i in range(10)]
-        self._record_hf_pages(monkeypatch, upstream)
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
         first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
         second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
         assert first.total is None
@@ -641,21 +702,23 @@ class TestGetCatalog:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """A window that ends inside the picks needs no HF request and still has more."""
-        calls = self._record_hf_pages(monkeypatch, [])
+        calls = stub_hf_listing(monkeypatch, {})
         result = get_catalog(task=ModelTask.CHAT, limit=3, offset=2)
         assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT[2:5]]
         assert calls == []
         assert result.has_more is True
 
-    def test_page_ending_at_the_last_pick_still_has_more(
+    def test_page_ending_at_the_last_pick_has_more_only_with_a_hf_match(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The HF rows start on the next page, so the client is told to ask for it."""
-        calls = self._record_hf_pages(monkeypatch, [])
-        result = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0)
-        assert len(result.models) == len(PICKS_CHAT)
-        assert calls == []
-        assert result.has_more is True
+        """At the end of the picks, has_more asks HuggingFace whether one more match exists."""
+        stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model(name="Hf0")]})
+        with_hf = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0)
+        stub_hf_listing(monkeypatch, {})
+        without_hf = get_catalog(task=ModelTask.CHAT, limit=len(PICKS_CHAT), offset=0)
+        assert len(with_hf.models) == len(PICKS_CHAT)
+        assert with_hf.has_more is True
+        assert without_hf.has_more is False
 
     def test_featured_listing_pages_past_the_first(self) -> None:
         """A featured-only listing pages through the picks with an exact has_more."""
@@ -666,9 +729,16 @@ class TestGetCatalog:
         assert [m.hf_repo for m in last.models] == [m.hf_repo for m in PICKS_CHAT[4:8]]
         assert last.has_more is False
 
+    def test_featured_listing_makes_no_hf_request(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """HuggingFace rows are never featured, so a featured-only page reads only the picks."""
+        calls = stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model()]})
+        result = get_catalog(task=ModelTask.CHAT, featured=True, limit=50)
+        assert [m.hf_repo for m in result.models] == [m.hf_repo for m in PICKS_CHAT]
+        assert calls == []
+
     def test_zero_width_window_returns_no_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A page of no rows reports no total and leaves the HF rows to the next page."""
-        calls = self._record_hf_pages(monkeypatch, [])
+        """A page of no rows reports no total and says whether any match exists."""
+        calls = stub_hf_listing(monkeypatch, {})
         result = get_catalog(task=ModelTask.CHAT, limit=0, offset=0)
         assert result.models == []
         assert result.total is None
@@ -772,26 +842,18 @@ class TestGetCatalog:
         assert [m.size_gb for m in result.models] == [4.6, 1.8]
         assert result.total == 3
 
-    def test_fit_filter_narrows_a_browse_page_without_ending_paging(
+    def test_fit_filter_fills_the_page_from_rows_past_the_window(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Browse pages are narrowed, not truncated.
-
-        Every fitting row of the upstream page survives, and ``has_more`` still
-        tells the client to ask for the next one.
-        """
+        """Rows that do not fit are skipped before paging, so later fitting rows fill the page."""
         upstream = [make_test_catalog_model(name=f"Big{i}", size_gb=80.0) for i in range(3)] + [
-            make_test_catalog_model(name=f"Small{i}", size_gb=2.0) for i in range(2)
+            make_test_catalog_model(name=f"Small{i}", size_gb=2.0) for i in range(3)
         ]
-        monkeypatch.setattr(
-            get_services().hf_client,
-            "fetch_models",
-            lambda **kw: HfPage(models=upstream, has_more=True),
-        )
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
         result = get_catalog(
             task=ModelTask.CHAT,
             featured=False,
-            limit=5,
+            limit=2,
             fit_filter=make_fit_filter(FitLevel.FITS, 8 * 1024**3),
         )
         assert [m.hf_repo for m in result.models] == ["test/Small0", "test/Small1"]
@@ -812,7 +874,7 @@ class TestGetCatalog:
         monkeypatch.setattr(
             get_services().hf_client,
             "fetch_models",
-            lambda **kw: HfPage(models=upstream, has_more=False),
+            lambda **kw: HfPage(models=upstream),
         )
         result = get_catalog(
             task=ModelTask.CHAT,
@@ -903,7 +965,7 @@ class TestGetCatalog:
         monkeypatch.setattr(
             get_services().hf_client,
             "fetch_models",
-            lambda **kw: HfPage(models=hf_models, has_more=False),
+            lambda **kw: HfPage(models=hf_models),
         )
         result = get_catalog()
         repos = [m.hf_repo for m in result.models]
@@ -926,22 +988,22 @@ class TestGetCatalog:
         monkeypatch.setattr(
             get_services().hf_client,
             "fetch_models",
-            lambda **kw: HfPage(models=hf_models, has_more=False),
+            lambda **kw: HfPage(models=hf_models),
         )
         result = get_catalog()
         dupes = [m for m in result.models if m.hf_repo == "mid/Mid-8B-GGUF"]
         assert len(dupes) == 1
         assert dupes[0].featured is True
 
-    def test_has_more_propagated_from_hf(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """CatalogResult.has_more reflects the HF API Link header."""
-        monkeypatch.setattr(
-            get_services().hf_client,
-            "fetch_models",
-            lambda **kw: HfPage(models=[], has_more=True),
-        )
-        result = get_catalog()
-        assert result.has_more is True
+    def test_has_more_false_when_hf_lists_more_rows_but_none_match(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A next HuggingFace page is not a next match: has_more follows the matches."""
+        upstream = [make_test_catalog_model(name=f"Hf{i}", size_gb=2.0) for i in range(300)]
+        stub_hf_listing(monkeypatch, {"text-generation": upstream})
+        result = get_catalog(task=ModelTask.CHAT, size=CatalogSize.HUGE, featured=False)
+        assert result.models == []
+        assert result.has_more is False
 
     def test_has_more_false_when_featured_only(self) -> None:
         """Featured-only requests have has_more=False (no HF fetch)."""
@@ -1650,7 +1712,7 @@ class TestTaskToPipeline:
         assert _query.task_to_pipeline(None) == (("text-generation",), None)
 
 
-class TestFetchHfPageMergesTags:
+class TestHfRowsMergeTags:
     @staticmethod
     def _row(repo: str, downloads: int) -> CatalogModel:
         return CatalogModel(
@@ -1664,121 +1726,195 @@ class TestFetchHfPageMergesTags:
             task="embedding",
         )
 
-    @staticmethod
-    def _fetch_by_tag(monkeypatch: pytest.MonkeyPatch, pages: dict[str, HfPage]) -> None:
-        def _fetch(**kwargs: Any) -> HfPage:
-            return pages.get(str(kwargs["pipeline_tag"]), _EMPTY_HF_PAGE)
-
-        monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
-
     def test_embedding_search_finds_a_repo_only_the_second_tag_lists(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """nomic-embed-text-v1.5 carries sentence-similarity, invisible to one tag."""
         nomic = self._row("nomic-ai/nomic-embed-text-v1.5-GGUF", 155590)
-        self._fetch_by_tag(
-            monkeypatch, {"sentence-similarity": HfPage(models=[nomic], has_more=False)}
-        )
+        stub_hf_listing(monkeypatch, {"sentence-similarity": [nomic]})
         result = get_catalog(task=ModelTask.EMBEDDING, search="nomic-embed-text")
         assert "nomic-ai/nomic-embed-text-v1.5-GGUF" in [m.hf_repo for m in result.models]
 
-    def test_merged_page_orders_by_downloads_across_tags(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        self._fetch_by_tag(
+    def test_rows_order_by_downloads_across_tags(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_hf_listing(
             monkeypatch,
             {
-                "feature-extraction": HfPage(models=[self._row("a/low-GGUF", 100)], has_more=False),
-                "sentence-similarity": HfPage(
-                    models=[self._row("b/high-GGUF", 9000)], has_more=False
-                ),
+                "feature-extraction": [self._row("a/low-GGUF", 100)],
+                "sentence-similarity": [self._row("b/high-GGUF", 9000)],
             },
         )
-        window = _models.PageWindow(rest_offset=0, rest_limit=10)
-        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
-        assert [m.hf_repo for m in page.models] == ["b/high-GGUF", "a/low-GGUF"]
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
+        assert [m.hf_repo for m in rows] == ["b/high-GGUF", "a/low-GGUF"]
 
-    def test_merged_page_dedupes_a_repo_listed_under_both_tags(
+    def test_rows_dedupe_a_repo_listed_under_both_tags(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         dupe = self._row("a/dupe-GGUF", 500)
-        self._fetch_by_tag(
-            monkeypatch,
-            {
-                "feature-extraction": HfPage(models=[dupe], has_more=False),
-                "sentence-similarity": HfPage(models=[dupe], has_more=False),
-            },
-        )
-        window = _models.PageWindow(rest_offset=0, rest_limit=10)
-        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
-        assert [m.hf_repo for m in page.models] == ["a/dupe-GGUF"]
+        stub_hf_listing(monkeypatch, {"feature-extraction": [dupe], "sentence-similarity": [dupe]})
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
+        assert [m.hf_repo for m in rows] == ["a/dupe-GGUF"]
 
-    def test_merged_page_caps_at_the_window_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        first = [self._row(f"a/m{i}-GGUF", 100 * (i + 1)) for i in range(3)]
-        second = [self._row(f"b/n{i}-GGUF", 1000 * (i + 1)) for i in range(3)]
-        self._fetch_by_tag(
-            monkeypatch,
-            {
-                "feature-extraction": HfPage(models=first, has_more=False),
-                "sentence-similarity": HfPage(models=second, has_more=False),
-            },
-        )
-        window = _models.PageWindow(rest_offset=0, rest_limit=2)
-        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
-        assert [m.downloads for m in page.models] == [3000, 2000]
-
-    def test_merged_has_more_when_either_page_has_more(
+    def test_rows_follow_cursors_across_pages_of_both_tags(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        self._fetch_by_tag(
-            monkeypatch,
-            {
-                "feature-extraction": HfPage(models=[], has_more=False),
-                "sentence-similarity": HfPage(models=[], has_more=True),
-            },
+        """Every row of both tags arrives, interleaved by downloads, across page boundaries."""
+        size = _query._HF_SCAN_PAGE_SIZE
+        tag_a = [self._row(f"a/r{i:04d}-GGUF", 10 * size - 2 * i) for i in range(size + 5)]
+        tag_b = [self._row(f"b/s{i:04d}-GGUF", 10 * size - 2 * i - 1) for i in range(size + 5)]
+        calls = stub_hf_listing(
+            monkeypatch, {"feature-extraction": tag_a, "sentence-similarity": tag_b}
         )
-        window = _models.PageWindow(rest_offset=0, rest_limit=10)
-        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
-        assert page.has_more is True
-
-    def test_merged_has_more_when_buffered_rows_exceed_the_window(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """40 merged rows with 20 shown still have a next page."""
-        first = [self._row(f"a/m{i:02d}-GGUF", 100 + i) for i in range(20)]
-        second = [self._row(f"b/n{i:02d}-GGUF", 1000 + i) for i in range(20)]
-        self._fetch_by_tag(
-            monkeypatch,
-            {
-                "feature-extraction": HfPage(models=first, has_more=False),
-                "sentence-similarity": HfPage(models=second, has_more=False),
-            },
-        )
-        window = _models.PageWindow(rest_offset=0, rest_limit=20)
-        page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
-        assert len(page.models) == 20
-        assert page.has_more is True
-
-    def test_two_windows_show_every_merged_row(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A per-shard skip drops the rows the first merge capped away."""
-        tag_a = [self._row(f"a/r{i:02d}-GGUF", 1000 - i) for i in range(30)]
-        tag_b = [self._row(f"b/s{i:02d}-GGUF", 2000 - i) for i in range(30)]
-        shards = {"feature-extraction": tag_a, "sentence-similarity": tag_b}
-
-        def _fetch(**kwargs: Any) -> HfPage:
-            shard = shards[str(kwargs["pipeline_tag"])]
-            start = int(kwargs.get("offset") or 0)
-            stop = start + int(kwargs["limit"])
-            return HfPage(models=list(shard[start:stop]), has_more=stop < len(shard))
-
-        monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
-        shown: list[str] = []
-        for skip in (0, 20):
-            window = _models.PageWindow(rest_offset=skip, rest_limit=20)
-            page = _query._fetch_hf_page(ModelTask.EMBEDDING, "", window)
-            shown.extend(m.hf_repo for m in page.models)
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
         by_downloads = sorted(tag_a + tag_b, key=lambda m: m.downloads, reverse=True)
-        assert shown == [m.hf_repo for m in by_downloads[:40]]
+        assert [m.hf_repo for m in rows] == [m.hf_repo for m in by_downloads]
+        assert sorted(str(c["cursor"]) for c in calls) == [str(size), str(size), "None", "None"]
+
+    def test_rows_stop_at_the_scan_bound(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A tag is read for at most the page cap, so an endless listing cannot spin."""
+        size = _query._HF_SCAN_PAGE_SIZE
+        pages = _query._HF_SCAN_MAX_PAGES
+        endless = [make_test_catalog_model(name=f"Hf{i}") for i in range(size * (pages + 1))]
+        calls = stub_hf_listing(monkeypatch, {"text-generation": endless})
+        scan = _query._HfScan(ModelTask.CHAT, "")
+        rows = list(scan.rows())
+        assert len(rows) == size * pages
+        assert len(calls) == pages
+        assert scan.truncated is True
+
+    @pytest.mark.parametrize(
+        ("past_bound", "truncated"),
+        [
+            pytest.param(-1, False, id="ends-before-the-bound"),
+            pytest.param(0, False, id="ends-exactly-at-the-bound"),
+            pytest.param(1, True, id="one-row-past-the-bound"),
+        ],
+    )
+    def test_scan_is_truncated_only_with_rows_past_the_bound(
+        self, monkeypatch: pytest.MonkeyPatch, past_bound: int, truncated: bool
+    ) -> None:
+        bound = _query._HF_SCAN_PAGE_SIZE * _query._HF_SCAN_MAX_PAGES
+        rows = [make_test_catalog_model(name=f"Hf{i}") for i in range(bound + past_bound)]
+        stub_hf_listing(monkeypatch, {"text-generation": rows})
+        scan = _query._HfScan(ModelTask.CHAT, "")
+        assert len(list(scan.rows())) == min(len(rows), bound)
+        assert scan.truncated is truncated
+
+
+class TestCatalogFiltersBeforePaging:
+    """A filtered listing pages over matching rows, not over windows of the raw listing."""
+
+    @staticmethod
+    def _sparse_listing() -> list[CatalogModel]:
+        """600 rows where every 50th row is a large model: 12 matches for size=large."""
+        rows = []
+        for i in range(600):
+            params = 30_000_000_000 if i % 50 == 49 else 1_000_000_000
+            rows.append(replace(make_test_catalog_model(name=f"Hf{i:03d}"), params=params))
+        return rows
+
+    def test_sparse_filter_returns_full_pages(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(
+            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=0
+        )
+        assert [m.hf_repo for m in page.models] == [
+            f"test/Hf{i:03d}" for i in (49, 99, 149, 199, 249)
+        ]
+        assert page.has_more is True
+
+    def test_offset_counts_matching_rows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(
+            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=5
+        )
+        assert [m.hf_repo for m in page.models] == [
+            f"test/Hf{i:03d}" for i in (299, 349, 399, 449, 499)
+        ]
+        assert page.has_more is True
+
+    def test_has_more_false_on_the_last_matching_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(
+            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=10
+        )
+        assert [m.hf_repo for m in page.models] == ["test/Hf549", "test/Hf599"]
+        assert page.has_more is False
+
+    def test_has_more_false_on_an_exactly_full_last_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(
+            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=6, offset=6
+        )
+        assert len(page.models) == 6
+        assert page.has_more is False
+
+    def test_has_more_false_on_an_empty_result(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(task=ModelTask.CHAT, size=CatalogSize.HUGE, featured=False, limit=5)
+        assert page.models == []
+        assert page.has_more is False
+
+    def test_paging_a_sparse_filter_takes_one_request_per_page(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A client paging until the listing ends makes one request per page of matches."""
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        shown: list[str] = []
+        requests = 0
+        for offset in range(0, 600, 5):
+            page = get_catalog(
+                task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=offset
+            )
+            requests += 1
+            shown.extend(m.hf_repo for m in page.models)
+            if not page.has_more:
+                break
+        assert requests == 3
+        assert shown == [f"test/Hf{i:03d}" for i in range(49, 600, 50)]
+
+    def test_listing_cut_short_by_the_scan_bound_says_so(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Matches past the scan bound are unreachable, so the page reports truncated."""
+        bound = _query._HF_SCAN_PAGE_SIZE * _query._HF_SCAN_MAX_PAGES
+        rows = [
+            replace(
+                make_test_catalog_model(name=f"Hf{i:05d}"),
+                params=30_000_000_000 if i in (bound - 1, bound + 1) else 1_000_000_000,
+            )
+            for i in range(bound + 10)
+        ]
+        stub_hf_listing(monkeypatch, {"text-generation": rows})
+        page = get_catalog(task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5)
+        assert [m.hf_repo for m in page.models] == [f"test/Hf{bound - 1:05d}"]
+        assert page.has_more is False
+        assert page.truncated is True
+
+    def test_listing_that_ends_is_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(
+            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=10
+        )
+        assert page.has_more is False
+        assert page.truncated is False
+
+    def test_unfiltered_listing_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """With no filter the pages are the picks then the HuggingFace rows in order."""
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        first = get_catalog(task=ModelTask.CHAT, limit=10, offset=0)
+        second = get_catalog(task=ModelTask.CHAT, limit=10, offset=10)
+        hf_first = 10 - len(PICKS_CHAT)
+        assert [m.hf_repo for m in first.models] == [m.hf_repo for m in PICKS_CHAT] + [
+            f"test/Hf{i:03d}" for i in range(hf_first)
+        ]
+        assert [m.hf_repo for m in second.models] == [
+            f"test/Hf{i:03d}" for i in range(hf_first, hf_first + 10)
+        ]
+        assert second.has_more is True
 
 
 class TestDedupeModels:

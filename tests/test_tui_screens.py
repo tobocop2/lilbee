@@ -5777,13 +5777,19 @@ class TestCatalogSearchFetchesAWholeResultSet:
                 with patch(
                     "lilbee.cli.tui.screens.catalog.get_catalog",
                     return_value=CatalogResult(
-                        total=0, limit=_HF_SEARCH_LIMIT, offset=0, models=[], has_more=True
+                        total=0,
+                        limit=_HF_SEARCH_LIMIT,
+                        offset=0,
+                        models=[],
+                        has_more=True,
+                        truncated=True,
                     ),
                 ) as get:
                     screen._fetch_hf_search("qwen3", ModelTask.CHAT, 0)
                     await screen.workers.wait_for_complete()
                 assert get.call_args.kwargs["limit"] == _HF_SEARCH_LIMIT
                 assert get.call_args.kwargs["search"] == "qwen3"
+                assert screen._search_truncated is True
 
     async def test_paging_a_search_advances_the_search_not_the_browse_offset(self):
         """Scrolling a filtered grid must page the query the user typed.
@@ -5868,6 +5874,18 @@ class TestCatalogSearchFetchesAWholeResultSet:
                     screen._apply_worker_result(_WORKER_FETCH_SEARCH, [])
 
                 fetch.assert_called_once_with("qwen3", ModelTask.CHAT, 0)
+
+    async def test_a_new_term_clears_the_previous_terms_cut_short_flag(self):
+        app = CatalogTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            with _patch_catalog()[0], _patch_catalog()[1], _patch_catalog()[2]:
+                screen = await self._screen(app, pilot)
+                screen._searched_query = "qwen"
+                screen._search_truncated = True
+                with patch.object(screen, "_fetch_hf_search") as fetch:
+                    screen._trigger_remote_search("llama")
+                fetch.assert_called_once_with("llama", ModelTask.CHAT, 0)
+                assert screen._search_truncated is False
 
     async def test_a_failed_search_still_resumes_the_term_typed_during_it(self):
         """A search that errors or is cancelled releases the latch too.
@@ -6868,6 +6886,12 @@ async def test_catalog_sort_label_covers_every_pagination_state():
             text = str(label._Static__content)  # type: ignore[attr-defined]
             assert "loading" not in text
             assert "for more" not in text.lower()
+            assert "cut short" not in text
+
+            # Stopped at the scan bound: the count says the listing is cut short.
+            screen._hf_truncated_by_task[ModelTask.CHAT] = True
+            screen._update_sort_label()
+            assert "cut short" in str(label._Static__content)  # type: ignore[attr-defined]
 
 
 async def test_catalog_get_search_text_returns_empty_when_input_missing():
@@ -14480,6 +14504,7 @@ async def test_catalog_clearing_the_search_restarts_the_result_set():
             screen._searched_query = "qwen3"
             screen._search_offset = 100
             screen._search_has_more = True
+            screen._search_truncated = True
 
             with patch.object(screen, "set_timer", side_effect=lambda *_: MagicMock()):
                 screen._on_search_changed(SimpleNamespace())
@@ -14487,6 +14512,7 @@ async def test_catalog_clearing_the_search_restarts_the_result_set():
             assert screen._searched_query == ""
             assert screen._search_offset == 0
             assert screen._search_has_more is False
+            assert screen._search_truncated is False
 
 
 async def test_catalog_search_submit_never_installs_a_model():
@@ -14808,6 +14834,46 @@ async def test_catalog_get_highlighted_model_name_model_grid_branch():
             grid.focus()
             await _pilot.pause()
             assert screen._get_highlighted_model_name() == "ref-2"
+
+
+@pytest.mark.parametrize(
+    ("search", "truncated", "cut_short"),
+    [("", True, True), ("", False, False), ("qwen", True, True), ("qwen", False, False)],
+)
+def test_catalog_grid_scroll_hint_says_when_the_listing_was_cut_short(
+    search: str, truncated: bool, cut_short: bool
+):
+    """The end-of-listing hint names a truncated scan for browse and search alike."""
+    from lilbee.cli.tui import messages as msg_module
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    screen._active_tab_id_cache = "chat"
+    screen._get_search_text = lambda: search  # type: ignore[method-assign]
+    screen._loading_more = False
+    screen._hf_has_more_by_task[ModelTask.CHAT] = False
+    screen._hf_truncated_by_task[ModelTask.CHAT] = truncated and not search
+    screen._search_truncated = truncated and bool(search)
+    text = screen._grid_scroll_hint_text(hf_count=12)
+    expected = (
+        msg_module.CATALOG_GRID_CUT_SHORT if cut_short else msg_module.CATALOG_GRID_ALL_LOADED
+    )
+    assert text == expected.format(count=12)
+
+
+def test_catalog_browse_page_records_whether_the_scan_was_cut_short():
+    """Each task tab keeps its own truncated flag from the page it fetched."""
+    from unittest.mock import patch
+
+    from lilbee.catalog.models import CatalogResult
+    from lilbee.cli.tui.screens.catalog import CatalogScreen
+
+    screen = CatalogScreen()
+    page = CatalogResult(total=None, limit=24, offset=0, models=[], truncated=True)
+    with patch("lilbee.cli.tui.screens.catalog.get_catalog", return_value=page):
+        screen._fetch_hf_page_for_task(ModelTask.EMBEDDING)
+    assert screen._hf_truncated_by_task[ModelTask.EMBEDDING] is True
+    assert screen._hf_truncated_by_task[ModelTask.CHAT] is False
 
 
 def test_catalog_grid_scroll_hint_text_keep_scrolling_branch():

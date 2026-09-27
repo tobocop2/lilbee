@@ -306,6 +306,7 @@ class CatalogScreen(Screen[None]):
         # that task's next page; sibling tabs stay untouched.
         self._hf_offset_by_task: dict[ModelTask, int] = dict.fromkeys(_ALL_TASKS, 0)
         self._hf_has_more_by_task: dict[ModelTask, bool] = dict.fromkeys(_ALL_TASKS, True)
+        self._hf_truncated_by_task: dict[ModelTask, bool] = dict.fromkeys(_ALL_TASKS, False)
         self._hf_fetched_tasks: set[ModelTask] = set()
         self._rows: list[LocalCatalogRow] = []
         self._sort_column: str = "Name"
@@ -324,6 +325,7 @@ class CatalogScreen(Screen[None]):
         self._searched_query: str = ""
         self._search_offset: int = 0
         self._search_has_more: bool = False
+        self._search_truncated: bool = False
         self._frontier_rows: list[FrontierCatalogRow] = []
         # Bumped on every worker callback so the _all_*_rows caches
         # invalidate even when collection lengths happen to coincide.
@@ -651,12 +653,20 @@ class CatalogScreen(Screen[None]):
         active search this is the search's own flag, so the hint describes the
         result set on screen.
         """
+        return self._active_listing_flag(self._search_has_more, self._hf_has_more_by_task)
+
+    def _active_task_truncated(self) -> bool:
+        """True iff the active task tab's listing stopped at the scan bound with rows unread."""
+        return self._active_listing_flag(self._search_truncated, self._hf_truncated_by_task)
+
+    def _active_listing_flag(self, search_flag: bool, by_task: dict[ModelTask, bool]) -> bool:
+        """The search's flag under a search, else the active task's; False off a task tab."""
         task = self._active_task()
         if task is None:
             return False
         if self._get_search_text():
-            return self._search_has_more
-        return self._hf_has_more_by_task.get(task, False)
+            return search_flag
+        return by_task.get(task, False)
 
     def _hf_fetched_any(self) -> bool:
         """True iff any task has had its first HF page fetched.
@@ -757,6 +767,7 @@ class CatalogScreen(Screen[None]):
             self._searched_query = ""
             self._search_offset = 0
             self._search_has_more = False
+            self._search_truncated = False
             return
         self._remote_search_timer = self.set_timer(
             self._REMOTE_SEARCH_DEBOUNCE_SECONDS,
@@ -827,6 +838,7 @@ class CatalogScreen(Screen[None]):
             self._searched_query = query
             self._search_offset = 0
             self._search_has_more = False
+            self._search_truncated = False
         self._search_in_flight = True
         self._update_sort_label()
         # The toolbar spinner carries this in both views. No toast: typing
@@ -864,6 +876,7 @@ class CatalogScreen(Screen[None]):
             offset=offset,
         )
         self._hf_has_more_by_task[task] = result.has_more
+        self._hf_truncated_by_task[task] = result.truncated
         existing_repos = {m.hf_repo for m in self._hf_models}
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
@@ -936,6 +949,7 @@ class CatalogScreen(Screen[None]):
             offset=offset,
         )
         self._search_has_more = result.has_more
+        self._search_truncated = result.truncated
         return [m for m in result.models if not m.featured and m.hf_repo not in existing_repos]
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
@@ -1525,6 +1539,8 @@ class CatalogScreen(Screen[None]):
             return msg.CATALOG_GRID_LOADING_MORE.format(frame=SPINNER_FRAMES[self._spinner_frame])
         if self._active_task_has_more():
             return msg.CATALOG_GRID_LOAD_MORE.format(count=hf_count)
+        if self._active_task_truncated():
+            return msg.CATALOG_GRID_CUT_SHORT.format(count=hf_count)
         return msg.CATALOG_GRID_ALL_LOADED.format(count=hf_count)
 
     def _mount_grid_ctas(self, *, hf_count: int) -> None:
@@ -1935,8 +1951,10 @@ class CatalogScreen(Screen[None]):
             count = f"{n_total} models · loading more…"
         elif self._active_task_has_more():
             count = f"{n_total} models · press [b]n[/b] for more"
+        elif self._active_task_truncated():
+            count = msg.CATALOG_LIST_CUT_SHORT.format(count=n_total)
         else:
-            count = f"{n_total} models"
+            count = msg.CATALOG_LIST_COUNT.format(count=n_total)
         hint = msg.CATALOG_SEARCHING_HF if self._search_in_flight else msg.CATALOG_VIEW_TOGGLE_LIST
         label.update(f"Sort: {self._sort_column} ({direction})  |  {count}  |  {hint}")
 

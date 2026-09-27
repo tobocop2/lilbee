@@ -155,13 +155,18 @@ class CatalogModel:
 
 @dataclass(frozen=True)
 class CatalogResult:
-    """Paginated catalog result."""
+    """Paginated catalog result.
+
+    ``truncated`` is True when the HuggingFace scan stopped at its bound with
+    rows left unread, so matches past them are unreachable at any offset.
+    """
 
     total: int | None
     limit: int
     offset: int
     models: list[CatalogModel]
     has_more: bool = False
+    truncated: bool = False
 
 
 @dataclass(frozen=True)
@@ -180,10 +185,15 @@ def page_window(leading_count: int, offset: int, limit: int) -> PageWindow:
 
 @dataclass(frozen=True)
 class HfPage:
-    """One page of HuggingFace API results."""
+    """One page of HuggingFace API results and the cursor of the page after it."""
 
     models: list[CatalogModel]
-    has_more: bool
+    next_cursor: str | None = None
+
+    @property
+    def has_more(self) -> bool:
+        """True when HuggingFace lists a next page."""
+        return self.next_cursor is not None
 
 
 def dedupe_models(models: list[CatalogModel]) -> list[CatalogModel]:

@@ -907,6 +907,30 @@ def make_test_catalog_model(
     )
 
 
+def stub_hf_listing(
+    monkeypatch: pytest.MonkeyPatch, listings: dict[str, list[CatalogModel]]
+) -> list[dict[str, object]]:
+    """Serve *listings* (pipeline tag to rows, most downloaded first) in cursor pages.
+
+    Honors ``limit`` and ``cursor`` like the HuggingFace listing API and returns
+    the list of recorded fetch arguments.
+    """
+    from lilbee.app.services import get_services
+    from lilbee.catalog.models import HfPage
+
+    calls: list[dict[str, object]] = []
+
+    def _fetch(**kwargs: object) -> HfPage:
+        calls.append(kwargs)
+        rows = listings.get(str(kwargs["pipeline_tag"]), [])
+        start = int(str(kwargs.get("cursor") or 0))
+        stop = start + int(str(kwargs["limit"]))
+        return HfPage(models=rows[start:stop], next_cursor=str(stop) if stop < len(rows) else None)
+
+    monkeypatch.setattr(get_services().hf_client, "fetch_models", _fetch)
+    return calls
+
+
 # A deterministic stand-in for the live HuggingFace picks. Unit tests must not
 # depend on what is trending, and must not reach the network at all, so the
 # autouse fixture below seeds these instead. Chat entries cover all four
@@ -1040,7 +1064,7 @@ def _hermetic_hf_client(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     def _fetch(_self: object, **kwargs: object) -> HfPage:
         search = str(kwargs.get("search") or "").lower()
         hit = "qwen" in search
-        return HfPage(models=[_STUB_HF_SEARCH_HIT] if hit else [], has_more=False)
+        return HfPage(models=[_STUB_HF_SEARCH_HIT] if hit else [])
 
     # On the class, not on get_services().hf_client: this runs for every test in
     # the suite, and building the services container each time is not free.

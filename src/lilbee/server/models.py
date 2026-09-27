@@ -447,8 +447,9 @@ class CatalogEntryResponse(BaseModel):
 class ModelsCatalogResponse(BaseModel):
     """Response for GET /api/models/catalog.
 
-    ``next_offset`` names the offset to request next, None on the last page, so
-    a short filtered page never strands the client.
+    Filters apply before paging. ``next_offset`` names the offset to request
+    next, None on the last page. ``truncated`` is True when the HuggingFace scan
+    stopped at its bound with rows left unread, so the listing is cut short.
     """
 
     total: int | None
@@ -457,6 +458,7 @@ class ModelsCatalogResponse(BaseModel):
     models: list[CatalogEntryResponse]
     has_more: bool = False
     next_offset: int | None
+    truncated: bool = False
 
 
 class InstalledModelEntry(BaseModel):
