@@ -56,6 +56,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remember_from_input,
     unregister_added_roots,
 )
+from lilbee.cli.tui.screens.profile_dialogs import start_profile_switch
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
@@ -1455,6 +1456,13 @@ class ChatScreen(Screen[None]):
 
     def _cmd_settings(self, _args: str) -> None:
         self.app.switch_view("Settings")
+
+    def _cmd_profile(self, args: str) -> None:
+        name = args.strip()
+        if not name:
+            self.app.open_profile_tab()
+            return
+        start_profile_switch(self.app, self, name, on_close=lambda: None)
 
     def _cmd_remember(self, args: str) -> None:
         """Run /remember in a worker so embedding the text never blocks the UI."""

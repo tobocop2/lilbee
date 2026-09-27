@@ -1008,6 +1008,16 @@ class LilbeeApp(App[None]):
 
         self.call_later(_start)
 
+    def open_profile_tab(self) -> None:
+        """Switch to Settings with the Profile tab active and its dropdown focused."""
+        from lilbee.cli.tui.screens.settings import SettingsScreen
+
+        self.switch_view("Settings")
+        screen = self.screen
+        # switch_view drops the request while an earlier switch is still settling
+        if isinstance(screen, SettingsScreen):
+            screen.call_after_refresh(screen.show_profile_tab)
+
     def start_rebuild(self) -> None:
         """Queue a full reindex on the chat screen's task bar without leaving this view."""
         chat = self.chat_screen()

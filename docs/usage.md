@@ -210,6 +210,7 @@ tab-complete; `/help` opens the same catalog live.
 | `/memories` | | Browse, delete, or share saved memories |
 | `/settings` | | View or change settings |
 | `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
+| `/profile [name]` | | Switch the settings profile. No args opens the Profile tab in Settings |
 | `/theme <name>` | | Switch theme |
 | `/status` | | Show indexed documents and config |
 | `/login <token>` | | Log in to HuggingFace |
@@ -930,6 +931,12 @@ lilbee memory remove <id>                        # delete a memory by id
 
 A profile is a named set of ingest, OCR, chunking and retrieval settings.
 Every write goes to all projects unless you pass `--target project`.
+
+In the TUI, Settings opens on the Profile tab. It lists your values
+against the profile's with the reindex cost of each, and saves, updates
+or discards them. Picking another profile shows what changes before
+anything is applied. `/profile <name>` does the same from chat, and
+`/profile` alone opens the tab.
 
 ```bash
 lilbee profile show                           # this project's profile

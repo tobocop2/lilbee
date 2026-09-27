@@ -19,6 +19,9 @@ from textual.widgets import Checkbox, DataTable, Footer, Input, Select, Static, 
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app import profiles
+from lilbee.cli.tui.app import LilbeeApp
+from lilbee.cli.tui.command_registry import get_command
+from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.screens.profile_dialogs import (
     ApplyProfileDialog,
     SaveProfileDialog,
@@ -26,14 +29,18 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 )
 from lilbee.cli.tui.screens.profile_tab import ProfileTab
 from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
+from lilbee.cli.tui.widgets.autocomplete import get_completions
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
+from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.profile_line import ProfileLinePill
+from lilbee.cli.tui.widgets.slash_command_catalog import CATALOG_GROUPS
+from lilbee.cli.tui.widgets.suggester import SlashSuggester
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
 from tests._async_wait import wait_until
-from tests._lilbee_app_test_host import LilbeeAppHost
+from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
 
@@ -696,3 +703,97 @@ async def test_picking_the_blank_entry_shows_the_active_profile_again() -> None:
         select.value = Select.NULL
         assert await _until(pilot, lambda: select.value == "legal-discovery")
         assert app.screen is screen
+
+
+@pytest.fixture
+def chat_app():
+    """The real app with a ready chat screen and no model scan."""
+    with (
+        mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._embedding_ready", return_value=True),
+        mock.patch.object(ModelBar, "_scan_models"),
+    ):
+        yield LilbeeApp()
+
+
+async def test_slash_profile_alone_opens_the_profile_tab(chat_app) -> None:
+    async with chat_app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(chat_app, pilot)
+        chat.run_command("/profile")
+        assert await _until(pilot, lambda: isinstance(chat_app.screen, SettingsScreen))
+        screen = await _loaded(chat_app, pilot, "Default")
+        tabs = screen.query_one("#settings-tabs", TabbedContent)
+        assert tabs.active == PROFILE_PANE_ID
+        select = screen.query_one("#profile-select", Select)
+        assert await _until(pilot, lambda: select.has_focus)
+
+
+async def test_slash_profile_from_another_tab_returns_to_the_profile_tab(chat_app) -> None:
+    async with chat_app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(chat_app, pilot)
+        chat_app.switch_view("Settings")
+        assert await _until(pilot, lambda: isinstance(chat_app.screen, SettingsScreen))
+        screen = await _loaded(chat_app, pilot, "Default")
+        tabs = screen.query_one("#settings-tabs", TabbedContent)
+        tabs.active = "settings-tab-ingest"
+        await _until(pilot, lambda: tabs.active == "settings-tab-ingest")
+        chat_app.switch_view("Chat")
+        # switch_view drops a request while an earlier switch is still settling
+        assert await _until(pilot, lambda: chat_app.screen is chat and not chat_app._switching)
+        chat.run_command("/profile")
+        assert await _until(pilot, lambda: tabs.active == PROFILE_PANE_ID)
+
+
+async def test_slash_profile_with_a_name_asks_then_applies(chat_app, sources) -> None:
+    async with chat_app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(chat_app, pilot)
+        chat.run_command("/profile research papers")
+        await _dialog(chat_app, pilot, ApplyProfileDialog)
+        await _press(pilot, chat_app.screen.query_one("#apply-apply", ConfirmPill))
+        assert await _until(pilot, lambda: chat_app.screen is chat)
+        assert await _until(pilot, lambda: cfg.table_extraction is True)
+    assert profiles.active(ProfileStore()).name == "Research papers"
+
+
+async def test_slash_profile_with_an_unknown_name_toasts(chat_app) -> None:
+    async with chat_app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(chat_app, pilot)
+        chat.run_command("/profile nope")
+        assert await _until(
+            pilot,
+            lambda: any("No profile named 'nope'" in n.message for n in chat_app._notifications),
+        )
+        assert chat_app.screen is chat
+
+
+def test_profile_completion_lists_usable_names_only() -> None:
+    _write_global("mine", "[values]\nchunk_size = 900\n")
+    _write_global("busted", "not toml [")
+    options = get_completions("/profile ")
+    assert "Research papers" in options
+    assert "mine" in options
+    assert "busted" not in options
+    assert get_completions("/profile Scan") == ["Scanned archive"]
+
+
+async def test_profile_suggestion_completes_a_name_inline() -> None:
+    assert await SlashSuggester(use_cache=False).get_suggestion("/profile Sca") == (
+        "/profile Scanned archive"
+    )
+
+
+async def test_palette_choose_profile_opens_the_profile_tab(chat_app) -> None:
+    async with chat_app.run_test(size=(120, 40)) as pilot:
+        chat = await await_chat(chat_app, pilot)
+        provider = LilbeeCommandProvider(chat, match_style=None)
+        entry = next(c for c in provider._get_commands() if c[0] == "Choose profile")
+        entry[2]()
+        assert await _until(pilot, lambda: isinstance(chat_app.screen, SettingsScreen))
+        screen = await _loaded(chat_app, pilot, "Default")
+        select = screen.query_one("#profile-select", Select)
+        assert await _until(pilot, lambda: select.has_focus)
+
+
+def test_profile_is_listed_in_the_help_catalog() -> None:
+    names = [name for group in CATALOG_GROUPS for name in group.members]
+    assert "/profile" in names
+    assert get_command("/profile").args_hint == "[name]"
