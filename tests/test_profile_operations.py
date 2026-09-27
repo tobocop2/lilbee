@@ -382,6 +382,23 @@ def test_share_writes_a_clean_community_file(store, tmp_path):
     assert again.path == location.path
 
 
+def test_share_refuses_an_existing_file_exactly_as_export_does(store, tmp_path):
+    _write(
+        _global_dir(),
+        "mine",
+        '[profile]\nname = "Mine"\nauthors = [{ name = "Jane Doe", github = "janedoe" }]\n'
+        'tested_on = "100 filings"\n[values]\nchunk_size = 900\n',
+    )
+    dest = tmp_path / "mine.toml"
+    dest.write_text("taken", encoding="utf-8")
+    with pytest.raises(ValueError) as export_exc:
+        profiles.export(store, "mine", dest)
+    with pytest.raises(ValueError) as share_exc:
+        profiles.share(store, "mine", dest)
+    assert str(export_exc.value) == str(share_exc.value) == f"{dest} already exists"
+    assert dest.read_text(encoding="utf-8") == "taken"
+
+
 def test_share_fills_missing_authors_and_tested_on(store, tmp_path):
     _write(_global_dir(), "mine", '[profile]\nname = "Mine"\n[values]\nchunk_size = 900\n')
     assert profiles.share_missing(store, "mine") == ("authors", "tested_on")
