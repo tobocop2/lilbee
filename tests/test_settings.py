@@ -1282,10 +1282,48 @@ class TestResetRemovesTheUserValue:
         assert cfg.embedding_model == builtin_value("embedding_model")
         assert "embedding_model" not in settings.load(root)
 
+    def test_reset_validates_the_profile_value_it_falls_back_to(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config(
+            "chunk_size = 2048\nchunk_overlap = 1000\n[profile.values]\nchunk_size = 1500\n"
+        )
+        cfg.chunk_size = 2048
+        cfg.chunk_overlap = 1000
+        appset.reset_settings(["chunk_size"])
+        assert (cfg.chunk_size, cfg.chunk_overlap) == (1500, 1000)
+        assert "chunk_size" not in settings.load(root)
+
+    def test_reset_refuses_an_invalid_profile_value_and_changes_nothing(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("temperature = 0.3\n[profile.values]\ntemperature = -5.0\n")
+        cfg.temperature = 0.3
+        with pytest.raises(
+            ValueError, match=r"Cannot reset 'temperature': its profile value -5\.0 is invalid"
+        ):
+            appset.reset_settings(["temperature"])
+        assert cfg.temperature == 0.3
+        assert settings.load(root)["temperature"] == 0.3
+
+    def test_reset_with_duplicate_keys_removes_the_key_once(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("top_k = 7\nseed = 3\n")
+        cfg.top_k = 7
+        assert appset.reset_settings(["top_k", "top_k"]).updated == ["top_k"]
+        assert settings.load(root) == {"seed": 3}
+        assert cfg.top_k == 12
+
     def test_reset_keeps_refusing_documents_dir(self):
         from lilbee.app import settings as appset
 
-        with pytest.raises(ValueError, match="'documents_dir' has no resettable default"):
+        with pytest.raises(
+            ValueError, match="'documents_dir' has no default to reset to; set a folder path"
+        ):
             appset.reset_settings(["documents_dir"])
         assert appset.reset_settings(["documents_dir"], skip_unresettable=True).updated == []
 

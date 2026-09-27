@@ -20,7 +20,14 @@ from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
-from lilbee.core.config.resolve import builtin_value, read_layers, resolve, resolve_all
+from lilbee.core.config.resolve import (
+    Resolved,
+    SettingLayers,
+    builtin_value,
+    read_layers,
+    resolve,
+    resolve_all,
+)
 from lilbee.core.config.schema import field_type_name
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
@@ -127,11 +134,21 @@ def _setting_help(key: str, definition: SettingDef | None) -> str:
 
 def setting_sources() -> dict[str, SettingSource]:
     """The source of every Config field's effective value, from one read of config.toml."""
-    resolved = resolve_all(read_layers(cfg.data_root))
-    return {key: entry.source for key, entry in resolved.items()}
+    return _sources(read_layers(cfg.data_root))
 
 
-def _setting_info(key: str, definition: SettingDef | None, source: SettingSource) -> SettingInfo:
+def _sources(layers: SettingLayers) -> dict[str, SettingSource]:
+    """The source of every Config field's effective value under *layers*."""
+    return {key: entry.source for key, entry in resolve_all(layers).items()}
+
+
+def _reset_target(key: str, layers: SettingLayers) -> Any:
+    """The value a reset falls back to without an env var: the profile's, else the built-in."""
+    return layers.profile[key] if key in layers.profile else builtin_value(key)
+
+
+def _setting_info(key: str, layers: SettingLayers, source: SettingSource) -> SettingInfo:
+    definition = SETTINGS_MAP.get(key)
     nullable = _is_nullable(key)
     group = definition.group if definition else SettingGroup.MODELS
     help_text = _setting_help(key, definition)
@@ -139,7 +156,7 @@ def _setting_info(key: str, definition: SettingDef | None, source: SettingSource
     return SettingInfo(
         key=key,
         value=getattr(cfg, key),
-        default=builtin_value(key),
+        default=_reset_target(key, layers),
         type=field_type_name(key),
         nullable=nullable,
         group=group,
@@ -166,10 +183,9 @@ def _parse_group(group: SettingGroup | str) -> SettingGroup:
 
 def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
     """List every writable non-secret setting, optionally filtered by group (case-insensitive)."""
-    sources = setting_sources()
-    infos = [
-        _setting_info(key, SETTINGS_MAP.get(key), sources[key]) for key in _public_writable_keys()
-    ]
+    layers = read_layers(cfg.data_root)
+    sources = _sources(layers)
+    infos = [_setting_info(key, layers, sources[key]) for key in _public_writable_keys()]
     if group is not None:
         wanted = _parse_group(group)
         infos = [info for info in infos if info.group == wanted]
@@ -182,7 +198,8 @@ def get_setting(key: str) -> SettingInfo:
         raise KeyError(f"Unknown or read-only setting: {key}")
     if _is_write_only(key):
         raise KeyError(f"Setting '{key}' is write-only and cannot be read back")
-    return _setting_info(key, SETTINGS_MAP.get(key), setting_sources()[key])
+    layers = read_layers(cfg.data_root)
+    return _setting_info(key, layers, _sources(layers)[key])
 
 
 def _is_settable(key: str) -> bool:
@@ -561,11 +578,11 @@ def reset_settings(
         if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")
         if key in _NO_RESET_FIELDS and not skip_unresettable:
-            raise ValueError(
-                f"'{key}' has no resettable default; pass an explicit value via settings_set."
-            )
+            raise ValueError(f"'{key}' has no default to reset to; set a folder path instead.")
     targets = [key for key in keys if key not in _NO_RESET_FIELDS]
-    _validate(_values_after_reset(targets))
+    fallbacks = _values_after_reset(targets)
+    _refuse_invalid_fallbacks(fallbacks)
+    _validate({key: entry.value for key, entry in fallbacks.items()})
     embed_in_batch = "embedding_model" in targets
     if embed_in_batch:
         _pin_legacy_store_meta()
@@ -573,10 +590,23 @@ def reset_settings(
     return _settle(set(targets), embed_in_batch=embed_in_batch)
 
 
-def _values_after_reset(keys: list[str]) -> dict[str, Any]:
-    """The value each of *keys* resolves to once its user entry is gone."""
+def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
+    """The value and source each of *keys* resolves to once its user entry is gone."""
     layers = read_layers(cfg.data_root)
     remaining = replace(
         layers, user={key: value for key, value in layers.user.items() if key not in keys}
     )
-    return {key: resolve(key, remaining).value for key in keys}
+    return {key: resolve(key, remaining) for key in keys}
+
+
+def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved]) -> None:
+    """Refuse a reset when a key would fall back to a value its field rejects."""
+    trial = cfg.model_copy()
+    for key, entry in fallbacks.items():
+        try:
+            setattr(trial, key, entry.value)
+        except ValueError as exc:
+            raise ValueError(
+                f"Cannot reset '{key}': its {entry.source.value} value {entry.value!r} is "
+                "invalid. Fix or remove that value first."
+            ) from exc
