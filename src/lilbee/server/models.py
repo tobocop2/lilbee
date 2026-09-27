@@ -24,7 +24,7 @@ from lilbee.app.profiles import (
 )
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.core.config.enums import CrawlRenderMode, KvCacheType, SettingSource
+from lilbee.core.config.enums import CrawlRenderMode, FtsLanguage, KvCacheType, SettingSource
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.profile_files import ProfileEntry, ProfileFolder, ProfileValidation
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
@@ -37,7 +37,9 @@ from lilbee.wiki.entity_extractor import EntityKind
 if TYPE_CHECKING:
     from lilbee.app.agent_configs.detect import ClientDetection
     from lilbee.app.agent_configs.document import AgentConfigDocument
+    from lilbee.app.analyze import AnalyzeReport, LanguageRow, Recommendation, SavedProfile
     from lilbee.app.placement import PlacementView
+    from lilbee.data.analyze import PdfSignals
 
 
 def decode_chunk_type(value: str | None) -> ChunkType | None:
@@ -1260,3 +1262,136 @@ class ProfileValidateRequest(BaseModel):
     content: str
     filename: str
     folder: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class AnalyzeFailureResponse(BaseModel):
+    """A sampled file analyze could not read."""
+
+    file: str
+    error: str
+
+
+class AnalyzePdfResponse(BaseModel):
+    """PDF pages, scans and tables; ``scanned_share`` counts each image file as one scanned page."""
+
+    files: int
+    pages: int
+    scanned_pages: int
+    scanned_share: float
+    files_with_tables: int
+    tables: int
+    median_pages: float | None
+
+    @classmethod
+    def from_signals(cls, pdf: PdfSignals) -> AnalyzePdfResponse:
+        """The serialized PDF signals."""
+        return cls(
+            files=pdf.files,
+            pages=pdf.pages,
+            scanned_pages=pdf.scanned_pages,
+            scanned_share=pdf.scanned_share,
+            files_with_tables=pdf.files_with_tables,
+            tables=pdf.tables,
+            median_pages=pdf.median_pages,
+        )
+
+
+class AnalyzeLanguageResponse(BaseModel):
+    """A detected language (ISO 639-3), its share of text files, its stemmer, and OCR support."""
+
+    code: str
+    share: float
+    fts_language: FtsLanguage | None
+    ocr_supported: bool
+
+    @classmethod
+    def from_row(cls, row: LanguageRow) -> AnalyzeLanguageResponse:
+        """One serialized language row."""
+        return cls(
+            code=row.code,
+            share=row.share,
+            fts_language=row.fts_language,
+            ocr_supported=row.ocr_supported,
+        )
+
+
+class AnalyzeReasonResponse(BaseModel):
+    """Why the recommendation sets a setting; the key ``profile`` explains the built-in pick."""
+
+    key: str
+    text: str
+
+
+class AnalyzeRecommendationResponse(BaseModel):
+    """The picked built-in, the derived profile, and what applying it changes."""
+
+    builtin: str
+    name: str | None
+    values: dict[str, Any]
+    changes: list[ProfileDiffRowResponse]
+    kept: list[str]
+    reasons: list[AnalyzeReasonResponse]
+    notes: list[str]
+
+    @classmethod
+    def from_recommendation(cls, rec: Recommendation) -> AnalyzeRecommendationResponse:
+        """The serialized recommendation."""
+        return cls(
+            builtin=rec.builtin,
+            name=rec.name,
+            values=dict(rec.values),
+            changes=[ProfileDiffRowResponse.from_row(row) for row in rec.changes],
+            kept=list(rec.kept),
+            reasons=[AnalyzeReasonResponse(key=r.key, text=r.text) for r in rec.reasons],
+            notes=list(rec.notes),
+        )
+
+
+class AnalyzeSavedResponse(ProfileLocationResponse):
+    """The profile analyze saved or switched to, its file, and whether the project now uses it."""
+
+    applied: bool
+
+    @classmethod
+    def from_saved(cls, saved: SavedProfile) -> AnalyzeSavedResponse:
+        """The serialized saved profile."""
+        return cls(
+            name=saved.name,
+            folder=saved.folder,
+            path=saved.path.as_posix(),
+            applied=saved.applied,
+        )
+
+
+class AnalyzeResponse(BaseModel):
+    """One analyze run: what it read and what it recommends; the shape every surface returns."""
+
+    files_total: int
+    files_read: int
+    cap: int
+    failed: list[AnalyzeFailureResponse]
+    file_types: dict[str, int]
+    code_share: float
+    pdf: AnalyzePdfResponse
+    median_chars: float | None
+    languages: list[AnalyzeLanguageResponse]
+    recommendation: AnalyzeRecommendationResponse
+    saved: AnalyzeSavedResponse | None
+
+    @classmethod
+    def from_report(cls, report: AnalyzeReport) -> AnalyzeResponse:
+        """The canonical serialized analyze report, shared by every surface."""
+        signals = report.signals
+        return cls(
+            files_total=signals.files_total,
+            files_read=signals.files_read,
+            cap=signals.cap,
+            failed=[AnalyzeFailureResponse(file=f.file, error=f.error) for f in signals.failed],
+            file_types=dict(signals.file_types),
+            code_share=signals.code_share,
+            pdf=AnalyzePdfResponse.from_signals(signals.pdf),
+            median_chars=signals.median_chars,
+            languages=[AnalyzeLanguageResponse.from_row(row) for row in report.languages],
+            recommendation=AnalyzeRecommendationResponse.from_recommendation(report.recommendation),
+            saved=None if report.saved is None else AnalyzeSavedResponse.from_saved(report.saved),
+        )

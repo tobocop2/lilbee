@@ -955,6 +955,35 @@ lilbee profile import ./shared/court-filings.toml --target project
 lilbee profile validate court-filings.toml --folder community
 ```
 
+### Analyze
+
+`lilbee analyze` reads your documents and recommends a profile. It
+changes nothing until you pass `--apply` or `--save`. No AI model runs:
+lilbee extracts the files with OCR off and reads the file types, code
+share, scanned pages, tables, lengths and languages. A corpus of more
+than `analyze_max_files` files (500 by default) is sampled evenly, and
+the report says how many files it read.
+
+The recommendation is the closest built-in profile plus corpus
+adjustments, saved as "<built-in> (<project>)". The search language
+(`fts_language`) follows the most common language. When there are scans,
+the OCR languages (`ocr_language`) come from the text pages, and the
+report says so. Your own values and `LILBEE_*` variables stay.
+
+```bash
+lilbee analyze                        # the files lilbee indexes; saves nothing
+lilbee analyze ~/papers               # any folder, before you add it
+lilbee analyze --apply                # save the recommendation and switch to it
+lilbee analyze --save "My papers"     # save it under a name without switching
+lilbee analyze --off                  # hide the tip
+lilbee --json analyze                 # the report as one JSON object
+```
+
+`lilbee init` and `lilbee add` print a one-line tip before ingest
+starts while the project is on the Default profile and was never
+analyzed. Analyzing, applying any profile, or `lilbee analyze --off`
+hides it. Press Ctrl+C to cancel a run; a cancelled run saves nothing.
+
 ### Sessions
 
 See [Sessions](#sessions). Ids accept any unique prefix.
