@@ -47,7 +47,8 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Per-worker state (store, skip markers, engine slots) under the parent data root.
+# Per-worker state (store, engine slots, log) under the parent data root; the
+# skip records stay the corpus's, at the parent data root itself.
 SHARDS_DIRNAME = "shards"
 _DATA_ROOT_ENV = "LILBEE_DATA"
 _CPU_QUOTA_ENV = "LILBEE_CPU_QUOTA"
@@ -93,7 +94,6 @@ class ShardOptions:
 
     parent_pid: int
     force_rebuild: bool = False
-    retry_skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,7 +160,7 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
     root = config.data_root / SHARDS_DIRNAME
     return [
         ShardSpec(
-            shard=ShardId(index=index, count=processes),
+            shard=ShardId(index=index, count=processes, records_root=config.data_root),
             device=index % devices,
             config=_shard_config(config, root / f"w{index}", plan_share, processes),
             # Keyed by card, not by worker: workers sharing a card share one
@@ -440,7 +440,6 @@ def run_shard(
                     quiet=True,
                     on_progress=reporter,
                     cancel=stop,
-                    retry_skipped=options.retry_skipped,
                     shard=spec.shard,
                 )
             )

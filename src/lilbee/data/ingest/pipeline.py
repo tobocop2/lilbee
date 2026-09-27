@@ -877,25 +877,39 @@ def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
         log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
 
 
-def _load_sync_skip_markers(*, force_rebuild: bool, retry_skipped: bool) -> dict[str, str]:
-    """Read the skip-marker file, after clearing every marker or only the failed ones.
+def _clear_skip_records(records_root: Path, *, force_rebuild: bool, retry_skipped: bool) -> None:
+    """Clear every skip record for a rebuild, or only the failed ones for a retry.
 
-    Entries are kept whether or not this pass discovered the file. A marker is
-    what holds a removed or unextractable file out of the next sync, so a pass
-    that cannot see the file -- its root is unmounted or moved, or this worker
-    owns only a shard of the corpus -- must not erase the record and re-offer
-    the file the moment it comes back. A marker is dropped when the file
-    ingests cleanly, by ``rebuild``, or for a failure by ``retry-skipped``.
+    Entries are otherwise kept whether or not a pass discovers the file. A
+    marker is what holds a removed or unextractable file out of the next sync,
+    so a pass that cannot see the file -- its root is unmounted or moved, or a
+    worker owns only a shard of the corpus -- must not erase the record and
+    re-offer the file the moment it comes back. A marker is dropped when the
+    file ingests cleanly, by ``rebuild``, or for a failure by ``retry-skipped``.
     """
-    data_root = active_config().data_root
     if force_rebuild:
-        clear_skip_markers(data_root)
+        clear_skip_markers(records_root)
     elif retry_skipped:
-        clear_failed_markers(data_root)
-    return load_skip_markers(data_root)
+        clear_failed_markers(records_root)
+
+
+def _prepare_skip_records(
+    shard: ShardId | None, *, force_rebuild: bool, retry_skipped: bool
+) -> Path:
+    """The data root whose skip records this sync reads and writes.
+
+    Only a sync that is not a worker clears them, so a fan-out clears once: a
+    worker clearing the shared records would erase a sibling's verdicts.
+    """
+    if shard is not None:
+        return shard.records_root
+    records_root = active_config().data_root
+    _clear_skip_records(records_root, force_rebuild=force_rebuild, retry_skipped=retry_skipped)
+    return records_root
 
 
 def _persist_skip_records(
+    records_root: Path,
     pending_hashes: dict[str, str],
     reasons: dict[str, str],
     *,
@@ -920,12 +934,12 @@ def _persist_skip_records(
         records.reasons.update({name: reasons[name] for name in held if name in reasons})
         records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
 
-    update_skip_records(active_config().data_root, _merge)
+    update_skip_records(records_root, _merge)
 
 
-def _failures_among(held: Iterable[str]) -> list[str]:
+def _failures_among(records_root: Path, held: Iterable[str]) -> list[str]:
     """The files in *held* that an ingestion failure holds out, in order; removals are left out."""
-    failed = set(held_out_names(active_config().data_root))
+    failed = set(held_out_names(records_root))
     return [name for name in held if name in failed]
 
 
@@ -1240,6 +1254,9 @@ async def sync(
 
     config.documents_dir.mkdir(parents=True, exist_ok=True)
     index_mismatch = _report_index_mismatch(_store)
+    records_root = _prepare_skip_records(
+        shard, force_rebuild=force_rebuild, retry_skipped=retry_skipped
+    )
 
     if shard is None and (specs := plan_fanout()):
         merged = await _sync_across_workers(
@@ -1249,7 +1266,6 @@ async def sync(
             options=ShardOptions(
                 parent_pid=os.getpid(),
                 force_rebuild=force_rebuild,
-                retry_skipped=retry_skipped,
             ),
             quiet=quiet,
             on_progress=on_progress,
@@ -1262,7 +1278,7 @@ async def sync(
     disk_files = scan.files
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
-    skip_markers = _load_sync_skip_markers(force_rebuild=force_rebuild, retry_skipped=retry_skipped)
+    skip_markers = load_skip_markers(records_root)
 
     failed: dict[str, None] = {}
     # Refused formats start the run skipped; they get no skip marker (no planned hash).
@@ -1338,7 +1354,7 @@ async def sync(
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
     marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
     _persist_skip_records(
-        pending_hashes, reasons, succeeded=[*added, *updated], failed=marker_failed
+        records_root, pending_hashes, reasons, succeeded=[*added, *updated], failed=marker_failed
     )
 
     if shard is None:
@@ -1378,7 +1394,7 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=describe_skips(config.data_root, _failures_among(state.held_out)),
+        held_out=describe_skips(records_root, _failures_among(records_root, state.held_out)),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
     )

@@ -1405,7 +1405,9 @@ class TestSyncDropsNewlyIgnored:
         # not own. Every shard must leave the index untouched here.
         store = svc_mod.get_services().store
         for index in range(2):
-            result = await sync(prune_ignored=True, shard=ShardId(index=index, count=2))
+            result = await sync(
+                prune_ignored=True, shard=ShardId(index=index, count=2, records_root=cfg.data_root)
+            )
             assert result.removed == []
         store.remove_documents.assert_not_called()
         assert {s["filename"] for s in store.get_sources()} == {"drop.txt", "keep.txt"}
@@ -2143,6 +2145,91 @@ class TestSyncMergesItsSkipRecords:
         assert load_skip_markers(cfg.data_root) == {"scanned.pdf": file_hash(scan)}
         assert load_skip_reasons(cfg.data_root) == {"scanned.pdf": "no text extracted (0 chunks)"}
         assert cfg.linked_roots == {}
+
+
+class TestFanoutReadsTheCorpusSkipRecords:
+    """A multi-worker sync holds out and records files exactly as a single-process one does.
+
+    The workers run as threads over the one mock store, so the real fan-out path
+    runs from ``sync`` through each worker's own ``sync`` of its slice.
+    """
+
+    @pytest.fixture(params=[False, True], ids=["one-process", "fan-out"])
+    def fan_out(self, request, monkeypatch, mock_svc):
+        from lilbee.data.ingest import fanout, pipeline
+        from tests.test_ingest_fanout import FakeContext
+
+        if request.param:
+            monkeypatch.setattr(pipeline, "plan_fanout", lambda: fanout.shard_specs(cfg, 2, 2))
+            monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _k: FakeContext())
+            monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
+            monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+            monkeypatch.setattr(
+                "lilbee.providers.fleet.child_guard.bind_lifetime_to_parent", lambda pid: None
+            )
+            monkeypatch.setattr("lilbee.app.services.build_services", lambda config: mock_svc)
+            monkeypatch.setattr(pipeline, "_merge_worker_shards", lambda *args: None)
+        else:
+            monkeypatch.setattr(pipeline, "plan_fanout", list)
+        return request.param
+
+    async def test_a_removed_file_is_not_ingested_again(self, isolated_env, fan_out):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
+
+        (isolated_env / "gone.txt").write_text("removed by the user", encoding="utf-8")
+        (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
+        mark_removed(cfg.data_root, {"gone.txt": file_hash(isolated_env / "gone.txt")})
+
+        result = await sync(quiet=True)
+
+        assert result.added == ["kept.txt"]
+        assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.REMOVED}
+
+    async def test_a_failure_is_recorded_for_the_corpus(self, isolated_env, fan_out):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records",
+            side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
+        ):
+            first = await sync(quiet=True)
+            second = await sync(quiet=True)
+
+        assert first.added == ["kept.txt"]
+        assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
+        assert [held.filename for held in second.held_out] == ["scanned.pdf"]
+
+    async def test_retry_skipped_retries_a_failure_and_keeps_a_removal(self, isolated_env, fan_out):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            mark_removed,
+            update_skip_records,
+        )
+
+        gone = isolated_env / "gone.txt"
+        fixed = isolated_env / "fixed.txt"
+        gone.write_text("removed by the user", encoding="utf-8")
+        fixed.write_text("readable now", encoding="utf-8")
+        mark_removed(cfg.data_root, {"gone.txt": file_hash(gone)})
+
+        def _fail(records):
+            records.markers["fixed.txt"] = file_hash(fixed)
+            records.kinds["fixed.txt"] = SkipKind.FAILED
+
+        update_skip_records(cfg.data_root, _fail)
+
+        result = await sync(quiet=True, retry_skipped=True)
+
+        assert result.added == ["fixed.txt"]
+        assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.REMOVED}
 
 
 class TestStatusExposesTheIndexEmbedder:
@@ -3000,7 +3087,9 @@ class TestExcludedFormats:
             (isolated_env / f"a{i}.md").write_text("# Note", encoding="utf-8")
             (isolated_env / f"a{i}.svg").write_text("<svg/>", encoding="utf-8")
 
-        slices = [discover_corpus(ShardId(index=i, count=3)) for i in range(3)]
+        slices = [
+            discover_corpus(ShardId(index=i, count=3, records_root=cfg.data_root)) for i in range(3)
+        ]
         assert sum(len(s.files) for s in slices) == 12
         assert sum(len(s.excluded) for s in slices) == 12
 
