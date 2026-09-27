@@ -606,10 +606,10 @@ async def _collect_members(
 
 def _page_count_config() -> ExtractionConfig:
     """A metadata-only ExtractionConfig: OCR and page bodies off, structure kept."""
-    from xberg import ExtractionConfig, OcrConfig, PageConfig
+    from xberg import ExtractionConfig, PageConfig
 
+    # No OCR block at all: xberg OCRs a PDF's page images whenever one is present, even disabled.
     return ExtractionConfig(
-        ocr=OcrConfig(enabled=False),
         pages=PageConfig(extract_pages=False, insert_page_markers=False),
         disable_ocr=True,
         enable_quality_processing=False,
