@@ -31,7 +31,7 @@ from lilbee.core.project_state import dismiss_tip, mark_analyzed, read_state
 from lilbee.core.system import LOCAL_ROOT_DIRNAME
 from lilbee.data.analyze import CorpusSignals, collect_signals, ocr_language_supported
 from lilbee.data.ingest.discovery import discover_corpus, discover_dir
-from lilbee.runtime.cancellation import CancelSignal
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
 
 log = logging.getLogger(__name__)
@@ -57,8 +57,12 @@ NOTE_CONTENT_TYPES = frozenset({"md", "markdown", "mdx", "txt"})
 OCR_LANGUAGE_REASON = "assumed from the text pages"
 OCR_MODEL_NOTE = "The catalog lists OCR models that fit this machine."
 DEFAULT_FITS_NOTE = "Default fits this corpus."
-IMAGE_SCAN_NOTE = "Each image file counts as one scanned page."
+IMAGE_SCAN_NOTE = (
+    "Image files are counted, not read: each adds one scanned page to the scanned share, "
+    "scaled by the share of documents sampled."
+)
 TARGET_WITHOUT_SAVE_MESSAGE = "target takes effect only with apply or save; nothing was read."
+RELATIVE_DIRECTORY_MESSAGE = "directory must be an absolute path on the lilbee server: {value!r}"
 TIP_TEXT = (
     "This project uses the Default profile. Run lilbee analyze to get a profile "
     "recommendation, or lilbee analyze --off to hide this tip."
@@ -330,11 +334,27 @@ def _save(
     return SavedProfile(location.name, location.folder, location.path, request.apply)
 
 
+def validate_request(request: AnalyzeRequest) -> None:
+    """Refuse a *target* without *apply* or *save*, and a *directory* that is not a folder."""
+    if request.target is not None and not request.apply and request.save is None:
+        raise ValueError(TARGET_WITHOUT_SAVE_MESSAGE)
+    if request.directory is not None and not request.directory.is_dir():
+        raise ValueError(f"{request.directory} is not a folder")
+
+
+def server_directory(value: str | None) -> Path | None:
+    """A directory named by a remote caller: absolute on the server, or None for the corpus."""
+    if value is None:
+        return None
+    directory = Path(value)
+    if not directory.is_absolute():
+        raise ValueError(RELATIVE_DIRECTORY_MESSAGE.format(value=value))
+    return directory
+
+
 def _files(directory: Path | None) -> Mapping[str, Path]:
     if directory is None:
         return discover_corpus().files
-    if not directory.is_dir():
-        raise ValueError(f"{directory} is not a folder")
     return discover_dir(directory).files
 
 
@@ -346,9 +366,16 @@ def _record_run() -> None:
         log.warning("Could not record that analyze ran: %s", exc)
 
 
-def _finish(store: ProfileStore, signals: CorpusSignals, request: AnalyzeRequest) -> AnalyzeReport:
+def _finish(
+    store: ProfileStore,
+    signals: CorpusSignals,
+    request: AnalyzeRequest,
+    cancel: CancelSignal | None,
+) -> AnalyzeReport:
     rows = language_rows(signals)
     recommendation = recommend(store, signals, rows)
+    if cancel is not None and cancel.is_set():
+        raise TaskCancelledError
     saved = _save(store, recommendation, request)
     _record_run()
     return AnalyzeReport(signals, rows, recommendation, saved)
@@ -367,20 +394,34 @@ async def run_analysis(
     raises ``ValueError`` when *directory* is not a folder, a *target* comes without
     *apply* or *save*, or the save is refused.
     """
-    if request.target is not None and not request.apply and request.save is None:
-        raise ValueError(TARGET_WITHOUT_SAVE_MESSAGE)
+    await asyncio.to_thread(validate_request, request)
     files = await asyncio.to_thread(_files, request.directory)
     signals = await collect_signals(files, on_progress=on_progress, cancel=cancel)
-    return await asyncio.to_thread(_finish, store, signals, request)
+    return await asyncio.to_thread(_finish, store, signals, request, cancel)
+
+
+@dataclass(frozen=True)
+class TipState:
+    """Whether the project was analyzed, hid the tip, and would see the tip now."""
+
+    analyzed: bool
+    tip_dismissed: bool
+    tip_shows: bool
+
+
+def tip_state(root: Path) -> TipState:
+    """The analyze tip state of the project at *root*."""
+    state = read_state(root)
+    analyzed = state.analyzed_at is not None
+    name = read_profile_table(root).name or DEFAULT_PROFILE_NAME
+    on_default = profile_key(name) == profile_key(DEFAULT_PROFILE_NAME)
+    shows = on_default and not analyzed and not state.tip_dismissed
+    return TipState(analyzed, state.tip_dismissed, shows)
 
 
 def tip_shows(root: Path) -> bool:
     """True when the project at *root* is on Default, never analyzed, and the tip is not hidden."""
-    name = read_profile_table(root).name or DEFAULT_PROFILE_NAME
-    if profile_key(name) != profile_key(DEFAULT_PROFILE_NAME):
-        return False
-    state = read_state(root)
-    return state.analyzed_at is None and not state.tip_dismissed
+    return tip_state(root).tip_shows
 
 
 def hide_tip(root: Path) -> None:

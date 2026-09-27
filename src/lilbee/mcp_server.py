@@ -27,6 +27,13 @@ from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
 
 from lilbee.app import profiles
+from lilbee.app.analyze import (
+    AnalyzeRequest,
+    hide_tip,
+    run_analysis,
+    server_directory,
+    tip_state,
+)
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -1289,6 +1296,44 @@ def profile_manage(
     ``folder``: global or project."""
     args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
     return _profile_call(lambda: _MANAGE_ACTIONS[action](_profile_store(), args))
+
+
+@_tool_if(_profiles_enabled)
+async def analyze(
+    directory: str | None = None,
+    apply: bool = False,
+    save: str | None = None,
+    target: ProfileFolder | None = None,
+) -> dict[str, Any]:
+    """Read the corpus, or an absolute ``directory`` on the server, and recommend a profile.
+    ``apply`` saves it and switches to it; ``save`` saves it as that name without switching;
+    ``target`` (project or global) needs one of them. No AI model runs."""
+    from lilbee.server.models import AnalyzeResponse
+
+    if not _profiles_enabled():
+        return _error(profiles.MCP_PROFILES_DISABLED_HINT)
+    try:
+        request = AnalyzeRequest(server_directory(directory), apply, save, target)
+        with _cancel_token() as cancel:
+            report = await run_analysis(_profile_store(), request, cancel=cancel)
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(profiles.file_failure_message(exc))
+    return AnalyzeResponse.from_report(report).model_dump(mode="json")
+
+
+def _tip_dismissed() -> dict[str, Any]:
+    from lilbee.server.models import AnalyzeStateResponse
+
+    hide_tip(cfg.data_root)
+    return AnalyzeStateResponse.from_state(tip_state(cfg.data_root)).model_dump(mode="json")
+
+
+@_tool_if(_profiles_enabled)
+def analyze_dismiss() -> dict[str, Any]:
+    """Hide the analyze tip for this project."""
+    return _profile_call(_tip_dismissed)
 
 
 @_tool

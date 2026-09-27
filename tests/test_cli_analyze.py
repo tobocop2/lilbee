@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from lilbee.app import analyze
 from lilbee.app import services as svc_mod
-from lilbee.app.analyze import TIP_TEXT
+from lilbee.app.analyze import IMAGE_SCAN_NOTE, TIP_TEXT
 from lilbee.cli.app import app
 from lilbee.cli.commands.analyze import CANCELLED_MESSAGE, OFF_ALONE_MESSAGE
 from lilbee.cli.helpers import json_output
@@ -288,7 +288,7 @@ def test_text_output_lists_failures_languages_and_notes(project, tmp_path):
     assert "1 files could not be read:" in result.output
     assert "bad.pdf" in result.output
     assert "No language detected" in result.output
-    assert "Each image file counts as one scanned page." in result.output
+    assert IMAGE_SCAN_NOTE in result.output
 
 
 def test_progress_bar_moves_only_on_analyze_events():
