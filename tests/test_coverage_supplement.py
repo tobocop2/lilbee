@@ -1358,7 +1358,7 @@ class TestSettingsTabNavFallbacks:
             await pilot.pause()
             # Drop the active pane from the screen's bookkeeping so the
             # boundary path hits the early-return guard.
-            screen._pane_groups = {}
+            screen._pane_ids = []
             screen.action_next_field_or_pane()
             await pilot.pause()
             # Active pane stays put because the boundary guard returned early.

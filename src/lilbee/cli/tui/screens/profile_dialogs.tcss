@@ -1,0 +1,77 @@
+ApplyProfileDialog, SaveProfileDialog {
+    align: center middle;
+}
+
+#apply-body {
+    width: 90%;
+    max-width: 100;
+    height: auto;
+    max-height: 90%;
+    border: $rail-heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#save-body {
+    width: 90%;
+    max-width: 72;
+    height: auto;
+    max-height: 20;
+    border: $rail-heavy $primary;
+    background: $surface;
+    padding: 1 2;
+}
+
+#apply-title, #save-title {
+    text-style: bold;
+    color: $text;
+}
+
+#apply-description, #apply-credit, #apply-untouched, #save-explain {
+    color: $text-muted;
+}
+
+.profile-section-title {
+    text-style: bold;
+    margin-top: 1;
+}
+
+#apply-changes {
+    height: auto;
+    max-height: 8;
+}
+
+#apply-summary {
+    text-style: bold;
+    margin-top: 1;
+}
+
+#save-error {
+    color: $error;
+}
+
+#apply-actions, #save-actions {
+    dock: bottom;
+    height: 1;
+    width: 100%;
+    margin-top: 1;
+    align-horizontal: center;
+}
+
+#apply-actions ConfirmPill, #save-actions ConfirmPill {
+    width: auto;
+    height: 1;
+    padding: 0 2;
+    margin: 0 1;
+    background: $boost;
+    color: $text;
+    text-style: bold;
+
+    &:focus, &:hover {
+        background: $accent;
+    }
+}
+
+#save-actions ConfirmPill.-disabled {
+    color: $text-disabled;
+}
