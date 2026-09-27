@@ -49,6 +49,7 @@ from lilbee.core.profile_files import (
     validate_file,
     validate_text,
 )
+from lilbee.core.security import write_text_atomically
 
 _OVERRIDE_SOURCES = frozenset({SettingSource.ENV, SettingSource.USER})
 _SAVE_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
@@ -532,6 +533,56 @@ def export(
         path, exported.folder, parse_text(text, path.stem, exported.folder), text, None
     )
     return _written(planned)
+
+
+def missing_for_share(profile: ProfileFile) -> tuple[str, ...]:
+    """Which of "authors" and "tested_on" *profile* still needs before it can be shared."""
+    missing = []
+    if not profile.authors:
+        missing.append("authors")
+    if not profile.tested_on:
+        missing.append("tested_on")
+    return tuple(missing)
+
+
+def share_missing(store: ProfileStore, name: str) -> tuple[str, ...]:
+    """What the profile *name* picks still needs before ``share`` can write it."""
+    return missing_for_share(_usable(store, name))
+
+
+def share(
+    store: ProfileStore,
+    name: str,
+    dest: Path,
+    *,
+    authors: tuple[ProfileAuthor, ...] | None = None,
+    tested_on: str | None = None,
+    overwrite: bool = False,
+) -> ProfileLocation:
+    """Validate the profile *name* picks as a community submission and write it to *dest*.
+
+    Raises ``ValueError`` when authors or tested_on is still missing, the result fails
+    community validation, or *dest* already exists without *overwrite*. Nothing is sent
+    anywhere; the caller opens the pull request.
+    """
+    profile = _usable(store, name)
+    if authors is not None:
+        profile = replace(profile, authors=authors)
+    if tested_on is not None:
+        profile = replace(profile, tested_on=tested_on)
+    missing = missing_for_share(profile)
+    if missing:
+        raise ValueError(f"Missing for a community submission: {', '.join(missing)}")
+    filename = f"{profile_key(profile.name)}{PROFILE_SUFFIX}"
+    text = profile_text(profile)
+    validation = validate_content(text, filename, ProfileFolder.COMMUNITY)
+    if not validation.valid:
+        raise ValueError("; ".join(validation.problems))
+    path = dest / filename if dest.is_dir() else dest
+    if path.exists() and not overwrite:
+        raise ValueError(f"{path} already exists")
+    write_text_atomically(path, text)
+    return ProfileLocation(profile.name, ProfileFolder.COMMUNITY, path)
 
 
 def _same_name_in(store: ProfileStore, folder: ProfileFolder, name: str) -> Path | None:

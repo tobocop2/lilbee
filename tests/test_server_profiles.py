@@ -264,7 +264,10 @@ def test_validate_reports_every_problem_without_writing(client):
 
 
 def test_validate_applies_the_community_evidence_rule_when_asked(client):
-    body = {"content": "[values]\ntop_k = 13\n", "filename": "c.toml"}
+    body = {
+        "content": '[profile]\ntested_on = "our corpus"\n[values]\ntop_k = 13\n',
+        "filename": "c.toml",
+    }
     assert client.post("/api/profiles/validate", json=body).json()["valid"] is True
     community = client.post("/api/profiles/validate", json={**body, "folder": "community"})
     assert community.json()["problems"] == ["Sets retrieval setting top_k without evidence"]

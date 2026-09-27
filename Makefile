@@ -9,6 +9,8 @@ lint: lint-shell
 	# The README formats table is generated from discovery's format map, so an
 	# xberg or tree-sitter bump that changes the set lands in the table.
 	uv run python tools/gen_formats_table.py --check
+	# Every file in profiles/community/ must pass `lilbee profile validate`.
+	uv run python scripts/check_community_profiles.py
 
 lint-shell:  ## shellcheck the release scripts and actionlint every workflow
 	@if command -v shellcheck >/dev/null; then \
