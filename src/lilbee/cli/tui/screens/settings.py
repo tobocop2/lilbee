@@ -31,6 +31,8 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings_widgets import (
+    ADVANCED_COLLAPSIBLE_CLASS,
+    ADVANCED_COLLAPSIBLE_ID_PREFIX,
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
     EDITOR_ID_PREFIX,
@@ -328,7 +330,11 @@ class SettingsScreen(Screen[None]):
         return None if group is None else lambda: self._build_pane_widgets(group)
 
     def _build_pane_widgets(self, group: _PaneGroup) -> list[Widget]:
-        """Return the body widgets for one settings tab."""
+        """Return the body widgets for one settings tab.
+
+        Advanced settings are folded into one collapsed section at the
+        bottom, after every regular row.
+        """
         widgets: list[Widget] = []
         if group.group_name == API_KEYS_GROUP:
             widgets.append(
@@ -339,9 +345,28 @@ class SettingsScreen(Screen[None]):
             )
         sources = setting_sources()
         profile_name = active_profile_name()
-        for key, defn in group.items:
+        basic = [(key, defn) for key, defn in group.items if not defn.advanced]
+        advanced = [(key, defn) for key, defn in group.items if defn.advanced]
+        for key, defn in basic:
             widgets.append(self._build_setting_row(key, defn, sources[key], profile_name))
+        if advanced:
+            rows = [
+                self._build_setting_row(key, defn, sources[key], profile_name)
+                for key, defn in advanced
+            ]
+            widgets.append(self._build_advanced_section(group.pane_id, rows))
         return widgets
+
+    def _build_advanced_section(self, pane_id: str, rows: list[VerticalGroup]) -> Collapsible:
+        """One collapsed section holding every advanced row for a tab."""
+        title = msg.SETTINGS_ADVANCED_TITLE.format(count=len(rows))
+        return Collapsible(
+            *rows,
+            title=title,
+            collapsed=True,
+            id=f"{ADVANCED_COLLAPSIBLE_ID_PREFIX}{pane_id}",
+            classes=ADVANCED_COLLAPSIBLE_CLASS,
+        )
 
     def _build_setting_row(
         self, key: str, defn: SettingDef, source: SettingSource, profile_name: str | None

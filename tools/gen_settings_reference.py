@@ -227,6 +227,11 @@ def _cli_cell(key: str) -> str:
     return CLI_COMMANDS.get(key, "no")
 
 
+def _advanced_cell(key: str) -> str:
+    definition = SETTINGS_MAP.get(key)
+    return "yes" if definition is not None and definition.advanced else "no"
+
+
 def _notes(key: str) -> list[str]:
     """Per-setting warnings that change what a caller must do after writing."""
     notes: list[str] = []
@@ -258,14 +263,15 @@ def _row(key: str) -> str:
         _mcp_cell(key),
         _http_cell(key),
         _cli_cell(key),
+        _advanced_cell(key),
         _description_cell(key),
     )
     return "| " + " | ".join(cells) + " |"
 
 
 HEADER = (
-    "| Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |\n"
-    "|---|---|---|---|---|---|---|---|---|"
+    "| Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |\n"
+    "|---|---|---|---|---|---|---|---|---|---|"
 )
 
 
