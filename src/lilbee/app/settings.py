@@ -503,10 +503,16 @@ def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
 def _inert_reindex_keys() -> set[str]:
     """Reindex keys that change no extraction output under the effective config.
 
-    xberg reads ``table_model`` only inside layout detection, so a change to it
-    while ``layout_detection`` is off is not worth a rebuild.
+    ``table_model`` is read only inside layout detection, and ``topic_threshold``
+    only inside semantic chunking, so a change to either while its gating flag is
+    off is not worth a rebuild.
     """
-    return set() if cfg.layout_detection else {"table_model"}
+    inert: set[str] = set()
+    if not cfg.layout_detection:
+        inert.add("table_model")
+    if not cfg.semantic_chunking:
+        inert.add("topic_threshold")
+    return inert
 
 
 def _embed_reindex_required() -> bool:
