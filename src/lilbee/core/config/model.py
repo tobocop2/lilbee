@@ -344,6 +344,8 @@ class Config(BaseSettings):
     # Coalesce concurrent extractions into one xberg extract_batch call.
     batch_extraction: bool = ConfigField(default=False, writable=True)
     batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
+    # Files analyze extracts; a larger corpus is sampled evenly down to this many.
+    analyze_max_files: int = ConfigField(default=500, ge=1, writable=True)
     # xberg's shared thread budget: PDF rendering, OCR and ONNX inference. It
     # also bounds concurrent Tesseract sessions, which xberg further limits to
     # what free memory holds. 0 = auto, runtime.cpu.cpu_quota() (half the usable
