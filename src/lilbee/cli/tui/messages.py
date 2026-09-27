@@ -12,7 +12,9 @@ from functools import lru_cache
 from importlib.util import find_spec
 from pathlib import Path
 
+from lilbee.app.profiles import ProfileEffect, ProfileStatus
 from lilbee.core.config import cfg
+from lilbee.core.profile_files import NameProblem, ProfileFolder
 from lilbee.data.types import SyncResult
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 from lilbee.runtime.progress import OcrBackendUsed
@@ -807,3 +809,91 @@ MODEL_BAR_NOT_INSTALLED_TOOLTIP = (
 )
 MODEL_PICKER_TURN_OFF = "Turn off this model"
 MODEL_PICKER_HINT = "Enter to pick · Esc to cancel · / to search"
+
+# Settings Profile tab, the profile line, and the Apply and Save-as dialogs
+PROFILE_TAB_LABEL = "Profile"
+PROFILE_LINE_LABEL = "Profile"
+PROFILE_LINE_COUNT_ONE = "1 value set by you"
+PROFILE_LINE_COUNT = "{count} values set by you"
+PROFILE_TAB_TITLE = "profile"
+PROFILE_TAB_HELP = (
+    "Settings for ingest, OCR, chunking and search. Models, hardware and API keys stay as they are."
+)
+PROFILE_TESTED_ON = "Tested on: {text}"
+PROFILE_CHANGES_TITLE = "Your changes"
+PROFILE_CHANGES_HELP = "These values override {name} in this project."
+PROFILE_CHANGES_NONE = "No values of yours override {name}."
+PROFILE_COL_SETTING = "Setting"
+PROFILE_COL_YOURS = "Your value"
+PROFILE_COL_PROFILE = "Profile value"
+PROFILE_COL_NOW = "Now"
+PROFILE_COL_AFTER = "After"
+PROFILE_COL_COST = "Cost"
+PROFILE_VALUE_ON = "on"
+PROFILE_VALUE_OFF = "off"
+PROFILE_VALUE_NONE = "none"
+PROFILE_ACTION_UPDATE = "Update {name}"
+PROFILE_ACTION_SAVE_AS = "Save as new profile"
+PROFILE_ACTION_DISCARD = "Discard my changes"
+PROFILE_ACTION_REAPPLY = "Re-apply {name}"
+PROFILE_APPLY_TITLE = "Switch to {name}?"
+PROFILE_APPLY_CHANGES = "Changes"
+PROFILE_APPLY_KEEPS = "Keeps your values"
+PROFILE_APPLY_UNTOUCHED = "Models, hardware and API keys stay as they are."
+PROFILE_APPLY_NOTHING = "Nothing changes; lilbee records the profile's name."
+PROFILE_APPLY_REINDEX_ONE = "One change rebuilds the index of {files} files."
+PROFILE_APPLY_REINDEX_MANY = "{count} changes rebuild the index of {files} files."
+PROFILE_APPLY_REINDEX_LABEL = "Apply and reindex"
+PROFILE_APPLY_LABEL = "Apply"
+PROFILE_CANCEL_LABEL = "Cancel"
+PROFILE_APPLIED = "Switched to {name}."
+PROFILE_SAVE_TITLE = "Save as a new profile"
+PROFILE_SAVE_PLACEHOLDER = "Profile name"
+PROFILE_SAVE_TO = "Save to"
+PROFILE_SAVE_GLOBAL = "All my projects"
+PROFILE_SAVE_PROJECT = "This project"
+PROFILE_SAVE_EXPLAIN = (
+    "The new profile holds {name}'s values and your {count} changes. "
+    "This project switches to it, and your changes stop showing as yours."
+)
+PROFILE_SAVE_LABEL = "Save"
+PROFILE_SAVED = "Saved {name} to {path}."
+PROFILE_UPDATED = "Updated {name}."
+PROFILE_DISCARDED = "Your values are gone; {name}'s values show through."
+
+PROFILE_EFFECT_TEXT: dict[ProfileEffect, str] = {
+    ProfileEffect.REINDEX: "reindex",
+    ProfileEffect.NEW_FILES_ONLY: "new files only",
+    ProfileEffect.NOW: "",
+}
+PROFILE_FOLDER_TEXT: dict[ProfileFolder, str] = {
+    ProfileFolder.PROJECT: "Saved in this project.",
+    ProfileFolder.GLOBAL: "Saved for all projects.",
+    ProfileFolder.COMMUNITY: "A community profile that ships with lilbee.",
+    ProfileFolder.BUILTIN: "A built-in profile that ships with lilbee.",
+}
+PROFILE_STATUS_PILL: dict[ProfileStatus, str] = {
+    ProfileStatus.CURRENT: "",
+    ProfileStatus.CHANGED: "file changed",
+    ProfileStatus.MISSING: "file missing",
+    ProfileStatus.BROKEN: "file broken",
+}
+PROFILE_NAME_PROBLEM_TEXT: dict[NameProblem, str] = {
+    NameProblem.EMPTY: "Type a name for the profile.",
+    NameProblem.INVALID: "Use 1 to 40 letters, digits, spaces, hyphens, underscores, parentheses.",
+    NameProblem.RESERVED: "A built-in profile already has this name.",
+    NameProblem.RESERVED_WORD: "Reserved name: this cannot name a profile.",
+    NameProblem.TAKEN: "A profile in that folder already has this name.",
+}
+
+
+def profile_count_text(count: int) -> str:
+    """The profile line's count of values set by you."""
+    return PROFILE_LINE_COUNT_ONE if count == 1 else PROFILE_LINE_COUNT.format(count=count)
+
+
+def profile_reindex_text(count: int, files: int) -> str:
+    """The Apply dialog's summary of the changes that rebuild the index."""
+    if count == 1:
+        return PROFILE_APPLY_REINDEX_ONE.format(files=files)
+    return PROFILE_APPLY_REINDEX_MANY.format(count=count, files=files)

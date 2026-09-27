@@ -178,8 +178,13 @@ def type_pill(defn: SettingDef) -> Content:
     return pill(type_name, bg, fg)
 
 
-def _user_pill(_key: str) -> Content:
+def user_pill() -> Content:
+    """The accent pill that marks a value set by you."""
     return pill(msg.SETTINGS_SOURCE_USER_PILL, "$accent", "$text")
+
+
+def _user_pill(_key: str) -> Content:
+    return user_pill()
 
 
 def _env_pill(key: str) -> Content:

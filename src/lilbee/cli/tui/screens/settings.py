@@ -29,6 +29,7 @@ from lilbee.app.settings import OCR_SETTING_KEYS, setting_sources
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
+from lilbee.cli.tui.screens.profile_tab import ProfileSnapshot, ProfileTab, load_snapshot
 from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
@@ -54,8 +55,10 @@ from lilbee.cli.tui.screens.settings_widgets import (
     set_widget_value,
     title_content,
 )
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
+from lilbee.cli.tui.widgets.profile_line import ProfileLine, ProfileLinePill
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import SettingSource
 
@@ -65,6 +68,8 @@ if TYPE_CHECKING:
     from lilbee.cli.tui.widgets.model_bar import ModelOption
 
 log = logging.getLogger(__name__)
+
+PROFILE_PANE_ID = "settings-tab-profile"
 
 
 @dataclass(frozen=True)
@@ -163,7 +168,8 @@ class SettingsScreen(Screen[None]):
         # body gets populated in on_mount (the active-by-default first
         # pane); the rest fill in on first activation.
         self._pane_groups: dict[str, _PaneGroup] = {}
-        self._eagerly_populate: str | None = None
+        self._pane_ids: list[str] = [PROFILE_PANE_ID]
+        self._eagerly_populate = PROFILE_PANE_ID
         # Text each editor showed the moment it was last built or refreshed
         # (a field showing a model default renders that default's text, not
         # a user value). A save handler acts only when the new value differs
@@ -184,12 +190,18 @@ class SettingsScreen(Screen[None]):
 
         with TopBars():
             yield ViewTabs()
+        yield ProfileLine(id="profile-line")
         # Container (not VerticalScroll) here -- each tab body is itself a
         # VerticalScroll, and stacking two scrollables on the same column
         # tears the layout when the inner one wheels past its top edge
         # (bb-...-wiki-tear). Only the inner pane scrolls; the outer just
         # reserves the flex row.
         with Container(id="settings-scroll"), TabbedContent(id="settings-tabs"):
+            yield TabPane(
+                msg.PROFILE_TAB_LABEL,
+                _LazyGroupBody(id=f"{PROFILE_PANE_ID}-body"),
+                id=PROFILE_PANE_ID,
+            )
             yield from self._compose_group_tabs()
         with BottomBars():
             yield TaskBar()
@@ -197,24 +209,17 @@ class SettingsScreen(Screen[None]):
 
     def _compose_group_tabs(self) -> ComposeResult:
         """Yield one TabPane per setting group; bodies populate on activation."""
-        first = True
         for group_name, items in group_settings().items():
             pane_id = f"settings-tab-{group_name.lower().replace('-', '_')}"
             self._pane_groups[pane_id] = _PaneGroup(
                 pane_id=pane_id, group_name=group_name, items=items
             )
+            self._pane_ids.append(pane_id)
             yield TabPane(
                 group_name,
                 _LazyGroupBody(id=f"{pane_id}-body"),
                 id=pane_id,
             )
-            # The first pane is the one TabbedContent activates by
-            # default; populate it eagerly so a user landing on
-            # Settings sees content on first paint instead of an empty
-            # active pane that fills in one frame later.
-            if first:
-                first = False
-                self._eagerly_populate = pane_id
 
     def on_mount(self) -> None:
         """Defer first-pane content mount until after the screen has painted.
@@ -226,23 +231,66 @@ class SettingsScreen(Screen[None]):
         skeleton immediately and the rows hydrate one frame later.
         """
         self.app.settings_changed_signal.subscribe(self, self._on_setting_changed)
-        if self._eagerly_populate is not None:
-            self.call_after_refresh(self._populate_pane, self._eagerly_populate)
+        # The first pane is the one TabbedContent activates by default; populate
+        # it eagerly so Settings shows content on first paint.
+        self.call_after_refresh(self._populate_pane, self._eagerly_populate)
+
+    def on_screen_resume(self) -> None:
+        """Rescan the profiles, which the CLI or another terminal may have changed."""
+        self.reload_profile()
 
     def _on_setting_changed(self, change: tuple[str, object]) -> None:
-        """Queue the changed key's source pill for the next refresh."""
+        """Queue the changed key's source pill and editor, and the profile state, for a refresh."""
         key, _value = change
         if not self._stale_source_keys:
-            self.call_after_refresh(self._refresh_source_pills)
+            self.call_after_refresh(self._refresh_changed_rows)
         self._stale_source_keys.add(key)
 
-    def _refresh_source_pills(self) -> None:
-        """Repaint the title of every queued row from one read of the setting sources."""
+    def _refresh_changed_rows(self) -> None:
+        """Repaint every queued row's title and editor from one read of the setting sources."""
         keys, self._stale_source_keys = self._stale_source_keys, set()
         sources = setting_sources()
         for key in keys:
             for title in self.query(f"#{ROW_ID_PREFIX}{key} > .setting-title").results(Static):
                 title.update(title_content(key, SETTINGS_MAP[key], sources[key]))
+            self._sync_editor(key)
+        self.reload_profile()
+
+    def _sync_editor(self, key: str) -> None:
+        """Show cfg's value in *key*'s editor, unless the user is typing in it."""
+        defn = SETTINGS_MAP.get(key)
+        editor = self.query(f"#{EDITOR_ID_PREFIX}{key}")
+        if defn is None or not editor or editor.first().has_focus_within:
+            return
+        self._refresh_editor(key, defn, getattr(cfg, key))
+
+    @work(thread=True, exclusive=True, group="profile-load", exit_on_error=False)
+    def reload_profile(self) -> None:
+        """Load the profile state off the loop, then show it on the line and the Profile tab."""
+        call_from_thread(self, self._show_profile, load_snapshot())
+
+    def _show_profile(self, snapshot: ProfileSnapshot) -> None:
+        self.query_one(ProfileLine).show(snapshot)
+        for tab in self.query(ProfileTab):
+            tab.show(snapshot)
+
+    @on(ProfileTab.Stale)
+    def _on_profile_stale(self) -> None:
+        self.reload_profile()
+
+    @on(ProfileLinePill.Jump)
+    def _on_profile_jump(self) -> None:
+        self.show_profile_tab()
+
+    def show_profile_tab(self) -> None:
+        """Activate the Profile tab and put focus on its dropdown."""
+        self.query_one("#settings-tabs", TabbedContent).active = PROFILE_PANE_ID
+        self._populate_pane(PROFILE_PANE_ID)
+        self.call_after_refresh(self._focus_profile_select)
+
+    def _focus_profile_select(self) -> None:
+        for tab in self.query(ProfileTab):
+            tab.focus_select()
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
@@ -251,23 +299,32 @@ class SettingsScreen(Screen[None]):
         if pane is None or pane.id is None:
             return
         self._populate_pane(pane.id)
+        if pane.id == PROFILE_PANE_ID:
+            self.reload_profile()
 
     def populate_all_panes(self) -> None:
         """Force every tab body to populate now (test/agent helper)."""
-        for pane_id in self._pane_groups:
+        for pane_id in self._pane_ids:
             self._populate_pane(pane_id)
 
     def _populate_pane(self, pane_id: str) -> None:
         """Populate a pane's body if known and the body widget is mounted."""
-        group = self._pane_groups.get(pane_id)
-        if group is None:
+        build = self._pane_builder(pane_id)
+        if build is None:
             return
         try:
             body = self.query_one(f"#{pane_id}-body", _LazyGroupBody)
         except Exception:
             log.debug("pane body %s not yet mounted", pane_id, exc_info=True)
             return
-        body.populate(lambda: self._build_pane_widgets(group))
+        body.populate(build)
+
+    def _pane_builder(self, pane_id: str) -> Callable[[], list[Widget]] | None:
+        """The function that builds *pane_id*'s body widgets, or None for an unknown pane."""
+        if pane_id == PROFILE_PANE_ID:
+            return lambda: [ProfileTab()]
+        group = self._pane_groups.get(pane_id)
+        return None if group is None else lambda: self._build_pane_widgets(group)
 
     def _build_pane_widgets(self, group: _PaneGroup) -> list[Widget]:
         """Return the body widgets for one settings tab."""
@@ -721,9 +778,7 @@ class SettingsScreen(Screen[None]):
             tabs = self.query_one("#settings-tabs", TabbedContent)
         except Exception:
             return
-        pane_ids = list(self._pane_groups)
-        if not pane_ids:
-            return
+        pane_ids = self._pane_ids
         try:
             current = pane_ids.index(tabs.active)
         except ValueError:
@@ -758,7 +813,7 @@ class SettingsScreen(Screen[None]):
             focusables[next_index].focus()
             return
         # At the boundary: advance to the next/previous pane.
-        pane_ids = list(self._pane_groups.keys())
+        pane_ids = self._pane_ids
         if active_pane_id not in pane_ids:
             return
         target_index = (pane_ids.index(active_pane_id) + direction) % len(pane_ids)
