@@ -456,7 +456,7 @@ EMBED_ADOPT_CANCELLED = "Kept the current embedder."
 SETTINGS_RESET_ALL_LABEL = "Reset all defaults"
 SETTINGS_RESET_ALL_CONFIRM_TITLE = "Reset all settings?"
 SETTINGS_RESET_ALL_CONFIRM_MESSAGE = (
-    "Every writable setting will be restored to its built-in default. "
+    "Your value for every writable setting is removed, so each one falls back to its default. "
     "Readonly fields (like installed models) are not affected."
 )
 SETTINGS_RESET_ALL_SUCCESS = "All settings reset to defaults"

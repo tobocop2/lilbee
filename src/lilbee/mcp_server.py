@@ -1102,7 +1102,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
 
 @_tool
 def settings_reset(keys: list[str]) -> dict[str, Any]:
-    """Reset writable settings to their built-in defaults."""
+    """Remove your values; env, profile or default applies."""
     if _transport.http_mounted and requires_services_reset(dict.fromkeys(keys)):
         return _error(provider_reset_refused_message("Resetting"))
     try:

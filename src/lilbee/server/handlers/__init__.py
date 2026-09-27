@@ -29,6 +29,7 @@ from lilbee.server.handlers.config import (
     get_config,
     get_config_defaults,
     get_config_schema,
+    reset_config,
     update_config,
 )
 from lilbee.server.handlers.crawl import crawl_stream
@@ -346,6 +347,7 @@ __all__ = [
     "placement_clear",
     "placement_preview",
     "placement_set",
+    "reset_config",
     "search",
     "set_chat_model",
     "set_embedding_model",

@@ -323,8 +323,14 @@ class SetModelResponse(BaseModel):
     warnings: list[str] = []
 
 
+class ConfigResetRequest(BaseModel):
+    """Request body for POST /api/config/reset."""
+
+    keys: list[str]
+
+
 class ConfigUpdateResponse(BaseModel):
-    """Response for PATCH /api/config."""
+    """Response for PATCH /api/config and POST /api/config/reset."""
 
     updated: list[str]
     reindex_required: bool
