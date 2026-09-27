@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, field_validator
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
+from lilbee.core.config.enums import CrawlRenderMode, KvCacheType, SettingSource
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
@@ -387,6 +387,12 @@ class ConfigResponse(BaseModel):
     """Response for GET /api/config."""
 
     model_config = {"extra": "allow"}
+
+
+class ConfigSourcesResponse(BaseModel):
+    """Response for GET /api/config/sources: the layer that supplies each GET /api/config key."""
+
+    sources: dict[str, SettingSource]
 
 
 class ConfigFieldSchema(BaseModel):

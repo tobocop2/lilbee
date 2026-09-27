@@ -25,7 +25,7 @@ from textual.widgets import (
     TabPane,
 )
 
-from lilbee.app.settings import OCR_SETTING_KEYS
+from lilbee.app.settings import OCR_SETTING_KEYS, setting_sources
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
@@ -57,6 +57,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.cli.tui.widgets.model_pick import apply_model_pick
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import SettingSource
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -171,6 +172,7 @@ class SettingsScreen(Screen[None]):
         # successful save updates it. Keyed by setting key; kept in sync by
         # ``_build_setting_row`` and ``_refresh_editor``.
         self._mount_display: dict[str, str] = {}
+        self._stale_source_keys: set[str] = set()
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -223,8 +225,24 @@ class SettingsScreen(Screen[None]):
         moves it to the next event-loop tick so the user sees the empty pane
         skeleton immediately and the rows hydrate one frame later.
         """
+        self.app.settings_changed_signal.subscribe(self, self._on_setting_changed)
         if self._eagerly_populate is not None:
             self.call_after_refresh(self._populate_pane, self._eagerly_populate)
+
+    def _on_setting_changed(self, change: tuple[str, object]) -> None:
+        """Queue the changed key's source pill for the next refresh."""
+        key, _value = change
+        if not self._stale_source_keys:
+            self.call_after_refresh(self._refresh_source_pills)
+        self._stale_source_keys.add(key)
+
+    def _refresh_source_pills(self) -> None:
+        """Repaint the title of every queued row from one read of the setting sources."""
+        keys, self._stale_source_keys = self._stale_source_keys, set()
+        sources = setting_sources()
+        for key in keys:
+            for title in self.query(f"#{ROW_ID_PREFIX}{key} > .setting-title").results(Static):
+                title.update(title_content(key, SETTINGS_MAP[key], sources[key]))
 
     @on(TabbedContent.TabActivated)
     def _on_tab_activated(self, event: TabbedContent.TabActivated) -> None:
@@ -261,13 +279,16 @@ class SettingsScreen(Screen[None]):
                     classes=API_KEYS_WARNING_CLASS,
                 )
             )
+        sources = setting_sources()
         for key, defn in group.items:
-            widgets.append(self._build_setting_row(key, defn))
+            widgets.append(self._build_setting_row(key, defn, sources[key]))
         return widgets
 
-    def _build_setting_row(self, key: str, defn: SettingDef) -> VerticalGroup:
+    def _build_setting_row(
+        self, key: str, defn: SettingDef, source: SettingSource
+    ) -> VerticalGroup:
         """Construct one setting row with its title, help, editor, and reset."""
-        title = Static(title_content(key, defn), classes="setting-title")
+        title = Static(title_content(key, defn, source), classes="setting-title")
         help_widget = Static(help_content(key, defn), classes="setting-help")
         children: list[Widget] = [title, help_widget]
         if key in model_field_to_picker_scope():

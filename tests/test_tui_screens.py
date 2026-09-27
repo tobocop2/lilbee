@@ -996,6 +996,7 @@ async def test_settings_first_pane_populate_is_deferred():
     with (
         patch.object(SettingsScreen, "_populate_pane") as mock_populate,
         patch.object(SettingsScreen, "call_after_refresh", MagicMock()) as mock_defer,
+        patch.object(SettingsScreen, "app", new_callable=PropertyMock),
     ):
         SettingsScreen.on_mount(screen)
         assert not mock_populate.called, (
@@ -15206,16 +15207,6 @@ async def test_catalog_focused_list_index_returns_highlighted():
 # =============================================================================
 
 
-def test_settings_env_pill_when_env_set(monkeypatch):
-    """env_pill returns a pill when the LILBEE_* env var is exported."""
-    from lilbee.cli.tui.screens.settings_widgets import env_pill
-
-    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
-    pill_content = env_pill("chat_model")
-    assert pill_content is not None
-    assert "LILBEE_CHAT_MODEL" in pill_content.plain
-
-
 @pytest.mark.parametrize("key", ["enable_ocr", "vision_model"])
 def test_settings_help_content_names_the_ocr_engine_on_ocr_rows(key):
     from lilbee.app.settings_map import SETTINGS_MAP
@@ -15252,37 +15243,129 @@ def test_settings_help_content_blank_when_no_help_text():
 
 
 @pytest.mark.parametrize(
-    ("key", "value", "shown"),
-    [("vision_model", "", True), ("chat_model", "", False), ("top_k", "", False)],
+    ("key", "shown"),
+    [("vision_model", True), ("chat_model", False), ("top_k", False)],
 )
-def test_settings_env_pill_follows_whether_an_empty_env_value_overrides(
-    monkeypatch, key, value, shown
-):
+def test_settings_env_pill_follows_whether_an_empty_env_value_overrides(monkeypatch, key, shown):
     """An empty LILBEE_* value shows the pill only where it clears the setting."""
-    from lilbee.cli.tui.screens.settings_widgets import env_pill
+    from lilbee.app.settings import setting_sources
+    from lilbee.cli.tui.screens.settings_widgets import source_pill
 
-    monkeypatch.setenv(f"LILBEE_{key.upper()}", value)
-    assert (env_pill(key) is not None) is shown
+    env_name = f"LILBEE_{key.upper()}"
+    monkeypatch.setenv(env_name, "")
+    pill_content = source_pill(key, setting_sources()[key])
+    assert (pill_content is not None and env_name in pill_content.plain) is shown
 
 
-def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
-    """title_content carries the env var name when LILBEE_* is exported."""
+def _row_title(app, key: str) -> str:
+    """The rendered text of one setting row's title line."""
+    return str(app.screen.query_one(f"#row-{key} .setting-title", Static).content)
+
+
+def test_settings_title_content_pill_per_source():
+    """title_content pills the two override sources only."""
     from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.settings_widgets import title_content
+    from lilbee.core.config.enums import SettingSource
 
-    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
-    content = title_content("chat_model", SETTINGS_MAP["chat_model"])
-    assert "LILBEE_CHAT_MODEL" in content.plain
+    defn = SETTINGS_MAP["top_k"]
+    titles = {source: title_content("top_k", defn, source).plain for source in SettingSource}
+    assert msg.SETTINGS_SOURCE_USER_PILL in titles[SettingSource.USER]
+    assert "LILBEE_TOP_K" in titles[SettingSource.ENV]
+    for source in (SettingSource.PROFILE, SettingSource.BUILT_IN, SettingSource.AUTO):
+        assert msg.SETTINGS_SOURCE_USER_PILL not in titles[source]
+        assert "LILBEE_TOP_K" not in titles[source]
 
 
-def test_settings_title_content_no_env_pill_when_unset(monkeypatch):
-    """title_content omits the env pill when the LILBEE_* var is not set."""
-    from lilbee.app.settings_map import SETTINGS_MAP
-    from lilbee.cli.tui.screens.settings_widgets import title_content
+async def test_env_pill_hidden_for_empty_env_var(monkeypatch):
+    """An empty LILBEE_X= has no effect, so its row shows no env pill; a set one does."""
+    monkeypatch.setenv("LILBEE_TOP_K", "")
+    monkeypatch.setenv("LILBEE_CHUNK_SIZE", "900")
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_size")))
+        assert "LILBEE_CHUNK_SIZE" in _row_title(app, "chunk_size")
+        assert "LILBEE_TOP_K" not in _row_title(app, "top_k")
 
-    monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
-    content = title_content("chat_model", SETTINGS_MAP["chat_model"])
-    assert "LILBEE_CHAT_MODEL" not in content.plain
+
+async def test_user_pill_only_on_set_key(tmp_path):
+    """A key in config.toml carries "set by you"; a key absent from it does not."""
+    from lilbee.cli.tui import messages as msg
+
+    persistent_settings.update_values(tmp_path, {"top_k": 7})
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
+        assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
+        assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "chunk_overlap")
+
+
+async def test_no_pill_on_built_in_or_auto():
+    """A built-in or derived value follows lilbee's default and shows no source pill."""
+    from lilbee.app.settings import setting_sources
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config.enums import SettingSource
+
+    sources = setting_sources()
+    assert sources["temperature"] is SettingSource.BUILT_IN
+    assert sources["num_ctx"] is SettingSource.AUTO
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(app.screen.query("#row-num_ctx")))
+        for key in ("temperature", "num_ctx"):
+            title = _row_title(app, key)
+            assert msg.SETTINGS_SOURCE_USER_PILL not in title
+            assert f"LILBEE_{key.upper()}" not in title
+
+
+async def test_user_pill_follows_save_and_reset(tmp_path):
+    """Saving a value adds "set by you"; Ctrl+R deletes the value and the pill with it."""
+    from textual.widgets import Input
+
+    from lilbee.cli.tui import messages as msg
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-top_k", Input)
+        assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
+        editor.focus()
+        await wait_until(pilot, lambda: app.screen.focused is editor)
+        editor.value = ""
+        await pilot.press("7", "enter")
+        await wait_until(pilot, lambda: msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k"))
+        assert persistent_settings.load(tmp_path) == {"top_k": 7}
+        assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
+        await pilot.press("ctrl+r")
+        await wait_until(
+            pilot, lambda: msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
+        )
+        assert "top_k" not in persistent_settings.load(tmp_path)
+        assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
+
+
+async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
+    """A reset of two keys repaints both pills from one read of the setting sources."""
+    from lilbee.app import settings as app_settings
+    from lilbee.cli.tui import messages as msg
+
+    persistent_settings.update_values(tmp_path, {"top_k": 7, "chunk_overlap": 50})
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(app.screen.query("#row-chunk_overlap")))
+        assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "top_k")
+        assert msg.SETTINGS_SOURCE_USER_PILL in _row_title(app, "chunk_overlap")
+        with patch(
+            "lilbee.cli.tui.screens.settings.setting_sources",
+            side_effect=app_settings.setting_sources,
+        ) as reads:
+            app.reset_settings(["top_k", "chunk_overlap"])
+            await wait_until(pilot, lambda: reads.call_count > 0)
+            for _ in range(3):
+                await pilot.pause()
+        assert reads.call_count == 1
+        assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
+        assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "chunk_overlap")
 
 
 def test_catalog_grid_scroll_hint_text_loading_branch():

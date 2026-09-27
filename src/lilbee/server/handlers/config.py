@@ -16,6 +16,7 @@ from lilbee.app.settings import (
     provider_reset_refused_message,
     requires_services_reset,
     reset_settings,
+    setting_sources,
 )
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
@@ -31,6 +32,7 @@ from lilbee.server.models import (
     ConfigFieldSchema,
     ConfigResponse,
     ConfigSchemaResponse,
+    ConfigSourcesResponse,
     ConfigUpdateResponse,
 )
 
@@ -79,6 +81,14 @@ async def get_config() -> ConfigResponse:
     dumped = cfg.model_dump()
     result = {k: v for k, v in dumped.items() if k in _PUBLIC_CONFIG_FIELDS}
     return ConfigResponse(**result)
+
+
+async def get_config_sources() -> ConfigSourcesResponse:
+    """Return the source of every value GET /api/config answers."""
+    sources = await asyncio.to_thread(setting_sources)
+    return ConfigSourcesResponse(
+        sources={k: v for k, v in sources.items() if k in _PUBLIC_CONFIG_FIELDS}
+    )
 
 
 @functools.cache

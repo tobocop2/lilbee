@@ -1114,6 +1114,41 @@ class TestConfigRoute:
         assert "rag_system_prompt" in resp.json()
 
 
+class TestConfigSourcesRoute:
+    def test_config_sources_route_covers_every_public_key(self, client):
+        """The sources payload names every key GET /api/config answers, and no other."""
+        config_keys = set(client.get("/api/config").json())
+        resp = client.get("/api/config/sources")
+        assert resp.status_code == 200
+        sources = resp.json()["sources"]
+        assert config_keys
+        assert set(sources) == config_keys
+
+    def test_each_key_carries_the_layer_that_supplies_it(self, client, isolated_env, monkeypatch):
+        """Env beats config.toml on top_k; chunk_size, named only in config.toml, stays user."""
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        monkeypatch.setenv("LILBEE_TEMPERATURE", "")
+        sources = client.get("/api/config/sources").json()["sources"]
+        assert sources["top_k"] == "env"
+        assert sources["chunk_size"] == "user"
+        assert sources["temperature"] == "built_in"
+        assert sources["num_ctx"] == "auto"
+
+    def test_get_config_shape_has_no_source_key(self, client, isolated_env):
+        """GET /api/config stays a flat key-to-value map beside the new route."""
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        cfg.top_k = 7
+        data = client.get("/api/config").json()
+        assert "sources" not in data
+        assert "source" not in data
+        assert data["top_k"] == 7
+
+
 class TestConfigDefaultsRoute:
     def test_returns_writable_defaults(self, client):
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
