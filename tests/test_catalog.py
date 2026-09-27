@@ -561,6 +561,36 @@ class TestFetchHfModels:
         assert page.next_cursor == "abc123"
         assert page.has_more is True
 
+    @pytest.mark.parametrize(
+        "link",
+        [
+            pytest.param(
+                '<https://huggingface.co:abc/api/models?cursor=x>; rel="next"', id="bad-port"
+            ),
+            pytest.param(
+                '<https://huggingface.co/api/models?cursor=>; rel="next"', id="empty-cursor"
+            ),
+            pytest.param('<https://huggingface.co/api/models?limit=2>; rel="next"', id="no-cursor"),
+        ],
+    )
+    def test_unusable_next_link_ends_the_listing(
+        self, monkeypatch: pytest.MonkeyPatch, link: str
+    ) -> None:
+        """A next link with no usable cursor is the last page, not an error or a loop."""
+        data = [{"id": "user/model", "downloads": 100, "siblings": []}]
+        calls: list[object] = []
+
+        def mock_get(*args: object, **kwargs: Any) -> httpx.Response:
+            calls.append(kwargs["params"].get("cursor"))
+            return httpx.Response(200, json=data, headers={"Link": link})
+
+        monkeypatch.setattr(httpx, "get", mock_get)
+        result = get_catalog(task=ModelTask.CHAT, featured=False, limit=5)
+        assert [m.hf_repo for m in result.models] == ["user/model"]
+        assert result.has_more is False
+        assert result.truncated is False
+        assert calls == [None]
+
     def test_cursor_is_sent_and_skip_is_not(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A cursor pages the listing; the deprecated skip parameter is never sent."""
         sent: list[httpx.QueryParams] = []
@@ -1713,7 +1743,7 @@ class TestHfRowsMergeTags:
                 "sentence-similarity": [self._row("b/high-GGUF", 9000)],
             },
         )
-        rows = list(_query._hf_rows(ModelTask.EMBEDDING, ""))
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
         assert [m.hf_repo for m in rows] == ["b/high-GGUF", "a/low-GGUF"]
 
     def test_rows_dedupe_a_repo_listed_under_both_tags(
@@ -1721,7 +1751,7 @@ class TestHfRowsMergeTags:
     ) -> None:
         dupe = self._row("a/dupe-GGUF", 500)
         stub_hf_listing(monkeypatch, {"feature-extraction": [dupe], "sentence-similarity": [dupe]})
-        rows = list(_query._hf_rows(ModelTask.EMBEDDING, ""))
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
         assert [m.hf_repo for m in rows] == ["a/dupe-GGUF"]
 
     def test_rows_follow_cursors_across_pages_of_both_tags(
@@ -1734,7 +1764,7 @@ class TestHfRowsMergeTags:
         calls = stub_hf_listing(
             monkeypatch, {"feature-extraction": tag_a, "sentence-similarity": tag_b}
         )
-        rows = list(_query._hf_rows(ModelTask.EMBEDDING, ""))
+        rows = list(_query._HfScan(ModelTask.EMBEDDING, "").rows())
         by_downloads = sorted(tag_a + tag_b, key=lambda m: m.downloads, reverse=True)
         assert [m.hf_repo for m in rows] == [m.hf_repo for m in by_downloads]
         assert sorted(str(c["cursor"]) for c in calls) == [str(size), str(size), "None", "None"]
@@ -1745,9 +1775,19 @@ class TestHfRowsMergeTags:
         pages = _query._HF_SCAN_MAX_PAGES
         endless = [make_test_catalog_model(name=f"Hf{i}") for i in range(size * (pages + 1))]
         calls = stub_hf_listing(monkeypatch, {"text-generation": endless})
-        rows = list(_query._hf_rows(ModelTask.CHAT, ""))
+        scan = _query._HfScan(ModelTask.CHAT, "")
+        rows = list(scan.rows())
         assert len(rows) == size * pages
         assert len(calls) == pages
+        assert scan.truncated is True
+
+    def test_scan_that_reaches_the_end_is_not_truncated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model()]})
+        scan = _query._HfScan(ModelTask.CHAT, "")
+        assert len(list(scan.rows())) == 1
+        assert scan.truncated is False
 
 
 class TestCatalogFiltersBeforePaging:
@@ -1825,6 +1865,32 @@ class TestCatalogFiltersBeforePaging:
                 break
         assert requests == 3
         assert shown == [f"test/Hf{i:03d}" for i in range(49, 600, 50)]
+
+    def test_listing_cut_short_by_the_scan_bound_says_so(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Matches past the scan bound are unreachable, so the page reports truncated."""
+        bound = _query._HF_SCAN_PAGE_SIZE * _query._HF_SCAN_MAX_PAGES
+        rows = [
+            replace(
+                make_test_catalog_model(name=f"Hf{i:05d}"),
+                params=30_000_000_000 if i in (bound - 1, bound + 1) else 1_000_000_000,
+            )
+            for i in range(bound + 10)
+        ]
+        stub_hf_listing(monkeypatch, {"text-generation": rows})
+        page = get_catalog(task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5)
+        assert [m.hf_repo for m in page.models] == [f"test/Hf{bound - 1:05d}"]
+        assert page.has_more is False
+        assert page.truncated is True
+
+    def test_listing_that_ends_is_not_truncated(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        stub_hf_listing(monkeypatch, {"text-generation": self._sparse_listing()})
+        page = get_catalog(
+            task=ModelTask.CHAT, size=CatalogSize.LARGE, featured=False, limit=5, offset=10
+        )
+        assert page.has_more is False
+        assert page.truncated is False
 
     def test_unfiltered_listing_is_unchanged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """With no filter the pages are the picks then the HuggingFace rows in order."""

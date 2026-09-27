@@ -3700,6 +3700,20 @@ class TestModelsCatalogFiltersBeforePaging:
         assert page.has_more is True
         assert page.next_offset == 1
 
+    async def test_truncated_scan_reaches_the_response(self, monkeypatch) -> None:
+        import lilbee.catalog.query as query
+
+        monkeypatch.setattr(query, "_HF_SCAN_MAX_PAGES", 1)
+        page = await handlers.models_catalog(task="chat", search="zzz", source="native")
+        assert page.models == []
+        assert page.has_more is False
+        assert page.truncated is True
+
+    async def test_listing_that_ends_is_not_truncated(self) -> None:
+        page = await handlers.models_catalog(task="chat", search="zzz", source="native")
+        assert page.has_more is False
+        assert page.truncated is False
+
     async def test_invalid_source_names_the_valid_values(self) -> None:
         with pytest.raises(ValueError, match="invalid source 'cloud'; expected one of: native"):
             await handlers.models_catalog(source="cloud")

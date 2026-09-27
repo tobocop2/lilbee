@@ -128,12 +128,16 @@ def hf_headers() -> dict[str, str]:
 
 
 def _next_cursor(resp: httpx.Response) -> str | None:
-    """The cursor of the page after *resp*, None on the last page."""
+    """The cursor of the page after *resp*; None on the last page or an unusable next link."""
     link = resp.links.get("next")
     if link is None:
         return None
-    cursor: str | None = httpx.URL(link["url"]).params.get(_HF_CURSOR_PARAM)
-    return cursor
+    try:
+        cursor: str | None = httpx.URL(link["url"]).params.get(_HF_CURSOR_PARAM)
+    except httpx.InvalidURL:
+        log.debug("Ignoring an unparseable HuggingFace next link: %s", link["url"])
+        return None
+    return cursor or None
 
 
 def _hf_search_value(search: str) -> str:

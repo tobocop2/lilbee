@@ -2093,6 +2093,7 @@ class TestCatalogPriorScrollAndPrefetchEdges:
         }
         screen._grid_view = True
         screen._hf_has_more_by_task = {ModelTask.CHAT: True}
+        screen._search_has_more = False
         screen._loading_more = False
         fake_container = mock.MagicMock()
         fake_container.query.return_value = []

@@ -499,6 +499,7 @@ async def models_catalog(
         offset=offset,
         has_more=has_more,
         next_offset=offset + limit if has_more else None,
+        truncated=result.truncated,
         models=hosted[offset : offset + limit] + native_rows,
     )
 

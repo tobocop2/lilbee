@@ -2250,6 +2250,22 @@ class TestLilbeeLabel:
 class TestCatalogBrowseMcp:
     """MCP catalog_browse exposes the featured catalog + HF for any model role."""
 
+    @pytest.mark.parametrize("pages, truncated", [(1, True), (10, False)])
+    def test_browse_reports_whether_the_scan_was_cut_short(
+        self, isolated_env, mock_svc, monkeypatch, pages, truncated
+    ):
+        """A scan that stops at its bound with rows unread says the listing is truncated."""
+        import lilbee.catalog.query as query
+        from conftest import make_test_catalog_model, stub_hf_listing
+
+        monkeypatch.setattr(query, "_HF_SCAN_MAX_PAGES", pages)
+        rows = [make_test_catalog_model(name=f"Hf{i}") for i in range(300)]
+        stub_hf_listing(monkeypatch, {"text-generation": rows})
+        result = catalog_browse(task="chat", search="zzz", featured=False)
+        assert result["models"] == []
+        assert result["has_more"] is False
+        assert result["truncated"] is truncated
+
     def test_browse_returns_featured_embedding_models(self, isolated_env, mock_svc):
         """task=embedding + featured=true returns the curated embedding catalog."""
         # featured=True skips the live HF call; the real HfClient never runs.

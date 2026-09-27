@@ -155,13 +155,18 @@ class CatalogModel:
 
 @dataclass(frozen=True)
 class CatalogResult:
-    """Paginated catalog result."""
+    """Paginated catalog result.
+
+    ``truncated`` is True when the HuggingFace scan stopped at its bound with
+    rows left unread, so matches past them are unreachable at any offset.
+    """
 
     total: int | None
     limit: int
     offset: int
     models: list[CatalogModel]
     has_more: bool = False
+    truncated: bool = False
 
 
 @dataclass(frozen=True)

@@ -96,9 +96,10 @@ def get_catalog(
     leading = _sort_models([m for m in picks if keep(m)], sort)
     wanted = offset + limit + 1 - len(leading)
     hf_matches: list[CatalogModel] = []
+    scan = _HfScan(task, search)
     if not featured and wanted > 0:
         pick_repos = {m.hf_repo for m in picks}
-        rows = (m for m in _hf_rows(task, search) if m.hf_repo not in pick_repos)
+        rows = (m for m in scan.rows() if m.hf_repo not in pick_repos)
         hf_matches = list(islice(filter(keep, rows), wanted))
     window = page_window(len(leading), offset, limit)
     hf_page = hf_matches[window.rest_offset : window.rest_offset + window.rest_limit]
@@ -108,36 +109,45 @@ def get_catalog(
         offset=offset,
         models=leading[offset : offset + limit] + _sort_models(hf_page, sort),
         has_more=len(leading) + len(hf_matches) > offset + limit,
+        truncated=scan.truncated,
     )
 
 
-def _tag_rows(pipeline_tag: str, library: str | None, search: str) -> Iterator[CatalogModel]:
-    """HuggingFace rows for one pipeline tag, most downloaded first, up to the scan bound."""
-    hf_client = get_services().hf_client
-    cursor: str | None = None
-    for _ in range(_HF_SCAN_MAX_PAGES):
-        page = hf_client.fetch_models(
-            pipeline_tag=pipeline_tag,
-            limit=_HF_SCAN_PAGE_SIZE,
-            library=library,
-            search=search,
-            cursor=cursor,
-        )
-        yield from page.models
-        if page.next_cursor is None:
-            return
-        cursor = page.next_cursor
+class _HfScan:
+    """A lazy read of the HuggingFace rows for one browse, bounded per pipeline tag."""
 
+    def __init__(self, task: ModelTask | None, search: str) -> None:
+        self._task = task
+        self._search = search
+        self.truncated = False
 
-def _hf_rows(task: ModelTask | None, search: str) -> Iterator[CatalogModel]:
-    """HuggingFace rows for *task* across its pipeline tags, most downloaded first, deduped."""
-    hf_tags, hf_library = task_to_pipeline(task)
-    streams = [_tag_rows(tag, hf_library, search) for tag in hf_tags]
-    seen: set[str] = set()
-    for model in heapq.merge(*streams, key=_by_downloads_desc):
-        if model.hf_repo not in seen:
-            seen.add(model.hf_repo)
-            yield model
+    def rows(self) -> Iterator[CatalogModel]:
+        """Rows across the task's pipeline tags, most downloaded first, deduped."""
+        hf_tags, hf_library = task_to_pipeline(self._task)
+        streams = [self._tag_rows(tag, hf_library) for tag in hf_tags]
+        seen: set[str] = set()
+        for model in heapq.merge(*streams, key=_by_downloads_desc):
+            if model.hf_repo not in seen:
+                seen.add(model.hf_repo)
+                yield model
+
+    def _tag_rows(self, pipeline_tag: str, library: str | None) -> Iterator[CatalogModel]:
+        """Rows for one pipeline tag; sets ``truncated`` when the bound leaves pages unread."""
+        hf_client = get_services().hf_client
+        cursor: str | None = None
+        for _ in range(_HF_SCAN_MAX_PAGES):
+            page = hf_client.fetch_models(
+                pipeline_tag=pipeline_tag,
+                limit=_HF_SCAN_PAGE_SIZE,
+                library=library,
+                search=self._search,
+                cursor=cursor,
+            )
+            yield from page.models
+            if page.next_cursor is None:
+                return
+            cursor = page.next_cursor
+        self.truncated = True
 
 
 def _by_downloads_desc(model: CatalogModel) -> int:

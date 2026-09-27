@@ -1183,6 +1183,7 @@ def catalog_browse(
         "limit": result.limit,
         "offset": result.offset,
         "has_more": result.has_more,
+        "truncated": result.truncated,
         "models": [
             {
                 "ref": m.hf_repo,
