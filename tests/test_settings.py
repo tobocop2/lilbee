@@ -1072,11 +1072,13 @@ class TestResolverIsTheOnlyWriter:
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
 
+        # temperature carries no profile scope, so this [profile.values] entry
+        # is dropped and the clear falls to the built-in default, same as null.
         self._write_config("[profile.values]\ntemperature = 0.7\n")
         appset.apply_settings_update({"temperature": 0.3})
         assert cfg.temperature == 0.3
         appset.apply_settings_update({"temperature": ""})
-        assert cfg.temperature == 0.7
+        assert cfg.temperature == 0.1
         assert "temperature" not in settings.load(cfg.data_root)
 
     def test_null_update_over_invalid_profile_value_warns_and_keeps_cfg_valid(self, caplog):
