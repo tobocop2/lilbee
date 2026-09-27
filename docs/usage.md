@@ -866,7 +866,7 @@ lilbee ask "Explain this" --model qwen3
 | Command | Description |
 |---------|-------------|
 | `lilbee remove manual.pdf` | Remove from the index (source files are always kept) |
-| `lilbee remove reports/2024` | Remove every document indexed under a folder |
+| `lilbee remove reports/2024` | Remove every document and held-out file under a folder |
 | `lilbee remove '**/*.log'` | Remove every source matching a glob pattern |
 | `lilbee chunks manual.pdf` | Inspect how a document was chunked |
 | `lilbee sync` | Re-index changed files |
@@ -875,6 +875,14 @@ lilbee ask "Explain this" --model qwen3
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
 | `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync or import runs on the same library |
+
+A file that fails to ingest is held out of later syncs, and `lilbee status`
+lists it. `lilbee remove` also takes held-out files, by name, folder or glob.
+The TUI `/delete` takes a held-out file by name, and Tab completes it. A removed
+file stays out of every later sync and leaves the status list.
+`lilbee sync --retry-skipped` retries failed files only, so it does not bring a
+removed file back. To restore a removed file, edit it, add its path again, or
+run `lilbee rebuild`.
 
 ### Wiki
 
