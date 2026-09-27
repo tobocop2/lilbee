@@ -1393,14 +1393,14 @@ class TestConfigResetRoute:
         from lilbee.core import settings
 
         (isolated_env / "config.toml").write_text(
-            "temperature = 0.3\n[profile.values]\ntemperature = -5.0\n", encoding="utf-8"
+            "max_distance = 0.3\n[profile.values]\nmax_distance = -5.0\n", encoding="utf-8"
         )
-        cfg.temperature = 0.3
-        resp = client.post("/api/config/reset", json={"keys": ["temperature"]})
+        cfg.max_distance = 0.3
+        resp = client.post("/api/config/reset", json={"keys": ["max_distance"]})
         assert resp.status_code == 400
-        assert "Cannot reset 'temperature': its profile value -5.0 is invalid" in resp.text
-        assert cfg.temperature == 0.3
-        assert settings.load(isolated_env)["temperature"] == 0.3
+        assert "Cannot reset 'max_distance': its profile value -5.0 is invalid" in resp.text
+        assert cfg.max_distance == 0.3
+        assert settings.load(isolated_env)["max_distance"] == 0.3
 
     def test_documents_dir_answers_400_without_naming_an_mcp_tool(self, client, isolated_env):
         resp = client.post("/api/config/reset", json={"keys": ["documents_dir"]})

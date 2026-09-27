@@ -2,15 +2,22 @@
 
 from pathlib import Path
 
+import pytest
+
+from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup
+from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import Config
-from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.enums import ProfileScope, SettingSource
 from lilbee.core.config.resolve import (
+    PROFILE_FIELDS,
     SettingLayers,
     builtin_value,
     read_layers,
+    read_profile_table,
     resolve,
     resolve_all,
 )
+from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
 
 def _write(root: Path, text: str) -> Path:
@@ -44,10 +51,10 @@ def test_user_beats_profile_table_value_which_loses(tmp_path):
 
 
 def test_profile_table_beats_built_in(tmp_path):
-    root = _write(tmp_path / "root", "[profile.values]\ntemperature = 0.7\n")
+    root = _write(tmp_path / "root", "[profile.values]\nmax_distance = 0.7\n")
     layers = read_layers(root)
-    assert resolve("temperature", layers).value == 0.7
-    assert resolve("temperature", layers).source is SettingSource.PROFILE
+    assert resolve("max_distance", layers).value == 0.7
+    assert resolve("max_distance", layers).source is SettingSource.PROFILE
     assert resolve("top_p", layers).source is SettingSource.BUILT_IN
     assert "profile" not in layers.user
 
@@ -85,10 +92,12 @@ def test_empty_env_var_is_not_a_source(tmp_path, monkeypatch):
 
 
 def test_empty_string_in_config_toml_is_not_a_source(tmp_path):
-    root = _write(tmp_path / "root", 'chat_model = ""\n[profile.values]\nseed = ""\ntop_k = 4\n')
+    root = _write(
+        tmp_path / "root", 'chat_model = ""\n[profile.values]\nrerank_min_score = ""\ntop_k = 4\n'
+    )
     layers = read_layers(root)
     assert resolve("chat_model", layers).source is SettingSource.BUILT_IN
-    assert resolve("seed", layers).source is SettingSource.BUILT_IN
+    assert resolve("rerank_min_score", layers).source is SettingSource.BUILT_IN
     assert resolve("top_k", layers).source is SettingSource.PROFILE
 
 
@@ -172,3 +181,60 @@ def test_host_computed_default_is_auto(tmp_path):
 def test_fixed_default_is_built_in(tmp_path):
     layers = read_layers(tmp_path / "absent")
     assert resolve("main_gpu", layers).source is SettingSource.BUILT_IN
+
+
+def test_disallowed_profile_value_is_dropped_with_warning(tmp_path, caplog):
+    root = _write(
+        tmp_path / "root",
+        '[profile]\nname = "x"\n[profile.values]\nchat_model = "a/b/c.gguf"\nchunk_size = 900\n',
+    )
+    with caplog.at_level("WARNING", logger="lilbee.core.config.resolve"):
+        layers = read_layers(root)
+    assert layers.profile == {"chunk_size": 900}
+    assert resolve("chat_model", layers).source is SettingSource.BUILT_IN
+    assert resolve("chunk_size", layers).source is SettingSource.PROFILE
+    assert any("chat_model" in record.getMessage() for record in caplog.records)
+    table = read_profile_table(root)
+    assert (table.name, dict(table.values)) == ("x", {"chunk_size": 900})
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["", 'profile = "Default"\n', "[profile]\nname = 3\nvalues = 4\n"],
+)
+def test_missing_or_malformed_profile_table_has_no_name_or_values(tmp_path, text):
+    table = read_profile_table(_write(tmp_path / "root", text))
+    assert (table.name, dict(table.values)) == (None, {})
+
+
+def test_profile_scope_matches_settings_group_and_fields_are_writable_not_derived_or_model():
+    groups = {
+        SettingGroup.INGEST: ProfileScope.INGEST,
+        SettingGroup.RETRIEVAL: ProfileScope.RETRIEVAL,
+    }
+    assert len(PROFILE_FIELDS) > 40
+    derived = set()
+    for key, scope in PROFILE_FIELDS.items():
+        extra = Config.model_fields[key].json_schema_extra
+        assert isinstance(extra, dict)
+        assert key in WRITABLE_CONFIG_FIELDS, key
+        assert key in PUBLIC_CONFIG_FIELDS, key
+        assert not extra.get("write_only"), key
+        assert key not in MODEL_ROLE_FIELDS, key
+        assert groups[SETTINGS_MAP[key].group] is scope, key
+        if extra.get("derived"):
+            derived.add(key)
+    # enable_ocr's None means "on"; every other profile field has a fixed built-in value.
+    assert derived == {"enable_ocr"}
+    retrieval = {k for k, d in SETTINGS_MAP.items() if d.group is SettingGroup.RETRIEVAL}
+    assert retrieval == {k for k, s in PROFILE_FIELDS.items() if s is ProfileScope.RETRIEVAL}
+
+
+def test_config_construction_ignores_a_disallowed_profile_value(tmp_path, monkeypatch):
+    root = _write(
+        tmp_path / "root", "[profile.values]\ntemperature = 0.7\nlayout_detection = true\n"
+    )
+    monkeypatch.setenv("LILBEE_DATA", str(root))
+    built = Config()
+    assert built.temperature == builtin_value("temperature") == 0.1
+    assert built.layout_detection is True

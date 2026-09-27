@@ -133,6 +133,13 @@ class KvCacheType(StrEnum):
     Q4_0 = "q4_0"
 
 
+class ProfileScope(StrEnum):
+    """Which part of lilbee a profile-held setting tunes."""
+
+    INGEST = "ingest"
+    RETRIEVAL = "retrieval"
+
+
 class SettingSource(StrEnum):
     """The layer that supplies a setting's effective value, highest precedence first."""
 

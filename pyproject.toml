@@ -73,6 +73,8 @@ dependencies = [
     # install: numpy, pyyaml, requests and tqdm all already arrive with
     # huggingface_hub, lancedb and lilbee itself.
     "gguf>=0.19",
+    # PEP 440 comparison for a profile's min_lilbee; stdlib has none.
+    "packaging>=24",
     # The read side is stdlib tomllib; this is its write half.
     "tomli-w>=1.0",
     "cachetools>=7.1.4",
@@ -172,7 +174,6 @@ dev = [
     "chardet>=7",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
-    "packaging>=24",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

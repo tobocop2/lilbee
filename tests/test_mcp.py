@@ -1957,15 +1957,15 @@ class TestSettingsMcp:
 
         cfg.data_root = isolated_env
         (isolated_env / "config.toml").write_text(
-            "temperature = 0.3\ntop_k = 7\n[profile.values]\ntemperature = 0.7\n",
+            "max_distance = 0.3\ntop_k = 7\n[profile.values]\nmax_distance = 0.7\n",
             encoding="utf-8",
         )
-        cfg.temperature = 0.3
-        result = settings_reset(["temperature"])
-        assert result["updated"] == ["temperature"]
-        assert cfg.temperature == 0.7
+        cfg.max_distance = 0.3
+        result = settings_reset(["max_distance"])
+        assert result["updated"] == ["max_distance"]
+        assert cfg.max_distance == 0.7
         stored = persistent.load(isolated_env)
-        assert "temperature" not in stored
+        assert "max_distance" not in stored
         assert stored["top_k"] == 7
 
     def test_settings_reset_warns_when_it_leaves_ocr_off_with_a_vision_model(self, isolated_env):
