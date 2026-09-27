@@ -23,19 +23,16 @@ from lilbee.cli.tui.screens.profile_dialogs import (
     add_cost_column,
     credit_text,
     effect_cell,
+    has_project_folder,
     run_profile_op,
+    save_folders,
     start_profile_switch,
     value_text,
 )
+from lilbee.cli.tui.screens.profile_library import ProfileLibrary
 from lilbee.cli.tui.screens.settings_widgets import user_pill
 from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
-from lilbee.core.config import cfg
-from lilbee.core.profile_files import (
-    ProfileCatalog,
-    ProfileFolder,
-    ProfileStore,
-    profile_folders,
-)
+from lilbee.core.profile_files import ProfileCatalog, ProfileFolder, ProfileStore
 
 if TYPE_CHECKING:
     from lilbee.cli.tui.app import LilbeeApp
@@ -51,6 +48,15 @@ class ProfileAction(StrEnum):
     SAVE_AS = "save_as"
     DISCARD = "discard"
     REAPPLY = "reapply"
+    MANAGE = "manage"
+
+
+_ROW_ACTIONS = (
+    ProfileAction.UPDATE,
+    ProfileAction.SAVE_AS,
+    ProfileAction.DISCARD,
+    ProfileAction.REAPPLY,
+)
 
 
 @dataclass(frozen=True)
@@ -70,7 +76,7 @@ def load_snapshot() -> ProfileSnapshot:
         active=profiles.active(store),
         catalog=profiles.list_profiles(store),
         changes=profiles.your_changes(),
-        has_project=ProfileFolder.PROJECT in dict(profile_folders(cfg.data_root)),
+        has_project=has_project_folder(),
     )
 
 
@@ -90,6 +96,7 @@ class ProfileTab(Vertical):
             ProfileAction.SAVE_AS: self._save_as,
             ProfileAction.DISCARD: self._discard,
             ProfileAction.REAPPLY: self._reapply,
+            ProfileAction.MANAGE: self._manage,
         }
 
     def compose(self) -> ComposeResult:
@@ -110,8 +117,14 @@ class ProfileTab(Vertical):
         add_cost_column(table)
         yield table
         with Horizontal(id="profile-actions"):
-            for action in ProfileAction:
+            for action in _ROW_ACTIONS:
                 yield ConfirmPill("", pill_id=f"profile-{action.value}", answer=action)
+        yield Static(msg.PROFILE_ALL_TITLE, classes="setting-title profile-section")
+        yield Static(msg.PROFILE_ALL_HELP, classes="setting-help")
+        with Horizontal(id="profile-manage-row"):
+            yield ConfirmPill(
+                msg.PROFILE_MANAGE_LABEL, pill_id="profile-manage", answer=ProfileAction.MANAGE
+            )
 
     def on_mount(self) -> None:
         self._stale()
@@ -172,7 +185,7 @@ class ProfileTab(Vertical):
             ProfileAction.DISCARD: msg.PROFILE_ACTION_DISCARD,
             ProfileAction.REAPPLY: msg.PROFILE_ACTION_REAPPLY.format(name=active.name),
         }
-        for action in ProfileAction:
+        for action in _ROW_ACTIONS:
             pill = self.query_one(f"#profile-{action.value}", ConfirmPill)
             pill.update(labels[action])
             pill.display = shown[action]
@@ -209,10 +222,12 @@ class ProfileTab(Vertical):
 
     def _save_as(self, snapshot: ProfileSnapshot) -> None:
         dialog = SaveProfileDialog(
-            active_name=snapshot.active.name,
-            change_count=len(snapshot.changes),
+            title=msg.PROFILE_SAVE_TITLE,
+            explain=msg.PROFILE_SAVE_EXPLAIN.format(
+                name=snapshot.active.name, count=len(snapshot.changes)
+            ),
             catalog=snapshot.catalog,
-            has_project=snapshot.has_project,
+            folders=save_folders(snapshot.has_project),
         )
         self.app.push_screen(dialog, self._on_save_request)
 
@@ -238,6 +253,9 @@ class ProfileTab(Vertical):
 
     def _reapply(self, snapshot: ProfileSnapshot) -> None:
         start_profile_switch(self.app, self, snapshot.active.name, self._stale)
+
+    def _manage(self, snapshot: ProfileSnapshot) -> None:
+        self.app.push_screen(ProfileLibrary(on_change=self._stale))
 
 
 def _change_cells(row: ChangeRow) -> tuple[str | Content, ...]:

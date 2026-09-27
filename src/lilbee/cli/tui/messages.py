@@ -860,6 +860,45 @@ PROFILE_SAVE_LABEL = "Save"
 PROFILE_SAVED = "Saved {name} to {path}."
 PROFILE_UPDATED = "Updated {name}."
 PROFILE_DISCARDED = "Your values are gone; {name}'s values show through."
+PROFILE_ALL_TITLE = "All profiles"
+PROFILE_ALL_HELP = "Apply, duplicate, rename, delete, export or import any profile."
+PROFILE_MANAGE_LABEL = "Manage profiles"
+PROFILE_LIBRARY_TITLE = "Profiles"
+PROFILE_LIBRARY_SHADOWED = "shadowed"
+PROFILE_LIBRARY_BROKEN = "cannot load: {reason}"
+PROFILE_LIBRARY_SHADOWED_NOTE = "Hidden by the {folder} profile with the same name."
+PROFILE_LIBRARY_CHANGES = "Applying it changes"
+PROFILE_LIBRARY_NO_CHANGES = "Applying it changes nothing."
+PROFILE_LIBRARY_UNREACHABLE = (
+    "The name {name} picks another file, so lilbee cannot act on {path} here. "
+    "Rename or remove it in its folder."
+)
+PROFILE_KEY_APPLY = "Apply"
+PROFILE_KEY_DUPLICATE = "Duplicate"
+PROFILE_KEY_RENAME = "Rename"
+PROFILE_KEY_DELETE = "Delete"
+PROFILE_KEY_EXPORT = "Export"
+PROFILE_KEY_IMPORT = "Import"
+PROFILE_KEY_CLOSE = "Close"
+PROFILE_DUPLICATE_TITLE = "Duplicate {name}"
+PROFILE_DUPLICATE_EXPLAIN = "The copy keeps {name}'s values, description and credit."
+PROFILE_DUPLICATE_INITIAL = "{name} copy"
+PROFILE_RENAME_TITLE = "Rename {name}"
+PROFILE_RENAME_EXPLAIN = "The file stays in its folder. This project follows the new name."
+PROFILE_RENAMED = "Renamed {old} to {name}."
+PROFILE_DELETE_TITLE = "Delete {name}?"
+PROFILE_DELETE_MESSAGE = "This removes {path}. Projects that use it keep their recorded copy."
+PROFILE_DELETED = "Deleted {path}."
+PROFILE_PATH_PLACEHOLDER = "Path to a file or a folder"
+PROFILE_PATH_EMPTY = "Type a path."
+PROFILE_EXPORT_TITLE = "Export {name}"
+PROFILE_EXPORT_EXPLAIN = "Writes a file anyone can import. Give a folder or a file path."
+PROFILE_EXPORT_LABEL = "Export"
+PROFILE_EXPORTED = "Exported {name} to {path}."
+PROFILE_IMPORT_TITLE = "Import a profile"
+PROFILE_IMPORT_EXPLAIN = "Checks a profile file and copies it into a profile folder."
+PROFILE_IMPORT_LABEL = "Import"
+PROFILE_IMPORTED = "Imported {name} to {path}."
 
 PROFILE_EFFECT_TEXT: dict[ProfileEffect, str] = {
     ProfileEffect.REINDEX: "reindex",
@@ -870,6 +909,16 @@ PROFILE_FOLDER_TEXT: dict[ProfileFolder, str] = {
     ProfileFolder.PROJECT: "Saved in this project.",
     ProfileFolder.GLOBAL: "Saved for all projects.",
     ProfileFolder.BUILTIN: "A built-in profile that ships with lilbee.",
+}
+PROFILE_FOLDER_TAG: dict[ProfileFolder, str] = {
+    ProfileFolder.PROJECT: "project",
+    ProfileFolder.GLOBAL: "global",
+    ProfileFolder.COMMUNITY: "community",
+    ProfileFolder.BUILTIN: "built-in",
+}
+PROFILE_SAVE_FOLDER_TEXT: dict[ProfileFolder, str] = {
+    ProfileFolder.GLOBAL: PROFILE_SAVE_GLOBAL,
+    ProfileFolder.PROJECT: PROFILE_SAVE_PROJECT,
 }
 PROFILE_STATUS_PILL: dict[ProfileStatus, str] = {
     ProfileStatus.CURRENT: "",
