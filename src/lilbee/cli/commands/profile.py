@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
@@ -16,7 +17,7 @@ from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
-from lilbee.core.profile_files import ProfileFolder, ProfileStore, profile_key
+from lilbee.core.profile_files import ProfileAuthor, ProfileFolder, ProfileStore, profile_key
 
 if TYPE_CHECKING:
     from pydantic import BaseModel
@@ -51,6 +52,9 @@ _folder_option = typer.Option(
     help="Check it as a profile in this folder; community applies the evidence rule.",
 )
 _export_path_argument = typer.Argument(_CURRENT_DIR, help="A file, or a folder for <name>.toml.")
+_share_out_option = typer.Option(
+    _CURRENT_DIR, "--out", help="Where to write it: a folder, or a file path."
+)
 
 
 def _store() -> ProfileStore:
@@ -412,6 +416,63 @@ def profile_export(
         _run(lambda: profiles.export(_store(), name, path, overwrite=overwrite))
     )
     _emit(location, lambda: _render_location("Exported", location))
+
+
+def _interactive() -> bool:
+    """True when share can prompt: a real terminal, and not --json."""
+    return not cfg.json_mode and sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _prompt_missing(
+    missing: tuple[str, ...],
+) -> tuple[tuple[ProfileAuthor, ...] | None, str | None]:
+    """Ask for each field *missing* names; ``(authors, tested_on)``, either possibly None."""
+    authors = None
+    if "authors" in missing:
+        author_name = typer.prompt("Your name")
+        github = typer.prompt("Your GitHub username (blank for none)", default="")
+        authors = (ProfileAuthor(name=author_name, github=github or None),)
+    tested_on = typer.prompt("What corpus was this tested on?") if "tested_on" in missing else None
+    return authors, tested_on
+
+
+@profile_app.command(name="share")
+def profile_share(
+    name: str,
+    out: Path = _share_out_option,
+    overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing file."),
+    data_dir: Path | None = data_dir_option,
+    use_global: bool = global_option,
+) -> None:
+    """Write name as a clean file ready to add to profiles/community/, and print how."""
+    from lilbee.app import profiles
+    from lilbee.server.models import ProfileLocationResponse
+
+    _setup(data_dir, use_global)
+    store = _store()
+    missing = _run(lambda: profiles.share_missing(store, name))
+    authors: tuple[ProfileAuthor, ...] | None = None
+    tested_on: str | None = None
+    if missing:
+        if not _interactive():
+            _fail(f"Missing for a community submission: {', '.join(missing)}")
+        authors, tested_on = _prompt_missing(missing)
+    location = ProfileLocationResponse.from_location(
+        _run(
+            lambda: profiles.share(
+                store, name, out, authors=authors, tested_on=tested_on, overwrite=overwrite
+            )
+        )
+    )
+
+    def _render() -> None:
+        _render_location("Wrote", location)
+        _line(
+            "Add it to profiles/community/ in a lilbee checkout and open a pull request. "
+            'See CONTRIBUTING.md, "Share a profile", for the acceptance bar.'
+        )
+
+    _emit(location, _render)
 
 
 @profile_app.command(name="import")
