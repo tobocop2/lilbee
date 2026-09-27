@@ -8528,6 +8528,26 @@ def test_build_sync_progress_callback_routes_extract_event() -> None:
     assert kwargs.get("indeterminate") is True
 
 
+def test_add_and_sync_progress_callbacks_show_tesseract_ocr() -> None:
+    """/add and sync both show Tesseract running on a file when OCR_START arrives."""
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import (
+        build_add_progress_callback,
+        build_sync_progress_callback,
+    )
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.runtime.progress import EventType, OcrStartEvent
+
+    expected = msg.SYNC_TESSERACT_OCR.format(total=212, file="scan.pdf")
+    assert expected == "Running Tesseract OCR on the scanned pages of scan.pdf (212 pages)"
+    for build in (build_add_progress_callback, build_sync_progress_callback):
+        reporter = MagicMock(spec=ProgressReporter)
+        build(reporter)(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
+        reporter.update.assert_called_once_with(0, expected, indeterminate=True)
+
+
 def test_build_import_progress_callback_routes_embed_events() -> None:
     """``build_import_progress_callback`` ticks determinate progress on EMBED events."""
     from unittest.mock import MagicMock

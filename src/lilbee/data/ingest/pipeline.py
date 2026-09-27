@@ -130,6 +130,7 @@ from lilbee.runtime.progress import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    OcrStartEvent,
     ProgressEvent,
     SyncDoneEvent,
     noop_callback,
@@ -1400,16 +1401,24 @@ def _phase_progress_callback(
 ) -> DetailedProgressCallback:
     """Wrap *chain*, updating the bar's description on per-page / per-chunk events.
 
-    EXTRACT (vision OCR page i/N) and EMBED (chunk i/N) events would otherwise
-    leave the bar frozen between file completions; surfacing them on the spinner
-    description keeps a single large file's row visibly moving. All events still
-    forward to *chain* so the caller's own callback (TUI / JSON) is unaffected.
+    EXTRACT (vision OCR page i/N), OCR_START (Tesseract running on a file) and
+    EMBED (chunk i/N) events would otherwise leave the bar frozen between file
+    completions; surfacing them on the spinner description keeps a single large
+    file's row visibly moving. All events still forward to *chain* so the
+    caller's own callback (TUI / JSON) is unaffected.
     """
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
         if event_type is EventType.EXTRACT and isinstance(data, ExtractEvent):
             progress.update(
                 ptask, description=f"OCR {data.file} (page {data.page}/{data.total_pages})"
+            )
+        elif event_type is EventType.OCR_START and isinstance(data, OcrStartEvent):
+            progress.update(
+                ptask,
+                description=(
+                    f"Tesseract OCR on scanned pages of {data.file} ({data.total_pages} pages)"
+                ),
             )
         elif event_type is EventType.EMBED and isinstance(data, EmbedEvent):
             progress.update(

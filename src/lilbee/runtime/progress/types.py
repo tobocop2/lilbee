@@ -19,6 +19,7 @@ class EventType(StrEnum):
     SYNC_DONE = "sync_done"
     EMBED = "embed"
     EXTRACT = "extract"
+    OCR_START = "ocr_start"
     CRAWL_START = "crawl_start"
     CRAWL_PAGE = "crawl_page"
     CRAWL_PAGE_FAILED = "crawl_page_failed"
@@ -98,15 +99,26 @@ class BatchProgressEvent(BaseModel):
 class ExtractEvent(BaseModel):
     """Emitted with page-level extraction progress.
 
-    OCR fires one event per page as xberg processes it, as a running count
-    against the page total known before extraction for a PDF or image source,
-    or ``0`` when that count could not be read. Extraction then fires once per
-    file with ``page == total_pages`` so subscribers see "extracted N pages"
-    before the embed phase ticks.
+    Vision OCR fires one event per page as xberg processes it, as a running
+    count against the page total known before extraction for a PDF or image
+    source, or ``0`` when that count could not be read. Extraction then fires
+    once per file with ``page == total_pages`` so subscribers see "extracted N
+    pages" before the embed phase ticks.
     """
 
     file: str
     page: int
+    total_pages: int
+
+
+class OcrStartEvent(BaseModel):
+    """Emitted once when Tesseract starts OCR on a file, which reports no per-page progress.
+
+    ``total_pages`` is the file's page count, read before extraction. Tesseract
+    OCRs the pages that lack a text layer, which may be fewer.
+    """
+
+    file: str
     total_pages: int
 
 

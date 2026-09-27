@@ -13,6 +13,7 @@ from lilbee.runtime.progress.types import (
     ExtractEvent,
     FileDoneEvent,
     FileStartEvent,
+    OcrStartEvent,
     SetupDoneEvent,
     SetupProgressEvent,
     SetupStartEvent,
@@ -26,6 +27,7 @@ ProgressEvent = (
     | FileDoneEvent
     | BatchProgressEvent
     | ExtractEvent
+    | OcrStartEvent
     | EmbedEvent
     | SyncDoneEvent
     | CrawlStartEvent
