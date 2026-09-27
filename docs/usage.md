@@ -926,6 +926,28 @@ lilbee memory recall "what language"             # recall facts by relevance
 lilbee memory remove <id>                        # delete a memory by id
 ```
 
+### Profiles
+
+A profile is a named set of ingest, OCR, chunking and retrieval settings.
+Every write goes to all projects unless you pass `--target project`.
+
+```bash
+lilbee profile show                           # this project's profile
+lilbee profile list                           # every profile, with credit and broken files
+lilbee profile diff "Scanned archive"         # what applying it changes
+lilbee profile apply scanned-archive --reindex  # apply, then rebuild when a change needs it
+lilbee profile save "Court filings"           # save your settings as a profile and switch to it
+lilbee profile update                         # write your settings into the active profile
+lilbee profile discard                        # drop your values so the profile's show through
+lilbee profile new "Mine" --from research-papers
+lilbee profile duplicate "Scanned archive" "My scans"
+lilbee profile rename "My scans" "Old scans"
+lilbee profile delete "Old scans"
+lilbee profile export "Court filings" ./shared/
+lilbee profile import ./shared/court-filings.toml --target project
+lilbee profile validate court-filings.toml --folder community
+```
+
 ### Sessions
 
 See [Sessions](#sessions). Ids accept any unique prefix.
@@ -985,6 +1007,8 @@ port file, and `lilbee agent-config` hands it to local clients. The surface
 covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
+profiles (`/api/profiles`: list, show, the active profile, diff, apply,
+and every profile file operation),
 saved conversations (`/api/sessions`: list, read, create, append, fork,
 rename, delete, the compaction summary, and `GET /api/sessions/{id}/markdown`
 for a markdown export whose `Content-Disposition` header names the file),

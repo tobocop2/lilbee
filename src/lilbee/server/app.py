@@ -79,6 +79,7 @@ from lilbee.server.routes.placement import (
     placement_route,
     placement_set_route,
 )
+from lilbee.server.routes.profiles import profiles_router
 from lilbee.server.routes.search import (
     ask_route,
     ask_stream_route,
@@ -336,6 +337,7 @@ def create_app() -> Litestar:
             session_delete_route,
             export_route,
             import_route,
+            profiles_router,
             placement_route,
             placement_preview_route,
             placement_set_route,
