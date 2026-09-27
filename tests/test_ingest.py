@@ -3875,12 +3875,18 @@ class TestPageCountConfig:
 
         config = _page_count_config()
         assert config.disable_ocr is True
-        assert config.ocr.enabled is False
+        assert config.ocr is None
         assert config.pages.extract_pages is False
         assert config.enable_quality_processing is False
 
 
 class TestKnownPageCount:
+    async def test_real_xberg_counts_pages_without_an_ocr_block(self):
+        """The OCR-free config still reads the page count from a real PDF."""
+        from lilbee.data.extract.document import _known_page_count
+
+        assert await _known_page_count(make_pdf(pages=3), "three.pdf") == 3
+
     async def test_returns_the_probes_page_count(self):
         """The count comes from the metadata-only document's own counts, not a guess."""
         from lilbee.data.extract.document import _known_page_count
@@ -5253,6 +5259,33 @@ class TestIngestDocumentOcrPath:
         await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
         assert (1, 5) in seen
         assert (2, 5) in seen
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_page_count_probe_sends_no_ocr_block(self, mock_kf, isolated_env, mock_svc):
+        """The probe carries no OCR block, since xberg OCRs page images under any OCR block."""
+        cfg.vision_model = ""
+        cfg.enable_ocr = True
+        probe_result = mock.MagicMock(counts=mock.MagicMock(pages=5))
+        configs = []
+
+        async def fake_extract(data, *, filename=None, config):
+            configs.append(config)
+            if config.disable_ocr:
+                return probe_result
+            return _make_xberg_result(num_chunks=1, has_pages=True)
+
+        mock_kf.side_effect = fake_extract
+        from lilbee.data.ingest import ingest_document
+        from lilbee.data.types import OcrBackendName
+
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        await ingest_document(f, "scan.pdf", "pdf", on_progress=lambda *_: None)
+        probes = [c for c in configs if c.disable_ocr]
+        extractions = [c for c in configs if not c.disable_ocr]
+        assert len(probes) == 1 and len(extractions) == 1
+        assert probes[0].ocr is None
+        assert extractions[0].ocr.backend == OcrBackendName.TESSERACT
 
 
 class TestTitleStamping:
