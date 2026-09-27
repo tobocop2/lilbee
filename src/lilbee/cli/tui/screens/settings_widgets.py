@@ -43,6 +43,8 @@ MODEL_DEFAULT_MARKER = " (model default)"
 LIST_RESTORE_PREFIX = "list-restore-"
 LIST_ERROR_ID_PREFIX = "err-"
 LIST_ERROR_VISIBLE_CLASS = "-visible"
+ADVANCED_COLLAPSIBLE_ID_PREFIX = "settings-advanced-"
+ADVANCED_COLLAPSIBLE_CLASS = "settings-advanced-collapsible"
 
 API_KEYS_GROUP = SettingGroup.API_KEYS
 API_KEYS_WARNING_CLASS = "api-keys-warning"

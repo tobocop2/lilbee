@@ -473,6 +473,7 @@ SETTINGS_RESET_ALL_SUCCESS = "All settings reset to defaults"
 SETTINGS_LIST_EDITOR_TITLE = "{key}  ({count} lines)"
 SETTINGS_LIST_EDITOR_INVALID_REGEX = "Invalid regex on line {n}: {error}"
 SETTINGS_LIST_EDITOR_RESTORE_DEFAULTS = "Restore defaults"
+SETTINGS_ADVANCED_TITLE = "Advanced ({count})"
 WIKI_EMPTY_STATE = "No wiki pages found"
 # spaCy installs its NER model as an importable top-level package.
 _SPACY_MODEL_PACKAGE = "en_core_web_sm"

@@ -35,6 +35,8 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 **CLI.** The command that writes this setting, or `no`.
 
+**Advanced.** `yes` means the TUI folds this setting into the collapsed "Advanced" section at the bottom of its tab: a normal user never needs it to get good results. `no` means the setting stays with the tab's regular rows. Every setting is still reachable through every other surface either way.
+
 ## Where a value comes from
 
 Each setting takes its value from the first source that sets it: a non-empty environment variable (`env`), then `config.toml` (`user`), then the project's profile (`profile`), then lilbee's default. A default that lilbee computes at runtime is `auto`; any other default is `built_in`. An empty `LILBEE_<SETTING>=` sets nothing.
