@@ -1,33 +1,54 @@
-"""Profile use cases: list, show, the active profile, diff and apply."""
+"""Profile use cases: list, show, the active profile, diff, apply, and the file operations."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
-from lilbee.app.settings import apply_profile_layer
+import tomli_w
+
+from lilbee.app.settings import apply_profile_layer, list_settings, reset_settings
 from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, REINDEX_FIELDS
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ProfileScope, SettingSource
 from lilbee.core.config.resolve import (
     PROFILE_FIELDS,
+    SettingLayers,
+    builtin_value,
     read_layers,
     read_profile_table,
     resolve,
 )
 from lilbee.core.profile_files import (
     DEFAULT_PROFILE_NAME,
+    META_TABLE,
+    PACKAGE_FOLDERS,
+    PROFILE_FORMAT,
+    PROFILE_SUFFIX,
+    VALUES_TABLE,
+    PlannedWrite,
     ProfileCatalog,
     ProfileEntry,
     ProfileFile,
+    ProfileFolder,
     ProfileStore,
+    ProfileValidation,
     normalized_values,
+    parse_text,
+    plan_write,
+    profile_folders,
     profile_key,
+    profile_text,
+    read_profile_text,
+    validate_file,
 )
 
 _OVERRIDE_SOURCES = frozenset({SettingSource.ENV, SettingSource.USER})
+_SAVE_FOLDERS = frozenset({ProfileFolder.PROJECT, ProfileFolder.GLOBAL})
 
 
 class ProfileEffect(StrEnum):
@@ -79,6 +100,30 @@ class ActiveProfile:
 
 
 @dataclass(frozen=True)
+class ProfileLocation:
+    """A profile file an operation wrote or removed."""
+
+    name: str
+    folder: ProfileFolder
+    path: Path
+
+
+@dataclass(frozen=True)
+class SaveResult:
+    """A saved profile file and the settings of yours it took over from config.toml."""
+
+    location: ProfileLocation
+    absorbed: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class DiscardResult:
+    """The settings of yours removed so the profile's values show through."""
+
+    dropped: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ApplyResult:
     """The outcome of a profile apply."""
 
@@ -109,12 +154,16 @@ def show(store: ProfileStore, name: str) -> ProfileEntry:
     return entry
 
 
-def _usable(store: ProfileStore, name: str) -> ProfileFile:
-    """The valid profile file *name* picks; raises ``ValueError`` when missing or broken."""
-    entry = show(store, name)
+def _valid_file(entry: ProfileEntry) -> ProfileFile:
+    """The profile file of *entry*; raises ``ValueError`` when it is broken."""
     if entry.file is None:
         raise ValueError(f"Profile {entry.name!r} cannot be used: {entry.error}")
     return entry.file
+
+
+def _usable(store: ProfileStore, name: str) -> ProfileFile:
+    """The valid profile file *name* picks; raises ``ValueError`` when missing or broken."""
+    return _valid_file(show(store, name))
 
 
 def _file_status(entry: ProfileEntry | None, recorded: Mapping[str, Any]) -> ProfileStatus:
@@ -175,3 +224,203 @@ def apply(store: ProfileStore, name: str) -> ApplyResult:
         reindex_required=ProfileEffect.REINDEX in effects.values(),
         new_files_only=tuple(k for k, e in effects.items() if e is ProfileEffect.NEW_FILES_ONLY),
     )
+
+
+def _target_dir(target: ProfileFolder) -> Path:
+    """The folder a new profile file goes to; only this project's or the global folder."""
+    if target not in _SAVE_FOLDERS:
+        raise ValueError("Profiles are saved to this project or to all projects")
+    folders = dict(profile_folders(cfg.data_root))
+    if target not in folders:
+        raise ValueError(
+            "lilbee is using the global data folder, so there is no project folder; "
+            "save the profile for all projects instead"
+        )
+    return folders[target]
+
+
+def _written(planned: PlannedWrite) -> ProfileLocation:
+    return ProfileLocation(planned.profile.name, planned.folder, planned.write())
+
+
+def _owned(store: ProfileStore, name: str, instead: str = "duplicate it") -> ProfileEntry:
+    """The project or global profile *name* picks; raises for one that ships with lilbee."""
+    entry = show(store, name)
+    if entry.folder in PACKAGE_FOLDERS:
+        raise ValueError(f"{entry.name} ships with lilbee and cannot be changed; {instead} instead")
+    return entry
+
+
+def _owned_file(
+    store: ProfileStore, name: str, instead: str = "duplicate it"
+) -> tuple[ProfileEntry, ProfileFile]:
+    entry = _owned(store, name, instead)
+    return entry, _valid_file(entry)
+
+
+def _commented(text: str) -> list[str]:
+    return [f"# {line}" for line in text.strip().splitlines()]
+
+
+def _template_lines(key: str, value: Any, help_text: str) -> list[str]:
+    """A template entry: the help text, then *value* set, or the default commented out."""
+    if value is not None:
+        return [*_commented(help_text), tomli_w.dumps({key: value}).strip()]
+    default = builtin_value(key)
+    if default is None:
+        return [
+            *_commented(help_text),
+            f"# {key} has no default: leaving it out lets lilbee decide",
+        ]
+    return [*_commented(help_text), *_commented(tomli_w.dumps({key: default}))]
+
+
+def _template_text(name: str, values: Mapping[str, Any]) -> str:
+    """A profile file that lists every profile setting, set from *values* or commented out."""
+    help_texts = {info.key: info.help_text for info in list_settings()}
+    blocks = [
+        "\n".join(_template_lines(key, values.get(key), help_texts[key])) for key in PROFILE_FIELDS
+    ]
+    head = tomli_w.dumps({META_TABLE: {"name": name, "format": PROFILE_FORMAT}})
+    return "\n\n".join([head.strip(), f"[{VALUES_TABLE}]", *blocks]) + "\n"
+
+
+def new(
+    store: ProfileStore,
+    name: str,
+    target: ProfileFolder = ProfileFolder.GLOBAL,
+    from_name: str | None = None,
+) -> ProfileLocation:
+    """Write a template for *name* listing every profile setting; *from_name* sets its values."""
+    values = _usable(store, from_name).values if from_name is not None else {}
+    text = _template_text(name, values)
+    return _written(plan_write(_target_dir(target), target, text, stem=name))
+
+
+def _your_profile_keys(layers: SettingLayers) -> tuple[str, ...]:
+    """The profile settings config.toml sets, in profile-field order."""
+    return tuple(key for key in PROFILE_FIELDS if key in layers.user)
+
+
+def _project_values() -> tuple[dict[str, Any], tuple[str, ...]]:
+    """The project's profile values with yours laid over them, and which keys are yours."""
+    layers = read_layers(cfg.data_root)
+    yours = _your_profile_keys(layers)
+    return {**layers.profile, **{key: layers.user[key] for key in yours}}, yours
+
+
+def _switch_to(planned: PlannedWrite, yours: tuple[str, ...]) -> SaveResult:
+    """Make *planned* the project's profile, taking *yours* out of config.toml, then write it."""
+    apply_profile_layer(planned.profile.name, planned.profile.values, absorb=yours)
+    return SaveResult(_written(planned), yours)
+
+
+def _bare(name: str, values: Mapping[str, Any]) -> ProfileFile:
+    return ProfileFile(
+        name=name,
+        description=None,
+        authors=(),
+        tested_on=None,
+        format=PROFILE_FORMAT,
+        min_lilbee=None,
+        evidence=None,
+        values=values,
+    )
+
+
+def save_as(name: str, target: ProfileFolder = ProfileFolder.GLOBAL) -> SaveResult:
+    """Save the project's profile values plus yours as *name* and switch the project to it.
+
+    ``absorbed`` names your settings the new profile now holds; they leave config.toml.
+    Environment variables are not saved.
+    """
+    values, yours = _project_values()
+    text = profile_text(_bare(name, values))
+    return _switch_to(plan_write(_target_dir(target), target, text, stem=name), yours)
+
+
+def update(store: ProfileStore) -> SaveResult:
+    """Write the project's profile values plus yours into the active profile's own file."""
+    name = read_profile_table(cfg.data_root).name or DEFAULT_PROFILE_NAME
+    entry, profile = _owned_file(store, name, "save your settings as a new profile")
+    values, yours = _project_values()
+    text = profile_text(replace(profile, values=values))
+    directory = entry.path.parent
+    planned = plan_write(directory, entry.folder, text, stem=entry.path.stem, replacing=entry.path)
+    return _switch_to(planned, yours)
+
+
+def discard() -> DiscardResult:
+    """Remove your settings of profile keys from config.toml; environment variables stay."""
+    yours = _your_profile_keys(read_layers(cfg.data_root))
+    if yours:
+        reset_settings(list(yours))
+    return DiscardResult(yours)
+
+
+def duplicate(
+    store: ProfileStore, name: str, new_name: str, target: ProfileFolder = ProfileFolder.GLOBAL
+) -> ProfileLocation:
+    """Copy the profile *name* picks, with its metadata, as *new_name*."""
+    text = profile_text(replace(_usable(store, name), name=new_name))
+    return _written(plan_write(_target_dir(target), target, text, stem=new_name))
+
+
+def rename(store: ProfileStore, name: str, new_name: str) -> ProfileLocation:
+    """Rename a project or global profile in its folder; the project follows when it is active."""
+    entry, profile = _owned_file(store, name)
+    text = profile_text(replace(profile, name=new_name))
+    planned = plan_write(entry.path.parent, entry.folder, text, stem=new_name, replacing=entry.path)
+    location = _written(planned)
+    table = read_profile_table(cfg.data_root)
+    if table.name is not None and profile_key(table.name) == profile_key(entry.name):
+        persistent_settings.write_profile_table(cfg.data_root, location.name, table.values)
+    return location
+
+
+def delete(store: ProfileStore, name: str) -> ProfileLocation:
+    """Remove a project or global profile file; projects keep their recorded copy of it."""
+    entry = _owned(store, name)
+    entry.path.unlink()
+    return ProfileLocation(entry.name, entry.folder, entry.path)
+
+
+def export(store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False) -> Path:
+    """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder."""
+    entry = show(store, name)
+    profile = _valid_file(entry)
+    path = dest / f"{profile_key(entry.name)}{PROFILE_SUFFIX}" if dest.is_dir() else dest
+    if path.exists() and not overwrite:
+        raise ValueError(f"{path} already exists")
+    text = profile_text(profile)
+    return PlannedWrite(
+        path, entry.folder, parse_text(text, path.stem, entry.folder), text, None
+    ).write()
+
+
+def _same_name_in(store: ProfileStore, folder: ProfileFolder, name: str) -> Path | None:
+    key = profile_key(name)
+    return next(
+        (e.path for e in store.scan().entries if e.folder is folder and profile_key(e.name) == key),
+        None,
+    )
+
+
+def import_profile(
+    store: ProfileStore,
+    source: Path,
+    target: ProfileFolder = ProfileFolder.GLOBAL,
+    *,
+    overwrite: bool = False,
+) -> ProfileLocation:
+    """Validate the file at *source* and copy it into *target*; a taken name needs *overwrite*."""
+    text = read_profile_text(source)
+    directory = _target_dir(target)
+    profile = parse_text(text, source.stem, target)
+    replacing = _same_name_in(store, target, profile.name) if overwrite else None
+    return _written(plan_write(directory, target, text, stem=source.stem, replacing=replacing))
+
+
+def validate(path: Path, folder: ProfileFolder = ProfileFolder.GLOBAL) -> ProfileValidation:
+    """Every problem with the file at *path* as a profile in *folder*."""
+    return validate_file(path, folder)

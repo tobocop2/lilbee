@@ -140,13 +140,20 @@ def delete_values(data_root: Path, keys: list[str]) -> None:
         save(data_root, current)
 
 
-def write_profile_table(data_root: Path, name: str, values: Mapping[str, Any]) -> None:
-    """Replace the ``[profile]`` table with *name* and *values*; top-level keys stay as they are."""
+def write_profile_table(
+    data_root: Path, name: str, values: Mapping[str, Any], drop: Iterable[str] = ()
+) -> None:
+    """Replace the ``[profile]`` table with *name* and *values* and remove the *drop* keys.
+
+    Other top-level keys stay as they are; one write does both.
+    """
     table: dict[str, Any] = {PROFILE_NAME_KEY: name}
     if values:
         table[PROFILE_VALUES_KEY] = dict(values)
     with _config_write_lock(data_root):
         current = load(data_root)
+        for key in drop:
+            current.pop(key, None)
         current[PROFILE_TABLE] = table
         save(data_root, current)
 

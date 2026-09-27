@@ -1,23 +1,28 @@
-"""Profile files: the file format, its validation, and discovery across the profile folders."""
+"""Profile files: the file format, its validation, discovery across the folders, and writes."""
 
 from __future__ import annotations
 
 import re
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from functools import partial
 from importlib.metadata import version as installed_version
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
+import tomli_w
 from packaging.version import InvalidVersion, Version
 from pydantic import ValidationError
 
 from lilbee.core.config import Config, cfg
 from lilbee.core.config.enums import ProfileScope
 from lilbee.core.config.resolve import PROFILE_FIELDS, builtin_value
+from lilbee.core.security import write_private_text
 from lilbee.core.system import canonical_data_root, default_data_dir
+
+T = TypeVar("T")
 
 PROFILES_DIRNAME = "profiles"
 BUILTIN_DIRNAME = "builtin"
@@ -177,20 +182,15 @@ def _parse_min_lilbee(meta: Mapping[str, Any]) -> str | None:
     return value
 
 
-def _check_name(name: str) -> str:
+def _check_name(meta: Mapping[str, Any], stem: str) -> str:
+    raw = _optional_str(meta, "name")
+    name = stem if raw is None else raw
     if _NAME_PATTERN.fullmatch(name) is None or not profile_key(name):
         raise ProfileFileError(
             f"Bad name {name!r}: use 1 to 40 letters, digits, spaces, hyphens, "
             "underscores or parentheses"
         )
     return name
-
-
-def _check_key(key: str, min_lilbee: str | None) -> None:
-    if key not in Config.model_fields:
-        raise ProfileFileError(_needs_newer(min_lilbee) or f"Unknown setting: {key}")
-    if key not in PROFILE_FIELDS:
-        raise ProfileFileError(f"Profiles cannot set {key}")
 
 
 def normalized_values(values: Mapping[str, Any]) -> dict[str, Any]:
@@ -207,79 +207,135 @@ def normalized_values(values: Mapping[str, Any]) -> dict[str, Any]:
     return {key: getattr(trial, key) for key in values}
 
 
-def _check_overlap(values: Mapping[str, Any]) -> None:
-    size, overlap = values.get("chunk_size"), values.get("chunk_overlap")
-    if size is not None and overlap is not None and overlap >= size:
-        raise ProfileFileError(f"chunk_overlap ({overlap}) must be < chunk_size ({size})")
-
-
-def _check_evidence(values: Mapping[str, Any], evidence: str | None) -> None:
-    """A package profile sets a retrieval value unequal to the built-in only with evidence."""
-    if evidence is not None:
-        return
-    for key, value in values.items():
-        if PROFILE_FIELDS[key] is ProfileScope.RETRIEVAL and value != builtin_value(key):
-            raise ProfileFileError(f"Sets retrieval setting {key} without evidence")
-
-
-def _parse_values(
-    data: Mapping[str, Any], min_lilbee: str | None, folder: ProfileFolder, evidence: str | None
-) -> dict[str, Any]:
-    raw = data.get(VALUES_TABLE)
-    # untyped TOML: [values] must be a table
-    if not isinstance(raw, dict):
-        raise ProfileFileError("Missing [values] table")
-    for key in raw:
-        _check_key(key, min_lilbee)
+def _normalized(key: str, value: Any, min_lilbee: str | None) -> Any:
+    """*value* as Config holds it; raises when *key* is not a profile setting or *value* is bad."""
+    if key not in Config.model_fields:
+        raise ProfileFileError(_needs_newer(min_lilbee) or f"Unknown setting: {key}")
+    if key not in PROFILE_FIELDS:
+        raise ProfileFileError(f"Profiles cannot set {key}")
     try:
-        normalized = normalized_values(raw)
+        return normalized_values({key: value})[key]
     except ProfileFileError as exc:
         raise ProfileFileError(_needs_newer(min_lilbee) or str(exc)) from None
-    _check_overlap(normalized)
+
+
+def _overlap_problems(values: Mapping[str, Any]) -> list[str]:
+    size, overlap = values.get("chunk_size"), values.get("chunk_overlap")
+    if size is not None and overlap is not None and overlap >= size:
+        return [f"chunk_overlap ({overlap}) must be < chunk_size ({size})"]
+    return []
+
+
+def _evidence_problems(values: Mapping[str, Any], evidence: str | None) -> list[str]:
+    """A package profile sets a retrieval value unequal to the built-in only with evidence."""
+    if evidence is not None:
+        return []
+    return [
+        f"Sets retrieval setting {key} without evidence"
+        for key, value in values.items()
+        if PROFILE_FIELDS[key] is ProfileScope.RETRIEVAL and value != builtin_value(key)
+    ]
+
+
+def _value_problems(
+    raw: Mapping[str, Any], min_lilbee: str | None, folder: ProfileFolder, evidence: str | None
+) -> list[str]:
+    problems: list[str] = []
+    normalized: dict[str, Any] = {}
+    for key, value in raw.items():
+        try:
+            normalized[key] = _normalized(key, value, min_lilbee)
+        except ProfileFileError as exc:
+            problems.append(str(exc))
+    problems += _overlap_problems(normalized)
     if folder in PACKAGE_FOLDERS:
-        _check_evidence(normalized, evidence)
-    return dict(raw)
+        problems += _evidence_problems(normalized, evidence)
+    return problems
 
 
-def parse_profile(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> ProfileFile:
-    """Validate parsed TOML as a profile file; raises ``ProfileFileError`` with the reason."""
-    unknown = sorted(set(data) - _TOP_LEVEL_KEYS)
-    if unknown:
-        raise ProfileFileError(f"Unknown table: {unknown[0]}")
+def _checked(problems: list[str], check: Callable[[], T]) -> T | None:
+    """The result of *check*, or None with its reason added to *problems*."""
+    try:
+        return check()
+    except ProfileFileError as exc:
+        problems.append(str(exc))
+        return None
+
+
+def _meta_problems(meta: Mapping[str, Any], stem: str) -> tuple[list[str], str | None]:
+    """Every problem in the ``[profile]`` table, and its ``min_lilbee`` when that is valid."""
+    problems = [f"Unknown profile field: {key}" for key in sorted(set(meta) - _META_KEYS)]
+    _checked(problems, partial(_check_name, meta, stem))
+    for key in ("description", "tested_on", "evidence"):
+        _checked(problems, partial(_optional_str, meta, key))
+    min_lilbee = _checked(problems, partial(_parse_min_lilbee, meta))
+    _checked(problems, partial(_parse_authors, meta))
+    _checked(problems, partial(_parse_format, meta))
+    return problems, min_lilbee
+
+
+def profile_problems(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> list[str]:
+    """Every reason parsed TOML is not a valid profile file; empty when it is one."""
+    problems = [f"Unknown table: {key}" for key in sorted(set(data) - _TOP_LEVEL_KEYS)]
     meta = data.get(META_TABLE, {})
     # untyped TOML: [profile] must be a table
     if not isinstance(meta, dict):
-        raise ProfileFileError("[profile] must be a table")
-    unknown = sorted(set(meta) - _META_KEYS)
-    if unknown:
-        raise ProfileFileError(f"Unknown profile field: {unknown[0]}")
-    strings = {key: _optional_str(meta, key) for key in _STRING_META_KEYS}
-    min_lilbee = _parse_min_lilbee(meta)
+        problems.append("[profile] must be a table")
+        meta = {}
+    meta_problems, min_lilbee = _meta_problems(meta, stem)
+    problems += meta_problems
+    raw = data.get(VALUES_TABLE)
+    # untyped TOML: [values] must be a table
+    if not isinstance(raw, dict):
+        problems.append("Missing [values] table")
+    else:
+        evidence = meta.get("evidence")
+        # untyped TOML: a non-text evidence is already a problem and counts as none
+        evidence = evidence if isinstance(evidence, str) else None
+        problems += _value_problems(raw, min_lilbee, folder, evidence)
+    return list(dict.fromkeys(problems))
+
+
+def parse_profile(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> ProfileFile:
+    """Validate parsed TOML as a profile file; raises ``ProfileFileError`` with the first reason."""
+    problems = profile_problems(data, stem, folder)
+    if problems:
+        raise ProfileFileError(problems[0])
+    meta = data.get(META_TABLE, {})
     return ProfileFile(
-        name=_check_name(stem if strings["name"] is None else strings["name"]),
-        description=strings["description"],
+        name=_check_name(meta, stem),
+        description=meta.get("description"),
         authors=_parse_authors(meta),
-        tested_on=strings["tested_on"],
-        format=_parse_format(meta),
-        min_lilbee=min_lilbee,
-        evidence=strings["evidence"],
-        values=_parse_values(data, min_lilbee, folder, strings["evidence"]),
+        tested_on=meta.get("tested_on"),
+        format=PROFILE_FORMAT,
+        min_lilbee=meta.get("min_lilbee"),
+        evidence=meta.get("evidence"),
+        values=dict(data[VALUES_TABLE]),
     )
+
+
+def _load_toml(path: Path) -> dict[str, Any]:
+    """The parsed TOML at *path*; raises ``ProfileFileError`` when it cannot be read or parsed."""
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    # tomllib raises RecursionError on arrays nested a few hundred deep
+    except (tomllib.TOMLDecodeError, RecursionError) as exc:
+        raise ProfileFileError(f"Not valid TOML: {exc}") from None
+    except UnicodeDecodeError:
+        raise ProfileFileError("Not UTF-8 text") from None
+    except OSError as exc:
+        raise ProfileFileError(f"Cannot read the file: {exc}") from None
 
 
 def read_entry(path: Path, folder: ProfileFolder) -> ProfileEntry:
     """Read and validate one profile file; a broken file is returned with its reason."""
     try:
-        with path.open("rb") as f:
-            data = tomllib.load(f)
+        data = _load_toml(path)
+    except ProfileFileError as exc:
+        return ProfileEntry(path.stem, folder, path, None, str(exc))
+    try:
         profile = parse_profile(data, path.stem, folder)
-    # tomllib raises RecursionError on arrays nested a few hundred deep
-    except (tomllib.TOMLDecodeError, RecursionError) as exc:
-        return ProfileEntry(path.stem, folder, path, None, f"Not valid TOML: {exc}")
-    except UnicodeDecodeError:
-        return ProfileEntry(path.stem, folder, path, None, "Not UTF-8 text")
-    except OSError as exc:
-        return ProfileEntry(path.stem, folder, path, None, f"Cannot read the file: {exc}")
     except ProfileFileError as exc:
         return ProfileEntry(_entry_name(data, path.stem), folder, path, None, str(exc))
     return ProfileEntry(profile.name, folder, path, profile, None)
@@ -314,6 +370,10 @@ def _mark_duplicates(entries: list[ProfileEntry]) -> list[ProfileEntry]:
     ]
 
 
+def _reserved_reason(name: str) -> str:
+    return f"Reserved name: {name} is a built-in profile"
+
+
 def _settle_names(entries: list[ProfileEntry]) -> list[ProfileEntry]:
     """Break non-builtin entries that take a built-in name; shadow each lower entry by name."""
     reserved = {profile_key(e.name) for e in entries if e.folder is ProfileFolder.BUILTIN}
@@ -322,7 +382,7 @@ def _settle_names(entries: list[ProfileEntry]) -> list[ProfileEntry]:
     for entry in entries:
         key = profile_key(entry.name)
         if entry.folder is not ProfileFolder.BUILTIN and key in reserved:
-            entry = _broken(entry, f"Reserved name: {entry.name} is a built-in profile")
+            entry = _broken(entry, _reserved_reason(entry.name))
             settled.append(replace(entry, shadowed_by=ProfileFolder.BUILTIN))
             continue
         winner = owner.setdefault(key, entry.folder)
@@ -343,3 +403,127 @@ class ProfileStore:
     def scan(self) -> ProfileCatalog:
         """Every profile visible from ``cfg.data_root`` now."""
         return scan(profile_folders(cfg.data_root))
+
+
+@dataclass(frozen=True)
+class ProfileValidation:
+    """Every problem found in one profile file; empty ``problems`` means it is valid."""
+
+    path: Path
+    name: str
+    problems: tuple[str, ...]
+
+    @property
+    def valid(self) -> bool:
+        """True when the file has no problems."""
+        return not self.problems
+
+
+@dataclass(frozen=True)
+class PlannedWrite:
+    """A validated profile file and the free path it goes to; nothing is written until ``write``."""
+
+    path: Path
+    folder: ProfileFolder
+    profile: ProfileFile
+    text: str
+    replacing: Path | None
+
+    def write(self) -> Path:
+        """Write the file atomically, then remove the file it replaces when that is another path."""
+        write_private_text(self.path, self.text)
+        if self.replacing is not None and self.replacing != self.path:
+            self.replacing.unlink(missing_ok=True)
+        return self.path
+
+
+def builtin_keys() -> frozenset[str]:
+    """The lookup keys of the built-in profiles, which no other profile may take."""
+    folder = PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME
+    return frozenset(profile_key(e.name) for e in _read_folder(ProfileFolder.BUILTIN, folder))
+
+
+def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:
+    """Every problem with *path* as a profile file in *folder*."""
+    try:
+        data = _load_toml(path)
+    except ProfileFileError as exc:
+        return ProfileValidation(path, path.stem, (str(exc),))
+    name = _entry_name(data, path.stem)
+    problems = profile_problems(data, path.stem, folder)
+    if folder is not ProfileFolder.BUILTIN and profile_key(name) in builtin_keys():
+        problems.append(_reserved_reason(name))
+    return ProfileValidation(path, name, tuple(problems))
+
+
+def profile_text(profile: ProfileFile) -> str:
+    """*profile* as the text of a clean profile file."""
+    authors = [
+        {k: v for k, v in (("name", a.name), ("github", a.github)) if v is not None}
+        for a in profile.authors
+    ]
+    meta = {
+        "name": profile.name,
+        "description": profile.description,
+        "authors": authors or None,
+        "tested_on": profile.tested_on,
+        "format": profile.format,
+        "min_lilbee": profile.min_lilbee,
+        "evidence": profile.evidence,
+    }
+    table = {key: value for key, value in meta.items() if value is not None}
+    return tomli_w.dumps({META_TABLE: table, VALUES_TABLE: dict(profile.values)})
+
+
+def parse_text(text: str, stem: str, folder: ProfileFolder) -> ProfileFile:
+    """Validate *text* as a profile file named *stem* when it names none; raises on a problem."""
+    try:
+        data = tomllib.loads(text)
+    # tomllib raises RecursionError on arrays nested a few hundred deep
+    except (tomllib.TOMLDecodeError, RecursionError) as exc:
+        raise ProfileFileError(f"Not valid TOML: {exc}") from None
+    return parse_profile(data, stem, folder)
+
+
+def read_profile_text(path: Path) -> str:
+    """The text of the file at *path*; raises ``ProfileFileError`` when it cannot be read."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise ProfileFileError("Not UTF-8 text") from None
+    except OSError as exc:
+        raise ProfileFileError(f"Cannot read the file: {exc}") from None
+
+
+def _clash(
+    directory: Path, folder: ProfileFolder, planned: Path, replacing: Path | None
+) -> Path | None:
+    """A file in *directory*, other than *replacing*, at *planned* or holding the same name."""
+    if not directory.is_dir():
+        return None
+    key = planned.stem
+    for path in sorted(directory.glob(f"*{PROFILE_SUFFIX}")):
+        # a case-insensitive file system treats Mine.toml and mine.toml as one file
+        same_file = path.name.casefold() == planned.name.casefold()
+        if path != replacing and (same_file or profile_key(read_entry(path, folder).name) == key):
+            return path
+    return None
+
+
+def plan_write(
+    directory: Path, folder: ProfileFolder, text: str, *, stem: str, replacing: Path | None = None
+) -> PlannedWrite:
+    """Validate *text* and pick its file in *directory*, named by the profile's slug.
+
+    Raises ``ProfileFileError`` when the text is invalid or another file there has the name;
+    *replacing* is the file this write supersedes.
+    """
+    profile = parse_text(text, stem, folder)
+    key = profile_key(profile.name)
+    if key in builtin_keys():
+        raise ProfileFileError(_reserved_reason(profile.name))
+    path = directory / f"{key}{PROFILE_SUFFIX}"
+    clash = _clash(directory, folder, path, replacing)
+    if clash is not None:
+        raise ProfileFileError(f"A profile named {profile.name} already exists: {clash}")
+    return PlannedWrite(path, folder, profile, text, replacing)
