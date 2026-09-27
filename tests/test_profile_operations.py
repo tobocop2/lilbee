@@ -1,6 +1,7 @@
 """Profile file operations: new, save as, update, discard, duplicate, rename, delete, export,
 import and validate."""
 
+import os
 import tomllib
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.resolve import PROFILE_FIELDS, read_layers, resolve
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
+from tests._private_mode import file_mode, posix_only
 from tests.conftest import make_mock_services
 
 
@@ -441,3 +443,158 @@ def test_apply_profile_layer_validates_a_taken_over_key_at_the_profile_value():
     with pytest.raises(ValueError, match=r"chunk_overlap \(600\) must be < chunk_size \(512\)"):
         apply_profile_layer("x", {"chunk_overlap": 600}, absorb=("chunk_overlap",))
     assert _stored() == {"chunk_overlap": 50}
+
+
+def _refuse(*_args, **_kwargs):
+    raise OSError("disk full")
+
+
+def test_update_of_a_file_named_in_another_case_keeps_the_file(store):
+    _write(_global_dir(), "Mine", '[profile]\nname = "Mine"\n[values]\nchunk_size = 900\n')
+    profiles.apply(store, "Mine")
+    _prepend_config("top_k = 7\n")
+    result = profiles.update(store)
+    assert _read(result.location.path)["values"] == {"chunk_size": 900, "top_k": 7}
+    assert [name.casefold() for name in _files(_global_dir())] == ["mine.toml"]
+    assert profiles.active(store).status is ProfileStatus.CURRENT
+
+
+def test_rename_to_another_case_of_the_file_name_keeps_the_file(store):
+    _write(_global_dir(), "Mine", '[profile]\nname = "Mine"\n[values]\nchunk_size = 900\n')
+    location = profiles.rename(store, "Mine", "mine")
+    assert _read(location.path) == {
+        "profile": {"name": "mine", "format": 1},
+        "values": {"chunk_size": 900},
+    }
+    assert [name.casefold() for name in _files(_global_dir())] == ["mine.toml"]
+
+
+def test_import_with_overwrite_over_a_file_named_in_another_case_keeps_the_file(store, tmp_path):
+    _write(_global_dir(), "Mine", '[profile]\nname = "Mine"\n[values]\n')
+    text = '[profile]\nname = "Mine"\n[values]\nchunk_size = 777\n'
+    source = _write(tmp_path / "in", "incoming", text)
+    location = profiles.import_profile(store, source, overwrite=True)
+    assert location.path.read_text(encoding="utf-8") == text
+    assert [name.casefold() for name in _files(_global_dir())] == ["mine.toml"]
+
+
+def test_a_write_that_replaces_another_spelling_of_its_own_path_keeps_the_file(tmp_path):
+    (tmp_path / "sub").mkdir()
+    path = _write(tmp_path, "mine", "[values]\n")
+    text = "[values]\nchunk_size = 900\n"
+    profile = profile_files.parse_text(text, "mine", ProfileFolder.GLOBAL)
+    replacing = tmp_path / "sub" / ".." / "mine.toml"
+    assert replacing != path
+    written = profile_files.PlannedWrite(
+        path, ProfileFolder.GLOBAL, profile, text, replacing
+    ).write()
+    assert written.read_text(encoding="utf-8") == text
+
+
+def test_save_as_whose_file_write_fails_leaves_config_toml_unchanged(store, monkeypatch):
+    profiles.apply(store, "Notes and markdown")
+    _prepend_config("chunk_size = 900\n")
+    before = _stored()
+    monkeypatch.setattr(profile_files.PlannedWrite, "write", _refuse)
+    with pytest.raises(OSError, match="disk full"):
+        profiles.save_as("Mine")
+    assert _stored() == before
+    assert _files(_global_dir()) == []
+    assert cfg.chunk_size == 900
+
+
+def test_update_whose_file_write_fails_leaves_config_toml_unchanged(store, monkeypatch):
+    path = _write(_global_dir(), "mine", "[values]\nchunk_overlap = 50\n")
+    profiles.apply(store, "mine")
+    _prepend_config("chunk_size = 700\n")
+    before = _stored()
+    monkeypatch.setattr(profile_files.PlannedWrite, "write", _refuse)
+    with pytest.raises(OSError, match="disk full"):
+        profiles.update(store)
+    assert _stored() == before
+    assert path.read_text(encoding="utf-8") == "[values]\nchunk_overlap = 50\n"
+
+
+def test_save_as_whose_config_write_fails_keeps_the_new_file_and_says_so(store, monkeypatch):
+    profiles.apply(store, "Notes and markdown")
+    _prepend_config("chunk_size = 900\n")
+    before = _stored()
+    monkeypatch.setattr(settings, "save", _refuse)
+    with pytest.raises(
+        ValueError,
+        match=r"Saved the profile to .*mine\.toml, but switching this project to it failed: "
+        "disk full",
+    ):
+        profiles.save_as("Mine")
+    assert _stored() == before
+    assert _read(_global_dir() / "mine.toml")["values"]["chunk_size"] == 900
+
+
+def test_update_whose_config_write_fails_keeps_the_new_file_and_says_so(store, monkeypatch):
+    path = _write(_global_dir(), "mine", "[values]\nchunk_overlap = 50\n")
+    profiles.apply(store, "mine")
+    _prepend_config("chunk_size = 700\n")
+    before = _stored()
+    monkeypatch.setattr(settings, "save", _refuse)
+    with pytest.raises(ValueError, match="switching this project to it failed: disk full"):
+        profiles.update(store)
+    assert _stored() == before
+    assert _read(path)["values"] == {"chunk_overlap": 50, "chunk_size": 700}
+
+
+@posix_only
+def test_profile_files_and_exports_are_written_with_the_umask(store, tmp_path):
+    previous = os.umask(0o022)
+    try:
+        written = [
+            profiles.new(store, "Fresh").path,
+            profiles.save_as("Saved").location.path,
+            profiles.export(store, "Scanned archive", tmp_path),
+        ]
+    finally:
+        os.umask(previous)
+    assert [file_mode(path) for path in written] == [0o644, 0o644, 0o644]
+
+
+def test_import_refuses_a_file_over_the_size_cap_and_writes_nothing(store, tmp_path):
+    source = tmp_path / "big.toml"
+    source.write_text("[values]\n" + "#" * profile_files.MAX_PROFILE_BYTES + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"too large for a profile file"):
+        profiles.import_profile(store, source)
+    assert _files(_global_dir()) == []
+
+
+def test_validate_and_scan_report_a_file_over_the_size_cap(store, tmp_path):
+    big = "[values]\n" + "#" * profile_files.MAX_PROFILE_BYTES + "\n"
+    path = _write(_global_dir(), "big", big)
+    reason = "The file is over 256 KB, too large for a profile file"
+    assert profiles.validate(path).problems == (reason,)
+    entry = store.scan().find("big")
+    assert entry is not None and entry.error == reason
+
+
+@posix_only
+def test_import_refuses_an_endless_source(store):
+    with pytest.raises(ValueError, match=r"too large for a profile file"):
+        profiles.import_profile(store, Path("/dev/zero"))
+    assert _files(_global_dir()) == []
+
+
+def test_a_nameless_import_shows_the_name_the_scan_shows(store, tmp_path):
+    source = _write(tmp_path / "in", "My Profile", "[values]\nchunk_size = 700\n")
+    location = profiles.import_profile(store, source)
+    entry = store.scan().find(location.name)
+    assert entry is not None
+    assert (entry.name, entry.path) == (location.name, location.path)
+
+
+def test_update_refuses_a_file_changed_since_it_was_applied(store):
+    path = _write(_global_dir(), "mine", "[values]\nchunk_size = 900\n")
+    profiles.apply(store, "mine")
+    edited = "[values]\nchunk_size = 900\ntop_k = 9\n"
+    path.write_text(edited, encoding="utf-8")
+    _prepend_config("chunk_overlap = 50\n")
+    with pytest.raises(ValueError, match="mine changed on disk since it was applied"):
+        profiles.update(store)
+    assert path.read_text(encoding="utf-8") == edited
+    assert _stored()["chunk_overlap"] == 50
