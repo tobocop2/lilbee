@@ -326,7 +326,8 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
         )
 
     def on_mount(self) -> None:
-        self.query_one("#apply-actions ConfirmPill", ConfirmPill).focus()
+        # Cancel first: a stray Enter never applies or queues a rebuild
+        self.query_one("#apply-cancel", ConfirmPill).focus()
 
     @on(ConfirmPill.Picked)
     def _on_picked(self, event: ConfirmPill.Picked) -> None:

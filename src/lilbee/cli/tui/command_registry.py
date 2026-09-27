@@ -25,6 +25,7 @@ class SlashCommand:
 
 
 ANALYZE_OFF_ARG = "off"
+ANALYZE_REPORT_ARG = "report"
 
 COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
@@ -87,8 +88,11 @@ COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/analyze",
         "_cmd_analyze",
-        args_hint=f"[dir|{ANALYZE_OFF_ARG}]",
-        help_text=f"Recommend a profile for your documents ({ANALYZE_OFF_ARG} hides the tip)",
+        args_hint=f"[dir|{ANALYZE_REPORT_ARG}|{ANALYZE_OFF_ARG}]",
+        help_text=(
+            f"Recommend a profile for your documents ({ANALYZE_REPORT_ARG} opens the last "
+            f"report, {ANALYZE_OFF_ARG} hides the tip)"
+        ),
     ),
     SlashCommand(
         "/reset",

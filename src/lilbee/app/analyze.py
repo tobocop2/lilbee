@@ -18,6 +18,7 @@ from lilbee.app.profiles import (
     save_recommended,
     show,
 )
+from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import FtsLanguage
 from lilbee.core.config.resolve import read_layers, read_profile_table, resolve
@@ -415,12 +416,21 @@ def tip_state(root: Path) -> TipState:
     analyzed = state.analyzed_at is not None
     name = read_profile_table(root).name or DEFAULT_PROFILE_NAME
     on_default = profile_key(name) == profile_key(DEFAULT_PROFILE_NAME)
-    shows = on_default and not analyzed and not state.tip_dismissed
-    return TipState(analyzed, state.tip_dismissed, shows)
+    fresh = on_default and not analyzed and not state.tip_dismissed
+    return TipState(analyzed, state.tip_dismissed, fresh and not _has_documents(root))
+
+
+def _has_documents(root: Path) -> bool:
+    """Whether the project at *root* indexed, or will index, anything: an added root or a file."""
+    if settings.load(root).get("linked_roots"):
+        return True
+    # a project other than the active one (a fresh init) keeps the default documents folder
+    documents = cfg.documents_dir if root == cfg.data_root else root / "documents"
+    return any(path.is_file() for path in documents.rglob("*"))
 
 
 def tip_shows(root: Path) -> bool:
-    """True when the project at *root* is on Default, never analyzed, and the tip is not hidden."""
+    """True when the project at *root* is on Default, unanalyzed, empty, and not hiding the tip."""
     return tip_state(root).tip_shows
 
 

@@ -372,7 +372,7 @@ async def test_apply_and_reindex_starts_a_rebuild(sources) -> None:
             screen = await _loaded(app, pilot, "Default")
             _pick(screen, "Research papers")
             await _dialog(app, pilot, ApplyProfileDialog)
-            await pilot.press("enter")
+            await _press(pilot, app.screen.query_one("#apply-reindex", ConfirmPill))
             await _loaded(app, pilot, "Research papers")
     rebuild.assert_called_once_with()
 
@@ -406,7 +406,7 @@ async def test_a_switch_with_nothing_to_change_says_so(sources) -> None:
             "apply-apply",
             "apply-cancel",
         ]
-        await pilot.press("enter")
+        await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
         await _loaded(app, pilot, "same")
     sources.store.get_sources.assert_not_called()
 

@@ -453,6 +453,32 @@ def test_a_fresh_default_project_gets_the_tip_until_it_is_hidden():
     assert tip_shows(root) is False
 
 
+def test_a_project_with_a_document_gets_no_tip():
+    assert tip_shows(cfg.data_root) is True
+    (cfg.documents_dir / "notes").mkdir(parents=True)
+    assert tip_shows(cfg.data_root) is True, "an empty folder is not a document"
+    (cfg.documents_dir / "notes" / "a.md").write_text("# A\n", encoding="utf-8")
+    assert tip_shows(cfg.data_root) is False
+
+
+def test_a_project_with_an_added_root_gets_no_tip(tmp_path):
+    assert tip_shows(cfg.data_root) is True
+    settings.set_value(cfg.data_root, "linked_roots", {"papers": str(tmp_path / "papers")})
+    assert tip_shows(cfg.data_root) is False
+
+
+def test_another_project_is_judged_by_its_own_documents(tmp_path):
+    (cfg.documents_dir).mkdir(parents=True, exist_ok=True)
+    (cfg.documents_dir / "a.md").write_text("# A\n", encoding="utf-8")
+    other = tmp_path / "other" / ".lilbee"
+    other.mkdir(parents=True)
+    assert tip_shows(cfg.data_root) is False
+    assert tip_shows(other) is True
+    (other / "documents").mkdir()
+    (other / "documents" / "b.md").write_text("# B\n", encoding="utf-8")
+    assert tip_shows(other) is False
+
+
 def test_an_analyzed_project_gets_no_tip(store, monkeypatch):
     _run(store, monkeypatch=monkeypatch)
     assert tip_shows(cfg.data_root) is False
