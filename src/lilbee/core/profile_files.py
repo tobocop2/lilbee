@@ -42,6 +42,21 @@ _META_KEYS = frozenset({*_STRING_META_KEYS, "authors", "format"})
 _AUTHOR_KEYS = frozenset({"name", "github"})
 
 _NAME_PATTERN = re.compile(r"[A-Za-z0-9 _()-]{1,40}")
+# the fixed segments under /api/profiles/, and the file names Windows keeps for devices
+RESERVED_NAME_KEYS = frozenset(
+    {
+        "active",
+        "new",
+        "discard",
+        "import",
+        "validate",
+        "con",
+        "prn",
+        "aux",
+        "nul",
+        *(f"{port}{digit}" for port in ("com", "lpt") for digit in range(10)),
+    }
+)
 _KEY_DROPPED = re.compile(r"[()]")
 _KEY_SEPARATORS = re.compile(r"[\s_-]+")
 
@@ -191,6 +206,8 @@ def _check_name(meta: Mapping[str, Any], stem: str) -> str:
             f"Bad name {name!r}: use 1 to 40 letters, digits, spaces, hyphens, "
             "underscores or parentheses"
         )
+    if profile_key(name) in RESERVED_NAME_KEYS:
+        raise ProfileFileError(f"Reserved name: {name} cannot name a profile")
     return name
 
 
@@ -315,8 +332,17 @@ def parse_profile(data: Mapping[str, Any], stem: str, folder: ProfileFolder) -> 
     )
 
 
+def _check_size(size: int) -> None:
+    """Raise ``ProfileFileError`` when *size* bytes is over the profile file cap."""
+    if size > MAX_PROFILE_BYTES:
+        raise ProfileFileError(
+            f"The file is over {MAX_PROFILE_BYTES // 1024} KB, too large for a profile file"
+        )
+
+
 def _parse_toml(text: str) -> dict[str, Any]:
-    """The parsed TOML in *text*; raises ``ProfileFileError`` when it is not TOML."""
+    """The parsed TOML in *text*; raises ``ProfileFileError`` when it is too large or not TOML."""
+    _check_size(len(text.encode("utf-8")))
     try:
         return tomllib.loads(text)
     # tomllib raises RecursionError on arrays nested a few hundred deep
@@ -331,10 +357,7 @@ def read_profile_text(path: Path) -> str:
             data = f.read(MAX_PROFILE_BYTES + 1)
     except OSError as exc:
         raise ProfileFileError(f"Cannot read the file: {exc}") from None
-    if len(data) > MAX_PROFILE_BYTES:
-        raise ProfileFileError(
-            f"The file is over {MAX_PROFILE_BYTES // 1024} KB, too large for a profile file"
-        )
+    _check_size(len(data))
     try:
         return data.decode("utf-8")
     except UnicodeDecodeError:
