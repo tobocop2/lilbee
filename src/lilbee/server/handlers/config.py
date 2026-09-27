@@ -15,6 +15,7 @@ from lilbee.app.settings import (
     list_settings,
     provider_reset_refused_message,
     requires_services_reset,
+    reset_settings,
 )
 from lilbee.config_meta import (
     MODEL_ROLE_FIELDS as _MODEL_ROLE_FIELDS,
@@ -55,6 +56,18 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
         reindex_required=result.reindex_required,
         warnings=list(result.warnings),
     )
+
+
+async def reset_config(keys: list[str]) -> ConfigUpdateResponse:
+    """Remove each key from config.toml so its value falls back to the next source.
+
+    Refuses the same keys PATCH /api/config refuses: a provider switch and the
+    model role slots.
+    """
+    if requires_services_reset(dict.fromkeys(keys)):
+        raise ValueError(provider_reset_refused_message("Resetting"))
+    result = await asyncio.to_thread(reset_settings, keys, allow_model_roles=False)
+    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
 
 
 async def get_config() -> ConfigResponse:

@@ -4,9 +4,10 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.settings_map import SETTINGS_MAP, get_default
+from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
+from lilbee.core.config.resolve import builtin_value
 
 
 class TestChunkSizeOverlapInvariant:
@@ -318,17 +319,17 @@ class TestRerankerConfig:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.group == "Retrieval"
-        assert get_default("neighbor_expansion") == 0
+        assert builtin_value("neighbor_expansion") == 0
 
     def test_fusion_knobs_in_settings_map(self):
         """The four adaptive-fusion / structural-filter knobs (which gate the
         on-by-default fusion behavior) are on the settings surface with their
         shipped defaults, so a dropped or typo'd entry fails CI."""
 
-        assert get_default("lexical_fusion_weight") == 1.0
-        assert get_default("adaptive_fusion") is False
-        assert get_default("adaptive_fusion_margin") == 0.15
-        assert get_default("filter_structural_chunks") is False
+        assert builtin_value("lexical_fusion_weight") == 1.0
+        assert builtin_value("adaptive_fusion") is False
+        assert builtin_value("adaptive_fusion_margin") == 0.15
+        assert builtin_value("filter_structural_chunks") is False
         for key in (
             "lexical_fusion_weight",
             "adaptive_fusion",
@@ -367,14 +368,14 @@ class TestTableExtractionSetting:
     """The table-extraction flag is writable, grouped with ingest, and reindex-marked."""
 
     def test_table_extraction_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["table_extraction"]
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is bool
         assert defn.group == "Ingest"
-        assert get_default("table_extraction") is False
+        assert builtin_value("table_extraction") is False
 
     def test_table_extraction_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -387,14 +388,14 @@ class TestLayoutDetectionSetting:
     """The layout-detection flag is writable, grouped with ingest, and reindex-marked."""
 
     def test_layout_detection_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["layout_detection"]
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is bool
         assert defn.group == "Ingest"
-        assert get_default("layout_detection") is False
+        assert builtin_value("layout_detection") is False
 
     def test_layout_detection_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -407,7 +408,7 @@ class TestTableModelSetting:
     """The table-model choice is writable, grouped with ingest, and reindex-marked."""
 
     def test_table_model_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["table_model"]
         assert defn.writable is True
@@ -422,7 +423,7 @@ class TestTableModelSetting:
             "slanet_wired",
             "slanet_wireless",
         )
-        assert get_default("table_model") == "slanet_auto"
+        assert builtin_value("table_model") == "slanet_auto"
 
     def test_table_model_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -461,9 +462,9 @@ class TestOcrPageSelectionSettings:
         for key in ("ocr_strategy", "ocr_scan_confidence", "force_ocr_pages"):
             assert SETTINGS_MAP[key].group == "Ingest"
             assert key in WRITABLE_CONFIG_FIELDS
-        assert get_default("ocr_strategy") == "auto"
-        assert get_default("ocr_scan_confidence") == 0.7
-        assert get_default("force_ocr_pages") == []
+        assert builtin_value("ocr_strategy") == "auto"
+        assert builtin_value("ocr_scan_confidence") == 0.7
+        assert builtin_value("force_ocr_pages") == []
 
     def test_update_persists_and_reloads(self, tmp_path, monkeypatch):
         from lilbee.app import settings as appset
@@ -510,7 +511,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is True  # None = use model training_ctx as ceiling
         assert defn.group == "Generation"
-        assert get_default("num_ctx_max") is None
+        assert builtin_value("num_ctx_max") is None
 
     def test_chat_n_ctx_target_in_settings_map(self):
 
@@ -522,7 +523,7 @@ class TestMemoryTuningSettingsMap:
             "lilbee.core.system._read_total_memory_bytes",
             return_value=8 * 1024**3,
         ):
-            assert get_default("chat_n_ctx_target") == 8192
+            assert builtin_value("chat_n_ctx_target") == 8192
 
     def test_flash_attention_in_settings_map(self):
 
@@ -530,7 +531,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is True  # tri-state: None=auto
         assert defn.type is bool
-        assert get_default("flash_attention") is None
+        assert builtin_value("flash_attention") is None
 
     def test_kv_cache_type_in_settings_map(self):
         from lilbee.core.config.enums import KvCacheType
@@ -544,7 +545,7 @@ class TestMemoryTuningSettingsMap:
         defn = SETTINGS_MAP["n_gpu_layers"]
         assert defn.writable is True
         assert defn.nullable is True  # None = auto/all
-        assert get_default("n_gpu_layers") is None
+        assert builtin_value("n_gpu_layers") is None
 
     def test_vision_ocr_max_tokens_in_settings_map(self):
 
@@ -553,7 +554,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.nullable is False
         assert defn.type is int
         assert defn.group == "Ingest"
-        assert get_default("vision_ocr_max_tokens") == 4096
+        assert builtin_value("vision_ocr_max_tokens") == 4096
 
     def test_vision_ocr_concurrency_in_settings_map(self):
 
@@ -562,7 +563,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.nullable is False
         assert defn.type is int
         assert defn.group == "Ingest"
-        assert get_default("vision_ocr_concurrency") == 4
+        assert builtin_value("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):
         from lilbee.core.config.enums import CrawlRenderMode
@@ -583,12 +584,12 @@ class TestMemoryTuningSettingsMap:
         recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
         assert recycle.writable is True
         assert recycle.type is int
-        assert get_default("crawl_browser_recycle_pages") == 50
+        assert builtin_value("crawl_browser_recycle_pages") == 50
 
         extra = SETTINGS_MAP["crawl_browser_extra_args"]
         assert extra.writable is True
         assert extra.type is list
-        assert get_default("crawl_browser_extra_args") == [
+        assert builtin_value("crawl_browser_extra_args") == [
             "--disable-dev-shm-usage",
             "--disable-gpu",
         ]
@@ -810,7 +811,7 @@ class TestTitleSearchSettings:
         assert defn.writable is True
         assert defn.type is bool
         assert defn.group == "Retrieval"
-        assert get_default("title_search") is False
+        assert builtin_value("title_search") is False
 
     def test_title_search_weight_in_settings_map(self):
 
@@ -818,7 +819,7 @@ class TestTitleSearchSettings:
         assert defn.writable is True
         assert defn.type is float
         assert defn.group == "Retrieval"
-        assert get_default("title_search_weight") == 0.5
+        assert builtin_value("title_search_weight") == 0.5
 
     def test_title_search_fields_are_writable_for_programmatic_surfaces(self):
 
@@ -1144,3 +1145,163 @@ class TestResolverIsTheOnlyWriter:
         assert PROFILE_TABLE not in fields
         assert not any(name.startswith(("profile", "analyze")) for name in fields)
         assert PROFILE_TABLE not in WRITABLE_CONFIG_FIELDS
+
+
+class TestResetRemovesTheUserValue:
+    """Reset deletes the key from config.toml and cfg takes the resolver's next source."""
+
+    @staticmethod
+    def _write_config(text: str):
+        from lilbee.core.config import cfg
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "config.toml").write_text(text, encoding="utf-8")
+        return cfg.data_root
+
+    def test_reset_leaves_cfg_equal_to_a_fresh_config(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config, cfg
+        from lilbee.core.config.resolve import ROOT_DERIVED_FIELDS
+        from lilbee.providers.roles import MODEL_ROLE_FIELDS
+
+        root = self._write_config(
+            "top_k = 7\ntemperature = 0.3\nmax_tokens = 1000\nchunk_size = 900\n"
+            "[profile.values]\ntemperature = 0.7\n"
+        )
+        monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
+        settings.overlay_persisted_settings(root)
+        appset.reset_settings(["top_k", "temperature", "max_tokens", "seed"])
+
+        fresh = Config()
+        keys = sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        diverged = {k: (getattr(cfg, k), getattr(fresh, k)) for k in keys}
+        diverged = {k: pair for k, pair in diverged.items() if pair[0] != pair[1]}
+        assert diverged == {}
+        assert (cfg.top_k, cfg.temperature, cfg.max_tokens) == (12, 0.7, 2048)
+        assert settings.load(root) == {
+            "chunk_size": 900,
+            "profile": {"values": {"temperature": 0.7}},
+        }
+
+    def test_reset_under_env_pin_keeps_env_and_removes_user_key(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("top_k = 7\nchunk_size = 900\n")
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        cfg.top_k = 9
+        result = appset.reset_settings(["top_k"])
+        assert result.updated == ["top_k"]
+        assert cfg.top_k == 9
+        assert settings.load(root) == {"chunk_size": 900}
+
+    def test_reset_resolves_to_the_profile_value(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config(
+            "temperature = 0.3\ntop_k = 7\n[profile.values]\ntemperature = 0.7\n"
+        )
+        cfg.temperature = 0.3
+        cfg.top_k = 7
+        appset.reset_settings(["temperature"])
+        assert cfg.temperature == 0.7
+        assert cfg.top_k == 7
+        stored = settings.load(root)
+        assert "temperature" not in stored
+        assert stored["top_k"] == 7
+        assert stored["profile"] == {"values": {"temperature": 0.7}}
+
+    def test_reset_of_a_key_not_in_config_toml_writes_nothing(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("chunk_size = 900\n")
+        path = root / "config.toml"
+        before = path.stat().st_mtime_ns
+        cfg.top_k = 99
+        result = appset.reset_settings(["top_k"])
+        assert result.updated == ["top_k"]
+        assert cfg.top_k == 12
+        assert path.stat().st_mtime_ns == before
+        assert settings.load(root) == {"chunk_size": 900}
+
+    def test_reset_with_no_config_file_creates_none(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        cfg.seed = 5
+        appset.reset_settings(["seed"])
+        assert cfg.seed is None
+        assert not (cfg.data_root / "config.toml").exists()
+
+    def test_reset_refuses_a_chunk_size_below_the_kept_overlap(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("chunk_size = 2048\nchunk_overlap = 1000\n")
+        cfg.chunk_size = 2048
+        cfg.chunk_overlap = 1000
+        with pytest.raises(
+            ValueError, match=r"chunk_overlap \(1000\) must be < chunk_size \(512\)"
+        ):
+            appset.reset_settings(["chunk_size"])
+        assert (cfg.chunk_size, cfg.chunk_overlap) == (2048, 1000)
+        assert settings.load(root) == {"chunk_size": 2048, "chunk_overlap": 1000}
+
+    def test_reset_refuses_model_roles_when_the_surface_owns_them_elsewhere(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config('chat_model = "acme/a-GGUF/a.gguf"\n')
+        with pytest.raises(ValueError, match="'chat_model' must be set through the dedicated"):
+            appset.reset_settings(["top_k", "chat_model"], allow_model_roles=False)
+        assert settings.load(root) == {"chat_model": "acme/a-GGUF/a.gguf"}
+        assert cfg.top_k == 12
+
+    def test_reset_embedding_model_pins_meta_first_and_reports_reindex(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config('embedding_model = "acme/b-GGUF/b.gguf"\n')
+        cfg.embedding_model = "acme/b-GGUF/b.gguf"
+        calls: list[str] = []
+
+        def pin() -> None:
+            calls.append(settings.load(root).get("embedding_model", "<gone>"))
+
+        monkeypatch.setattr(appset, "_pin_legacy_store_meta", pin)
+        monkeypatch.setattr(appset, "_embedder_dim_from_gguf", lambda ref, registry=None: None)
+        monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
+        monkeypatch.setattr(appset, "_embed_reindex_required", lambda: True)
+        result = appset.reset_settings(["embedding_model"])
+        assert calls == ["acme/b-GGUF/b.gguf"]
+        assert result.reindex_required is True
+        assert cfg.embedding_model == builtin_value("embedding_model")
+        assert "embedding_model" not in settings.load(root)
+
+    def test_reset_keeps_refusing_documents_dir(self):
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="'documents_dir' has no resettable default"):
+            appset.reset_settings(["documents_dir"])
+        assert appset.reset_settings(["documents_dir"], skip_unresettable=True).updated == []
+
+    def test_reset_unknown_key_is_refused(self):
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="Unknown or read-only setting: nope"):
+            appset.reset_settings(["nope"])
+
+
+class TestDeleteValues:
+    def test_absent_keys_write_nothing(self, tmp_path):
+        settings.delete_values(tmp_path, ["top_k"])
+        assert not (tmp_path / "config.toml").exists()
+
+    def test_present_key_is_removed_and_others_kept(self, tmp_path):
+        settings.update_values(tmp_path, {"top_k": 7, "seed": 3})
+        settings.delete_values(tmp_path, ["top_k", "absent"])
+        assert settings.load(tmp_path) == {"seed": 3}

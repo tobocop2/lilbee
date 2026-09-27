@@ -25,8 +25,8 @@ from textual.widgets import (
     TabPane,
 )
 
-from lilbee.app.settings import OCR_SETTING_KEYS, reset_settings
-from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup, get_default
+from lilbee.app.settings import OCR_SETTING_KEYS
+from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.screens.settings_widgets import (
@@ -52,7 +52,6 @@ from lilbee.cli.tui.screens.settings_widgets import (
     picker_scope_to_task,
     select_shown_value,
     set_widget_value,
-    stringify_default,
     title_content,
 )
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
@@ -445,24 +444,16 @@ class SettingsScreen(Screen[None]):
 
     @on(Button.Pressed, ".setting-list-restore")
     def _on_list_restore(self, event: Button.Pressed) -> None:
-        """Restore defaults for a list setting."""
+        """Reset a list setting."""
         btn_id = event.button.id
         if btn_id is None or not btn_id.startswith(LIST_RESTORE_PREFIX):
             return
         key = btn_id.removeprefix(LIST_RESTORE_PREFIX)
-        defn = SETTINGS_MAP.get(key)
-        if defn is None:
+        if SETTINGS_MAP.get(key) is None or not self._reset_keys([key]):
             return
-        default = get_default(key)
-        defaults = list(default) if isinstance(default, list) else []
-        text = "\n".join(str(item) for item in defaults)
-        ta = self.query_one(f"#{EDITOR_ID_PREFIX}{key}", ListTextArea)
-        ta.load_text(text)
-        if self._persist_value(key, defn, text):
-            self._mount_display[key] = text
         error_widget = self.query_one(f"#{LIST_ERROR_ID_PREFIX}{key}", Static)
         error_widget.remove_class(LIST_ERROR_VISIBLE_CLASS)
-        self._refresh_list_title(key, len(defaults))
+        self._refresh_list_title(key, len(getattr(cfg, key)))
 
     def _refresh_list_title(self, key: str, count: int) -> None:
         """Update the Collapsible title to reflect the current line count."""
@@ -591,27 +582,16 @@ class SettingsScreen(Screen[None]):
         )
 
     def _on_reset_all_confirmed(self, confirmed: bool | None) -> None:
-        """Reset every writable setting to its cfg default atomically."""
+        """Reset every writable setting in one batch."""
         if not confirmed:
             return
 
-        writable = [(key, defn) for key, defn in SETTINGS_MAP.items() if defn.writable]
-        try:
-            result = reset_settings([key for key, _ in writable], skip_unresettable=True)
-        except (ValueError, OSError) as exc:
-            self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
-            return
-        resettable = set(result.updated)
-        for key, defn in writable:
-            if key not in resettable:
-                continue
-            self._refresh_editor(key, defn, getattr(cfg, key))
-            self._refresh_help(key, defn)
-            self.app.settings_changed_signal.publish((key, getattr(cfg, key)))
-        self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
+        writable = [key for key, defn in SETTINGS_MAP.items() if defn.writable]
+        if self._reset_keys(writable, skip_unresettable=True):
+            self.notify(msg.SETTINGS_RESET_ALL_SUCCESS)
 
     def action_reset_focused(self) -> None:
-        """Reset the currently-focused setting row to its cfg default."""
+        """Reset the setting whose row holds focus."""
         focused = self.focused
         if focused is None:
             return
@@ -623,14 +603,24 @@ class SettingsScreen(Screen[None]):
                 return
 
     def _reset_to_default(self, key: str) -> None:
-        """Restore a single setting to its cfg default."""
+        """Reset one writable setting."""
         defn = SETTINGS_MAP.get(key)
         if defn is None or not defn.writable:
             return
-        default = get_default(key)
-        stringified = stringify_default(default)
-        self._persist_value(key, defn, stringified)
-        self._refresh_editor(key, defn, default)
+        self._reset_keys([key])
+
+    def _reset_keys(self, keys: list[str], *, skip_unresettable: bool = False) -> bool:
+        """Reset *keys*, then show each one's resolved value. Returns whether it succeeded."""
+        try:
+            reset = self.app.reset_settings(keys, skip_unresettable=skip_unresettable)
+        except (ValueError, OSError) as exc:
+            self.notify(msg.SETTINGS_INVALID_VALUE.format(error=exc), severity="error")
+            return False
+        for key in reset:
+            defn = SETTINGS_MAP[key]
+            self._refresh_editor(key, defn, getattr(cfg, key))
+            self._refresh_help(key, defn)
+        return True
 
     def _refresh_editor(self, key: str, defn: SettingDef, value: object) -> None:
         """Update the editor widget to reflect a new value (e.g. after reset)."""
@@ -639,7 +629,9 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
-        set_widget_value(widget, value)
+        # A checkbox has no save baseline, so its change event would write the value back.
+        with widget.prevent(Checkbox.Changed):
+            set_widget_value(widget, value)
         # Every writable key with a trackable editor is already seeded into
         # _mount_display at row construction, list-typed keys included; this
         # guard only stops a future editor kind from gaining a baseline here

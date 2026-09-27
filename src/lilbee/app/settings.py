@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import errno
-from dataclasses import dataclass
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
@@ -19,7 +20,7 @@ from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
-from lilbee.core.config.resolve import builtin_value, read_layers, resolve_all
+from lilbee.core.config.resolve import builtin_value, read_layers, resolve, resolve_all
 from lilbee.core.config.schema import field_type_name
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
@@ -406,13 +407,7 @@ def apply_settings_update(
     writes through PUT /api/models/<role>.
     """
     if not allow_model_roles:
-        rejected = MODEL_ROLE_FIELDS & set(updates)
-        if rejected:
-            offender = sorted(rejected)[0]
-            raise ValueError(
-                f"'{offender}' must be set through the dedicated model route, "
-                "not the general settings update."
-            )
+        _refuse_model_roles(updates)
     _validate(updates)
     embed_in_batch = "embedding_model" in updates
     if embed_in_batch:
@@ -434,16 +429,32 @@ def apply_settings_update(
         # in-memory snapshot must be restored so cfg matches what was persisted.
         _restore_snapshot(snapshot)
         raise
-    persistent_settings.sync_from_resolver(updates)
-    _rederive_from_resolved(set(updates))
-    _invalidate_caches(set(updates))
-    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
+    return _settle(set(updates), embed_in_batch=embed_in_batch)
+
+
+def _refuse_model_roles(keys: Iterable[str]) -> None:
+    """Refuse model-role keys, which the dedicated model route owns."""
+    rejected = MODEL_ROLE_FIELDS & set(keys)
+    if rejected:
+        offender = sorted(rejected)[0]
+        raise ValueError(
+            f"'{offender}' must be set through the dedicated model route, "
+            "not the general settings update."
+        )
+
+
+def _settle(keys: set[str], *, embed_in_batch: bool) -> SettingsUpdateResult:
+    """Set *keys* on cfg from the resolver, then rederive, invalidate and report."""
+    persistent_settings.sync_from_resolver(keys)
+    _rederive_from_resolved(keys)
+    _invalidate_caches(keys)
+    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & keys)
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
-        updated=sorted(updates),
+        updated=sorted(keys),
         reindex_required=reindex_required,
-        warnings=_update_warnings(set(updates)),
+        warnings=_update_warnings(keys),
     )
 
 
@@ -536,15 +547,16 @@ def _embed_reindex_required() -> bool:
     return store.index_mismatch() is not None
 
 
-def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> SettingsUpdateResult:
-    """Reset each key to its pydantic default and apply through the write boundary.
+def reset_settings(
+    keys: list[str], *, skip_unresettable: bool = False, allow_model_roles: bool = True
+) -> SettingsUpdateResult:
+    """Remove each key from config.toml and set cfg to the value the resolver then gives.
 
-    Fields whose default is a known sentinel (currently ``documents_dir``,
-    which resolves to ``data_root/documents`` at process start) are
-    refused so a reset doesn't write the literal sentinel back. Pass
-    ``skip_unresettable=True`` for bulk-reset gestures that should drop
-    those fields rather than failing the whole batch.
+    ``documents_dir`` has no default to fall back to, so it is refused; pass
+    ``skip_unresettable=True`` for bulk gestures that skip it instead.
     """
+    if not allow_model_roles:
+        _refuse_model_roles(keys)
     for key in keys:
         if not _is_settable(key):
             raise ValueError(f"Unknown or read-only setting: {key}")
@@ -552,13 +564,19 @@ def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> Setti
             raise ValueError(
                 f"'{key}' has no resettable default; pass an explicit value via settings_set."
             )
-    updates: dict[str, Any] = {}
-    for key in keys:
-        if key in _NO_RESET_FIELDS:
-            continue
-        default = builtin_value(key)
-        if default is None and _is_nullable(key):
-            updates[key] = None
-        else:
-            updates[key] = default
-    return apply_settings_update(updates)
+    targets = [key for key in keys if key not in _NO_RESET_FIELDS]
+    _validate(_values_after_reset(targets))
+    embed_in_batch = "embedding_model" in targets
+    if embed_in_batch:
+        _pin_legacy_store_meta()
+    persistent_settings.delete_values(cfg.data_root, targets)
+    return _settle(set(targets), embed_in_batch=embed_in_batch)
+
+
+def _values_after_reset(keys: list[str]) -> dict[str, Any]:
+    """The value each of *keys* resolves to once its user entry is gone."""
+    layers = read_layers(cfg.data_root)
+    remaining = replace(
+        layers, user={key: value for key, value in layers.user.items() if key not in keys}
+    )
+    return {key: resolve(key, remaining).value for key in keys}

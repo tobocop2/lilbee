@@ -1947,7 +1947,7 @@ class TestSettingsMcp:
 
     def test_settings_reset_answers_a_failed_write_with_the_cause(self, isolated_env, monkeypatch):
         cfg.data_root = isolated_env
-        cfg.top_k = 99
+        settings_set({"top_k": 99})
 
         def refuse(_src, _dst):
             raise PermissionError(13, "The process cannot access the file")
@@ -1989,6 +1989,33 @@ class TestSettingsMcp:
         from lilbee.app.settings import get_setting
 
         assert cfg.top_k == get_setting("top_k").default
+
+    def test_settings_reset_removes_the_user_key_and_resolves_the_profile_value(self, isolated_env):
+        from lilbee.core import settings as persistent
+
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "temperature = 0.3\ntop_k = 7\n[profile.values]\ntemperature = 0.7\n",
+            encoding="utf-8",
+        )
+        cfg.temperature = 0.3
+        result = settings_reset(["temperature"])
+        assert result["updated"] == ["temperature"]
+        assert cfg.temperature == 0.7
+        stored = persistent.load(isolated_env)
+        assert "temperature" not in stored
+        assert stored["top_k"] == 7
+
+    def test_settings_reset_under_env_pin_keeps_env(self, isolated_env, monkeypatch):
+        from lilbee.core import settings as persistent
+
+        cfg.data_root = isolated_env
+        settings_set({"top_k": 7})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        result = settings_reset(["top_k"])
+        assert result["updated"] == ["top_k"]
+        assert cfg.top_k == 9
+        assert "top_k" not in persistent.load(isolated_env)
 
     def test_settings_reset_unknown_key_returns_error(self, isolated_env):
         cfg.data_root = isolated_env

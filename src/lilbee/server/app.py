@@ -40,6 +40,7 @@ from lilbee.server.routes.documents import (
 )
 from lilbee.server.routes.general import (
     config_defaults_route,
+    config_reset_route,
     config_route,
     config_schema_route,
     config_update_route,
@@ -287,6 +288,7 @@ def create_app() -> Litestar:
             shutdown_route,
             config_route,
             config_defaults_route,
+            config_reset_route,
             config_schema_route,
             config_update_route,
             source_content_route,

@@ -213,15 +213,6 @@ def title_content(key: str, defn: SettingDef) -> Content:
     return Content.assemble(*parts)
 
 
-def stringify_default(default: object) -> str:
-    """Serialize a default for the TOML settings store."""
-    if default is None:
-        return ""
-    if isinstance(default, list):
-        return "\n".join(str(item) for item in default)
-    return str(default)
-
-
 def _litellm_installed() -> bool:
     from lilbee.providers.litellm_sdk import litellm_available
 

@@ -1356,6 +1356,67 @@ class TestConfigUpdateRoute:
         assert saved["vault_base"] == str(vault)
 
 
+class TestConfigResetRoute:
+    def test_removes_the_user_value_and_answers_the_reset_keys(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
+        cfg.top_k = 7
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 201
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+        assert settings.load(isolated_env) == {"chunk_size": 900}
+        assert cfg.top_k == 12
+
+    def test_resolves_to_the_env_value_when_one_is_set(self, client, isolated_env, monkeypatch):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 201
+        assert cfg.top_k == 9
+        assert "top_k" not in settings.load(isolated_env)
+
+    def test_an_unknown_key_answers_400_naming_it(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["bogus"]})
+        assert resp.status_code == 400
+        assert "Unknown or read-only setting: bogus" in resp.text
+
+    def test_a_model_role_answers_400_and_changes_nothing(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"chat_model": "acme/a-GGUF/a.gguf"})
+        resp = client.post("/api/config/reset", json={"keys": ["chat_model"]})
+        assert resp.status_code == 400
+        assert "dedicated model route" in resp.text
+        assert settings.load(isolated_env) == {"chat_model": "acme/a-GGUF/a.gguf"}
+
+    def test_a_provider_switch_answers_400(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["llm_provider"]})
+        assert resp.status_code == 400
+        assert "Resetting the model provider is unavailable on the HTTP server" in resp.text
+
+    def test_a_body_without_keys_answers_400(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"top_k": 1})
+        assert resp.status_code == 400
+
+    def test_a_config_toml_held_open_answers_503(self, client, isolated_env, monkeypatch):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        cfg.top_k = 7
+
+        def refuse(_src, _dst):
+            raise PermissionError(13, "The process cannot access the file")
+
+        monkeypatch.setattr(os, "replace", refuse)
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 503
+        assert "Close the program that holds config.toml open" in resp.json()["detail"]
+        assert cfg.top_k == 7
+
+
 class TestModelsSetEmbeddingRoute:
     @mock.patch(
         "lilbee.server.handlers.set_embedding_model",
