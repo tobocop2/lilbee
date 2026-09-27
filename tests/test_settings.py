@@ -1066,6 +1066,19 @@ class TestResolverIsTheOnlyWriter:
         assert cfg.temperature == 0.7
         assert "temperature" not in settings.load(cfg.data_root)
 
+    def test_blank_string_update_clears_a_sampling_field_like_null(self):
+        """REST and MCP forward raw JSON with no blank-stripping of their own;
+        the field validator is what makes "" behave like an explicit null."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config("[profile.values]\ntemperature = 0.7\n")
+        appset.apply_settings_update({"temperature": 0.3})
+        assert cfg.temperature == 0.3
+        appset.apply_settings_update({"temperature": ""})
+        assert cfg.temperature == 0.7
+        assert "temperature" not in settings.load(cfg.data_root)
+
     def test_null_update_over_invalid_profile_value_warns_and_keeps_cfg_valid(self, caplog):
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
