@@ -77,6 +77,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         help_text="Switch theme (no arg opens the theme list)",
     ),
     SlashCommand(
+        "/profile",
+        "_cmd_profile",
+        args_hint="[name]",
+        help_text="Switch profile (no arg opens the Profile tab in Settings)",
+    ),
+    SlashCommand(
         "/reset",
         "_cmd_reset",
         help_text="Factory reset (asks for confirmation)",
