@@ -121,7 +121,7 @@ def test_diff_prints_values_as_a_profile_file_writes_them(project):
 
 def test_apply_records_the_profile_and_says_to_rebuild(project, monkeypatch):
     rebuilds = MagicMock()
-    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.run_rebuild", rebuilds)
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "court-filings", CREDITED)
     result = _invoke(project, "apply", "court filings")
     assert result.exit_code == 0, result.output
@@ -133,7 +133,7 @@ def test_apply_records_the_profile_and_says_to_rebuild(project, monkeypatch):
 
 def test_apply_with_reindex_rebuilds_when_a_change_needs_it(project, monkeypatch):
     rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf", "b.pdf"]))
-    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.run_rebuild", rebuilds)
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "court-filings", CREDITED)
     payload = _json(project, "apply", "Court filings", "--reindex")
     assert payload["reindex_required"] is True
@@ -143,7 +143,7 @@ def test_apply_with_reindex_rebuilds_when_a_change_needs_it(project, monkeypatch
 
 def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(project, monkeypatch):
     rebuilds = MagicMock()
-    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.run_rebuild", rebuilds)
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "tables", "[values]\ntop_k = 13\n")
     result = _invoke(project, "apply", "tables", "--reindex")
     assert result.exit_code == 0, result.output
@@ -153,10 +153,33 @@ def test_apply_with_reindex_skips_the_rebuild_when_nothing_needs_it(project, mon
 
 def test_apply_with_reindex_prints_the_rebuild_count(project, monkeypatch):
     rebuilds = MagicMock(return_value=MagicMock(added=["a.pdf"]))
-    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.run_rebuild", rebuilds)
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
     _write(_global_dir(), "court-filings", CREDITED)
     result = _invoke(project, "apply", "Court filings", "--reindex")
     assert "Rebuilt: 1 documents ingested" in result.output
+
+
+def test_apply_with_reindex_reports_both_when_the_rebuild_fails(project, monkeypatch):
+    rebuilds = MagicMock(side_effect=RuntimeError("A sync is already running"))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    _write(_global_dir(), "court-filings", CREDITED)
+    result = _invoke(project, "apply", "Court filings", "--reindex", json_mode=True)
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["name"] == "Court filings"
+    assert payload["reindex_required"] is True
+    assert payload["reindexed"] is None
+    assert payload["reindex_error"] == "A sync is already running"
+
+
+def test_apply_with_reindex_exits_nonzero_when_the_rebuild_fails(project, monkeypatch):
+    rebuilds = MagicMock(side_effect=RuntimeError("A sync is already running"))
+    monkeypatch.setattr("lilbee.cli.commands.ingest_sync.rebuild_or_raise", rebuilds)
+    _write(_global_dir(), "court-filings", CREDITED)
+    result = _invoke(project, "apply", "Court filings", "--reindex")
+    assert result.exit_code == 1
+    assert "Applied Court filings." in result.output
+    assert "A sync is already running" in result.output
 
 
 def test_a_refusal_prints_the_core_message_and_exits_1(project):
@@ -231,6 +254,7 @@ def test_export_then_import_round_trips_a_profile(project, tmp_path):
     out.mkdir()
     exported = _json(project, "export", "Court filings", str(out))
     assert Path(exported["path"]) == out / "court-filings.toml"
+    assert (exported["name"], exported["folder"]) == ("Court filings", "global")
     refused = _invoke(project, "export", "Court filings", str(out))
     assert refused.exit_code == 1
     assert "already exists" in refused.output

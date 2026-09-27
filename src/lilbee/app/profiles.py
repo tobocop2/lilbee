@@ -448,16 +448,19 @@ def export_text(store: ProfileStore, name: str) -> ExportedProfile:
     return ExportedProfile(filename, entry.folder, profile, profile_text(profile))
 
 
-def export(store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False) -> Path:
+def export(
+    store: ProfileStore, name: str, dest: Path, *, overwrite: bool = False
+) -> ProfileLocation:
     """Write the profile *name* picks as a clean file at *dest*, or in it when it is a folder."""
     exported = export_text(store, name)
     path = dest / exported.filename if dest.is_dir() else dest
     if path.exists() and not overwrite:
         raise ValueError(f"{path} already exists")
     text = exported.text
-    return PlannedWrite(
+    planned = PlannedWrite(
         path, exported.folder, parse_text(text, path.stem, exported.folder), text, None
-    ).write()
+    )
+    return _written(planned)
 
 
 def _same_name_in(store: ProfileStore, folder: ProfileFolder, name: str) -> Path | None:

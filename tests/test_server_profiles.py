@@ -1,8 +1,12 @@
 """The /api/profiles routes: every profile operation over HTTP, and URL-name path safety."""
 
 import asyncio
+import contextlib
 import tomllib
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
+from unittest.mock import MagicMock
 from urllib.parse import quote
 
 import pytest
@@ -229,7 +233,7 @@ def test_import_copies_uploaded_text_into_the_folder_whatever_the_file_name(clie
         "/api/profiles/import",
         json={"content": "[values]\nchunk_size = 641\n", "filename": "my-upload.toml"},
     )
-    assert again.status_code == 400
+    assert again.status_code == 409
     assert again.json()["detail"].startswith("A profile named my-upload already exists")
     replaced = client.post(
         "/api/profiles/import",
@@ -355,6 +359,76 @@ def test_a_profile_operation_runs_off_the_event_loop(client, monkeypatch):
     assert seen == [False]
 
 
+def test_every_profile_handler_runs_its_operation_off_the_event_loop(monkeypatch):
+    from lilbee.server.handlers import profiles as handlers
+    from lilbee.server.models import (
+        ProfileDuplicateRequest,
+        ProfileImportRequest,
+        ProfileNewRequest,
+        ProfileSaveRequest,
+        ProfileValidateRequest,
+    )
+
+    names = [
+        "list_profiles",
+        "active",
+        "show",
+        "diff",
+        "apply",
+        "save_as",
+        "update",
+        "discard",
+        "new",
+        "duplicate",
+        "rename",
+        "delete",
+        "export_text",
+        "import_text",
+        "validate_content",
+    ]
+    on_loop: dict[str, bool] = {}
+
+    def _recorder(name: str) -> Callable[..., MagicMock]:
+        def _record(*_args: object, **_kwargs: object) -> MagicMock:
+            try:
+                asyncio.get_running_loop()
+                on_loop[name] = True
+            except RuntimeError:
+                on_loop[name] = False
+            return MagicMock()
+
+        return _record
+
+    for name in names:
+        monkeypatch.setattr(profiles, name, _recorder(name))
+
+    calls: list[Callable[[], Any]] = [
+        lambda: handlers.list_profiles(),
+        lambda: handlers.active_profile(),
+        lambda: handlers.show_profile("x"),
+        lambda: handlers.diff_profile("x"),
+        lambda: handlers.apply_profile("x"),
+        lambda: handlers.save_profile(ProfileSaveRequest(name="x")),
+        lambda: handlers.update_profile("x"),
+        lambda: handlers.discard_changes(),
+        lambda: handlers.new_profile(ProfileNewRequest(name="x")),
+        lambda: handlers.duplicate_profile("x", ProfileDuplicateRequest(new_name="y")),
+        lambda: handlers.rename_profile("x", "y"),
+        lambda: handlers.delete_profile("x"),
+        lambda: handlers.export_profile("x"),
+        lambda: handlers.import_profile(ProfileImportRequest(content="c", filename="f.toml")),
+        lambda: handlers.validate_profile(ProfileValidateRequest(content="c", filename="f.toml")),
+    ]
+    for call in calls:
+        # only the recorded loop state matters; each stub's response conversion
+        # raises afterward, which is expected and not the thing under test
+        with contextlib.suppress(Exception):
+            asyncio.run(call())
+
+    assert set(on_loop) == set(names)
+    assert on_loop == dict.fromkeys(names, False)
+
+
 def test_every_fixed_route_segment_is_a_reserved_profile_name():
     from lilbee.core.profile_files import RESERVED_NAME_KEYS, profile_key
 
@@ -396,6 +470,24 @@ def test_a_reserved_name_is_refused_on_every_http_write(client, name):
     )
     assert checked.json()["problems"] == [reason]
     assert not _global_dir().exists()
+
+
+def test_a_name_clash_is_409_and_bad_input_stays_400(client):
+    _write(_global_dir(), "taken", '[profile]\nname = "Taken"\n[values]\n')
+    clashes = [
+        client.post("/api/profiles/new", json={"name": "Taken"}),
+        client.post(_url("Scanned archive", "/duplicate"), json={"new_name": "Taken"}),
+        client.post(
+            "/api/profiles/import", json={"content": "[values]\n", "filename": "Taken.toml"}
+        ),
+    ]
+    for resp in clashes:
+        assert resp.status_code == 409, resp.json()
+        assert resp.json()["detail"].startswith("A profile named")
+        assert "already exists" in resp.json()["detail"]
+    bad_input = client.post("/api/profiles/new", json={"name": "../escape"})
+    assert bad_input.status_code == 400
+    assert bad_input.json()["detail"].startswith("Bad name")
 
 
 def test_a_reserved_file_on_disk_is_listed_broken_and_the_fixed_route_still_answers(client):
