@@ -952,7 +952,27 @@ lilbee profile rename "My scans" "Old scans"
 lilbee profile delete "Old scans"
 lilbee profile export "Court filings" ./shared/
 lilbee profile import ./shared/court-filings.toml --target project
-lilbee profile validate court-filings.toml --folder community
+lilbee profile validate court-filings.toml
+```
+
+#### Share a profile
+
+To share a profile, export it to a file and send the file. The other
+person imports it:
+
+```bash
+lilbee profile export "Court filings" ./court-filings.toml
+lilbee profile import ./court-filings.toml
+```
+
+A profile file can credit its authors and name the corpus it was tuned
+on. `lilbee profile list` and the Profile tab show both:
+
+```toml
+[profile]
+name = "Court filings"
+authors = [{ name = "Jane Doe", github = "janedoe" }]
+tested_on = "4,000 scanned county court filings"
 ```
 
 ### Analyze
