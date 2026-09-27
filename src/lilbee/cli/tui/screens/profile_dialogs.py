@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 from textual import on
 from textual.app import ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widget import Widget
@@ -106,19 +106,28 @@ def credit_text(profile: ProfileFile) -> str:
     return ". ".join(part for part in parts if part)
 
 
-def run_profile_op(node: Widget, op: Callable[[], T], on_done: Callable[[T], None]) -> None:
-    """Run *op* off the loop; toast a refusal or a failed write, else call *on_done* on the loop."""
+def run_profile_op(
+    node: Widget,
+    op: Callable[[], T],
+    on_done: Callable[[T], None],
+    on_error: Callable[[], None] | None = None,
+) -> None:
+    """Run *op* off the loop; on failure toast and call *on_error*, else call *on_done*."""
 
     def _work() -> None:
         try:
             result = op()
         except ValueError as exc:
             call_from_thread(node, node.notify, str(exc), severity="error")
+            if on_error is not None:
+                call_from_thread(node, on_error)
             return
         except OSError as exc:
             call_from_thread(
                 node, node.notify, profiles.file_failure_message(exc), severity="error"
             )
+            if on_error is not None:
+                call_from_thread(node, on_error)
             return
         call_from_thread(node, on_done, result)
 
@@ -159,7 +168,7 @@ def start_profile_switch(
     def _ask(plan: SwitchPlan) -> None:
         app.push_screen(ApplyProfileDialog(plan), _on_choice)
 
-    run_profile_op(node, lambda: _switch_plan(name), _ask)
+    run_profile_op(node, lambda: _switch_plan(name), _ask, on_error=on_close)
 
 
 class ApplyProfileDialog(ModalScreen[ApplyChoice]):
@@ -183,21 +192,24 @@ class ApplyProfileDialog(ModalScreen[ApplyChoice]):
     def compose(self) -> ComposeResult:
         profile = self._plan.profile
         with Vertical(id="apply-body"):
-            yield Static(
-                msg.PROFILE_APPLY_TITLE.format(name=profile.name), id="apply-title", markup=False
-            )
-            for text, widget_id in (
-                (profile.description, "apply-description"),
-                (credit_text(profile), "apply-credit"),
-            ):
-                if text:
-                    yield Static(text, id=widget_id, markup=False)
-            yield from self._compose_changes()
-            yield from self._compose_kept()
-            yield Static(msg.PROFILE_APPLY_UNTOUCHED, id="apply-untouched")
-            summary = self._summary()
-            if summary:
-                yield Static(summary, id="apply-summary", markup=False)
+            with VerticalScroll(id="apply-scroll"):
+                yield Static(
+                    msg.PROFILE_APPLY_TITLE.format(name=profile.name),
+                    id="apply-title",
+                    markup=False,
+                )
+                for text, widget_id in (
+                    (profile.description, "apply-description"),
+                    (credit_text(profile), "apply-credit"),
+                ):
+                    if text:
+                        yield Static(text, id=widget_id, markup=False)
+                yield from self._compose_changes()
+                yield from self._compose_kept()
+                yield Static(msg.PROFILE_APPLY_UNTOUCHED, id="apply-untouched")
+                summary = self._summary()
+                if summary:
+                    yield Static(summary, id="apply-summary", markup=False)
             with Horizontal(id="apply-actions"):
                 yield from self._action_pills()
 
