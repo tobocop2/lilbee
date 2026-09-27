@@ -1781,13 +1781,23 @@ class TestHfRowsMergeTags:
         assert len(calls) == pages
         assert scan.truncated is True
 
-    def test_scan_that_reaches_the_end_is_not_truncated(
-        self, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize(
+        ("past_bound", "truncated"),
+        [
+            pytest.param(-1, False, id="ends-before-the-bound"),
+            pytest.param(0, False, id="ends-exactly-at-the-bound"),
+            pytest.param(1, True, id="one-row-past-the-bound"),
+        ],
+    )
+    def test_scan_is_truncated_only_with_rows_past_the_bound(
+        self, monkeypatch: pytest.MonkeyPatch, past_bound: int, truncated: bool
     ) -> None:
-        stub_hf_listing(monkeypatch, {"text-generation": [make_test_catalog_model()]})
+        bound = _query._HF_SCAN_PAGE_SIZE * _query._HF_SCAN_MAX_PAGES
+        rows = [make_test_catalog_model(name=f"Hf{i}") for i in range(bound + past_bound)]
+        stub_hf_listing(monkeypatch, {"text-generation": rows})
         scan = _query._HfScan(ModelTask.CHAT, "")
-        assert len(list(scan.rows())) == 1
-        assert scan.truncated is False
+        assert len(list(scan.rows())) == min(len(rows), bound)
+        assert scan.truncated is truncated
 
 
 class TestCatalogFiltersBeforePaging:
