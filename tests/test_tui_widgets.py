@@ -23,6 +23,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
@@ -1181,7 +1182,10 @@ class TestModelPickerButton:
             btn = app.query_one("#model-pick-chat", ModelPickerButton)
             new_ref = "ollama/new-chat:latest"
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 btn._on_picker_dismissed(new_ref)
@@ -1236,7 +1240,10 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock(store=store_mock)
             set_services(services_mock)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
@@ -1313,7 +1320,10 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1373,7 +1383,10 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,

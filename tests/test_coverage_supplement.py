@@ -17,6 +17,7 @@ from unittest import mock
 import pytest
 
 from lilbee.catalog.types import ModelTask
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.data.types import OcrReport, SyncResult
 from lilbee.runtime.progress import OcrBackendUsed
@@ -551,7 +552,8 @@ class TestAppCanonicalizeFallbackNotice:
                     side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
                 ),
                 mock.patch(
-                    "lilbee.app.settings.persistent_settings.update_values"
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
                 ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
@@ -2451,11 +2453,8 @@ class TestAppToastsOcrOffWarning:
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         app = LilbeeApp()
-        with (
-            mock.patch.object(
-                app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
-            ),
-            mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+        with mock.patch.object(
+            app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
         ):
             app.set_setting("enable_ocr", False)
             app.set_setting("enable_ocr", True)
@@ -2555,7 +2554,10 @@ class TestAppSetActiveModelDownloadGuard:
         app = LilbeeApp()
         try:
             app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
-            with mock.patch("lilbee.app.settings.persistent_settings.update_values"):
+            with mock.patch(
+                "lilbee.app.settings.persistent_settings.update_values",
+                wraps=persistent_settings.update_values,
+            ):
                 app.set_active_model("chat_model", ref)
             assert cfg.chat_model == ref
         finally:

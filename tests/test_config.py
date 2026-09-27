@@ -18,7 +18,8 @@ from lilbee.core.config import (
     validate_ocr_timeout,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
-from lilbee.core.config.model import _TomlSource, value_is_set
+from lilbee.core.config.model import value_is_set
+from lilbee.core.config.resolve import read_layers
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
@@ -122,9 +123,7 @@ class TestEnvVarOverrides:
         assert through_link.data_dir == direct.data_dir
         assert through_link.lancedb_dir == direct.lancedb_dir
 
-    def test_padded_data_env_finds_the_same_dir_for_root_and_config(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_padded_data_env_finds_the_same_dir_for_root_and_config(self, tmp_path):
         """A padded LILBEE_DATA sends the root and its config.toml to one dir."""
         (tmp_path / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
         with mock.patch.dict(os.environ, {"LILBEE_DATA": f"  {tmp_path}  "}):
@@ -452,6 +451,34 @@ class TestOcrStrategy:
 
 
 class TestTomlConfigFile:
+    def test_config_construction_equals_resolver_per_field(self, tmp_path):
+        from lilbee.core.config.resolve import (
+            EXPLICIT_SOURCES,
+            ROOT_DERIVED_FIELDS,
+            read_layers,
+            resolve_all,
+        )
+
+        (tmp_path / "config.toml").write_text(
+            'top_k = 7\nchunk_size = 900\n[profile]\nname = "x"\n[profile.values]\n'
+            "top_k = 3\nchunk_overlap = 50\ntemperature = 0.7\n",
+            encoding="utf-8",
+        )
+        env = clean_env(tmp_path)
+        env["LILBEE_CHUNK_SIZE"] = "1024"
+        with mock.patch.dict(os.environ, env, clear=True):
+            built = Config()
+            resolved = resolve_all(read_layers(tmp_path))
+        probe = Config.model_validate(
+            {k: v.value for k, v in resolved.items() if v.source in EXPLICIT_SOURCES}
+        )
+        keys = sorted(set(Config.model_fields) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        assert {k for k in keys if getattr(built, k) != getattr(probe, k)} == set()
+        assert (built.top_k, built.chunk_size, built.chunk_overlap) == (7, 1024, 50)
+        assert built.temperature == 0.7
+        assert built.top_p == 0.9
+
     def test_toml_values_loaded(self, tmp_path):
         ref = "ollama/my-saved-model:latest"
         toml_path = tmp_path / "config.toml"
@@ -1143,7 +1170,7 @@ class TestCorsOriginRegexConfig:
             assert c.cors_origin_regex == r"^https://only-this\.example$"
 
     def test_cors_origin_regex_from_env_match_nothing_disables_default(self, tmp_path) -> None:
-        # Empty env vars are ignored by _PlainEnvSource, so the documented opt-out is
+        # Empty env vars are ignored by the settings resolver, so the documented opt-out is
         # to set a regex that matches nothing: e.g. ^$.
         env = clean_env(tmp_path)
         env["LILBEE_CORS_ORIGIN_REGEX"] = "^$"
@@ -1760,7 +1787,7 @@ class TestEmptyValueClearsModelRole:
             'vision_model = ""\nreranker_model = ""\nchat_model = ""\nchunk_size = ""\ntop_k = 9\n',
             encoding="utf-8",
         )
-        assert _TomlSource(Config, toml_path)() == {
+        assert read_layers(tmp_path).user == {
             "vision_model": "",
             "reranker_model": "",
             "top_k": 9,

@@ -1049,6 +1049,7 @@ def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
         "help": info.help_text,
         "choices": list(info.choices) if info.choices else None,
         "reindex_required": info.reindex_required,
+        "source": info.source.value,
     }
 
 

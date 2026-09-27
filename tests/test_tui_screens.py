@@ -45,6 +45,7 @@ from lilbee.cli.tui.screens.chat import _Turn, _TurnEnded
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.modelhub.model_manager import RemoteModel
@@ -3098,7 +3099,10 @@ async def test_chat_slash_version():
 async def test_chat_slash_model_with_arg():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
-        with patch("lilbee.app.settings.persistent_settings.update_values"):
+        with patch(
+            "lilbee.app.settings.persistent_settings.update_values",
+            wraps=persistent_settings.update_values,
+        ):
             new_ref = "ollama/new-model:latest"
             app.screen._handle_slash(f"/model {new_ref}")
             await _pilot.pause()
@@ -3764,7 +3768,7 @@ async def test_chat_slash_set_nullable_none():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("temperature none")
-        assert cfg.temperature is None
+        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
 
 
 async def test_chat_slash_set_unknown_key():
@@ -5246,7 +5250,10 @@ async def test_command_provider_set_model():
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch("lilbee.app.settings.persistent_settings.update_values"):
+        with patch(
+            "lilbee.app.settings.persistent_settings.update_values",
+            wraps=persistent_settings.update_values,
+        ):
             provider._set_model("chat_model", "ollama/new-model:latest")
             assert cfg.chat_model == "ollama/new-model:latest"
             assert "ollama/new-model:latest" in app.title

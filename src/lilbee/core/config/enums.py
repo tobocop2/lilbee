@@ -133,6 +133,16 @@ class KvCacheType(StrEnum):
     Q4_0 = "q4_0"
 
 
+class SettingSource(StrEnum):
+    """The layer that supplies a setting's effective value, highest precedence first."""
+
+    ENV = "env"
+    USER = "user"
+    PROFILE = "profile"
+    BUILT_IN = "built_in"
+    AUTO = "auto"
+
+
 # Bytes per KV element for memory budgeting, from llama.cpp's block layouts:
 # q8_0 stores 32 elements in 34 bytes (2-byte scale + 32 data bytes) and q4_0
 # stores 32 elements in 18 bytes (2-byte scale + 16 bytes of packed nibbles).

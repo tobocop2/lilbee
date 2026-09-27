@@ -631,9 +631,7 @@ class TestInit:
         assert cfg.documents_dir == root / "documents"
         assert cfg.data_root == tmp_path
 
-    async def test_init_switches_search_scope_hint_to_the_new_vault(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    async def test_init_switches_search_scope_hint_to_the_new_vault(self, tmp_path, monkeypatch):
         """After a vault switch, a live server advertises the new corpus's scopes.
 
         The hint is computed per list_tools call from current config, so the
@@ -677,7 +675,7 @@ class TestInit:
         init(str(target))
         assert os.environ.get("LILBEE_DATA") == str(target)
 
-    def test_init_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
+    def test_init_overlays_per_root_config_toml(self, tmp_path):
         """init() must re-read the project base's config.toml, the same fix as
         the CLI's --data-dir entry point. Without this, switching the MCP
         session to a project that has its own model preferences silently
@@ -695,9 +693,7 @@ class TestInit:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
-    def test_init_keeps_a_reranker_model_the_project_cleared(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_init_keeps_a_reranker_model_the_project_cleared(self, tmp_path):
         """An empty reranker_model in the project's config.toml clears the ambient one."""
         cfg.reranker_model = "org/Ambient-Rerank-GGUF/ambient-Q4_K_M.gguf"
         cfg.top_k = 5
@@ -1818,6 +1814,21 @@ class TestSettingsMcp:
         assert top_k["help"]
         assert top_k["reindex_required"] is False
 
+    def test_settings_list_and_get_carry_source(self, isolated_env, monkeypatch):
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "top_k = 7\n[profile.values]\nchunk_overlap = 50\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
+        listed = {entry["key"]: entry["source"] for entry in settings_list()["settings"]}
+        assert listed["top_k"] == "user"
+        assert listed["chunk_overlap"] == "profile"
+        assert listed["max_tokens"] == "env"
+        assert listed["temperature"] == "built_in"
+        assert listed["num_ctx"] == "auto"
+        assert settings_get("top_k")["setting"]["source"] == "user"
+        assert settings_get("temperature")["setting"]["source"] == "built_in"
+
     def test_settings_list_filters_by_group(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_list(group="Retrieval")
@@ -1959,7 +1970,7 @@ class TestSettingsMcp:
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" in persisted
         settings_set({"max_tokens": None})
-        assert cfg.max_tokens is None
+        assert cfg.max_tokens == 4096  # the built-in, as a fresh Config() gives
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert "max_tokens" not in persisted
 
@@ -2065,19 +2076,19 @@ class TestSettingsMcp:
         assert all(info.group == SettingGroup.RETRIEVAL for info in infos)
 
     def test_setting_default_handles_pydantic_undefined(self, isolated_env):
-        """_setting_default returns None when the pydantic field has no default."""
+        """builtin_value returns None when the pydantic field has no default."""
         cfg.data_root = isolated_env
         from unittest.mock import MagicMock, patch
 
         from pydantic_core import PydanticUndefined
 
-        from lilbee.app.settings import _setting_default
+        from lilbee.core.config.resolve import builtin_value
 
         field_info = MagicMock()
         field_info.default_factory = None
         field_info.default = PydanticUndefined
-        with patch("lilbee.app.settings.Config.model_fields", {"top_k": field_info}):
-            assert _setting_default("top_k") is None
+        with patch("lilbee.core.config.resolve.Config.model_fields", {"top_k": field_info}):
+            assert builtin_value("top_k") is None
 
     def test_is_nullable_returns_false_for_model_role_field(self, isolated_env):
         """Model role fields are not in WRITABLE_CONFIG_FIELDS; _is_nullable returns False."""
