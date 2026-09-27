@@ -67,30 +67,40 @@ def embed_token_cap(ctx: int) -> int:
 
 
 def embed_window_warning(cap: int) -> HealthWarning | None:
-    """The warning when token sizing is in effect because *cap* binds the chunker, else None."""
-    from lilbee.data.extract.chunk import CHARS_PER_TOKEN, token_sizing_in_effect
+    """The embed-window warning for a real, actionable gap, else None.
 
-    if cfg.token_sizing:
-        if cap >= cfg.chunk_size:
-            return None
-        allowed = f"the configured chunk_size {cfg.chunk_size} in tokens"
-        remedy = f"Set chunk_size to {cap} to match the window."
-    elif token_sizing_in_effect(cap):
+    Plain chunking self-corrects to token sizing when *cap* binds, so it loses
+    no text and needs no warning. Semantic chunking ignores token sizing and
+    stays character-sized, so a bound *cap* loses text there regardless of the
+    ``token_sizing`` setting.
+    """
+    from lilbee.data.extract.chunk import CHARS_PER_TOKEN
+
+    if cfg.semantic_chunking:
         chars = cfg.chunk_size * CHARS_PER_TOKEN
-        allowed = f"the {chars} characters that chunk_size {cfg.chunk_size} allows"
-        remedy = None
-    else:
-        return None
-    return HealthWarning(
-        code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
-        message=(
-            f"The embedding model accepts {cap} tokens per input, below {allowed}. "
-            f"Token sizing is in effect for this embedder: chunks are sized with its own "
-            f"tokenizer at up to {min(cfg.chunk_size, cap)} tokens, so none loses text "
-            f"at embedding time."
-        ),
-        remedy=remedy,
-    )
+        if cap >= chars:
+            return None
+        return HealthWarning(
+            code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+            message=(
+                f"The embedding model accepts {cap} tokens per input, below the {chars} "
+                f"characters that chunk_size {cfg.chunk_size} allows. Semantic chunking "
+                f"sizes chunks by characters and ignores token sizing, so a chunk over "
+                f"{cap} tokens loses text at embedding time."
+            ),
+            remedy="Turn off semantic_chunking or lower chunk_size.",
+        )
+    if cfg.token_sizing and cap < cfg.chunk_size:
+        return HealthWarning(
+            code=WarningCode.EMBED_WINDOW_BELOW_CHUNK,
+            message=(
+                f"The embedding model accepts {cap} tokens per input, below the configured "
+                f"chunk_size {cfg.chunk_size} in tokens. Chunks are capped to {cap} tokens "
+                f"instead."
+            ),
+            remedy=f"Set chunk_size to {cap} to match the window.",
+        )
+    return None
 
 
 _LLM_RERANK_HEADROOM = 512

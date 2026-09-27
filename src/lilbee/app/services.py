@@ -190,9 +190,10 @@ def build_services(
     reconciliation is a global-cfg concern owned by :func:`get_services`, not
     done here.
 
-    Side effect: binds *provider* into xberg's process-global OCR/embedding/
-    tokenizer backends. The registry is a single global slot, so every container
-    (singleton or per-instance library) binds its own, not only get_services.
+    Side effect: binds *provider* into xberg's process-global OCR and embedding
+    backends (the chunker binds the tokenizer on demand). The registry is one
+    process-wide slot, so every container (singleton or per-instance library)
+    binds its own, not only get_services.
     """
     from lilbee.catalog.hf_client import HfClient
     from lilbee.data.store import Store
