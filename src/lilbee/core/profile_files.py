@@ -26,7 +26,6 @@ T = TypeVar("T")
 
 PROFILES_DIRNAME = "profiles"
 BUILTIN_DIRNAME = "builtin"
-COMMUNITY_DIRNAME = "community"
 PROFILE_SUFFIX = ".toml"
 PACKAGE_PROFILES_DIR = Path(__file__).resolve().parent.parent / PROFILES_DIRNAME
 MAX_PROFILE_BYTES = 256 * 1024
@@ -66,11 +65,7 @@ class ProfileFolder(StrEnum):
 
     PROJECT = "project"
     GLOBAL = "global"
-    COMMUNITY = "community"
     BUILTIN = "builtin"
-
-
-PACKAGE_FOLDERS = frozenset({ProfileFolder.COMMUNITY, ProfileFolder.BUILTIN})
 
 
 class NameProblem(StrEnum):
@@ -155,7 +150,6 @@ def profile_folders(data_root: Path) -> list[tuple[ProfileFolder, Path]]:
     global_root = default_data_dir()
     folders = [
         (ProfileFolder.GLOBAL, global_root / PROFILES_DIRNAME),
-        (ProfileFolder.COMMUNITY, PACKAGE_PROFILES_DIR / COMMUNITY_DIRNAME),
         (ProfileFolder.BUILTIN, PACKAGE_PROFILES_DIR / BUILTIN_DIRNAME),
     ]
     if canonical_data_root(data_root) != canonical_data_root(global_root):
@@ -267,7 +261,7 @@ def _overlap_problems(values: Mapping[str, Any]) -> list[str]:
 
 
 def _evidence_problems(values: Mapping[str, Any], evidence: str | None) -> list[str]:
-    """A package profile sets a retrieval value unequal to the built-in only with evidence."""
+    """A built-in profile sets a retrieval value unequal to the default only with evidence."""
     if evidence is not None:
         return []
     return [
@@ -288,7 +282,7 @@ def _value_problems(
         except ProfileFileError as exc:
             problems.append(str(exc))
     problems += _overlap_problems(normalized)
-    if folder in PACKAGE_FOLDERS:
+    if folder is ProfileFolder.BUILTIN:
         problems += _evidence_problems(normalized, evidence)
     return problems
 
@@ -519,28 +513,6 @@ def builtin_keys() -> frozenset[str]:
     return frozenset(profile_key(e.name) for e in _read_folder(ProfileFolder.BUILTIN, folder))
 
 
-_PACKAGE_FOLDER_DIRS = (
-    (ProfileFolder.BUILTIN, BUILTIN_DIRNAME),
-    (ProfileFolder.COMMUNITY, COMMUNITY_DIRNAME),
-)
-
-
-def _duplicate_of(values: Mapping[str, Any], path: Path) -> str | None:
-    """The name of another built-in or community profile whose values equal *values*, or None."""
-    try:
-        normalized = normalized_values(values)
-    except ProfileFileError:
-        return None
-    for folder, dirname in _PACKAGE_FOLDER_DIRS:
-        for entry in _read_folder(folder, PACKAGE_PROFILES_DIR / dirname):
-            if entry.file is None or _same_file(entry.path, path):
-                continue
-            # entry.file already passed value validation, so its own values always normalize
-            if normalized_values(entry.file.values) == normalized:
-                return entry.name
-    return None
-
-
 def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:
     """Every problem with *path* as a profile file in *folder*."""
     try:
@@ -548,20 +520,6 @@ def validate_file(path: Path, folder: ProfileFolder) -> ProfileValidation:
     except ProfileFileError as exc:
         return ProfileValidation(path, path.stem, (str(exc),))
     return validate_text(text, path, folder)
-
-
-def _missing_tested_on(meta: Any) -> bool:
-    """True when a community profile still needs tested_on.
-
-    A present value of the wrong type already has its own "must be text" problem, so it does
-    not also count as missing here.
-    """
-    # untyped TOML: a non-table [profile] already has its own problem
-    if not isinstance(meta, dict):
-        return True
-    tested_on = meta.get("tested_on")
-    # untyped TOML: a non-text tested_on already has its own "must be text" problem
-    return isinstance(tested_on, str | type(None)) and not tested_on
 
 
 def validate_text(text: str, path: Path, folder: ProfileFolder) -> ProfileValidation:
@@ -574,15 +532,6 @@ def validate_text(text: str, path: Path, folder: ProfileFolder) -> ProfileValida
     problems = profile_problems(data, path.stem, folder)
     if folder is not ProfileFolder.BUILTIN and profile_key(name) in builtin_keys():
         problems.append(_reserved_reason(name))
-    if folder is ProfileFolder.COMMUNITY:
-        if _missing_tested_on(data.get(META_TABLE)):
-            problems.append("A community profile needs tested_on")
-        raw_values = data.get(VALUES_TABLE)
-        # untyped TOML: a missing or malformed [values] table already has its own problem
-        if isinstance(raw_values, dict):
-            duplicate_of = _duplicate_of(raw_values, path)
-            if duplicate_of is not None:
-                problems.append(f"Duplicates the values of the {duplicate_of} profile")
     return ProfileValidation(path, name, tuple(problems))
 
 

@@ -15,7 +15,7 @@ from lilbee.core import profile_files, settings
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.resolve import PROFILE_FIELDS, read_layers, resolve
-from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileAuthor, ProfileFolder, ProfileStore
+from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
 from tests._private_mode import file_mode, posix_only
 from tests.conftest import make_mock_services
@@ -138,9 +138,8 @@ def test_a_file_whose_name_differs_only_in_case_is_taken(store):
 
 def test_writes_go_only_to_the_project_or_global_folder(store, monkeypatch, tmp_path):
     monkeypatch.setattr(profile_files, "PACKAGE_PROFILES_DIR", tmp_path / "package")
-    for folder in (ProfileFolder.BUILTIN, ProfileFolder.COMMUNITY):
-        with pytest.raises(ValueError, match="saved to this project or to all projects"):
-            profiles.new(store, "X", folder)
+    with pytest.raises(ValueError, match="saved to this project or to all projects"):
+        profiles.new(store, "X", ProfileFolder.BUILTIN)
     monkeypatch.setattr(cfg, "data_root", default_data_dir())
     with pytest.raises(ValueError, match="there is no project folder"):
         profiles.save_as("X", ProfileFolder.PROJECT)
@@ -352,87 +351,6 @@ def test_export_refuses_a_broken_profile(store, tmp_path):
     assert not (tmp_path / "x.toml").exists()
 
 
-def test_share_writes_a_clean_community_file(store, tmp_path):
-    _write(
-        _global_dir(),
-        "mine",
-        '[profile]\nname = "Mine"\nauthors = [{ name = "Jane Doe", github = "janedoe" }]\n'
-        'tested_on = "100 filings"\n[values]\nchunk_size = 900\n',
-    )
-    out = tmp_path / "out"
-    out.mkdir()
-    location = profiles.share(store, "mine", out)
-    assert (location.name, location.folder, location.path) == (
-        "Mine",
-        ProfileFolder.COMMUNITY,
-        out / "mine.toml",
-    )
-    assert _read(location.path) == {
-        "profile": {
-            "name": "Mine",
-            "authors": [{"name": "Jane Doe", "github": "janedoe"}],
-            "tested_on": "100 filings",
-            "format": 1,
-        },
-        "values": {"chunk_size": 900},
-    }
-    with pytest.raises(ValueError, match="already exists"):
-        profiles.share(store, "mine", location.path)
-    again = profiles.share(store, "mine", location.path, overwrite=True)
-    assert again.path == location.path
-
-
-def test_share_refuses_an_existing_file_exactly_as_export_does(store, tmp_path):
-    _write(
-        _global_dir(),
-        "mine",
-        '[profile]\nname = "Mine"\nauthors = [{ name = "Jane Doe", github = "janedoe" }]\n'
-        'tested_on = "100 filings"\n[values]\nchunk_size = 900\n',
-    )
-    dest = tmp_path / "mine.toml"
-    dest.write_text("taken", encoding="utf-8")
-    with pytest.raises(ValueError) as export_exc:
-        profiles.export(store, "mine", dest)
-    with pytest.raises(ValueError) as share_exc:
-        profiles.share(store, "mine", dest)
-    assert str(export_exc.value) == str(share_exc.value) == f"{dest} already exists"
-    assert dest.read_text(encoding="utf-8") == "taken"
-
-
-def test_share_fills_missing_authors_and_tested_on(store, tmp_path):
-    _write(_global_dir(), "mine", '[profile]\nname = "Mine"\n[values]\nchunk_size = 900\n')
-    assert profiles.share_missing(store, "mine") == ("authors", "tested_on")
-    with pytest.raises(ValueError, match="Missing for a community submission: authors, tested_on"):
-        profiles.share(store, "mine", tmp_path)
-    location = profiles.share(
-        store,
-        "mine",
-        tmp_path,
-        authors=(ProfileAuthor("Jane Doe", "janedoe"),),
-        tested_on="100 filings",
-    )
-    assert _read(location.path)["profile"]["tested_on"] == "100 filings"
-    # the file lilbee holds is untouched; only the shared copy was filled in
-    assert profiles.share_missing(store, "mine") == ("authors", "tested_on")
-
-
-def test_share_refuses_a_profile_that_fails_community_validation(store, tmp_path):
-    _write(
-        _global_dir(),
-        "mine",
-        '[profile]\nname = "Mine"\ntested_on = "100 filings"\n'
-        'authors = [{ name = "Jane Doe" }]\n[values]\ntop_k = 20\n',
-    )
-    with pytest.raises(ValueError, match="Sets retrieval setting top_k without evidence"):
-        profiles.share(store, "mine", tmp_path)
-
-
-def test_share_refuses_a_broken_profile(store, tmp_path):
-    _write(_global_dir(), "broken", "[values]\nchat_model = 'x'\n")
-    with pytest.raises(ValueError, match="cannot be used: Profiles cannot set chat_model"):
-        profiles.share(store, "broken", tmp_path)
-
-
 def test_import_copies_the_file_verbatim_and_refuses_a_clash_unless_overwrite(store, tmp_path):
     text = '# kept\n[profile]\nname = "Court filings"\n[values]\nchunk_size = 900\n'
     source = _write(tmp_path / "in", "anything", text)
@@ -501,14 +419,10 @@ def test_validate_passes_a_good_file_and_reports_an_unreadable_one(tmp_path):
     assert broken.problems[0].startswith("Not valid TOML")
 
 
-def test_validate_applies_the_evidence_rule_for_package_folders(tmp_path):
-    path = _write(
-        tmp_path,
-        "x",
-        '[profile]\ntested_on = "our corpus"\n[values]\ntop_k = 20\nmmr_lambda = 0.9\n',
-    )
+def test_validate_applies_the_evidence_rule_for_builtin_profiles(tmp_path):
+    path = _write(tmp_path, "x", "[values]\ntop_k = 20\nmmr_lambda = 0.9\n")
     assert profiles.validate(path).valid
-    report = profiles.validate(path, ProfileFolder.COMMUNITY)
+    report = profiles.validate(path, ProfileFolder.BUILTIN)
     assert report.problems == (
         "Sets retrieval setting top_k without evidence",
         "Sets retrieval setting mmr_lambda without evidence",

@@ -49,7 +49,6 @@ PLAN.md
 .DS_Store
 scripts/*
 !scripts/check_style_rules.py
-!scripts/check_community_profiles.py
 !scripts/porkbun-dns-setup.sh
 !scripts/demo.sh
 !scripts/release.sh

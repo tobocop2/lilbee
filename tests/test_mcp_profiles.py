@@ -149,7 +149,7 @@ def test_manage_export_import_and_validate_use_content_not_a_path():
         ProfileAction.VALIDATE,
         content=exported["content"],
         filename=exported["filename"],
-        folder=ProfileFolder.COMMUNITY,
+        folder=ProfileFolder.BUILTIN,
     )
     assert checked == {"name": "Court filings", "valid": True, "problems": []}
 

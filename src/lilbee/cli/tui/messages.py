@@ -869,7 +869,6 @@ PROFILE_EFFECT_TEXT: dict[ProfileEffect, str] = {
 PROFILE_FOLDER_TEXT: dict[ProfileFolder, str] = {
     ProfileFolder.PROJECT: "Saved in this project.",
     ProfileFolder.GLOBAL: "Saved for all projects.",
-    ProfileFolder.COMMUNITY: "A community profile that ships with lilbee.",
     ProfileFolder.BUILTIN: "A built-in profile that ships with lilbee.",
 }
 PROFILE_STATUS_PILL: dict[ProfileStatus, str] = {
