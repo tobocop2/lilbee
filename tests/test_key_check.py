@@ -20,8 +20,10 @@ from lilbee.modelhub.model_manager import (
     ValidationResult,
     discover_api_model_groups,
     discover_api_models,
+    discovery,
     validate_persisted_model,
 )
+from lilbee.modelhub.model_manager.discovery import KnownModelCache
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.providers import key_check
 from lilbee.server import handlers
@@ -32,6 +34,8 @@ _GEMINI_MODELS = ["gemini-2.0-flash", "gemini-2.0-pro"]
 _OPENAI_MODELS = ["gpt-4o"]
 _BAD_KEY = "bad-gemini-key"
 _GOOD_KEY = "good-gemini-key"
+_PASTED_KEY = "good-gemini\u200bkey"
+_LOCAL_REF = "org/repo/model.gguf"
 # Captured at import, before the autouse seal replaces the seam.
 _REAL_HTTP_GET = key_check._http_get
 
@@ -143,6 +147,58 @@ class TestCatalogRoute:
         assert set(_frontier_names(first)) == set(_GEMINI_MODELS)
         assert set(_frontier_names(second)) == set(_GEMINI_MODELS)
         assert len(fake.calls) == 1
+
+    async def test_unsendable_key_omits_the_provider_without_a_call(
+        self, catalog_route, monkeypatch
+    ) -> None:
+        fake = _install(monkeypatch, _FakeProviders(_gemini_rejects_bad_key))
+        cfg.gemini_api_key = _PASTED_KEY
+        cfg.openai_api_key = "sk-openai"
+        resp = await handlers.models_catalog(task="chat")
+        assert _frontier_names(resp) == {"gpt-4o": KeyStatus.READY}
+        assert [url for url, _h in fake.calls] == ["https://api.openai.com/v1/models"]
+
+    async def test_unexpected_check_error_lists_ready_and_warns(
+        self, catalog_route, monkeypatch, caplog
+    ) -> None:
+        def _broken(url: str, headers: dict[str, str]) -> httpx.Response:
+            raise RuntimeError("unexpected")
+
+        _install(monkeypatch, _FakeProviders(_broken))
+        cfg.gemini_api_key = _GOOD_KEY
+        with caplog.at_level(logging.WARNING, logger=key_check.__name__):
+            resp = await handlers.models_catalog(task="chat")
+        assert _frontier_names(resp) == dict.fromkeys(_GEMINI_MODELS, KeyStatus.READY)
+        assert "Could not verify the gemini API key: RuntimeError" in caplog.text
+
+
+@pytest.fixture
+def known_models(services: mock.MagicMock, monkeypatch: pytest.MonkeyPatch) -> KnownModelCache:
+    """The chat-routing model cache with one local model and no local servers."""
+    manifest = mock.MagicMock()
+    manifest.ref = _LOCAL_REF
+    services.registry.list_installed.return_value = [manifest]
+    monkeypatch.setattr(discovery, "classify_all_remote_models", lambda: [])
+    return KnownModelCache()
+
+
+class TestChatRouting:
+    def test_unsendable_key_keeps_local_models_routable(self, known_models, monkeypatch) -> None:
+        _install(monkeypatch, _FakeProviders(_gemini_rejects_bad_key))
+        cfg.gemini_api_key = _PASTED_KEY
+        assert known_models.resolve(_LOCAL_REF) == _LOCAL_REF
+        assert known_models.resolve("gemini/gemini-2.0-flash") is None
+
+    def test_unexpected_check_error_keeps_every_model_routable(
+        self, known_models, monkeypatch
+    ) -> None:
+        def _broken(url: str, headers: dict[str, str]) -> httpx.Response:
+            raise RuntimeError("unexpected")
+
+        _install(monkeypatch, _FakeProviders(_broken))
+        cfg.gemini_api_key = _GOOD_KEY
+        assert known_models.resolve(_LOCAL_REF) == _LOCAL_REF
+        assert known_models.resolve("gemini/gemini-2.0-flash") == "gemini/gemini-2.0-flash"
 
 
 class TestSetModelRoute:
@@ -317,6 +373,14 @@ class TestKeyProbe:
             assert key_check._checked_key_status("openai", "k") is KeyStatus.READY
         assert caplog.text == ""
 
+    @pytest.mark.parametrize(
+        "api_key", ["key\u200b", "caf\u00e9-key", "key\nX-Injected: 1", "key\t"]
+    )
+    def test_unsendable_key_is_invalid_without_a_call(self, monkeypatch, api_key) -> None:
+        fake = _install(monkeypatch, _FakeProviders(lambda u, h: _response(200, u)))
+        assert key_check._checked_key_status("openai", api_key) is KeyStatus.INVALID_KEY
+        assert fake.calls == []
+
     def test_connection_error_stays_ready(self, monkeypatch) -> None:
         def _refused(url: str, headers: dict[str, str]) -> httpx.Response:
             raise httpx.ConnectError("refused")
@@ -331,6 +395,7 @@ class TestKeyProbe:
             ({"error": {"details": ["text", {"reason": "OTHER"}]}}, KeyStatus.READY),
             ({"error": {"message": "bad request"}}, KeyStatus.READY),
             ({"error": None}, KeyStatus.READY),
+            ({"error": {"details": None}}, KeyStatus.READY),
             (None, KeyStatus.READY),
         ],
     )
@@ -344,6 +409,11 @@ class TestKeyProbe:
 
         _install(monkeypatch, _FakeProviders(_answer))
         assert key_check._checked_key_status("gemini", "k") is expected
+
+    def test_gemini_null_details_is_not_a_rejection(self) -> None:
+        url = "https://generativelanguage.googleapis.com/v1beta/models"
+        resp = _response(400, url, {"error": {"details": None}})
+        assert key_check._gemini_rejected(resp) is False
 
     def test_gemini_forbidden_is_invalid_key(self, monkeypatch) -> None:
         _install(monkeypatch, _FakeProviders(lambda u, h: _response(403, u)))

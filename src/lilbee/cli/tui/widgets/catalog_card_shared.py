@@ -34,13 +34,13 @@ _FIT_LEVEL_BACKGROUND: dict[FitLevel, str] = {
 }
 
 # Label and color per hosted-provider key status, shared by the cards and the list.
-_KEY_STATUS_LABEL: dict[KeyStatus, str] = {
+KEY_STATUS_LABEL: dict[KeyStatus, str] = {
     KeyStatus.READY: msg.KEY_STATUS_READY,
     KeyStatus.MISSING_KEY: msg.KEY_STATUS_NEEDS_KEY,
     KeyStatus.INVALID_KEY: msg.KEY_STATUS_KEY_REJECTED,
 }
 
-_KEY_STATUS_COLOR: dict[KeyStatus, str] = {
+KEY_STATUS_COLOR: dict[KeyStatus, str] = {
     KeyStatus.READY: "$success",
     KeyStatus.MISSING_KEY: "$warning",
     KeyStatus.INVALID_KEY: "$error",
@@ -100,7 +100,7 @@ def _truncate_name(name: str) -> str:
 
 
 def _key_status_pill(status: KeyStatus) -> Content:
-    return pill(_KEY_STATUS_LABEL[status], _KEY_STATUS_COLOR[status], "$text")
+    return pill(KEY_STATUS_LABEL[status], KEY_STATUS_COLOR[status], "$text")
 
 
 def _spec_strip(params: str, quant: str, size: str) -> str:

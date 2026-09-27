@@ -614,3 +614,34 @@ async def test_bar_unconfigured_chat_reads_pick_one(monkeypatch) -> None:
         rendered = str(chat_btn.render())
         assert msg.MODEL_BAR_NONE in rendered
         assert msg.MODEL_BAR_DISABLED not in rendered
+
+
+def test_model_bar_leaves_out_a_provider_whose_key_is_rejected(monkeypatch) -> None:
+    import httpx
+
+    from lilbee.app import services as svc_mod
+    from lilbee.catalog.types import ModelTask
+    from lilbee.cli.tui.widgets.model_bar import ModelOption, _collect_api_models
+    from lilbee.core.config import cfg
+    from lilbee.providers import key_check
+    from tests.conftest import make_mock_services
+
+    def _gemini_rejects(url: str, *, headers: dict[str, str]) -> httpx.Response:
+        status = 401 if "x-goog-api-key" in headers else 200
+        return httpx.Response(status, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(key_check, "_http_get", _gemini_rejects)
+    for env in key_check.PROVIDER_API_KEY_ENV.values():
+        monkeypatch.delenv(env, raising=False)
+    cfg.gemini_api_key = "rejected-gemini-key"
+    cfg.openai_api_key = "sk-openai"
+    services = make_mock_services()
+    catalog = {"gemini": ["gemini-2.0-flash"], "openai": ["gpt-4o"]}
+    services.provider.list_chat_models.side_effect = lambda prov: catalog.get(prov, [])
+    svc_mod.set_services(services)
+    buckets: dict[ModelTask, list[ModelOption]] = {task: [] for task in ModelTask}
+    try:
+        _collect_api_models(buckets, set())
+    finally:
+        svc_mod.set_services(None)
+    assert [option.ref for option in buckets[ModelTask.CHAT]] == ["openai/gpt-4o"]

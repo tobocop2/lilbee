@@ -51,7 +51,9 @@ def _gemini_rejected(resp: httpx.Response) -> bool:
         details = resp.json()["error"]["details"]
     except (ValueError, KeyError, TypeError):
         return False
-    # Untyped JSON error body: only dict entries carry a reason.
+    # Untyped JSON error body: details must be a list, and only dict entries carry a reason.
+    if not isinstance(details, list):
+        return False
     return any(
         isinstance(item, dict) and item.get("reason") == _GEMINI_INVALID_KEY_REASON
         for item in details
@@ -67,9 +69,8 @@ class _KeyProbe:
     rejected: Callable[[httpx.Response], bool] = _auth_rejected
 
 
-# Not litellm: its model-list and key-check helpers swallow every error, so a
-# 401 and a timeout look the same. OpenRouter's model list is public, so its
-# probe reads the key's own record instead.
+# Not litellm: get_models raises untyped errors; check_valid_key and get_valid_models hide them.
+# OpenRouter's model list is public, so its probe reads the key's own record instead.
 _PROBES: dict[str, _KeyProbe] = {
     "openrouter": _KeyProbe("https://openrouter.ai/api/v1/key", _bearer),
     "gemini": _KeyProbe(
@@ -89,24 +90,36 @@ def _http_get(url: str, *, headers: dict[str, str]) -> httpx.Response:
     return httpx.get(url, headers=headers, timeout=KEY_CHECK_TIMEOUT_S)
 
 
+def _sendable(api_key: str) -> bool:
+    """True when the key can travel in an HTTP header: printable ASCII only."""
+    return api_key.isascii() and api_key.isprintable()
+
+
+def _probe_status(provider: str, api_key: str) -> KeyStatus:
+    """Send one probe and read the verdict from its status."""
+    probe = _PROBES[provider]
+    resp = _http_get(probe.url, headers=probe.headers(api_key))
+    if probe.rejected(resp):
+        return KeyStatus.INVALID_KEY
+    if resp.is_error:
+        log.warning("Could not verify the %s API key: HTTP %d", provider, resp.status_code)
+    return KeyStatus.READY
+
+
 @cached(
     TTLCache(maxsize=len(_PROBES) * _KEYS_CACHED_PER_PROVIDER, ttl=KEY_CHECK_TTL_S),
     lock=_probe_condition,
     condition=_probe_condition,
 )
 def _checked_key_status(provider: str, api_key: str) -> KeyStatus:
-    """INVALID_KEY only on an explicit rejection; an unanswered check stays READY."""
-    probe = _PROBES[provider]
+    """INVALID_KEY for a key that cannot be sent or is refused; an unanswered check stays READY."""
+    if not _sendable(api_key):
+        return KeyStatus.INVALID_KEY
     try:
-        resp = _http_get(probe.url, headers=probe.headers(api_key))
-    except httpx.HTTPError as exc:
+        return _probe_status(provider, api_key)
+    except Exception as exc:  # a failed check must never fail the catalog or chat routing
         log.warning("Could not verify the %s API key: %s", provider, type(exc).__name__)
         return KeyStatus.READY
-    if probe.rejected(resp):
-        return KeyStatus.INVALID_KEY
-    if resp.is_error:
-        log.warning("Could not verify the %s API key: HTTP %d", provider, resp.status_code)
-    return KeyStatus.READY
 
 
 def _key_in_use(provider: str) -> str | None:

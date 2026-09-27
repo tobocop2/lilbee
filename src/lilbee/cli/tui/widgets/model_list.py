@@ -29,8 +29,8 @@ from lilbee.cli.tui.screens.catalog_utils import (
 from lilbee.cli.tui.widgets.catalog_card_shared import (
     _FIT_LEVEL_BACKGROUND,
     _FIT_LEVEL_LABEL_COMPACT,
-    _KEY_STATUS_COLOR,
-    _KEY_STATUS_LABEL,
+    KEY_STATUS_COLOR,
+    KEY_STATUS_LABEL,
     _compat_label,
     _spec_strip,
 )
@@ -148,8 +148,8 @@ def _render_frontier(row: FrontierCatalogRow) -> Content:
     line1: list[Content] = [Content("  "), Content.styled(row.name, "bold")]
     line1.append(
         Content.styled(
-            f"    {_KEY_STATUS_LABEL[row.key_status]}",
-            f"{_KEY_STATUS_COLOR[row.key_status]} italic",
+            f"    {KEY_STATUS_LABEL[row.key_status]}",
+            f"{KEY_STATUS_COLOR[row.key_status]} italic",
         )
     )
     line2: list[Content] = [Content("   "), Content.styled(row.provider, "dim $text-muted")]
