@@ -17,6 +17,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ProfileScope, SettingSource
 from lilbee.core.config.resolve import (
     PROFILE_FIELDS,
+    Resolved,
     SettingLayers,
     builtin_value,
     read_layers,
@@ -103,12 +104,24 @@ class ProfileDiff:
 
 
 @dataclass(frozen=True)
+class ChangeRow:
+    """A profile setting config.toml sets, next to the value and source it falls back to."""
+
+    key: str
+    yours: Any
+    profile_value: Any
+    profile_source: SettingSource
+    effect: ProfileEffect
+
+
+@dataclass(frozen=True)
 class ActiveProfile:
-    """The project's applied profile, its recorded values, and the state of its file."""
+    """The project's applied profile, its recorded values, your changes, and its file's state."""
 
     name: str
     values: Mapping[str, Any]
     status: ProfileStatus
+    changes: tuple[ChangeRow, ...]
     error: str | None = None
     entry: ProfileEntry | None = None
 
@@ -132,9 +145,12 @@ class SaveResult:
 
 @dataclass(frozen=True)
 class DiscardResult:
-    """The settings of yours removed so the profile's values show through."""
+    """Your settings removed so the profile's values show through, whether to rebuild, and
+    any setting the discard leaves in conflict."""
 
     dropped: tuple[str, ...]
+    reindex_required: bool
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -145,16 +161,6 @@ class ApplyResult:
     changes: tuple[DiffRow, ...]
     reindex_required: bool
     new_files_only: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ChangeRow:
-    """A profile setting config.toml sets, next to the value the profile gives it."""
-
-    key: str
-    yours: Any
-    profile_value: Any
-    effect: ProfileEffect
 
 
 def effect_of(key: str) -> ProfileEffect:
@@ -206,10 +212,12 @@ def active(store: ProfileStore) -> ActiveProfile:
     table = read_profile_table(cfg.data_root)
     name = table.name or DEFAULT_PROFILE_NAME
     entry = store.scan().find(name)
+    changes = your_changes()
     if profile_key(name) == profile_key(DEFAULT_PROFILE_NAME):
-        return ActiveProfile(name, table.values, ProfileStatus.CURRENT, entry=entry)
+        return ActiveProfile(name, table.values, ProfileStatus.CURRENT, changes, entry=entry)
     error = entry.error if entry is not None else None
-    return ActiveProfile(name, table.values, _file_status(entry, table.values), error, entry)
+    status = _file_status(entry, table.values)
+    return ActiveProfile(name, table.values, status, changes, error, entry)
 
 
 def _diff(profile: ProfileFile) -> ProfileDiff:
@@ -346,10 +354,14 @@ def your_changes() -> tuple[ChangeRow, ...]:
     layers = read_layers(cfg.data_root)
     underneath = replace(layers, user={})
     return tuple(
-        ChangeRow(key, layers.user[key], resolve(key, underneath).value, effect_of(key))
+        _change_row(key, layers.user[key], resolve(key, underneath))
         for key in _your_profile_keys(layers)
         if key not in layers.env
     )
+
+
+def _change_row(key: str, yours: Any, fallback: Resolved) -> ChangeRow:
+    return ChangeRow(key, yours, fallback.value, fallback.source, effect_of(key))
 
 
 def _project_values() -> tuple[dict[str, Any], tuple[str, ...]]:
@@ -486,9 +498,10 @@ def apply_recommended(
 def discard() -> DiscardResult:
     """Remove your settings of profile keys from config.toml; environment variables stay."""
     yours = _your_profile_keys(read_layers(cfg.data_root))
-    if yours:
-        reset_settings(list(yours))
-    return DiscardResult(yours)
+    if not yours:
+        return DiscardResult((), reindex_required=False)
+    result = reset_settings(list(yours))
+    return DiscardResult(yours, result.reindex_required, result.warnings)
 
 
 def duplicate(

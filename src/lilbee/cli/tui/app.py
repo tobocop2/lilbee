@@ -25,12 +25,7 @@ from textual.signal import Signal
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services, peek_services
-from lilbee.app.settings import (
-    SettingsUpdateResult,
-    apply_settings_update,
-    reset_settings,
-    setting_sources,
-)
+from lilbee.app.settings import apply_settings_update, reset_settings, setting_sources
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
 from lilbee.cli.tui import messages as msg
@@ -605,12 +600,12 @@ class LilbeeApp(App[None]):
         except ValueError as exc:
             self.notify(msg.MODEL_ASSIGN_REJECTED.format(error=exc), severity="error")
             return
-        self._notify_update_warnings(result)
+        self.notify_warnings(result.warnings)
         self.settings_changed_signal.publish((key, getattr(cfg, key)))
 
-    def _notify_update_warnings(self, result: SettingsUpdateResult) -> None:
-        """Toast each warning a settings update reports."""
-        for warning in result.warnings:
+    def notify_warnings(self, warnings: Sequence[str]) -> None:
+        """Toast each warning a settings update, reset or discard reports."""
+        for warning in warnings:
             self.notify(warning, severity="warning")
 
     def set_setting(self, key: str, value: object) -> None:
@@ -624,7 +619,7 @@ class LilbeeApp(App[None]):
         # set_active_model); toast and skip rather than half-pull.
         if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
             return
-        self._notify_update_warnings(apply_settings_update({key: value}))
+        self.notify_warnings(apply_settings_update({key: value}).warnings)
         self.publish_settings([key])
         if key == "wiki" and cfg.wiki is False:
             self._offer_wiki_wipe()
@@ -636,7 +631,7 @@ class LilbeeApp(App[None]):
         """
         wiki_was_on = cfg.wiki
         result = reset_settings(keys, skip_unresettable=skip_unresettable)
-        self._notify_update_warnings(result)
+        self.notify_warnings(result.warnings)
         self.publish_settings(result.updated)
         if wiki_was_on and cfg.wiki is False:
             self._offer_wiki_wipe()

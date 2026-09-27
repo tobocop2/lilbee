@@ -18,6 +18,7 @@ from textual.widget import Widget
 from textual.widgets import Checkbox, DataTable, Footer, Input, Select, Static, TabbedContent
 
 from lilbee.app import profiles
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.command_registry import get_command
 from lilbee.cli.tui.commands import LilbeeCommandProvider
@@ -30,7 +31,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 from lilbee.cli.tui.screens.profile_tab import ProfileTab
 from lilbee.cli.tui.screens.settings import PROFILE_PANE_ID, SettingsScreen
 from lilbee.cli.tui.widgets.autocomplete import get_completions
-from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
 from lilbee.cli.tui.widgets.model_bar import ModelBar
 from lilbee.cli.tui.widgets.profile_line import ProfileLinePill
 from lilbee.cli.tui.widgets.slash_command_catalog import CATALOG_GROUPS
@@ -638,6 +639,56 @@ async def test_discard_empties_the_table_and_publishes_the_keys() -> None:
         assert await _until(pilot, lambda: _text(count) == "0 values set by you")
     assert cfg.chunk_size == 512
     assert set(seen) == {"chunk_size", "layout_detection", "max_chunks_per_file"}
+
+
+@pytest.mark.parametrize(("pill_id", "rebuilds"), [("confirm-yes", 1), ("confirm-no", 0)])
+async def test_discarding_a_reindex_setting_offers_a_rebuild(pill_id: str, rebuilds: int) -> None:
+    _on_legal_with_three_changes()
+    app = _SettingsApp()
+    with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = await _loaded(app, pilot, "legal-discovery")
+            await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
+            dialog = await _dialog(app, pilot, ConfirmDialog)
+            assert _text(dialog.query_one("#confirm-title", Static)) == (
+                msg.CMD_REBUILD_CONFIRM_TITLE
+            )
+            assert not screen.query_one("#profile-changes").display
+            await _press(pilot, dialog.query_one(f"#{pill_id}", ConfirmPill))
+            assert await _until(pilot, lambda: app.screen is screen)
+    assert rebuild.call_count == rebuilds
+    assert cfg.chunk_size == 512
+
+
+async def test_discarding_settings_that_need_no_rebuild_offers_none() -> None:
+    _write_global("legal-discovery", _LEGAL)
+    profiles.apply(ProfileStore(), "legal-discovery")
+    _set_yours("max_chunks_per_file = 2000\n")
+    app = _SettingsApp()
+    with mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild:
+        async with app.run_test(size=(80, 24)) as pilot:
+            screen = await _loaded(app, pilot, "legal-discovery")
+            await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
+            assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
+            assert app.screen is screen
+    rebuild.assert_not_called()
+
+
+async def test_discard_toasts_the_warning_it_leaves_behind() -> None:
+    _write_global("ocr-off", "[values]\nenable_ocr = false\n")
+    profiles.apply(ProfileStore(), "ocr-off")
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    _set_yours(f'enable_ocr = true\nvision_model = "{vision_model}"\n')
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "ocr-off")
+        with mock.patch.object(app, "notify") as notify:
+            await _press(pilot, screen.query_one("#profile-discard", ConfirmPill))
+            assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
+    warnings = [c for c in notify.call_args_list if c.kwargs.get("severity") == "warning"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0].args[0]
+    assert cfg.enable_ocr is False
 
 
 async def test_a_refused_operation_toasts_its_reason() -> None:

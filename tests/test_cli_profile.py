@@ -242,7 +242,12 @@ def test_save_update_and_discard(project):
     discarded = _invoke(project, "discard")
     assert "Removed your values of: top_k" in discarded.output
     assert "top_k" not in _stored(project)
-    assert _json(project, "discard") == {"dropped": []}
+    assert "lilbee rebuild" not in discarded.output
+    assert _json(project, "discard") == {
+        "dropped": [],
+        "reindex_required": False,
+        "warnings": [],
+    }
     assert "no values of profile settings" in _invoke(project, "discard").output
 
 
@@ -362,3 +367,53 @@ def test_show_without_a_name_prints_the_active_profiles_credit(project):
     assert "Scanned court PDFs." in result.output
     assert "by Jane Doe (@janedoe)" in result.output
     assert "Tested on 4,000 county court filings" in result.output
+
+
+def test_discard_of_a_reindex_setting_says_to_rebuild(project):
+    (project / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    result = _invoke(project, "discard")
+    assert result.exit_code == 0, result.output
+    assert "Removed your values of: chunk_size" in result.output
+    assert "Run lilbee rebuild so the index uses the new values." in result.output
+    (project / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    assert _json(project, "discard") == {
+        "dropped": ["chunk_size"],
+        "reindex_required": True,
+        "warnings": [],
+    }
+
+
+def test_discard_warns_when_it_leaves_ocr_off_with_a_vision_model(project):
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    config_text = (
+        f'enable_ocr = true\nvision_model = "{vision_model}"\n'
+        "[profile.values]\nenable_ocr = false\n"
+    )
+    (project / "config.toml").write_text(config_text, encoding="utf-8")
+    result = _invoke(project, "discard")
+    assert result.exit_code == 0, result.output
+    assert vision_model in result.output
+    (project / "config.toml").write_text(config_text, encoding="utf-8")
+    warnings = _json(project, "discard")["warnings"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0]
+
+
+def test_show_without_a_name_lists_your_changes(project):
+    assert _json(project, "show")["changes"] == []
+    assert "Your changes" not in _invoke(project, "show").output
+    (project / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    assert _json(project, "show")["changes"] == [
+        {
+            "key": "chunk_size",
+            "yours": 900,
+            "profile_value": 512,
+            "profile_source": "built_in",
+            "effect": "reindex",
+        }
+    ]
+    result = _invoke(project, "show")
+    assert result.exit_code == 0, result.output
+    assert "Your changes" in result.output
+    assert "900" in result.output
+    assert "512 (built in)" in result.output

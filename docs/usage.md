@@ -935,8 +935,9 @@ Every write goes to all projects unless you pass `--target project`.
 
 In the TUI, Settings opens on the Profile tab. It lists your values
 against the profile's with the reindex cost of each, and saves, updates
-or discards them. Picking another profile shows what changes before
-anything is applied. `/profile <name>` does the same from chat, and
+or discards them. When a discard reverts a setting the index is built
+with, the tab offers a rebuild. Picking another profile shows what
+changes before anything is applied. `/profile <name>` does the same from chat, and
 `/profile` alone opens the tab.
 
 Manage profiles, on the same tab, opens the profile library. It lists
@@ -946,7 +947,7 @@ the library duplicate, rename, delete, export or import it.
 Profiles that ship with lilbee cannot be renamed or deleted.
 
 ```bash
-lilbee profile show                           # this project's profile
+lilbee profile show                           # this project's profile and your changes to it
 lilbee profile list                           # every profile, with credit and broken files
 lilbee profile diff "Scanned archive"         # what applying it changes
 lilbee profile apply scanned-archive --reindex  # apply, then rebuild when a change needs it

@@ -1191,6 +1191,12 @@ def _save_dict(result: profiles.SaveResult) -> dict[str, Any]:
     return ProfileSaveResponse.from_save(result).model_dump(mode="json")
 
 
+def _discard_dict(result: profiles.DiscardResult) -> dict[str, Any]:
+    from lilbee.server.models import ProfileDiscardResponse
+
+    return ProfileDiscardResponse.from_result(result).model_dump(mode="json")
+
+
 def _validation_dict(result: ProfileValidation) -> dict[str, Any]:
     from lilbee.server.models import ProfileValidationResponse
 
@@ -1213,7 +1219,7 @@ _MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[
     ),
     ProfileAction.SAVE: lambda _store, a: _save_dict(profiles.save_as(a.name, a.folder)),
     ProfileAction.UPDATE: lambda store, _a: _save_dict(profiles.update(store)),
-    ProfileAction.DISCARD: lambda _store, _a: {"dropped": list(profiles.discard().dropped)},
+    ProfileAction.DISCARD: lambda _store, _a: _discard_dict(profiles.discard()),
     ProfileAction.DUPLICATE: lambda store, a: _location_dict(
         profiles.duplicate(store, a.name, a.new_name, a.folder)
     ),
