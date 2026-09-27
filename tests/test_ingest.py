@@ -3772,7 +3772,7 @@ class TestExtractionConfig:
             assert extraction_config(mode).extraction_timeout_secs == 45
 
     def test_extraction_timeout_zero_lifts_the_cap(self, monkeypatch):
-        """0 means no cap, matching ocr_timeout and tesseract_timeout."""
+        """0 means no cap, matching ocr_timeout."""
         from lilbee.core.config import cfg
         from lilbee.data.ingest import ExtractMode, extraction_config
 

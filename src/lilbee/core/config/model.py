@@ -274,8 +274,6 @@ class Config(BaseSettings):
     # pages raises throughput. Each slot adds KV cache, so lower it on small GPUs.
     vision_ocr_concurrency: int = ConfigField(default=4, ge=1, writable=True)
 
-    # Tesseract fallback wall-clock timeout per file, seconds. 0 = no cap.
-    tesseract_timeout: float = ConfigField(default=60.0, ge=0.0, writable=True)
     # Tesseract OCR language codes for the scanned-document fallback (used when no
     # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
     # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.

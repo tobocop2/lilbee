@@ -110,7 +110,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.INGEST,
         help_text=(
             "OCR for scanned PDFs: the vision model when one is set, else Tesseract "
-            "(empty or true = on; false = off for every backend, the vision model included)"
+            "(empty or true = on, since only false is checked; false = off for every "
+            "backend, the vision model included)"
         ),
     ),
     "ocr_timeout": SettingDef(
@@ -970,12 +971,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "not embedded (0 = no limit). Raise it for a long document such as a "
             "thousand-page manual at a small chunk_size, then retry skipped files"
         ),
-    ),
-    "tesseract_timeout": SettingDef(
-        float,
-        nullable=False,
-        group=SettingGroup.INGEST,
-        help_text="Per-page Tesseract timeout in seconds (used when no vision model is set)",
     ),
     "ocr_language": SettingDef(
         list,

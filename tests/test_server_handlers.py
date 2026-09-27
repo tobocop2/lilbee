@@ -2162,6 +2162,30 @@ class TestSyncStreamDoneDelivery:
 
         assert observed["prune_ignored"] is True
 
+    async def test_ocr_timeout_reaches_the_effective_ocr_config(self):
+        """sync_stream(ocr_timeout=...) overrides the per-page OCR timeout for the sync."""
+        from lilbee.data.extract.document import _effective_ocr_timeout
+
+        sync_result = SyncResult(added=[])
+        observed: dict[str, float] = {}
+
+        async def fake_sync(
+            force_rebuild=False,
+            retry_skipped=False,
+            prune_ignored=False,
+            quiet=False,
+            *,
+            on_progress=None,
+            cancel=None,
+        ):
+            observed["ocr_timeout"] = _effective_ocr_timeout()
+            return sync_result
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream(ocr_timeout=17.0)]
+
+        assert observed["ocr_timeout"] == 17.0
+
 
 class TestDrainFallback:
     async def test_drain_exits_when_task_done_without_sentinel(self):

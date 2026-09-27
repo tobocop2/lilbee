@@ -534,6 +534,48 @@ class TestIngestStreamTerminalEvent:
         assert names[-1] == "done", names
         assert events[-1][1]["copied"] == ["uploaded.txt"]
 
+    async def test_upload_ocr_options_reach_the_extraction_config(
+        self, mock_extract_file, isolated_env
+    ):
+        """POST /api/add/upload?enable_ocr=...&ocr_timeout=... overrides OCR for this upload."""
+        from lilbee.data.extract.document import _effective_enable_ocr, _effective_ocr_timeout
+        from lilbee.server.app import create_app
+
+        observed: dict[str, object] = {}
+
+        async def _capture(*args, **kwargs):
+            observed["enable_ocr"] = _effective_enable_ocr()
+            observed["ocr_timeout"] = _effective_ocr_timeout()
+            return _make_xberg_result()
+
+        mock_extract_file.side_effect = _capture
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                params={"enable_ocr": "false", "ocr_timeout": "17"},
+                files=[("data", ("scan.pdf", b"content", "application/pdf"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
+
+    async def test_upload_rejects_negative_ocr_timeout(self, mock_extract_file, isolated_env):
+        """A negative ocr_timeout is a 400; extraction never runs."""
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                params={"ocr_timeout": "-5"},
+                files=[("data", ("scan.pdf", b"content", "application/pdf"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 400
+        mock_extract_file.assert_not_called()
+
 
 class TestAddValidation:
     async def test_empty_paths_returns_400(self, isolated_env):
@@ -551,6 +593,21 @@ class TestAddValidation:
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post("/api/add", json={"force": True}, headers=_auth_headers())
         assert resp.status_code == 400
+
+    async def test_negative_ocr_timeout_returns_400(self, isolated_env, tmp_path):
+        """POST /api/add with a negative ocr_timeout returns 400 before any file copy."""
+        from lilbee.server.app import create_app
+
+        src = tmp_path / "added.txt"
+        src.write_text("content", encoding="utf-8")
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add",
+                json={"paths": [str(src)], "ocr_timeout": -5},
+                headers=_auth_headers(),
+            )
+        assert resp.status_code == 400
+        assert not (isolated_env / "added.txt").exists()
 
     async def test_hundreds_of_paths_accepted(self, isolated_env, tmp_path):
         """POST /api/add has no file-count cap (paths can be nonexistent)."""
