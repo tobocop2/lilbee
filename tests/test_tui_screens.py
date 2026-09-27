@@ -1594,7 +1594,7 @@ async def test_settings_effective_value_no_defaults():
 
 
 async def test_settings_generation_tab_blur_without_edit_leaves_config_untouched(tmp_path):
-    """Tabbing through the Generation tab without typing must not write config.toml.
+    """Moving focus through the Generation editors without typing must not write config.toml.
 
     Several Generation fields are nullable and display a per-model default
     (e.g. temperature shows "0.7 (model default)" stripped to "0.7") when the
@@ -1606,6 +1606,7 @@ async def test_settings_generation_tab_blur_without_edit_leaves_config_untouched
     from textual.widgets import TabbedContent
 
     from lilbee.core import settings as settings_store
+    from tests._async_wait import wait_until
 
     @dataclass(frozen=True)
     class FakeDefaults:
@@ -1637,20 +1638,18 @@ async def test_settings_generation_tab_blur_without_edit_leaves_config_untouched
         tabs.active = "settings-tab-generation"
         await pilot.pause()
         body = app.screen.query_one("#settings-tab-generation-body")
-        # Same selector _move_focus_within_pane uses: editors AND their
-        # reset buttons are all in the keyboard tab order.
-        focusables = [w for w in body.query("*") if w.focusable]
-        assert focusables, "Generation tab must expose focusable rows"
-        focusables[0].focus()
+        # Only an Input or a ListTextArea saves on blur; a Checkbox or Select
+        # saves on change and a reset button on press. Each settled focus
+        # change rebuilds the footer and restyles the screen, so focus moves
+        # through the blur-saving editors in one batch and settles once.
+        editors = list(body.query("Input.setting-editor, ListTextArea"))
+        assert "ed-temperature" in {editor.id for editor in editors}
+        for editor in editors:
+            editor.focus()
+        reset = app.screen.query_one("#reset-temperature")
+        reset.focus()
+        assert await wait_until(pilot, lambda: app.screen.focused is reset)
         await pilot.pause()
-        last = focusables[-1]
-        for _ in range(len(focusables)):
-            await pilot.press("tab")
-            await pilot.pause()
-        from tests._async_wait import wait_until
-
-        settled = await wait_until(pilot, lambda: app.screen.focused is not last)
-        assert settled, "focus never left the last Generation field"
 
     assert (tmp_path / "config.toml").read_bytes() == baseline
     assert cfg.temperature is None
