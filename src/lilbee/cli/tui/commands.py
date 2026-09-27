@@ -44,6 +44,7 @@ class LilbeeCommandProvider(Provider):
             ("Open catalog", "Browse and install models", app.action_open_catalog),
             ("Open status", "Knowledge base status", lambda: app.switch_view("Status")),
             ("Open settings", "View and change settings", lambda: app.switch_view("Settings")),
+            ("Choose profile", "Pick the settings profile for this project", app.open_profile_tab),
             ("Open task center", "Monitor background tasks", lambda: app.switch_view("Tasks")),
             ("Help", "Show keybinding reference", app.action_push_help),
             ("Cycle theme", "Switch to next color theme", app.action_cycle_theme),
