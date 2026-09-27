@@ -119,7 +119,48 @@ def test_manage_new_save_update_and_discard():
     config.write_text("top_k = 13\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
     assert profile_manage(ProfileAction.UPDATE)["absorbed"] == ["top_k"]
     config.write_text("top_k = 14\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
-    assert profile_manage(ProfileAction.DISCARD) == {"dropped": ["top_k"]}
+    assert profile_manage(ProfileAction.DISCARD) == {
+        "dropped": ["top_k"],
+        "reindex_required": False,
+        "warnings": [],
+    }
+
+
+def test_manage_discard_of_a_reindex_setting_reports_the_reindex():
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    assert profile_manage(ProfileAction.DISCARD) == {
+        "dropped": ["chunk_size"],
+        "reindex_required": True,
+        "warnings": [],
+    }
+
+
+def test_manage_discard_warns_when_it_leaves_ocr_off_with_a_vision_model():
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text(
+        "enable_ocr = true\n[profile.values]\nenable_ocr = false\n", encoding="utf-8"
+    )
+    cfg.enable_ocr = True
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profile_manage(ProfileAction.DISCARD)
+    assert len(result["warnings"]) == 1
+    assert "enable_ocr" in result["warnings"][0]
+    assert cfg.enable_ocr is False
+
+
+def test_list_carries_your_changes_on_the_active_profile():
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")
+    assert profile_list()["active"]["changes"] == [
+        {
+            "key": "chunk_size",
+            "yours": 900,
+            "profile_value": 512,
+            "profile_source": "built_in",
+            "effect": "reindex",
+        }
+    ]
 
 
 def test_manage_duplicate_rename_and_delete():

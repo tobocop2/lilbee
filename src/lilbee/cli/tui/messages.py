@@ -900,6 +900,9 @@ PROFILE_IMPORT_TITLE = "Import a profile"
 PROFILE_IMPORT_EXPLAIN = "Checks a profile file and copies it into a profile folder."
 PROFILE_IMPORT_LABEL = "Import"
 PROFILE_IMPORTED = "Imported {name} to {path}."
+PROFILE_DISCARD_REINDEX_MESSAGE = (
+    "The index was built with values you discarded. Rebuild it so search uses {name}'s values."
+)
 
 PROFILE_EFFECT_TEXT: dict[ProfileEffect, str] = {
     ProfileEffect.REINDEX: "reindex",

@@ -244,11 +244,37 @@ def test_discard_drops_your_profile_settings_only(store, monkeypatch):
     monkeypatch.setenv("LILBEE_TOP_K", "3")
     profiles.apply(store, "Notes and markdown")
     _prepend_config("chunk_size = 900\nauto_sync = false\n")
-    assert profiles.discard().dropped == ("chunk_size",)
+    result = profiles.discard()
+    assert (result.dropped, result.reindex_required) == (("chunk_size",), True)
     assert "chunk_size" not in _stored()
     assert _stored()["auto_sync"] is False
     assert (cfg.chunk_size, cfg.top_k) == (384, 3)
-    assert profiles.discard().dropped == ()
+    assert profiles.discard() == profiles.DiscardResult((), reindex_required=False)
+
+
+def test_discard_of_settings_that_need_no_rebuild_reports_no_reindex(store):
+    profiles.apply(store, "Notes and markdown")
+    _prepend_config("top_k = 7\nmax_chunks_per_file = 9\n")
+    result = profiles.discard()
+    assert (result.dropped, result.reindex_required) == (("max_chunks_per_file", "top_k"), False)
+
+
+def test_discard_warns_when_it_leaves_ocr_off_with_a_vision_model(store):
+    _write(_global_dir(), "mine", "[values]\nenable_ocr = false\n")
+    profiles.apply(store, "mine")
+    _prepend_config("enable_ocr = true\n")
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profiles.discard()
+    assert result.dropped == ("enable_ocr",)
+    assert len(result.warnings) == 1
+    assert "enable_ocr" in result.warnings[0]
+    assert cfg.enable_ocr is False
+
+
+def test_discard_of_a_setting_with_no_conflict_reports_no_warnings(store):
+    profiles.apply(store, "Notes and markdown")
+    _prepend_config("top_k = 7\n")
+    assert profiles.discard().warnings == ()
 
 
 def test_duplicate_copies_a_builtin_with_its_metadata_under_a_new_name(store):
@@ -660,8 +686,34 @@ def test_your_changes_lists_your_profile_settings_against_the_profile(store, mon
     profiles.apply(store, "Notes and markdown")
     _prepend_config("chunk_size = 900\ntop_k = 7\nchunk_overlap = 50\nauto_sync = false\n")
     assert profiles.your_changes() == (
-        profiles.ChangeRow("chunk_size", 900, 384, profiles.ProfileEffect.REINDEX),
-        profiles.ChangeRow("top_k", 7, 12, profiles.ProfileEffect.NOW),
+        profiles.ChangeRow(
+            "chunk_size", 900, 384, SettingSource.PROFILE, profiles.ProfileEffect.REINDEX
+        ),
+        profiles.ChangeRow("top_k", 7, 12, SettingSource.BUILT_IN, profiles.ProfileEffect.NOW),
     )
     profiles.discard()
     assert profiles.your_changes() == ()
+
+
+def test_your_changes_under_default_compare_with_the_built_in_value():
+    _write_config("chunk_size = 900\n")
+    assert profiles.your_changes() == (
+        profiles.ChangeRow(
+            "chunk_size", 900, 512, SettingSource.BUILT_IN, profiles.ProfileEffect.REINDEX
+        ),
+    )
+
+
+def test_active_carries_your_changes_under_default_and_an_applied_profile(store):
+    _write_config("chunk_size = 900\n")
+    default = profiles.active(store)
+    assert default.name == "Default"
+    assert [(row.key, row.profile_source) for row in default.changes] == [
+        ("chunk_size", SettingSource.BUILT_IN)
+    ]
+    profiles.apply(store, "Notes and markdown")
+    applied = profiles.active(store)
+    assert applied.changes == profiles.your_changes()
+    assert [(row.key, row.profile_value) for row in applied.changes] == [("chunk_size", 384)]
+    profiles.discard()
+    assert profiles.active(store).changes == ()
