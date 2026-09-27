@@ -17,7 +17,6 @@ from textual.screen import Screen
 from textual.widget import Widget
 from textual.widgets import Checkbox, DataTable, Footer, Input, Select, Static, TabbedContent
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app import profiles
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.command_registry import get_command
@@ -42,27 +41,11 @@ from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileSt
 from lilbee.core.system import default_data_dir
 from tests._async_wait import press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
-from tests._lilbee_app_test_host import ready_services as _ready_services
-
-
-@pytest.fixture(autouse=True)
-def _gate_releases_at_once():
-    with _ready_services():
-        yield
-
-
-@pytest.fixture(autouse=True)
-def _isolated_cfg(tmp_path):
-    snapshot = cfg.model_copy()
-    cfg.data_root = tmp_path
-    cfg.data_dir = tmp_path / "data"
-    cfg.documents_dir = tmp_path / "documents"
-    cfg.lancedb_dir = tmp_path / "lancedb"
-    cfg.chat_model = TEST_LOCAL_REF
-    cfg.embedding_model = TEST_EMBED_REF
-    yield
-    for name in type(cfg).model_fields:
-        setattr(cfg, name, getattr(snapshot, name))
+from tests._profile_fixtures import (
+    gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
+    isolated_cfg,  # noqa: F401 -- autouse fixture, applied by import
+    sources_totaling,
+)
 
 
 class _Pick(StrEnum):
@@ -228,10 +211,7 @@ def _pick(screen: SettingsScreen, name: str) -> None:
 
 @pytest.fixture
 def sources():
-    """Stand in for the store behind the reindex file count."""
-    services = mock.MagicMock()
-    services.store.get_sources.return_value = [{"source": f"f{i}"} for i in range(412)]
-    with mock.patch("lilbee.cli.tui.screens.profile_dialogs.get_services", return_value=services):
+    with sources_totaling(412) as services:
         yield services
 
 

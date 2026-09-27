@@ -3,6 +3,7 @@
 import json
 import tomllib
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -86,6 +87,15 @@ def test_show_a_name_prints_its_credit_tested_on_and_values(project):
     shown = _json(project, "show", "court filings")
     assert shown["credit"] == "by Jane Doe (@janedoe)"
     assert shown["tested_on"] == "4,000 county court filings"
+
+
+def test_show_renders_tested_on_through_the_shared_formatter(project):
+    _write(_global_dir(), "court-filings", CREDITED)
+    with mock.patch("lilbee.app.profiles.tested_on_line", return_value="SENTINEL-TESTED-ON"):
+        result = _invoke(project, "show", "court-filings")
+    assert result.exit_code == 0, result.output
+    assert "SENTINEL-TESTED-ON" in result.output
+    assert "Tested on 4,000 county court filings" not in result.output
 
 
 def test_list_marks_the_active_profile_and_shows_credit_and_broken_files(project):
