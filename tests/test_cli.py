@@ -3015,6 +3015,17 @@ class TestEnsureChatModelWiring:
 # ---------------------------------------------------------------------------
 
 
+def _plain_help_text(output: str) -> str:
+    """Flatten captured --help output to one space-joined line of plain text.
+
+    Rich's own decoder strips the ANSI styling. The box-drawing border and
+    every line wrap then collapse to a single space, so a phrase rich wraps
+    across lines still matches as one substring at any terminal width.
+    """
+    plain = Text.from_ansi(output).plain
+    return " ".join(plain.replace("│", " ").split())
+
+
 class TestOcrFlags:
     """Tests for --ocr/--no-ocr and --ocr-timeout flags on sync, add, rebuild."""
 
@@ -3063,9 +3074,7 @@ class TestOcrFlags:
         or a reader keeps thinking a vision model overrides it."""
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
-        # Rich wraps the help column across lines behind a box-drawing border;
-        # strip the border and collapse whitespace before matching the phrase.
-        normalized = " ".join(result.output.replace("│", " ").split())
+        normalized = _plain_help_text(result.output)
         assert "off applies to every backend, vision included" in normalized
 
 
