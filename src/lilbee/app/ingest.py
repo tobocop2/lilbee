@@ -12,8 +12,12 @@ from pathlib import Path
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
-from lilbee.data.ingest.discovery import excluded_extension_reasons, resolve_source_path
-from lilbee.data.ingest.skip_marker import update_skip_records
+from lilbee.data.ingest.discovery import (
+    excluded_extension_reasons,
+    file_hash,
+    resolve_source_path,
+)
+from lilbee.data.ingest.skip_marker import SkipRecords, mark_removed, update_skip_records
 from lilbee.data.store.types import RemoveResult
 
 
@@ -180,10 +184,9 @@ def unmark_sources_under(paths: list[Path]) -> None:
     to files through the live registry.
     """
 
-    def _drop_covered(markers: dict[str, str], reasons: dict[str, str]) -> None:
-        for name in _markers_covering(markers, paths):
-            markers.pop(name)
-            reasons.pop(name, None)
+    def _drop_covered(records: SkipRecords) -> None:
+        for name in _markers_covering(records.markers, paths):
+            records.markers.pop(name)
 
     update_skip_records(active_config().data_root, _drop_covered)
 
@@ -196,8 +199,6 @@ def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
     registered root, and a single-file root are all matched by the one rule
     instead of three shape-specific ones.
     """
-    from lilbee.data.ingest.discovery import resolve_source_path
-
     named = [p.resolve() for p in paths]
     covered = set()
     for name in markers:
@@ -206,8 +207,6 @@ def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
             covered.add(name)
     return covered
 
-
-_REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skipped to restore)"
 
 _GLOB_CHARS = frozenset("*?[")
 
@@ -308,15 +307,13 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
     """
-    from lilbee.data.ingest.discovery import file_hash, resolve_source_path
-
     if targets is None:
         targets = expand_remove_targets(names)
     result = get_services().store.remove_documents(targets)
     if not result.removed:
         return result
     unregistered = unregister_roots(names)
-    held: dict[str, str] = {}
+    hashes: dict[str, str] = {}
     for name in result.removed:
         if any(name == root or name.startswith(root + "/") for root in unregistered):
             continue  # the root is gone; discovery won't resurrect these
@@ -324,13 +321,8 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
         # Imported sources have no file on disk; sync never re-ingests them, so a
         # marker is only needed for a real file that would otherwise be re-found.
         if path.exists():
-            held[name] = file_hash(path)
-
-    def _hold(markers: dict[str, str], reasons: dict[str, str]) -> None:
-        markers.update(held)
-        reasons.update(dict.fromkeys(held, _REMOVED_SKIP_REASON))
-
-    update_skip_records(active_config().data_root, _hold)
+            hashes[name] = file_hash(path)
+    mark_removed(active_config().data_root, hashes)
     forget_removed_from_wiki_index(list(result.removed))
     return result
 

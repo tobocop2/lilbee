@@ -40,7 +40,6 @@ from lilbee.app.ingest import forget_held_out, remove_documents_durably
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
 from lilbee.app.settings_map import SETTINGS_MAP
-from lilbee.app.status import held_out_names
 from lilbee.app.themes import DARK_THEMES
 from lilbee.app.version import get_version
 from lilbee.cli.tui import messages as msg
@@ -81,6 +80,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.data.ingest.skip_marker import held_out_names
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -1169,7 +1169,7 @@ class ChatScreen(Screen[None]):
             return
 
         indexed = {s.get("filename", s.get("source", "?")) for s in sources}
-        known = indexed | set(held_out_names())
+        known = indexed | set(held_out_names(cfg.data_root))
         if not known:
             call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return

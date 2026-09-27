@@ -12,7 +12,7 @@ from lilbee.app.settings import ocr_off_warning
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
-from lilbee.data.ingest.skip_marker import describe_skips, load_skip_markers
+from lilbee.data.ingest.skip_marker import describe_skips, held_out_names
 from lilbee.data.types import SkippedSource
 
 LILBEE_LABEL_MAX_LEN = 40
@@ -199,14 +199,9 @@ def gather_status() -> StatusResult:
     )
 
 
-def held_out_names() -> list[str]:
-    """Every held-out source name, sorted."""
-    return sorted(load_skip_markers(cfg.data_root))
-
-
 def held_out_sources() -> tuple[list[SkippedSource], int]:
-    """Held-out files with reasons, capped at ``STATUS_SKIPPED_LIMIT``, and the real count."""
-    held_out = held_out_names()
+    """Failed files with reasons, capped at ``STATUS_SKIPPED_LIMIT``, and the real count."""
+    held_out = held_out_names(cfg.data_root)
     return describe_skips(cfg.data_root, held_out[:STATUS_SKIPPED_LIMIT]), len(held_out)
 
 

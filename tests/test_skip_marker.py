@@ -13,13 +13,21 @@ import pytest
 
 from lilbee.data.ingest.skip_marker import (
     DEFAULT_SKIP_REASON,
+    REMOVED_SKIP_REASON,
+    SKIP_KIND_FILENAME,
     SKIP_MARKER_FILENAME,
     SKIP_REASON_FILENAME,
+    SkipKind,
+    SkipRecords,
     clear_skip_markers,
     describe_skips,
+    held_out_names,
+    load_skip_kinds,
     load_skip_markers,
     load_skip_reasons,
+    mark_removed,
     update_skip_records,
+    write_skip_kinds,
     write_skip_markers,
     write_skip_reasons,
 )
@@ -191,18 +199,30 @@ class TestUpdateSkipRecords:
         write_skip_markers(tmp_path, {"kept.pdf": "h1", "gone.pdf": "h2"})
         write_skip_reasons(tmp_path, {"kept.pdf": "no text", "gone.pdf": "no text"})
 
-        def _change(markers: dict[str, str], reasons: dict[str, str]) -> None:
-            del markers["gone.pdf"], reasons["gone.pdf"]
-            markers["new.pdf"] = "h3"
-            reasons["new.pdf"] = "decode failure"
+        def _change(records: SkipRecords) -> None:
+            del records.markers["gone.pdf"], records.reasons["gone.pdf"]
+            records.markers["new.pdf"] = "h3"
+            records.reasons["new.pdf"] = "decode failure"
 
         update_skip_records(tmp_path, _change)
 
         assert load_skip_markers(tmp_path) == {"kept.pdf": "h1", "new.pdf": "h3"}
         assert load_skip_reasons(tmp_path) == {"kept.pdf": "no text", "new.pdf": "decode failure"}
 
+    def test_dropping_a_marker_drops_its_reason_and_kind(self, tmp_path: Path) -> None:
+        write_skip_markers(tmp_path, {"scan.pdf": "h1", "keep.pdf": "h2"})
+        write_skip_reasons(tmp_path, {"scan.pdf": "no text", "keep.pdf": "no text"})
+        write_skip_kinds(tmp_path, {"scan.pdf": SkipKind.REMOVED, "keep.pdf": SkipKind.FAILED})
+
+        update_skip_records(tmp_path, lambda records: records.markers.pop("scan.pdf"))
+
+        assert load_skip_markers(tmp_path) == {"keep.pdf": "h2"}
+        assert load_skip_reasons(tmp_path) == {"keep.pdf": "no text"}
+        assert load_skip_kinds(tmp_path) == {"keep.pdf": SkipKind.FAILED}
+        assert "scan.pdf" not in (tmp_path / SKIP_KIND_FILENAME).read_text(encoding="utf-8")
+
     def test_an_unchanged_update_writes_nothing(self, tmp_path: Path) -> None:
-        update_skip_records(tmp_path, lambda _markers, _reasons: None)
+        update_skip_records(tmp_path, lambda _records: None)
         assert not (tmp_path / SKIP_MARKER_FILENAME).exists()
         assert not (tmp_path / SKIP_REASON_FILENAME).exists()
 
@@ -211,7 +231,7 @@ class TestUpdateSkipRecords:
         [
             pytest.param(
                 lambda root: update_skip_records(
-                    root, lambda markers, _reasons: markers.update({"new.pdf": "h2"})
+                    root, lambda records: records.markers.update({"new.pdf": "h2"})
                 ),
                 {"old.pdf": "h1", "new.pdf": "h2"},
                 id="update",
@@ -239,3 +259,80 @@ class TestUpdateSkipRecords:
         worker.join(timeout=5)
         assert not worker.is_alive()
         assert load_skip_markers(tmp_path) == expected
+
+
+def test_kinds_round_trip_for_every_marker(tmp_path: Path) -> None:
+    """A stored kind is read back for its marker."""
+    write_skip_markers(tmp_path, {"scan.pdf": "h1", "gone.txt": "h2"})
+    write_skip_kinds(tmp_path, {"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED})
+    assert load_skip_kinds(tmp_path) == {"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED}
+
+
+def test_a_record_without_a_kind_is_failed_unless_its_reason_is_the_removal_text(
+    tmp_path: Path,
+) -> None:
+    """Records written before the kinds sidecar existed read by their reason."""
+    write_skip_markers(tmp_path, {"scan.pdf": "h1", "gone.txt": "h2", "bare.md": "h3"})
+    write_skip_reasons(tmp_path, {"scan.pdf": "no text", "gone.txt": REMOVED_SKIP_REASON})
+    assert not (tmp_path / SKIP_KIND_FILENAME).exists()
+    assert load_skip_kinds(tmp_path) == {
+        "scan.pdf": SkipKind.FAILED,
+        "gone.txt": SkipKind.REMOVED,
+        "bare.md": SkipKind.FAILED,
+    }
+
+
+def test_an_unknown_stored_kind_falls_back_to_the_reason(tmp_path: Path) -> None:
+    """A kind this version does not know is read like a missing one."""
+    write_skip_markers(tmp_path, {"gone.txt": "h1", "scan.pdf": "h2"})
+    write_skip_reasons(tmp_path, {"gone.txt": REMOVED_SKIP_REASON})
+    (tmp_path / SKIP_KIND_FILENAME).write_text(
+        '{"gone.txt": "archived", "scan.pdf": "archived"}', encoding="utf-8"
+    )
+    assert load_skip_kinds(tmp_path) == {"gone.txt": SkipKind.REMOVED, "scan.pdf": SkipKind.FAILED}
+
+
+def test_a_kind_without_a_marker_is_not_reported(tmp_path: Path) -> None:
+    """Kinds describe markers; a stray kind entry holds nothing out."""
+    write_skip_markers(tmp_path, {"scan.pdf": "h1"})
+    write_skip_kinds(tmp_path, {"scan.pdf": SkipKind.FAILED, "stray.md": SkipKind.REMOVED})
+    assert load_skip_kinds(tmp_path) == {"scan.pdf": SkipKind.FAILED}
+
+
+def test_held_out_names_lists_failures_only(tmp_path: Path) -> None:
+    """A removed source is not a held-out file; a failure is."""
+    write_skip_markers(tmp_path, {"b.pdf": "h1", "gone.txt": "h2", "a.pdf": "h3"})
+    write_skip_kinds(
+        tmp_path,
+        {"b.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED, "a.pdf": SkipKind.FAILED},
+    )
+    assert held_out_names(tmp_path) == ["a.pdf", "b.pdf"]
+
+
+def test_mark_removed_writes_marker_reason_and_kind(tmp_path: Path) -> None:
+    """A removal records all three and leaves other records alone."""
+    write_skip_markers(tmp_path, {"scan.pdf": "h1", "other.pdf": "h2"})
+    write_skip_reasons(tmp_path, {"scan.pdf": "no text", "other.pdf": "no text"})
+
+    mark_removed(tmp_path, {"scan.pdf": "h9", "gone.txt": "h3"})
+
+    assert load_skip_markers(tmp_path) == {"scan.pdf": "h9", "gone.txt": "h3", "other.pdf": "h2"}
+    assert load_skip_reasons(tmp_path) == {
+        "scan.pdf": REMOVED_SKIP_REASON,
+        "gone.txt": REMOVED_SKIP_REASON,
+        "other.pdf": "no text",
+    }
+    assert load_skip_kinds(tmp_path) == {
+        "scan.pdf": SkipKind.REMOVED,
+        "gone.txt": SkipKind.REMOVED,
+        "other.pdf": SkipKind.FAILED,
+    }
+    assert (tmp_path / SKIP_KIND_FILENAME).exists()
+
+
+def test_clear_removes_the_kinds_sidecar(tmp_path: Path) -> None:
+    """clear_skip_markers deletes the kinds file with the other two."""
+    write_skip_markers(tmp_path, {"gone.txt": "h1"})
+    write_skip_kinds(tmp_path, {"gone.txt": SkipKind.REMOVED})
+    clear_skip_markers(tmp_path)
+    assert not (tmp_path / SKIP_KIND_FILENAME).exists()

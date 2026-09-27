@@ -74,8 +74,11 @@ from lilbee.data.ingest.fanout import (
 )
 from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
+    SkipKind,
+    SkipRecords,
     clear_skip_markers,
     describe_skips,
+    held_out_names,
     load_skip_markers,
     update_skip_records,
 )
@@ -897,23 +900,28 @@ def _persist_skip_records(
     """Merge this sync's verdicts into the skip records as they are on disk now.
 
     Only the files this sync decided on change: a clean ingest drops its
-    record, a file that produced no chunks gains one with its reason. Records
-    written or cleared since the sync started (a reset, a removal, a rolled
-    back add) stand. Reasons whose marker is gone are dropped in the same step.
+    record, a file that produced no chunks gains one with its reason and the
+    FAILED kind. Records written or cleared since the sync started (a reset, a
+    removal, a rolled back add) keep their reason and kind.
     """
     dropped = list(succeeded)
     held = list(failed)
     marked = {name: fhash for name in held if (fhash := pending_hashes.get(name))}
 
-    def _merge(markers: dict[str, str], recorded: dict[str, str]) -> None:
+    def _merge(records: SkipRecords) -> None:
         for name in dropped:
-            markers.pop(name, None)
-        markers.update(marked)
-        recorded.update({name: reasons[name] for name in held if name in reasons})
-        for name in [name for name in recorded if name not in markers]:
-            del recorded[name]
+            records.markers.pop(name, None)
+        records.markers.update(marked)
+        records.reasons.update({name: reasons[name] for name in held if name in reasons})
+        records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
 
     update_skip_records(active_config().data_root, _merge)
+
+
+def _failures_among(held: Iterable[str]) -> list[str]:
+    """The files in *held* that an ingestion failure holds out, in order; removals are left out."""
+    failed = set(held_out_names(active_config().data_root))
+    return [name for name in held if name in failed]
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1365,7 +1373,7 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=describe_skips(config.data_root, state.held_out),
+        held_out=describe_skips(config.data_root, _failures_among(state.held_out)),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
     )

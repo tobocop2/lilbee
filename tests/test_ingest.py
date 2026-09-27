@@ -1791,6 +1791,104 @@ class TestSkipMarkerLifecycle:
             rebuilt = await sync(quiet=True, force_rebuild=True)
             assert "scanned.pdf" in rebuilt.skipped  # attempted again after the wipe
 
+    async def test_a_failure_is_recorded_as_failed(self, isolated_env, mock_svc):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
+
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ):
+            await sync(quiet=True)
+
+        assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
+
+    async def test_a_removal_stays_removed_and_is_not_reported_held_out(
+        self, isolated_env, mock_svc
+    ):
+        """The sync keeps a removal's kind and leaves it out of the held-out list."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
+
+        (isolated_env / "gone.txt").write_text("removed later", encoding="utf-8")
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for("scanned.pdf")
+        ):
+            await sync(quiet=True)
+            remove_documents_durably(["gone.txt"])
+            second = await sync(quiet=True)
+
+        assert "gone.txt" not in second.added
+        assert [held.filename for held in second.held_out] == ["scanned.pdf"]
+        assert load_skip_kinds(cfg.data_root) == {
+            "gone.txt": SkipKind.REMOVED,
+            "scanned.pdf": SkipKind.FAILED,
+        }
+
+    async def test_an_edited_removal_that_fails_becomes_a_failure(self, isolated_env, mock_svc):
+        """A removed file edited on disk is retried; failing then records it as failed."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds
+
+        doc = isolated_env / "gone.txt"
+        doc.write_text("removed later", encoding="utf-8")
+        await sync(quiet=True)
+        remove_documents_durably(["gone.txt"])
+        doc.write_text("edited after the removal", encoding="utf-8")
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_chunks
+        ):
+            result = await sync(quiet=True)
+
+        assert "gone.txt" in result.skipped
+        assert load_skip_kinds(cfg.data_root) == {"gone.txt": SkipKind.FAILED}
+
+    async def test_a_sync_keeps_the_stored_kind_of_a_marker_it_did_not_touch(
+        self, isolated_env, mock_svc
+    ):
+        """The stored kind wins over the reason: a removal with any reason stays a removal."""
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.discovery import file_hash
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            write_skip_kinds,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        kept = isolated_env / "kept.md"
+        kept.write_text("removed by the user", encoding="utf-8")
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 no text")
+        write_skip_markers(cfg.data_root, {"kept.md": file_hash(kept)})
+        write_skip_reasons(cfg.data_root, {"kept.md": "custom note"})
+        write_skip_kinds(cfg.data_root, {"kept.md": SkipKind.REMOVED})
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for("scanned.pdf")
+        ):
+            result = await sync(quiet=True)
+
+        assert "scanned.pdf" in result.failed + result.skipped
+        assert load_skip_kinds(cfg.data_root) == {
+            "kept.md": SkipKind.REMOVED,
+            "scanned.pdf": SkipKind.FAILED,
+        }
+        assert [held.filename for held in result.held_out] == []
+
+    @classmethod
+    def _zero_for(cls, target: str):
+        from lilbee.data.ingest.pipeline import produce_records as orig
+
+        async def _produce(path, name, content_type, **kwargs):
+            if name == target:
+                return cls._zero_chunks()
+            return await orig(path, name, content_type, **kwargs)
+
+        return _produce
+
 
 class TestSyncMergesItsSkipRecords:
     """A writer that changes the skip records while a sync runs keeps its change.
@@ -1881,10 +1979,16 @@ class TestSyncMergesItsSkipRecords:
         assert load_skip_markers(cfg.data_root) == {}
 
     async def test_a_delete_during_a_sync_stays_deleted(self, isolated_env, mock_svc):
-        from lilbee.app.ingest import _REMOVED_SKIP_REASON, remove_documents_durably
+        from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest import sync
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import load_skip_markers, load_skip_reasons
+        from lilbee.data.ingest.skip_marker import (
+            REMOVED_SKIP_REASON,
+            SkipKind,
+            load_skip_kinds,
+            load_skip_markers,
+            load_skip_reasons,
+        )
 
         stay = isolated_env / "stay.txt"
         stay.write_text("indexed before the delete", encoding="utf-8")
@@ -1898,8 +2002,12 @@ class TestSyncMergesItsSkipRecords:
             "scanned.pdf": file_hash(scan),
         }
         assert load_skip_reasons(cfg.data_root) == {
-            "stay.txt": _REMOVED_SKIP_REASON,
+            "stay.txt": REMOVED_SKIP_REASON,
             "scanned.pdf": "no text extracted (0 chunks)",
+        }
+        assert load_skip_kinds(cfg.data_root) == {
+            "stay.txt": SkipKind.REMOVED,
+            "scanned.pdf": SkipKind.FAILED,
         }
 
     async def test_an_add_rolled_back_during_a_sync_stays_rolled_back(
@@ -2017,6 +2125,26 @@ class TestStatusReportsHeldOutFiles:
 
         assert [s.filename for s in status.skipped] == ["scan0.pdf", "scan1.pdf"]
         assert status.skipped_total == 5
+
+    def test_status_leaves_removed_sources_out(self):
+        """A removed source is not a library problem, so status does not list it."""
+        from lilbee.app.status import gather_status
+        from lilbee.data.ingest.skip_marker import (
+            REMOVED_SKIP_REASON,
+            SkipKind,
+            write_skip_kinds,
+            write_skip_markers,
+            write_skip_reasons,
+        )
+
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "gone.txt": "h2", "old.md": "h3"})
+        write_skip_reasons(cfg.data_root, {"old.md": REMOVED_SKIP_REASON})
+        write_skip_kinds(cfg.data_root, {"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED})
+
+        status = gather_status()
+
+        assert [s.filename for s in status.skipped] == ["scan.pdf"]
+        assert status.skipped_total == 1
 
     def test_status_is_empty_when_nothing_is_held_out(self):
         from lilbee.app.status import gather_status
@@ -4911,7 +5039,12 @@ class TestRemoveDocumentsDurably:
         """A durable delete keeps the file but skip-marks it so sync won't re-ingest."""
         from lilbee.app.ingest import remove_documents_durably
         from lilbee.data.ingest.discovery import file_hash
-        from lilbee.data.ingest.skip_marker import load_skip_markers, load_skip_reasons
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            load_skip_markers,
+            load_skip_reasons,
+        )
         from lilbee.data.store.types import RemoveResult
 
         doc = isolated_env / "keep.txt"
@@ -4926,6 +5059,7 @@ class TestRemoveDocumentsDurably:
         assert doc.exists()  # non-destructive: file stays on disk
         assert load_skip_markers(cfg.data_root)["keep.txt"] == file_hash(doc)
         assert "keep.txt" in load_skip_reasons(cfg.data_root)
+        assert load_skip_kinds(cfg.data_root) == {"keep.txt": SkipKind.REMOVED}
 
     def test_no_marker_when_nothing_removed(self, isolated_env, mock_svc):
         from lilbee.app.ingest import remove_documents_durably

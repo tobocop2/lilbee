@@ -124,8 +124,8 @@ flowchart TD
     ST -->|no| H["SHA-256 the bytes"]
     H --> HC{"hash matches<br/>the stored row?"}
     HC -->|yes| BF["unchanged —<br/>backfill the fresh stat"]
-    HC -->|no| SK{"hash matches a<br/>failed-file skip marker?"}
-    SK -->|yes| SKIP["held out: failed here last sync;<br/>counted apart from unchanged,<br/>reported with its reason"]
+    HC -->|no| SK{"hash matches a skip marker<br/>(a failure or a removal)?"}
+    SK -->|yes| SKIP["held out: a failure is counted<br/>apart from unchanged and reported<br/>with its reason; a removal is not reported"]
     SK -->|no| PR["process:<br/>extract → chunk → embed,<br/>store chunks keyed by this hash"]
 ```
 
