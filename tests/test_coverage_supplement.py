@@ -39,20 +39,13 @@ def _isolated_cfg(tmp_path: Any) -> Any:
 
 class TestStatusHelpers:
     """Branches in `_ocr_label`, `_ocr_pill`, `_data_dir_pill` that the
-    other status tests didn't reach (auto / missing-dir paths)."""
+    other status tests didn't reach (missing-dir path; enable_ocr has no
+    auto/None state left to reach)."""
 
-    def test_ocr_label_auto_when_none(self) -> None:
-        from lilbee.cli.tui.screens.status import _ocr_label
-
-        cfg.enable_ocr = None  # type: ignore[assignment]
-        assert _ocr_label() == "auto"
-
-    def test_ocr_pill_auto_when_none(self) -> None:
-        from lilbee.cli.tui.screens.status import _ocr_pill
-
-        cfg.enable_ocr = None  # type: ignore[assignment]
-        result = _ocr_pill()
-        assert "auto" in str(result.plain)
+    def test_enable_ocr_none_assignment_rejected(self) -> None:
+        """enable_ocr's removed "auto" state: an explicit None now errors."""
+        with pytest.raises(ValueError, match="Use true or false"):
+            cfg.enable_ocr = None  # type: ignore[assignment]
 
     def test_data_dir_pill_missing_when_dir_absent(self, tmp_path: Any) -> None:
         from lilbee.cli.tui.screens.status import _data_dir_pill

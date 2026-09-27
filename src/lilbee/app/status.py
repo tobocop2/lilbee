@@ -91,7 +91,8 @@ class StatusConfig(BaseModel):
     embedding_model: str
     vision_model: str = ""
     reranker_model: str = ""
-    enable_ocr: bool | None = None
+    enable_ocr: bool = True
+    force_ocr: bool = False
     num_ctx: int | None = None
     num_ctx_max: int | None = None
     chat_n_ctx_target: int | None = None
@@ -167,6 +168,7 @@ def gather_status() -> StatusResult:
             vision_model=cfg.vision_model,
             reranker_model=cfg.reranker_model,
             enable_ocr=cfg.enable_ocr,
+            force_ocr=cfg.force_ocr,
             num_ctx=cfg.num_ctx,
             num_ctx_max=cfg.num_ctx_max,
             chat_n_ctx_target=cfg.chat_n_ctx_target,

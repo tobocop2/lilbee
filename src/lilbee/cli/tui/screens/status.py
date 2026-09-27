@@ -90,20 +90,14 @@ def _collapse_home(path: Path | str) -> str:
 
 def _ocr_label() -> str:
     """Return a human-readable OCR status string."""
-    if cfg.enable_ocr is True:
-        return "enabled"
-    if cfg.enable_ocr is False:
-        return "disabled"
-    return "auto"
+    return "enabled" if cfg.enable_ocr else "disabled"
 
 
 def _ocr_pill() -> Content:
     """Return a pill reflecting OCR status."""
-    if cfg.enable_ocr is True:
+    if cfg.enable_ocr:
         return pill("on", "$success", "$text")
-    if cfg.enable_ocr is False:
-        return pill("off", "$warning", "$text")
-    return pill("auto", "$accent", "$text")
+    return pill("off", "$warning", "$text")
 
 
 def _data_dir_pill() -> Content:

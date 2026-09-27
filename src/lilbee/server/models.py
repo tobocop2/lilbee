@@ -94,6 +94,7 @@ class SyncRequest(BaseModel):
     """
 
     enable_ocr: bool | None = None
+    force_ocr: bool | None = None
     force_rebuild: bool = False
     retry_skipped: bool = False
     prune_ignored: bool = False
@@ -106,6 +107,7 @@ class AddRequest(BaseModel):
     force: bool = False
     enable_ocr: bool | None = None
     ocr_timeout: float | None = None
+    force_ocr: bool | None = None
 
 
 class SetModelRequest(BaseModel):
@@ -178,7 +180,8 @@ class StatusConfigInfo(BaseModel):
     embedding_model: str
     vision_model: str = ""
     reranker_model: str = ""
-    enable_ocr: bool | None = None
+    enable_ocr: bool = True
+    force_ocr: bool = False
     num_ctx: int | None = None
     num_ctx_max: int | None = None
     chat_n_ctx_target: int | None = None

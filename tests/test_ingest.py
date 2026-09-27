@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock
@@ -1473,28 +1475,27 @@ class TestSyncCancellation:
         mock_svc.store.write_chunks_batch.assert_not_called()
 
 
-class TestOcrForceRequested:
-    """cfg-independent LILBEE_OCR_FORCE lever that OCRs every page, text layer or not."""
+class TestEffectiveForceOcr:
+    """cfg.force_ocr forces OCR on every page, for both engines, text layer or not."""
 
-    def test_false_when_env_unset(self, monkeypatch):
-        from lilbee.data.extract.document import _ocr_force_requested
+    def test_false_by_default(self, isolated_env):
+        from lilbee.data.extract.document import _effective_force_ocr
 
-        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
-        assert _ocr_force_requested() is False
+        assert _effective_force_ocr() is False
 
-    @pytest.mark.parametrize("value", ["1", "true", "YES"])
-    def test_true_when_env_set(self, monkeypatch, value):
-        from lilbee.data.extract.document import _ocr_force_requested
+    def test_true_when_cfg_set(self, isolated_env):
+        from lilbee.data.extract.document import _effective_force_ocr
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", value)
-        assert _ocr_force_requested() is True
+        cfg.force_ocr = True
+        assert _effective_force_ocr() is True
 
-    @pytest.mark.parametrize("value", ["0", "false", "no", "", "  "])
-    def test_false_for_non_truthy_values(self, monkeypatch, value):
-        from lilbee.data.extract.document import _ocr_force_requested
+    def test_per_request_override_wins_over_cfg(self, isolated_env):
+        from lilbee.data.extract.document import _effective_force_ocr, ocr_override
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", value)
-        assert _ocr_force_requested() is False
+        cfg.force_ocr = False
+        with ocr_override(force_ocr=True):
+            assert _effective_force_ocr() is True
+        assert _effective_force_ocr() is False
 
 
 class TestIngestHelpers:
@@ -3707,7 +3708,7 @@ class TestOcrPageSelection:
 
     @pytest.fixture(autouse=True)
     def _ocr_on(self, monkeypatch):
-        monkeypatch.setattr(cfg, "enable_ocr", None)
+        monkeypatch.setattr(cfg, "enable_ocr", True)
 
     def test_auto_sends_the_auto_strategy_and_no_forced_pages(self):
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -3758,7 +3759,7 @@ class TestOcrPageSelection:
                 assert config.ocr_strategy.mode == "auto"
                 assert config.force_ocr_pages is None
 
-    @pytest.mark.parametrize("enable_ocr", [None, False])
+    @pytest.mark.parametrize("enable_ocr", [True, False])
     def test_real_xberg_accepts_the_built_config(self, monkeypatch, enable_ocr):
         from lilbee.data.extract.xberg import extract_document
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -4814,48 +4815,58 @@ class TestOcrConfigSelection:
     def test_vision_backend_with_token_when_model_set(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        cfg.enable_ocr = None
+        cfg.enable_ocr = True
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED, ocr_token="tok-123")
         assert config.ocr.backend == "lilbee-vision"
         assert json.loads(config.ocr.backend_options)["req"] == "tok-123"
 
-    def test_force_ocr_off_by_default(self, isolated_env, monkeypatch):
+    def test_force_ocr_off_by_default(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.force_ocr is False
 
     @pytest.mark.parametrize("mode_name", ["PAGINATED", "MARKDOWN"])
-    def test_force_ocr_set_when_env_and_vision_model(self, isolated_env, monkeypatch, mode_name):
+    def test_force_ocr_set_when_cfg_and_vision_model(self, isolated_env, mode_name):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+        cfg.force_ocr = True
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(getattr(ExtractMode, mode_name))
         assert config.force_ocr is True
 
-    def test_force_ocr_ignored_without_vision_model(self, isolated_env, monkeypatch):
-        # Tesseract path: force is a vision/GPU re-OCR lever, so it stays off here.
+    def test_force_ocr_reaches_tesseract_backend(self, isolated_env):
+        """The removed vision-only guard used to zero this out for Tesseract."""
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+        cfg.force_ocr = True
         cfg.vision_model = ""
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.ocr.backend == "tesseract"
-        assert config.force_ocr is False
+        assert config.force_ocr is True
 
-    def test_force_ocr_ignored_when_ocr_disabled(self, isolated_env, monkeypatch):
+    def test_force_ocr_ignored_when_ocr_disabled(self, isolated_env):
+        """xberg rejects force_ocr together with a disabled OcrConfig."""
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+        cfg.force_ocr = True
         cfg.enable_ocr = False
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
         assert config.ocr.enabled is False
         assert config.force_ocr is False
+
+    def test_force_ocr_per_request_override(self, isolated_env):
+        from lilbee.data.extract.document import ocr_override
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        cfg.force_ocr = False
+        cfg.vision_model = ""
+        with ocr_override(force_ocr=True):
+            config = extraction_config(ExtractMode.PAGINATED)
+        assert config.force_ocr is True
 
 
 class _CountingVisionBackend:
@@ -4914,10 +4925,11 @@ class _CountingVisionBackend:
 
 
 class TestForceOcrRoutesToBackend:
-    """Behavioral contract against real xberg: LILBEE_OCR_FORCE must OCR every page
-    of a born-digital PDF through the registered vision backend, defeating xberg's
-    text-layer short-circuit. This is the guard that a future xberg bump can't
-    silently disable forced re-OCR (the way rc25's short-circuit did)."""
+    """Behavioral contract against real xberg: cfg.force_ocr must OCR every page
+    of a born-digital PDF, on both engines, defeating xberg's text-layer
+    short-circuit. This is the guard that a future xberg bump can't silently
+    disable forced re-OCR (the way rc25's short-circuit did for the vision
+    engine), and that a vision-only guard can't silently disable for Tesseract."""
 
     @staticmethod
     def _extract(pdf: bytes, config) -> tuple[int, str]:
@@ -4935,26 +4947,46 @@ class TestForceOcrRoutesToBackend:
         finally:
             unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
 
-    def test_native_text_skips_ocr_without_force(self, isolated_env, monkeypatch):
+    def test_native_text_skips_ocr_without_force(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
         calls, content = self._extract(make_pdf(pages=2), config)
         assert calls == 0
         assert "clean native text layer" in content
 
-    def test_force_ocrs_every_page(self, isolated_env, monkeypatch):
+    def test_force_ocrs_every_page_via_vision(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+        cfg.force_ocr = True
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
         calls, content = self._extract(make_pdf(pages=2), config)
         assert calls == 2  # one OCR call per page, text layer notwithstanding
         assert "OCR-TEXT" in content
         assert "clean native text layer" not in content
+
+    @pytest.mark.skipif(not shutil.which("tesseract"), reason="Tesseract not installed")
+    def test_force_ocrs_every_page_via_tesseract(self, isolated_env):
+        """The removed vision-only guard used to leave force_ocr=False here,
+        so a born-digital page kept its native text instead of getting re-OCR'd."""
+        from lilbee.data.extract.xberg import extract_document
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        cfg.force_ocr = True
+        cfg.vision_model = ""
+        config = extraction_config(ExtractMode.PAGINATED)
+        assert config.ocr.backend == "tesseract"
+        assert config.force_ocr is True
+
+        pdf = make_pdf(pages=1)
+        native = extract_document(
+            pdf, "application/pdf", filename="born.pdf", config=replace(config, force_ocr=False)
+        )
+        forced = extract_document(pdf, "application/pdf", filename="born.pdf", config=config)
+        assert str(native.extraction_method) == "native"
+        assert str(forced.extraction_method) == "ocr"
 
 
 class TestChunkAndEmbedPagesEmpty:
@@ -5746,7 +5778,12 @@ class TestHttpSurface:
         remove_documents_durably(["corpus/gone.txt"])
 
         summary = await _run_add(
-            paths=[str(corpus)], force=False, enable_ocr=None, ocr_timeout=None, sse=SseStream()
+            paths=[str(corpus)],
+            force=False,
+            enable_ocr=None,
+            ocr_timeout=None,
+            force_ocr=None,
+            sse=SseStream(),
         )
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
@@ -5767,6 +5804,7 @@ class TestHttpSurface:
                 force=False,
                 enable_ocr=None,
                 ocr_timeout=None,
+                force_ocr=None,
                 sse=SseStream(),
             )
 
@@ -5789,7 +5827,12 @@ class TestHttpSurface:
 
         with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
             summary = await _run_add(
-                paths=[str(two)], force=False, enable_ocr=None, ocr_timeout=None, sse=SseStream()
+                paths=[str(two)],
+                force=False,
+                enable_ocr=None,
+                ocr_timeout=None,
+                force_ocr=None,
+                sse=SseStream(),
             )
 
         run_sync.assert_not_called()

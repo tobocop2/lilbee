@@ -87,6 +87,9 @@ _ocr_enable_override: contextvars.ContextVar[bool | None] = contextvars.ContextV
 _ocr_timeout_override: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "lilbee_ocr_timeout_override", default=None
 )
+_ocr_force_override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
+    "lilbee_ocr_force_override", default=None
+)
 
 
 # Per-file title for embedding input; a ContextVar (like the OCR overrides) so the
@@ -167,7 +170,7 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
     return enriched
 
 
-def _effective_enable_ocr() -> bool | None:
+def _effective_enable_ocr() -> bool:
     """``cfg.enable_ocr`` unless a per-request OCR override is active.
 
     The override is a ContextVar, not a global cfg mutation, so concurrent
@@ -193,9 +196,17 @@ def _effective_ocr_timeout() -> float:
     return active_config().ocr_timeout if override is None else override
 
 
+def _effective_force_ocr() -> bool:
+    """``cfg.force_ocr`` unless a per-request force-OCR override is active."""
+    override = _ocr_force_override.get()
+    return active_config().force_ocr if override is None else override
+
+
 @contextmanager
 def ocr_override(
-    enable_ocr: bool | None = None, ocr_timeout: float | None = None
+    enable_ocr: bool | None = None,
+    ocr_timeout: float | None = None,
+    force_ocr: bool | None = None,
 ) -> Generator[None, None, None]:
     """Scope per-request OCR settings without mutating the global cfg.
 
@@ -209,6 +220,8 @@ def ocr_override(
             tokens.append((_ocr_enable_override, _ocr_enable_override.set(enable_ocr)))
         if ocr_timeout is not None:
             tokens.append((_ocr_timeout_override, _ocr_timeout_override.set(ocr_timeout)))
+        if force_ocr is not None:
+            tokens.append((_ocr_force_override, _ocr_force_override.set(force_ocr)))
         yield
     finally:
         for var, token in reversed(tokens):
@@ -257,13 +270,6 @@ def _force_ocr_pages() -> list[int] | None:
     if _effective_enable_ocr() is False:
         return None
     return list(active_config().force_ocr_pages) or None
-
-
-def _ocr_force_requested() -> bool:
-    """Whether LILBEE_OCR_FORCE forces vision OCR on every page (targeted re-ingest lever)."""
-    import os
-
-    return os.environ.get("LILBEE_OCR_FORCE", "").strip().lower() in {"1", "true", "yes"}
 
 
 # Header/footer band stripped when layout detection is on: outermost 5%.
@@ -322,8 +328,9 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # pages internally, and cross-file concurrency is the pipeline's semaphore.
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
-    # Defeats xberg's text-layer short-circuit; vision path only (GPU re-OCR lever).
-    force_ocr = _ocr_force_requested() and ocr.backend == OcrBackendName.LILBEE_VISION
+    # Defeats xberg's text-layer short-circuit for whichever engine ocr picked.
+    # xberg rejects force_ocr together with a disabled OcrConfig.
+    force_ocr = _effective_force_ocr() and _effective_enable_ocr()
     if mode is ExtractMode.PAGINATED:
         paginated = ExtractionConfig(
             chunking=chunking,

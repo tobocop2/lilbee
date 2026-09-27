@@ -125,9 +125,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)
     yield _label_line("Reranker", reranker)
-    if status.config.enable_ocr is not None:
-        ocr_label = "enabled" if status.config.enable_ocr else "disabled"
-        yield _label_line("Vision OCR", ocr_label)
+    ocr_label = "enabled" if status.config.enable_ocr else "disabled"
+    yield _label_line("OCR", ocr_label)
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
         yield _label_line("Entities", f"{status.entities.rows} entities extracted ({names})")

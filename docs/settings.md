@@ -51,7 +51,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Cross-encoder model for result reranking. |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `str` | `auto` | yes | yes | yes | no | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
-| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Vision model for scanned PDF OCR (empty = disabled; Tesseract only). |
+| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | OCR engine for scanned PDFs when enable_ocr is on (empty = Tesseract). |
 
 ## Retrieval
 
@@ -140,10 +140,11 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `batch_extraction_size` | `LILBEE_BATCH_EXTRACTION_SIZE` | `int` | `8` | yes | yes | yes | no | Max files per extract_batch call when batch extraction is on. |
 | `chunk_overlap` | `LILBEE_CHUNK_OVERLAP` | `int` | `100` | yes | yes | yes | no | Tokens of overlap between adjacent chunks (preserves context across boundaries). **Reindex** with `lilbee rebuild` after changing. |
 | `chunk_size` | `LILBEE_CHUNK_SIZE` | `int` | `512` | yes | yes | yes | no | Document chunk size in tokens (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
-| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | Vision OCR for scanned PDFs (empty = auto-detect from vision_model). |
+| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool` | `true` | yes | yes | yes | no | OCR for scanned PDFs: picks native text or OCR per page (false disables it). |
 | `entity_extraction` | `LILBEE_ENTITY_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Extract typed entities automatically at sync (schema induced on first run). |
 | `extraction_threads` | `LILBEE_EXTRACTION_THREADS` | `int` | `0` | yes | yes | yes | no | Threads xberg uses for PDF rendering, OCR and layout models, and the most Tesseract OCR sessions that run at once (0 = auto, half the available cores). Takes full effect after a restart. |
 | `extraction_timeout` | `LILBEE_EXTRACTION_TIMEOUT` | `int` | `0` | yes | yes | yes | no | Wall-clock seconds one file gets to extract before ingest gives up on it (0 = no limit). |
+| `force_ocr` | `LILBEE_FORCE_OCR` | `bool` | `false` | yes | yes | yes | no | Re-OCR every page, for example after changing the OCR language; persisted true OCRs every future ingest. |
 | `force_ocr_pages` | `LILBEE_FORCE_OCR_PAGES` | `list` | *(empty)* | yes | yes | yes | no | PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3) or one per line. |
 | `ingest_processes` | `LILBEE_INGEST_PROCESSES` | `int` | `0` | yes | yes | yes | no | Ingest worker processes, one GPU each (0 = auto, one per card). Used once the corpus is big enough to pay for them; 1 keeps ingest in this process. |
 | `ingest_workers` | `LILBEE_INGEST_WORKERS` | `int` | `0` | yes | yes | yes | no | Workers for discovering and hashing files (0 = auto, all available cores). |
@@ -314,5 +315,4 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_INGEST_TRACE_FILE` | File the ingest trace is written to |
 | `LILBEE_LOG_LEVEL` | Logging level: DEBUG, INFO, WARNING, or ERROR. `--log-level` overrides it |
 | `LILBEE_NO_SPLASH` | Set to any value to suppress the startup splash animation |
-| `LILBEE_OCR_FORCE` | Force vision OCR on pages that already carry a text layer. It has no effect on those pages today; set `vlm_fallback` instead |
 | `LILBEE_TOKEN` | Auth token for the HTTP server. The launchers set it to the live session token so no literal token is written to a config file on disk |

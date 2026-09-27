@@ -278,10 +278,15 @@ class TestStatus:
         result = status()
         assert result["config"]["enable_ocr"] is True
 
-    def test_status_enable_ocr_none_by_default(self):
-        cfg.enable_ocr = None
+    def test_status_enable_ocr_true_by_default(self):
+        cfg.enable_ocr = True
         result = status()
-        assert result["config"]["enable_ocr"] is None
+        assert result["config"]["enable_ocr"] is True
+
+    def test_status_includes_force_ocr(self):
+        cfg.force_ocr = True
+        result = status()
+        assert result["config"]["force_ocr"] is True
 
     def test_status_includes_entities_when_enabled(self, mock_svc):
         cfg.entity_extraction = True
@@ -722,6 +727,55 @@ class TestAdd:
         assert cfg.linked_roots == {"test.txt": str(src.resolve())}
         mock_sync.assert_awaited_once()
 
+    @mock.patch(
+        "lilbee.data.extract.xberg.aextract_document",
+        new_callable=AsyncMock,
+        return_value=MagicMock(chunks=[], content="hi", pages=[], metadata=MagicMock(format=None)),
+    )
+    async def test_add_force_ocr_reaches_extraction_config(self, mock_extract, tmp_path):
+        """force_ocr=True on lilbee_add reaches the ExtractionConfig xberg receives.
+
+        add() never has to name force_ocr for this to pass by accident: without
+        the plumbing, the real sync it triggers builds a config with the
+        persisted default (False) even though the call asked for True.
+        """
+        src = tmp_path / "test.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        await add([str(src)], force_ocr=True)
+
+        assert mock_extract.await_args is not None
+        received_config = mock_extract.await_args.kwargs["config"]
+        assert received_config.force_ocr is True
+
+    @mock.patch(
+        "lilbee.data.extract.xberg.aextract_document",
+        new_callable=AsyncMock,
+        return_value=MagicMock(chunks=[], content="hi", pages=[], metadata=MagicMock(format=None)),
+    )
+    async def test_add_force_ocr_false_overrides_persisted_true(self, mock_extract, tmp_path):
+        """force_ocr=False on lilbee_add beats a persisted cfg.force_ocr=True.
+
+        enable_ocr is the losing field: the call never names it, so it must still
+        reach xberg as an active Tesseract backend, not the OCR-disabled branch a
+        mutated override would also produce. The persisted cfg.force_ocr must
+        survive untouched: the override is a per-request ContextVar, not a cfg
+        mutation (unlike the CLI's direct assignment).
+        """
+        from lilbee.data.types import OcrBackendName
+
+        cfg.force_ocr = True
+        src = tmp_path / "test.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        await add([str(src)], force_ocr=False)
+
+        assert mock_extract.await_args is not None
+        received_config = mock_extract.await_args.kwargs["config"]
+        assert received_config.force_ocr is False
+        assert received_config.ocr.backend == OcrBackendName.TESSERACT
+        assert cfg.force_ocr is True
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_nonexistent_path(self, mock_sync, tmp_path):
         """An add that indexed nothing is an error, not a success with a note."""
@@ -830,6 +884,17 @@ class TestAdd:
             await add([str(src)], enable_ocr=True)
 
         assert cfg.enable_ocr == original_ocr
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_add_with_force_ocr(self, mock_sync, tmp_path):
+        """force_ocr is a per-request ContextVar override; the persisted setting is untouched."""
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-fake")
+        original_force_ocr = cfg.force_ocr
+
+        await add([str(src)], force_ocr=True)
+
+        assert cfg.force_ocr == original_force_ocr
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_empty_paths(self, mock_sync):
@@ -2333,8 +2398,8 @@ class TestToolsSchemaSize:
         # mcp_sessions_enabled (off by default) takes them off the default wire
         # and drops it to 6_996. 7_500 leaves room for a tool or two. Each
         # tool's docstring becomes its schema description, so trim verbose Args
-        # sections before raising this.
-        ceiling = 7_500
+        # sections before raising this. 7_600 covers add's new force_ocr param.
+        ceiling = 7_600
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}."
         )

@@ -467,6 +467,21 @@ class TestStatus:
         assert result.config.vision_model == ""
         assert result.config.reranker_model == ""
 
+    async def test_exposes_force_ocr(self):
+        """/api/status config payload surfaces force_ocr, the sibling of enable_ocr.
+
+        ``handlers.status()`` rebuilds a ``StatusResponse`` from ``gather_status()``'s
+        dump; a field missing from ``StatusConfigInfo`` is dropped here even when
+        ``StatusConfig`` carries it.
+        """
+        cfg.force_ocr = True
+        result = await handlers.status()
+        assert result.config.force_ocr is True
+
+        cfg.force_ocr = False
+        result = await handlers.status()
+        assert result.config.force_ocr is False
+
 
 class TestSearch:
     async def test_returns_grouped_results(self, mock_svc):
@@ -5088,10 +5103,17 @@ class TestReasoningCapHandling:
 class TestParseOcrParams:
     def test_ocr_timeout_coerced_to_float(self):
         """_parse_ocr_params coerces ocr_timeout to float."""
-        enable_ocr, ocr_timeout = _ingest_h._parse_ocr_params({"ocr_timeout": "60"})
+        enable_ocr, ocr_timeout, force_ocr = _ingest_h._parse_ocr_params({"ocr_timeout": "60"})
         assert ocr_timeout == 60.0
         assert isinstance(ocr_timeout, float)
         assert enable_ocr is None
+        assert force_ocr is None
+
+    def test_force_ocr_coerced_to_bool(self):
+        """_parse_ocr_params coerces force_ocr to bool."""
+        _, _, force_ocr = _ingest_h._parse_ocr_params({"force_ocr": 1})
+        assert force_ocr is True
+        assert isinstance(force_ocr, bool)
 
 
 class TestAddHandlerCancel:
@@ -5110,6 +5132,7 @@ class TestAddHandlerCancel:
                 force=False,
                 enable_ocr=None,
                 ocr_timeout=None,
+                force_ocr=None,
                 sse=sse,
             )
         assert result is not None

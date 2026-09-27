@@ -344,7 +344,10 @@ async def sync(
 
 
 async def _sync_after_add(
-    reached_corpus: bool, enable_ocr: bool | None, ocr_timeout: float | None
+    reached_corpus: bool,
+    enable_ocr: bool | None,
+    ocr_timeout: float | None,
+    force_ocr: bool | None,
 ) -> dict[str, Any] | None:
     """The sync that follows an add, or None when nothing named reached the corpus."""
     from lilbee.app.ingest import temporary_ocr_config
@@ -352,7 +355,7 @@ async def _sync_after_add(
 
     if not reached_corpus:
         return None
-    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
+    with temporary_ocr_config(enable_ocr, ocr_timeout, force_ocr), _cancel_token() as cancel:
         return (await run_sync(quiet=True, cancel=cancel)).model_dump()
 
 
@@ -362,6 +365,7 @@ async def add(
     force: bool = False,
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
+    force_ocr: bool | None = None,
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
@@ -418,7 +422,7 @@ async def add(
     )
     errors.extend(reg_result.refused)
     reached = reg_result.reached_corpus or bool(crawled_count)
-    sync_result = await _sync_after_add(reached, enable_ocr, ocr_timeout)
+    sync_result = await _sync_after_add(reached, enable_ocr, ocr_timeout, force_ocr)
     result: dict[str, Any] = {
         "command": "add",
         "copied": reg_result.registered,

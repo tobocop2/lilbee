@@ -40,7 +40,7 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.crawler import is_url
 
-_ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Force vision OCR on/off for scanned PDFs.")
+_ocr_option = typer.Option(None, "--ocr/--no-ocr", help="Turn OCR for scanned PDFs on or off.")
 _retry_skipped_option = typer.Option(
     False,
     "--retry-skipped",
@@ -56,10 +56,17 @@ _ocr_timeout_option = typer.Option(
     "--ocr-timeout",
     help="Per-page timeout in seconds for vision OCR (default: 300, 0 = no limit).",
 )
+_force_ocr_option = typer.Option(
+    None,
+    "--force-ocr/--no-force-ocr",
+    help="Re-OCR every page for this run, overriding the persisted force_ocr setting.",
+)
 
 
-def _apply_ocr_overrides(ocr: bool | None, ocr_timeout: float | None) -> None:
-    """Apply --ocr/--no-ocr and --ocr-timeout CLI overrides to config.
+def _apply_ocr_overrides(
+    ocr: bool | None, ocr_timeout: float | None, force_ocr: bool | None = None
+) -> None:
+    """Apply --ocr/--no-ocr, --ocr-timeout, and --force-ocr CLI overrides to config.
 
     The CLI is a single-shot, single-process invocation, so mutating the global
     cfg here is safe (it mirrors ``apply_overrides`` for the data dir). The
@@ -70,6 +77,8 @@ def _apply_ocr_overrides(ocr: bool | None, ocr_timeout: float | None) -> None:
         cfg.enable_ocr = ocr
     if ocr_timeout is not None:
         cfg.ocr_timeout = ocr_timeout
+    if force_ocr is not None:
+        cfg.force_ocr = force_ocr
 
 
 _paths_argument = typer.Argument(
@@ -370,6 +379,7 @@ def sync_cmd(
     use_global: bool = global_option,
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
+    force_ocr: bool | None = _force_ocr_option,
     retry_skipped: bool = _retry_skipped_option,
     prune_ignored: bool = _prune_ignored_option,
     max_cpus: int | None = _max_cpus_option,
@@ -377,7 +387,7 @@ def sync_cmd(
 ) -> None:
     """Manually trigger document sync."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    _apply_ocr_overrides(ocr, ocr_timeout)
+    _apply_ocr_overrides(ocr, ocr_timeout, force_ocr)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
     if processes is not None:
@@ -536,6 +546,7 @@ def add(
     force: bool = _force_option,
     ocr: bool | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
+    force_ocr: bool | None = _force_ocr_option,
     crawl: bool = _crawl_option,
     depth: int | None = _depth_option,
     max_pages: int | None = _max_pages_option,
@@ -545,7 +556,7 @@ def add(
 ) -> None:
     """Link files or crawl URLs into the knowledge base and ingest them."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
-    _apply_ocr_overrides(ocr, ocr_timeout)
+    _apply_ocr_overrides(ocr, ocr_timeout, force_ocr)
     if max_cpus is not None:
         cfg.ingest_workers = max_cpus
     if processes is not None:

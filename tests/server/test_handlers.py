@@ -14,6 +14,7 @@ from xberg import Metadata
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
+from lilbee.data.types import OcrBackendName
 from lilbee.server import auth as _auth_mod
 from tests.server.conftest import parse_sse_events as _parse_sse_events
 
@@ -124,6 +125,63 @@ class TestAddEndpoint:
         assert "file_start" in event_types
         assert "file_done" in event_types
         assert "done" in event_types
+
+    async def test_add_force_ocr_reaches_extraction_config(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """POST /api/add {"force_ocr": true} reaches the ExtractionConfig xberg receives.
+
+        The handler that runs sync never has to name force_ocr for this to pass
+        by accident: without the plumbing, the captured config keeps the
+        persisted default (False) even though the request asked for True.
+        """
+        from lilbee.server.app import create_app
+
+        src = tmp_path / "input.txt"
+        src.write_text("Hello world content for testing.", encoding="utf-8")
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add",
+                json={"paths": [str(src)], "force_ocr": True},
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert mock_extract_file.await_args is not None
+        received_config = mock_extract_file.await_args.kwargs["config"]
+        assert received_config.force_ocr is True
+
+    async def test_add_force_ocr_false_overrides_persisted_true(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """POST /api/add {"force_ocr": false} beats a persisted force_ocr=True.
+
+        enable_ocr is the losing field here: the request never names it, so it
+        must still reach xberg as an active Tesseract backend, not the
+        OCR-disabled branch a mutated override would also produce. The
+        persisted cfg.force_ocr must survive untouched: the override is a
+        per-request ContextVar, not a cfg mutation.
+        """
+        from lilbee.server.app import create_app
+
+        cfg.force_ocr = True
+        src = tmp_path / "input.txt"
+        src.write_text("Hello world content for testing.", encoding="utf-8")
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add",
+                json={"paths": [str(src)], "force_ocr": False},
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 201
+        assert mock_extract_file.await_args is not None
+        received_config = mock_extract_file.await_args.kwargs["config"]
+        assert received_config.force_ocr is False
+        assert received_config.ocr.backend == OcrBackendName.TESSERACT
+        assert cfg.force_ocr is True
 
     async def test_add_upload_writes_content_and_indexes(
         self, mock_extract_file, isolated_env, tmp_path
@@ -494,6 +552,35 @@ class TestIngestStreamTerminalEvent:
         assert names.count("done") == 1, names
         assert names[-1] == "done", names
         assert events[-1][1]["added"] == ["indexed.txt"]
+
+    async def test_sync_force_ocr_false_overrides_persisted_true(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """POST /api/sync {"force_ocr": false} beats a persisted force_ocr=True.
+
+        enable_ocr is the losing field: the request never names it, so it must
+        still reach xberg as an active Tesseract backend. The persisted
+        cfg.force_ocr must survive untouched: the override is a per-request
+        ContextVar, not a cfg mutation.
+        """
+        from lilbee.server.app import create_app
+
+        cfg.force_ocr = True
+        (isolated_env / "indexed.txt").write_text(
+            "Content the sync pass indexes.", encoding="utf-8"
+        )
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/sync", json={"force_ocr": False}, headers=_auth_headers()
+            )
+
+        assert resp.status_code == 201
+        assert mock_extract_file.await_args is not None
+        received_config = mock_extract_file.await_args.kwargs["config"]
+        assert received_config.force_ocr is False
+        assert received_config.ocr.backend == OcrBackendName.TESSERACT
+        assert cfg.force_ocr is True
 
     async def test_add_stream_closes_with_one_done(self, mock_extract_file, isolated_env, tmp_path):
         """POST /api/add ends on a single done carrying the add summary."""
@@ -1023,5 +1110,7 @@ class TestValidateAddPathsRejectsNamelessPaths:
     def test_a_normal_path_still_passes(self):
         from lilbee.server.handlers.ingest import validate_add_paths
 
-        paths, _force, _ocr, _timeout = validate_add_paths({"paths": ["/tmp/report.pdf"]})
+        paths, _force, _ocr, _timeout, _force_ocr = validate_add_paths(
+            {"paths": ["/tmp/report.pdf"]}
+        )
         assert paths == ["/tmp/report.pdf"]

@@ -9,10 +9,12 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
+from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
@@ -48,6 +50,8 @@ log = logging.getLogger(__name__)
 # instance equal to this, so the model_validator can distinguish "user passed
 # the default" from "user explicitly set a value".
 _UNSET_PATH = Path()
+
+_SKIP_TOML_CONFIG_ENV = "LILBEE_SKIP_TOML_CONFIG"
 
 # A Tesseract language code: ISO 639 letters plus script or orientation suffixes
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
@@ -239,11 +243,10 @@ class Config(BaseSettings):
             "Use a .lilbeeignore file for per-library patterns"
         ),
     )
-    # OCR for scanned PDFs via vision-capable chat model.
-    # None = auto-detect (use OCR if chat model is vision-capable).
-    # True = force OCR regardless of detection.
-    # False = disable OCR entirely.
-    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+    # xberg auto-OCRs per page (native text where good, OCR where missing or
+    # bad) whenever this is true; the vision model, when set, only picks
+    # which engine runs, not whether OCR runs at all.
+    enable_ocr: bool = ConfigField(default=True, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
     # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
     # needs matching headroom here.
@@ -276,6 +279,11 @@ class Config(BaseSettings):
     # Scan-grade threshold for scanned_pages. A slide with a full-bleed
     # background image grades 0.5, so lower this to OCR such slides too.
     ocr_scan_confidence: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
+    # OCR every page of every future ingest, for both the vision and Tesseract
+    # engines, defeating xberg's text-layer short-circuit. A re-ingest lever
+    # (for example after changing ocr_language): re-sync while it's set, then
+    # turn it back off. Persisting it true OCRs every page from then on.
+    force_ocr: bool = ConfigField(default=False, writable=True)
     # 1-indexed pages that lilbee OCRs in every PDF; while set, it replaces the
     # ocr_strategy page selection. Env form: LILBEE_FORCE_OCR_PAGES="1,3".
     force_ocr_pages: list[int] = ConfigField(default_factory=list, writable=True)
@@ -1123,28 +1131,20 @@ class Config(BaseSettings):
 
     @field_validator("enable_ocr", mode="before")
     @classmethod
-    def _parse_enable_ocr(cls, v: Any) -> bool | None:
+    def _parse_enable_ocr(cls, v: Any) -> bool:
         """Parse enable_ocr from env var string or direct value.
 
-        Accepts: true/false/1/0/yes/no (case-insensitive), empty string
-        or None for auto-detect.
+        Accepts true/false/1/0/yes/no (case-insensitive), matching every other
+        bool on Config. Anything else is a validation error naming the fix.
         """
-        if v is None:
-            return None
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
             try:
                 return parse_bool(v)
             except ValueError:
-                # bool() on a non-empty string is True, so falling through here
-                # turned an unparseable value into "on". Warn and auto-detect,
-                # matching the sibling validators.
-                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
-                return None
-        return bool(v)
+                pass
+        raise ValueError(f"enable_ocr: {v!r} is not a boolean. Use true or false.")
 
     @field_validator("ocr_language", mode="before")
     @classmethod
@@ -1455,7 +1455,7 @@ class Config(BaseSettings):
 
         plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_", env_ignore_empty=True)
         sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
+        if toml_path.exists() and os.environ.get(_SKIP_TOML_CONFIG_ENV) != "1":
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
@@ -1556,26 +1556,105 @@ class _TomlSource:
         # default apply rather than crashing the whole Config load. TOML's
         # native types (lists, ints, bools) pass through untouched: stringifying
         # turned a list field's ["a", "b"] into the literal "['a', 'b']".
-        return {k: v for k, v in data.items() if v != ""}
+        skip = _skip_toml_fields()
+        return {k: v for k, v in data.items() if v != "" and k not in skip}
+
+
+_SKIP_TOML_FIELDS_ENV = "LILBEE_SKIP_TOML_FIELDS"
+
+
+def _skip_toml_fields() -> frozenset[str]:
+    """Field names the ``_build_cfg`` retry excludes from config.toml."""
+    raw = os.environ.get(_SKIP_TOML_FIELDS_ENV, "")
+    return frozenset(f for f in raw.split(",") if f)
+
+
+def _describe_bad_field(field: str, err: ErrorDetails) -> str:
+    """One line naming the offending source, key, and the validator's fix for *field*."""
+    env_key = f"LILBEE_{field.upper()}"
+    source = f"env {env_key}" if os.environ.get(env_key) else f"config.toml field {field!r}"
+    msg = str(err["msg"]).removeprefix("Value error, ")
+    return f"{source}: {msg}"
+
+
+def _describe_errors(errors: list[ErrorDetails]) -> str:
+    """One line joining every error's message, without per-field detail."""
+    return "; ".join(str(e["msg"]).removeprefix("Value error, ") for e in errors)
+
+
+def _pop_env_fields(fields: Iterable[str]) -> dict[str, str]:
+    """Remove each field's LILBEE_<FIELD> env var, returning what was removed."""
+    return {
+        f"LILBEE_{f.upper()}": os.environ.pop(f"LILBEE_{f.upper()}")
+        for f in fields
+        if f"LILBEE_{f.upper()}" in os.environ
+    }
+
+
+def _fallback_to_defaults(detail: str) -> tuple[Config, Exception]:
+    """Rebuild Config from built-in defaults, excluding every env var and config.toml.
+
+    Used when a build attempt names no field to drop, or raises again after one
+    is dropped. A failure of this call itself is a broken built-in default, not
+    a user or environment value, and propagates uncaught rather than reported.
+    """
+    saved_env = _pop_env_fields(Config.model_fields)
+    saved_skip_toml = os.environ.get(_SKIP_TOML_CONFIG_ENV)
+    os.environ[_SKIP_TOML_CONFIG_ENV] = "1"
+    try:
+        return Config(), ValueError(f"Falling back to built-in defaults: {detail}")
+    finally:
+        if saved_skip_toml is None:
+            os.environ.pop(_SKIP_TOML_CONFIG_ENV, None)
+        else:
+            os.environ[_SKIP_TOML_CONFIG_ENV] = saved_skip_toml
+        os.environ.update(saved_env)
+
+
+def _retry_dropping_bad_fields(exc: ValidationError) -> tuple[Config, Exception]:
+    """Drop exactly the fields *exc* names, from env and config.toml, and rebuild.
+
+    Every other setting, from either source, survives the retry. Falls back to
+    built-in defaults, discarding every source, when no error names a field or
+    the retry itself raises again, of any exception type.
+    """
+    all_errors = exc.errors()
+    field_errors = [e for e in all_errors if e["loc"]]
+    bad_fields = sorted({str(e["loc"][0]) for e in field_errors})
+    if not bad_fields:
+        return _fallback_to_defaults(_describe_errors(all_errors))
+    detail = "; ".join(_describe_bad_field(str(e["loc"][0]), e) for e in field_errors)
+    saved_env = _pop_env_fields(bad_fields)
+    os.environ[_SKIP_TOML_FIELDS_ENV] = ",".join(bad_fields)
+    try:
+        return Config(), ValueError(detail)
+    except ValidationError as retry_exc:
+        return _fallback_to_defaults(f"{detail}; {_describe_errors(retry_exc.errors())}")
+    except Exception as retry_exc:
+        return _fallback_to_defaults(f"{detail}; {retry_exc}")
+    finally:
+        os.environ.pop(_SKIP_TOML_FIELDS_ENV, None)
+        os.environ.update(saved_env)
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
-    """Build cfg; on stale-config validation failure, fall back to defaults.
+    """Build cfg; on any error building it from a user or environment value, fall back.
 
-    A persisted ``config.toml`` from before a breaking schema change can
-    contain values the new validators reject. Crashing at module import
-    means every command (``lilbee --help`` included) emits a Python
-    traceback. Falling back to env+defaults lets the package load; the
-    CLI / TUI surfaces the original error before doing real work.
+    Crashing at module import means every command (``lilbee --help`` included) dies
+    with a traceback. A ``ValidationError`` naming a field drops exactly that
+    field and retries, so every other setting, from either source, survives;
+    any other exception, or a ``ValidationError`` naming no field, rebuilds cfg
+    from built-in defaults instead. Either path reports the failure through
+    ``config_load_error``, which the CLI / TUI surfaces before doing real work.
+    A failure building Config from built-in defaults alone is a program bug,
+    not a user or environment value, and propagates uncaught.
     """
     try:
         return Config(), None
+    except ValidationError as exc:
+        return _retry_dropping_bad_fields(exc)
     except Exception as exc:
-        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
-        try:
-            return Config(), exc
-        finally:
-            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+        return _fallback_to_defaults(str(exc))
 
 
 cfg, config_load_error = _build_cfg()

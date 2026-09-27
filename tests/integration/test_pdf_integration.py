@@ -310,7 +310,7 @@ class TestForceOcrPagesReplacesAutomaticOcr:
     @pytest.fixture(autouse=True)
     def _tesseract(self, monkeypatch):
         monkeypatch.setattr(cfg, "vision_model", "")
-        monkeypatch.setattr(cfg, "enable_ocr", None)
+        monkeypatch.setattr(cfg, "enable_ocr", True)
 
     def test_default_settings_ocr_every_scanned_page(self, monkeypatch):
         monkeypatch.setattr(cfg, "force_ocr_pages", [])

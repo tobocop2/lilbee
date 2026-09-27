@@ -3233,6 +3233,15 @@ async def test_chat_slash_set_nullable_none():
         assert cfg.temperature is None
 
 
+async def test_chat_slash_set_enable_ocr_empty_means_false():
+    """enable_ocr is a plain bool, so an empty value parses as false, not auto."""
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        cfg.enable_ocr = True
+        app.screen._cmd_set("enable_ocr ")
+        assert cfg.enable_ocr is False
+
+
 async def test_chat_slash_set_unknown_key():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -13590,6 +13599,22 @@ def test_make_editor_with_choices():
         defn = SettingDef(type=str, nullable=False, group="Test", choices=("auto", "litellm"))
         widget = make_editor("test_key", defn)
     assert isinstance(widget, Select)
+
+
+def test_enable_ocr_checkbox_checked_by_default():
+    """enable_ocr's default (True) renders checked, not unchecked-as-auto.
+
+    Before enable_ocr became a plain bool, its unset default read back as the
+    string "None", so the checkbox rendered unchecked while OCR ran anyway.
+    """
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings_widgets import effective_value, make_checkbox
+    from lilbee.core.config import cfg
+
+    cfg.enable_ocr = True
+    widget = make_checkbox("enable_ocr", effective_value("enable_ocr"))
+    assert SETTINGS_MAP["enable_ocr"].type is bool
+    assert widget.value is True
 
 
 async def test_catalog_fetch_installed_names():

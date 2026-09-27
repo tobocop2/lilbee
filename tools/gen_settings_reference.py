@@ -121,15 +121,14 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         "A directory that at most one server may serve at a time, for a plugin's shared root",
         False,
     ),
-    "LILBEE_OCR_FORCE": (
-        "Force vision OCR on pages that already carry a text layer. It has no "
-        "effect on those pages today; set `vlm_fallback` instead",
-        False,
-    ),
     # Internal: not settings, and documenting them would invite misuse.
     "LILBEE_PARENT_PID": ("Process plumbing: the parent to watch and exit with", True),
     "LILBEE_LAUNCHER_SERVE_QUIET": ("Internal launcher flag", True),
     "LILBEE_SKIP_TOML_CONFIG": ("Test hook: ignore config.toml for hermetic runs", True),
+    "LILBEE_SKIP_TOML_FIELDS": (
+        "Internal: comma-separated fields _build_cfg's retry drops from config.toml",
+        True,
+    ),
     "LILBEE_SKIP_MODEL_TASK_VALIDATION": ("Test hook: skip catalog task validation", True),
 }
 

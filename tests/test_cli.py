@@ -144,13 +144,14 @@ class TestStatus:
     def test_status_shows_ocr_when_enabled(self):
         cfg.enable_ocr = True
         result = runner.invoke(app, ["status"])
-        assert "Vision OCR:" in result.output
+        assert "OCR:" in result.output
         assert "enabled" in result.output
 
-    def test_status_hides_ocr_when_none(self):
-        cfg.enable_ocr = None
+    def test_status_shows_ocr_when_disabled(self):
+        cfg.enable_ocr = False
         result = runner.invoke(app, ["status"])
-        assert "Vision OCR:" not in result.output
+        assert "OCR:" in result.output
+        assert "disabled" in result.output
 
     def test_status_with_indexed_docs(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
@@ -2410,11 +2411,18 @@ class TestStatusJson:
         data = json.loads(result.output.strip())
         assert data["config"]["enable_ocr"] is True
 
-    def test_status_json_excludes_enable_ocr_when_none(self):
-        cfg.enable_ocr = None
+    def test_status_json_includes_enable_ocr_when_false(self):
+        """enable_ocr is a plain bool now, so exclude_none never omits it."""
+        cfg.enable_ocr = False
         result = runner.invoke(app, ["--json", "status"])
         data = json.loads(result.output.strip())
-        assert "enable_ocr" not in data["config"]
+        assert data["config"]["enable_ocr"] is False
+
+    def test_status_json_includes_force_ocr(self):
+        cfg.force_ocr = True
+        result = runner.invoke(app, ["--json", "status"])
+        data = json.loads(result.output.strip())
+        assert data["config"]["force_ocr"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -3058,6 +3066,38 @@ class TestOcrFlags:
         result = runner.invoke(app, ["sync", "--no-ocr"])
         assert result.exit_code == 0
         assert cfg.enable_ocr is False
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_force_ocr_flag_on_sync(self, mock_sync):
+        """--force-ocr sets cfg.force_ocr for this run."""
+        result = runner.invoke(app, ["sync", "--force-ocr"])
+        assert result.exit_code == 0
+        assert cfg.force_ocr is True
+
+    def test_force_ocr_flag_on_add(self, isolated_env, tmp_path, mock_svc):
+        """--force-ocr sets cfg.force_ocr for add."""
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(app, ["add", "--force-ocr", str(src)])
+        assert result.exit_code == 0
+        assert cfg.force_ocr is True
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_no_force_ocr_flag_disables(self, mock_sync):
+        """--no-force-ocr overrides a persisted force_ocr=true back off for this run."""
+        cfg.force_ocr = True
+        result = runner.invoke(app, ["sync", "--no-force-ocr"])
+        assert result.exit_code == 0
+        assert cfg.force_ocr is False
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_no_force_ocr_flag_leaves_default(self, mock_sync):
+        """Without --force-ocr, cfg.force_ocr stays at whatever was persisted."""
+        cfg.force_ocr = True
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert cfg.force_ocr is True
 
 
 class TestLogLevel:

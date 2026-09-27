@@ -46,12 +46,14 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     now excludes; without it, sync leaves already-indexed sources alone.
     """
     enable_ocr = data.enable_ocr if data else None
+    force_ocr = data.force_ocr if data else None
     force_rebuild = data.force_rebuild if data else False
     retry_skipped = data.retry_skipped if data else False
     prune_ignored = data.prune_ignored if data else False
     return Stream(
         handlers.sync_stream(
             enable_ocr=enable_ocr,
+            force_ocr=force_ocr,
             force_rebuild=force_rebuild,
             retry_skipped=retry_skipped,
             prune_ignored=prune_ignored,
@@ -64,12 +66,14 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress."""
     try:
-        paths, force, enable_ocr, ocr_timeout = handlers.validate_add_paths(data.model_dump())
+        paths, force, enable_ocr, ocr_timeout, force_ocr = handlers.validate_add_paths(
+            data.model_dump()
+        )
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     return Stream(
         handlers.add_files_stream(
-            paths, force=force, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout
+            paths, force=force, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout, force_ocr=force_ocr
         ),
         media_type=SSE_MEDIA_TYPE,
         status_code=201,

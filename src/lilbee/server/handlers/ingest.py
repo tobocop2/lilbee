@@ -36,6 +36,7 @@ _Payload = TypeVar("_Payload")
 async def _run_sync_with_sentinel(
     sse: SseStream,
     enable_ocr: bool | None,
+    force_ocr: bool | None = None,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
     prune_ignored: bool = False,
@@ -45,7 +46,7 @@ async def _run_sync_with_sentinel(
     from lilbee.data.ingest import sync
 
     try:
-        with temporary_ocr_config(enable_ocr):
+        with temporary_ocr_config(enable_ocr, force_ocr=force_ocr):
             return await sync(
                 quiet=True,
                 on_progress=sse.callback,
@@ -61,6 +62,7 @@ async def _run_sync_with_sentinel(
 async def sync_stream(
     *,
     enable_ocr: bool | None = None,
+    force_ocr: bool | None = None,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
     prune_ignored: bool = False,
@@ -76,7 +78,9 @@ async def sync_stream(
     """
     sse = SseStream()
     task = asyncio.create_task(
-        _run_sync_with_sentinel(sse, enable_ocr, force_rebuild, retry_skipped, prune_ignored)
+        _run_sync_with_sentinel(
+            sse, enable_ocr, force_ocr, force_rebuild, retry_skipped, prune_ignored
+        )
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event
@@ -90,6 +94,7 @@ async def _run_add(
     force: bool,
     enable_ocr: bool | None,
     ocr_timeout: float | None,
+    force_ocr: bool | None,
     sse: SseStream,
 ) -> AddSummary:
     """Copy files and sync, returning the summary for the final done event."""
@@ -121,7 +126,7 @@ async def _run_add(
         if not reg_result.reached_corpus:
             return AddSummary(copied=[], name_taken=reg_result.name_taken, errors=errors)
 
-        with temporary_ocr_config(enable_ocr, ocr_timeout):
+        with temporary_ocr_config(enable_ocr, ocr_timeout, force_ocr):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
         return AddSummary(
@@ -138,7 +143,7 @@ async def _run_add(
 
 def validate_add_paths(
     data: dict[str, Any],
-) -> tuple[list[str], bool, bool | None, float | None]:
+) -> tuple[list[str], bool, bool | None, float | None, bool | None]:
     """Validate add-files input. Raises ValueError on bad input."""
     paths = data.get("paths")
     if not isinstance(paths, list) or not paths:
@@ -157,19 +162,22 @@ def validate_add_paths(
         validate_path_within(cfg.documents_dir / name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
-    enable_ocr, ocr_timeout = _parse_ocr_params(data)
-    return paths, force, enable_ocr, ocr_timeout
+    enable_ocr, ocr_timeout, force_ocr = _parse_ocr_params(data)
+    return paths, force, enable_ocr, ocr_timeout, force_ocr
 
 
-def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
+def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None, bool | None]:
     """Extract and coerce OCR parameters from a request dict."""
     enable_ocr = data.get("enable_ocr")
     ocr_timeout = data.get("ocr_timeout")
+    force_ocr = data.get("force_ocr")
     if enable_ocr is not None:
         enable_ocr = bool(enable_ocr)
     if ocr_timeout is not None:
         ocr_timeout = float(ocr_timeout)
-    return enable_ocr, ocr_timeout
+    if force_ocr is not None:
+        force_ocr = bool(force_ocr)
+    return enable_ocr, ocr_timeout, force_ocr
 
 
 async def _ingest_stream(
@@ -227,6 +235,7 @@ async def add_files_stream(
     force: bool = False,
     enable_ocr: bool | None = None,
     ocr_timeout: float | None = None,
+    force_ocr: bool | None = None,
 ) -> AsyncGenerator[str, None]:
     """Copy server-side files, sync, and yield SSE progress events.
 
@@ -235,7 +244,7 @@ async def add_files_stream(
     """
     async for event in _ingest_stream(
         [(IngestLockRegistry.canonical_source_name(p), p) for p in paths],
-        lambda locked, sse: _run_add(locked, force, enable_ocr, ocr_timeout, sse),
+        lambda locked, sse: _run_add(locked, force, enable_ocr, ocr_timeout, force_ocr, sse),
         "Add files stream",
     ):
         yield event

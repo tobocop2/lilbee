@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION, clean_env
 from lilbee.core.config import (
@@ -659,10 +660,10 @@ class TestTomlConfigFile:
 
 
 class TestEnableOcrConfig:
-    def test_default_is_none(self, tmp_path) -> None:
+    def test_default_is_true(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
             c = Config()
-            assert c.enable_ocr is None
+            assert c.enable_ocr is True
 
     def test_true_from_env(self) -> None:
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "true"}):
@@ -674,17 +675,21 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is False
 
-    def test_empty_string_means_auto(self, tmp_path) -> None:
+    def test_empty_string_uses_default(self, tmp_path) -> None:
+        """An empty env value never reaches the validator (ignore_empty=True)."""
         with mock.patch.dict(
             os.environ, {**clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
         ):
             c = Config()
-            assert c.enable_ocr is None
+            assert c.enable_ocr is True
 
-    def test_auto_string_means_none(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "auto"}):
-            c = Config()
-            assert c.enable_ocr is None
+    def test_auto_string_is_rejected(self) -> None:
+        """ "auto" is a removed alias; it is now a validation error, not a fallback."""
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "auto"}),
+            pytest.raises(ValidationError, match="Use true or false"),
+        ):
+            Config()
 
     def test_yes_no_variants(self) -> None:
         with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "yes"}):
@@ -718,22 +723,45 @@ class TestEnableOcrConfig:
             c = Config()
             assert c.enable_ocr is True
 
-    def test_garbage_value_falls_back_to_auto(self) -> None:
-        """An unparseable value must not turn OCR on.
+    def test_garbage_value_is_rejected(self) -> None:
+        """An unparseable value must not silently turn OCR on or off.
 
         This used to fall through to ``bool()``, and ``bool("maybe")`` is True,
-        so a typo silently enabled an expensive pass. The sibling bool
-        validators warn and take their default; this one now does too.
+        so a typo silently enabled an expensive pass. There is no alias or
+        silent fallback now: it is a validation error naming the fix.
         """
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
-            c = Config()
-            assert c.enable_ocr is None
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}),
+            pytest.raises(ValidationError, match="Use true or false"),
+        ):
+            Config()
 
-    def test_whitespace_only_means_auto(self) -> None:
-        """Whitespace-only strings hit the auto/none branch and return None."""
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "   "}):
-            c = Config()
-            assert c.enable_ocr is None
+    def test_whitespace_only_is_rejected(self) -> None:
+        """Whitespace-only reaches the validator (it isn't the empty string) and fails."""
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "   "}),
+            pytest.raises(ValidationError, match="Use true or false"),
+        ):
+            Config()
+
+    def test_stale_toml_value_falls_back_to_default_and_reports_clearly(self, tmp_path) -> None:
+        """A pre-upgrade config.toml with enable_ocr = "auto" must not go silent.
+
+        Mirrors TestBuildCfgFallback: _build_cfg catches the ValidationError,
+        drops the stale config.toml on retry, and reports the detail rather
+        than leaving the caller with an unexplained default.
+        """
+        from lilbee.core.config.model import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('enable_ocr = "auto"\n', encoding="utf-8")
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "Use true or false" in str(error)
+        assert built_cfg.enable_ocr is True
 
 
 class TestFlashAttentionConfig:
@@ -1405,27 +1433,27 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_enable_ocr_none_allowed(self, tmp_path):
-        """enable_ocr is nullable, None means auto."""
-        c = Config(
-            data_root=tmp_path,
-            documents_dir=tmp_path / "docs",
-            data_dir=tmp_path / "data",
-            lancedb_dir=tmp_path / "data" / "lancedb",
-            models_dir=tmp_path / "models",
-            chat_model=_SAMPLE_CHAT_REF,
-            embedding_model=_SAMPLE_EMBED_REF,
-            embedding_dim=768,
-            chunk_size=512,
-            chunk_overlap=100,
-            max_embed_chars=2000,
-            top_k=10,
-            max_distance=0.7,
-            rag_system_prompt="You are helpful.",
-            ignore_dirs=frozenset(),
-            enable_ocr=None,
-        )
-        assert c.enable_ocr is None
+    def test_enable_ocr_none_rejected(self, tmp_path):
+        """enable_ocr is a plain bool now; an explicit None is a validation error."""
+        with pytest.raises(ValidationError, match="Use true or false"):
+            Config(
+                data_root=tmp_path,
+                documents_dir=tmp_path / "docs",
+                data_dir=tmp_path / "data",
+                lancedb_dir=tmp_path / "data" / "lancedb",
+                models_dir=tmp_path / "models",
+                chat_model=_SAMPLE_CHAT_REF,
+                embedding_model=_SAMPLE_EMBED_REF,
+                embedding_dim=768,
+                chunk_size=512,
+                chunk_overlap=100,
+                max_embed_chars=2000,
+                top_k=10,
+                max_distance=0.7,
+                rag_system_prompt="You are helpful.",
+                ignore_dirs=frozenset(),
+                enable_ocr=None,
+            )
 
 
 class TestEmptyStringToNone:
@@ -1453,12 +1481,14 @@ class TestIgnoreDirsFallback:
 
 
 class TestParseEnableOcrFallback:
-    def test_non_string_non_bool_coerced_via_bool(self):
-        """An integer like 42 falls through to bool(v)."""
+    def test_non_string_non_bool_rejected(self):
+        """A non-bool, non-string value like 42 is refused, not silently coerced."""
         from lilbee.core.config import Config
 
-        assert Config._parse_enable_ocr(42) is True
-        assert Config._parse_enable_ocr(0) is False
+        with pytest.raises(ValueError, match="Use true or false"):
+            Config._parse_enable_ocr(42)
+        with pytest.raises(ValueError, match="Use true or false"):
+            Config._parse_enable_ocr(0)
 
 
 class TestDefaultCrawlExcludePatterns:
@@ -1931,6 +1961,182 @@ class TestBuildCfgFallback:
         assert error is None
         assert built_cfg.max_tokens == 4096
 
+    def test_bad_env_var_drops_only_that_field(self, tmp_path):
+        """A rejected LILBEE_* env var must not crash import; only that field falls back.
+
+        Reproduces bb-7efjw: the old retry cleared only config.toml, leaving the
+        bad env var in place, so the identical ValidationError re-raised uncaught.
+        The other two env-set fields are a losing-precedence control: they name no
+        invalid value and must survive the retry untouched.
+        """
+        from lilbee.core.config.model import _build_cfg
+
+        env = clean_env(tmp_path)
+        env["LILBEE_ENABLE_OCR"] = "auto"
+        env["LILBEE_TOP_K"] = "7"
+        env["LILBEE_CHUNK_SIZE"] = "256"
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "LILBEE_ENABLE_OCR" in str(error)
+        assert "Use true or false" in str(error)
+        assert built_cfg.enable_ocr is True
+        assert built_cfg.top_k == 7
+        assert built_cfg.chunk_size == 256
+
+    def test_bad_toml_value_drops_only_that_field(self, tmp_path):
+        """A stale config.toml value falls back alone; sibling toml keys survive."""
+        from lilbee.core.config.model import _build_cfg
+
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text('enable_ocr = "auto"\ntop_k = 7\nchunk_size = 256\n', encoding="utf-8")
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "config.toml field 'enable_ocr'" in str(error)
+        assert "Use true or false" in str(error)
+        assert built_cfg.enable_ocr is True
+        assert built_cfg.top_k == 7
+        assert built_cfg.chunk_size == 256
+
+    def test_model_level_error_falls_back_to_defaults(self, tmp_path):
+        """A model-level validator failure (no field to blame) must not crash import.
+
+        Reproduces bb-7efjw's remaining gap: ``_resolve_defaults`` is a whole-model
+        validator, so a failure inside it produces a ``ValidationError`` whose only
+        error has an empty ``loc``. The per-field retry computed an empty drop list
+        from that and replayed the identical failing ``Config()`` call uncaught.
+        """
+        from lilbee.core.config.model import _build_cfg
+        from lilbee.core.system import canonical_models_dir as real_canonical_models_dir
+
+        def flaky_models_dir() -> Path:
+            # Fails only while a config value is present, so a defaults-only
+            # rebuild (every LILBEE_* var popped) is what actually recovers.
+            if os.environ.get("LILBEE_TOP_K"):
+                raise ValueError("injected model-level failure")
+            return real_canonical_models_dir()
+
+        env = clean_env(tmp_path)
+        env["LILBEE_TOP_K"] = "7"
+        # A pre-existing skip-toml-config value must survive the fallback's own
+        # temporary "1", not be left set or wiped.
+        env["LILBEE_SKIP_TOML_CONFIG"] = "0"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.core.system.canonical_models_dir", side_effect=flaky_models_dir),
+        ):
+            built_cfg, error = _build_cfg()
+            assert os.environ["LILBEE_SKIP_TOML_CONFIG"] == "0"
+        assert error is not None
+        assert "injected model-level failure" in str(error)
+        # Full-default fallback, not a per-field drop: nothing identifies which
+        # field to blame, so the good sibling env var is discarded too.
+        assert built_cfg.top_k == 12
+        assert built_cfg.enable_ocr is True
+
+    def test_mixed_field_and_model_level_errors_falls_back_to_defaults(self, tmp_path):
+        """A per-field retry whose own rebuild hits a model-level failure still lands.
+
+        The first ``Config()`` attempt fails on the bad env var alone (field-level,
+        drives the per-field retry). The retry's own ``Config()`` call then fails on
+        a model-level validator (no field to blame), which dropping one field cannot
+        fix. Both stages must still land on built-in defaults, never raise.
+        """
+        from lilbee.core.config.model import _build_cfg
+        from lilbee.core.system import canonical_models_dir as real_canonical_models_dir
+
+        calls = {"n": 0}
+
+        def flaky_models_dir() -> Path:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise ValueError("injected model-level failure on retry")
+            return real_canonical_models_dir()
+
+        env = clean_env(tmp_path)
+        env["LILBEE_ENABLE_OCR"] = "auto"
+        env["LILBEE_TOP_K"] = "7"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.core.system.canonical_models_dir", side_effect=flaky_models_dir),
+        ):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "LILBEE_ENABLE_OCR" in str(error)
+        assert "injected model-level failure on retry" in str(error)
+        assert calls["n"] == 3
+        # Full-default fallback: even the good sibling env var from the first
+        # attempt does not survive the second-stage fallback.
+        assert built_cfg.top_k == 12
+        assert built_cfg.enable_ocr is True
+
+    def test_non_validation_error_falls_back_to_defaults(self, tmp_path):
+        """An OSError from directory resolution must not crash import.
+
+        ``_resolve_defaults`` calls ``canonical_models_dir`` unconditionally.
+        Pydantic wraps only ``ValueError``/``TypeError``/``AssertionError``
+        raised in a validator into a ``ValidationError``; an ``OSError``
+        (a symlink loop, a permission fault) propagates raw and bypassed
+        every guard before this fix.
+        """
+        from lilbee.core.config.model import _build_cfg
+        from lilbee.core.system import canonical_models_dir as real_canonical_models_dir
+
+        def flaky_models_dir() -> Path:
+            # Fails only while a config value is present, so a defaults-only
+            # rebuild (every LILBEE_* var popped) is what actually recovers.
+            if os.environ.get("LILBEE_TOP_K"):
+                raise OSError("injected disk fault")
+            return real_canonical_models_dir()
+
+        env = clean_env(tmp_path)
+        env["LILBEE_TOP_K"] = "7"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.core.system.canonical_models_dir", side_effect=flaky_models_dir),
+        ):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "injected disk fault" in str(error)
+        assert built_cfg.top_k == 12
+
+    def test_retry_non_validation_error_falls_back_to_defaults(self, tmp_path):
+        """A per-field retry whose own rebuild hits an OSError still lands.
+
+        The first ``Config()`` attempt fails on the bad env var alone
+        (field-level, drives the per-field retry). The retry's own
+        ``Config()`` call then raises an ``OSError``, which the retry's
+        ``except ValidationError`` alone would not catch.
+        """
+        from lilbee.core.config.model import _build_cfg
+        from lilbee.core.system import canonical_models_dir as real_canonical_models_dir
+
+        calls = {"n": 0}
+
+        def flaky_models_dir() -> Path:
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise OSError("injected disk fault on retry")
+            return real_canonical_models_dir()
+
+        env = clean_env(tmp_path)
+        env["LILBEE_ENABLE_OCR"] = "auto"
+        env["LILBEE_TOP_K"] = "7"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            mock.patch("lilbee.core.system.canonical_models_dir", side_effect=flaky_models_dir),
+        ):
+            built_cfg, error = _build_cfg()
+        assert error is not None
+        assert "LILBEE_ENABLE_OCR" in str(error)
+        assert "injected disk fault on retry" in str(error)
+        assert calls["n"] == 3
+        assert built_cfg.top_k == 12
+        assert built_cfg.enable_ocr is True
+
 
 class TestChatCtxTargetDefault:
     def test_explicit_env_var_wins_over_scaling(self, tmp_path):
@@ -2040,11 +2246,12 @@ class TestBoolVocabularyMatchesPydantic:
 
         assert Config(enable_ocr=raw).enable_ocr is expected
 
-    def test_enable_ocr_unknown_value_falls_back_to_auto(self):
+    def test_enable_ocr_unknown_value_is_rejected(self):
         """An unparseable value must not silently become True via bool()."""
         from lilbee.core.config.model import Config
 
-        assert Config(enable_ocr="maybe").enable_ocr is None
+        with pytest.raises(ValidationError, match="Use true or false"):
+            Config(enable_ocr="maybe")
 
 
 class TestCrawlExclusionsMatchWholeSegments:

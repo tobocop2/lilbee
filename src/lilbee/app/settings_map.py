@@ -97,13 +97,22 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         writable=False,
         group=SettingGroup.MODELS,
-        help_text="Vision model for scanned PDF OCR (empty = disabled; Tesseract only)",
+        help_text="OCR engine for scanned PDFs when enable_ocr is on (empty = Tesseract)",
     ),
     "enable_ocr": SettingDef(
         bool,
-        nullable=True,
+        nullable=False,
         group=SettingGroup.INGEST,
-        help_text="Vision OCR for scanned PDFs (empty = auto-detect from vision_model)",
+        help_text="OCR for scanned PDFs: picks native text or OCR per page (false disables it)",
+    ),
+    "force_ocr": SettingDef(
+        bool,
+        nullable=False,
+        group=SettingGroup.INGEST,
+        help_text=(
+            "Re-OCR every page, for example after changing the OCR language;"
+            " persisted true OCRs every future ingest"
+        ),
     ),
     "ocr_timeout": SettingDef(
         float,
