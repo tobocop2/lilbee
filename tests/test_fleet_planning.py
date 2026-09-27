@@ -858,10 +858,10 @@ class TestBuildFleetWiring:
 
     @pytest.mark.parametrize(
         ("enable_ocr", "granted", "planned"),
-        [(False, False, False), (False, True, True), (None, False, True), (True, False, True)],
+        [(False, False, False), (False, True, True), (True, False, True)],
     )
     def test_plan_all_launches_plans_vision_only_when_ocr_can_use_it(
-        self, monkeypatch, enable_ocr: bool | None, granted: bool, planned: bool
+        self, monkeypatch, enable_ocr: bool, granted: bool, planned: bool
     ) -> None:
         monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
         monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])

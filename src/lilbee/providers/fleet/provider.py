@@ -1943,8 +1943,10 @@ class FleetProvider:
         """Re-plan the fleet with vision for an OCR call that ``enable_ocr`` false left out.
 
         Only a request that turned OCR on reaches vision OCR while the setting is
-        off, so the call itself is the demand. The re-plan starts just the added
-        vision group, the same diff-driven pass a vision model change runs.
+        off, so the call itself is the demand. The re-plan is the diff-driven pass
+        a vision model change runs: it restarts the groups whose launches change,
+        which includes chat where chat and vision share one group. A failed
+        re-plan drops the grant, so the next page tries again.
         """
         ref = str(cfg.vision_model)
         if not ref:
@@ -1953,7 +1955,11 @@ class FleetProvider:
             if planning.vision_role_wanted(ref):
                 return
             planning.grant_vision_on_request()
-            self._dispatch_reload("fleet-vision-on-request", wait=True)
+            try:
+                self._dispatch_reload("fleet-vision-on-request", wait=True)
+            except BaseException:
+                planning.revoke_vision_on_request()
+                raise
 
     # PDF/image OCR now runs inside xberg via the registered lilbee-vision
     # backend (see data.extract.backends.vision_ocr); this provider only exposes
