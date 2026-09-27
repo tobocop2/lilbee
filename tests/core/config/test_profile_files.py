@@ -1,6 +1,7 @@
 """Profile files: the format, validation, the built-ins, and discovery across folders."""
 
 import re
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -177,6 +178,21 @@ def test_non_utf8_file_is_broken_and_costs_only_itself():
     latin = catalog.find("latin")
     assert latin is not None and latin.file is None
     assert latin.error == "Not UTF-8 text"
+    good = catalog.find("good")
+    assert good is not None and good.file is not None
+
+
+def test_deeply_nested_file_is_broken_and_costs_only_itself():
+    folder = cfg.data_root / PROFILES_DIRNAME
+    _write(folder, "good", "[values]\nchunk_size = 900\n")
+    nested = "x = " + "[" * 1000 + "]" * 1000 + "\n"
+    with pytest.raises(RecursionError):
+        tomllib.loads(nested)
+    _write(folder, "deep", nested)
+    catalog = ProfileStore().scan()
+    deep = catalog.find("deep")
+    assert deep is not None and deep.file is None
+    assert deep.error is not None and deep.error.startswith("Not valid TOML: ")
     good = catalog.find("good")
     assert good is not None and good.file is not None
 
