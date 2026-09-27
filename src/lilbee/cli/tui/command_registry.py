@@ -24,6 +24,8 @@ class SlashCommand:
     allowed_while_streaming: bool = False
 
 
+ANALYZE_OFF_ARG = "off"
+
 COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand(
         "/model",
@@ -81,6 +83,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         "_cmd_profile",
         args_hint="[name]",
         help_text="Switch profile (no arg opens the Profile tab in Settings)",
+    ),
+    SlashCommand(
+        "/analyze",
+        "_cmd_analyze",
+        args_hint=f"[dir|{ANALYZE_OFF_ARG}]",
+        help_text=f"Recommend a profile for your documents ({ANALYZE_OFF_ARG} hides the tip)",
     ),
     SlashCommand(
         "/reset",

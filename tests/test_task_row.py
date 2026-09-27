@@ -8,8 +8,8 @@ import pytest
 from textual.app import ComposeResult
 from textual.containers import VerticalScroll
 
-from lilbee.cli.tui.task_queue import Task, TaskStatus
-from lilbee.cli.tui.widgets.task_row import TaskRow, _build_head, _format_elapsed
+from lilbee.cli.tui.task_queue import Task, TaskStatus, TaskType
+from lilbee.cli.tui.widgets.task_row import _TASK_TYPE_BG, TaskRow, _build_head, _format_elapsed
 from tests._lilbee_app_test_host import LilbeeAppHost
 
 
@@ -94,6 +94,12 @@ def test_build_head_renders_setup_pill() -> None:
     assert "Install Chromium browser" in plain
     assert "setup" in plain
     assert "active" in plain
+
+
+def test_every_task_type_has_its_own_pill_color() -> None:
+    types = {task_type.value for task_type in TaskType}
+    assert TaskType.ANALYZE.value in types
+    assert types - set(_TASK_TYPE_BG) == set()
 
 
 def test_build_head_omits_elapsed_when_empty() -> None:

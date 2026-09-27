@@ -247,9 +247,13 @@ def apply(store: ProfileStore, name: str) -> ApplyResult:
     profile = _usable(store, name)
     planned = _diff(profile)
     apply_profile_layer(profile.name, profile.values)
+    return _apply_result(planned)
+
+
+def _apply_result(planned: ProfileDiff) -> ApplyResult:
     effects = {row.key: row.effect for row in planned.changes}
     return ApplyResult(
-        name=profile.name,
+        name=planned.name,
         changes=planned.changes,
         reindex_required=ProfileEffect.REINDEX in effects.values(),
         new_files_only=tuple(k for k, e in effects.items() if e is ProfileEffect.NEW_FILES_ONLY),
@@ -458,11 +462,25 @@ def save_recommended(
     """
     directory = _target_dir(target)
     replacing = _analyze_file_to_replace(store, target, name)
-    text = profile_text(replace(_bare(name, values), description=ANALYZE_DESCRIPTION))
+    text = profile_text(recommended_file(name, values))
     planned = plan_write(directory, target, text, stem=name, replacing=replacing)
     if switch:
         return _switch_to(planned, ())
     return SaveResult(_written(planned), ())
+
+
+def recommended_file(name: str, values: Mapping[str, Any]) -> ProfileFile:
+    """Analyze's recommended profile *name* of *values*, as it is saved."""
+    return replace(_bare(name, values), description=ANALYZE_DESCRIPTION)
+
+
+def apply_recommended(
+    store: ProfileStore, name: str, values: Mapping[str, Any], target: ProfileFolder
+) -> ApplyResult:
+    """Save analyze's recommended *values* as *name* and switch this project to it."""
+    planned = _diff(recommended_file(name, values))
+    save_recommended(store, name, values, target, switch=True)
+    return _apply_result(planned)
 
 
 def discard() -> DiscardResult:

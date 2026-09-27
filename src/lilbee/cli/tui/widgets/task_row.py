@@ -51,6 +51,7 @@ _TASK_TYPE_BG: dict[str, str] = {
     TaskType.IMPORT.value: "$secondary",
     TaskType.EXPORT.value: "$primary",
     TaskType.CRAWL.value: "$primary",
+    TaskType.ANALYZE.value: "$primary",
     TaskType.WIKI.value: "$warning",
     TaskType.SETUP.value: "$warning-darken-1",
 }
