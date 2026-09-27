@@ -35,6 +35,7 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.cli.app import clear_overrides
 from lilbee.core.config import cfg
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
@@ -361,15 +362,16 @@ def _join_fleet_background_threads():
 
 
 @pytest.fixture(autouse=True)
-def _ignore_user_global_config(monkeypatch):
-    """Skip the platform-default config.toml for unit tests.
+def _ignore_user_global_config(monkeypatch, tmp_path):
+    """Point every config.toml read at the test's own data root, never the developer's.
 
-    A developer's persisted ``~/Library/Application Support/lilbee/config.toml``
-    can hold values from a previous schema. ``Config()`` would crash at
-    construction. Setting this env var tells ``settings_customise_sources``
-    not to add the toml source: env + defaults only.
+    ``LILBEE_DATA`` matches the ``cfg.data_root`` that ``_isolate_cfg`` sets, so a
+    fresh ``Config()``, the CLI overlay and the settings resolver all read the same
+    scratch directory. The skip flag set at import is cleared: a settings write must
+    read back the config.toml it just wrote.
     """
-    monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data_root"))
 
 
 @pytest.fixture(scope="session")
@@ -416,18 +418,6 @@ def permissive_umask():
     previous = os.umask(0)
     yield
     os.umask(previous)
-
-
-@pytest.fixture
-def overlay_reads_config_toml(monkeypatch):
-    """Opt a test back into the config.toml overlay path.
-
-    The suite runs with ``LILBEE_SKIP_TOML_CONFIG=1`` for hermeticity, and
-    ``overlay_persisted_settings`` honors that flag. Tests that specifically
-    exercise the overlay-applies behavior (writing a config.toml to a controlled
-    root and asserting it lands on cfg) must clear the flag so overlay runs.
-    """
-    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -599,7 +589,9 @@ def _isolate_cfg(tmp_path, request):
         setattr(cfg, field, "")
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
+    clear_overrides()
     yield
+    clear_overrides()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
     cfg.clear_model_defaults()

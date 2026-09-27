@@ -693,8 +693,8 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_model, cfg.top_k = original_vision, original_top_k
 
-    def test_empty_persisted_vision_model_clears_the_ambient_one(self, tmp_path, monkeypatch):
-        """A vision_model cleared into config.toml stays cleared; an empty chat_model is skipped."""
+    def test_empty_persisted_vision_model_beats_the_profile(self, tmp_path, monkeypatch):
+        """A vision_model cleared into config.toml stays cleared; an empty chat_model is unset."""
         from lilbee.core.config import cfg
 
         originals = cfg.vision_model, cfg.chat_model, cfg.top_k
@@ -702,15 +702,16 @@ class TestOverlayPersistedSettings:
             monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
             monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
             monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
-            cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
-            cfg.chat_model = "ollama/ambient-chat:latest"
-            cfg.top_k = 5
             (tmp_path / "config.toml").write_text(
-                'vision_model = ""\nchat_model = ""\ntop_k = 9\n', encoding="utf-8"
+                'vision_model = ""\nchat_model = ""\ntop_k = 9\n'
+                "[profile.values]\n"
+                'vision_model = "org/Profile-Vision-GGUF/profile-Q4_K_M.gguf"\n'
+                'chat_model = "ollama/profile-chat:latest"\n',
+                encoding="utf-8",
             )
             settings.overlay_persisted_settings(tmp_path)
             assert cfg.vision_model == ""
-            assert cfg.chat_model == "ollama/ambient-chat:latest"
+            assert cfg.chat_model == "ollama/profile-chat:latest"
             assert cfg.top_k == 9
         finally:
             cfg.vision_model, cfg.chat_model, cfg.top_k = originals
@@ -982,3 +983,130 @@ class TestEmbedReindexRequired:
         assert appset._embed_reindex_required() is True
         monkeypatch.setattr(appset.cfg, "embedding_model", "acme/built-GGUF/built.gguf")
         assert appset._embed_reindex_required() is False
+
+
+class TestResolverIsTheOnlyWriter:
+    """Every settings writer leaves cfg equal to what a fresh Config() resolves."""
+
+    @staticmethod
+    def _write_config(text: str):
+        from lilbee.core.config import cfg
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "config.toml").write_text(text, encoding="utf-8")
+        return cfg.data_root
+
+    def test_live_cfg_matches_fresh_config_after_updates_and_nulls(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config, cfg
+        from lilbee.core.config.resolve import ROOT_DERIVED_FIELDS
+        from lilbee.providers.roles import MODEL_ROLE_FIELDS
+
+        root = self._write_config(
+            'top_k = 7\n[profile]\nname = "x"\n[profile.values]\n'
+            "temperature = 0.7\nchunk_overlap = 50\n"
+        )
+        monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
+        settings.overlay_persisted_settings(root)
+        appset.apply_settings_update(
+            {"top_k": 9, "temperature": 0.3, "max_tokens": 1000, "seed": 5}
+        )
+        appset.apply_settings_update({"temperature": None, "seed": None})
+
+        fresh = Config()
+        keys = sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        diverged = {k: (getattr(cfg, k), getattr(fresh, k)) for k in keys}
+        diverged = {k: pair for k, pair in diverged.items() if pair[0] != pair[1]}
+        assert diverged == {}
+        assert (cfg.top_k, cfg.temperature, cfg.max_tokens, cfg.seed) == (9, 0.7, 2048, None)
+        assert cfg.chunk_overlap == 50
+
+    def test_update_under_env_keeps_env_value_in_cfg(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        cfg.top_k = 9
+        cfg.chunk_size = 512
+        appset.apply_settings_update({"top_k": 7, "chunk_size": 900})
+        assert cfg.top_k == 9
+        assert cfg.chunk_size == 900
+        assert settings.load(cfg.data_root)["top_k"] == 7
+
+    def test_null_update_resolves_to_profile_value(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config("[profile.values]\ntemperature = 0.7\n")
+        appset.apply_settings_update({"temperature": 0.3})
+        assert cfg.temperature == 0.3
+        appset.apply_settings_update({"temperature": None})
+        assert cfg.temperature == 0.7
+        assert "temperature" not in settings.load(cfg.data_root)
+
+    def test_null_update_over_invalid_profile_value_warns_and_keeps_cfg_valid(self, caplog):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config("[profile.values]\ntemperature = -5.0\n")
+        with caplog.at_level("WARNING", logger="lilbee.core.settings"):
+            appset.apply_settings_update({"temperature": None})
+        assert cfg.temperature is None
+        assert any("temperature" in record.getMessage() for record in caplog.records)
+
+    def test_overlay_resets_key_absent_from_new_root(self, tmp_path):
+        from lilbee.core.config import cfg
+
+        first = tmp_path / "first"
+        first.mkdir()
+        (first / "config.toml").write_text("top_k = 7\nchunk_size = 900\n", encoding="utf-8")
+        second = tmp_path / "second"
+        second.mkdir()
+        (second / "config.toml").write_text("chunk_size = 700\n", encoding="utf-8")
+
+        settings.overlay_persisted_settings(first)
+        assert (cfg.top_k, cfg.chunk_size) == (7, 900)
+        settings.overlay_persisted_settings(second)
+        assert cfg.top_k == 12
+        assert cfg.chunk_size == 700
+
+    def test_overlay_keeps_the_root_derived_documents_dir(self, tmp_path):
+        from lilbee.core.config import cfg
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+        cfg.documents_dir = root / "documents"
+        settings.overlay_persisted_settings(root)
+        assert cfg.documents_dir == root / "documents"
+        assert cfg.top_k == 7
+
+    def test_profile_table_survives_update_and_delete(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config('[profile]\nname = "scanned"\n[profile.values]\ntop_k = 4\n')
+        appset.apply_settings_update({"chunk_size": 900})
+        appset.apply_settings_update({"seed": 3})
+        appset.apply_settings_update({"seed": None})
+        stored = settings.load(cfg.data_root)
+        assert stored["profile"] == {"name": "scanned", "values": {"top_k": 4}}
+        assert stored["chunk_size"] == 900
+        assert "seed" not in stored
+
+    def test_profile_is_not_a_settable_key(self):
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="Unknown or read-only setting: profile"):
+            appset.apply_settings_update({"profile": {"name": "x"}})
+
+    def test_no_config_field_holds_project_state(self):
+        from lilbee.core.config import Config
+        from lilbee.core.config.resolve import PROFILE_TABLE
+
+        fields = set(Config.model_fields)
+        assert "top_k" in fields
+        assert PROFILE_TABLE not in fields
+        assert not any(name.startswith(("profile", "analyze")) for name in fields)
+        assert PROFILE_TABLE not in WRITABLE_CONFIG_FIELDS
