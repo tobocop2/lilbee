@@ -21,7 +21,7 @@
 
 lilbee runs and manages your models: chat, embedding, vision, and rerank, placed across every GPU you have. It puts them to work as a search engine you can talk to, over your files, notes, code, and the web, where every answer cites the exact file and line. It crawls websites into your library, launches your coding agents on local models, and hands any MCP-aware agent cited answers from everything you've indexed. Ask in plain English. No containers, no networking, nothing else to install or set up.
 
-And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry, needs no account, and makes no cloud call unless you configure a cloud model yourself.
+And it is private. Your files, the index, the embeddings, your questions, and the answers stay on your machine. lilbee sends no telemetry and needs no account. It contacts a cloud provider only when you set an API key for it, in lilbee's settings or in the provider's own environment variable. Then it checks once that the key works, and sends your questions only to a cloud model you pick.
 
 ![ask lilbee "what is lilbee in one sentence?" and get a cited answer drawn from its own README](https://raw.githubusercontent.com/tobocop2/lilbee/gh-pages/demos/what_is_lilbee.gif)
 

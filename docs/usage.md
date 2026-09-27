@@ -807,8 +807,8 @@ naming a file is the stronger instruction.
 
 ## Cloud models
 
-lilbee runs entirely on your machine by default. There are two ways to use
-cloud models when you want to:
+lilbee runs entirely on your machine until you set a cloud provider's API
+key. There are two ways to use cloud models when you want to:
 
 - **Bring your own key, inside lilbee.** Install the `[litellm]` extra and add
   an API key in `/settings` → API-Keys, then pick a cloud model from the model

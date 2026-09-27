@@ -243,7 +243,7 @@ is a step you have to take.
 
 ## Hardware requirements
 
-Standalone mode runs entirely on your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+ (older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)), or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
+Standalone mode needs nothing but your machine. No cloud required. **Minimum:** Apple Silicon Mac, or a 64-bit Intel/AMD CPU from 2013+ (older CPUs: [On older CPUs](#on-older-cpus-pre-avx2)), or an ARMv8 Linux box; 8 GB RAM, 2 GB disk.
 
 <details>
 <summary>Full platform and resource breakdown</summary>
@@ -519,7 +519,7 @@ https://github.com/user-attachments/assets/b42effc3-a7f6-4391-904c-3ac897712172
 
 ### Cloud models, when you want them
 
-lilbee runs entirely on your machine by default. Two ways to use a cloud model when you want one:
+lilbee runs entirely on your machine until you set a cloud provider's API key. Two ways to use a cloud model when you want one:
 
 - **Bring your own key.** Install the `[litellm]` extra, add an API key, then point any role (chat, embedding, vision, rerank) at a cloud model from the same catalog. The TUI shows a warning the whole time a cloud model is on.
 - **Pair lilbee with a cloud agent over MCP.** Your files, the embeddings, and the index stay local. Any MCP-aware agent calls `lilbee_search` / `lilbee_add` and gets back cited snippets.
