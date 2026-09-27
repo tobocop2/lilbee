@@ -882,7 +882,7 @@ PROFILE_NAME_PROBLEM_TEXT: dict[NameProblem, str] = {
     NameProblem.EMPTY: "Type a name for the profile.",
     NameProblem.INVALID: "Use 1 to 40 letters, digits, spaces, hyphens, underscores, parentheses.",
     NameProblem.RESERVED: "A built-in profile already has this name.",
-    NameProblem.RESERVED_WORD: "Reserved name: this cannot name a profile.",
+    NameProblem.RESERVED_WORD: "This name already names a lilbee page or a Windows device.",
     NameProblem.TAKEN: "A profile in that folder already has this name.",
 }
 
