@@ -1968,6 +1968,30 @@ class TestSettingsMcp:
         assert "temperature" not in stored
         assert stored["top_k"] == 7
 
+    def test_settings_reset_with_duplicate_keys_removes_the_key_once(self, isolated_env):
+        from lilbee.core import settings as persistent
+
+        cfg.data_root = isolated_env
+        settings_set({"top_k": 7, "seed": 3})
+        result = settings_reset(["top_k", "top_k"])
+        assert result["updated"] == ["top_k"]
+        assert cfg.top_k == 12
+        assert persistent.load(isolated_env) == {"seed": 3}
+
+    def test_settings_default_is_the_profile_value_a_reset_resolves_to(self, isolated_env):
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "top_k = 99\n[profile.values]\ntop_k = 7\n", encoding="utf-8"
+        )
+        cfg.top_k = 99
+        assert settings_get("top_k")["setting"]["default"] == 7
+        listed = {row["key"]: row for row in settings_list()["settings"]}
+        assert listed["top_k"]["default"] == 7
+        assert listed["seed"]["default"] is None
+        assert listed["temperature"]["default"] == 0.1
+        settings_reset(["top_k"])
+        assert cfg.top_k == 7
+
     def test_settings_reset_under_env_pin_keeps_env(self, isolated_env, monkeypatch):
         from lilbee.core import settings as persistent
 
@@ -1995,7 +2019,7 @@ class TestSettingsMcp:
         assert cfg.temperature == get_setting("temperature").default
 
     def test_settings_reset_refuses_path_sentinel_field(self, isolated_env):
-        """documents_dir has no resettable default; resetting must error instead of corrupting."""
+        """documents_dir has no default to reset to; resetting must error instead of corrupting."""
         cfg.data_root = isolated_env
         result = settings_reset(["documents_dir"])
         assert "error" in result

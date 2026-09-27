@@ -1338,7 +1338,7 @@ class TestConfigResetRoute:
         settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
         cfg.top_k = 7
         resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
         assert settings.load(isolated_env) == {"chunk_size": 900}
         assert cfg.top_k == 12
@@ -1349,9 +1349,51 @@ class TestConfigResetRoute:
         settings.update_values(isolated_env, {"top_k": 7})
         monkeypatch.setenv("LILBEE_TOP_K", "9")
         resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
-        assert resp.status_code == 201
+        assert resp.status_code == 200
         assert cfg.top_k == 9
         assert "top_k" not in settings.load(isolated_env)
+
+    def test_duplicate_keys_reset_the_key_once(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "seed": 3})
+        cfg.top_k = 7
+        resp = client.post("/api/config/reset", json={"keys": ["top_k", "top_k"]})
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+        assert settings.load(isolated_env) == {"seed": 3}
+        assert cfg.top_k == 12
+
+    def test_resolves_to_the_profile_value(self, client, isolated_env):
+        from lilbee.core import settings
+
+        (isolated_env / "config.toml").write_text(
+            "top_k = 99\nseed = 3\n[profile.values]\ntop_k = 7\n", encoding="utf-8"
+        )
+        cfg.top_k = 99
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert cfg.top_k == 7
+        assert settings.load(isolated_env) == {"seed": 3, "profile": {"values": {"top_k": 7}}}
+
+    def test_an_invalid_profile_value_answers_400_and_changes_nothing(self, client, isolated_env):
+        from lilbee.core import settings
+
+        (isolated_env / "config.toml").write_text(
+            "temperature = 0.3\n[profile.values]\ntemperature = -5.0\n", encoding="utf-8"
+        )
+        cfg.temperature = 0.3
+        resp = client.post("/api/config/reset", json={"keys": ["temperature"]})
+        assert resp.status_code == 400
+        assert "Cannot reset 'temperature': its profile value -5.0 is invalid" in resp.text
+        assert cfg.temperature == 0.3
+        assert settings.load(isolated_env)["temperature"] == 0.3
+
+    def test_documents_dir_answers_400_without_naming_an_mcp_tool(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["documents_dir"]})
+        assert resp.status_code == 400
+        assert "'documents_dir' has no default to reset to; set a folder path" in resp.text
+        assert "settings_set" not in resp.text
 
     def test_an_unknown_key_answers_400_naming_it(self, client, isolated_env):
         resp = client.post("/api/config/reset", json={"keys": ["bogus"]})
