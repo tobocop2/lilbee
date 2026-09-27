@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import errno
-from collections.abc import Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -622,13 +622,18 @@ def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: _LayerChan
 
 
 def apply_profile_layer(
-    name: str, values: Mapping[str, Any], *, absorb: Collection[str] = ()
+    name: str,
+    values: Mapping[str, Any],
+    *,
+    absorb: Collection[str] = (),
+    write_first: Callable[[], object] | None = None,
 ) -> SettingsUpdateResult:
     """Record *name* and *values* as the project's profile and set cfg from the new layers.
 
     Every key the old or new profile holds is validated at the value it resolves to
     under the new profile before anything is written; user and env values keep winning.
     Each *absorb* key, which *values* must hold, leaves config.toml in the same write.
+    *write_first* runs once validation passes, before config.toml changes.
     """
     refused = sorted(set(values) - set(PROFILE_FIELDS))
     if refused:
@@ -643,5 +648,7 @@ def apply_profile_layer(
     resolved = {key: resolve(key, after) for key in sorted(keys)}
     _refuse_invalid_fallbacks(resolved, _LayerChange.APPLY)
     _validate({key: entry.value for key, entry in resolved.items()})
+    if write_first is not None:
+        write_first()
     persistent_settings.write_profile_table(cfg.data_root, name, values, drop=absorb)
     return _settle(keys, embed_in_batch=False)

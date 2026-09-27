@@ -38,6 +38,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.catalog.types import ModelCompat, ModelTask
 from lilbee.cli.app import clear_overrides
+from lilbee.core import profile_files
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import profile_folders
 from lilbee.core.system import default_data_dir
@@ -58,10 +59,13 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # The developer's platform data root, read before any test redirects it.
 REAL_GLOBAL_ROOT = default_data_dir()
+# The package's own profiles folder; the suite reads a session copy of it.
+REAL_PACKAGE_PROFILES_DIR = profile_files.PACKAGE_PROFILES_DIR
 # The variables that root derives from, with their real values.
 HOME_VARIABLES = ("HOME", "USERPROFILE", "XDG_DATA_HOME", "LOCALAPPDATA")
 REAL_HOME_ENVIRONMENT = {name: os.environ.get(name) for name in HOME_VARIABLES}
 _SESSION_SCRATCH = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
+_PACKAGE_PROFILES_STATE = pytest.StashKey[dict[str, bytes]]()
 
 
 def _patch_executor_daemon_threads() -> None:
@@ -390,6 +394,19 @@ def _ignore_user_global_config(monkeypatch, tmp_path, request):
         redirect_global_root(monkeypatch, tmp_path / "home")
 
 
+@pytest.fixture(autouse=True)
+def _package_profiles_untouched(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fail the test that changes a file in the package's own profiles folder."""
+    yield
+    after = folder_state(REAL_PACKAGE_PROFILES_DIR)
+    if after != request.config.stash[_PACKAGE_PROFILES_STATE]:
+        request.config.stash[_PACKAGE_PROFILES_STATE] = after
+        pytest.fail(
+            f"The test changed {REAL_PACKAGE_PROFILES_DIR}; "
+            "tests read and write the session copy at profile_files.PACKAGE_PROFILES_DIR"
+        )
+
+
 def redirect_global_root(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
     """Point every variable the platform data root derives from under *home*."""
     monkeypatch.setenv("HOME", str(home))
@@ -407,6 +424,15 @@ def restore_real_home(monkeypatch: pytest.MonkeyPatch) -> None:
             monkeypatch.setenv(name, value)
 
 
+def folder_state(root: Path) -> dict[str, bytes]:
+    """Every file under *root*, by its relative path, with its bytes."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
 def profile_folders_under_real_root(data_root: Path) -> list[Path]:
     """The profile folders for *data_root* that resolve under the real global root."""
     folders = [path for _, path in profile_folders(data_root)]
@@ -415,7 +441,9 @@ def profile_folders_under_real_root(data_root: Path) -> list[Path]:
 
 @pytest.hookimpl(wrapper=True)
 def pytest_sessionstart(session: pytest.Session) -> Iterator[None]:
-    """Redirect the global root before collection; stop when a profile folder escapes it.
+    """Redirect the global root and the package profiles folder before collection.
+
+    Stops when a profile folder escapes the redirected global root.
 
     Runs after xdist starts its workers, so each worker reads the real root at import.
     """
@@ -423,6 +451,10 @@ def pytest_sessionstart(session: pytest.Session) -> Iterator[None]:
     scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
     session.config.stash[_SESSION_SCRATCH] = scratch
     redirect_global_root(pytest.MonkeyPatch(), Path(scratch.name) / "home")
+    package_copy = Path(scratch.name) / "package-profiles"
+    shutil.copytree(REAL_PACKAGE_PROFILES_DIR, package_copy)
+    pytest.MonkeyPatch().setattr(profile_files, "PACKAGE_PROFILES_DIR", package_copy)
+    session.config.stash[_PACKAGE_PROFILES_STATE] = folder_state(REAL_PACKAGE_PROFILES_DIR)
     leaks = profile_folders_under_real_root(Path(scratch.name) / "data_root")
     if leaks:
         raise pytest.UsageError(f"Profile folders resolve under the real global root: {leaks}")
