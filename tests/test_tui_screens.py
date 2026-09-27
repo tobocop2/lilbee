@@ -2168,6 +2168,99 @@ async def test_ctrl_r_then_blur_writes_nothing(tmp_path):
         assert persistent_settings.load(tmp_path) == {"chunk_size": 1024}
 
 
+async def _blur_after_focus(pilot, app, editor) -> None:
+    """Focus *editor*, then move focus to another row so its blur handler runs."""
+    from textual.widgets import Input
+
+    editor.focus()
+    await wait_until(pilot, lambda: app.screen.focused is editor)
+    app.screen.query_one("#ed-max_distance", Input).focus()
+    await wait_until(pilot, lambda: not editor.has_focus)
+    for _ in range(5):
+        await pilot.pause()
+
+
+async def test_select_reset_then_blur_writes_nothing(tmp_path):
+    """A reset Select shows the resolved value and its blur does not write it back."""
+    from textual.widgets import Button, Select
+
+    persistent_settings.update_values(tmp_path, {"ocr_strategy": "scanned_pages", "top_k": 5})
+    cfg.ocr_strategy = "scanned_pages"
+    default = str(builtin_value("ocr_strategy"))
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        select = app.screen.query_one("#ed-ocr_strategy", Select)
+        app.screen.query_one("#reset-ocr_strategy", Button).press()
+        await wait_until(pilot, lambda: str(select.value) == default)
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+        await _blur_after_focus(pilot, app, select)
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+
+
+async def test_multiline_reset_then_blur_writes_nothing(tmp_path):
+    """A reset multiline editor shows the resolved text and its blur does not write it back."""
+    from textual.widgets import Button
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    persistent_settings.update_values(tmp_path, {"general_system_prompt": "mine", "top_k": 5})
+    cfg.general_system_prompt = "mine"
+    default = str(builtin_value("general_system_prompt"))
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-general_system_prompt", ListTextArea)
+        app.screen.query_one("#reset-general_system_prompt", Button).press()
+        await wait_until(pilot, lambda: editor.text == default)
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+        await _blur_after_focus(pilot, app, editor)
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+
+
+async def test_list_restore_then_blur_writes_nothing(tmp_path):
+    """Restoring a list's defaults and then leaving the editor writes nothing back."""
+    from textual.widgets import Button
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    persistent_settings.update_values(tmp_path, {"crawl_exclude_patterns": "mine", "top_k": 5})
+    cfg.crawl_exclude_patterns = ["mine"]
+    expected = builtin_value("crawl_exclude_patterns")
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        editor = app.screen.query_one("#ed-crawl_exclude_patterns", ListTextArea)
+        app.screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
+        await wait_until(pilot, lambda: editor.text == "\n".join(expected))
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+        await _blur_after_focus(pilot, app, editor)
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+
+
+async def test_list_restore_updates_the_title_and_clears_the_error(tmp_path):
+    """Restore defaults shows the resolved line count and hides a visible list error."""
+    from textual.widgets import Button, Collapsible, Static
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.settings_widgets import LIST_ERROR_VISIBLE_CLASS
+
+    key = "crawl_exclude_patterns"
+    persistent_settings.update_values(tmp_path, {key: "a\nb\nc\nd\ne"})
+    cfg.crawl_exclude_patterns = ["a", "b", "c", "d", "e"]
+    expected = builtin_value("crawl_exclude_patterns")
+    assert len(expected) != 5
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        collapsible = app.screen.query_one("#collapsible-crawl_exclude_patterns", Collapsible)
+        assert str(collapsible.title) == msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=5)
+        error = app.screen.query_one("#err-crawl_exclude_patterns", Static)
+        error.add_class(LIST_ERROR_VISIBLE_CLASS)
+        app.screen.query_one("#list-restore-crawl_exclude_patterns", Button).press()
+        await wait_until(pilot, lambda: cfg.crawl_exclude_patterns == expected)
+        assert str(collapsible.title) == msg.SETTINGS_LIST_EDITOR_TITLE.format(
+            key=key, count=len(expected)
+        )
+        assert not error.has_class(LIST_ERROR_VISIBLE_CLASS)
+
+
 async def test_checkbox_reset_does_not_write_the_value_back(tmp_path):
     """Resetting a checkbox moves its value without the change handler saving it."""
     from textual.widgets import Button, Checkbox

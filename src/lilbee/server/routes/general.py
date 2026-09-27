@@ -16,7 +16,7 @@ from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import HTTPException, NotFoundException, ValidationException
 from litestar.params import FromQuery
 from litestar.response import Stream
-from litestar.status_codes import HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
+from litestar.status_codes import HTTP_200_OK, HTTP_202_ACCEPTED, HTTP_503_SERVICE_UNAVAILABLE
 from pydantic import ValidationError
 
 from lilbee.app.services import request_server_exit
@@ -87,7 +87,7 @@ async def config_defaults_route() -> ConfigResponse:
     return await handlers.get_config_defaults()
 
 
-@post("/api/config/reset")
+@post("/api/config/reset", status_code=HTTP_200_OK)
 async def config_reset_route(data: ConfigResetRequest) -> ConfigUpdateResponse:
     """Remove the listed keys from config.toml; each falls back to the next source."""
     try:
