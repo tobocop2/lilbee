@@ -4959,14 +4959,19 @@ async def test_command_provider_retry_skipped_action(tmp_path):
     from lilbee.cli.tui.messages import retry_skipped_message
     from lilbee.data.ingest.skip_marker import (
         SkipKind,
+        SkipRecords,
         load_skip_markers,
-        write_skip_kinds,
-        write_skip_markers,
+        write_skip_records,
     )
 
     cfg.data_root = tmp_path
-    write_skip_markers(tmp_path, {"stuck.pdf": "deadbeef", "gone.txt": "cafef00d"})
-    write_skip_kinds(tmp_path, {"stuck.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED})
+    write_skip_records(
+        tmp_path,
+        SkipRecords(
+            markers={"stuck.pdf": "deadbeef", "gone.txt": "cafef00d"},
+            kinds={"stuck.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED},
+        ),
+    )
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:

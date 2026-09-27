@@ -7,10 +7,15 @@ until the file content changes (its hash differs) or the user runs
 
 from __future__ import annotations
 
+import json
+import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
+from filelock import FileLock, Timeout
 
+from lilbee.data.ingest import skip_marker
 from lilbee.data.ingest.skip_marker import (
     DEFAULT_SKIP_REASON,
     REMOVED_SKIP_REASON,
@@ -19,6 +24,7 @@ from lilbee.data.ingest.skip_marker import (
     SKIP_REASON_FILENAME,
     SkipKind,
     SkipRecords,
+    clear_failed_markers,
     clear_skip_markers,
     describe_skips,
     held_out_names,
@@ -27,9 +33,9 @@ from lilbee.data.ingest.skip_marker import (
     load_skip_reasons,
     mark_removed,
     update_skip_records,
-    write_skip_kinds,
     write_skip_markers,
     write_skip_reasons,
+    write_skip_records,
 )
 
 
@@ -92,8 +98,6 @@ def test_load_handles_corrupt_json(tmp_path: Path) -> None:
 
 def test_load_rejects_non_string_values(tmp_path: Path) -> None:
     """Filenames with non-string hash values are filtered out (defensive)."""
-    import json
-
     marker = tmp_path / SKIP_MARKER_FILENAME
     marker.write_text(json.dumps({"good": "hash", "bad": 42}), encoding="utf-8")
     assert load_skip_markers(tmp_path) == {"good": "hash"}
@@ -101,8 +105,6 @@ def test_load_rejects_non_string_values(tmp_path: Path) -> None:
 
 def test_load_rejects_non_dict_top_level(tmp_path: Path) -> None:
     """A list (or any non-dict) at top level is treated as no markers."""
-    import json
-
     marker = tmp_path / SKIP_MARKER_FILENAME
     marker.write_text(json.dumps(["this", "should", "be", "a", "dict"]), encoding="utf-8")
     assert load_skip_markers(tmp_path) == {}
@@ -210,9 +212,14 @@ class TestUpdateSkipRecords:
         assert load_skip_reasons(tmp_path) == {"kept.pdf": "no text", "new.pdf": "decode failure"}
 
     def test_dropping_a_marker_drops_its_reason_and_kind(self, tmp_path: Path) -> None:
-        write_skip_markers(tmp_path, {"scan.pdf": "h1", "keep.pdf": "h2"})
-        write_skip_reasons(tmp_path, {"scan.pdf": "no text", "keep.pdf": "no text"})
-        write_skip_kinds(tmp_path, {"scan.pdf": SkipKind.REMOVED, "keep.pdf": SkipKind.FAILED})
+        write_skip_records(
+            tmp_path,
+            SkipRecords(
+                markers={"scan.pdf": "h1", "keep.pdf": "h2"},
+                reasons={"scan.pdf": "no text", "keep.pdf": "no text"},
+                kinds={"scan.pdf": SkipKind.REMOVED, "keep.pdf": SkipKind.FAILED},
+            ),
+        )
 
         update_skip_records(tmp_path, lambda records: records.markers.pop("scan.pdf"))
 
@@ -237,6 +244,12 @@ class TestUpdateSkipRecords:
                 id="update",
             ),
             pytest.param(clear_skip_markers, {}, id="clear"),
+            pytest.param(
+                lambda root: mark_removed(root, {"new.pdf": "h2"}),
+                {"old.pdf": "h1", "new.pdf": "h2"},
+                id="mark_removed",
+            ),
+            pytest.param(clear_failed_markers, {}, id="clear_failed"),
         ],
     )
     def test_waits_for_another_holder_of_the_lock(self, tmp_path: Path, operation, expected):
@@ -263,8 +276,13 @@ class TestUpdateSkipRecords:
 
 def test_kinds_round_trip_for_every_marker(tmp_path: Path) -> None:
     """A stored kind is read back for its marker."""
-    write_skip_markers(tmp_path, {"scan.pdf": "h1", "gone.txt": "h2"})
-    write_skip_kinds(tmp_path, {"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED})
+    write_skip_records(
+        tmp_path,
+        SkipRecords(
+            markers={"scan.pdf": "h1", "gone.txt": "h2"},
+            kinds={"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED},
+        ),
+    )
     assert load_skip_kinds(tmp_path) == {"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED}
 
 
@@ -282,29 +300,63 @@ def test_a_record_without_a_kind_is_failed_unless_its_reason_is_the_removal_text
     }
 
 
-def test_an_unknown_stored_kind_falls_back_to_the_reason(tmp_path: Path) -> None:
-    """A kind this version does not know is read like a missing one."""
+@pytest.mark.parametrize(
+    ("gone_entry", "scan_entry"),
+    [
+        pytest.param("failed", "removed", id="not-an-object"),
+        pytest.param(
+            {"kind": "archived", "hash": "h1", "reason": REMOVED_SKIP_REASON},
+            {"kind": "archived", "hash": "h2", "reason": None},
+            id="unknown-kind",
+        ),
+        pytest.param(
+            {"kind": ["failed"], "hash": "h1", "reason": REMOVED_SKIP_REASON},
+            {"kind": ["removed"], "hash": "h2", "reason": None},
+            id="kind-not-a-string",
+        ),
+        pytest.param(
+            {"kind": "failed", "reason": REMOVED_SKIP_REASON},
+            {"kind": "removed", "reason": None},
+            id="no-hash",
+        ),
+    ],
+)
+def test_an_unreadable_stored_kind_falls_back_to_the_reason(
+    tmp_path: Path, gone_entry: object, scan_entry: object
+) -> None:
+    """A kinds entry this version cannot read is read like a missing one."""
     write_skip_markers(tmp_path, {"gone.txt": "h1", "scan.pdf": "h2"})
     write_skip_reasons(tmp_path, {"gone.txt": REMOVED_SKIP_REASON})
-    (tmp_path / SKIP_KIND_FILENAME).write_text(
-        '{"gone.txt": "archived", "scan.pdf": "archived"}', encoding="utf-8"
-    )
+    stored = {"gone.txt": gone_entry, "scan.pdf": scan_entry}
+    (tmp_path / SKIP_KIND_FILENAME).write_text(json.dumps(stored), encoding="utf-8")
     assert load_skip_kinds(tmp_path) == {"gone.txt": SkipKind.REMOVED, "scan.pdf": SkipKind.FAILED}
 
 
 def test_a_kind_without_a_marker_is_not_reported(tmp_path: Path) -> None:
     """Kinds describe markers; a stray kind entry holds nothing out."""
-    write_skip_markers(tmp_path, {"scan.pdf": "h1"})
-    write_skip_kinds(tmp_path, {"scan.pdf": SkipKind.FAILED, "stray.md": SkipKind.REMOVED})
+    write_skip_records(
+        tmp_path,
+        SkipRecords(
+            markers={"scan.pdf": "h1"},
+            kinds={"scan.pdf": SkipKind.FAILED, "stray.md": SkipKind.REMOVED},
+        ),
+    )
     assert load_skip_kinds(tmp_path) == {"scan.pdf": SkipKind.FAILED}
+    assert "stray.md" not in (tmp_path / SKIP_KIND_FILENAME).read_text(encoding="utf-8")
 
 
 def test_held_out_names_lists_failures_only(tmp_path: Path) -> None:
     """A removed source is not a held-out file; a failure is."""
-    write_skip_markers(tmp_path, {"b.pdf": "h1", "gone.txt": "h2", "a.pdf": "h3"})
-    write_skip_kinds(
+    write_skip_records(
         tmp_path,
-        {"b.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED, "a.pdf": SkipKind.FAILED},
+        SkipRecords(
+            markers={"b.pdf": "h1", "gone.txt": "h2", "a.pdf": "h3"},
+            kinds={
+                "b.pdf": SkipKind.FAILED,
+                "gone.txt": SkipKind.REMOVED,
+                "a.pdf": SkipKind.FAILED,
+            },
+        ),
     )
     assert held_out_names(tmp_path) == ["a.pdf", "b.pdf"]
 
@@ -332,7 +384,152 @@ def test_mark_removed_writes_marker_reason_and_kind(tmp_path: Path) -> None:
 
 def test_clear_removes_the_kinds_sidecar(tmp_path: Path) -> None:
     """clear_skip_markers deletes the kinds file with the other two."""
-    write_skip_markers(tmp_path, {"gone.txt": "h1"})
-    write_skip_kinds(tmp_path, {"gone.txt": SkipKind.REMOVED})
+    write_skip_records(
+        tmp_path,
+        SkipRecords(markers={"gone.txt": "h1"}, kinds={"gone.txt": SkipKind.REMOVED}),
+    )
     clear_skip_markers(tmp_path)
     assert not (tmp_path / SKIP_KIND_FILENAME).exists()
+
+
+def test_mark_removed_keeps_the_recorded_hash_of_an_unreachable_file(tmp_path: Path) -> None:
+    """An unreachable marked file is held at its marker's hash; one with no marker is skipped."""
+    write_skip_markers(tmp_path, {"away.pdf": "h1"})
+
+    mark_removed(tmp_path, {"here.txt": "h2"}, unreachable=["away.pdf", "never.pdf"])
+
+    assert load_skip_markers(tmp_path) == {"away.pdf": "h1", "here.txt": "h2"}
+    assert load_skip_kinds(tmp_path) == {"away.pdf": SkipKind.REMOVED, "here.txt": SkipKind.REMOVED}
+
+
+def _older_clear(data_root: Path) -> None:
+    """What retry-skipped does in a lilbee without the kinds file: drop markers and reasons."""
+    (data_root / SKIP_MARKER_FILENAME).unlink(missing_ok=True)
+    (data_root / SKIP_REASON_FILENAME).unlink(missing_ok=True)
+
+
+def _older_write(data_root: Path, markers: dict[str, str], reasons: dict[str, str]) -> None:
+    """What a lilbee without the kinds file writes: the markers and reasons, nothing else."""
+    write_skip_markers(data_root, {**load_skip_markers(data_root), **markers})
+    write_skip_reasons(data_root, {**load_skip_reasons(data_root), **reasons})
+
+
+def _head_failure(data_root: Path, name: str, fhash: str, reason: str) -> None:
+    def _fail(records: SkipRecords) -> None:
+        records.markers[name] = fhash
+        records.reasons[name] = reason
+        records.kinds[name] = SkipKind.FAILED
+
+    update_skip_records(data_root, _fail)
+
+
+class TestAnOlderLilbeeWritingTheRecords:
+    """A lilbee without the kinds file clears and rewrites markers; a stale kind must not win."""
+
+    @pytest.mark.parametrize(
+        ("fhash", "reasons"),
+        [
+            pytest.param("h1", {"x.pdf": "no text extracted"}, id="same-hash"),
+            pytest.param("h2", {"x.pdf": "no text extracted"}, id="new-hash"),
+            pytest.param("h1", {}, id="same-hash-no-reason"),
+        ],
+    )
+    def test_a_failure_after_an_older_retry_is_a_failure(
+        self, tmp_path: Path, fhash: str, reasons: dict[str, str]
+    ) -> None:
+        mark_removed(tmp_path, {"x.pdf": "h1"})
+        _older_clear(tmp_path)
+        _older_write(tmp_path, {"x.pdf": fhash}, reasons)
+
+        assert (tmp_path / SKIP_KIND_FILENAME).exists()
+        assert load_skip_kinds(tmp_path) == {"x.pdf": SkipKind.FAILED}
+        assert held_out_names(tmp_path) == ["x.pdf"]
+        assert clear_failed_markers(tmp_path) == ["x.pdf"]
+        assert load_skip_markers(tmp_path) == {}
+
+    @pytest.mark.parametrize(
+        ("failed_reason", "fhash"),
+        [
+            pytest.param("no text extracted", "h1", id="same-hash"),
+            pytest.param(REMOVED_SKIP_REASON, "h2", id="new-hash-same-reason"),
+        ],
+    )
+    def test_an_older_removal_of_a_former_failure_is_a_removal(
+        self, tmp_path: Path, failed_reason: str, fhash: str
+    ) -> None:
+        _head_failure(tmp_path, "x.pdf", "h1", failed_reason)
+        _older_clear(tmp_path)
+        _older_write(tmp_path, {"x.pdf": fhash}, {"x.pdf": REMOVED_SKIP_REASON})
+
+        assert load_skip_kinds(tmp_path) == {"x.pdf": SkipKind.REMOVED}
+        assert held_out_names(tmp_path) == []
+        assert clear_failed_markers(tmp_path) == []
+        assert load_skip_markers(tmp_path) == {"x.pdf": fhash}
+
+    def test_records_an_older_lilbee_did_not_touch_keep_their_kind(self, tmp_path: Path) -> None:
+        """Control: the stored kind still wins over the reason while its marker is unchanged."""
+        _head_failure(tmp_path, "x.pdf", "h1", REMOVED_SKIP_REASON)
+        _older_write(tmp_path, {"y.pdf": "h2"}, {"y.pdf": "no text extracted"})
+
+        assert load_skip_kinds(tmp_path) == {"x.pdf": SkipKind.FAILED, "y.pdf": SkipKind.FAILED}
+
+
+_OPERATIONS = [
+    pytest.param(
+        lambda root: update_skip_records(
+            root, lambda records: records.markers.update({"new.pdf": "h2"})
+        ),
+        id="update",
+    ),
+    pytest.param(clear_skip_markers, id="clear"),
+    pytest.param(lambda root: mark_removed(root, {"new.pdf": "h2"}), id="mark_removed"),
+    pytest.param(clear_failed_markers, id="clear_failed"),
+]
+
+
+@pytest.mark.parametrize("operation", _OPERATIONS)
+def test_every_sidecar_changes_while_the_records_lock_is_held(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: Callable[[Path], object]
+) -> None:
+    """Another process asking for the records lock is refused during each sidecar write."""
+    _head_failure(tmp_path, "old.pdf", "h1", "no text")
+    lock_path = str(tmp_path / SKIP_MARKER_FILENAME) + ".lock"
+    held_during: dict[str, bool] = {}
+
+    def _lock_is_held() -> bool:
+        refused: list[bool] = []
+
+        def _probe() -> None:
+            probe = FileLock(lock_path)
+            try:
+                probe.acquire(timeout=0)
+            except Timeout:
+                refused.append(True)
+            else:
+                probe.release()
+                refused.append(False)
+
+        prober = threading.Thread(target=_probe)
+        prober.start()
+        prober.join()
+        return refused == [True]
+
+    real_write, real_unlink = skip_marker._write_json_map, skip_marker._unlink
+
+    def _write(path: Path, data: object) -> None:
+        held_during[path.name] = _lock_is_held()
+        real_write(path, data)
+
+    def _unlink(path: Path) -> None:
+        held_during[path.name] = _lock_is_held()
+        real_unlink(path)
+
+    monkeypatch.setattr(skip_marker, "_write_json_map", _write)
+    monkeypatch.setattr(skip_marker, "_unlink", _unlink)
+    assert not _lock_is_held()
+
+    operation(tmp_path)
+
+    assert held_during == dict.fromkeys(
+        [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME], True
+    )

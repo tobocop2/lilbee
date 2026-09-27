@@ -1876,18 +1876,22 @@ class TestSkipMarkerLifecycle:
         from lilbee.data.ingest.discovery import file_hash
         from lilbee.data.ingest.skip_marker import (
             SkipKind,
+            SkipRecords,
             load_skip_kinds,
-            write_skip_kinds,
-            write_skip_markers,
-            write_skip_reasons,
+            write_skip_records,
         )
 
         kept = isolated_env / "kept.md"
         kept.write_text("removed by the user", encoding="utf-8")
         (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 no text")
-        write_skip_markers(cfg.data_root, {"kept.md": file_hash(kept)})
-        write_skip_reasons(cfg.data_root, {"kept.md": "custom note"})
-        write_skip_kinds(cfg.data_root, {"kept.md": SkipKind.REMOVED})
+        write_skip_records(
+            cfg.data_root,
+            SkipRecords(
+                markers={"kept.md": file_hash(kept)},
+                reasons={"kept.md": "custom note"},
+                kinds={"kept.md": SkipKind.REMOVED},
+            ),
+        )
         with mock.patch(
             "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for("scanned.pdf")
         ):
@@ -2154,14 +2158,18 @@ class TestStatusReportsHeldOutFiles:
         from lilbee.data.ingest.skip_marker import (
             REMOVED_SKIP_REASON,
             SkipKind,
-            write_skip_kinds,
-            write_skip_markers,
-            write_skip_reasons,
+            SkipRecords,
+            write_skip_records,
         )
 
-        write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "gone.txt": "h2", "old.md": "h3"})
-        write_skip_reasons(cfg.data_root, {"old.md": REMOVED_SKIP_REASON})
-        write_skip_kinds(cfg.data_root, {"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED})
+        write_skip_records(
+            cfg.data_root,
+            SkipRecords(
+                markers={"scan.pdf": "h1", "gone.txt": "h2", "old.md": "h3"},
+                reasons={"old.md": REMOVED_SKIP_REASON},
+                kinds={"scan.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED},
+            ),
+        )
 
         status = gather_status()
 
@@ -5248,6 +5256,29 @@ class TestRemovingHeldOutFiles:
         assert load_skip_markers(cfg.data_root) == {"away.pdf": "h1"}
         assert load_skip_kinds(cfg.data_root) == {"away.pdf": SkipKind.REMOVED}
 
+    def test_an_unreachable_failure_keeps_the_hash_recorded_when_it_is_marked(
+        self, isolated_env, mock_svc
+    ):
+        """A marker another writer changes while the removal runs is the hash the removal keeps."""
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.data.ingest.discovery import resolve_source_path
+        from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+
+        written = ["h1"]
+        write_skip_markers(cfg.data_root, {"away.pdf": written[-1]})
+
+        def _rewritten_meanwhile(name: str) -> Path:
+            written.append(f"h{len(written) + 1}")
+            write_skip_markers(cfg.data_root, {"away.pdf": written[-1]})
+            return resolve_source_path(name)
+
+        with mock.patch("lilbee.app.ingest.resolve_source_path", side_effect=_rewritten_meanwhile):
+            result = remove_documents_durably(["away.pdf"])
+
+        assert result.removed == ["away.pdf"]
+        assert len(written) > 2
+        assert load_skip_markers(cfg.data_root) == {"away.pdf": written[-1]}
+
     def test_a_failed_single_file_root_is_forgotten(self, isolated_env, mock_svc, tmp_path):
         """A single-file root is un-registered and its records dropped, not converted."""
         from lilbee.app.ingest import register_sources, remove_documents_durably
@@ -5367,11 +5398,16 @@ class TestRemovingHeldOutFiles:
 
     def test_removable_names_lists_indexed_then_failures(self, isolated_env, mock_svc):
         from lilbee.app.ingest import removable_names
-        from lilbee.data.ingest.skip_marker import SkipKind, write_skip_kinds, write_skip_markers
+        from lilbee.data.ingest.skip_marker import SkipKind, SkipRecords, write_skip_records
 
         mock_svc.store.upsert_source("a.txt", "hash", 1)
-        write_skip_markers(cfg.data_root, {"a.txt": "h0", "b.pdf": "h1", "gone.txt": "h2"})
-        write_skip_kinds(cfg.data_root, {"gone.txt": SkipKind.REMOVED})
+        write_skip_records(
+            cfg.data_root,
+            SkipRecords(
+                markers={"a.txt": "h0", "b.pdf": "h1", "gone.txt": "h2"},
+                kinds={"gone.txt": SkipKind.REMOVED},
+            ),
+        )
 
         assert removable_names() == ["a.txt", "b.pdf"]
 

@@ -4,10 +4,12 @@
 ``_plan_file_changes`` treats a file whose current hash matches its marker as
 unchanged, so a failed extract is paid once and a removal stays out. Editing the
 file changes its hash and re-arms it. ``skip_reasons.json`` records why each
-file is held out, and ``skip_kinds.json`` records its ``SkipKind``. A record
-with no stored kind reads as a removal when its reason is ``REMOVED_SKIP_REASON``.
-Production writes go through ``update_skip_records`` and ``clear_skip_markers``,
-both under one cross-process lock.
+file is held out, and ``skip_kinds.json`` records its ``SkipKind`` with the
+hash and reason it was written for. A stored kind counts only while both still
+match; otherwise the record reads as a removal when its reason is
+``REMOVED_SKIP_REASON`` and as a failure when it is not. Production writes go
+through ``update_skip_records`` and ``clear_skip_markers``, both under one
+cross-process lock.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
+from typing import TypedDict
 
 from lilbee.core.security import file_lock_or_warn
 from lilbee.data.types import SkippedSource
@@ -42,6 +45,14 @@ class SkipKind(StrEnum):
     REMOVED = "removed"
 
 
+class _StoredKind(TypedDict):
+    """One ``skip_kinds.json`` entry: the kind and the marker it was written for."""
+
+    kind: SkipKind
+    hash: str
+    reason: str | None
+
+
 @dataclass
 class SkipRecords:
     """The skip markers with the reason and the kind of each."""
@@ -51,8 +62,8 @@ class SkipRecords:
     kinds: dict[str, SkipKind] = field(default_factory=dict)
 
 
-def _load_str_map(path: Path) -> dict[str, str]:
-    """Load a ``{str: str}`` JSON file, or empty dict on any read/parse error."""
+def _load_json_map(path: Path) -> dict[str, object]:
+    """Load a JSON object, or empty dict on any read/parse error."""
     if not path.exists():
         return {}
     try:
@@ -60,13 +71,18 @@ def _load_str_map(path: Path) -> dict[str, str]:
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         log.debug("Sidecar %s unreadable, treating as empty: %s", path.name, exc)
         return {}
-    if not isinstance(raw, dict):
+    if not isinstance(raw, dict):  # the file is untyped JSON
         return {}
-    return {str(k): str(v) for k, v in raw.items() if isinstance(v, str)}
+    return {str(k): v for k, v in raw.items()}
 
 
-def _write_str_map(path: Path, data: dict[str, str]) -> None:
-    """Replace *path* atomically with a ``{str: str}`` JSON map. Best-effort."""
+def _load_str_map(path: Path) -> dict[str, str]:
+    """Load a ``{str: str}`` JSON file, or empty dict on any read/parse error."""
+    return {k: v for k, v in _load_json_map(path).items() if isinstance(v, str)}
+
+
+def _write_json_map(path: Path, data: Mapping[str, object]) -> None:
+    """Replace *path* atomically with a JSON object. Best-effort."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,7 +108,7 @@ def load_skip_markers(data_root: Path) -> dict[str, str]:
 
 def write_skip_markers(data_root: Path, markers: dict[str, str]) -> None:
     """Replace the marker file atomically. Best-effort: errors are logged, not raised."""
-    _write_str_map(data_root / SKIP_MARKER_FILENAME, markers)
+    _write_json_map(data_root / SKIP_MARKER_FILENAME, markers)
 
 
 def load_skip_reasons(data_root: Path) -> dict[str, str]:
@@ -102,43 +118,45 @@ def load_skip_reasons(data_root: Path) -> dict[str, str]:
 
 def write_skip_reasons(data_root: Path, reasons: dict[str, str]) -> None:
     """Replace the reasons sidecar atomically. Best-effort: errors are logged, not raised."""
-    _write_str_map(data_root / SKIP_REASON_FILENAME, reasons)
+    _write_json_map(data_root / SKIP_REASON_FILENAME, reasons)
 
 
-def _kind_of(stored: str, reason: str | None) -> SkipKind:
-    """The stored kind, or for a record without one: REMOVED when its reason is the removal text."""
-    try:
-        return SkipKind(stored)
-    except ValueError:
-        return SkipKind.REMOVED if reason == REMOVED_SKIP_REASON else SkipKind.FAILED
+def _kind_of(stored: object, marker: str, reason: str | None) -> SkipKind:
+    """The stored kind while it names this marker and reason; else REMOVED for the removal text."""
+    # the kinds file is untyped JSON
+    if isinstance(stored, dict) and (stored.get("hash"), stored.get("reason")) == (marker, reason):
+        with contextlib.suppress(ValueError):
+            return SkipKind(stored.get("kind", ""))
+    return SkipKind.REMOVED if reason == REMOVED_SKIP_REASON else SkipKind.FAILED
 
 
 def _load_records(data_root: Path) -> SkipRecords:
-    """Read the three sidecars; a marker without a stored kind is FAILED unless removed."""
+    """Read the three sidecars; a marker without a matching stored kind reads by its reason."""
     markers = load_skip_markers(data_root)
     reasons = load_skip_reasons(data_root)
-    stored = _load_str_map(data_root / SKIP_KIND_FILENAME)
-    kinds = {name: _kind_of(stored.get(name, ""), reasons.get(name)) for name in markers}
+    stored = _load_json_map(data_root / SKIP_KIND_FILENAME)
+    kinds = {
+        name: _kind_of(stored.get(name), marker, reasons.get(name))
+        for name, marker in markers.items()
+    }
     return SkipRecords(markers, reasons, kinds)
 
 
-def _write_records(data_root: Path, records: SkipRecords) -> None:
-    """Replace the three sidecars. Best-effort: errors are logged, not raised."""
+def write_skip_records(data_root: Path, records: SkipRecords) -> None:
+    """Replace the three sidecars; each kind names the hash and reason it is written for."""
     write_skip_markers(data_root, records.markers)
     write_skip_reasons(data_root, records.reasons)
-    write_skip_kinds(data_root, records.kinds)
+    stored = {
+        name: _StoredKind(kind=kind, hash=marker, reason=records.reasons.get(name))
+        for name, kind in records.kinds.items()
+        if (marker := records.markers.get(name)) is not None
+    }
+    _write_json_map(data_root / SKIP_KIND_FILENAME, stored)
 
 
 def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
-    """The kind of every marked file; a record without a stored kind is FAILED unless removed."""
+    """The kind of every marked file."""
     return _load_records(data_root).kinds
-
-
-def write_skip_kinds(data_root: Path, kinds: Mapping[str, SkipKind]) -> None:
-    """Replace the kinds sidecar atomically. Best-effort: errors are logged, not raised."""
-    _write_str_map(
-        data_root / SKIP_KIND_FILENAME, {name: str(kind) for name, kind in kinds.items()}
-    )
 
 
 def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) -> None:
@@ -153,7 +171,7 @@ def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) 
         records.reasons = {k: v for k, v in records.reasons.items() if k in records.markers}
         records.kinds = {k: v for k, v in records.kinds.items() if k in records.markers}
         if records != before:
-            _write_records(data_root, records)
+            write_skip_records(data_root, records)
 
 
 def held_out_names(data_root: Path) -> list[str]:
@@ -162,13 +180,21 @@ def held_out_names(data_root: Path) -> list[str]:
     return sorted(name for name, kind in kinds.items() if kind is SkipKind.FAILED)
 
 
-def mark_removed(data_root: Path, hashes: Mapping[str, str]) -> None:
-    """Hold each file in *hashes* out of every sync as a user removal, at the given hash."""
+def mark_removed(
+    data_root: Path, hashes: Mapping[str, str], unreachable: Iterable[str] = ()
+) -> None:
+    """Hold files out of every sync as user removals.
+
+    Each file in *hashes* is held at the given hash; each marked file in
+    *unreachable* keeps the hash its marker already records.
+    """
 
     def _hold(records: SkipRecords) -> None:
-        records.markers.update(hashes)
-        records.reasons.update(dict.fromkeys(hashes, REMOVED_SKIP_REASON))
-        records.kinds.update(dict.fromkeys(hashes, SkipKind.REMOVED))
+        kept = {name: records.markers[name] for name in unreachable if name in records.markers}
+        held = {**kept, **hashes}
+        records.markers.update(held)
+        records.reasons.update(dict.fromkeys(held, REMOVED_SKIP_REASON))
+        records.kinds.update(dict.fromkeys(held, SkipKind.REMOVED))
 
     update_skip_records(data_root, _hold)
 

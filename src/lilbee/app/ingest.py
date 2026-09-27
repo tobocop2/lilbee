@@ -20,7 +20,6 @@ from lilbee.data.ingest.discovery import (
 from lilbee.data.ingest.skip_marker import (
     SkipRecords,
     held_out_names,
-    load_skip_markers,
     mark_removed,
     update_skip_records,
 )
@@ -351,18 +350,17 @@ def _hold_out_removed(names: list[str], roots: list[str]) -> None:
     The marker takes the file's current hash. An imported source has no file and
     needs no marker; a held-out file that is not reachable keeps its marker's hash.
     """
-    data_root = active_config().data_root
-    markers = load_skip_markers(data_root)
     hashes: dict[str, str] = {}
+    unreachable: list[str] = []
     for name in names:
         if any(name == root or name.startswith(root + "/") for root in roots):
             continue  # the root is gone; discovery won't resurrect these
         path = resolve_source_path(name)
         if path.exists():
             hashes[name] = file_hash(path)
-        elif name in markers:
-            hashes[name] = markers[name]
-    mark_removed(data_root, hashes)
+        else:
+            unreachable.append(name)
+    mark_removed(active_config().data_root, hashes, unreachable)
 
 
 def forget_removed_from_wiki_index(removed: list[str]) -> None:
