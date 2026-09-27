@@ -175,22 +175,36 @@ def run_profile_op(
     node.run_worker(_work, thread=True, group=PROFILE_OP_GROUP, exclusive=True, exit_on_error=False)
 
 
+def switch_plan(profile: ProfileFile, diff: ProfileDiff) -> SwitchPlan:
+    """The Apply dialog's plan for *profile*: its diff, your kept values, the files to rebuild."""
+    reindex = any(row.effect is ProfileEffect.REINDEX for row in diff.changes)
+    files = len(get_services().store.get_sources()) if reindex else 0
+    kept = tuple((key, getattr(cfg, key)) for key in diff.kept)
+    return SwitchPlan(profile, diff, kept, files)
+
+
 def _switch_plan(name: str) -> SwitchPlan:
     """Diff *name* against the project and count the files a reindex would rebuild."""
     store = ProfileStore()
     profile = profiles.show(store, name).file
     diff = profiles.diff(store, name)
-    reindex = any(row.effect is ProfileEffect.REINDEX for row in diff.changes)
-    files = len(get_services().store.get_sources()) if reindex else 0
-    kept = tuple((key, getattr(cfg, key)) for key in diff.kept)
     assert profile is not None  # noqa: S101 -- diff() refuses a broken profile first
-    return SwitchPlan(profile, diff, kept, files)
+    return switch_plan(profile, diff)
 
 
-def start_profile_switch(
-    app: LilbeeApp, node: Widget, name: str, on_close: Callable[[], None]
+def start_switch(
+    app: LilbeeApp,
+    node: Widget,
+    plan: Callable[[], SwitchPlan],
+    apply: Callable[[], profiles.ApplyResult],
+    *,
+    on_close: Callable[[], None],
+    on_applied: Callable[[], None] = lambda: None,
 ) -> None:
-    """Diff *name* off the loop, ask with the Apply dialog, then apply; *on_close* runs after."""
+    """Build *plan* off the loop, ask with the Apply dialog, then *apply*; *on_close* runs after.
+
+    *on_applied* runs only when the profile was applied.
+    """
 
     def _on_choice(choice: ApplyChoice | None) -> None:
         if choice is None or choice is ApplyChoice.CANCEL:
@@ -203,13 +217,32 @@ def start_profile_switch(
                 app.start_rebuild()
             node.notify(msg.PROFILE_APPLIED.format(name=result.name))
             on_close()
+            on_applied()
 
-        run_profile_op(node, lambda: profiles.apply(ProfileStore(), name), _applied)
+        run_profile_op(node, apply, _applied)
 
-    def _ask(plan: SwitchPlan) -> None:
-        app.push_screen(ApplyProfileDialog(plan), _on_choice)
+    def _ask(switch: SwitchPlan) -> None:
+        app.push_screen(ApplyProfileDialog(switch), _on_choice)
 
-    run_profile_op(node, lambda: _switch_plan(name), _ask, on_error=on_close)
+    run_profile_op(node, plan, _ask, on_error=on_close)
+
+
+def start_profile_switch(
+    app: LilbeeApp,
+    node: Widget,
+    name: str,
+    on_close: Callable[[], None],
+    on_applied: Callable[[], None] = lambda: None,
+) -> None:
+    """Diff *name* off the loop, ask with the Apply dialog, then apply; *on_close* runs after."""
+    start_switch(
+        app,
+        node,
+        lambda: _switch_plan(name),
+        lambda: profiles.apply(ProfileStore(), name),
+        on_close=on_close,
+        on_applied=on_applied,
+    )
 
 
 class ApplyProfileDialog(ModalScreen[ApplyChoice]):

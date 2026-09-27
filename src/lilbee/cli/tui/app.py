@@ -1018,6 +1018,13 @@ class LilbeeApp(App[None]):
         if isinstance(screen, SettingsScreen):
             screen.call_after_refresh(screen.show_profile_tab)
 
+    def start_analyze(self) -> None:
+        """Queue analyze of the indexed documents; its report opens when it finishes."""
+        # circular: screens import the app module
+        from lilbee.cli.tui.screens.analyze_report import start_analysis
+
+        start_analysis(self, None)
+
     def start_rebuild(self) -> None:
         """Queue a full reindex on the chat screen's task bar without leaving this view."""
         chat = self.chat_screen()
