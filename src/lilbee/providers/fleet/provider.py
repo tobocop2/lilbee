@@ -125,6 +125,7 @@ _PREWARM_CHUNK_BYTES = 8 * 1024 * 1024
 _PREWARMED_SHARDS: set[tuple[str, int, int]] = set()
 # Per-role client request budget: the first request covers the lazy cold load plus
 # generation, so the weights-scaled cold-load budget plus the margin raises this floor.
+# The embedder generates nothing, so its budget is the cold load plus the margin alone.
 _REQUEST_TIMEOUT_FLOOR_S = 900.0
 _REQUEST_TIMEOUT_GENERATION_MARGIN_S = 120.0
 # Jinja chat templates flag tool support by referencing one of these names as an
@@ -153,12 +154,15 @@ def _prewarm_key(shard: Path) -> tuple[str, int, int]:
     return (str(shard), stat.st_size, stat.st_mtime_ns)
 
 
-def _request_timeout_s(weights_bytes: int) -> float:
-    """Per-client request budget: the floor, or the cold-load budget plus margin."""
-    return max(
-        _REQUEST_TIMEOUT_FLOOR_S,
-        cold_load_timeout_s(weights_bytes) + _REQUEST_TIMEOUT_GENERATION_MARGIN_S,
+def _request_timeout_s(launch: InstanceLaunch) -> float:
+    """Per-client request budget: the role's cold load plus margin, floored when it generates."""
+    budget = (
+        cold_load_timeout_s(launch.weights_bytes, launch.role)
+        + _REQUEST_TIMEOUT_GENERATION_MARGIN_S
     )
+    if launch.role is WorkerRole.EMBED:
+        return budget
+    return max(_REQUEST_TIMEOUT_FLOOR_S, budget)
 
 
 def _launches_by_group(
@@ -1244,7 +1248,7 @@ class FleetProvider:
                     endpoint,
                     launch.model_id,
                     token_cap=launch.token_cap,
-                    timeout=_request_timeout_s(launch.weights_bytes),
+                    timeout=_request_timeout_s(launch),
                     rerank_mode=launch.rerank_mode,
                     inline_reasoning=role is WorkerRole.CHAT,
                     on_prefill=self._record_chat_prefill if role is WorkerRole.CHAT else None,
@@ -1252,7 +1256,7 @@ class FleetProvider:
                     # out the same cold-load budget llama-swap keeps it alive for so a
                     # burst never drops files while the server is legitimately warming.
                     embed_busy_deadline_s=(
-                        cold_load_timeout_s(launch.weights_bytes)
+                        cold_load_timeout_s(launch.weights_bytes, role)
                         if role is WorkerRole.EMBED
                         else None
                     ),

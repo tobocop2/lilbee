@@ -172,11 +172,22 @@ class TestBuildSwapConfig:
 
 
 class TestHealthCheckTimeoutScaling:
-    def test_small_model_gets_the_floor(self) -> None:
-        launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
+    @pytest.mark.parametrize(
+        ("role", "floor_s"),
+        [
+            (WorkerRole.CHAT, 600),
+            (WorkerRole.VISION, 600),
+            (WorkerRole.RERANK, 600),
+            (WorkerRole.EMBED, 120),
+        ],
+    )
+    def test_small_model_gets_its_role_floor(self, role: WorkerRole, floor_s: int) -> None:
+        # An embedder's weights load in seconds, so llama-swap gives up on a wedged
+        # embed restart after two minutes; the generating roles keep ten.
+        launch = _launch(role, ["/bin/llama-server"])
         launch.weights_bytes = 4 * 1024**3
         cfg = _config([launch])
-        assert cfg["healthCheckTimeout"] == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+        assert cfg["healthCheckTimeout"] == floor_s
 
     def test_giant_model_scales_the_timeout_past_the_floor(self) -> None:
         # 300 GB at the conservative 150 MB/s disk rate needs ~2048s, not 600s;
@@ -184,9 +195,14 @@ class TestHealthCheckTimeoutScaling:
         launch = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
         launch.weights_bytes = 300 * 1024**3
         cfg = _config([launch])
-        expected = (300 * 1024**3) // swap_config_mod._COLD_LOAD_BYTES_PER_S
-        assert cfg["healthCheckTimeout"] == expected
-        assert expected > swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+        assert cfg["healthCheckTimeout"] == 2048
+
+    def test_giant_embedder_scales_past_its_floor(self) -> None:
+        # 30 GB streams in ~204s at the conservative rate, past the embed floor.
+        launch = _launch(WorkerRole.EMBED, ["/bin/llama-server"])
+        launch.weights_bytes = 30 * 1024**3
+        cfg = _config([launch])
+        assert cfg["healthCheckTimeout"] == 204
 
     def test_heaviest_member_sets_the_proxy_global_timeout(self) -> None:
         small = _launch(WorkerRole.EMBED, ["/bin/llama-server"])
@@ -194,21 +210,36 @@ class TestHealthCheckTimeoutScaling:
         giant = _launch(WorkerRole.CHAT, ["/bin/llama-server"])
         giant.weights_bytes = 300 * 1024**3
         cfg = _config([small, giant])
-        expected = (300 * 1024**3) // swap_config_mod._COLD_LOAD_BYTES_PER_S
-        assert cfg["healthCheckTimeout"] == expected
+        assert cfg["healthCheckTimeout"] == 2048
 
-    def test_cold_load_timeout_floors_small_weights(self) -> None:
+    def test_co_tenant_embedder_takes_the_slower_role_floor(self) -> None:
+        # The timeout is proxy-global: an embedder sharing a group with a small
+        # reranker must not cut the reranker's load short at the embed floor.
+        embed = _launch(WorkerRole.EMBED, ["/bin/llama-server"])
+        embed.weights_bytes = 1 * 1024**3
+        rerank = _launch(WorkerRole.RERANK, ["/bin/llama-server"])
+        rerank.weights_bytes = 1 * 1024**3
+        cfg = _config([embed, rerank])
+        assert cfg["healthCheckTimeout"] == 600
+
+    def test_no_members_takes_the_longest_floor(self) -> None:
+        assert _config([])["healthCheckTimeout"] == 600
+
+    def test_cold_load_timeout_floors_small_weights_per_role(self) -> None:
         # The shared per-member helper; the provider's client timeout derives from it.
         from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 
-        assert cold_load_timeout_s(0) == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
-        assert cold_load_timeout_s(4 * 1024**3) == swap_config_mod._HEALTH_CHECK_TIMEOUT_FLOOR_S
+        assert cold_load_timeout_s(0, WorkerRole.CHAT) == 600
+        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.CHAT) == 600
+        assert cold_load_timeout_s(0, WorkerRole.EMBED) == 120
+        assert cold_load_timeout_s(4 * 1024**3, WorkerRole.EMBED) == 120
 
     def test_cold_load_timeout_scales_giant_weights(self) -> None:
         from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 
         weights = 300 * 1024**3
-        assert cold_load_timeout_s(weights) == weights // swap_config_mod._COLD_LOAD_BYTES_PER_S
+        assert cold_load_timeout_s(weights, WorkerRole.CHAT) == 2048
+        assert cold_load_timeout_s(weights, WorkerRole.EMBED) == 2048
 
 
 class TestWarmTtlSeconds:

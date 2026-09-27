@@ -900,9 +900,8 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
 def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> None:
     # The EMBED client waits out a still-warming replica for the full cold-load
     # budget (so a cold-start burst never drops files); rerank/chat/vision keep the
-    # short interactive attempt cap (deadline None).
-    from lilbee.providers.fleet.swap_config import cold_load_timeout_s
-
+    # short interactive attempt cap (deadline None). 6 GB loads well inside the
+    # embed floor, so the deadline is that floor.
     weights = 6_000_000_000
     launches = [
         _fake_launch(WorkerRole.EMBED, weights_bytes=weights),
@@ -924,7 +923,7 @@ def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> 
         planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
     )
     FleetProvider()._ensure_fleet()
-    assert captured[WorkerRole.EMBED] == cold_load_timeout_s(weights)
+    assert captured[WorkerRole.EMBED] == 120
     assert captured[WorkerRole.RERANK] is None
 
 
@@ -1797,19 +1796,32 @@ def _captured_client_kwargs(monkeypatch, launch) -> dict:
 
 def test_clients_get_token_cap_and_cold_load_timeout(monkeypatch) -> None:
     # Each role's client carries the launch token_cap (embed/rerank input truncation,
-    # the in-process backstop) and a timeout long enough for a cold upstream load,
-    # matching the old supervisor's client construction.
-    launch = _fake_launch(WorkerRole.EMBED)
+    # the in-process backstop) and a timeout long enough for a cold upstream load:
+    # the embedder's two-minute cold-load floor plus the two-minute margin.
+    launch = _fake_launch(WorkerRole.EMBED, weights_bytes=_GB)
     launch.token_cap = 2048
     kwargs = _captured_client_kwargs(monkeypatch, launch)
     assert kwargs["token_cap"] == 2048
-    assert kwargs["timeout"] == prov_mod._REQUEST_TIMEOUT_FLOOR_S
+    assert kwargs["timeout"] == 240.0
 
 
 def test_small_model_client_keeps_the_floor_timeout(monkeypatch) -> None:
     launch = _fake_launch(WorkerRole.CHAT, weights_bytes=4 * _GB)
     kwargs = _captured_client_kwargs(monkeypatch, launch)
-    assert kwargs["timeout"] == prov_mod._REQUEST_TIMEOUT_FLOOR_S
+    assert kwargs["timeout"] == 900.0
+
+
+@pytest.mark.parametrize("role", [WorkerRole.CHAT, WorkerRole.VISION, WorkerRole.RERANK])
+def test_generating_roles_keep_the_request_floor(role: WorkerRole) -> None:
+    assert prov_mod._request_timeout_s(_fake_launch(role, weights_bytes=4 * _GB)) == 900.0
+
+
+def test_giant_embedder_client_timeout_covers_its_cold_load(monkeypatch) -> None:
+    # 30 GB streams in ~204s at the conservative rate, past the embed floor; the
+    # client waits out that load plus the margin, never less than llama-swap does.
+    launch = _fake_launch(WorkerRole.EMBED, weights_bytes=30 * _GB)
+    kwargs = _captured_client_kwargs(monkeypatch, launch)
+    assert kwargs["timeout"] == 324.0
 
 
 def test_giant_model_client_timeout_covers_its_cold_load(monkeypatch) -> None:
