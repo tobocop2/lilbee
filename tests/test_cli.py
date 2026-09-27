@@ -1673,6 +1673,13 @@ class TestSearch:
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
 
+    def test_search_omitted_top_k_uses_configured_value(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 7
+
     def test_search_rejects_non_positive_top_k(self, mock_svc):
         for bad in ("0", "-3"):
             result = runner.invoke(app, ["search", "q", "--top-k", bad])
