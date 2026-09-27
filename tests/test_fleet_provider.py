@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import json
 import logging
 import os
 import struct
@@ -14,11 +15,13 @@ from types import SimpleNamespace
 from unittest import mock
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from lilbee.core.config import cfg
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
+from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
@@ -1171,6 +1174,39 @@ def test_vision_ocr_timed_request_carries_repeat_penalty(monkeypatch) -> None:
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
     sent = client.chat_bounded.call_args.kwargs["options"]
     assert sent == {"max_tokens": 1024, "repeat_penalty": 1.1, "repeat_last_n": 64}
+
+
+@pytest.mark.parametrize(
+    ("timeout", "streamed"),
+    [(300.0, True), (None, False)],
+    ids=["timed-ingest", "untimed"],
+)
+def test_vision_ocr_request_body_carries_sampler_options(
+    monkeypatch, timeout: float | None, streamed: bool
+) -> None:
+    # A real client over a mock transport: the options must reach the posted JSON body.
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 1024)
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        if streamed:
+            return httpx.Response(
+                200, text='data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
+            )
+        return httpx.Response(200, json={"choices": [{"message": {"content": "page"}}]})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu")
+    client = LlamaServerClient("http://gpu", "vision-model", http=http)
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=timeout) == "page"
+    (body,) = bodies
+    assert body["stream"] is streamed
+    assert body["messages"]  # the page image and prompt are in the same body
+    assert body["max_tokens"] == 1024
+    assert body["repeat_penalty"] == 1.1
+    assert body["repeat_last_n"] == 64
 
 
 def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
