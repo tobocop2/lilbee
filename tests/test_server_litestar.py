@@ -1160,6 +1160,17 @@ class TestConfigSchemaRoute:
         assert entry["type"] == "str"
         assert entry["nullable"] is False
 
+    def test_advanced_flag_matches_the_settings_map(self, client):
+        """``advanced`` is read off SETTINGS_MAP, not restated per field."""
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        entries = self._by_key(client)
+        assert entries["reranker_type"]["advanced"] is True
+        assert entries["top_k"]["advanced"] is False
+        assert {key for key, entry in entries.items() if entry["advanced"]} == {
+            key for key, defn in SETTINGS_MAP.items() if defn.advanced
+        }
+
 
 class TestConfigUpdateRoute:
     @mock.patch(

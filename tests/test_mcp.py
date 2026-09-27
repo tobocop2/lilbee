@@ -1716,6 +1716,15 @@ class TestSettingsMcp:
         assert result["setting"]["key"] == "top_k"
         assert result["setting"]["value"] == 7
 
+    def test_settings_carry_the_advanced_flag(self, isolated_env):
+        cfg.data_root = isolated_env
+        assert settings_get("top_k")["setting"]["advanced"] is False
+        assert settings_get("reranker_type")["setting"]["advanced"] is True
+        result = settings_list()
+        by_key = {entry["key"]: entry["advanced"] for entry in result["settings"]}
+        assert by_key["max_reasoning_chars"] is True
+        assert by_key["chunk_size"] is False
+
     def test_settings_get_unknown_key_returns_error(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_get("bogus")

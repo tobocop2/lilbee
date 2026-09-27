@@ -155,4 +155,12 @@ SettingsScreen {
     .setting-list-restore {
         margin-top: 1;
     }
+
+    .settings-advanced-collapsible {
+        margin-top: 1;
+    }
+
+    .settings-advanced-collapsible .setting-row {
+        margin-bottom: 1;
+    }
 }

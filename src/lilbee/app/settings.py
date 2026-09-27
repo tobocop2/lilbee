@@ -49,6 +49,7 @@ class SettingInfo:
     help_text: str
     choices: tuple[str, ...] | None
     reindex_required: bool
+    advanced: bool
 
 
 @dataclass(frozen=True)
@@ -99,6 +100,7 @@ def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
     group = definition.group if definition else SettingGroup.MODELS
     help_text = _setting_help(key, definition)
     choices = definition.choices if definition else None
+    advanced = definition.advanced if definition else False
     return SettingInfo(
         key=key,
         value=getattr(cfg, key),
@@ -109,6 +111,7 @@ def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
         help_text=help_text,
         choices=choices,
         reindex_required=key in REINDEX_FIELDS,
+        advanced=advanced,
     )
 
 

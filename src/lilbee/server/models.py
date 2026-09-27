@@ -388,6 +388,7 @@ class ConfigFieldSchema(BaseModel):
     group: SettingGroup
     help: str
     choices: list[str] | None
+    advanced: bool
 
 
 class ConfigSchemaResponse(BaseModel):

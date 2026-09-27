@@ -105,6 +105,7 @@ def _field_schema(info: SettingInfo) -> ConfigFieldSchema:
         group=info.group,
         help=info.help_text,
         choices=list(info.choices) if info.choices else None,
+        advanced=info.advanced,
     )
 
 

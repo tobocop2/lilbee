@@ -15461,3 +15461,38 @@ async def test_settings_invalid_regex_error_shows_brackets_as_written():
         error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
         rendered = str(error.render())
     assert "bad character in group name '[/x]'" in rendered
+
+
+async def test_settings_advanced_section_expands_and_reaches_field_at_80x24():
+    """The Models tab's Advanced section expands with the keyboard and its
+    field is reachable, at the 80x24 floor the settings screen must support.
+    """
+    from textual.widgets import Select
+    from textual.widgets._collapsible import Collapsible, CollapsibleTitle
+
+    from lilbee.cli.tui.screens.settings_widgets import ADVANCED_COLLAPSIBLE_ID_PREFIX
+    from tests._async_wait import wait_until
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(80, 24)) as pilot:
+        collapsible = app.screen.query_one(
+            f"#{ADVANCED_COLLAPSIBLE_ID_PREFIX}settings-tab-models", Collapsible
+        )
+        assert collapsible.collapsed is True
+
+        title = collapsible.query_one(CollapsibleTitle)
+        title.focus()
+        assert await wait_until(pilot, lambda: isinstance(app.focused, CollapsibleTitle))
+        assert isinstance(app.focused, CollapsibleTitle)
+
+        await pilot.press("enter")
+        assert await wait_until(pilot, lambda: collapsible.collapsed is False), (
+            "Enter on the header must expand the section"
+        )
+
+        await pilot.press("tab")
+        assert await wait_until(pilot, lambda: isinstance(app.focused, Select))
+        assert isinstance(app.focused, Select), (
+            f"tab past the expanded header should reach reranker_type, got {app.focused}"
+        )
+        assert app.focused.id == "ed-reranker_type"
