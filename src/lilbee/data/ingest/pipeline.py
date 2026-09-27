@@ -74,8 +74,12 @@ from lilbee.data.ingest.fanout import (
 )
 from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
+    SkipKind,
+    SkipRecords,
+    clear_failed_markers,
     clear_skip_markers,
     describe_skips,
+    held_out_names,
     load_skip_markers,
     update_skip_records,
 )
@@ -870,20 +874,21 @@ def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
         log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
 
 
-def _load_sync_skip_markers(*, clear_first: bool) -> dict[str, str]:
-    """Read the skip-marker file, optionally clearing it first.
+def _load_sync_skip_markers(*, force_rebuild: bool, retry_skipped: bool) -> dict[str, str]:
+    """Read the skip-marker file, after clearing every marker or only the failed ones.
 
     Entries are kept whether or not this pass discovered the file. A marker is
     what holds a removed or unextractable file out of the next sync, so a pass
     that cannot see the file -- its root is unmounted or moved, or this worker
     owns only a shard of the corpus -- must not erase the record and re-offer
     the file the moment it comes back. A marker is dropped when the file
-    ingests cleanly, or by ``retry-skipped`` / ``rebuild``.
+    ingests cleanly, by ``rebuild``, or for a failure by ``retry-skipped``.
     """
     data_root = active_config().data_root
-    if clear_first:
-        # Clearing the markers makes the diff re-include the skipped files.
+    if force_rebuild:
         clear_skip_markers(data_root)
+    elif retry_skipped:
+        clear_failed_markers(data_root)
     return load_skip_markers(data_root)
 
 
@@ -897,23 +902,28 @@ def _persist_skip_records(
     """Merge this sync's verdicts into the skip records as they are on disk now.
 
     Only the files this sync decided on change: a clean ingest drops its
-    record, a file that produced no chunks gains one with its reason. Records
-    written or cleared since the sync started (a reset, a removal, a rolled
-    back add) stand. Reasons whose marker is gone are dropped in the same step.
+    record, a file that produced no chunks gains one with its reason and the
+    FAILED kind. Records written or cleared since the sync started (a reset, a
+    removal, a rolled back add) keep their reason and kind.
     """
     dropped = list(succeeded)
     held = list(failed)
     marked = {name: fhash for name in held if (fhash := pending_hashes.get(name))}
 
-    def _merge(markers: dict[str, str], recorded: dict[str, str]) -> None:
+    def _merge(records: SkipRecords) -> None:
         for name in dropped:
-            markers.pop(name, None)
-        markers.update(marked)
-        recorded.update({name: reasons[name] for name in held if name in reasons})
-        for name in [name for name in recorded if name not in markers]:
-            del recorded[name]
+            records.markers.pop(name, None)
+        records.markers.update(marked)
+        records.reasons.update({name: reasons[name] for name in held if name in reasons})
+        records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
 
     update_skip_records(active_config().data_root, _merge)
+
+
+def _failures_among(held: Iterable[str]) -> list[str]:
+    """The files in *held* that an ingestion failure holds out, in order; removals are left out."""
+    failed = set(held_out_names(active_config().data_root))
+    return [name for name in held if name in failed]
 
 
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
@@ -1209,8 +1219,8 @@ async def sync(
     When *cancel* is set mid-run, planning and processing stop between files
     without data loss (completed work is flushed) and CancelledError is raised;
     a cancel already set on entry returns an empty result instead.
-    When *retry_skipped* (or *force_rebuild*) is set, the failed-file skip
-    markers are cleared so this sync attempts every file.
+    When *retry_skipped* is set, the failed-file skip markers are cleared so this
+    sync attempts those files again; *force_rebuild* clears removals too.
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
     dropped from the index. Off by default: the patterns govern what sync takes
     in, and removing what a past sync already indexed is the caller's decision.
@@ -1249,7 +1259,7 @@ async def sync(
     disk_files = scan.files
     sources = _store.get_sources()
     existing_sources = {s["filename"]: s for s in sources}
-    skip_markers = _load_sync_skip_markers(clear_first=force_rebuild or retry_skipped)
+    skip_markers = _load_sync_skip_markers(force_rebuild=force_rebuild, retry_skipped=retry_skipped)
 
     failed: dict[str, None] = {}
     # Refused formats start the run skipped; they get no skip marker (no planned hash).
@@ -1365,7 +1375,7 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=describe_skips(config.data_root, state.held_out),
+        held_out=describe_skips(config.data_root, _failures_among(state.held_out)),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
     )

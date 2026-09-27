@@ -11,6 +11,7 @@ from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
 from lilbee.core.config import cfg
+from lilbee.data.ingest.skip_marker import clear_failed_markers
 
 log = logging.getLogger(__name__)
 
@@ -146,17 +147,9 @@ class LilbeeCommandProvider(Provider):
         self._app.action_run_sync()
 
     def _action_retry_skipped(self) -> None:
-        """Clear the failed-file markers and kick off a sync to retry them.
-
-        Clearing the marker cache and then running a normal sync is
-        equivalent to ``lilbee sync --retry-skipped`` / ``POST /api/sync``
-        with ``retry_skipped=true``.
-        """
-        from lilbee.data.ingest.skip_marker import clear_skip_markers, load_skip_markers
-
-        cleared = len(load_skip_markers(cfg.data_root))
-        clear_skip_markers(cfg.data_root)
-        self.screen.app.notify(msg.retry_skipped_message(cleared))
+        """Clear the failed-file markers and start a sync, like ``lilbee sync --retry-skipped``."""
+        cleared = clear_failed_markers(cfg.data_root)
+        self.screen.app.notify(msg.retry_skipped_message(len(cleared)))
         self._app.action_run_sync()
 
     def _action_prune_ignored(self) -> None:

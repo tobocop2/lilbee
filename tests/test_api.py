@@ -239,6 +239,22 @@ class TestAdd:
 
 
 class TestRemove:
+    def test_remove_holds_a_failed_file_out_as_a_removal(self, tmp_path):
+        from lilbee import Lilbee
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            write_skip_markers,
+        )
+
+        bee = Lilbee(tmp_path / "proj")
+        _write_doc(bee.config.documents_dir, "scan.md", "# Scan\nHeld out by a failure.")
+        write_skip_markers(bee.config.data_root, {"scan.md": "h1"})
+
+        bee.remove("scan.md")
+
+        assert load_skip_kinds(bee.config.data_root) == {"scan.md": SkipKind.REMOVED}
+
     def test_remove_deletes_from_index(self, tmp_path):
         from lilbee import Lilbee
 

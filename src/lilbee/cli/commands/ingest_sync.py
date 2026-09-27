@@ -19,6 +19,7 @@ from lilbee.app.ingest import (
     RegisterResult,
     expand_remove_targets,
     register_sources,
+    removable_names,
     remove_documents_durably,
 )
 from lilbee.app.search import clean_result
@@ -650,14 +651,15 @@ def remove(
     """Remove documents from the knowledge base by source name, folder, or glob pattern.
 
     A folder name removes every document indexed beneath it; a glob pattern
-    (containing ``*``, ``?``, or ``[]``) removes every source it matches. Source
-    files on disk are never deleted.
+    (containing ``*``, ``?``, or ``[]``) removes every source it matches. A file
+    held out because its ingestion failed can be named too; it stays out of later
+    syncs. Source files on disk are never deleted.
     """
     apply_overrides(data_dir=data_dir, use_global=use_global)
     # Remove only touches the store, never the engine; skip the eager fleet warm.
     cfg.worker_pool_eager_start = False
 
-    known = [s["filename"] for s in get_services().store.get_sources()]
+    known = removable_names()
     targets = expand_remove_targets(names, known=known)
     expanded = sorted(set(targets)) != sorted(set(names))
     if expanded and not yes and not cfg.json_mode:

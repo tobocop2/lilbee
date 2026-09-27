@@ -460,7 +460,7 @@ class EmbeddingModelMismatchError(RuntimeError):
 
 @dataclass
 class RemoveResult:
-    """Result of a remove_documents operation."""
+    """Result of a remove: *removed* can also name held-out files and root labels."""
 
     removed: list[str]
     not_found: list[str]

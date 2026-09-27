@@ -2622,6 +2622,25 @@ class TestSlashSuggester:
         assert s._get_document_names() == ["notes.md", "todo.txt"]
         assert await s.get_suggestion("/delete no") == "/delete notes.md"
 
+    async def test_delete_suggests_a_held_out_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``/delete`` completes a file that ingestion held out, beside an indexed one."""
+        from types import SimpleNamespace
+
+        from lilbee.cli.tui.widgets import autocomplete as autocomplete_mod
+        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+        fake = SimpleNamespace(
+            store=SimpleNamespace(get_sources=lambda: [{"filename": "notes.md"}])
+        )
+        monkeypatch.setattr(autocomplete_mod, "get_services", lambda: fake)
+
+        s = SlashSuggester(use_cache=False)
+        assert await s.get_suggestion("/delete no") == "/delete notes.md"
+        assert await s.get_suggestion("/delete sc") == "/delete scan.pdf"
+
     @mock.patch("lilbee.cli.tui.widgets.suggester.SlashSuggester._get_model_names")
     async def test_suggest_model_arg(self, mock_names: mock.MagicMock) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
@@ -2980,19 +2999,7 @@ class TestSettingOptions:
 
 
 class TestDocumentOptions:
-    """``_document_options`` caches the store's source list across Tab presses.
-
-    The cache is process-local; each test invalidates it up front so it
-    doesn't leak between cases.
-    """
-
-    @pytest.fixture(autouse=True)
-    def _reset_doc_cache(self):
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
-
-        invalidate_document_cache()
-        yield
-        invalidate_document_cache()
+    """``_document_options`` lists every ``/delete`` target from an uncached read."""
 
     def test_returns_filenames(self) -> None:
         from lilbee.cli.tui.widgets.autocomplete import _document_options
@@ -3018,31 +3025,30 @@ class TestDocumentOptions:
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
             assert _document_options() == ["b.pdf"]
 
-    def test_second_call_hits_cache(self) -> None:
-        """Second call must not re-invoke ``get_sources``."""
+    def test_held_out_sources_follow_indexed_ones(self) -> None:
+        """A held-out file is a ``/delete`` target; one also indexed is listed once."""
         from lilbee.cli.tui.widgets.autocomplete import _document_options
+        from lilbee.core.config import cfg
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "a.txt": "h2"})
+        mock_svc = mock.MagicMock()
+        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
+            assert _document_options() == ["a.txt", "scan.pdf"]
+
+    def test_delete_completion_reflects_a_store_change_at_once(self) -> None:
+        """A source added after a completion is offered by the next Tab, with no invalidation."""
+        from lilbee.cli.tui.widgets.autocomplete import get_completions
 
         mock_svc = mock.MagicMock()
         mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
         with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            assert _document_options() == ["a.txt"]
-            assert _document_options() == ["a.txt"]
-            assert mock_svc.store.get_sources.call_count == 1
-
-    def test_invalidate_forces_refetch(self) -> None:
-        """``invalidate_document_cache`` drops the memo; next call refetches."""
-        from lilbee.cli.tui.widgets.autocomplete import (
-            _document_options,
-            invalidate_document_cache,
-        )
-
-        mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
-        with mock.patch("lilbee.cli.tui.widgets.autocomplete.get_services", return_value=mock_svc):
-            _document_options()
-            invalidate_document_cache()
-            _document_options()
-            assert mock_svc.store.get_sources.call_count == 2
+            assert get_completions("/delete ") == ["a.txt"]
+            mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+            assert get_completions("/delete ") == ["a.txt", "b.md"]
+            mock_svc.store.get_sources.return_value = []
+            assert get_completions("/delete ") == []
 
 
 class TestThemeOptions:

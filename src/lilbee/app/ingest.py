@@ -12,8 +12,17 @@ from pathlib import Path
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
-from lilbee.data.ingest.discovery import excluded_extension_reasons
-from lilbee.data.ingest.skip_marker import update_skip_records
+from lilbee.data.ingest.discovery import (
+    excluded_extension_reasons,
+    file_hash,
+    resolve_source_path,
+)
+from lilbee.data.ingest.skip_marker import (
+    SkipRecords,
+    held_out_names,
+    mark_removed,
+    update_skip_records,
+)
 from lilbee.data.store.types import RemoveResult
 
 
@@ -166,24 +175,22 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
 
 
 def unmark_sources_under(paths: list[Path]) -> None:
-    """Drop the skip markers and reasons for every source *paths* covers.
+    """Drop the skip records (marker, reason and kind) of every source *paths* covers.
 
     A marker exists to stop *discovery* from resurrecting a source the user
     removed, or from re-paying the extract cost on a file that yielded nothing.
     Naming the path outranks it: ``add`` is the user asking for that source
     back, so the marker goes and the sync that follows ingests the file again.
-    Without this a removal would be permanent, undoable only by
-    ``retry-skipped`` or ``rebuild``, neither of which the user has any reason
-    to reach for after typing the path they want.
+    Without this a removal would be permanent, undoable only by ``rebuild``,
+    which the user has no reason to reach for after typing the path they want.
 
     Each root in *paths* must be registered when this runs: marker keys resolve
     to files through the live registry.
     """
 
-    def _drop_covered(markers: dict[str, str], reasons: dict[str, str]) -> None:
-        for name in _markers_covering(markers, paths):
-            markers.pop(name)
-            reasons.pop(name, None)
+    def _drop_covered(records: SkipRecords) -> None:
+        for name in _markers_covering(records.markers, paths):
+            records.markers.pop(name)
 
     update_skip_records(active_config().data_root, _drop_covered)
 
@@ -196,8 +203,6 @@ def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
     registered root, and a single-file root are all matched by the one rule
     instead of three shape-specific ones.
     """
-    from lilbee.data.ingest.discovery import resolve_source_path
-
     named = [p.resolve() for p in paths]
     covered = set()
     for name in markers:
@@ -206,8 +211,6 @@ def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
             covered.add(name)
     return covered
 
-
-_REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skipped to restore)"
 
 _GLOB_CHARS = frozenset("*?[")
 
@@ -218,7 +221,7 @@ def _is_glob(name: str) -> bool:
 
 
 def folder_members(name: str, known: Iterable[str]) -> list[str]:
-    """Indexed sources under folder *name*, matched on whole path segments.
+    """Known sources under folder *name*, matched on whole path segments.
 
     ``myrepo`` covers ``myrepo/a.py`` but never ``myrepo-2/x``. Empty when *name*
     is not a parent directory of any known source.
@@ -227,19 +230,27 @@ def folder_members(name: str, known: Iterable[str]) -> list[str]:
     return [source for source in known if source.startswith(prefix)]
 
 
-def expand_remove_targets(names: list[str], known: list[str] | None = None) -> list[str]:
-    """Expand folder names and glob patterns to the indexed sources they cover.
+def removable_names(indexed: list[str] | None = None) -> list[str]:
+    """What a remove can name: *indexed* (the store's sources when not given), then failures."""
+    if indexed is None:
+        indexed = [s["filename"] for s in get_services().store.get_sources()]
+    seen = set(indexed)
+    failed = held_out_names(active_config().data_root)
+    return indexed + [name for name in failed if name not in seen]
 
-    An exact source name is kept. A folder name (a parent directory of indexed
+
+def expand_remove_targets(names: list[str], known: list[str] | None = None) -> list[str]:
+    """Expand folder names and glob patterns to the known sources they cover.
+
+    An exact source name is kept. A folder name (a parent directory of known
     sources) expands to every source beneath it. A glob (a name containing
     ``* ? [``) expands to every source it fnmatches. A name matching none of
     these is kept unchanged so the caller reports it not-found. Order and
-    de-duplication are preserved. *known* (the indexed source filenames) is read
-    from the store when not supplied; a caller that already has it passes it to
-    avoid a second read.
+    de-duplication are preserved. *known* is ``removable_names()`` when not
+    supplied; a caller that already has it passes it to avoid a second read.
     """
     if known is None:
-        known = [s["filename"] for s in get_services().store.get_sources()]
+        known = removable_names()
     known_set = set(known)
     expanded: list[str] = []
     seen: set[str] = set()
@@ -299,40 +310,57 @@ log = logging.getLogger(__name__)
 def remove_documents_durably(names: list[str], targets: list[str] | None = None) -> RemoveResult:
     """Remove documents from the index (folders and globs expand) and make it stick.
 
-    Never deletes source bytes. A folder or glob argument expands to every
-    indexed source it covers. Each removed source gets a skip-marker keyed on its
-    current hash so the next sync treats it as unchanged-and-skipped instead of
-    re-ingesting it. Removing a top-level registered root instead un-registers it
-    (discovery then can't re-find its files, so no markers are needed for them).
-    Editing the source (new hash), ``retry-skipped``, or ``rebuild`` restores it.
+    Never deletes source bytes. A name is an indexed source, a file an ingestion
+    failure holds out, a folder or glob covering either, or a registered root.
+    Each removed file is held out of every later sync as a removal, at its
+    current hash, so a held-out failure stays out instead of being retried.
+    Removing a registered root un-registers it and drops the skip records under
+    it: discovery can no longer find its files. Editing the source (new hash),
+    ``rebuild`` or adding the path again restores it; ``retry-skipped`` does not.
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
     """
-    from lilbee.data.ingest.discovery import file_hash, resolve_source_path
-
     if targets is None:
         targets = expand_remove_targets(names)
     result = get_services().store.remove_documents(targets)
-    if not result.removed:
-        return result
-    unregistered = unregister_roots(names)
-    held: dict[str, str] = {}
-    for name in result.removed:
-        if any(name == root or name.startswith(root + "/") for root in unregistered):
+    failed = set(held_out_names(active_config().data_root))
+    held = [name for name in result.not_found if name in failed]
+    roots = forget_roots(names)
+    _hold_out_removed([*result.removed, *held], roots)
+    forget_removed_from_wiki_index(list(result.removed))
+    missing = [name for name in result.not_found if name not in failed]
+    emptied = [name for name in missing if name.strip("/") in roots]
+    return RemoveResult(
+        removed=[*result.removed, *held, *emptied],
+        not_found=[name for name in missing if name not in emptied],
+    )
+
+
+def forget_roots(names: list[str]) -> list[str]:
+    """Un-register every root named in *names* and drop the skip records under it."""
+    roots = active_config().linked_roots
+    named = [Path(roots[label]) for label in (name.strip("/") for name in names) if label in roots]
+    unmark_sources_under(named)  # records resolve through the registry, so before un-registering
+    return unregister_roots(names)
+
+
+def _hold_out_removed(names: list[str], roots: list[str]) -> None:
+    """Hold each of *names* out of later syncs as a removal, except under an un-registered root.
+
+    The marker takes the file's current hash. An imported source has no file and
+    needs no marker; a held-out file that is not reachable keeps its marker's hash.
+    """
+    hashes: dict[str, str] = {}
+    unreachable: list[str] = []
+    for name in names:
+        if any(name == root or name.startswith(root + "/") for root in roots):
             continue  # the root is gone; discovery won't resurrect these
         path = resolve_source_path(name)
-        # Imported sources have no file on disk; sync never re-ingests them, so a
-        # marker is only needed for a real file that would otherwise be re-found.
         if path.exists():
-            held[name] = file_hash(path)
-
-    def _hold(markers: dict[str, str], reasons: dict[str, str]) -> None:
-        markers.update(held)
-        reasons.update(dict.fromkeys(held, _REMOVED_SKIP_REASON))
-
-    update_skip_records(active_config().data_root, _hold)
-    forget_removed_from_wiki_index(list(result.removed))
-    return result
+            hashes[name] = file_hash(path)
+        else:
+            unreachable.append(name)
+    mark_removed(active_config().data_root, hashes, unreachable)
 
 
 def forget_removed_from_wiki_index(removed: list[str]) -> None:

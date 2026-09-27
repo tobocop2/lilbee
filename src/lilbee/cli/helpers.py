@@ -148,7 +148,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         more = f" ({hidden} more not shown)" if hidden > 0 else ""
         yield styled(
             (str(status.skipped_total), theme.LABEL),
-            f" held out{more}; run 'lilbee sync --retry-skipped' to try them again",
+            f" held out{more}; 'lilbee sync --retry-skipped' retries failed files",
         )
         yield ""
 

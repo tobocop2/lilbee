@@ -36,6 +36,7 @@ from textual.widgets import Footer, Markdown, Select, Static
 from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
+from lilbee.app.ingest import removable_names, remove_documents_durably
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
 from lilbee.app.settings_map import SETTINGS_MAP
@@ -1160,7 +1161,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, msg.CMD_DELETE_READ_FAILED, severity="error")
             return
 
-        known = {s.get("filename", s.get("source", "?")) for s in sources}
+        known = set(removable_names([s.get("filename", s.get("source", "?")) for s in sources]))
         if not known:
             call_from_thread(self, self.notify, msg.CMD_DELETE_NO_DOCS, severity="warning")
             return
@@ -1178,13 +1179,7 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, message, severity="error")
             return
 
-        from lilbee.app.ingest import remove_documents_durably
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
-
-        # Skip-mark so the next sync doesn't re-ingest the kept file (durable,
-        # non-destructive delete; the file stays on disk).
         remove_documents_durably([name])
-        invalidate_document_cache()
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:
@@ -1244,7 +1239,6 @@ class ChatScreen(Screen[None]):
     def _do_import(self, raw_path: str, reporter: ProgressReporter) -> None:
         """Import body. Runs on the task worker thread."""
         from lilbee.app.dataset import DatasetError, import_from_path
-        from lilbee.cli.tui.widgets.autocomplete import invalidate_document_cache
 
         reporter.update(0, msg.IMPORT_STATUS_LOADING, indeterminate=True)
         try:
@@ -1258,7 +1252,6 @@ class ChatScreen(Screen[None]):
         except DatasetError as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             raise RuntimeError(str(exc)) from exc
-        invalidate_document_cache()
         call_from_thread(
             self,
             self.notify,

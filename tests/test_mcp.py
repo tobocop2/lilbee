@@ -402,6 +402,28 @@ class TestSync:
 
 
 class TestRemove:
+    def test_holds_a_failed_file_out_as_a_removal(self, mock_svc):
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            load_skip_kinds,
+            write_skip_markers,
+        )
+        from lilbee.data.store import RemoveResult
+
+        cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.documents_dir / "scan.pdf").write_bytes(b"%PDF-1.4")
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+            removed=[], not_found=list(names)
+        )
+
+        result = remove(["scan.pdf"])
+
+        assert result["removed"] == ["scan.pdf"]
+        assert result["not_found"] == []
+        assert load_skip_kinds(cfg.data_root) == {"scan.pdf": SkipKind.REMOVED}
+
     def test_removes_known_file(self, mock_svc):
         from lilbee.data.store import RemoveResult
 

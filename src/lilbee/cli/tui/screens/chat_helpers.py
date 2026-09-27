@@ -10,14 +10,12 @@ import time
 import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
-from lilbee.core.config import active_config
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
     BatchProgressEvent,
@@ -145,12 +143,10 @@ def unregister_added_roots(labels: list[str]) -> None:
     dropped, with the skip records its sync wrote under them; the source bytes on
     disk and files the user owns are never touched.
     """
-    from lilbee.app.ingest import unmark_sources_under, unregister_roots
+    from lilbee.app.ingest import forget_roots
 
     if labels:
-        roots = active_config().linked_roots
-        unmark_sources_under([Path(roots[label]) for label in labels if label in roots])
-        unregister_roots(labels)
+        forget_roots(labels)
 
 
 def add_indexed_anything(registered: list[str], result: SyncResult) -> bool:

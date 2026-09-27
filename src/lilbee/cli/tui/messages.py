@@ -83,8 +83,8 @@ SYNC_HELD_OUT = (
 STATUS_HELD_OUT_TITLE = "Held out of the index"
 STATUS_HELD_OUT_EMPTY = "No files are held out."
 STATUS_HELD_OUT_MORE = "{count} more held out"
-CMD_RETRY_SKIPPED_NONE = "No skipped files to retry; running a normal sync."
-CMD_RETRY_SKIPPED_SOME = "Cleared {count} skip marker(s); retrying those files."
+CMD_RETRY_SKIPPED_NONE = "No failed files to retry; running a normal sync."
+CMD_RETRY_SKIPPED_SOME = "Retrying {count} failed file(s); removed sources stay removed."
 CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
 CMD_PRUNE_IGNORED_SOME = "Dropped {count} document(s) your ignore patterns exclude."
 

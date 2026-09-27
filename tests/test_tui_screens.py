@@ -2971,6 +2971,119 @@ async def test_chat_slash_delete_empty_sources(mock_svc):
             assert "No documents" in mock_notify.call_args[0][0]
 
 
+async def _tab_complete(app, pilot, typed: str) -> str:
+    """Type *typed* into the chat input, press Tab, and return the input value."""
+    inp = app.screen.query_one("#chat-input", ChatInput)
+    inp.focus()
+    inp.value = typed
+    await pilot.pause()
+    await pilot.press("tab")
+    await pilot.pause()
+    return inp.value
+
+
+async def test_chat_tab_completes_a_held_out_source_for_delete(mock_svc):
+    """``/delete <Tab>`` offers a file ingestion held out when nothing is indexed."""
+    from lilbee.data.ingest.skip_marker import write_skip_markers
+
+    write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        assert await _tab_complete(app, pilot, "/delete sc") == "/delete scan.pdf"
+
+
+async def test_chat_tab_delete_completion_follows_the_store(mock_svc):
+    """A source indexed after the first ``/delete <Tab>`` is offered by the next one."""
+    mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        assert await _tab_complete(app, pilot, "/delete a") == "/delete a.txt"
+        mock_svc.store.get_sources.return_value = [{"filename": "a.txt"}, {"filename": "b.md"}]
+        assert await _tab_complete(app, pilot, "/delete b") == "/delete b.md"
+
+
+async def test_chat_slash_delete_forgets_a_held_out_single_file_root(mock_svc, tmp_path):
+    """Deleting a held-out single-file root drops its record, its reason and the root."""
+    from lilbee.app.ingest import register_sources
+    from lilbee.data.ingest.skip_marker import (
+        load_skip_markers,
+        load_skip_reasons,
+        write_skip_markers,
+        write_skip_reasons,
+    )
+    from lilbee.data.store import RemoveResult
+
+    scan = tmp_path / "scan.pdf"
+    scan.write_bytes(b"%PDF-1.4")
+    keep = tmp_path / "keep.pdf"
+    keep.write_bytes(b"%PDF-1.4")
+    register_sources([scan, keep])
+    write_skip_markers(cfg.data_root, {"scan.pdf": "h1", "keep.pdf": "h2"})
+    write_skip_reasons(cfg.data_root, {"scan.pdf": "no text", "keep.pdf": "no text"})
+    mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        removed=[], not_found=list(names)
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/delete scan.pdf")
+            await app.screen.workers.wait_for_complete()
+            await pilot.pause()
+        assert mock_notify.call_args[0][0] == "Deleted scan.pdf"
+    assert load_skip_markers(cfg.data_root) == {"keep.pdf": "h2"}
+    assert load_skip_reasons(cfg.data_root) == {"keep.pdf": "no text"}
+    assert set(cfg.linked_roots) == {"keep.pdf"}
+    assert scan.exists()
+
+
+async def test_chat_slash_delete_turns_a_failure_under_a_directory_root_into_a_removal(
+    mock_svc, tmp_path
+):
+    """A held-out file under a folder stays out as a removal; the folder stays registered."""
+    from lilbee.app.ingest import register_sources
+    from lilbee.data.ingest.discovery import file_hash
+    from lilbee.data.ingest.skip_marker import (
+        SkipKind,
+        held_out_names,
+        load_skip_kinds,
+        load_skip_markers,
+        write_skip_markers,
+    )
+    from lilbee.data.store import RemoveResult
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    bad = corpus / "bad.pdf"
+    bad.write_bytes(b"%PDF-1.4")
+    register_sources([corpus])
+    write_skip_markers(cfg.data_root, {"corpus/bad.pdf": "h1", "corpus/other.pdf": "h2"})
+    mock_svc.store.get_sources.return_value = [{"filename": "corpus/good.md"}]
+    mock_svc.store.remove_documents.side_effect = lambda names: RemoveResult(
+        removed=[], not_found=list(names)
+    )
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/delete corpus/bad.pdf")
+            await app.screen.workers.wait_for_complete()
+            await pilot.pause()
+        assert mock_notify.call_args[0][0] == "Deleted corpus/bad.pdf"
+    assert load_skip_markers(cfg.data_root) == {
+        "corpus/bad.pdf": file_hash(bad),
+        "corpus/other.pdf": "h2",
+    }
+    assert load_skip_kinds(cfg.data_root) == {
+        "corpus/bad.pdf": SkipKind.REMOVED,
+        "corpus/other.pdf": SkipKind.FAILED,
+    }
+    assert held_out_names(cfg.data_root) == ["corpus/other.pdf"]
+    assert set(cfg.linked_roots) == {"corpus"}
+
+
 class _DatasetStubEmbedder:
     truncated_total = 0
 
@@ -3101,17 +3214,11 @@ async def test_chat_slash_import_round_trip(tmp_path):
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         set_services(services)
-        with (
-            patch.object(app.screen, "notify") as mock_notify,
-            patch(
-                "lilbee.cli.tui.widgets.autocomplete.invalidate_document_cache"
-            ) as mock_invalidate,
-        ):
+        with patch.object(app.screen, "notify") as mock_notify:
             app.screen._cmd_import(str(out))
             task = await _wait_for_dataset_task(app, _pilot, TaskType.IMPORT)
             assert task.status == TaskStatus.DONE
             assert "Imported" in mock_notify.call_args[0][0]
-            mock_invalidate.assert_called_once()
     set_services(None)
 
 
@@ -4904,12 +5011,24 @@ async def test_command_provider_wipe_wiki_action_with_wiki_off(tmp_path):
 
 
 async def test_command_provider_retry_skipped_action(tmp_path):
-    """Palette 'Retry skipped documents' clears the marker file and starts a sync."""
+    """Palette 'Retry skipped documents' clears the failed markers only and starts a sync."""
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+    from lilbee.cli.tui.messages import retry_skipped_message
+    from lilbee.data.ingest.skip_marker import (
+        SkipKind,
+        SkipRecords,
+        load_skip_markers,
+        write_skip_records,
+    )
 
     cfg.data_root = tmp_path
-    write_skip_markers(tmp_path, {"stuck.pdf": "deadbeef"})
+    write_skip_records(
+        tmp_path,
+        SkipRecords(
+            markers={"stuck.pdf": "deadbeef", "gone.txt": "cafef00d"},
+            kinds={"stuck.pdf": SkipKind.FAILED, "gone.txt": SkipKind.REMOVED},
+        ),
+    )
 
     app = LilbeeApp()
     async with app.run_test(size=(120, 40)) as _pilot:
@@ -4917,10 +5036,14 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
-        with patch.object(app, "action_run_sync") as mock_sync:
+        with (
+            patch.object(app, "action_run_sync") as mock_sync,
+            patch.object(app, "notify") as notify,
+        ):
             provider._action_retry_skipped()
             mock_sync.assert_called_once()
-        assert load_skip_markers(tmp_path) == {}
+        notify.assert_called_once_with(retry_skipped_message(1))
+        assert load_skip_markers(tmp_path) == {"gone.txt": "cafef00d"}
 
 
 async def test_command_provider_prune_ignored_dispatches_the_command(mock_svc):
