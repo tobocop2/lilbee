@@ -369,17 +369,12 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
 
 def analysis_config() -> ExtractionConfig:
     """Native extraction for corpus analysis: no OCR, no layout model, tables and languages on."""
-    from xberg import (
-        ExtractionConfig,
-        LanguageDetectionConfig,
-        OcrConfig,
-        PageConfig,
-        PdfConfig,
-    )
+    from xberg import ExtractionConfig, LanguageDetectionConfig, PageConfig, PdfConfig
 
+    # No OCR block at all: xberg 1.2.7 OCRs a PDF's page images whenever one is present,
+    # even disabled (fixed in 1.2.9).
     return ExtractionConfig(
         disable_ocr=True,
-        ocr=OcrConfig(enabled=False),
         pages=PageConfig(extract_pages=True),
         pdf_options=PdfConfig(extract_tables=True),
         language_detection=LanguageDetectionConfig(enabled=True, detect_multiple=True),
