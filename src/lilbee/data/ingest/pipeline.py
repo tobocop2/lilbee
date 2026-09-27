@@ -41,6 +41,7 @@ from lilbee.data.extract.document import (
     ingest_archive,
     ingest_document,
     ingest_markdown,
+    ocr_backend,
     warn_if_table_model_ignored,
 )
 from lilbee.data.extract.trace import configure_from_env as configure_trace_from_env
@@ -110,6 +111,7 @@ from lilbee.data.types import (
     FileChangePlan,
     FileToProcess,
     MemberRecords,
+    OcrBackendUsed,
     OcrReport,
     ShardId,
     SyncResult,
@@ -153,7 +155,7 @@ def _max_concurrent() -> int:
     from lilbee.providers.roles import WorkerRole
 
     config = active_config()
-    if config.vision_model:
+    if ocr_backend() is OcrBackendUsed.VISION:
         fitted = get_services().provider.vision_slot_capacity()
         if fitted is not None:
             return fitted

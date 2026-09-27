@@ -218,20 +218,20 @@ def ocr_override(
             var.reset(token)
 
 
-def _ocr_backend() -> OcrBackendUsed:
+def ocr_backend() -> OcrBackendUsed:
     """The OCR backend for this extraction; ``enable_ocr`` False wins over a vision model."""
     return OcrBackendUsed.chosen(_effective_enable_ocr(), active_config().vision_model)
 
 
 def _ocr_config(ocr_token: str | None) -> OcrConfig:
-    """xberg's OcrConfig for the backend ``_ocr_backend`` picks.
+    """xberg's OcrConfig for the backend ``ocr_backend`` picks.
 
     xberg auto-OCRs only the pages that lack a text layer.
     """
     from xberg import OcrConfig
 
     config = active_config()
-    backend = _ocr_backend()
+    backend = ocr_backend()
     if backend is OcrBackendUsed.NONE:
         return OcrConfig(enabled=False)
     if backend is OcrBackendUsed.VISION:
@@ -662,7 +662,7 @@ async def _extract_document(
         )
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
-    backend = _ocr_backend()
+    backend = ocr_backend()
     started = time.perf_counter()
     with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
         batcher = active_extract_batcher()

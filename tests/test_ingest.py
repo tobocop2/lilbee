@@ -6956,24 +6956,63 @@ def _scan_result(ocr_backends: list[str | None]) -> MagicMock:
     return result
 
 
+async def _sync_scan(isolated_env, pages: list[str | None]):
+    from lilbee.app.services import get_services
+    from lilbee.data.ingest import sync
+
+    get_services().provider.vision_slot_capacity.return_value = 1
+    (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+    with mock.patch(
+        "lilbee.data.extract.xberg.aextract_document",
+        new_callable=mock.AsyncMock,
+        return_value=_scan_result(pages),
+    ) as extract:
+        result = await sync(quiet=True)
+    return result, extract.call_args.kwargs["config"]
+
+
+class TestIngestSizingAsksTheOcrChooser:
+    """Admission is sized to vision slots only when extraction would run vision OCR."""
+
+    _VISION_MODEL = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+    async def test_ocr_off_with_a_vision_model_requests_no_vision_slots(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.app.services import get_services
+
+        cfg.enable_ocr = False
+        cfg.vision_model = self._VISION_MODEL
+        result, _ = await _sync_scan(isolated_env, [None])
+        assert result.skipped == ["scan.pdf"]  # the scan went through the ingest run
+        get_services().provider.vision_slot_capacity.assert_not_called()
+
+    async def test_ocr_unset_with_a_vision_model_requests_vision_slots(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.app.services import get_services
+
+        cfg.enable_ocr = None
+        cfg.vision_model = self._VISION_MODEL
+        await _sync_scan(isolated_env, ["lilbee-vision"])
+        get_services().provider.vision_slot_capacity.assert_called_once_with()
+
+    async def test_per_request_ocr_off_requests_no_vision_slots(self, isolated_env, mock_svc):
+        from lilbee.app.ingest import temporary_ocr_config
+        from lilbee.app.services import get_services
+
+        cfg.enable_ocr = None
+        cfg.vision_model = self._VISION_MODEL
+        with temporary_ocr_config(enable_ocr=False):
+            result, _ = await _sync_scan(isolated_env, [None])
+        assert result.skipped == ["scan.pdf"]
+        get_services().provider.vision_slot_capacity.assert_not_called()
+
+
 class TestSkippedScanReportsTheOcrThatRan:
     """A scan that yields no text is reported with the OCR its extraction ran, not the config."""
 
     _VISION_MODEL = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-
-    async def _sync_scan(self, isolated_env, pages: list[str | None]):
-        from lilbee.app.services import get_services
-        from lilbee.data.ingest import sync
-
-        get_services().provider.vision_slot_capacity.return_value = 1
-        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
-        with mock.patch(
-            "lilbee.data.extract.xberg.aextract_document",
-            new_callable=mock.AsyncMock,
-            return_value=_scan_result(pages),
-        ) as extract:
-            result = await sync(quiet=True)
-        return result, extract.call_args.kwargs["config"]
 
     async def test_ocr_off_with_a_vision_model_reports_ocr_off(
         self, isolated_env, mock_svc, caplog
@@ -6985,7 +7024,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         cfg.enable_ocr = False
         cfg.vision_model = self._VISION_MODEL
         with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
-            result, config = await self._sync_scan(isolated_env, [None, None, None])
+            result, config = await _sync_scan(isolated_env, [None, None, None])
 
         assert config.ocr.enabled is False  # a set vision model does not turn OCR back on
         assert result.skipped == ["scan.pdf"]
@@ -7008,7 +7047,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         cfg.enable_ocr = None
         cfg.vision_model = self._VISION_MODEL
         with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
-            result, _ = await self._sync_scan(isolated_env, ["lilbee-vision"] * 3)
+            result, _ = await _sync_scan(isolated_env, ["lilbee-vision"] * 3)
 
         assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=3)}
         message = sync_skipped_message(result, tui_log_path())
@@ -7034,7 +7073,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         cfg.enable_ocr = True
         cfg.vision_model = ""
         with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
-            result, _ = await self._sync_scan(isolated_env, ["tesseract", None])
+            result, _ = await _sync_scan(isolated_env, ["tesseract", None])
 
         assert result.skipped_ocr == {
             "scan.pdf": OcrReport(backend=OcrBackendUsed.TESSERACT, pages=1)
@@ -7048,7 +7087,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         cfg.enable_ocr = False
         cfg.vision_model = self._VISION_MODEL
         caplog.set_level("INFO", logger="lilbee.ingest.trace")
-        await self._sync_scan(isolated_env, [None, None])
+        await _sync_scan(isolated_env, [None, None])
         assert "ocr=none ocr_pages=0 vision=no" in caplog.text
 
     async def test_markdown_never_reaches_ocr_and_has_no_report(self, isolated_env, mock_svc):
