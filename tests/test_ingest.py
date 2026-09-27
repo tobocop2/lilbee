@@ -732,6 +732,85 @@ class TestSync:
         file_done = next(d for t, d in events if t == "file_done")
         assert file_done.status == "ok"
 
+    async def test_cli_bar_shows_the_per_file_events_of_a_sync(
+        self, mock_extract_file, isolated_env
+    ):
+        """The bar of a non-quiet sync renders the OCR-start, page and chunk events a file emits."""
+        from rich.progress import Progress
+
+        from lilbee.data.ingest import sync
+        from lilbee.data.types import DocumentRecords, OcrReport, SourceMeta
+        from lilbee.runtime.progress import (
+            EmbedEvent,
+            EventType,
+            ExtractEvent,
+            OcrStartEvent,
+        )
+
+        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+
+        async def fake_ingest_document(path, source_name, content_type, *, on_progress, **_kw):
+            on_progress(EventType.OCR_START, OcrStartEvent(file=source_name, total_pages=8))
+            on_progress(
+                EventType.EXTRACT,
+                ExtractEvent(
+                    file=source_name,
+                    page=8,
+                    total_pages=8,
+                    ocr_backend=OcrBackendUsed.TESSERACT,
+                ),
+            )
+            on_progress(EventType.EMBED, EmbedEvent(file=source_name, chunk=3, total_chunks=5))
+            return DocumentRecords(
+                [], SourceMeta(title="scan"), OcrReport(backend=OcrBackendUsed.TESSERACT)
+            )
+
+        descriptions: list[str] = []
+        totals: set[float | None] = set()
+        real_update = Progress.update
+
+        def spy_update(self, task_id, **kwargs):
+            if "description" in kwargs:
+                descriptions.append(kwargs["description"])
+            totals.add(self.tasks[0].total)
+            return real_update(self, task_id, **kwargs)
+
+        forwarded: list[object] = []
+        with (
+            mock.patch(
+                "lilbee.data.ingest.pipeline.ingest_document", side_effect=fake_ingest_document
+            ),
+            mock.patch.object(Progress, "update", spy_update),
+        ):
+            result = await sync(quiet=False, on_progress=lambda et, _d: forwarded.append(et))
+
+        mock_extract_file.assert_not_called()  # the stub replaced the whole extraction
+        assert result.skipped == ["scan.pdf"]  # the stub's zero records mark the file skipped
+        assert totals == {1}  # the bar measures the one-file corpus
+
+        assert descriptions == [
+            "Tesseract OCR on the scanned pages of scan.pdf (8 pages in the file)",
+            "Tesseract OCR scan.pdf (page 8/8)",
+            "Embedding scan.pdf (3/5)",
+            "Ingested scan.pdf",
+        ]
+        # The caller's own callback still receives every per-file event.
+        per_file = (EventType.OCR_START, EventType.EXTRACT, EventType.EMBED)
+        assert tuple(et for et in forwarded if et in per_file) == per_file
+
+    @pytest.mark.parametrize("quiet", [True, False])
+    async def test_sync_draws_the_bar_only_when_not_quiet(
+        self, mock_extract_file, quiet, isolated_env, capsys
+    ):
+        """A quiet sync (JSON output, TUI) writes nothing; a non-quiet one draws the bar."""
+        (isolated_env / "bar.txt").write_text("Bar or no bar.", encoding="utf-8")
+        from lilbee.data.ingest import sync
+
+        result = await sync(quiet=quiet)
+
+        assert "bar.txt" in result.added
+        assert (capsys.readouterr().out == "") is quiet
+
     async def test_batch_progress_measures_the_corpus_not_the_plan_so_far(
         self, mock_extract_file, isolated_env
     ):

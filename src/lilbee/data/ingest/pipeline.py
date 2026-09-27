@@ -1401,11 +1401,11 @@ def _phase_progress_callback(
 ) -> DetailedProgressCallback:
     """Wrap *chain*, updating the bar's description on per-page / per-chunk events.
 
-    EXTRACT (vision OCR page i/N), OCR_START (Tesseract running on a file) and
-    EMBED (chunk i/N) events would otherwise leave the bar frozen between file
-    completions; surfacing them on the spinner description keeps a single large
-    file's row visibly moving. All events still forward to *chain* so the
-    caller's own callback (TUI / JSON) is unaffected.
+    EXTRACT (page i/N, named for the OCR backend that ran), OCR_START (Tesseract
+    running on a file) and EMBED (chunk i/N) events would otherwise leave the bar
+    frozen between file completions; surfacing them on the spinner description
+    keeps a single large file's row visibly moving. All events still forward to
+    *chain* so the caller's own callback (TUI / JSON) is unaffected.
     """
 
     def _callback(event_type: EventType, data: ProgressEvent) -> None:
@@ -1422,6 +1422,19 @@ def _phase_progress_callback(
         chain(event_type, data)
 
     return _callback
+
+
+def _ingest_progress_bar(quiet: bool) -> Progress:
+    """The transient bar an in-process ingest reports on, disabled when *quiet*."""
+    return Progress(
+        SpinnerColumn(),
+        literal_text_column("{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        transient=True,
+        disable=quiet,
+    )
 
 
 # In-flight task cap, as a multiple of _max_concurrent(): enough queued tasks to
@@ -1605,6 +1618,13 @@ async def ingest_stream(
     # over a large corpus stays in-process. Undercounting only keeps a run
     # in-process, which is the safe direction.
     admission, window, controller_task = _build_admission(_max_concurrent(), pages_done)
+    progress = _ingest_progress_bar(quiet)
+    # The corpus the discovery walk found, known before the first batch is planned.
+    corpus_total = plan.corpus_total if plan is not None else 0
+    ptask = progress.add_task("Ingesting documents...", total=corpus_total or None)
+    # Rebound once, so every event the run emits, per file or per batch, passes the
+    # bar: a single large file's OCR and embed phases move it between completions.
+    on_progress = _phase_progress_callback(progress, ptask, on_progress)
 
     async def _process_one(entry: FileToProcess, file_index: int) -> _IngestResult:
         name = entry.name
@@ -1674,22 +1694,24 @@ async def ingest_stream(
                 )
 
     feed = _ResultFeed(_stream_tasks(plan_batches, _process_one), plan)
-    collect = _collect_results if quiet else _collect_under_bar
     try:
         # extract_batching coalesces extractions into xberg batch calls when the
         # toggle is on (off by default); the per-file collect contract is unchanged.
-        async with extract_batching():
-            await collect(
-                feed,
-                added,
-                updated,
-                failed,
-                skipped,
-                window=window,
-                on_progress=on_progress,
-                flush_failed=flush_failed,
-                reasons=reasons,
-            )
+        with progress:
+            async with extract_batching():
+                await _collect_results(
+                    feed,
+                    added,
+                    updated,
+                    failed,
+                    skipped,
+                    window=window,
+                    on_progress=on_progress,
+                    progress=progress,
+                    ptask=ptask,
+                    flush_failed=flush_failed,
+                    reasons=reasons,
+                )
     finally:
         # Stop the adaptive controller (if any) before returning: its background
         # loop must not outlive the batch it was tuning.
@@ -1915,50 +1937,6 @@ async def _collect_results(
                 # Closing the feed stops the planner behind it, so a cancelled
                 # sync does not keep hashing the rest of the corpus.
                 await feed.aclose()
-
-
-async def _collect_under_bar(
-    feed: _ResultFeed,
-    added: dict[str, None],
-    updated: dict[str, None],
-    failed: dict[str, None],
-    skipped: dict[str, OcrReport | None],
-    *,
-    window: int,
-    on_progress: DetailedProgressCallback = noop_callback,
-    flush_failed: set[str] | None = None,
-    reasons: dict[str, str] | None = None,
-) -> None:
-    """Run :func:`_collect_results` under a transient Rich progress bar."""
-    with Progress(
-        SpinnerColumn(),
-        literal_text_column("{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-        transient=True,
-    ) as progress:
-        # The corpus the discovery walk found, known before the first batch is
-        # planned. None only when the caller supplied no plan to measure against.
-        ptask = progress.add_task("Ingesting documents...", total=feed.corpus_total or None)
-        # The bar advances once per file (in _collect_results), so a single
-        # multi-page scanned PDF would freeze at "0/1" through its whole
-        # OCR + embed phase. Drive the spinner's description off the same
-        # EXTRACT (OCR page i/N) and EMBED (chunk i/N) events the TUI uses
-        # so the row visibly moves while one file is being worked.
-        await _collect_results(
-            feed,
-            added,
-            updated,
-            failed,
-            skipped,
-            window=window,
-            on_progress=_phase_progress_callback(progress, ptask, on_progress),
-            progress=progress,
-            ptask=ptask,
-            flush_failed=flush_failed,
-            reasons=reasons,
-        )
 
 
 async def _cancel_in_flight(in_flight: set[asyncio.Task[_IngestResult]]) -> None:

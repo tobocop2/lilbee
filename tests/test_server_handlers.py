@@ -2429,6 +2429,34 @@ class TestSseEventQueue:
         assert payload is not None
         assert payload.startswith("event: file_done")
 
+    @pytest.mark.parametrize(
+        ("event_type", "event", "wire"),
+        [
+            pytest.param(
+                "OCR_START",
+                {"file": "scan.pdf", "total_pages": 8},
+                'event: ocr_start\ndata: {"file": "scan.pdf", "total_pages": 8}\n\n',
+                id="ocr-start",
+            ),
+            pytest.param(
+                "EXTRACT",
+                {"file": "scan.pdf", "page": 8, "total_pages": 8, "ocr_backend": "tesseract"},
+                "event: extract\ndata: "
+                '{"file": "scan.pdf", "page": 8, "total_pages": 8, "ocr_backend": "tesseract"}\n\n',
+                id="extract-names-the-backend",
+            ),
+        ],
+    )
+    async def test_ocr_progress_wire_format_is_pinned(self, event_type, event, wire):
+        """The event names and fields clients such as the Obsidian plugin read."""
+        from lilbee.runtime.progress import EventType, ExtractEvent, OcrStartEvent
+        from lilbee.server.handlers import SseStream
+
+        model = {"OCR_START": OcrStartEvent, "EXTRACT": ExtractEvent}[event_type]
+        sse = SseStream()
+        sse.callback(EventType[event_type], model(**event))
+        assert sse.queue.get_nowait() == wire
+
     async def test_callback_from_worker_thread_routes_threadsafe(self):
         from lilbee.runtime.progress import EventType, FileDoneEvent
         from lilbee.server.handlers import SseStream
