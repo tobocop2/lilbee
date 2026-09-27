@@ -10,12 +10,12 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from litestar.exceptions import HTTPException, NotFoundException, ValidationException
-from litestar.status_codes import HTTP_503_SERVICE_UNAVAILABLE
+from litestar.status_codes import HTTP_409_CONFLICT, HTTP_503_SERVICE_UNAVAILABLE
 
 from lilbee.app import profiles
 from lilbee.app.profiles import ExportedProfile, ProfileNotFoundError, file_failure_message
 from lilbee.app.services import get_services
-from lilbee.core.profile_files import ProfileStore
+from lilbee.core.profile_files import ProfileNameClashError, ProfileStore
 from lilbee.server.models import (
     ActiveProfileResponse,
     ProfileApplyResponse,
@@ -41,11 +41,13 @@ def _store() -> ProfileStore:
 
 
 async def _run(operation: Callable[[], T]) -> T:
-    """Run *operation* on a thread; a missing profile is a 404, a refusal a 400."""
+    """Run *operation* on a thread: missing is a 404, a name clash 409, other refusals 400."""
     try:
         return await asyncio.to_thread(operation)
     except ProfileNotFoundError as exc:
         raise NotFoundException(detail=str(exc)) from exc
+    except ProfileNameClashError as exc:
+        raise HTTPException(status_code=HTTP_409_CONFLICT, detail=str(exc)) from exc
     except ValueError as exc:
         raise ValidationException(detail=str(exc)) from exc
     except OSError as exc:

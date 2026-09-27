@@ -77,6 +77,10 @@ class ProfileFileError(ValueError):
     """A profile file lilbee cannot use, with the reason as its message."""
 
 
+class ProfileNameClashError(ProfileFileError):
+    """A write's profile name already names another file in the same folder."""
+
+
 @dataclass(frozen=True)
 class ProfileAuthor:
     """One credited author of a profile."""
@@ -573,5 +577,5 @@ def plan_write(
     path = directory / f"{key}{PROFILE_SUFFIX}"
     clash = _clash(directory, folder, path, replacing)
     if clash is not None:
-        raise ProfileFileError(f"A profile named {profile.name} already exists: {clash}")
+        raise ProfileNameClashError(f"A profile named {profile.name} already exists: {clash}")
     return PlannedWrite(path, folder, profile, text, replacing)

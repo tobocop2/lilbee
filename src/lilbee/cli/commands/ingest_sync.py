@@ -409,21 +409,27 @@ def sync_cmd(
     console.print(result)
 
 
-def run_rebuild() -> SyncResult:
-    """Drop the index and re-ingest every document; a refused rebuild exits 1 with its reason."""
+def rebuild_or_raise() -> SyncResult:
+    """Drop the index and re-ingest every document; raises RuntimeError on a refused rebuild."""
     from lilbee.data.ingest import SyncResult
 
+    result = _run_sync_with_signal_cancel(force_rebuild=True)
+    # untyped return: _run_sync_with_signal_cancel returns object to avoid a heavy top-level import
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
+    return result
+
+
+def run_rebuild() -> SyncResult:
+    """Drop the index and re-ingest every document; a refused rebuild exits 1 with its reason."""
     try:
-        result = _run_sync_with_signal_cancel(force_rebuild=True)
+        return rebuild_or_raise()
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
-    if not isinstance(result, SyncResult):
-        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
-    return result
 
 
 def rebuild(

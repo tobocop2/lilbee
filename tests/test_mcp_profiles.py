@@ -132,28 +132,55 @@ def test_manage_duplicate_rename_and_delete():
     assert not (_global_dir() / "old-scans.toml").exists()
 
 
-def test_manage_export_import_and_validate_use_the_path(tmp_path):
+def test_manage_export_import_and_validate_use_content_not_a_path():
     _write(_global_dir(), "court-filings", CREDITED)
-    out = tmp_path / "out"
-    out.mkdir()
-    exported = profile_manage(ProfileAction.EXPORT, name="Court filings", path=str(out))
-    assert Path(exported["path"]) == out / "court-filings.toml"
+    exported = profile_manage(ProfileAction.EXPORT, name="Court filings")
+    assert exported["name"] == "Court filings"
+    assert exported["folder"] == "global"
+    assert exported["filename"] == "court-filings.toml"
     imported = profile_manage(
-        ProfileAction.IMPORT, path=exported["path"], folder=ProfileFolder.PROJECT
+        ProfileAction.IMPORT,
+        content=exported["content"],
+        filename=exported["filename"],
+        folder=ProfileFolder.PROJECT,
     )
     assert Path(imported["path"]) == cfg.data_root / PROFILES_DIRNAME / "court-filings.toml"
     checked = profile_manage(
-        ProfileAction.VALIDATE, path=exported["path"], folder=ProfileFolder.COMMUNITY
+        ProfileAction.VALIDATE,
+        content=exported["content"],
+        filename=exported["filename"],
+        folder=ProfileFolder.COMMUNITY,
     )
     assert checked == {"name": "Court filings", "valid": True, "problems": []}
 
 
-@pytest.mark.parametrize(
-    "action", [ProfileAction.EXPORT, ProfileAction.IMPORT, ProfileAction.VALIDATE]
-)
-def test_a_file_action_without_a_path_is_refused(action):
-    result = profile_manage(action, name="Scanned archive")
-    assert result == {"error": "path is required to export, import or validate a profile"}
+def test_import_and_validate_never_read_a_filename_that_looks_like_a_host_path(tmp_path):
+    outside = tmp_path / "outside.toml"
+    outside.write_text('[profile]\nname = "Not this"\n[values]\ntop_k = 99\n', encoding="utf-8")
+    imported = profile_manage(
+        ProfileAction.IMPORT,
+        content="[values]\nchunk_size = 640\n",
+        filename=str(outside),
+        folder=ProfileFolder.PROJECT,
+    )
+    assert imported["name"] == "outside"
+    assert Path(imported["path"]) == cfg.data_root / PROFILES_DIRNAME / "outside.toml"
+    assert tomllib.loads(Path(imported["path"]).read_text(encoding="utf-8"))["values"] == {
+        "chunk_size": 640
+    }
+    checked = profile_manage(ProfileAction.VALIDATE, content="[values]\n", filename="/etc/passwd")
+    assert checked == {"name": "passwd", "valid": True, "problems": []}
+    assert outside.read_text(encoding="utf-8").startswith('[profile]\nname = "Not this"')
+
+
+def test_import_without_content_is_refused():
+    result = profile_manage(ProfileAction.IMPORT, filename="fine.toml")
+    assert result == {"error": "Missing [values] table"}
+
+
+def test_validate_without_content_reports_the_problem_rather_than_erroring():
+    result = profile_manage(ProfileAction.VALIDATE, filename="fine.toml")
+    assert result == {"name": "fine", "valid": False, "problems": ["Missing [values] table"]}
 
 
 def test_every_action_has_a_handler():

@@ -327,17 +327,22 @@ def test_export_writes_a_clean_validated_file(store, tmp_path):
     )
     out = tmp_path / "out"
     out.mkdir()
-    path = profiles.export(store, "mine", out)
-    assert path == out / "mine.toml"
-    assert "# a comment" not in path.read_text(encoding="utf-8")
-    assert _read(path) == {
+    location = profiles.export(store, "mine", out)
+    assert (location.name, location.folder, location.path) == (
+        "Mine",
+        ProfileFolder.GLOBAL,
+        out / "mine.toml",
+    )
+    assert "# a comment" not in location.path.read_text(encoding="utf-8")
+    assert _read(location.path) == {
         "profile": {"name": "Mine", "tested_on": "notes", "format": 1},
         "values": {"chunk_size": 900},
     }
     with pytest.raises(ValueError, match="already exists"):
-        profiles.export(store, "mine", path)
-    target = profiles.export(store, "Scanned archive", path, overwrite=True)
-    assert _read(target)["profile"]["name"] == "Scanned archive"
+        profiles.export(store, "mine", location.path)
+    target = profiles.export(store, "Scanned archive", location.path, overwrite=True)
+    assert target.name == "Scanned archive"
+    assert _read(target.path)["profile"]["name"] == "Scanned archive"
 
 
 def test_export_refuses_a_broken_profile(store, tmp_path):
@@ -549,7 +554,7 @@ def test_profile_files_and_exports_are_written_with_the_umask(store, tmp_path):
         written = [
             profiles.new(store, "Fresh").path,
             profiles.save_as("Saved").location.path,
-            profiles.export(store, "Scanned archive", tmp_path),
+            profiles.export(store, "Scanned archive", tmp_path).path,
         ]
     finally:
         os.umask(previous)

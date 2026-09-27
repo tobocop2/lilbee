@@ -226,8 +226,13 @@ def profile_diff(
     _emit(diff, lambda: _render_diff(diff))
 
 
-def _apply_json(result: ProfileApplyResponse, reindexed: int | None) -> dict[str, Any]:
-    return {**result.model_dump(mode="json"), "reindexed": reindexed}
+def _apply_json(
+    result: ProfileApplyResponse, reindexed: int | None, reindex_error: str | None
+) -> dict[str, Any]:
+    payload = {**result.model_dump(mode="json"), "reindexed": reindexed}
+    if reindex_error is not None:
+        payload["reindex_error"] = reindex_error
+    return payload
 
 
 @profile_app.command(name="apply")
@@ -241,7 +246,7 @@ def profile_apply(
 ) -> None:
     """Make a profile this project's; your own values and LILBEE_* variables stay."""
     from lilbee.app import profiles
-    from lilbee.cli.commands.ingest_sync import run_rebuild
+    from lilbee.cli.commands.ingest_sync import rebuild_or_raise
     from lilbee.server.models import ProfileApplyResponse
 
     _setup(data_dir, use_global)
@@ -249,14 +254,23 @@ def profile_apply(
     if not cfg.json_mode:
         _line(f"Applied {result.name}.", theme.ACCENT)
         _render_changes(result.changes)
-    rebuild = reindex and result.reindex_required
-    reindexed = len(run_rebuild().added) if rebuild else None
+    reindexed: int | None = None
+    reindex_error: str | None = None
+    if reindex and result.reindex_required:
+        try:
+            reindexed = len(rebuild_or_raise().added)
+        except RuntimeError as exc:
+            reindex_error = str(exc)
     if cfg.json_mode:
-        json_output(_apply_json(result, reindexed))
+        json_output(_apply_json(result, reindexed, reindex_error))
+    elif reindex_error is not None:
+        print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
     elif reindexed is not None:
         _line(f"Rebuilt: {reindexed} documents ingested")
     elif result.reindex_required:
         _line("Run lilbee rebuild so the index uses the new values.", theme.WARNING)
+    if reindex_error is not None:
+        raise typer.Exit(1)
 
 
 @profile_app.command(name="new")
@@ -390,13 +404,13 @@ def profile_export(
 ) -> None:
     """Write a profile to a file anyone can import."""
     from lilbee.app import profiles
+    from lilbee.server.models import ProfileLocationResponse
 
     _setup(data_dir, use_global)
-    written = _run(lambda: profiles.export(_store(), name, path, overwrite=overwrite))
-    if cfg.json_mode:
-        json_output({"name": name, "path": written.as_posix()})
-    else:
-        _line(f"Exported {name}: {written}")
+    location = ProfileLocationResponse.from_location(
+        _run(lambda: profiles.export(_store(), name, path, overwrite=overwrite))
+    )
+    _emit(location, lambda: _render_location("Exported", location))
 
 
 @profile_app.command(name="import")

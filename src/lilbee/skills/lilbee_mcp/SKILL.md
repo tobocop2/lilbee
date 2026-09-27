@@ -90,7 +90,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_profile_list()` | The project's active profile (with `status`: `current` / `changed` / `missing` / `broken`) and every profile, each with `credit`, `tested_on`, its values and, for a broken file, `error`. Profile tools appear only when `mcp_profiles_enabled` is on. |
 | `lilbee_profile_show(name)` | One profile and the `diff` applying it makes: each change with its `effect` (`reindex` / `new_files_only` / `now`), and the values of yours it keeps. Names match loosely (`court-filings` finds "Court filings"). |
 | `lilbee_profile_apply(name)` | Make a profile the project's. Your own values and `LILBEE_*` variables stay. When `reindex_required` is true, rebuild before trusting search results. |
-| `lilbee_profile_manage(action, name, new_name, folder, path, from_profile, overwrite)` | Profile files: `new`, `save` (the project's settings as `name`, then switch to it), `update`, `discard`, `duplicate` / `rename` (to `new_name`), `delete`, `export` / `import` / `validate` (`path` on the lilbee machine). `folder` is `global` (all projects, default) or `project`. |
+| `lilbee_profile_manage(action, name, new_name, folder, content, filename, from_profile, overwrite)` | Profile files: `new`, `save` (the project's settings as `name`, then switch to it), `update`, `discard`, `duplicate` / `rename` (to `new_name`), `delete`, `export` (returns `content`), `import` / `validate` (a file's `content` and its `filename`, not a path). `folder` is `global` (all projects, default) or `project`. |
 | `lilbee_export_dataset(output, fmt, source)` | Write a per-page `{source, page, text}` dataset to a file (parquet or jsonl, no vectors). No embedding. |
 | `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Memory tools only appear when `memory_enabled` is on. |
 | `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
@@ -276,10 +276,9 @@ MCP can set it. Three cases need an extra step after the write succeeds.
 **A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled`,
 `mcp_sessions_enabled` and `mcp_profiles_enabled` decide which tools register, and that
 is decided once, when the server starts. `lilbee_settings_set({"wiki": true})` succeeds
-and persists, and the
-`lilbee_wiki_*` tools still are not there. Tell the user to restart the lilbee MCP server;
-do not report the feature as broken. `lilbee_wiki_status` works either way, so read it to
-confirm `wiki_enabled` before and after.
+and persists, and the `lilbee_wiki_*` tools still are not there. Tell the user to
+restart the lilbee MCP server; do not report the feature as broken. `lilbee_wiki_status`
+works either way, so read it to confirm `wiki_enabled` before and after.
 
 **Turning a feature on does not run it.** After enabling the wiki, pages exist only once
 you build them: `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for a single page,
