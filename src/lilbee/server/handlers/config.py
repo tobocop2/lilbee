@@ -67,7 +67,11 @@ async def reset_config(keys: list[str]) -> ConfigUpdateResponse:
     if requires_services_reset(dict.fromkeys(keys)):
         raise ValueError(provider_reset_refused_message("Resetting"))
     result = await asyncio.to_thread(reset_settings, keys, allow_model_roles=False)
-    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
+    return ConfigUpdateResponse(
+        updated=result.updated,
+        reindex_required=result.reindex_required,
+        warnings=list(result.warnings),
+    )
 
 
 async def get_config() -> ConfigResponse:

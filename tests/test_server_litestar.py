@@ -1389,6 +1389,19 @@ class TestConfigResetRoute:
         assert settings.load(isolated_env) == {"seed": 3}
         assert cfg.top_k == 12
 
+    def test_warns_when_the_reset_leaves_ocr_off_with_a_vision_model(self, client, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            "enable_ocr = true\n[profile.values]\nenable_ocr = false\n", encoding="utf-8"
+        )
+        cfg.enable_ocr = True
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        resp = client.post("/api/config/reset", json={"keys": ["enable_ocr"]})
+        assert resp.status_code == 200
+        warnings = resp.json()["warnings"]
+        assert len(warnings) == 1
+        assert "enable_ocr" in warnings[0] and cfg.vision_model in warnings[0]
+        assert cfg.enable_ocr is False
+
     def test_resolves_to_the_profile_value(self, client, isolated_env):
         from lilbee.core import settings
 
