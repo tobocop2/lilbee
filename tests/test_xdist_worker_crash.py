@@ -15,6 +15,8 @@ _CI_TARGET = "test-ci"
 _RUN_BUDGET_S = 60.0
 _DROPPED_FLAG_PREFIX = "--cov"
 _CHILD_ENV_PREFIXES = ("PYTEST_", "COV_CORE_")
+_PYTEST_WORD = "pytest"
+_MAKE_RECURSION_ENV_VARS = ("MAKEFLAGS", "MAKELEVEL")
 _CRASH_NODEID = "test_toy.py::test_worker_dies"
 _CRASH_REPORT = "crashed while running"
 _EXIT_TESTS_FAILED = 1
@@ -47,15 +49,18 @@ def test_after(index):
 
 def _ci_xdist_args() -> list[str]:
     """The pytest arguments the CI recipe passes, without the coverage flags."""
+    make_env = {k: v for k, v in os.environ.items() if k not in _MAKE_RECURSION_ENV_VARS}
     recipe = subprocess.run(
-        ["make", "-n", _CI_TARGET],
+        ["make", "--no-print-directory", "-n", _CI_TARGET],
         cwd=_REPO_ROOT,
         capture_output=True,
         encoding="utf-8",
         check=True,
+        env=make_env,
     ).stdout
-    words = shlex.split(recipe)
-    after_pytest = words[words.index("pytest") + 1 :]
+    pytest_line = next(line for line in recipe.splitlines() if _PYTEST_WORD in shlex.split(line))
+    words = shlex.split(pytest_line)
+    after_pytest = words[words.index(_PYTEST_WORD) + 1 :]
     return [word for word in after_pytest if not word.startswith(_DROPPED_FLAG_PREFIX)]
 
 
