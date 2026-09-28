@@ -166,10 +166,10 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
             roots[label] = str(src)
             by_target[str(src)] = label
             result.registered.append(label)
-        config.linked_roots = roots  # refresh the in-process view (picks up merges)
         return roots, result
 
     result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    settings.sync_from_resolver(config, ["linked_roots"])
     unmark_sources_under(paths)
     return result
 
@@ -298,10 +298,11 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
                 continue
             del roots[label]
             removed.append(label)
-        config.linked_roots = roots  # refresh the in-process view
         return roots, removed
 
-    return settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+    settings.sync_from_resolver(config, ["linked_roots"])
+    return result
 
 
 log = logging.getLogger(__name__)

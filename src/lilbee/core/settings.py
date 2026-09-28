@@ -12,7 +12,7 @@ from typing import Any, TypeVar
 import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core.config import CONFIG_FILE_NAME, cfg
+from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.defaults import SKIP_TOML_ENV
 from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.resolve import (
@@ -175,20 +175,22 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
     return result
 
 
-def _assign_resolved(resolved: Mapping[str, Resolved], keys: Iterable[str], root: Path) -> None:
-    """Set each of *keys* on cfg to its resolved value, warning on one the field rejects."""
+def _assign_resolved(
+    config: Config, resolved: Mapping[str, Resolved], keys: Iterable[str], root: Path
+) -> None:
+    """Set each of *keys* on *config* to its resolved value, warning on one the field rejects."""
     for key in keys:
         entry = resolved[key]
         try:
-            setattr(cfg, key, entry.value)
+            setattr(config, key, entry.value)
         except (ValueError, TypeError) as exc:
             log.warning("Ignoring invalid %s value for %s in %s: %s", entry.source, key, root, exc)
 
 
-def sync_from_resolver(keys: Iterable[str]) -> None:
-    """Set each of *keys* on cfg to the value the resolver gives under ``cfg.data_root``."""
-    root = cfg.data_root
-    _assign_resolved(resolve_all(read_layers(root)), keys, root)
+def sync_from_resolver(config: Config, keys: Iterable[str]) -> None:
+    """Set each of *keys* on *config* to the value the resolver gives under its data root."""
+    root = config.data_root
+    _assign_resolved(config, resolve_all(read_layers(root)), keys, root)
 
 
 def overlay_persisted_settings(root: Path) -> None:
@@ -205,4 +207,4 @@ def overlay_persisted_settings(root: Path) -> None:
         for key in sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS)
         if not (key in ROOT_DERIVED_FIELDS and resolved[key].source is SettingSource.BUILT_IN)
     ]
-    _assign_resolved(resolved, keys, root)
+    _assign_resolved(cfg, resolved, keys, root)
