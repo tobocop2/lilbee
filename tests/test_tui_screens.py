@@ -44,6 +44,7 @@ from lilbee.cli.tui.screens.chat import ChatScreen as _ChatScreen
 from lilbee.cli.tui.screens.chat import _Turn, _TurnEnded
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
@@ -15617,6 +15618,10 @@ async def test_pill_refresh_reads_sources_once_per_batch(tmp_path):
             for _ in range(3):
                 await pilot.pause()
         assert reads.call_count == 1
+        # chunk_overlap needs a rebuild, so the reset offers one; decline it
+        assert await wait_until(pilot, lambda: isinstance(app.screen, ConfirmDialog))
+        await pilot.press("n")
+        assert await wait_until(pilot, lambda: not isinstance(app.screen, ConfirmDialog))
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "top_k")
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "chunk_overlap")
 

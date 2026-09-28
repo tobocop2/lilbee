@@ -909,6 +909,9 @@ PROFILE_IMPORTED = "Imported {name} to {path}."
 PROFILE_DISCARD_REINDEX_MESSAGE = (
     "The index was built with values you discarded. Rebuild it so search uses {name}'s values."
 )
+SETTINGS_REINDEX_MESSAGE = (
+    "The index was built with values you changed. Rebuild it so search uses the new values."
+)
 
 PROFILE_EFFECT_TEXT: dict[ProfileEffect, str] = {
     ProfileEffect.REINDEX: "reindex",

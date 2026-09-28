@@ -40,6 +40,7 @@ from lilbee.cli.tui.color_compat import (
 from lilbee.cli.tui.commands import LilbeeCommandProvider
 from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog
 from lilbee.cli.tui.widgets.drawer import first_direct_child
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
@@ -630,8 +631,11 @@ class LilbeeApp(App[None]):
         # set_active_model); toast and skip rather than half-pull.
         if key in MODEL_ROLE_FIELDS and self._reject_if_downloading(value):
             return
-        self.notify_warnings(apply_settings_update({key: value}).warnings)
+        result = apply_settings_update({key: value})
+        self.notify_warnings(result.warnings)
         self.publish_settings([key])
+        if result.reindex_required:
+            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
         if key == "wiki" and cfg.wiki is False:
             self._offer_wiki_wipe()
 
@@ -644,6 +648,8 @@ class LilbeeApp(App[None]):
         result = reset_settings(keys, skip_unresettable=skip_unresettable)
         self.notify_warnings(result.warnings)
         self.publish_settings(result.updated)
+        if result.reindex_required:
+            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
         if wiki_was_on and cfg.wiki is False:
             self._offer_wiki_wipe()
         return result.updated
@@ -1042,6 +1048,15 @@ class LilbeeApp(App[None]):
         chat = self.chat_screen()
         if chat is not None:
             chat.run_sync(force_rebuild=True)
+
+    def offer_rebuild(self, message: str) -> None:
+        """Ask whether to rebuild the index, saying why in *message*; yes starts the rebuild."""
+
+        def _answered(rebuild: bool | None) -> None:
+            if rebuild:
+                self.start_rebuild()
+
+        self.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 
     def action_nav_prev(self) -> None:
         """Navigate to previous view ([ key)."""
