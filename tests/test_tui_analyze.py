@@ -46,7 +46,8 @@ from tests._profile_fixtures import (
     sources_totaling,
 )
 
-_PAUSES = 300
+# 300 pauses still missed a ConfirmPill focus event on a loaded Windows runner (#958).
+_PAUSES = 900
 _TIP_SHOWS = "lilbee.cli.tui.widgets.arg_hint.tip_shows"
 _NARROW = (80, 24)
 _WIDE = (120, 40)
