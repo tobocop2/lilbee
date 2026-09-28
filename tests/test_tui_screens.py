@@ -2277,6 +2277,30 @@ async def test_checkbox_reset_does_not_write_the_value_back(tmp_path):
         assert persistent_settings.load(tmp_path) == {"top_k": 7}
 
 
+async def test_checkbox_toggle_queued_before_a_reset_does_not_resave(tmp_path):
+    """A Changed message still queued when a reset runs must not undo it.
+
+    The toggle is applied directly (not via pilot.press) so its Changed
+    message is still sitting in the widget's queue, unprocessed, when the
+    reset call runs synchronously right after it in the same tick.
+    """
+    from textual.widgets import Checkbox
+
+    default = bool(builtin_value("show_reasoning"))
+    persistent_settings.update_values(tmp_path, {"show_reasoning": not default, "top_k": 5})
+    cfg.show_reasoning = not default
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        checkbox = app.screen.query_one("#ed-show_reasoning", Checkbox)
+        checkbox.toggle()
+        app.screen._reset_to_default("show_reasoning")
+        for _ in range(5):
+            await pilot.pause()
+        assert checkbox.value == default
+        assert cfg.show_reasoning == default
+        assert persistent_settings.load(tmp_path) == {"top_k": 5}
+
+
 async def test_reset_all_removes_every_user_key(tmp_path):
     """Reset-all leaves config.toml with no writable key, even after the checkboxes settle."""
     from lilbee.cli.tui.screens.settings import SettingsScreen
