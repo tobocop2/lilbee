@@ -8,7 +8,7 @@ import os
 import sys
 from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path, PurePath
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar, cast
 
 from rich.console import Console
 from textual import work
@@ -22,6 +22,7 @@ from textual.notifications import SeverityLevel
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.signal import Signal
+from textual.widget import Widget
 from textual.widgets import Input, TextArea
 
 from lilbee.app.services import get_services, peek_services
@@ -130,6 +131,23 @@ def _import_chat_stack() -> None:
 def get_views() -> dict[str, Callable[[], Screen]]:
     """Return the active view factories, derived from the nav view list."""
     return {name: _VIEW_FACTORIES[name] for name in msg.get_nav_views() if name in _VIEW_FACTORIES}
+
+
+_ChildT = TypeVar("_ChildT", bound=Widget)
+
+
+def _first_direct_child(node: Widget, widget_type: type[_ChildT]) -> _ChildT | None:
+    """The first immediate child of *node* that is a *widget_type*, or None.
+
+    A drawer mounts directly on the screen, so this answers "is a drawer
+    open" without ``screen.query()``'s whole-subtree walk. check_action
+    calls this on every focus change across the whole app, so the walk's
+    cost multiplies with the size of whichever screen is on top.
+    """
+    for child in node.children:
+        if isinstance(child, widget_type):
+            return child
+    return None
 
 
 class LilbeeApp(App[None]):
@@ -851,21 +869,16 @@ class LilbeeApp(App[None]):
         self.switch_view(msg.DEFAULT_VIEW)
 
     def _shows_placement_full_screen(self) -> bool:
-        """True when this screen shows the placement editor, tab or drawer.
+        """True when the Fleet screen, not the drawer, is the current screen."""
+        from lilbee.cli.tui.screens.fleet import FleetScreen
 
-        FleetDrawer composes a FleetBody, so this is also True while the drawer
-        is open. Callers that care about "nothing left to do" must rule the
-        drawer out first, as :meth:`_toggle_fleet_is_noop` does.
-        """
-        return bool(self.screen.query("FleetBody"))
+        return isinstance(self.screen, FleetScreen)
 
     def _shows_sessions_full_screen(self) -> bool:
-        """True when this screen shows the session list, tab or drawer.
+        """True when the Sessions screen, not the drawer, is the current screen."""
+        from lilbee.cli.tui.screens.sessions import SessionsScreen
 
-        SessionsDrawer composes a SessionListPanel, so the same caveat as
-        :meth:`_shows_placement_full_screen` applies.
-        """
-        return bool(self.screen.query("SessionListPanel"))
+        return isinstance(self.screen, SessionsScreen)
 
     def _toggle_fleet_is_noop(self) -> bool:
         """True when ctrl+g would do nothing, mirroring the action's own order.
@@ -876,7 +889,7 @@ class LilbeeApp(App[None]):
         """
         from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 
-        if self.screen.query(FleetDrawer):
+        if _first_direct_child(self.screen, FleetDrawer) is not None:
             return False
         return self._shows_placement_full_screen()
 
@@ -884,7 +897,7 @@ class LilbeeApp(App[None]):
         """True when ctrl+o would do nothing. See :meth:`_toggle_fleet_is_noop`."""
         from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 
-        if self.screen.query(SessionsDrawer):
+        if _first_direct_child(self.screen, SessionsDrawer) is not None:
             return False
         return self._shows_sessions_full_screen()
 
@@ -894,9 +907,9 @@ class LilbeeApp(App[None]):
         already shows the full placement editor."""
         from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 
-        drawers = self.screen.query(FleetDrawer)
-        if drawers:
-            drawers.first().remove()
+        drawer = _first_direct_child(self.screen, FleetDrawer)
+        if drawer is not None:
+            drawer.remove()
             return
         if self._shows_placement_full_screen():
             return
@@ -922,9 +935,9 @@ class LilbeeApp(App[None]):
             return
         from lilbee.cli.tui.widgets.sessions_drawer import SessionsDrawer
 
-        drawers = self.screen.query(SessionsDrawer)
-        if drawers:
-            drawers.first().remove()
+        drawer = _first_direct_child(self.screen, SessionsDrawer)
+        if drawer is not None:
+            drawer.remove()
             return
         if self._shows_sessions_full_screen():
             return
