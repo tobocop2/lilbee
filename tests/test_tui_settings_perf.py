@@ -113,7 +113,7 @@ async def test_first_direct_child_finds_only_immediate_children():
     from textual.containers import Vertical
     from textual.widgets import Static
 
-    from lilbee.cli.tui.app import _first_direct_child
+    from lilbee.cli.tui.widgets.drawer import first_direct_child
 
     class _ProbeApp(App[None]):
         def compose(self) -> ComposeResult:
@@ -124,8 +124,8 @@ async def test_first_direct_child_finds_only_immediate_children():
         outer = app.query_one("#outer", Vertical)
         inner = outer.query_one(Vertical)
 
-        assert _first_direct_child(outer, Vertical) is inner
-        assert _first_direct_child(outer, Static) is None
+        assert first_direct_child(outer, Vertical) is inner
+        assert first_direct_child(outer, Static) is None
 
 
 def test_stable_footer_skips_when_app_not_focused():
