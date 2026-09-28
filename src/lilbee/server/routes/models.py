@@ -14,7 +14,7 @@ from litestar.params import FromPath, FromQuery, QueryParameter
 from litestar.response import Stream
 from pydantic import BaseModel
 
-from lilbee.catalog.types import ModelSource
+from lilbee.catalog.types import ModelSource, ModelTask
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.server import handlers
 from lilbee.server.handlers import ModelsResponse, format_task_mismatch
@@ -130,9 +130,13 @@ async def models_catalog_route(
 
 
 @get("/api/models/installed")
-async def models_installed_route() -> ModelsInstalledResponse:
-    """List installed models with their source (native or remote)."""
-    return await handlers.models_installed()
+async def models_installed_route(task: FromQuery[str | None] = None) -> ModelsInstalledResponse:
+    """List installed models with source, task, size and display name; ``task`` keeps one role."""
+    try:
+        parsed_task = ModelTask(task) if task else None
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await handlers.models_installed(task=parsed_task)
 
 
 @post("/api/models/pull", media_type=SSE_MEDIA_TYPE)

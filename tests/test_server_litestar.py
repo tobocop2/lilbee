@@ -1068,6 +1068,31 @@ class TestModelsInstalledRoute:
         assert resp.status_code == 200
         assert resp.json()["models"] == []
 
+    @mock.patch(
+        "lilbee.server.handlers.models_installed",
+        new_callable=AsyncMock,
+        return_value={"models": []},
+    )
+    def test_task_query_reaches_the_handler(self, mock_inst, client):
+        resp = client.get("/api/models/installed?task=embedding")
+        assert resp.status_code == 200
+        assert mock_inst.call_args.kwargs["task"] == "embedding"
+
+    def test_unknown_task_is_refused(self, client):
+        resp = client.get("/api/models/installed?task=bogus")
+        assert resp.status_code == 422
+        assert "'bogus' is not a valid ModelTask" in resp.json()["detail"]
+
+    def test_schema_publishes_task_size_and_display_name(self, client):
+        schema = client.get("/schema/openapi.json").json()
+        ok = schema["paths"]["/api/models/installed"]["get"]["responses"]["200"]
+        response_ref = ok["content"]["application/json"]["schema"]["$ref"]
+        components = schema["components"]["schemas"]
+        response = components[response_ref.rsplit("/", 1)[-1]]
+        entry_ref = response["properties"]["models"]["items"]["$ref"]
+        entry = components[entry_ref.rsplit("/", 1)[-1]]
+        assert {"name", "source", "task", "size_gb", "display_name"} <= set(entry["properties"])
+
 
 class TestModelsPullRoute:
     @mock.patch("lilbee.server.handlers.models_pull")
