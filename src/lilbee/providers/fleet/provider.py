@@ -75,6 +75,7 @@ from lilbee.providers.warm_progress import (
     WarmProgressTracker,
     is_active_warm,
 )
+from lilbee.runtime.daemon_call import DaemonCall
 from lilbee.runtime.engine_lock import (
     ENGINE_DIR_ENV,
     UserLockHold,
@@ -2115,8 +2116,7 @@ class FleetProvider:
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
-                # thread is still warming; starting a thread then raises
-                # RuntimeError. The process is leaving anyway, so drop it quietly.
+                # thread is still warming; the process is leaving, so drop it quietly.
                 log.debug("Engine warm-up abandoned during interpreter shutdown: %s", exc)
             else:
                 # A warm-up failure is handled (roles lazy-load on first use), so
@@ -2201,35 +2201,18 @@ class FleetProvider:
         if not pools:
             return
         listeners = (on_spawning, on_spawned)
-        self._run_warm_chains(_warm_chains(list(pools), device_sets), pools, listeners)
-
-    def _run_warm_chains(
-        self,
-        chains: list[list[WorkerRole]],
-        pools: dict[WorkerRole, list[LlamaServerClient]],
-        listeners: tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None],
-    ) -> None:
-        """Warm *chains* in parallel; re-raise the first chain's error, in chain order."""
-        errors: list[Exception | None] = [None] * len(chains)
-
-        def _run(index: int) -> None:
-            try:
-                self._warm_chain(chains[index], pools, listeners)
-            except Exception as exc:
-                errors[index] = exc
-
-        # Daemon threads, not an executor: exit joins every executor worker, and a
-        # warm request on a stopped engine would then hold the process open.
-        threads = [
-            threading.Thread(target=_run, args=(index,), name="fleet-preload", daemon=True)
-            for index in range(len(chains))
+        calls = [
+            DaemonCall(
+                functools.partial(self._warm_chain, chain, pools, listeners),
+                name=f"fleet-preload-{'+'.join(role.value for role in chain)}",
+            )
+            for chain in _warm_chains(list(pools), device_sets)
         ]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-        if (first := next((exc for exc in errors if exc is not None), None)) is not None:
-            raise first
+        # Every chain finishes before the first chain's error, in chain order, is raised.
+        for call in calls:
+            call.wait()
+        for call in calls:
+            call.result()
 
     def _warm_chain(
         self,

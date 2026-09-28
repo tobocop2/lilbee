@@ -8,8 +8,6 @@ import json
 import logging
 import os
 import struct
-import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -29,6 +27,7 @@ from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
 from lilbee.providers.roles import RerankMode, WorkerRole
+from tests._exit_probe import assert_probe_exits
 
 _GB = 1024**3
 _real_plan_all_launches = planning_mod.plan_all_launches
@@ -2751,7 +2750,6 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     chat.chat.assert_called_once()  # chat still warmed behind the failed embed
 
 
-_EXIT_BUDGET_S = 30.0
 _HUNG_WARM_PROBE = """
 import threading
 import httpx
@@ -2779,16 +2777,65 @@ print("warm in flight", flush=True)
 
 def test_process_exits_while_a_warm_request_never_answers(tmp_path) -> None:
     # Interpreter exit must not join a warm worker stuck on an engine that never replies.
-    env = {**os.environ, "LILBEE_DATA": str(tmp_path), "HOME": str(tmp_path)}
-    result = subprocess.run(
-        [sys.executable, "-c", _HUNG_WARM_PROBE],
-        env=env,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=_EXIT_BUDGET_S,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "warm in flight"
+    assert_probe_exits(_HUNG_WARM_PROBE, tmp_path, "warm in flight")
+
+
+def test_preload_runs_chains_in_parallel_and_waits_for_them(monkeypatch) -> None:
+    # Both warm calls must be in flight at once to pass the barrier (a serial warm
+    # breaks it), and both finish before the preload returns.
+    barrier = threading.Barrier(2, timeout=5.0)
+    finished: list[WorkerRole] = []
+    chat, embed = _fake_client(), _fake_client()
+
+    def _meet(role: WorkerRole, value: object) -> object:
+        barrier.wait()
+        finished.append(role)
+        return value
+
+    chat.chat.side_effect = lambda *a, **k: _meet(WorkerRole.CHAT, MagicMock())
+    embed.embed.side_effect = lambda *a, **k: _meet(WorkerRole.EMBED, [[0.1]])
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._preload_roles()
+    assert sorted(finished) == sorted([WorkerRole.CHAT, WorkerRole.EMBED])
+
+
+def test_preload_raises_first_chains_error_after_every_chain_finishes(monkeypatch) -> None:
+    # Two chains fail; the first chain's error is raised, and only once the later
+    # chain, which fails after it, has also finished.
+    embed_failed = threading.Event()
+    never_set = threading.Event()
+    chat_finished = threading.Event()
+    chat, embed = _fake_client(), _fake_client()
+    embed.embed.return_value = [[0.1]]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+
+    def _failing_listener(role: WorkerRole) -> None:
+        if role is WorkerRole.EMBED:
+            embed_failed.set()
+            raise RuntimeError("embed broke")
+        assert embed_failed.wait(timeout=5.0)
+        never_set.wait(timeout=0.5)
+        chat_finished.set()
+        raise RuntimeError("chat broke")
+
+    p.add_spawn_listener(on_spawning=_failing_listener)
+    with pytest.raises(RuntimeError, match="embed broke"):
+        p._preload_roles()
+    assert chat_finished.is_set()
+
+
+def test_preload_names_each_warm_thread_for_its_chain(monkeypatch) -> None:
+    names: list[str] = []
+    embed = _fake_client()
+    embed.embed.side_effect = lambda *a, **k: (
+        names.append(threading.current_thread().name),
+        [[0.1]],
+    )[1]
+    p = _provider_with_clients({WorkerRole.EMBED: [embed]})
+    p._preload_roles()
+    assert names == ["fleet-preload-embed"]
 
 
 def _registry_with_shards(monkeypatch, shards: list[Path]) -> None:

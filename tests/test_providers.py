@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from tests._exit_probe import assert_probe_exits
 from tests._gguf_fixture import has_gguf_parser
 from tests._sys_modules import inject_modules
 
@@ -3419,6 +3420,19 @@ def test_sdk_provider_count_chat_prompt_tokens_not_implemented() -> None:
         provider.count_chat_prompt_tokens([{"role": "user", "content": "hello"}])
 
 
+_HUNG_OCR_PROBE = """
+import threading
+from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+
+provider = SdkLLMProvider(backend=None)
+provider.chat = lambda *args, **kwargs: threading.Event().wait()
+try:
+    provider.vision_ocr(b"png", "ollama/llava:7b", "p", timeout=0.2)
+except TimeoutError:
+    print("ocr timed out", flush=True)
+"""
+
+
 class TestSdkLLMProviderVisionOcr:
     """``SdkLLMProvider.vision_ocr`` translates to a multipart chat call."""
 
@@ -3488,8 +3502,8 @@ class TestSdkLLMProviderVisionOcr:
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.01)
 
     def test_timeout_frees_caller_without_waiting_for_hung_call(self) -> None:
-        # On timeout the caller must be freed at the deadline, not
-        # blocked by the pool's shutdown(wait=True) until the hung call returns.
+        # On timeout the caller must be freed at the deadline, not blocked until
+        # the hung call returns.
         import threading
         import time
 
@@ -3510,8 +3524,12 @@ class TestSdkLLMProviderVisionOcr:
         release.set()  # let the orphaned worker finish
         assert elapsed < 2.0  # freed at the deadline, not blocked on the 10s call
 
+    def test_process_exits_while_a_timed_out_ocr_call_never_answers(self, tmp_path) -> None:
+        # Interpreter exit must not join the thread of an OCR call that timed out.
+        assert_probe_exits(_HUNG_OCR_PROBE, tmp_path, "ocr timed out")
+
     def test_zero_timeout_returns_chat_result(self) -> None:
-        """``timeout=0`` skips the thread pool and returns chat's result."""
+        """``timeout=0`` skips the daemon thread and returns chat's result."""
         from lilbee.providers.base import ChatResult, FinishReason
 
         provider = self._make_provider()
