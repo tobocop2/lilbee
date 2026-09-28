@@ -10,6 +10,8 @@ from unittest import mock
 import httpx
 import pytest
 
+pytest.importorskip("litellm")
+
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog.types import KeyStatus
 from lilbee.core.config import cfg
