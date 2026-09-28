@@ -432,14 +432,18 @@ class SettingsScreen(Screen[None]):
 
     @on(Checkbox.Changed, ".setting-editor")
     def _on_checkbox_save(self, event: Checkbox.Changed) -> None:
-        """Save boolean on toggle."""
+        """Save boolean on toggle, but only if it still differs from the last saved value."""
         name = event.checkbox.name
         if name is None:
             return
         defn = SETTINGS_MAP.get(name)
         if defn is None:
             return
-        self._persist_value(name, defn, str(event.checkbox.value))
+        value = str(event.checkbox.value)
+        if self._mount_display.get(name) == value:
+            return
+        if self._persist_value(name, defn, value):
+            self._mount_display[name] = value
 
     @on(Select.Changed, ".setting-editor")
     def _on_select_save(self, event: Select.Changed) -> None:
@@ -706,13 +710,13 @@ class SettingsScreen(Screen[None]):
         except Exception:
             log.debug("Failed to refresh editor for %s", key, exc_info=True)
             return
-        # A checkbox has no save baseline, so its change event would write the value back.
+        # prevent() only covers a Changed message this call posts, not one already queued.
         with widget.prevent(Checkbox.Changed):
             set_widget_value(widget, value)
         # Every writable key with a trackable editor is already seeded into
-        # _mount_display at row construction, list-typed keys included; this
-        # guard only stops a future editor kind from gaining a baseline here
-        # before its construction path starts tracking it too.
+        # _mount_display at row construction, list-typed and checkbox keys
+        # included; this guard only stops a future editor kind from gaining a
+        # baseline here before its construction path starts tracking it too.
         if key in self._mount_display:
             baseline = displayed_text(widget)
             if baseline is not None:

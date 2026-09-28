@@ -98,14 +98,17 @@ def displayed_text(widget: Widget) -> str | None:
     Covers every editor kind a save handler compares a new value against to
     tell an edit from a field that was never touched (whether it shows a
     real cfg value or an unset field's model-default text): an Input or
-    multi-line TextArea round-trips through plain text, and a Select's
-    blank sentinel maps to the empty string the same way a save handler
-    treats it.
+    multi-line TextArea round-trips through plain text, a Select's blank
+    sentinel maps to the empty string the same way a save handler treats it,
+    and a Checkbox reports its boolean as text so a save handler can tell a
+    stale queued toggle from one that still disagrees with the last save.
     """
     if isinstance(widget, Input):
         return widget.value
     if isinstance(widget, TextArea):
         return widget.text
+    if isinstance(widget, Checkbox):
+        return str(widget.value)
     if isinstance(widget, Select):
         return "" if widget.value == Select.BLANK else str(widget.value)
     return None
