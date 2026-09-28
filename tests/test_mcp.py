@@ -9,6 +9,8 @@ import pytest
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import read_layers, resolve
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
@@ -1839,6 +1841,7 @@ class TestSettingsMcp:
         assert cfg.vision_model == ""
         persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
         assert 'vision_model = ""' in persisted
+        assert resolve("vision_model", read_layers(isolated_env)).source is SettingSource.USER
 
     def test_settings_set_pre_validates_chunk_size(self, isolated_env):
         cfg.data_root = isolated_env

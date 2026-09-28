@@ -21,6 +21,8 @@ from lilbee.app.version import get_version
 from lilbee.cli import app
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import read_layers, resolve
 from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
@@ -1114,6 +1116,7 @@ class TestApplyOverrides:
         assert cfg.vision_model == ""
         assert cfg.chunk_size == 900
         assert cfg.top_k == 9
+        assert resolve("vision_model", read_layers(cfg.data_root)).source is SettingSource.USER
 
     def test_callback_flags_survive_the_subcommand_overlay(self, tmp_path, monkeypatch):
         """--model before the subcommand outlives the subcommand's own data-root overlay."""
