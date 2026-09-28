@@ -3,6 +3,7 @@
 import asyncio
 import errno
 import logging
+import sqlite3
 import sys
 import threading
 import time
@@ -393,9 +394,14 @@ class TestSyncMark:
         lock = mock.MagicMock()
         lock.acquire_read.side_effect = refused
         lock.acquire_write.side_effect = refused
-        factory = (
-            mock.MagicMock(side_effect=refused) if fails_at == "open" else lambda *_a, **_k: lock
-        )
+
+        def factory(path: Path, *args, **kwargs) -> ReadWriteLock:
+            if Path(path).name.startswith("sync.probe."):
+                return ReadWriteLock(path, *args, **kwargs)
+            if fails_at == "open":
+                raise refused
+            return lock
+
         ran = []
         with (
             mock.patch("lilbee.runtime.lock.ReadWriteLock", factory),
@@ -443,7 +449,7 @@ class TestSyncMark:
         assert ran == []
         assert str(caught.value) == (
             f"{tmp_path} is on a filesystem that does not support file locking. "
-            "Move the data directory to a local disk."
+            "Move it to a local disk."
         )
         assert not list(tmp_path.glob("sync.probe.*"))
 
@@ -461,6 +467,54 @@ class TestSyncMark:
         )
         assert "is running on this library" not in str(caught.value)
         assert not list(tmp_path.glob("sync.probe.*"))
+
+    def test_a_probe_busy_for_a_moment_lets_a_reset_run(self, tmp_path: Path) -> None:
+        real_acquire_write = ReadWriteLock.acquire_write
+
+        def _free_after_a_moment(
+            lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True
+        ) -> None:
+            if Path(lock.lock_file).name.startswith("sync.probe.") and (
+                not blocking or 0 <= timeout < 0.1
+            ):
+                raise FileLockTimeout(lock.lock_file)
+            real_acquire_write(lock, timeout, blocking=blocking)
+
+        ran = []
+        with (
+            mock.patch.object(ReadWriteLock, "acquire_write", _free_after_a_moment),
+            no_sync_running(tmp_path),
+        ):
+            ran.append("reset")
+
+        assert ran == ["reset"]
+
+    async def test_a_probe_that_errors_names_the_data_directory_not_the_lock_file(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        real_acquire_write = ReadWriteLock.acquire_write
+
+        def _probe_errors(lock: ReadWriteLock, *args, **kwargs) -> None:
+            if Path(lock.lock_file).name.startswith("sync.probe."):
+                raise sqlite3.OperationalError("disk I/O error")
+            real_acquire_write(lock, *args, **kwargs)
+
+        ran = []
+        with (
+            mock.patch.object(ReadWriteLock, "acquire_write", _probe_errors),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+                ran.append("reset")
+
+        assert ran == ["sync"]
+        assert str(caught.value) == (
+            f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
+            "(disk I/O error)."
+        )
+        assert _lock_warnings(caplog) == 1
 
     def test_a_busy_probe_is_probed_again_on_the_next_reset(self, tmp_path: Path) -> None:
         real_acquire_write = ReadWriteLock.acquire_write
@@ -537,6 +591,16 @@ class TestFileLocksWithoutLockDaemon:
             f"{lancedb_dir} is on a filesystem that does not support file locking."
         )
         assert isinstance(caught.value.__cause__, OSError)
+
+    def test_the_scope_lock_names_the_shared_folder(self, tmp_path: Path) -> None:
+        scope = tmp_path / "shared-root"
+        with pytest.raises(LockingUnsupportedError) as caught:
+            acquire_scope_lock(scope, tmp_path / "data", timeout=1)
+
+        assert str(caught.value) == (
+            f"{scope} is on a filesystem that does not support file locking. "
+            "Move it to a local disk."
+        )
 
     def test_the_server_lock_names_the_directory(self, tmp_path: Path) -> None:
         with pytest.raises(

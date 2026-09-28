@@ -30,7 +30,12 @@ from lilbee.core.config import (
 from lilbee.core.health_warnings import HealthWarning, WarningCode
 from lilbee.core.vectors import Vector
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
-from lilbee.runtime.lock import LOCK_TIMEOUT, LockTimeoutError, write_lock
+from lilbee.runtime.lock import (
+    LOCK_TIMEOUT,
+    LockingUnsupportedError,
+    LockTimeoutError,
+    write_lock,
+)
 
 from .fusion import adaptive_weight_scale, fuse_arms, normalized_bm25, vector_similarity
 from .lance_helpers import (
@@ -99,6 +104,8 @@ BATCH_LOCK_TIMEOUT = 120.0
 # Lock budget for index builds reached from the read path: a query must not
 # stall behind a long ingest, so it skips the build and retries next search.
 _READ_LOCK_TIMEOUT = 2.0
+# What makes a read-path index build skip rather than fail the query.
+_UPKEEP_SKIPPED = (LockTimeoutError, LockingUnsupportedError)
 
 
 def _drop_unsupported_far_rows(
@@ -674,8 +681,9 @@ class Store:
         ``create_index(config=FTS(), replace=True)`` rebuild cost on every sync.
 
         ``blocking=False`` (the search path) marks an existing index ready
-        without the lock and skips maintenance when another process holds it,
-        so a long concurrent ingest cannot stall or fail a query. An unreadable
+        without the lock and skips maintenance when another process holds it
+        or the filesystem cannot lock, so a long concurrent ingest cannot stall
+        or fail a query. An unreadable
         index registry never counts as an existing index.
         """
         probe = self.open_table(CHUNKS_TABLE)
@@ -687,10 +695,10 @@ class Store:
         try:
             with self._index_build_lock(blocking):
                 self._ensure_fts_index_unlocked()
-        except LockTimeoutError:
+        except _UPKEEP_SKIPPED as exc:
             if blocking:
                 raise
-            log.debug("Skipped FTS index maintenance; another process holds the write lock")
+            log.debug("Skipped FTS index maintenance: %s", exc)
 
     def _ensure_fts_index_unlocked(self) -> None:
         """Body of ``ensure_fts_index``. Caller holds ``write_lock()``."""
@@ -778,10 +786,10 @@ class Store:
         try:
             with self._index_build_lock(blocking):
                 self._ensure_title_fts_unlocked(table)
-        except LockTimeoutError:
+        except _UPKEEP_SKIPPED as exc:
             if blocking:
                 raise
-            log.debug("Skipped title FTS build; another process holds the write lock")
+            log.debug("Skipped title FTS build: %s", exc)
 
     def _rebuild_fts(self, table: LanceTable, reason: str) -> None:
         """Replace the FTS indexes with fresh positionless ones. Caller holds the lock.
@@ -863,8 +871,8 @@ class Store:
         listing is unreadable keeps readiness unlatched until the FTS path
         repairs the listing. The lock is taken only
         when there is something to build; ``blocking=False`` (the search path)
-        skips the build when another process holds it instead of stalling the
-        query.
+        skips the build when another process holds it or the filesystem cannot
+        lock, instead of stalling or failing the query.
         """
         pending = []
         complete = True
@@ -894,10 +902,10 @@ class Store:
                 for name, columns in pending:
                     self._ensure_scalar_index_on(name, columns)
             self._scalar_ready = complete
-        except LockTimeoutError:
+        except _UPKEEP_SKIPPED as exc:
             if blocking:
                 raise
-            log.debug("Skipped scalar index build; another process holds the write lock")
+            log.debug("Skipped scalar index build: %s", exc)
 
     def _ensure_scalar_index_on(
         self, table_name: str, columns: tuple[tuple[str, ScalarIndexType], ...]

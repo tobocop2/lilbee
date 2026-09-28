@@ -45,6 +45,8 @@ _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
 _SYNC_LOCK_NAME = "sync.lock"
 _SYNC_PROBE_PREFIX = "sync.probe."
+# How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
+_PROBE_WAIT_S = 0.3
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
 # database, or a mount that refuses its locks). A busy lock arrives as filelock's
@@ -56,9 +58,11 @@ _SYNC_LOCK_UNKNOWN = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
     "Stop every lilbee process, delete {path}, and reset again."
 )
+_DATA_ROOT_UNLOCKABLE = (
+    "Cannot tell whether a sync or import is running: {path} cannot be locked ({error})."
+)
 _NO_LOCKING = (
-    "{path} is on a filesystem that does not support file locking. "
-    "Move the data directory to a local disk."
+    "{path} is on a filesystem that does not support file locking. Move it to a local disk."
 )
 _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
@@ -140,7 +144,8 @@ def acquire_scope_lock(
     scope_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(scope_dir / _SCOPE_LOCK_NAME)
     try:
-        lock.acquire(timeout=timeout)
+        with _enolck_as_unsupported(scope_dir):
+            lock.acquire(timeout=timeout)
     except FileLockTimeout:
         return None
     owner_path = scope_dir / _SCOPE_OWNER_NAME
@@ -159,10 +164,14 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
 
 def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
     """Hold the data root's sync lock; None lets a sync run unmarked when locking raises."""
-    path = data_root / _SYNC_LOCK_NAME
     try:
         data_root.mkdir(parents=True, exist_ok=True)
         _require_locking(data_root)
+    except _SYNC_LOCK_ERRORS as exc:
+        _sync_lock_unavailable(data_root, exc, write=write, refusal=_DATA_ROOT_UNLOCKABLE)
+        return None
+    path = data_root / _SYNC_LOCK_NAME
+    try:
         lock = ReadWriteLock(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, write=write)
@@ -188,7 +197,7 @@ def _require_locking(data_root: Path) -> None:
     probe_path = data_root / f"{_SYNC_PROBE_PREFIX}{uuid.uuid4().hex}"
     probe = ReadWriteLock(probe_path, is_singleton=False)
     try:
-        probe.acquire_write(blocking=False)
+        probe.acquire_write(timeout=_PROBE_WAIT_S)
     except FileLockTimeout:
         raise LockingUnsupportedError(_NO_LOCKING.format(path=data_root)) from None
     finally:
@@ -215,10 +224,12 @@ def _remove_probe(probe_path: Path) -> None:
         log.warning(_PROBE_LEFT, probe_path, exc)
 
 
-def _sync_lock_unavailable(path: Path, error: Exception, *, write: bool) -> None:
+def _sync_lock_unavailable(
+    path: Path, error: Exception, *, write: bool, refusal: str = _SYNC_LOCK_UNKNOWN
+) -> None:
     """Refuse a reset that cannot take the lock; warn once and let a sync run unmarked."""
     if write:
-        raise ResetRefusedError(_SYNC_LOCK_UNKNOWN.format(path=path, error=error)) from error
+        raise ResetRefusedError(refusal.format(path=path, error=error)) from error
     log.warning(_SYNC_LOCK_REFUSED, path, error)
 
 

@@ -1,5 +1,7 @@
 """Tests for LanceDB store operations: hybrid search + FTS index lifecycle."""
 
+import errno
+import sys
 from contextlib import contextmanager
 from unittest import mock
 
@@ -26,7 +28,7 @@ from lilbee.data.store.lance_helpers import (
     _has_vector_index,
     _index_registry,
 )
-from lilbee.runtime.lock import write_lock
+from lilbee.runtime.lock import LockingUnsupportedError, write_lock
 from tests._mock_effects import repeat_last
 
 
@@ -1107,6 +1109,25 @@ class TestEnsureScalarIndexes:
         assert results
         assert store._scalar_ready is False  # retried on a later search
         assert store._title_fts_ready is False
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
+    def test_search_survives_a_directory_that_cannot_lock(self, store, test_config):
+        """Read-path index builds skip on a filesystem without locking; the query serves."""
+        import fcntl  # POSIX only; skipped on Windows
+
+        def _flock(_fd: int, _operation: int) -> None:
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        test_config.title_search = True
+        store.add_chunks(_make_records())
+        with mock.patch.object(fcntl, "flock", _flock):
+            results = store.search(
+                [0.5] * test_config.embedding_dim, top_k=3, query_text="chunk number"
+            )
+            with pytest.raises(LockingUnsupportedError):
+                store.ensure_scalar_indexes()
+        assert results
+        assert store._scalar_ready is False
 
     def test_fts_ensure_body_is_a_noop_without_a_chunks_table(self, store):
         store._ensure_fts_index_unlocked()

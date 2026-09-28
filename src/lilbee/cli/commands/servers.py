@@ -148,7 +148,10 @@ def serve(
     scope_env = os.environ.get(SCOPE_ENV)
     if scope_env:
         scope_dir = Path(scope_env)
-        scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+        try:
+            scope_hold = acquire_scope_lock(scope_dir, cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+        except LockingUnsupportedError as exc:
+            _refuse_to_start(str(exc))
         if scope_hold is None:
             owner = read_scope_owner(scope_dir)
             serving = f" It is serving {owner.data_dir}." if owner else ""
