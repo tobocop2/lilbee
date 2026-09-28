@@ -40,6 +40,7 @@ from lilbee.cli.helpers import (
 )
 from lilbee.core.config import cfg
 from lilbee.crawler import is_url
+from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 
 _ocr_option = typer.Option(
     None,
@@ -435,9 +436,17 @@ def rebuild(
     if not isinstance(result, SyncResult):
         raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     if cfg.json_mode:
-        json_output({"command": "rebuild", "ingested": len(result.added)})
+        json_output(
+            {
+                "command": "rebuild",
+                "ingested": len(result.added),
+                "skip_records_error": result.skip_records_error,
+            }
+        )
         return
     console.print(f"Rebuilt: {len(result.added)} documents ingested")
+    if result.skip_records_error is not None:
+        print_prefixed(console, "Error: ", result.skip_records_error, style=theme.ERROR)
 
 
 def index(
@@ -667,7 +676,14 @@ def remove(
         removable = sum(1 for t in targets if t in set(known))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
-    result = remove_documents_durably(names, targets=targets)
+    try:
+        result = remove_documents_durably(names, targets=targets)
+    except SkipRecordsLockError as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

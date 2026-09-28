@@ -39,8 +39,8 @@ REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skippe
 # The total wait; filelock polls the lock until it runs out.
 _RECORDS_LOCK_TIMEOUT_S = 10.0
 _RECORDS_LOCKED = (
-    "Could not save which files this sync held out: {path} could not be locked ({error}). "
-    "If no other lilbee process is running, delete {path} and try again."
+    "Could not lock {path}, so the list of held-out files was not changed. "
+    "If no other lilbee process is running, delete that file and try again."
 )
 
 
@@ -170,15 +170,17 @@ def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
 
 
 @contextlib.contextmanager
-def _records_lock(data_root: Path) -> Iterator[None]:
-    """Hold the cross-process lock on the records, or raise without entering."""
-    lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock")
+def skip_records_lock(data_root: Path) -> Iterator[None]:
+    """Hold the cross-process lock on the records, or raise without entering.
+
+    Re-entrant within a thread, so an operation can take it before its first
+    change and still call the record helpers inside.
+    """
+    lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
     try:
         lock.acquire(timeout=_RECORDS_LOCK_TIMEOUT_S)
     except OSError as error:  # filelock's Timeout is an OSError too
-        raise SkipRecordsLockError(
-            _RECORDS_LOCKED.format(path=lock.lock_file, error=error)
-        ) from error
+        raise SkipRecordsLockError(_RECORDS_LOCKED.format(path=lock.lock_file)) from error
     try:
         yield
     finally:
@@ -190,7 +192,7 @@ def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) 
 
     Reasons and kinds whose marker is gone are dropped in the same write.
     """
-    with _records_lock(data_root):
+    with skip_records_lock(data_root):
         records = _load_records(data_root)
         before = SkipRecords(dict(records.markers), dict(records.reasons), dict(records.kinds))
         change(records)
@@ -249,7 +251,7 @@ def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]
 
 def clear_skip_markers(data_root: Path) -> None:
     """Delete the marker file and both sidecars. No-op if absent."""
-    with _records_lock(data_root):
+    with skip_records_lock(data_root):
         _unlink(data_root / SKIP_MARKER_FILENAME)
         _unlink(data_root / SKIP_REASON_FILENAME)
         _unlink(data_root / SKIP_KIND_FILENAME)

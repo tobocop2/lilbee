@@ -299,7 +299,9 @@ class TestUpdateSkipRecords:
         holder = FileLock(lock_path)
         holder.acquire()
         try:
-            with pytest.raises(SkipRecordsLockError, match=r"delete .*skipped_sources\.json\.lock"):
+            with pytest.raises(
+                SkipRecordsLockError, match=r"Could not lock .*skipped_sources\.json\.lock"
+            ):
                 operation(tmp_path)
         finally:
             holder.release()

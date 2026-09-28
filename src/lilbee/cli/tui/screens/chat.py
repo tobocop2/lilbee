@@ -82,6 +82,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -1181,7 +1182,11 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, message, severity="error")
             return
 
-        remove_documents_durably([name])
+        try:
+            remove_documents_durably([name])
+        except SkipRecordsLockError as exc:
+            call_from_thread(self, self.notify, str(exc), severity="error")
+            return
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))
 
     def _cmd_export(self, args: str) -> None:

@@ -59,6 +59,7 @@ from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
+from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
     EmbeddingModelMismatchError,
     MemoryKind,
@@ -341,15 +342,17 @@ async def sync(
     except ValueError as exc:
         return _error(str(exc))
     with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
-        return (
-            await run_sync(
+        try:
+            result = await run_sync(
                 quiet=True,
                 force_rebuild=force_rebuild,
                 retry_skipped=retry_skipped,
                 prune_ignored=prune_ignored,
                 cancel=cancel,
             )
-        ).model_dump()
+        except SkipRecordsLockError as exc:
+            return _error(str(exc))
+    return result.model_dump()
 
 
 async def _sync_after_add(
@@ -438,9 +441,12 @@ async def add(
 
     # Registration touches config.toml (a locked read-modify-write); keep the
     # blocking disk I/O off the event loop.
-    reg_result = await anyio.to_thread.run_sync(
-        functools.partial(register_sources, valid, force=force)
-    )
+    try:
+        reg_result = await anyio.to_thread.run_sync(
+            functools.partial(register_sources, valid, force=force)
+        )
+    except SkipRecordsLockError as exc:
+        return _error(str(exc))
     errors.extend(reg_result.refused)
     reached = reg_result.reached_corpus or bool(crawled_count)
     sync_result = await _sync_after_add(reached, enable_ocr, ocr_timeout)
@@ -578,7 +584,10 @@ def remove(names: list[str]) -> dict[str, Any]:
     beneath it; a glob (``*``/``?``/``[]``) removes every matching source."""
     from lilbee.app.ingest import remove_documents_durably
 
-    result = remove_documents_durably(names)
+    try:
+        result = remove_documents_durably(names)
+    except SkipRecordsLockError as exc:
+        return _error(str(exc))
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 
 

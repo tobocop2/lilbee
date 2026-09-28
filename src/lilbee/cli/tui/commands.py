@@ -10,8 +10,9 @@ from textual.command import Hit, Hits, Provider
 from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
+from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.core.config import cfg
-from lilbee.data.ingest.skip_marker import clear_failed_markers
+from lilbee.data.ingest.skip_marker import SkipRecordsLockError, clear_failed_markers
 
 log = logging.getLogger(__name__)
 
@@ -148,9 +149,18 @@ class LilbeeCommandProvider(Provider):
 
     def _action_retry_skipped(self) -> None:
         """Clear the failed-file markers and start a sync, like ``lilbee sync --retry-skipped``."""
-        cleared = clear_failed_markers(cfg.data_root)
-        self.screen.app.notify(msg.retry_skipped_message(len(cleared)))
-        self._app.action_run_sync()
+        self._app.run_worker(self._retry_skipped, thread=True, exit_on_error=False)
+
+    def _retry_skipped(self) -> None:
+        """Clear the markers off the UI thread, since the records lock can wait."""
+        app = self._app
+        try:
+            cleared = clear_failed_markers(cfg.data_root)
+        except SkipRecordsLockError as exc:
+            call_from_thread(app, app.notify, str(exc), severity="error")
+            return
+        call_from_thread(app, app.notify, msg.retry_skipped_message(len(cleared)))
+        call_from_thread(app, app.action_run_sync)
 
     def _action_prune_ignored(self) -> None:
         """Sync with pruning on, the TUI equivalent of ``lilbee sync --prune-ignored``."""

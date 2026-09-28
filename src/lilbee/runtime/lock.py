@@ -63,7 +63,7 @@ class LockTimeoutError(TimeoutError):
 
 
 class ResetRefusedError(RuntimeError):
-    """Raised when a reset cannot prove that no sync or import runs on the data root."""
+    """Raised when a reset cannot safely run on the data root; nothing was deleted."""
 
 
 # In-process write mutex: serializes writers within the same process

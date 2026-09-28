@@ -1366,6 +1366,12 @@ class TestDocumentsRemoveRoute:
         assert resp.status_code == 201
         assert resp.json()["removed"] == ["a.md"]
 
+    def test_a_held_records_lock_is_a_conflict(self, client, held_records_lock):
+        resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
+
+        assert resp.status_code == 409
+        assert "Could not lock" in resp.json()["detail"]
+
 
 SSE_ROUTES = [
     ("get", "/api/warm/stream"),
