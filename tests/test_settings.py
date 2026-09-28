@@ -1361,15 +1361,21 @@ class TestResolverIsTheOnlyWriter:
         assert cfg.temperature == 0.1
         assert "temperature" not in settings.load(cfg.data_root)
 
-    def test_null_update_over_invalid_profile_value_warns_and_keeps_cfg_valid(self, caplog):
+    def test_null_update_refuses_an_invalid_profile_value_and_changes_nothing(self):
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
 
-        self._write_config('[profile.values]\nrerank_min_score = "banana"\n')
-        with caplog.at_level("WARNING", logger="lilbee.core.settings"):
+        self._write_config(
+            'rerank_min_score = 0.4\n[profile.values]\nrerank_min_score = "banana"\n'
+        )
+        cfg.rerank_min_score = 0.4
+        with pytest.raises(
+            ValueError,
+            match=r"Cannot apply 'rerank_min_score': its profile value 'banana' is invalid",
+        ):
             appset.apply_settings_update({"rerank_min_score": None})
-        assert cfg.rerank_min_score is None
-        assert any("rerank_min_score" in record.getMessage() for record in caplog.records)
+        assert cfg.rerank_min_score == 0.4
+        assert settings.load(cfg.data_root)["rerank_min_score"] == 0.4
 
     def test_overlay_resets_key_absent_from_new_root(self, tmp_path):
         from lilbee.core.config import cfg
