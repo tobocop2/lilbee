@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
+from filelock import ReadWriteLock
+from filelock import Timeout as FileLockTimeout
 from rich.text import Text
 from typer.testing import CliRunner
 
@@ -253,6 +255,17 @@ class TestSync:
             result = runner.invoke(app, ["sync"])
         assert result.exit_code != 0
         assert "Error: locked: notes[draft].txt" in result.output
+
+    def test_sync_on_a_data_directory_that_cannot_lock_says_so(self, isolated_env):
+        def _busy(lock: ReadWriteLock, *_args, **_kwargs) -> None:
+            raise FileLockTimeout(lock.lock_file)
+
+        with mock.patch.object(ReadWriteLock, "acquire_write", _busy):
+            result = runner.invoke(app, ["sync"])
+
+        assert result.exit_code == 1
+        assert "Error:" in result.output
+        assert "does not support file locking" in result.output
 
 
 class TestRebuild:

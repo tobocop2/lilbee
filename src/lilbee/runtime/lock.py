@@ -8,11 +8,13 @@ data dir.
 """
 
 import asyncio
+import errno
 import json
 import logging
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
@@ -42,6 +44,9 @@ _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
 _SYNC_LOCK_NAME = "sync.lock"
+_SYNC_PROBE_PREFIX = "sync.probe."
+# How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
+_PROBE_WAIT_S = 0.3
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
 # database, or a mount that refuses its locks). A busy lock arrives as filelock's
@@ -53,6 +58,13 @@ _SYNC_LOCK_UNKNOWN = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
     "Stop every lilbee process, delete {path}, and reset again."
 )
+_DATA_ROOT_UNLOCKABLE = (
+    "Cannot tell whether a sync or import is running: {path} cannot be locked ({error})."
+)
+_NO_LOCKING = (
+    "{path} is on a filesystem that does not support file locking. Move it to a local disk."
+)
+_PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -60,6 +72,10 @@ _MUTEX_MIN_WAIT = 0.1
 
 class LockTimeoutError(TimeoutError):
     """Raised when a lock cannot be acquired within the timeout."""
+
+
+class LockingUnsupportedError(RuntimeError):
+    """Raised when the filesystem holding a lock file cannot lock files at all."""
 
 
 class ResetRefusedError(RuntimeError):
@@ -88,7 +104,8 @@ def acquire_server_lock(data_dir: Path, timeout: float = SERVER_LOCK_TIMEOUT) ->
     data_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(server_lock_path(data_dir))
     try:
-        lock.acquire(timeout=timeout)
+        with _enolck_as_unsupported(data_dir):
+            lock.acquire(timeout=timeout)
     except FileLockTimeout:
         return None
     return lock
@@ -127,7 +144,8 @@ def acquire_scope_lock(
     scope_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(scope_dir / _SCOPE_LOCK_NAME)
     try:
-        lock.acquire(timeout=timeout)
+        with _enolck_as_unsupported(scope_dir):
+            lock.acquire(timeout=timeout)
     except FileLockTimeout:
         return None
     owner_path = scope_dir / _SCOPE_OWNER_NAME
@@ -145,10 +163,15 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
 
 
 def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
-    """Hold the data root's sync lock; None lets a sync run unmarked when it cannot lock."""
-    path = data_root / _SYNC_LOCK_NAME
+    """Hold the data root's sync lock; None lets a sync run unmarked when locking raises."""
     try:
         data_root.mkdir(parents=True, exist_ok=True)
+        _require_locking(data_root)
+    except _SYNC_LOCK_ERRORS as exc:
+        _sync_lock_unavailable(data_root, exc, write=write, refusal=_DATA_ROOT_UNLOCKABLE)
+        return None
+    path = data_root / _SYNC_LOCK_NAME
+    try:
         lock = ReadWriteLock(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, write=write)
@@ -168,10 +191,45 @@ def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
     return lock
 
 
-def _sync_lock_unavailable(path: Path, error: Exception, *, write: bool) -> None:
+def _require_locking(data_root: Path) -> None:
+    """Raise ``LockingUnsupportedError`` when a lock nobody else holds still reports busy."""
+    # Unique per call: a probe shared with another thread or host would read its hold as busy.
+    probe_path = data_root / f"{_SYNC_PROBE_PREFIX}{uuid.uuid4().hex}"
+    probe = ReadWriteLock(probe_path, is_singleton=False)
+    try:
+        probe.acquire_write(timeout=_PROBE_WAIT_S)
+    except FileLockTimeout:
+        raise LockingUnsupportedError(_NO_LOCKING.format(path=data_root)) from None
+    finally:
+        probe.close()
+        _remove_probe(probe_path)
+
+
+@contextmanager
+def _enolck_as_unsupported(directory: Path) -> Generator[None, None, None]:
+    """Raise ``LockingUnsupportedError`` for a file lock the filesystem refuses with ENOLCK."""
+    try:
+        yield
+    except OSError as exc:
+        if exc.errno != errno.ENOLCK:
+            raise
+        raise LockingUnsupportedError(_NO_LOCKING.format(path=directory)) from exc
+
+
+def _remove_probe(probe_path: Path) -> None:
+    """Delete a lock probe; a leftover probe is harmless, so a failure only warns."""
+    try:
+        probe_path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning(_PROBE_LEFT, probe_path, exc)
+
+
+def _sync_lock_unavailable(
+    path: Path, error: Exception, *, write: bool, refusal: str = _SYNC_LOCK_UNKNOWN
+) -> None:
     """Refuse a reset that cannot take the lock; warn once and let a sync run unmarked."""
     if write:
-        raise ResetRefusedError(_SYNC_LOCK_UNKNOWN.format(path=path, error=error)) from error
+        raise ResetRefusedError(refusal.format(path=path, error=error)) from error
     log.warning(_SYNC_LOCK_REFUSED, path, error)
 
 
@@ -197,7 +255,10 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
 @contextmanager
 def no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
-    lock = _acquire_sync_lock(data_root, write=True)
+    try:
+        lock = _acquire_sync_lock(data_root, write=True)
+    except LockingUnsupportedError as exc:
+        raise ResetRefusedError(str(exc)) from exc
     try:
         yield
     finally:
@@ -226,7 +287,8 @@ def write_lock(
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     flock = FileLock(lock_path)
     try:
-        flock.acquire(timeout=timeout)
+        with _enolck_as_unsupported(lock_path.parent):
+            flock.acquire(timeout=timeout)
     except FileLockTimeout:
         raise LockTimeoutError("Timed out waiting for exclusive file lock") from None
     try:

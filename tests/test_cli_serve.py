@@ -1,5 +1,7 @@
 import asyncio
+import errno
 import json
+import sys
 from unittest import mock
 
 import pytest
@@ -424,6 +426,57 @@ class TestServeSingleton:
             holder.release()
         assert result.exit_code == 3
         assert "already running" in result.output
+        mock_asyncio_run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_refuses_a_data_directory_that_cannot_lock(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
+        import fcntl  # POSIX only; skipped on Windows
+
+        def _flock(_fd: int, _operation: int) -> None:
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        with mock.patch.object(fcntl, "flock", _flock):
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 3
+        assert "does not support file locking" in result.output
+        assert "Errno" not in result.output
+        mock_asyncio_run.assert_not_called()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_refuses_a_shared_folder_that_cannot_lock(
+        self,
+        mock_create_app,
+        mock_asyncio_run,
+        mock_setup_logging,
+        mock_setup_log_file,
+        tmp_path,
+        monkeypatch,
+    ):
+        import fcntl  # POSIX only; skipped on Windows
+
+        def _flock(_fd: int, _operation: int) -> None:
+            raise OSError(errno.ENOLCK, "No locks available")
+
+        scope = tmp_path / "shared-root"
+        monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
+        with mock.patch.object(fcntl, "flock", _flock):
+            result = runner.invoke(app, ["serve"])
+
+        assert result.exit_code == 3
+        assert "does not support file locking" in result.output
+        assert "shared-root" in result.output
+        assert "Errno" not in result.output
         mock_asyncio_run.assert_not_called()
 
     @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
