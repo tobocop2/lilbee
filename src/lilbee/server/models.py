@@ -23,6 +23,7 @@ from lilbee.app.profiles import (
     SaveResult,
     credit_line,
 )
+from lilbee.app.settings import SettingInfo
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode, FtsLanguage, KvCacheType, SettingSource
@@ -438,6 +439,49 @@ class ConfigSchemaResponse(BaseModel):
     """Response for GET /api/config/schema."""
 
     fields: list[ConfigFieldSchema]
+
+
+class SettingValueResponse(BaseModel):
+    """One setting's current value and source, for the CLI's ``lilbee settings`` JSON output.
+
+    Field names match the MCP ``settings_list``/``settings_get`` wire shape.
+    """
+
+    key: str
+    value: Any
+    default: Any
+    type: str
+    nullable: bool
+    group: SettingGroup
+    help: str
+    choices: list[str] | None
+    reindex_required: bool
+    source: SettingSource
+
+    @classmethod
+    def from_info(cls, info: SettingInfo) -> SettingValueResponse:
+        return cls(
+            key=info.key,
+            value=info.value,
+            default=info.default,
+            type=info.type,
+            nullable=info.nullable,
+            group=info.group,
+            help=info.help_text,
+            choices=list(info.choices) if info.choices else None,
+            reindex_required=info.reindex_required,
+            source=info.source,
+        )
+
+
+class SettingsListResponse(BaseModel):
+    """Response for the CLI's ``lilbee settings list --json``."""
+
+    settings: list[SettingValueResponse]
+
+    @classmethod
+    def from_infos(cls, infos: list[SettingInfo]) -> SettingsListResponse:
+        return cls(settings=[SettingValueResponse.from_info(info) for info in infos])
 
 
 class ModelsShowResponse(BaseModel):
