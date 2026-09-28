@@ -634,10 +634,7 @@ class LilbeeApp(App[None]):
         result = apply_settings_update({key: value})
         self.notify_warnings(result.warnings)
         self.publish_settings([key])
-        if result.reindex_required:
-            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
-        if key == "wiki" and cfg.wiki is False:
-            self._offer_wiki_wipe()
+        self._ask_after_change(result.reindex_required, key == "wiki" and cfg.wiki is False)
 
     def reset_settings(self, keys: list[str], *, skip_unresettable: bool = False) -> list[str]:
         """Reset *keys* through the boundary, fan each out to the UI, and return the reset keys.
@@ -648,11 +645,16 @@ class LilbeeApp(App[None]):
         result = reset_settings(keys, skip_unresettable=skip_unresettable)
         self.notify_warnings(result.warnings)
         self.publish_settings(result.updated)
-        if result.reindex_required:
-            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE)
-        if wiki_was_on and cfg.wiki is False:
-            self._offer_wiki_wipe()
+        self._ask_after_change(result.reindex_required, wiki_was_on and cfg.wiki is False)
         return result.updated
+
+    def _ask_after_change(self, reindex_required: bool, wiki_turned_off: bool) -> None:
+        """Offer a rebuild, then the wiki wipe, each only when needed and one at a time."""
+        wipe = self._offer_wiki_wipe if wiki_turned_off else None
+        if reindex_required:
+            self.offer_rebuild(msg.SETTINGS_REINDEX_MESSAGE, then=wipe)
+        elif wipe is not None:
+            wipe()
 
     def publish_settings(self, keys: Iterable[str]) -> None:
         """Apply a changed theme and tell subscribers each of *keys* now holds its cfg value."""
@@ -1049,12 +1051,17 @@ class LilbeeApp(App[None]):
         if chat is not None:
             chat.run_sync(force_rebuild=True)
 
-    def offer_rebuild(self, message: str) -> None:
-        """Ask whether to rebuild the index, saying why in *message*; yes starts the rebuild."""
+    def offer_rebuild(self, message: str, then: Callable[[], None] | None = None) -> None:
+        """Ask whether to rebuild the index, saying why in *message*; yes starts the rebuild.
+
+        *then* runs once the question is answered, so a follow-up dialog never stacks on it.
+        """
 
         def _answered(rebuild: bool | None) -> None:
             if rebuild:
                 self.start_rebuild()
+            if then is not None:
+                then()
 
         self.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 
