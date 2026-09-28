@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING
 
 import typer
 from rich.table import Table
@@ -14,8 +14,9 @@ from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
+from lilbee.cli.commands._shared import fail, line
 from lilbee.cli.commands.profile import render_changes
-from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
+from lilbee.cli.helpers import json_output, sigint_cancel
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore
 from lilbee.runtime.console import PlainConsole
@@ -64,14 +65,6 @@ def print_tip_if_shown(root: Path) -> None:
         console.print(Text(TIP_TEXT, style=theme.MUTED), soft_wrap=True)
 
 
-def _fail(message: str) -> NoReturn:
-    if cfg.json_mode:
-        json_output({"error": message})
-    else:
-        print_prefixed(console, "Error: ", message, style=theme.ERROR)
-    raise typer.Exit(1)
-
-
 @contextmanager
 def _progress() -> Iterator[DetailedProgressCallback]:
     """A progress bar over the files analyze extracts; off in JSON mode."""
@@ -97,10 +90,6 @@ def _progress() -> Iterator[DetailedProgressCallback]:
         yield on_progress
 
 
-def _line(text: str, style: str | None = None) -> None:
-    console.print(Text(text, style=style or ""), soft_wrap=True)
-
-
 def _reading_line(report: AnalyzeResponse) -> str:
     read = f"Read {report.files_read} of {report.documents_total} documents"
     if report.files_counted:
@@ -109,27 +98,27 @@ def _reading_line(report: AnalyzeResponse) -> str:
 
 
 def _render_reading(report: AnalyzeResponse) -> None:
-    _line(_reading_line(report), theme.ACCENT)
+    line(_reading_line(report), theme.ACCENT)
     if report.files_read + len(report.failed) < report.documents_total:
-        _line(f"The documents are sampled evenly; analyze_max_files is {report.cap}.", theme.MUTED)
+        line(f"The documents are sampled evenly; analyze_max_files is {report.cap}.", theme.MUTED)
     types = Table("File type", "Files")
     for kind, count in report.file_types.items():
         types.add_row(Text(kind), str(count))
     console.print(types)
     pdf = report.pdf
-    _line(f"Code files: {report.code_share:.0%}")
-    _line(f"Scanned pages: {pdf.scanned_pages} of {pdf.pages} PDF pages")
-    _line(f"Scanned share, image files included: {pdf.scanned_share:.0%}")
-    _line(f"PDFs with tables: {pdf.files_with_tables} of {pdf.files}")
+    line(f"Code files: {report.code_share:.0%}")
+    line(f"Scanned pages: {pdf.scanned_pages} of {pdf.pages} PDF pages")
+    line(f"Scanned share, image files included: {pdf.scanned_share:.0%}")
+    line(f"PDFs with tables: {pdf.files_with_tables} of {pdf.files}")
     if pdf.median_pages is not None:
-        _line(f"Median PDF length: {pdf.median_pages:g} pages")
+        line(f"Median PDF length: {pdf.median_pages:g} pages")
     if report.median_chars is not None:
-        _line(f"Median length of other files: {report.median_chars:g} characters")
+        line(f"Median length of other files: {report.median_chars:g} characters")
 
 
 def _render_languages(report: AnalyzeResponse) -> None:
     if not report.languages:
-        _line("No language detected: no file has enough text.")
+        line("No language detected: no file has enough text.")
         return
     table = Table("Language", "Share", "Search stemmer", "Tesseract")
     for lang in report.languages:
@@ -142,37 +131,37 @@ def _render_languages(report: AnalyzeResponse) -> None:
 def _render_failures(report: AnalyzeResponse) -> None:
     if not report.failed:
         return
-    _line(f"{len(report.failed)} files could not be read:", theme.WARNING)
+    line(f"{len(report.failed)} files could not be read:", theme.WARNING)
     for failure in report.failed[:MAX_FAILURES_SHOWN]:
-        _line(f"  {failure.file}: {failure.error}")
+        line(f"  {failure.file}: {failure.error}")
     hidden = len(report.failed) - MAX_FAILURES_SHOWN
     if hidden > 0:
-        _line(f"  and {hidden} more; --json lists them all")
+        line(f"  and {hidden} more; --json lists them all")
 
 
 def _render_recommendation(report: AnalyzeResponse) -> None:
     rec = report.recommendation
-    _line(f"Recommended: {rec.name or rec.builtin}", theme.ACCENT)
+    line(f"Recommended: {rec.name or rec.builtin}", theme.ACCENT)
     for reason in rec.reasons:
-        _line(f"  {reason.key}: {reason.text}")
+        line(f"  {reason.key}: {reason.text}")
     render_changes(rec.changes)
     if rec.kept:
-        _line(f"Keeps your values of: {', '.join(rec.kept)}")
+        line(f"Keeps your values of: {', '.join(rec.kept)}")
     for note in rec.notes:
-        _line(note, theme.MUTED)
+        line(note, theme.MUTED)
 
 
 def _render_saved(report: AnalyzeResponse) -> None:
     saved = report.saved
     if saved is not None and saved.applied:
-        _line(f"This project now uses {saved.name}: {saved.path}", theme.ACCENT)
+        line(f"This project now uses {saved.name}: {saved.path}", theme.ACCENT)
     elif saved is not None:
-        _line(f"Saved {saved.name}: {saved.path}")
+        line(f"Saved {saved.name}: {saved.path}")
     elif report.recommendation.name is not None:
-        _line("Run lilbee analyze --apply to save it and switch to it.", theme.MUTED)
+        line("Run lilbee analyze --apply to save it and switch to it.", theme.MUTED)
     if saved is not None:
         for warning in saved.warnings:
-            _line(warning, theme.WARNING)
+            line(warning, theme.WARNING)
 
 
 def _render(report: AnalyzeResponse) -> None:
@@ -196,11 +185,11 @@ def _analyze(request: AnalyzeRequest) -> AnalyzeResponse:
                 run_analysis(ProfileStore(), request, on_progress=on_progress, cancel=cancel)
             )
     except TaskCancelledError:
-        _fail(CANCELLED_MESSAGE)
+        fail(CANCELLED_MESSAGE)
     except ValueError as exc:
-        _fail(str(exc))
+        fail(str(exc))
     except OSError as exc:
-        _fail(file_failure_message(exc))
+        fail(file_failure_message(exc))
     return AnalyzeResponse.from_report(report)
 
 
@@ -211,11 +200,11 @@ def _hide_tip() -> None:
     try:
         hide_tip(cfg.data_root)
     except OSError as exc:
-        _fail(file_failure_message(exc))
+        fail(file_failure_message(exc))
     if cfg.json_mode:
         json_output({"tip_dismissed": True})
     else:
-        _line(TIP_HIDDEN_MESSAGE)
+        line(TIP_HIDDEN_MESSAGE)
 
 
 def analyze_cmd(
@@ -233,7 +222,7 @@ def analyze_cmd(
     apply_overrides(data_dir=data_dir, use_global=use_global)
     if off:
         if directory is not None or apply or save is not None or target is not None:
-            _fail(OFF_ALONE_MESSAGE)
+            fail(OFF_ALONE_MESSAGE)
         _hide_tip()
         return
     request = AnalyzeRequest(directory=directory, apply=apply, save=save, target=target)

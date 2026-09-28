@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import NoReturn
 
 import typer
 from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
+from lilbee.cli.commands._shared import fail
+from lilbee.cli.helpers import json_output, sigint_cancel
 from lilbee.core.config import cfg
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.console import styled
@@ -36,15 +36,6 @@ _export_source_option = typer.Option(
 )
 
 
-def _fail(message: str) -> NoReturn:
-    """Emit *message* as an error in the active output mode and exit non-zero."""
-    if cfg.json_mode:
-        json_output({"error": message})
-    else:
-        print_prefixed(console, "Error: ", message, style=theme.ERROR)
-    raise SystemExit(1)
-
-
 def export_cmd(
     output: Path = _export_output_argument,
     fmt: str = _format_option,
@@ -60,9 +51,9 @@ def export_cmd(
         with sigint_cancel() as cancel:
             summary = export_to_path(output, fmt, source, cancel=cancel)
     except TaskCancelledError:
-        _fail("Export cancelled; the partial file was removed.")
+        fail("Export cancelled; the partial file was removed.")
     except DatasetError as exc:
-        _fail(str(exc))
+        fail(str(exc))
 
     if cfg.json_mode:
         json_output(summary.model_dump())
@@ -93,7 +84,7 @@ def import_cmd(
     try:
         summary = asyncio.run(import_from_path(dataset, fmt))
     except DatasetError as exc:
-        _fail(str(exc))
+        fail(str(exc))
 
     if cfg.json_mode:
         json_output(summary.model_dump())
