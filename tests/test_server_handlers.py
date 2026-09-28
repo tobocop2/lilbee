@@ -3895,6 +3895,40 @@ class TestModelHandlersRunBlockingWorkOffLoop:
 
         assert threads and threads[0] != loop_tid
 
+    async def test_set_chat_model_runs_apply_settings_update_off_the_loop(self, tmp_path, mock_svc):
+        """The config.toml write behind PUT /api/models/chat must not stall the loop."""
+        import threading
+
+        from lilbee.app.settings import SettingsUpdateResult
+
+        loop_tid = threading.get_ident()
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        threads, stub = _thread_recorder(
+            SettingsUpdateResult(updated=["chat_model"], reindex_required=False)
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", side_effect=stub):
+            await handlers.set_chat_model(_CHAT_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
+    async def test_set_embedding_model_runs_apply_settings_update_off_the_loop(
+        self, tmp_path, mock_svc
+    ):
+        """Embedding has its own inline apply_settings_update call, unlike the shared helper."""
+        import threading
+
+        from lilbee.app.settings import SettingsUpdateResult
+
+        loop_tid = threading.get_ident()
+        mock_svc.provider.list_models.return_value = [_EMBED_REF]
+        threads, stub = _thread_recorder(
+            SettingsUpdateResult(updated=["embedding_model"], reindex_required=False)
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", side_effect=stub):
+            await handlers.set_embedding_model(_EMBED_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
 
 class TestPlacementHandlersRunOffTheLoop:
     """Placement actions and the Intel util notice shell out to GPU probes,
@@ -4193,6 +4227,20 @@ class TestUpdateConfig:
             result = await config_handlers.get_config_schema()
         spy.assert_called_once_with(config_handlers.list_settings)
         assert any(entry.key == "top_k" for entry in result.fields)
+
+    async def test_update_config_writes_settings_off_the_event_loop(self, tmp_path):
+        """The config.toml write behind PATCH /api/config must not stall the loop."""
+        from lilbee.server.handlers import config as config_handlers
+
+        with patch.object(asyncio, "to_thread", wraps=asyncio.to_thread) as spy:
+            result = await config_handlers.update_config({"temperature": 0.7})
+        spy.assert_called_once_with(
+            config_handlers.apply_settings_update,
+            {"temperature": 0.7},
+            allow_model_roles=False,
+        )
+        assert result.updated == ["temperature"]
+        assert cfg.temperature == 0.7
 
     async def test_update_config_unknown_field(self):
         with pytest.raises(ValueError, match="Unknown or read-only setting"):
