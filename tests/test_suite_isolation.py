@@ -11,7 +11,7 @@ from lilbee.cli import apply_overrides
 from lilbee.core import profile_files
 from lilbee.core.config import Config, cfg
 from lilbee.core.config import resolve as resolve_mod
-from lilbee.core.profile_files import profile_folders
+from lilbee.core.profile_files import ProfileFolder, profile_folders
 from lilbee.core.system import canonical_models_dir, default_data_dir
 from tests.conftest import (
     REAL_GLOBAL_ROOT,
@@ -56,7 +56,7 @@ def test_global_root_and_fresh_config_never_read_the_real_global_config(
 
 def test_profile_folders_never_resolve_under_the_real_global_root():
     assert default_data_dir() != REAL_GLOBAL_ROOT
-    assert len(profile_folders(cfg.data_root)) == 4
+    assert sorted(kind for kind, _ in profile_folders(cfg.data_root)) == sorted(ProfileFolder)
     assert profile_folders_under_real_root(cfg.data_root) == []
 
 
