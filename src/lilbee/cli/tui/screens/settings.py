@@ -181,9 +181,8 @@ class SettingsScreen(Screen[None]):
         self._stale_source_keys: set[str] = set()
 
     def compose(self) -> ComposeResult:
-        from textual.widgets import Footer
-
         from lilbee.cli.tui.widgets.bottom_bars import BottomBars
+        from lilbee.cli.tui.widgets.stable_footer import StableFooter
         from lilbee.cli.tui.widgets.status_bar import ViewTabs
         from lilbee.cli.tui.widgets.task_bar import TaskBar
         from lilbee.cli.tui.widgets.top_bars import TopBars
@@ -205,7 +204,7 @@ class SettingsScreen(Screen[None]):
             yield from self._compose_group_tabs()
         with BottomBars():
             yield TaskBar()
-            yield Footer()
+            yield StableFooter()
 
     def _compose_group_tabs(self) -> ComposeResult:
         """Yield one TabPane per setting group; bodies populate on activation."""

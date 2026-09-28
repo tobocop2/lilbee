@@ -15714,6 +15714,11 @@ async def test_settings_clearing_the_vision_model_updates_both_ocr_notes():
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
+        # Settle the mount-time profile reload before triggering another one below:
+        # both run in the same exclusive worker group, so an unsettled first reload
+        # would be cancelled by the second and fail this wait instead of the
+        # first's own caller.
+        await app.workers.wait_for_complete()
         before = _ocr_help_texts(screen)
         assert all("used instead of Tesseract" in text for text in before.values())
         with patch("lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock):
