@@ -111,9 +111,14 @@ def displayed_text(widget: Widget) -> str | None:
     return None
 
 
-def list_editor_text(key: str) -> str:
-    """The newline-joined text a list setting's editor shows for the current cfg value."""
-    return "\n".join(str(item) for item in (getattr(cfg, key, None) or []))
+def list_editor_text(key: str, value: list[object] | None = None) -> str:
+    """The newline-joined text a list setting's editor shows for *value*.
+
+    *value* defaults to the current cfg value; a caller that already read it
+    (to also compute a count, say) passes it through instead of re-reading cfg.
+    """
+    items = (getattr(cfg, key, None) or []) if value is None else value
+    return "\n".join(str(item) for item in items)
 
 
 def select_shown_value(defn: SettingDef, value: str) -> str:
@@ -295,7 +300,7 @@ def make_list_editor(key: str) -> Collapsible:
     current = getattr(cfg, key, None) or []
     title = msg.SETTINGS_LIST_EDITOR_TITLE.format(key=key, count=len(current))
     editor = ListTextArea(
-        text=list_editor_text(key),
+        text=list_editor_text(key, current),
         show_line_numbers=True,
         name=key,
         id=f"{EDITOR_ID_PREFIX}{key}",

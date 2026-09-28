@@ -343,6 +343,29 @@ class TestSettingsFeatureGating:
         # Still settable through the CLI / env path.
         assert "sse_heartbeat_interval" in SETTINGS_MAP
 
+    def test_make_list_editor_reads_cfg_once(self) -> None:
+        """make_list_editor reads a list setting's cfg value exactly once (bb-p284w.17).
+
+        The row count and the editor's text both derive from the same
+        value; the count must not trigger its own separate cfg read.
+        """
+        import builtins
+
+        from lilbee.cli.tui.screens import settings_widgets as settings_widgets_mod
+
+        real_getattr = builtins.getattr
+        reads: list[str] = []
+
+        def counting_getattr(obj: object, name: str, *default: object) -> object:
+            if obj is cfg and name == "crawl_exclude_patterns":
+                reads.append(name)
+            return real_getattr(obj, name, *default)
+
+        with mock.patch.object(settings_widgets_mod, "getattr", counting_getattr, create=True):
+            settings_widgets_mod.make_list_editor("crawl_exclude_patterns")
+
+        assert len(reads) == 1, f"expected exactly one cfg read, got {len(reads)}"
+
     def test_every_writable_memory_field_has_a_settings_map_entry(self) -> None:
         """Each writable memory_* config field must be in SETTINGS_MAP.
 
