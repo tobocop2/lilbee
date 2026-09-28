@@ -28,6 +28,7 @@ from lilbee.app.services import get_services, peek_services
 from lilbee.app.settings import apply_settings_update, reset_settings, setting_sources
 from lilbee.app.setup_state import chat_ready, embedding_ready
 from lilbee.app.themes import DARK_THEMES
+from lilbee.cli.app import chat_model_overridden
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.color_compat import (
     EightBitPalette,
@@ -494,6 +495,15 @@ class LilbeeApp(App[None]):
                             label=label, original=canon.original, reason=reason
                         )
                     )
+                continue
+
+            if field == "chat_model" and chat_model_overridden():
+                # --model outranks the env var and config.toml, so name the flag.
+                self._warn_with_toast(
+                    msg.MODEL_CLI_PIN_UNUSABLE.format(
+                        label=label, original=canon.original, reason=reason
+                    )
+                )
                 continue
 
             if sources[field] is SettingSource.ENV:
