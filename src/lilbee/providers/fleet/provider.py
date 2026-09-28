@@ -18,7 +18,6 @@ import re
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
@@ -2116,9 +2115,8 @@ class FleetProvider:
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
-                # thread is still warming; pool submission then raises "cannot
-                # schedule new futures after interpreter shutdown". The process is
-                # leaving anyway, so drop it quietly instead of stack-tracing.
+                # thread is still warming; starting a thread then raises
+                # RuntimeError. The process is leaving anyway, so drop it quietly.
                 log.debug("Engine warm-up abandoned during interpreter shutdown: %s", exc)
             else:
                 # A warm-up failure is handled (roles lazy-load on first use), so
@@ -2203,13 +2201,35 @@ class FleetProvider:
         if not pools:
             return
         listeners = (on_spawning, on_spawned)
-        chains = _warm_chains(list(pools), device_sets)
-        with ThreadPoolExecutor(
-            max_workers=len(chains), thread_name_prefix="fleet-preload"
-        ) as pool:
-            futures = [pool.submit(self._warm_chain, chain, pools, listeners) for chain in chains]
-            for future in futures:
-                future.result()
+        self._run_warm_chains(_warm_chains(list(pools), device_sets), pools, listeners)
+
+    def _run_warm_chains(
+        self,
+        chains: list[list[WorkerRole]],
+        pools: dict[WorkerRole, list[LlamaServerClient]],
+        listeners: tuple[Callable[[WorkerRole], None] | None, Callable[[WorkerRole], None] | None],
+    ) -> None:
+        """Warm *chains* in parallel; re-raise the first chain's error, in chain order."""
+        errors: list[Exception | None] = [None] * len(chains)
+
+        def _run(index: int) -> None:
+            try:
+                self._warm_chain(chains[index], pools, listeners)
+            except Exception as exc:
+                errors[index] = exc
+
+        # Daemon threads, not an executor: exit joins every executor worker, and a
+        # warm request on a stopped engine would then hold the process open.
+        threads = [
+            threading.Thread(target=_run, args=(index,), name="fleet-preload", daemon=True)
+            for index in range(len(chains))
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        if (first := next((exc for exc in errors if exc is not None), None)) is not None:
+            raise first
 
     def _warm_chain(
         self,

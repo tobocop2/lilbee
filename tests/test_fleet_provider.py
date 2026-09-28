@@ -8,6 +8,8 @@ import json
 import logging
 import os
 import struct
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -2584,11 +2586,11 @@ def test_warm_up_blocking_fails_when_chat_window_is_unusable(monkeypatch) -> Non
 
 
 def test_warm_up_blocking_swallows_interpreter_shutdown_race(monkeypatch, caplog) -> None:
-    # A fast CLI exit tears down the interpreter mid-warm; the pool submit then
+    # A fast CLI exit tears down the interpreter mid-warm; starting a thread then
     # raises RuntimeError. During finalization this must be dropped quietly, not
     # logged as a scary WARNING traceback.
     def _shutdown_race() -> list:
-        raise RuntimeError("cannot schedule new futures after interpreter shutdown")
+        raise RuntimeError("can't create new thread at interpreter shutdown")
 
     monkeypatch.setattr(planning_mod, "plan_all_launches", _shutdown_race)
     monkeypatch.setattr("lilbee.providers.fleet.provider.sys.is_finalizing", lambda: True)
@@ -2747,6 +2749,46 @@ def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="listener broke"):
         p._preload_roles()
     chat.chat.assert_called_once()  # chat still warmed behind the failed embed
+
+
+_EXIT_BUDGET_S = 30.0
+_HUNG_WARM_PROBE = """
+import threading
+import httpx
+from lilbee.providers.fleet.client import LlamaServerClient
+from lilbee.providers.fleet.groups import SwapGroup
+from lilbee.providers.fleet.provider import FleetProvider
+from lilbee.providers.roles import WorkerRole
+
+in_flight = threading.Event()
+
+def never_answers(request):
+    in_flight.set()
+    threading.Event().wait()
+
+http = httpx.Client(base_url="http://engine", transport=httpx.MockTransport(never_answers))
+p = FleetProvider()
+p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+p._clients = {WorkerRole.CHAT: [LlamaServerClient("http://engine", "chat", http=http)]}
+p._prewarm_chat_weights = lambda: None
+threading.Thread(target=p._preload_roles, daemon=True).start()
+assert in_flight.wait(10.0)
+print("warm in flight", flush=True)
+"""
+
+
+def test_process_exits_while_a_warm_request_never_answers(tmp_path) -> None:
+    # Interpreter exit must not join a warm worker stuck on an engine that never replies.
+    env = {**os.environ, "LILBEE_DATA": str(tmp_path), "HOME": str(tmp_path)}
+    result = subprocess.run(
+        [sys.executable, "-c", _HUNG_WARM_PROBE],
+        env=env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=_EXIT_BUDGET_S,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "warm in flight"
 
 
 def _registry_with_shards(monkeypatch, shards: list[Path]) -> None:
