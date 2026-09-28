@@ -77,6 +77,7 @@ from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
+    SkipRecordsLockError,
     clear_failed_markers,
     clear_skip_markers,
     describe_skips,
@@ -915,13 +916,14 @@ def _persist_skip_records(
     *,
     succeeded: Iterable[str],
     failed: Iterable[str],
-) -> None:
+) -> str | None:
     """Merge this sync's verdicts into the skip records as they are on disk now.
 
     Only the files this sync decided on change: a clean ingest drops its
     record, a file that produced no chunks gains one with its reason and the
     FAILED kind. Records written or cleared since the sync started (a reset, a
-    removal, a rolled back add) keep their reason and kind.
+    removal, a rolled back add) keep their reason and kind. Returns the error
+    when the records lock cannot be taken, in which case nothing is written.
     """
     dropped = list(succeeded)
     held = list(failed)
@@ -934,7 +936,12 @@ def _persist_skip_records(
         records.reasons.update({name: reasons[name] for name in held if name in reasons})
         records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
 
-    update_skip_records(records_root, _merge)
+    try:
+        update_skip_records(records_root, _merge)
+    except SkipRecordsLockError as error:
+        log.error("%s", error)
+        return str(error)
+    return None
 
 
 def _failures_among(records_root: Path, held: Iterable[str]) -> list[str]:
@@ -1353,7 +1360,7 @@ async def sync(
     # A flush failure is a transient store-side problem, not a verdict on the
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
     marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
-    _persist_skip_records(
+    skip_records_error = _persist_skip_records(
         records_root, pending_hashes, reasons, succeeded=[*added, *updated], failed=marker_failed
     )
 
@@ -1397,6 +1404,7 @@ async def sync(
         held_out=describe_skips(records_root, _failures_among(records_root, state.held_out)),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
+        skip_records_error=skip_records_error,
     )
     on_progress(
         EventType.SYNC_DONE,

@@ -88,6 +88,7 @@ from lilbee.data.store import (
     SearchScope,
     scope_to_chunk_type,
 )
+from lilbee.data.types import SyncResult
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.warm_progress import WarmPhase, WarmProgress
 from lilbee.retrieval.embedder import is_model_available
@@ -897,6 +898,7 @@ class ChatScreen(Screen[None]):
                 unregister_added_roots(registered)
                 raise RuntimeError(skipped_msg)
             call_from_thread(self, self.notify, skipped_msg, severity="warning")
+        self._report_unsaved_skip_records(sync_result)
         if sync_result.relocated:
             call_from_thread(
                 self,
@@ -2452,6 +2454,12 @@ class ChatScreen(Screen[None]):
                 msg.SYNC_HELD_OUT.format(count=len(result.held_out)),
                 severity="warning",
             )
+        self._report_unsaved_skip_records(result)
+
+    def _report_unsaved_skip_records(self, result: SyncResult) -> None:
+        """Show the error when a sync could not save which files it held out."""
+        if result.skip_records_error is not None:
+            call_from_thread(self, self.notify, result.skip_records_error, severity="error")
 
     def action_focus_commands(self) -> None:
         """Focus chat input and pre-fill with '/' for command entry."""

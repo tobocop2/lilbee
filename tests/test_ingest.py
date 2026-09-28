@@ -2285,6 +2285,34 @@ class TestFanoutReadsTheCorpusSkipRecords:
 
         assert result.removed == ["drop.txt"]
 
+    async def test_a_held_records_lock_leaves_the_records_unwritten_and_says_so(
+        self, isolated_env, fan_out, monkeypatch
+    ):
+        from filelock import FileLock
+
+        from lilbee.data.ingest import skip_marker, sync
+        from lilbee.data.ingest.skip_marker import SKIP_MARKER_FILENAME, load_skip_kinds
+
+        monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
+        holder = FileLock(str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock")
+        holder.acquire()
+        try:
+            with mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records",
+                side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
+            ):
+                result = await sync(quiet=True)
+        finally:
+            holder.release()
+
+        assert load_skip_kinds(cfg.data_root) == {}
+        assert result.added == ["kept.txt"]
+        assert result.skip_records_error is not None
+        assert SKIP_MARKER_FILENAME + ".lock" in result.skip_records_error
+        assert result.skip_records_error in str(result)
+
 
 class TestStatusExposesTheIndexEmbedder:
     """A client can tell a stale index from the configured model before the

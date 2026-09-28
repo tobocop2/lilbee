@@ -502,6 +502,7 @@ class SyncSummary(BaseModel):
     held_out: list[SkippedSource] = []
     truncated: int = 0
     index_mismatch: IndexMismatch | None = None
+    skip_records_error: str | None = None
 
 
 class AddSummary(BaseModel):

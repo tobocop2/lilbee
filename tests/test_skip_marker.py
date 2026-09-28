@@ -273,6 +273,40 @@ class TestUpdateSkipRecords:
         assert not worker.is_alive()
         assert load_skip_markers(tmp_path) == expected
 
+    @pytest.mark.parametrize(
+        "operation",
+        [
+            pytest.param(
+                lambda root: update_skip_records(
+                    root, lambda records: records.markers.update({"new.pdf": "h2"})
+                ),
+                id="update",
+            ),
+            pytest.param(clear_skip_markers, id="clear"),
+            pytest.param(lambda root: mark_removed(root, {"new.pdf": "h2"}), id="mark_removed"),
+            pytest.param(clear_failed_markers, id="clear_failed"),
+        ],
+    )
+    def test_a_lock_that_stays_held_fails_the_change_without_writing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation
+    ):
+        """A change that cannot take the records lock raises and leaves the records as they were."""
+        from lilbee.data.ingest.skip_marker import SkipRecordsLockError
+
+        monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)
+        _head_failure(tmp_path, "old.pdf", "h1", "no text")
+        lock_path = str(tmp_path / SKIP_MARKER_FILENAME) + ".lock"
+        holder = FileLock(lock_path)
+        holder.acquire()
+        try:
+            with pytest.raises(SkipRecordsLockError, match=r"delete .*skipped_sources\.json\.lock"):
+                operation(tmp_path)
+        finally:
+            holder.release()
+
+        assert load_skip_markers(tmp_path) == {"old.pdf": "h1"}
+        assert load_skip_kinds(tmp_path) == {"old.pdf": SkipKind.FAILED}
+
 
 def test_kinds_round_trip_for_every_marker(tmp_path: Path) -> None:
     """A stored kind is read back for its marker."""

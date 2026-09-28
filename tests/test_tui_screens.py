@@ -8708,6 +8708,71 @@ async def test_do_sync_reports_held_out_files():
         assert msg.SYNC_HELD_OUT.format(count=1) in messages
 
 
+async def test_do_sync_reports_unsaved_skip_records():
+    """A sync that could not save its held-out record shows the error."""
+    import threading
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.ingest import SyncResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+
+        async def fake_sync(**_kw):
+            return SyncResult(unchanged=1, skip_records_error="records.lock could not be locked")
+
+        app.screen.notify = MagicMock()
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
+            thread = threading.Thread(
+                target=lambda: app.screen._do_sync(MagicMock(spec=ProgressReporter))
+            )
+            thread.start()
+            thread.join(timeout=5)
+            await _pilot.pause()
+
+        calls = [(c.args[0], c.kwargs.get("severity")) for c in app.screen.notify.call_args_list]
+        assert ("records.lock could not be locked", "error") in calls
+
+
+async def test_do_add_reports_unsaved_skip_records(tmp_path):
+    """An add whose sync could not save its held-out record shows the error."""
+    import threading
+    from unittest.mock import MagicMock
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.ingest import SyncResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello", encoding="utf-8")
+
+        async def fake_sync(**_kw):
+            return SyncResult(
+                added=[test_file.name], skip_records_error="records.lock could not be locked"
+            )
+
+        app.screen.notify = MagicMock()
+        with (
+            patch("lilbee.app.ingest.register_sources") as mock_register,
+            patch("lilbee.data.ingest.sync", new=fake_sync),
+        ):
+            mock_register.return_value = RegisterResult(registered=[test_file.name])
+            thread = threading.Thread(
+                target=lambda: app.screen._do_add(
+                    [test_file], ProgressReporter(app.task_bar, "fake-id")
+                )
+            )
+            thread.start()
+            thread.join(timeout=5)
+            await _pilot.pause()
+
+        calls = [(c.args[0], c.kwargs.get("severity")) for c in app.screen.notify.call_args_list]
+        assert ("records.lock could not be locked", "error") in calls
+
+
 async def test_do_add_raises_on_sync_failed(tmp_path):
     """bb-vb28: _do_add raises when sync returns SyncResult with failed files.
 

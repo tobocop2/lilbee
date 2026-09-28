@@ -1892,6 +1892,19 @@ class TestAddFiles:
             {"filename": "scan.pdf", "reason": "OCR timed out after 300s"}
         ]
 
+    async def test_done_frame_carries_the_skip_records_error(self, isolated_env):
+        test_file = isolated_env / "documents" / "test.txt"
+        test_file.write_text("test content", encoding="utf-8")
+
+        async def fake_sync(**kwargs):
+            return SyncResult(skip_records_error="records.lock could not be locked")
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            events = [e async for e in handlers.add_files_stream([str(test_file)])]
+
+        done = json.loads([e for e in events if e.startswith("event: done")][-1].split("data: ")[1])
+        assert done["sync"]["skip_records_error"] == "records.lock could not be locked"
+
     async def test_stream_emits_sentinel_on_sync_failure(self, isolated_env):
         """Sync failure emits one error frame and closes the stream without a done frame."""
         test_file = isolated_env / "documents" / "test.txt"
