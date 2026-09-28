@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 # Single source of truth for per-provider API key configuration.
 # Maps (provider_name, config_field, env_var, display_label). Backend-agnostic:
-# OpenAI-compatible SDKs all read these env vars at call time. Tuple order
+# lilbee reads the env var, else the cfg field, and passes the key explicitly. Tuple order
 # is the canonical display order downstream consumers (TUI grouping, catalog
 # sections) honor when surfacing providers.
 PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
@@ -42,7 +42,7 @@ PROVIDER_KEYS: tuple[tuple[str, str, str, str], ...] = (
 PROVIDER_API_KEY_FIELD: dict[str, str] = {prov: field for prov, field, *_ in PROVIDER_KEYS}
 
 
-# Provider name -> the SDK's own env var (read at call time by the backend).
+# Provider name -> the provider's env var, which wins over the cfg field when set.
 PROVIDER_API_KEY_ENV: dict[str, str] = {prov: env for prov, _field, env, *_ in PROVIDER_KEYS}
 
 
