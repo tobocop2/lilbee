@@ -204,6 +204,29 @@ def test_discard_warns_when_it_leaves_ocr_off_with_a_vision_model(client):
     assert cfg.enable_ocr is False
 
 
+def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model(client):
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    applied = client.post(_url("Notes and markdown", "/apply")).json()
+    warnings = applied["warnings"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0] and cfg.vision_model in warnings[0]
+    assert cfg.enable_ocr is False
+
+
+def test_save_as_and_update_warn_when_they_leave_ocr_off_with_a_vision_model(client):
+    cfg.data_root.mkdir(parents=True)
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    (cfg.data_root / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+    saved = client.post("/api/profiles", json={"name": "Mine", "target": "project"}).json()
+    assert len(saved["warnings"]) == 1
+    assert "enable_ocr" in saved["warnings"][0]
+    config = cfg.data_root / "config.toml"
+    config.write_text("top_k = 3\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+    updated = client.put(_url("Mine")).json()
+    assert len(updated["warnings"]) == 1
+    assert "enable_ocr" in updated["warnings"][0]
+
+
 def test_active_lists_your_changes_with_the_value_and_source_they_fall_back_to(client):
     assert client.get("/api/profiles/active").json()["changes"] == []
     cfg.data_root.mkdir(parents=True)

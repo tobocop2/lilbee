@@ -137,10 +137,12 @@ class ProfileLocation:
 
 @dataclass(frozen=True)
 class SaveResult:
-    """A saved profile file and the settings of yours it took over from config.toml."""
+    """A saved profile file, the settings of yours it took over, and any setting it leaves
+    in conflict."""
 
     location: ProfileLocation
     absorbed: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -155,12 +157,13 @@ class DiscardResult:
 
 @dataclass(frozen=True)
 class ApplyResult:
-    """The outcome of a profile apply."""
+    """The outcome of a profile apply, and any setting it leaves in conflict."""
 
     name: str
     changes: tuple[DiffRow, ...]
     reindex_required: bool
     new_files_only: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
 
 
 def effect_of(key: str) -> ProfileEffect:
@@ -254,17 +257,18 @@ def apply(store: ProfileStore, name: str) -> ApplyResult:
     """Record *name* as the project's profile and set cfg from it; user and env values stay."""
     profile = _usable(store, name)
     planned = _diff(profile)
-    apply_profile_layer(profile.name, profile.values)
-    return _apply_result(planned)
+    result = apply_profile_layer(profile.name, profile.values)
+    return _apply_result(planned, result.warnings)
 
 
-def _apply_result(planned: ProfileDiff) -> ApplyResult:
+def _apply_result(planned: ProfileDiff, warnings: tuple[str, ...] = ()) -> ApplyResult:
     effects = {row.key: row.effect for row in planned.changes}
     return ApplyResult(
         name=planned.name,
         changes=planned.changes,
         reindex_required=ProfileEffect.REINDEX in effects.values(),
         new_files_only=tuple(k for k, e in effects.items() if e is ProfileEffect.NEW_FILES_ONLY),
+        warnings=warnings,
     )
 
 
@@ -378,7 +382,7 @@ def _switch_to(planned: PlannedWrite, yours: tuple[str, ...]) -> SaveResult:
     """
     written: list[Path] = []
     try:
-        apply_profile_layer(
+        result = apply_profile_layer(
             planned.profile.name,
             planned.profile.values,
             absorb=yours,
@@ -390,7 +394,7 @@ def _switch_to(planned: PlannedWrite, yours: tuple[str, ...]) -> SaveResult:
         raise ValueError(
             f"Saved the profile to {planned.path}, but switching this project to it failed: {exc}"
         ) from exc
-    return SaveResult(_location(planned), yours)
+    return SaveResult(_location(planned), yours, result.warnings)
 
 
 def _bare(name: str, values: Mapping[str, Any]) -> ProfileFile:
@@ -491,8 +495,8 @@ def apply_recommended(
 ) -> ApplyResult:
     """Save analyze's recommended *values* as *name* and switch this project to it."""
     planned = _diff(recommended_file(name, values))
-    save_recommended(store, name, values, target, switch=True)
-    return _apply_result(planned)
+    result = save_recommended(store, name, values, target, switch=True)
+    return _apply_result(planned, result.warnings)
 
 
 def discard() -> DiscardResult:

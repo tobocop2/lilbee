@@ -79,6 +79,22 @@ def test_apply_copies_values_into_profile_table(store):
     assert {row.key for row in result.changes} == {"ocr_strategy", "layout_detection"}
 
 
+def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model(store):
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profiles.apply(store, "Notes and markdown")
+    assert len(result.warnings) == 1
+    assert "enable_ocr" in result.warnings[0]
+    assert cfg.enable_ocr is False
+
+
+def test_apply_recommended_warns_when_it_leaves_ocr_off_with_a_vision_model(store):
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profiles.apply_recommended(store, "Mine", {"enable_ocr": False}, ProfileFolder.PROJECT)
+    assert len(result.warnings) == 1
+    assert "enable_ocr" in result.warnings[0]
+    assert cfg.enable_ocr is False
+
+
 def test_apply_default_records_name_only(store):
     profiles.apply(store, "Notes and markdown")
     assert cfg.chunk_size == 384

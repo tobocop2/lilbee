@@ -167,6 +167,15 @@ def test_save_as_moves_your_profile_settings_into_the_new_profile(store, monkeyp
     assert profiles.active(store).status is ProfileStatus.CURRENT
 
 
+def test_save_as_warns_when_it_leaves_ocr_off_with_a_vision_model(store):
+    profiles.apply(store, "Notes and markdown")
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profiles.save_as("Mine", ProfileFolder.PROJECT)
+    assert len(result.warnings) == 1
+    assert "enable_ocr" in result.warnings[0]
+    assert cfg.enable_ocr is False
+
+
 def test_save_as_on_default_saves_only_your_settings(store):
     _write_config("layout_detection = true\n")
     result = profiles.save_as("Layout")
@@ -208,6 +217,16 @@ def test_update_writes_your_settings_into_the_active_file_and_keeps_its_metadata
     assert _stored() == {"profile": {"name": "Mine", "values": values}}
     assert _source("chunk_size") is SettingSource.PROFILE
     assert profiles.active(store).status is ProfileStatus.CURRENT
+
+
+def test_update_warns_when_it_leaves_ocr_off_with_a_vision_model(store):
+    _write(_global_dir(), "mine", "[values]\nenable_ocr = false\n")
+    profiles.apply(store, "mine")
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profiles.update(store)
+    assert len(result.warnings) == 1
+    assert "enable_ocr" in result.warnings[0]
+    assert cfg.enable_ocr is False
 
 
 def test_update_renames_a_hand_named_file_to_the_slug(store):

@@ -399,6 +399,34 @@ def test_discard_warns_when_it_leaves_ocr_off_with_a_vision_model(project):
     assert "enable_ocr" in warnings[0]
 
 
+def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model(project):
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    (project / "config.toml").write_text(f'vision_model = "{vision_model}"\n', encoding="utf-8")
+    result = _invoke(project, "apply", "Notes and markdown")
+    assert result.exit_code == 0, result.output
+    assert vision_model in result.output
+    (project / "config.toml").write_text(f'vision_model = "{vision_model}"\n', encoding="utf-8")
+    warnings = _json(project, "apply", "Notes and markdown")["warnings"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0]
+
+
+def test_save_and_update_warn_when_they_leave_ocr_off_with_a_vision_model(project):
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    (project / "config.toml").write_text(
+        f'vision_model = "{vision_model}"\nenable_ocr = false\n', encoding="utf-8"
+    )
+    saved = _invoke(project, "save", "Mine", "--target", "project")
+    assert saved.exit_code == 0, saved.output
+    assert "enable_ocr" in saved.output and vision_model in saved.output
+    (project / "config.toml").write_text(
+        "top_k = 3\n" + (project / "config.toml").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    updated = _json(project, "update")
+    assert len(updated["warnings"]) == 1
+    assert "enable_ocr" in updated["warnings"][0]
+
+
 def test_show_without_a_name_lists_your_changes(project):
     assert _json(project, "show")["changes"] == []
     assert "Your changes" not in _invoke(project, "show").output

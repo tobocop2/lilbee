@@ -170,6 +170,9 @@ def _render_saved(report: AnalyzeResponse) -> None:
         _line(f"Saved {saved.name}: {saved.path}")
     elif report.recommendation.name is not None:
         _line("Run lilbee analyze --apply to save it and switch to it.", theme.MUTED)
+    if saved is not None:
+        for warning in saved.warnings:
+            _line(warning, theme.WARNING)
 
 
 def _render(report: AnalyzeResponse) -> None:

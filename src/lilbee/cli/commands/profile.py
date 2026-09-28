@@ -143,6 +143,8 @@ def _render_save(verb: str, result: ProfileSaveResponse) -> None:
     _render_location(verb, result)
     if result.absorbed:
         line(f"It now holds your settings of: {', '.join(result.absorbed)}")
+    for warning in result.warnings:
+        line(warning, theme.WARNING)
 
 
 def _render_discard(result: ProfileDiscardResponse) -> None:
@@ -253,12 +255,15 @@ def profile_apply(
             reindex_error = str(exc)
     if cfg.json_mode:
         json_output(_apply_json(result, reindexed, reindex_error))
-    elif reindex_error is not None:
-        print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
-    elif reindexed is not None:
-        line(f"Rebuilt: {reindexed} documents ingested")
-    elif result.reindex_required:
-        line(REBUILD_HINT, theme.WARNING)
+    else:
+        if reindex_error is not None:
+            print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
+        elif reindexed is not None:
+            line(f"Rebuilt: {reindexed} documents ingested")
+        elif result.reindex_required:
+            line(REBUILD_HINT, theme.WARNING)
+        for warning in result.warnings:
+            line(warning, theme.WARNING)
     if reindex_error is not None:
         raise typer.Exit(1)
 
