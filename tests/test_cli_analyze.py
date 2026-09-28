@@ -178,6 +178,18 @@ def test_apply_text_names_the_switch(project, notes):
     assert "This project now uses Notes and markdown (project):" in result.output
 
 
+def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model(project, notes):
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    (project / "config.toml").write_text(f'vision_model = "{vision_model}"\n', encoding="utf-8")
+    report = json.loads(_invoke(project, str(notes), "--apply", json_mode=True).output)
+    warnings = report["saved"]["warnings"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0]
+    (project / "config.toml").write_text(f'vision_model = "{vision_model}"\n', encoding="utf-8")
+    result = _invoke(project, str(notes), "--apply")
+    assert vision_model in result.output
+
+
 def test_save_writes_without_switching(project, notes):
     result = _invoke(project, str(notes), "--save", "Vault")
     assert result.exit_code == 0, result.output

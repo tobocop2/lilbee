@@ -317,6 +317,17 @@ def test_apply_saves_the_derived_profile_switches_and_keeps_your_values(store, m
     assert read_state(cfg.data_root).tip_dismissed is True
 
 
+def test_apply_saves_the_derived_profile_and_carries_the_ocr_warning(store, monkeypatch):
+    _write_config("enable_ocr = false\n")
+    profiles.apply(store, "Notes and markdown")
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    report = _run(store, AnalyzeRequest(apply=True), monkeypatch=monkeypatch)
+    saved = report.saved
+    assert saved is not None and saved.applied
+    assert len(saved.warnings) == 1
+    assert "enable_ocr" in saved.warnings[0]
+
+
 def test_save_writes_under_the_name_without_switching(store, monkeypatch):
     report = _run(store, AnalyzeRequest(save="Records"), monkeypatch=monkeypatch)
     assert report.saved is not None
@@ -380,6 +391,17 @@ def test_applying_a_fitting_default_switches_back_to_default(store, monkeypatch)
     )
     assert _stored()["profile"]["name"] == "Default"
     assert cfg.table_extraction is False
+
+
+def test_applying_a_fitting_default_carries_the_ocr_warning(store, monkeypatch):
+    _write_config("enable_ocr = false\n")
+    profiles.apply(store, "Notes and markdown")
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    report = _run(store, AnalyzeRequest(apply=True), signals=_signals(), monkeypatch=monkeypatch)
+    assert report.recommendation.name is None
+    assert report.saved is not None
+    assert len(report.saved.warnings) == 1
+    assert "enable_ocr" in report.saved.warnings[0]
 
 
 def test_a_cancelled_run_records_nothing(store, monkeypatch):

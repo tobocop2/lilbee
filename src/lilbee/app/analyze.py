@@ -140,12 +140,14 @@ class Recommendation:
 
 @dataclass(frozen=True)
 class SavedProfile:
-    """The profile analyze saved or switched to, its file, and whether the project now uses it."""
+    """The profile analyze saved or switched to, its file, whether the project now uses it,
+    and any setting switching to it leaves in conflict."""
 
     name: str
     folder: ProfileFolder
     path: Path
     applied: bool
+    warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -327,12 +329,17 @@ def _save(
         return None
     name = request.save if request.save is not None else recommendation.name
     if name is None:
-        entry = show(store, apply(store, recommendation.builtin).name)
-        return SavedProfile(entry.name, entry.folder, entry.path, applied=True)
+        applied = apply(store, recommendation.builtin)
+        entry = show(store, applied.name)
+        return SavedProfile(
+            entry.name, entry.folder, entry.path, applied=True, warnings=applied.warnings
+        )
     target = request.target or default_save_folder()
     result = save_recommended(store, name, recommendation.values, target, switch=request.apply)
     location = result.location
-    return SavedProfile(location.name, location.folder, location.path, request.apply)
+    return SavedProfile(
+        location.name, location.folder, location.path, request.apply, result.warnings
+    )
 
 
 def validate_request(request: AnalyzeRequest) -> None:

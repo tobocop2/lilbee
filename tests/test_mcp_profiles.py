@@ -149,6 +149,28 @@ def test_manage_discard_warns_when_it_leaves_ocr_off_with_a_vision_model():
     assert cfg.enable_ocr is False
 
 
+def test_apply_warns_when_it_leaves_ocr_off_with_a_vision_model():
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    result = profile_apply("Notes and markdown")
+    assert len(result["warnings"]) == 1
+    assert "enable_ocr" in result["warnings"][0]
+    assert cfg.enable_ocr is False
+
+
+def test_manage_save_and_update_warn_when_they_leave_ocr_off_with_a_vision_model():
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    (cfg.data_root / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+    saved = profile_manage(ProfileAction.SAVE, name="Mine", folder=ProfileFolder.PROJECT)
+    assert len(saved["warnings"]) == 1
+    assert "enable_ocr" in saved["warnings"][0]
+    config = cfg.data_root / "config.toml"
+    config.write_text("top_k = 3\n" + config.read_text(encoding="utf-8"), encoding="utf-8")
+    updated = profile_manage(ProfileAction.UPDATE)
+    assert len(updated["warnings"]) == 1
+    assert "enable_ocr" in updated["warnings"][0]
+
+
 def test_list_carries_your_changes_on_the_active_profile():
     cfg.data_root.mkdir(parents=True, exist_ok=True)
     (cfg.data_root / "config.toml").write_text("chunk_size = 900\n", encoding="utf-8")

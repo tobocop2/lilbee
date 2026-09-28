@@ -1233,6 +1233,7 @@ class ProfileApplyResponse(BaseModel):
     changes: list[ProfileDiffRowResponse]
     reindex_required: bool
     new_files_only: list[str]
+    warnings: list[str] = []
 
     @classmethod
     def from_result(cls, result: ApplyResult) -> ProfileApplyResponse:
@@ -1242,6 +1243,7 @@ class ProfileApplyResponse(BaseModel):
             changes=[ProfileDiffRowResponse.from_row(row) for row in result.changes],
             reindex_required=result.reindex_required,
             new_files_only=list(result.new_files_only),
+            warnings=list(result.warnings),
         )
 
 
@@ -1259,9 +1261,11 @@ class ProfileLocationResponse(BaseModel):
 
 
 class ProfileSaveResponse(ProfileLocationResponse):
-    """A saved profile file and the settings of yours it took over from config.toml."""
+    """A saved profile file, the settings of yours it took over, and any setting it leaves
+    in conflict."""
 
     absorbed: list[str]
+    warnings: list[str] = []
 
     @classmethod
     def from_save(cls, result: SaveResult) -> ProfileSaveResponse:
@@ -1272,6 +1276,7 @@ class ProfileSaveResponse(ProfileLocationResponse):
             folder=location.folder,
             path=location.path.as_posix(),
             absorbed=list(result.absorbed),
+            warnings=list(result.warnings),
         )
 
 
@@ -1435,9 +1440,11 @@ class AnalyzeRecommendationResponse(BaseModel):
 
 
 class AnalyzeSavedResponse(ProfileLocationResponse):
-    """The profile analyze saved or switched to, its file, and whether the project now uses it."""
+    """The profile analyze saved or switched to, its file, whether the project now uses it,
+    and any setting it leaves in conflict."""
 
     applied: bool
+    warnings: list[str] = []
 
     @classmethod
     def from_saved(cls, saved: SavedProfile) -> AnalyzeSavedResponse:
@@ -1447,6 +1454,7 @@ class AnalyzeSavedResponse(ProfileLocationResponse):
             folder=saved.folder,
             path=saved.path.as_posix(),
             applied=saved.applied,
+            warnings=list(saved.warnings),
         )
 
 

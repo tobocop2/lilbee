@@ -691,6 +691,42 @@ async def test_discard_toasts_the_warning_it_leaves_behind() -> None:
     assert cfg.enable_ocr is False
 
 
+async def test_update_toasts_the_warning_it_leaves_behind() -> None:
+    _write_global("ocr-off", "[values]\nenable_ocr = false\n")
+    profiles.apply(ProfileStore(), "ocr-off")
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    _set_yours(f'vision_model = "{vision_model}"\n')
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "ocr-off")
+        with mock.patch.object(app, "notify") as notify:
+            await _press(pilot, screen.query_one("#profile-update", ConfirmPill))
+            assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
+    warnings = [c for c in notify.call_args_list if c.kwargs.get("severity") == "warning"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0].args[0]
+    assert cfg.enable_ocr is False
+
+
+async def test_save_as_toasts_the_warning_it_leaves_behind() -> None:
+    _write_global("ocr-off", "[values]\nenable_ocr = false\n")
+    profiles.apply(ProfileStore(), "ocr-off")
+    vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    _set_yours(f'vision_model = "{vision_model}"\n')
+    app = _SettingsApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _loaded(app, pilot, "ocr-off")
+        with mock.patch.object(app, "notify") as notify:
+            await _press(pilot, screen.query_one("#profile-save_as", ConfirmPill))
+            await _dialog(app, pilot, SaveProfileDialog)
+            await pilot.press(*"Mine", "enter")
+            await _loaded(app, pilot, "Mine")
+    warnings = [c for c in notify.call_args_list if c.kwargs.get("severity") == "warning"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0].args[0]
+    assert cfg.enable_ocr is False
+
+
 async def test_a_refused_operation_toasts_its_reason() -> None:
     _on_legal_with_three_changes()
     app = _SettingsApp()

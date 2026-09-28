@@ -216,6 +216,7 @@ def start_switch(
             if choice is ApplyChoice.APPLY_REINDEX:
                 app.start_rebuild()
             node.notify(msg.PROFILE_APPLIED.format(name=result.name))
+            app.notify_warnings(result.warnings)
             on_close()
             on_applied()
 
