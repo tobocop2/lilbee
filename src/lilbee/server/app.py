@@ -19,7 +19,6 @@ from litestar.openapi import OpenAPIConfig
 from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
-from lilbee.providers.sdk_llm_provider import inject_provider_keys
 from lilbee.server.anthropic_api.routes import anthropic_router
 from lilbee.server.auth import AuthMiddleware, session_manager
 from lilbee.server.chat_completions_api.routes import completions_router
@@ -223,8 +222,6 @@ async def _lifespan(app: Litestar) -> AsyncIterator[None]:
     _server_loop.set(asyncio.get_running_loop())
     _warn_if_few_file_descriptors()
     session_manager.load_or_generate()
-
-    inject_provider_keys()
 
     try:
         services = get_services()  # pre-load all services (provider, embedder, etc.)

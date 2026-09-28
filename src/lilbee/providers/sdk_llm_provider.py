@@ -1,9 +1,9 @@
 """SDK-agnostic LLM provider implementing the public ``LLMProvider`` Protocol.
 
-``SdkLLMProvider`` owns the semantic layer: auth key injection, option
-translation, model-ref parsing, error wrapping, and lazy one-shot
-backend initialization (``configure_logging`` + ``inject_provider_keys``
-on first use). It speaks to the underlying SDK exclusively through an
+``SdkLLMProvider`` owns the semantic layer: the API key each request
+carries, option translation, model-ref parsing, error wrapping, and lazy
+one-shot backend initialization (``configure_logging`` on first use).
+It speaks to the underlying SDK exclusively through an
 ``LlmSdkBackend``, so swapping SDKs is a one-file adapter change.
 
 Zero direct SDK imports live here. The adapter owns SDK-specific
@@ -14,7 +14,6 @@ schema for image inputs.
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal, overload
@@ -37,12 +36,12 @@ from lilbee.providers.base import (
     ToolCallDelta,
     require_role_ref,
 )
+from lilbee.providers.key_check import provider_api_key_in_use
 from lilbee.providers.local_servers import LOCAL_SERVER_KEYS
 from lilbee.providers.local_servers.config_urls import base_url_for, configured_local_servers
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, translate_options
 from lilbee.providers.roles import WorkerRole
 from lilbee.providers.sdk_backend import (
-    PROVIDER_KEYS,
     CompletionRequest,
     EmbeddingRequest,
     LlmSdkBackend,
@@ -59,53 +58,28 @@ def _api_base_for(ref: ProviderModelRef) -> str | None:
     return None
 
 
-def inject_provider_keys() -> None:
-    """Copy per-provider API keys from config into ``os.environ``.
-
-    OpenAI-compatible SDKs read provider-specific env vars
-    (``OPENAI_API_KEY``, ``ANTHROPIC_API_KEY``, ...) at call time. This
-    bridges lilbee's config system to that convention. Explicit env
-    vars are never overwritten so users can still override via their
-    shell.
-    """
-    for _, cfg_field, env_var, _ in PROVIDER_KEYS:
-        # No default: every PROVIDER_KEYS field is a declared config attribute, so
-        # a typo in the table should surface as AttributeError, not silently read "".
-        value = getattr(cfg, cfg_field)
-        if value and not os.environ.get(env_var):
-            os.environ[env_var] = value
+def _api_key_for(ref: ProviderModelRef) -> str | None:
+    """A hosted ref sends the key the key check tests, else ``llm_api_key``; read per request."""
+    if ref.is_api:
+        return provider_api_key_in_use(ref.provider) or cfg.llm_api_key or None
+    return cfg.llm_api_key or None
 
 
 class SdkLLMProvider(LLMProvider):
     """Provider that delegates SDK calls to an ``LlmSdkBackend``."""
 
-    def __init__(
-        self,
-        backend: LlmSdkBackend,
-        *,
-        api_key: str = "",
-    ) -> None:
+    def __init__(self, backend: LlmSdkBackend) -> None:
         self._backend = backend
-        self._api_key = api_key
         self._initialized = False
 
     def _ensure_initialized(self) -> None:
-        """Apply one-shot backend setup before the first call.
-
-        Runs ``configure_logging(suppress_debug=cfg.json_mode)`` and
-        ``inject_provider_keys()`` exactly once, regardless of whether
-        the first operation is ``chat``, ``embed``, or a catalog query.
-        Both steps happen together because the backend's first SDK
-        import must see (a) the debug flag applied, and (b) per-provider
-        API keys in ``os.environ``.
-        """
+        """Run ``configure_logging(suppress_debug=cfg.json_mode)`` once, before any SDK call."""
         if self._initialized:
             return
         try:
             self._backend.configure_logging(suppress_debug=cfg.json_mode)
         except (ImportError, AttributeError):
             log.debug("backend.configure_logging failed", exc_info=True)
-        inject_provider_keys()
         self._initialized = True
 
     def embed(self, texts: list[str]) -> list[Vector]:
@@ -118,7 +92,7 @@ class SdkLLMProvider(LLMProvider):
             ref=ref,
             inputs=texts,
             api_base=_api_base_for(ref),
-            api_key=self._api_key or None,
+            api_key=_api_key_for(ref),
         )
         try:
             result = self._backend.embed(request)
@@ -210,7 +184,7 @@ class SdkLLMProvider(LLMProvider):
             messages=list(messages),
             options=translated,
             api_base=_api_base_for(ref),
-            api_key=self._api_key or None,
+            api_key=_api_key_for(ref),
         )
         if stream:
             return self._chat_stream(request)
@@ -338,7 +312,7 @@ class SdkLLMProvider(LLMProvider):
         names: list[str] = []
         for spec, base_url in configured_local_servers():
             try:
-                names.extend(self._backend.list_models(base_url=base_url, api_key=self._api_key))
+                names.extend(self._backend.list_models(base_url=base_url, api_key=cfg.llm_api_key))
             except NotImplementedError:
                 continue
             except Exception as exc:
@@ -415,7 +389,7 @@ class SdkLLMProvider(LLMProvider):
             query=query,
             candidates=candidates,
             api_base=_api_base_for(ref),
-            api_key=self._api_key or None,
+            api_key=_api_key_for(ref),
         )
         try:
             result = self._backend.rerank(request)

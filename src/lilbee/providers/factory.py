@@ -39,9 +39,6 @@ def create_provider(config: Config, *, hold_warm: bool = False) -> LLMProvider:
             backend = LitellmSdkBackend()
             if not backend.available():
                 raise ProviderError(LITELLM_MISSING_MSG)
-            return SdkLLMProvider(
-                backend,
-                api_key=config.llm_api_key,
-            )  # pragma: no cover
+            return SdkLLMProvider(backend)  # pragma: no cover
 
     assert_never(config.llm_provider)  # pragma: no cover

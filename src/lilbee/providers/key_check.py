@@ -122,19 +122,19 @@ def _checked_key_status(provider: str, api_key: str) -> KeyStatus:
         return KeyStatus.READY
 
 
-def _key_in_use(provider: str) -> str | None:
-    """The key the SDK sends: its env var when set, else the lilbee config field."""
+def provider_api_key_in_use(provider: str) -> str | None:
+    """The key a hosted request carries: its env var when set, else the lilbee config field."""
     return os.environ.get(PROVIDER_API_KEY_ENV[provider]) or get_provider_api_key(provider)
 
 
 def provider_key_set(provider: str) -> bool:
     """True when *provider* has an API key in its env var or the lilbee config."""
-    return _key_in_use(provider) is not None
+    return provider_api_key_in_use(provider) is not None
 
 
 def provider_key_status(provider: str) -> KeyStatus:
     """Whether *provider*'s API key is missing, rejected, or usable."""
-    api_key = _key_in_use(provider)
+    api_key = provider_api_key_in_use(provider)
     if api_key is None:
         return KeyStatus.MISSING_KEY
     return _checked_key_status(provider, api_key)
