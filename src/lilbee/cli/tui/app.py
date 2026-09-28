@@ -869,16 +869,25 @@ class LilbeeApp(App[None]):
         self.switch_view(msg.DEFAULT_VIEW)
 
     def _shows_placement_full_screen(self) -> bool:
-        """True when the Fleet screen, not the drawer, is the current screen."""
-        from lilbee.cli.tui.screens.fleet import FleetScreen
+        """True when the current screen hosts a FleetBody directly, not via the drawer.
 
-        return isinstance(self.screen, FleetScreen)
+        FleetScreen composes its FleetBody as a direct child, the same shape
+        FleetDrawer uses one level deeper; callers rule the drawer out first
+        (:meth:`_toggle_fleet_is_noop`), so a direct-child FleetBody here is
+        never the drawer's.
+        """
+        from lilbee.cli.tui.widgets.fleet_body import FleetBody
+
+        return _first_direct_child(self.screen, FleetBody) is not None
 
     def _shows_sessions_full_screen(self) -> bool:
-        """True when the Sessions screen, not the drawer, is the current screen."""
-        from lilbee.cli.tui.screens.sessions import SessionsScreen
+        """True when the current screen hosts a SessionListPanel directly, not via the drawer.
 
-        return isinstance(self.screen, SessionsScreen)
+        See :meth:`_shows_placement_full_screen`.
+        """
+        from lilbee.cli.tui.widgets.session_list import SessionListPanel
+
+        return _first_direct_child(self.screen, SessionListPanel) is not None
 
     def _toggle_fleet_is_noop(self) -> bool:
         """True when ctrl+g would do nothing, mirroring the action's own order.

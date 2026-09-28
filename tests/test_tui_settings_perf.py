@@ -157,14 +157,55 @@ def test_stable_footer_skips_when_not_attached_to_the_screen():
     assert footer._last_bindings_signature is None
 
 
-def test_shows_placement_full_screen_true_only_on_fleet_screen():
-    """The full-screen check is exact isinstance, not a subtree query."""
-    from types import SimpleNamespace
+async def test_shows_placement_full_screen_true_for_any_direct_host():
+    """True for any screen that hosts a FleetBody directly, not just FleetScreen.
+
+    FleetScreen is the production full-screen host, but the check must not
+    hard-code that class: bb-p284w.21 broke this by narrowing it to
+    ``isinstance(self.screen, FleetScreen)``, which went False for a
+    FleetBody mounted on any other screen, mounting a duplicate drawer over
+    it (test_tui_fleet_drawer.py::test_ctrl_g_noop_when_placement_already_shown).
+    """
+    from textual.widgets import Static
 
     from lilbee.cli.tui.app import LilbeeApp
-    from lilbee.cli.tui.screens.fleet import FleetScreen
+    from lilbee.cli.tui.widgets.fleet_body import FleetBody
 
-    fleet_screen = FleetScreen.__new__(FleetScreen)
+    class _HostApp(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            yield FleetBody()
 
-    assert LilbeeApp._shows_placement_full_screen(SimpleNamespace(screen=object())) is False
-    assert LilbeeApp._shows_placement_full_screen(SimpleNamespace(screen=fleet_screen)) is True
+    async with _HostApp().run_test() as pilot:
+        assert LilbeeApp._shows_placement_full_screen(pilot.app) is True
+
+    class _EmptyHostApp(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            yield Static()
+
+    async with _EmptyHostApp().run_test() as pilot:
+        assert LilbeeApp._shows_placement_full_screen(pilot.app) is False
+
+
+async def test_shows_sessions_full_screen_true_for_any_direct_host():
+    """True for any screen that hosts a SessionListPanel directly, not just
+    SessionsScreen. Mirrors test_shows_placement_full_screen_true_for_any_direct_host;
+    no host besides SessionsScreen mounts one today, but the check must not
+    assume that stays true."""
+    from textual.widgets import Static
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.widgets.session_list import SessionListPanel
+
+    class _HostApp(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            yield SessionListPanel()
+
+    async with _HostApp().run_test() as pilot:
+        assert LilbeeApp._shows_sessions_full_screen(pilot.app) is True
+
+    class _EmptyHostApp(LilbeeAppHost):
+        def compose(self) -> ComposeResult:
+            yield Static()
+
+    async with _EmptyHostApp().run_test() as pilot:
+        assert LilbeeApp._shows_sessions_full_screen(pilot.app) is False
