@@ -39,7 +39,7 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import PROFILES_DIRNAME, ProfileFolder, ProfileStore
 from lilbee.core.system import default_data_dir
-from tests._async_wait import wait_until
+from tests._async_wait import press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -201,9 +201,7 @@ async def _until(pilot: Pilot, predicate: Callable[[], bool]) -> bool:
 
 async def _press(pilot: Pilot, widget: Widget) -> None:
     """Focus *widget*, wait until it holds focus, then press Enter on it."""
-    widget.focus()
-    assert await _until(pilot, lambda: widget.has_focus), widget
-    await pilot.press("enter")
+    await press_widget(pilot, widget, max_pauses=_PAUSES)
 
 
 async def _dialog(app: LilbeeAppHost, pilot: Pilot, kind: type[Screen]) -> Screen:
