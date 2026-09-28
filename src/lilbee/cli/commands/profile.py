@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.table import Table
 from rich.text import Text
 
 from lilbee.cli import theme
-from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.commands._shared import REBUILD_HINT, emit, shown_value
+from lilbee.cli.app import console, data_dir_option, global_option
+from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, setup, shown_value
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, profile_key
@@ -30,8 +29,6 @@ if TYPE_CHECKING:
         ProfileSaveResponse,
         ProfileValidationResponse,
     )
-
-T = TypeVar("T")
 
 _CURRENT_DIR = Path()
 
@@ -57,34 +54,6 @@ def _store() -> ProfileStore:
     return ProfileStore()
 
 
-def _setup(data_dir: Path | None, use_global: bool) -> None:
-    apply_overrides(data_dir=data_dir, use_global=use_global)
-
-
-def _run(operation: Callable[[], T]) -> T:
-    """Run a profile operation; a refusal prints its reason, as JSON or text, and exits 1."""
-    from lilbee.app.profiles import file_failure_message
-
-    try:
-        return operation()
-    except ValueError as exc:
-        _fail(str(exc))
-    except OSError as exc:
-        _fail(file_failure_message(exc))
-
-
-def _fail(message: str) -> NoReturn:
-    if cfg.json_mode:
-        json_output({"error": message})
-    else:
-        print_prefixed(console, "Error: ", message, style=theme.ERROR)
-    raise typer.Exit(1)
-
-
-def _line(text: str, style: str | None = None) -> None:
-    console.print(Text(text, style=style or ""), soft_wrap=True)
-
-
 def _about(entry: ProfileEntryResponse) -> list[str]:
     """The description, credit, tested-on and problem lines shown for a profile."""
     from lilbee.app import profiles
@@ -95,16 +64,16 @@ def _about(entry: ProfileEntryResponse) -> list[str]:
         lines.append(f"Broken: {entry.error}")
     if entry.shadowed_by is not None:
         lines.append(f"Hidden by the {entry.shadowed_by.value} profile with this name")
-    return [line for line in lines if line]
+    return [text for text in lines if text]
 
 
 def _render_entry(entry: ProfileEntryResponse) -> None:
-    _line(entry.name, theme.ACCENT)
-    for line in _about(entry):
-        _line(line)
-    _line(f"{entry.folder.value} profile: {entry.path}", theme.MUTED)
+    line(entry.name, theme.ACCENT)
+    for about_line in _about(entry):
+        line(about_line)
+    line(f"{entry.folder.value} profile: {entry.path}", theme.MUTED)
     for key, value in entry.values.items():
-        _line(f"  {key} = {shown_value(value)}")
+        line(f"  {key} = {shown_value(value)}")
 
 
 def _render_list(entries: list[ProfileEntryResponse], active_name: str) -> None:
@@ -120,21 +89,21 @@ def _render_list(entries: list[ProfileEntryResponse], active_name: str) -> None:
 def _render_active(current: ActiveProfileResponse) -> None:
     from lilbee.app.profiles import status_note
 
-    _line(f"Profile: {current.name}", theme.ACCENT)
+    line(f"Profile: {current.name}", theme.ACCENT)
     note = status_note(current.status)
     if note:
-        _line(note, theme.WARNING)
+        line(note, theme.WARNING)
     if current.error:
-        _line(current.error, theme.WARNING)
+        line(current.error, theme.WARNING)
     if current.profile is not None:
-        for line in _about(current.profile):
-            _line(line)
+        for about_line in _about(current.profile):
+            line(about_line)
     if current.changes:
         _render_your_changes(current.changes)
 
 
 def _render_your_changes(rows: list[ProfileChangeRowResponse]) -> None:
-    _line("Your changes:", theme.ACCENT)
+    line("Your changes:", theme.ACCENT)
     table = Table("Setting", "Yours", "Without yours", "Takes effect")
     for row in rows:
         source = row.profile_source.value.replace("_", " ")
@@ -147,7 +116,7 @@ def _render_your_changes(rows: list[ProfileChangeRowResponse]) -> None:
 def render_changes(rows: list[ProfileDiffRowResponse]) -> None:
     """Print the settings a profile apply changes, as a table."""
     if not rows:
-        _line("No settings change.")
+        line("No settings change.")
         return
     table = Table("Setting", "Now", "After", "Takes effect")
     for row in rows:
@@ -159,32 +128,32 @@ def render_changes(rows: list[ProfileDiffRowResponse]) -> None:
 
 
 def _render_diff(diff: ProfileDiffResponse) -> None:
-    _line(f"Applying {diff.name}:", theme.ACCENT)
+    line(f"Applying {diff.name}:", theme.ACCENT)
     render_changes(diff.changes)
     if diff.kept:
-        _line(f"Keeps your values of: {', '.join(diff.kept)}")
-    _line(f"{diff.untouched_count} settings are never touched by profiles.", theme.MUTED)
+        line(f"Keeps your values of: {', '.join(diff.kept)}")
+    line(f"{diff.untouched_count} settings are never touched by profiles.", theme.MUTED)
 
 
 def _render_location(verb: str, location: ProfileLocationResponse) -> None:
-    _line(f"{verb} {location.name}: {location.path}")
+    line(f"{verb} {location.name}: {location.path}")
 
 
 def _render_save(verb: str, result: ProfileSaveResponse) -> None:
     _render_location(verb, result)
     if result.absorbed:
-        _line(f"It now holds your settings of: {', '.join(result.absorbed)}")
+        line(f"It now holds your settings of: {', '.join(result.absorbed)}")
 
 
 def _render_discard(result: ProfileDiscardResponse) -> None:
     if not result.dropped:
-        _line("You have no values of profile settings to remove.")
+        line("You have no values of profile settings to remove.")
         return
-    _line(f"Removed your values of: {', '.join(result.dropped)}")
+    line(f"Removed your values of: {', '.join(result.dropped)}")
     if result.reindex_required:
-        _line(REBUILD_HINT, theme.WARNING)
+        line(REBUILD_HINT, theme.WARNING)
     for warning in result.warnings:
-        _line(warning, theme.WARNING)
+        line(warning, theme.WARNING)
 
 
 @profile_app.command(name="show")
@@ -197,12 +166,16 @@ def profile_show(
     from lilbee.app import profiles
     from lilbee.server.models import ActiveProfileResponse, ProfileEntryResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     if name is None:
-        current = ActiveProfileResponse.from_active(_run(lambda: profiles.active(_store())))
+        current = ActiveProfileResponse.from_active(
+            run_or_fail(lambda: profiles.active(_store()), profiles.file_failure_message)
+        )
         emit(current, lambda: _render_active(current))
         return
-    entry = ProfileEntryResponse.from_entry(_run(lambda: profiles.show(_store(), name)))
+    entry = ProfileEntryResponse.from_entry(
+        run_or_fail(lambda: profiles.show(_store(), name), profiles.file_failure_message)
+    )
     emit(entry, lambda: _render_entry(entry))
 
 
@@ -215,9 +188,9 @@ def profile_list(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileEntryResponse, ProfileListResponse
 
-    _setup(data_dir, use_global)
-    catalog = _run(lambda: profiles.list_profiles(_store()))
-    active_name = _run(lambda: profiles.active(_store())).name
+    setup(data_dir, use_global)
+    catalog = run_or_fail(lambda: profiles.list_profiles(_store()), profiles.file_failure_message)
+    active_name = run_or_fail(lambda: profiles.active(_store()), profiles.file_failure_message).name
     listing = ProfileListResponse(
         profiles=[ProfileEntryResponse.from_entry(e) for e in catalog.entries]
     )
@@ -234,8 +207,10 @@ def profile_diff(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileDiffResponse
 
-    _setup(data_dir, use_global)
-    diff = ProfileDiffResponse.from_diff(_run(lambda: profiles.diff(_store(), name)))
+    setup(data_dir, use_global)
+    diff = ProfileDiffResponse.from_diff(
+        run_or_fail(lambda: profiles.diff(_store(), name), profiles.file_failure_message)
+    )
     emit(diff, lambda: _render_diff(diff))
 
 
@@ -262,10 +237,12 @@ def profile_apply(
     from lilbee.cli.commands.ingest_sync import rebuild_or_raise
     from lilbee.server.models import ProfileApplyResponse
 
-    _setup(data_dir, use_global)
-    result = ProfileApplyResponse.from_result(_run(lambda: profiles.apply(_store(), name)))
+    setup(data_dir, use_global)
+    result = ProfileApplyResponse.from_result(
+        run_or_fail(lambda: profiles.apply(_store(), name), profiles.file_failure_message)
+    )
     if not cfg.json_mode:
-        _line(f"Applied {result.name}.", theme.ACCENT)
+        line(f"Applied {result.name}.", theme.ACCENT)
         render_changes(result.changes)
     reindexed: int | None = None
     reindex_error: str | None = None
@@ -279,9 +256,9 @@ def profile_apply(
     elif reindex_error is not None:
         print_prefixed(console, "Error: ", reindex_error, style=theme.ERROR)
     elif reindexed is not None:
-        _line(f"Rebuilt: {reindexed} documents ingested")
+        line(f"Rebuilt: {reindexed} documents ingested")
     elif result.reindex_required:
-        _line(REBUILD_HINT, theme.WARNING)
+        line(REBUILD_HINT, theme.WARNING)
     if reindex_error is not None:
         raise typer.Exit(1)
 
@@ -300,9 +277,12 @@ def profile_new(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     location = ProfileLocationResponse.from_location(
-        _run(lambda: profiles.new(_store(), name, target, from_name=from_profile))
+        run_or_fail(
+            lambda: profiles.new(_store(), name, target, from_name=from_profile),
+            profiles.file_failure_message,
+        )
     )
     emit(location, lambda: _render_location("Wrote", location))
 
@@ -318,8 +298,10 @@ def profile_save(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileSaveResponse
 
-    _setup(data_dir, use_global)
-    result = ProfileSaveResponse.from_save(_run(lambda: profiles.save_as(name, target)))
+    setup(data_dir, use_global)
+    result = ProfileSaveResponse.from_save(
+        run_or_fail(lambda: profiles.save_as(name, target), profiles.file_failure_message)
+    )
     emit(result, lambda: _render_save("Saved", result))
 
 
@@ -332,8 +314,10 @@ def profile_update(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileSaveResponse
 
-    _setup(data_dir, use_global)
-    result = ProfileSaveResponse.from_save(_run(lambda: profiles.update(_store())))
+    setup(data_dir, use_global)
+    result = ProfileSaveResponse.from_save(
+        run_or_fail(lambda: profiles.update(_store()), profiles.file_failure_message)
+    )
     emit(result, lambda: _render_save("Updated", result))
 
 
@@ -346,8 +330,10 @@ def profile_discard(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileDiscardResponse
 
-    _setup(data_dir, use_global)
-    result = ProfileDiscardResponse.from_result(_run(profiles.discard))
+    setup(data_dir, use_global)
+    result = ProfileDiscardResponse.from_result(
+        run_or_fail(profiles.discard, profiles.file_failure_message)
+    )
     emit(result, lambda: _render_discard(result))
 
 
@@ -363,9 +349,12 @@ def profile_duplicate(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     location = ProfileLocationResponse.from_location(
-        _run(lambda: profiles.duplicate(_store(), name, new_name, target))
+        run_or_fail(
+            lambda: profiles.duplicate(_store(), name, new_name, target),
+            profiles.file_failure_message,
+        )
     )
     emit(location, lambda: _render_location("Wrote", location))
 
@@ -381,9 +370,11 @@ def profile_rename(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     location = ProfileLocationResponse.from_location(
-        _run(lambda: profiles.rename(_store(), name, new_name))
+        run_or_fail(
+            lambda: profiles.rename(_store(), name, new_name), profiles.file_failure_message
+        )
     )
     emit(location, lambda: _render_location("Renamed to", location))
 
@@ -398,8 +389,10 @@ def profile_delete(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    _setup(data_dir, use_global)
-    location = ProfileLocationResponse.from_location(_run(lambda: profiles.delete(_store(), name)))
+    setup(data_dir, use_global)
+    location = ProfileLocationResponse.from_location(
+        run_or_fail(lambda: profiles.delete(_store(), name), profiles.file_failure_message)
+    )
     emit(location, lambda: _render_location("Deleted", location))
 
 
@@ -415,9 +408,12 @@ def profile_export(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     location = ProfileLocationResponse.from_location(
-        _run(lambda: profiles.export(_store(), name, path, overwrite=overwrite))
+        run_or_fail(
+            lambda: profiles.export(_store(), name, path, overwrite=overwrite),
+            profiles.file_failure_message,
+        )
     )
     emit(location, lambda: _render_location("Exported", location))
 
@@ -436,20 +432,23 @@ def profile_import(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileLocationResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     location = ProfileLocationResponse.from_location(
-        _run(lambda: profiles.import_profile(_store(), file, target, overwrite=overwrite))
+        run_or_fail(
+            lambda: profiles.import_profile(_store(), file, target, overwrite=overwrite),
+            profiles.file_failure_message,
+        )
     )
     emit(location, lambda: _render_location("Imported", location))
 
 
 def _render_validation(result: ProfileValidationResponse) -> None:
     if result.valid:
-        _line(f"{result.name} is a valid profile.")
+        line(f"{result.name} is a valid profile.")
         return
-    _line(f"{result.name} is not a valid profile:", theme.ERROR)
+    line(f"{result.name} is not a valid profile:", theme.ERROR)
     for problem in result.problems:
-        _line(f"  {problem}")
+        line(f"  {problem}")
 
 
 @profile_app.command(name="validate")
@@ -463,7 +462,7 @@ def profile_validate(
     from lilbee.app import profiles
     from lilbee.server.models import ProfileValidationResponse
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     result = ProfileValidationResponse.from_validation(profiles.validate(file, folder))
     emit(result, lambda: _render_validation(result))
     if not result.valid:

@@ -1091,7 +1091,7 @@ def settings_get(key: str) -> dict[str, Any]:
 
     try:
         info = get_setting(key)
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         return _error(str(exc))
     return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
 

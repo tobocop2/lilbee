@@ -2,61 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.table import Table
 from rich.text import Text
 
 from lilbee.cli import theme
-from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
-from lilbee.cli.commands._shared import REBUILD_HINT, emit, shown_value
-from lilbee.cli.helpers import json_output, print_prefixed
-from lilbee.core.config import cfg
+from lilbee.cli.app import console, data_dir_option, global_option
+from lilbee.cli.commands._shared import REBUILD_HINT, emit, line, run_or_fail, setup, shown_value
+from lilbee.cli.tui import messages as msg
 
 if TYPE_CHECKING:
     from lilbee.app.settings import SettingInfo, SettingsUpdateResult
     from lilbee.server.models import ConfigUpdateResponse
 
-T = TypeVar("T")
-
 settings_app = typer.Typer(help="Show and change settings, with each value's source.")
 
-_MASKED_VALUE = "************"
 _key_argument = typer.Argument(help="A setting's name, as shown by 'lilbee settings list'.")
 _keys_argument = typer.Argument(
     help="One or more settings to remove your value of; env, profile or default applies."
 )
-
-
-def _setup(data_dir: Path | None, use_global: bool) -> None:
-    apply_overrides(data_dir=data_dir, use_global=use_global)
-
-
-def _fail(message: str) -> NoReturn:
-    if cfg.json_mode:
-        json_output({"error": message})
-    else:
-        print_prefixed(console, "Error: ", message, style=theme.ERROR)
-    raise typer.Exit(1)
-
-
-def _run(operation: Callable[[], T]) -> T:
-    """Run a settings operation; a refusal prints its reason, as JSON or text, and exits 1."""
-    try:
-        return operation()
-    except (ValueError, KeyError) as exc:
-        _fail(str(exc))
-    except OSError as exc:
-        from lilbee.app.settings import config_write_failure_message
-
-        _fail(config_write_failure_message(exc))
-
-
-def _line(text: str, style: str | None = None) -> None:
-    console.print(Text(text, style=style or ""), soft_wrap=True)
 
 
 def _is_secret(key: str) -> bool:
@@ -76,16 +43,16 @@ def _render_list(infos: list[SettingInfo]) -> None:
 
 def _render_get(info: SettingInfo) -> None:
     source = info.source.value.replace("_", " ")
-    _line(f"{info.key} = {shown_value(info.value)}", theme.ACCENT)
-    _line(f"source: {source}")
-    _line(info.help_text, theme.MUTED)
+    line(f"{info.key} = {shown_value(info.value)}", theme.ACCENT)
+    line(f"source: {source}")
+    line(info.help_text, theme.MUTED)
 
 
 def _render_update(result: SettingsUpdateResult) -> None:
     if result.reindex_required:
-        _line(REBUILD_HINT, theme.WARNING)
+        line(REBUILD_HINT, theme.WARNING)
     for warning in result.warnings:
-        _line(warning, theme.WARNING)
+        line(warning, theme.WARNING)
 
 
 def _update_response(result: SettingsUpdateResult) -> ConfigUpdateResponse:
@@ -107,11 +74,11 @@ def settings_list(
     use_global: bool = global_option,
 ) -> None:
     """List every writable setting with its current value and source."""
-    from lilbee.app.settings import list_settings
+    from lilbee.app.settings import config_write_failure_message, list_settings
     from lilbee.server.models import SettingsListResponse
 
-    _setup(data_dir, use_global)
-    infos = _run(lambda: list_settings(group))
+    setup(data_dir, use_global)
+    infos = run_or_fail(lambda: list_settings(group), config_write_failure_message)
     emit(SettingsListResponse.from_infos(infos), lambda: _render_list(infos))
 
 
@@ -122,11 +89,11 @@ def settings_get(
     use_global: bool = global_option,
 ) -> None:
     """Show one setting's current value and source."""
-    from lilbee.app.settings import get_setting
+    from lilbee.app.settings import config_write_failure_message, get_setting
     from lilbee.server.models import SettingValueResponse
 
-    _setup(data_dir, use_global)
-    info = _run(lambda: get_setting(key))
+    setup(data_dir, use_global)
+    info = run_or_fail(lambda: get_setting(key), config_write_failure_message)
     emit(SettingValueResponse.from_info(info), lambda: _render_get(info))
 
 
@@ -153,15 +120,18 @@ def settings_set(
     use_global: bool = global_option,
 ) -> None:
     """Set a writable setting; model roles are refused (use 'lilbee model' instead)."""
-    from lilbee.app.settings import apply_settings_update
+    from lilbee.app.settings import apply_settings_update, config_write_failure_message
 
-    _setup(data_dir, use_global)
+    setup(data_dir, use_global)
     parsed = _parse_cli_value(key, value)
-    result = _run(lambda: apply_settings_update({key: parsed}, allow_model_roles=False))
-    shown = _MASKED_VALUE if _is_secret(key) and value else value
+    result = run_or_fail(
+        lambda: apply_settings_update({key: parsed}, allow_model_roles=False),
+        config_write_failure_message,
+    )
+    shown = msg.MASKED_VALUE if _is_secret(key) and value else value
 
     def _render() -> None:
-        _line(f"Set {key} to {shown}.", theme.ACCENT)
+        line(f"Set {key} to {shown}.", theme.ACCENT)
         _render_update(result)
 
     emit(_update_response(result), _render)
@@ -174,20 +144,22 @@ def settings_unset(
     use_global: bool = global_option,
 ) -> None:
     """Remove your value of one or more settings; the next source applies."""
-    from lilbee.app.settings import get_setting, reset_settings
+    from lilbee.app.settings import config_write_failure_message, get_setting, reset_settings
 
-    _setup(data_dir, use_global)
-    result = _run(lambda: reset_settings(keys, allow_model_roles=False))
+    setup(data_dir, use_global)
+    result = run_or_fail(
+        lambda: reset_settings(keys, allow_model_roles=False), config_write_failure_message
+    )
 
     def _render() -> None:
         for key in result.updated:
             try:
                 info = get_setting(key)
             except KeyError:
-                _line(f"{key}: removed your value (write-only; new value not shown)")
+                line(f"{key}: removed your value (write-only; new value not shown)")
                 continue
             source = info.source.value.replace("_", " ")
-            _line(f"{key} = {shown_value(info.value)} ({source})")
+            line(f"{key} = {shown_value(info.value)} ({source})")
         _render_update(result)
 
     emit(_update_response(result), _render)
