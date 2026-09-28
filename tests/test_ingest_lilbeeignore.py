@@ -97,7 +97,7 @@ class TestIgnoreRules:
         base = isolated_env / "repo"
         target = _write(base / "app.min.js")
 
-        rules = IgnoreRules.for_corpus()
+        rules = IgnoreRules.for_corpus(cfg.data_root)
         assert rules.excludes_path(target, base=base)
 
     def test_nested_layer_overrides_the_corpus_layer(self, isolated_env):
@@ -108,7 +108,7 @@ class TestIgnoreRules:
         _write(base / IGNORE_FILENAME, "!app.min.js\n")
         target = _write(base / "app.min.js")
 
-        rules = IgnoreRules.for_corpus()
+        rules = IgnoreRules.for_corpus(cfg.data_root)
         assert not rules.excludes_path(target, base=base)
 
     def test_blank_lines_and_comments_are_ignored(self, isolated_env):
@@ -160,6 +160,16 @@ class TestDiscoveryHonoursIgnoreFiles:
 
         found = discover_files()
         assert set(found) == {"final.md"}
+
+    def test_data_root_file_drops_files_from_the_owned_tree(self, isolated_env):
+        from lilbee.data.ingest import discover_files
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        _write(cfg.data_root / IGNORE_FILENAME, "drafts/\n")
+        _write(cfg.documents_dir / "drafts" / "wip.md")
+        _write(cfg.documents_dir / "final.md")
+
+        assert set(discover_files()) == {"final.md"}
 
     def test_registered_root_keys_survive_filtering(self, isolated_env):
         from lilbee.data.ingest import discover_files
@@ -251,7 +261,7 @@ class TestReconcilesIndexAgainstPatterns:
         _write(cfg.documents_dir / "app.min.js")
 
         sources = [self._src("app.min.js"), self._src("keep.md"), self._src("deleted.md")]
-        assert _ignored_sources(sources, IgnoreRules.for_corpus()) == ["app.min.js"]
+        assert _ignored_sources(sources, IgnoreRules.for_corpus(cfg.data_root)) == ["app.min.js"]
 
     def test_imported_source_is_never_selected(self, isolated_env):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
@@ -262,7 +272,7 @@ class TestReconcilesIndexAgainstPatterns:
         # against; resolving its key would point at a path it does not own.
         _write(cfg.documents_dir / IGNORE_FILENAME, "*.pdf\n")
         sources = [self._src("shared.pdf", SourceType.IMPORTED)]
-        assert _ignored_sources(sources, IgnoreRules.for_corpus()) == []
+        assert _ignored_sources(sources, IgnoreRules.for_corpus(cfg.data_root)) == []
 
     def test_source_under_a_pruned_directory_is_selected(self, isolated_env):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
@@ -272,7 +282,9 @@ class TestReconcilesIndexAgainstPatterns:
         _write(cfg.documents_dir / "testdata" / "deep" / "fixture.md")
 
         sources = [self._src("testdata/deep/fixture.md")]
-        assert _ignored_sources(sources, IgnoreRules.for_corpus()) == ["testdata/deep/fixture.md"]
+        assert _ignored_sources(sources, IgnoreRules.for_corpus(cfg.data_root)) == [
+            "testdata/deep/fixture.md"
+        ]
 
     def test_single_file_root_is_never_selected(self, isolated_env):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME, IgnoreRules
@@ -282,7 +294,7 @@ class TestReconcilesIndexAgainstPatterns:
         target = _write(isolated_env / "loose" / "note.md")
         cfg.linked_roots = {"note.md": str(target)}
 
-        assert _ignored_sources([self._src("note.md")], IgnoreRules.for_corpus()) == []
+        assert _ignored_sources([self._src("note.md")], IgnoreRules.for_corpus(cfg.data_root)) == []
 
     def test_removal_writes_no_skip_marker(self, isolated_env, monkeypatch):
         from lilbee.data.ingest import pipeline
@@ -303,7 +315,9 @@ class TestReconcilesIndexAgainstPatterns:
             "lilbee.app.ingest.forget_removed_from_wiki_index", lambda removed: None
         )
 
-        removed = pipeline._forget_ignored([self._src("app.min.js")], IgnoreRules.for_corpus())
+        removed = pipeline._forget_ignored(
+            [self._src("app.min.js")], IgnoreRules.for_corpus(cfg.data_root)
+        )
         assert removed == ["app.min.js"]
         # A marker would outlive the pattern and hold the file out after the
         # pattern was deleted; the ignore file is the only durable statement.

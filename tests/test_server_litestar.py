@@ -1366,6 +1366,27 @@ class TestDocumentsRemoveRoute:
         assert resp.status_code == 201
         assert resp.json()["removed"] == ["a.md"]
 
+    def test_a_held_records_lock_is_a_conflict(self, client, held_records_lock):
+        """A busy records lock refuses the removal with the store, markers and files untouched."""
+        from lilbee.app.services import set_services
+        from lilbee.data.ingest.skip_marker import load_skip_markers, write_skip_markers
+        from tests.conftest import make_mock_services
+
+        (cfg.documents_dir / "a.md").write_text("kept", encoding="utf-8")
+        write_skip_markers(cfg.data_root, {"scan.pdf": "h1"})
+        services = make_mock_services()
+        set_services(services)
+        try:
+            resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
+        finally:
+            set_services(None)
+
+        assert resp.status_code == 409
+        assert "Could not lock" in resp.json()["detail"]
+        services.store.remove_documents.assert_not_called()
+        assert load_skip_markers(cfg.data_root) == {"scan.pdf": "h1"}
+        assert (cfg.documents_dir / "a.md").read_text(encoding="utf-8") == "kept"
+
 
 SSE_ROUTES = [
     ("get", "/api/warm/stream"),

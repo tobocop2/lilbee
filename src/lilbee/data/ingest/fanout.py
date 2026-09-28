@@ -416,6 +416,9 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
         held_out=[held for r in results for held in r.held_out],
         unchanged=sum(r.unchanged for r in results),
         truncated=sum(r.truncated for r in results),
+        skip_records_error=next(
+            (r.skip_records_error for r in results if r.skip_records_error is not None), None
+        ),
     )
 
 

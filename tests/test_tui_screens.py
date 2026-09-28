@@ -2895,6 +2895,24 @@ async def test_chat_slash_delete_with_match(mock_svc):
         mock_svc.store.remove_documents.assert_called_once_with(["notes.md"])
 
 
+async def test_chat_slash_delete_reports_a_held_records_lock(mock_svc, held_records_lock):
+    """A /delete refused by the records lock shows the error and leaves the index alone."""
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "notes.md", "source": "notes.md"},
+    ]
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("notes.md")
+            await app.screen.workers.wait_for_complete()
+            await _pilot.pause()
+        message, kwargs = mock_notify.call_args[0][0], mock_notify.call_args[1]
+        assert "Could not lock" in message
+        assert kwargs == {"severity": "error"}
+        mock_svc.store.remove_documents.assert_not_called()
+
+
 async def test_chat_slash_delete_not_found(mock_svc):
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
@@ -3385,6 +3403,24 @@ async def test_chat_slash_reset_refused_while_an_import_runs(tmp_path):
         mock_clear.assert_not_called()
         mock_notify.assert_any_call(_RESET_REFUSED_MID_SYNC, severity="warning")
     set_services(None)
+
+
+async def test_chat_slash_reset_refused_by_a_held_records_lock(held_records_lock):
+    """A reset refused by the records lock warns and deletes nothing."""
+    cfg.documents_dir.mkdir(parents=True, exist_ok=True)
+    (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._handle_slash("/reset")
+            await _pilot.pause()
+            await _pilot.press("y")
+            await _pilot.pause()
+        warnings = [
+            c.args[0] for c in mock_notify.call_args_list if c.kwargs == {"severity": "warning"}
+        ]
+        assert any("Could not lock" in text for text in warnings)
+        assert (cfg.documents_dir / "doc.txt").exists()
 
 
 async def test_chat_slash_reset_cancel_does_nothing():
@@ -5036,14 +5072,72 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         from lilbee.cli.tui.commands import LilbeeCommandProvider
 
         provider = LilbeeCommandProvider(app.screen, match_style=None)
+        import threading
+
+        from lilbee.cli.tui import commands
+
+        cleared_on: list[threading.Thread] = []
+        real_clear = commands.clear_failed_markers
+
+        def _spy(root):
+            cleared_on.append(threading.current_thread())
+            return real_clear(root)
+
+        with (
+            patch.object(app, "action_run_sync") as mock_sync,
+            patch.object(app, "notify") as notify,
+            patch.object(commands, "clear_failed_markers", _spy),
+        ):
+            provider._action_retry_skipped()
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+            mock_sync.assert_called_once()
+        notify.assert_called_once_with(retry_skipped_message(1))
+        assert load_skip_markers(tmp_path) == {"gone.txt": "cafef00d"}
+        assert cleared_on and cleared_on[0] is not threading.main_thread()
+
+
+async def test_command_provider_retry_skipped_reports_a_held_records_lock(
+    tmp_path, held_records_lock
+):
+    """A retry refused by the records lock shows the error and starts no sync."""
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.commands import LilbeeCommandProvider
+
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        await await_chat(app, _pilot)
+        provider = LilbeeCommandProvider(app.screen, match_style=None)
         with (
             patch.object(app, "action_run_sync") as mock_sync,
             patch.object(app, "notify") as notify,
         ):
             provider._action_retry_skipped()
-            mock_sync.assert_called_once()
-        notify.assert_called_once_with(retry_skipped_message(1))
-        assert load_skip_markers(tmp_path) == {"gone.txt": "cafef00d"}
+            await app.workers.wait_for_complete()
+            await _pilot.pause()
+        mock_sync.assert_not_called()
+        assert "Could not lock" in notify.call_args[0][0]
+        assert notify.call_args[1] == {"severity": "error"}
+
+
+async def test_add_rollback_unregisters_the_roots_when_the_records_lock_is_held(
+    tmp_path, held_records_lock
+):
+    """A cancelled add drops the roots it registered even when their records cannot change."""
+    from lilbee.cli.tui.screens.chat_helpers import unregister_added_roots
+    from lilbee.core import settings
+    from lilbee.data.ingest.skip_marker import SkipRecordsLockError
+
+    source = tmp_path / "corpus"
+    source.mkdir()
+    settings.set_value(cfg.data_root, "linked_roots", {"corpus": str(source)})
+    cfg.linked_roots = {"corpus": str(source)}
+
+    with pytest.raises(SkipRecordsLockError):
+        unregister_added_roots(["corpus"])
+
+    assert cfg.linked_roots == {}
+    assert not settings.load(cfg.data_root).get("linked_roots")
 
 
 async def test_command_provider_prune_ignored_dispatches_the_command(mock_svc):
@@ -8706,6 +8800,71 @@ async def test_do_sync_reports_held_out_files():
 
         messages = [c.args[0] for c in app.screen.notify.call_args_list]
         assert msg.SYNC_HELD_OUT.format(count=1) in messages
+
+
+async def test_do_sync_reports_unsaved_skip_records():
+    """A sync that could not save its held-out record shows the error."""
+    import threading
+    from unittest.mock import MagicMock
+
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.ingest import SyncResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+
+        async def fake_sync(**_kw):
+            return SyncResult(unchanged=1, skip_records_error="records.lock could not be locked")
+
+        app.screen.notify = MagicMock()
+        with patch("lilbee.data.ingest.sync", new=fake_sync):
+            thread = threading.Thread(
+                target=lambda: app.screen._do_sync(MagicMock(spec=ProgressReporter))
+            )
+            thread.start()
+            thread.join(timeout=5)
+            await _pilot.pause()
+
+        calls = [(c.args[0], c.kwargs.get("severity")) for c in app.screen.notify.call_args_list]
+        assert ("records.lock could not be locked", "error") in calls
+
+
+async def test_do_add_reports_unsaved_skip_records(tmp_path):
+    """An add whose sync could not save its held-out record shows the error."""
+    import threading
+    from unittest.mock import MagicMock
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+    from lilbee.data.ingest import SyncResult
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        test_file = tmp_path / "doc.txt"
+        test_file.write_text("hello", encoding="utf-8")
+
+        async def fake_sync(**_kw):
+            return SyncResult(
+                added=[test_file.name], skip_records_error="records.lock could not be locked"
+            )
+
+        app.screen.notify = MagicMock()
+        with (
+            patch("lilbee.app.ingest.register_sources") as mock_register,
+            patch("lilbee.data.ingest.sync", new=fake_sync),
+        ):
+            mock_register.return_value = RegisterResult(registered=[test_file.name])
+            thread = threading.Thread(
+                target=lambda: app.screen._do_add(
+                    [test_file], ProgressReporter(app.task_bar, "fake-id")
+                )
+            )
+            thread.start()
+            thread.join(timeout=5)
+            await _pilot.pause()
+
+        calls = [(c.args[0], c.kwargs.get("severity")) for c in app.screen.notify.call_args_list]
+        assert ("records.lock could not be locked", "error") in calls
 
 
 async def test_do_add_raises_on_sync_failed(tmp_path):

@@ -2200,6 +2200,43 @@ class TestChunks:
         assert "See [bold]section 2[/bold] for torque specs." in result.output
 
 
+class TestSkipRecordsLockHeld:
+    """A held skip-records lock refuses remove and reset cleanly, and rebuild reports it."""
+
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    def test_remove_is_refused_before_the_index_changes(
+        self, isolated_env, mock_svc, held_records_lock, json_flag
+    ):
+        result = runner.invoke(app, [*json_flag, "remove", "nothing.txt"])
+
+        assert result.exit_code == 1
+        assert "Could not lock" in result.output
+        assert Path(held_records_lock).name in result.output
+        assert "Traceback" not in result.output
+        mock_svc.store.remove_documents.assert_not_called()
+
+    def test_reset_is_refused_before_anything_is_deleted(self, isolated_env, held_records_lock):
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+
+        result = runner.invoke(app, ["reset", "--yes"])
+
+        assert result.exit_code == 1
+        assert "Could not lock" in result.output
+        assert (cfg.documents_dir / "doc.txt").exists()
+
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    def test_rebuild_shows_an_unsaved_skip_record_error(self, json_flag):
+        from lilbee.data.ingest import SyncResult
+
+        unsaved = SyncResult(added=["a.txt"], skip_records_error="records.lock could not be locked")
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=unsaved):
+            result = runner.invoke(app, [*json_flag, "rebuild"])
+
+        assert result.exit_code == 0
+        assert "records.lock could not be locked" in result.output
+        assert "1" in result.output
+
+
 class TestReset:
     """Test reset command."""
 

@@ -18,13 +18,14 @@ import contextlib
 import json
 import logging
 import os
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TypedDict
 
-from lilbee.core.security import file_lock_or_warn
+from filelock import FileLock
+
 from lilbee.data.types import SkippedSource
 
 log = logging.getLogger(__name__)
@@ -35,7 +36,16 @@ SKIP_KIND_FILENAME = "skip_kinds.json"
 DEFAULT_SKIP_REASON = "held out by an earlier sync"
 REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skipped to restore)"
 # A sync, a /delete, and a reset from another process all change these records.
+# The total wait; filelock polls the lock until it runs out.
 _RECORDS_LOCK_TIMEOUT_S = 10.0
+_RECORDS_LOCKED = (
+    "Could not lock {path}, so the list of held-out files was not changed. "
+    "If no other lilbee process is running, delete that file and try again."
+)
+
+
+class SkipRecordsLockError(RuntimeError):
+    """Raised when the records lock cannot be taken; nothing was read or written."""
 
 
 class SkipKind(StrEnum):
@@ -159,12 +169,30 @@ def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
     return _load_records(data_root).kinds
 
 
+@contextlib.contextmanager
+def skip_records_lock(data_root: Path) -> Iterator[None]:
+    """Hold the cross-process lock on the records, or raise without entering.
+
+    Re-entrant within a thread, so an operation can take it before its first
+    change and still call the record helpers inside.
+    """
+    lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
+    try:
+        lock.acquire(timeout=_RECORDS_LOCK_TIMEOUT_S)
+    except OSError as error:  # filelock's Timeout is an OSError too
+        raise SkipRecordsLockError(_RECORDS_LOCKED.format(path=lock.lock_file)) from error
+    try:
+        yield
+    finally:
+        lock.release()
+
+
 def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) -> None:
     """Apply *change* to the records as they are on disk, under a cross-process lock.
 
     Reasons and kinds whose marker is gone are dropped in the same write.
     """
-    with file_lock_or_warn(data_root / SKIP_MARKER_FILENAME, _RECORDS_LOCK_TIMEOUT_S):
+    with skip_records_lock(data_root):
         records = _load_records(data_root)
         before = SkipRecords(dict(records.markers), dict(records.reasons), dict(records.kinds))
         change(records)
@@ -223,7 +251,7 @@ def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]
 
 def clear_skip_markers(data_root: Path) -> None:
     """Delete the marker file and both sidecars. No-op if absent."""
-    with file_lock_or_warn(data_root / SKIP_MARKER_FILENAME, _RECORDS_LOCK_TIMEOUT_S):
+    with skip_records_lock(data_root):
         _unlink(data_root / SKIP_MARKER_FILENAME)
         _unlink(data_root / SKIP_REASON_FILENAME)
         _unlink(data_root / SKIP_KIND_FILENAME)

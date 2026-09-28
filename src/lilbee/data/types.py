@@ -39,8 +39,9 @@ SKIPPED_OCR_OFF_NOTE = ": OCR is off (enable_ocr = false)"
 class ShardId:
     """Which slice of the corpus one ingest worker owns.
 
-    *records_root* is the data root holding the corpus's skip records, which
-    every worker reads and writes in place of its own private data root.
+    *records_root* is the data root holding the corpus's skip records and its
+    data-root ``.lilbeeignore``, which every worker uses in place of its own
+    private data root.
     """
 
     index: int
@@ -184,6 +185,8 @@ class SyncResult(BaseModel):
     # Set when the index was built with another embedder than the one configured:
     # the sync left it as it is, and search refuses it until a rebuild or a switch back.
     index_mismatch: IndexMismatch | None = None
+    # Set when the record of held-out files could not be locked, so this run's was not saved.
+    skip_records_error: str | None = None
 
     def _lines(self) -> list[list[tuple[str, str]]]:
         """The summary as lines of ``(text, style)`` segments; ``""`` means unstyled."""
@@ -195,6 +198,8 @@ class SyncResult(BaseModel):
         ]
         if self.index_mismatch is not None:
             lines.append([("Index mismatch:", "red"), (f" {self.index_mismatch.message}", "")])
+        if self.skip_records_error is not None:
+            lines.append([(self.skip_records_error, "red")])
         if self.relocated:
             lines.append([(f"Relocated: {len(self.relocated)}", "")])
         lines += [

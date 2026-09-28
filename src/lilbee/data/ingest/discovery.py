@@ -352,7 +352,7 @@ def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
     """
     config = active_config()
     progress = _ScanProgress()
-    rules = rules if rules is not None else IgnoreRules.for_corpus()
+    rules = rules if rules is not None else IgnoreRules.for_corpus(config.data_root)
     if config.documents_dir.exists():
         yield from _walk_root(config.documents_dir, None, config.ignore_dirs, progress, rules)
     for label, root in config.linked_roots.items():

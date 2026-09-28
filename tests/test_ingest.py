@@ -2258,6 +2258,61 @@ class TestFanoutReadsTheCorpusSkipRecords:
         assert result.added == ["gone.txt"]
         assert load_skip_kinds(cfg.data_root) == {"scanned.pdf": SkipKind.FAILED}
 
+    async def test_the_data_root_ignore_file_keeps_a_file_out(self, isolated_env, fan_out):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        (cfg.data_root / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
+        (isolated_env / "drop.txt").write_text("excluded by the library", encoding="utf-8")
+        (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
+
+        result = await sync(quiet=True)
+
+        assert result.added == ["kept.txt"]
+
+    async def test_prune_ignored_drops_what_the_data_root_file_excludes(
+        self, isolated_env, fan_out
+    ):
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        (isolated_env / "drop.txt").write_text("excluded after ingest", encoding="utf-8")
+        (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
+        await sync(quiet=True)
+        (cfg.data_root / IGNORE_FILENAME).write_text("drop.txt\n", encoding="utf-8")
+
+        result = await sync(quiet=True, prune_ignored=True)
+
+        assert result.removed == ["drop.txt"]
+
+    async def test_a_held_records_lock_leaves_the_records_unwritten_and_says_so(
+        self, isolated_env, fan_out, monkeypatch
+    ):
+        from filelock import FileLock
+
+        from lilbee.data.ingest import skip_marker, sync
+        from lilbee.data.ingest.skip_marker import SKIP_MARKER_FILENAME, load_skip_kinds
+
+        monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)
+        (isolated_env / "scanned.pdf").write_bytes(b"%PDF-1.4 not really text")
+        (isolated_env / "kept.txt").write_text("still wanted", encoding="utf-8")
+        holder = FileLock(str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock")
+        holder.acquire()
+        try:
+            with mock.patch(
+                "lilbee.data.ingest.pipeline.produce_records",
+                side_effect=TestSkipMarkerLifecycle._zero_for("scanned.pdf"),
+            ):
+                result = await sync(quiet=True)
+        finally:
+            holder.release()
+
+        assert load_skip_kinds(cfg.data_root) == {}
+        assert result.added == ["kept.txt"]
+        assert result.skip_records_error is not None
+        assert SKIP_MARKER_FILENAME + ".lock" in result.skip_records_error
+        assert result.skip_records_error in str(result)
+
 
 class TestStatusExposesTheIndexEmbedder:
     """A client can tell a stale index from the configured model before the

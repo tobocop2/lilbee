@@ -77,6 +77,7 @@ from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
+    SkipRecordsLockError,
     clear_failed_markers,
     clear_skip_markers,
     describe_skips,
@@ -896,7 +897,7 @@ def _clear_skip_records(records_root: Path, *, force_rebuild: bool, retry_skippe
 def _prepare_skip_records(
     shard: ShardId | None, *, force_rebuild: bool, retry_skipped: bool
 ) -> Path:
-    """The data root whose skip records this sync reads and writes.
+    """The data root whose skip records and ``.lilbeeignore`` this sync uses.
 
     Only a sync that is not a worker clears them, so a fan-out clears once: a
     worker clearing the shared records would erase a sibling's verdicts.
@@ -915,13 +916,14 @@ def _persist_skip_records(
     *,
     succeeded: Iterable[str],
     failed: Iterable[str],
-) -> None:
+) -> str | None:
     """Merge this sync's verdicts into the skip records as they are on disk now.
 
     Only the files this sync decided on change: a clean ingest drops its
     record, a file that produced no chunks gains one with its reason and the
     FAILED kind. Records written or cleared since the sync started (a reset, a
-    removal, a rolled back add) keep their reason and kind.
+    removal, a rolled back add) keep their reason and kind. Returns the error
+    when the records lock cannot be taken, in which case nothing is written.
     """
     dropped = list(succeeded)
     held = list(failed)
@@ -934,7 +936,12 @@ def _persist_skip_records(
         records.reasons.update({name: reasons[name] for name in held if name in reasons})
         records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
 
-    update_skip_records(records_root, _merge)
+    try:
+        update_skip_records(records_root, _merge)
+    except SkipRecordsLockError as error:
+        log.error("%s", error)
+        return str(error)
+    return None
 
 
 def _failures_among(records_root: Path, held: Iterable[str]) -> list[str]:
@@ -1178,7 +1185,7 @@ async def _sync_across_workers(
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
     if prune_ignored:
         result.removed = await to_ingest_thread(
-            _forget_ignored, store.get_sources(), IgnoreRules.for_corpus()
+            _forget_ignored, store.get_sources(), IgnoreRules.for_corpus(active_config().data_root)
         )
     await _run_post_ingest_passes(
         store,
@@ -1273,7 +1280,7 @@ async def sync(
         )
         return merged.model_copy(update={"index_mismatch": index_mismatch})
 
-    rules = IgnoreRules.for_corpus()
+    rules = IgnoreRules.for_corpus(records_root)
     scan = discover_corpus(shard, rules)
     disk_files = scan.files
     sources = _store.get_sources()
@@ -1353,7 +1360,7 @@ async def sync(
     # A flush failure is a transient store-side problem, not a verdict on the
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
     marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
-    _persist_skip_records(
+    skip_records_error = _persist_skip_records(
         records_root, pending_hashes, reasons, succeeded=[*added, *updated], failed=marker_failed
     )
 
@@ -1397,6 +1404,7 @@ async def sync(
         held_out=describe_skips(records_root, _failures_among(records_root, state.held_out)),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
+        skip_records_error=skip_records_error,
     )
     on_progress(
         EventType.SYNC_DONE,

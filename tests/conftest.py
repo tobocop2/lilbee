@@ -1069,3 +1069,22 @@ def _hermetic_hf_client(request: pytest.FixtureRequest, monkeypatch: pytest.Monk
     # On the class, not on get_services().hf_client: this runs for every test in
     # the suite, and building the services container each time is not free.
     monkeypatch.setattr(HfClient, "fetch_models", _fetch)
+
+
+@pytest.fixture
+def held_records_lock(monkeypatch: pytest.MonkeyPatch):
+    """Hold the skip-records lock under ``cfg.data_root`` from another descriptor.
+
+    The code under test waits a few milliseconds instead of ten seconds. Request
+    it after the fixture that sets ``cfg.data_root``.
+    """
+    from filelock import FileLock
+
+    from lilbee.data.ingest import skip_marker
+
+    monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)
+    cfg.data_root.mkdir(parents=True, exist_ok=True)
+    holder = FileLock(str(cfg.data_root / skip_marker.SKIP_MARKER_FILENAME) + ".lock")
+    holder.acquire()
+    yield holder.lock_file
+    holder.release()

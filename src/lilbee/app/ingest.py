@@ -21,6 +21,7 @@ from lilbee.data.ingest.skip_marker import (
     SkipRecords,
     held_out_names,
     mark_removed,
+    skip_records_lock,
     update_skip_records,
 )
 from lilbee.data.store.types import RemoveResult
@@ -169,8 +170,10 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         config.linked_roots = roots  # refresh the in-process view (picks up merges)
         return roots, result
 
-    result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-    unmark_sources_under(paths)
+    # Taken before the registry changes, so a held lock refuses the add with nothing done.
+    with skip_records_lock(config.data_root):
+        result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+        unmark_sources_under(paths)
     return result
 
 
@@ -322,11 +325,13 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     """
     if targets is None:
         targets = expand_remove_targets(names)
-    result = get_services().store.remove_documents(targets)
-    failed = set(held_out_names(active_config().data_root))
-    held = [name for name in result.not_found if name in failed]
-    roots = forget_roots(names)
-    _hold_out_removed([*result.removed, *held], roots)
+    # Taken before the index changes, so a held lock refuses the removal with nothing done.
+    with skip_records_lock(active_config().data_root):
+        result = get_services().store.remove_documents(targets)
+        failed = set(held_out_names(active_config().data_root))
+        held = [name for name in result.not_found if name in failed]
+        roots = forget_roots(names)
+        _hold_out_removed([*result.removed, *held], roots)
     forget_removed_from_wiki_index(list(result.removed))
     missing = [name for name in result.not_found if name not in failed]
     emptied = [name for name in missing if name.strip("/") in roots]
@@ -337,11 +342,19 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
 
 
 def forget_roots(names: list[str]) -> list[str]:
-    """Un-register every root named in *names* and drop the skip records under it."""
+    """Un-register every root named in *names* and drop the skip records under it.
+
+    The roots are un-registered even when the records cannot be changed; the
+    error is raised after.
+    """
     roots = active_config().linked_roots
     named = [Path(roots[label]) for label in (name.strip("/") for name in names) if label in roots]
-    unmark_sources_under(named)  # records resolve through the registry, so before un-registering
-    return unregister_roots(names)
+    try:
+        # Records resolve through the registry, so they go before un-registering.
+        unmark_sources_under(named)
+    finally:
+        unregistered = unregister_roots(names)
+    return unregistered
 
 
 def _hold_out_removed(names: list[str], roots: list[str]) -> None:

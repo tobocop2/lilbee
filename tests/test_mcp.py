@@ -346,6 +346,44 @@ class TestStatus:
         assert isinstance(result["config"]["kv_cache_type"], str)
 
 
+class TestSkipRecordsLockHeld:
+    """A held skip-records lock comes back as a structured error with nothing changed."""
+
+    def test_remove_is_refused_before_the_index_changes(self, mock_svc, held_records_lock):
+        result = remove(["a.md"])
+
+        assert "Could not lock" in result["error"]
+        mock_svc.store.remove_documents.assert_not_called()
+
+    def test_reset_is_refused_before_anything_is_deleted(self, held_records_lock):
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+
+        result = reset(confirm=True)
+
+        assert "Could not lock" in result["error"]
+        assert (cfg.documents_dir / "doc.txt").exists()
+
+    async def test_add_is_refused_before_the_source_is_registered(
+        self, tmp_path, held_records_lock
+    ):
+        src = tmp_path / "test.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        result = await add([str(src)])
+
+        assert "Could not lock" in result["error"]
+        assert cfg.linked_roots == {}
+
+    async def test_sync_reports_a_records_lock_it_cannot_take(self):
+        from lilbee.data.ingest.skip_marker import SkipRecordsLockError
+
+        refused = SkipRecordsLockError("Could not lock records.lock")
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=refused):
+            result = await sync(retry_skipped=True)
+
+        assert result == {"error": "Could not lock records.lock"}
+
+
 class TestSync:
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_sync_empty(self, mock_sync):

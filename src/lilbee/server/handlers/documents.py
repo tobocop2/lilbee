@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 import mimetypes
 
+from litestar.exceptions import ClientException
+from litestar.status_codes import HTTP_409_CONFLICT
+
 from lilbee.app.services import get_services
+from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
@@ -71,7 +75,10 @@ async def delete_documents(names: list[str]) -> DocumentRemoveResponse:
     # Deletes store rows and takes the wiki build mutex to drop the removed
     # documents from the browse index, so it cannot run on the event loop: a
     # build in flight holds that mutex for the length of the whole run.
-    result = await asyncio.to_thread(remove_documents_durably, names)
+    try:
+        result = await asyncio.to_thread(remove_documents_durably, names)
+    except SkipRecordsLockError as exc:
+        raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
 
 
