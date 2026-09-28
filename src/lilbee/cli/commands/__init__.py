@@ -19,6 +19,7 @@ from lilbee.cli.commands import (
     profile,
     search_chat,
     servers,
+    settings,
     wiki,
 )
 from lilbee.cli.commands import setup as setup_module
@@ -59,5 +60,6 @@ app.add_typer(agent_config.agent_config_app, name="agent-config")
 app.add_typer(launch_app, name="launch")
 app.add_typer(memory.memory_app, name="memory")
 app.add_typer(profile.profile_app, name="profile")
+app.add_typer(settings.settings_app, name="settings")
 
 __all__ = ["app"]

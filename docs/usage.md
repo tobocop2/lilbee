@@ -1506,7 +1506,7 @@ reporting the model fits.
 Lower `system_memory_reserve_gb` on a machine with a lot of RAM and nothing else
 running, if a model that offloads to host memory is being refused.
 
-Both are writable at runtime through `/settings`, `lilbee config set`, and MCP.
+Both are writable at runtime through `/settings`, `lilbee settings set`, and MCP.
 
 **If a model is refused for memory it looks like it should have:** run
 `lilbee placement preview` to see what the planner budgeted. The planner charges

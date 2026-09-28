@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
 
 import typer
-from pydantic_core import to_jsonable_python
 from rich.table import Table
 from rich.text import Text
 
 from lilbee.cli import theme
 from lilbee.cli.app import apply_overrides, console, data_dir_option, global_option
+from lilbee.cli.commands._shared import REBUILD_HINT, emit, shown_value
 from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.core.config import cfg
 from lilbee.core.profile_files import ProfileFolder, ProfileStore, profile_key
 
 if TYPE_CHECKING:
-    from pydantic import BaseModel
-
     from lilbee.server.models import (
         ActiveProfileResponse,
         ProfileApplyResponse,
@@ -37,7 +34,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 _CURRENT_DIR = Path()
-_REBUILD_HINT = "Run lilbee rebuild so the index uses the new values."
 
 profile_app = typer.Typer(
     help="Manage profiles: named sets of ingest, OCR, chunking and retrieval settings."
@@ -85,19 +81,6 @@ def _fail(message: str) -> NoReturn:
     raise typer.Exit(1)
 
 
-def _emit(model: BaseModel, render: Callable[[], None]) -> None:
-    """Print *model* as JSON in --json mode, else run *render*."""
-    if cfg.json_mode:
-        json_output(model.model_dump(mode="json"))
-    else:
-        render()
-
-
-def _shown(value: Any) -> str:
-    """A setting value as a profile file writes it: "auto", true, 512."""
-    return json.dumps(to_jsonable_python(value))
-
-
 def _line(text: str, style: str | None = None) -> None:
     console.print(Text(text, style=style or ""), soft_wrap=True)
 
@@ -121,7 +104,7 @@ def _render_entry(entry: ProfileEntryResponse) -> None:
         _line(line)
     _line(f"{entry.folder.value} profile: {entry.path}", theme.MUTED)
     for key, value in entry.values.items():
-        _line(f"  {key} = {_shown(value)}")
+        _line(f"  {key} = {shown_value(value)}")
 
 
 def _render_list(entries: list[ProfileEntryResponse], active_name: str) -> None:
@@ -155,9 +138,9 @@ def _render_your_changes(rows: list[ProfileChangeRowResponse]) -> None:
     table = Table("Setting", "Yours", "Without yours", "Takes effect")
     for row in rows:
         source = row.profile_source.value.replace("_", " ")
-        fallback = f"{_shown(row.profile_value)} ({source})"
+        fallback = f"{shown_value(row.profile_value)} ({source})"
         effect = row.effect.value.replace("_", " ")
-        table.add_row(row.key, Text(_shown(row.yours)), Text(fallback), effect)
+        table.add_row(row.key, Text(shown_value(row.yours)), Text(fallback), effect)
     console.print(table)
 
 
@@ -169,8 +152,9 @@ def render_changes(rows: list[ProfileDiffRowResponse]) -> None:
     table = Table("Setting", "Now", "After", "Takes effect")
     for row in rows:
         source = row.current_source.value.replace("_", " ")
-        now = f"{_shown(row.current)} ({source})"
-        table.add_row(row.key, Text(now), Text(_shown(row.new)), row.effect.value.replace("_", " "))
+        now = f"{shown_value(row.current)} ({source})"
+        effect = row.effect.value.replace("_", " ")
+        table.add_row(row.key, Text(now), Text(shown_value(row.new)), effect)
     console.print(table)
 
 
@@ -198,7 +182,7 @@ def _render_discard(result: ProfileDiscardResponse) -> None:
         return
     _line(f"Removed your values of: {', '.join(result.dropped)}")
     if result.reindex_required:
-        _line(_REBUILD_HINT, theme.WARNING)
+        _line(REBUILD_HINT, theme.WARNING)
     for warning in result.warnings:
         _line(warning, theme.WARNING)
 
@@ -216,10 +200,10 @@ def profile_show(
     _setup(data_dir, use_global)
     if name is None:
         current = ActiveProfileResponse.from_active(_run(lambda: profiles.active(_store())))
-        _emit(current, lambda: _render_active(current))
+        emit(current, lambda: _render_active(current))
         return
     entry = ProfileEntryResponse.from_entry(_run(lambda: profiles.show(_store(), name)))
-    _emit(entry, lambda: _render_entry(entry))
+    emit(entry, lambda: _render_entry(entry))
 
 
 @profile_app.command(name="list")
@@ -237,7 +221,7 @@ def profile_list(
     listing = ProfileListResponse(
         profiles=[ProfileEntryResponse.from_entry(e) for e in catalog.entries]
     )
-    _emit(listing, lambda: _render_list(listing.profiles, active_name))
+    emit(listing, lambda: _render_list(listing.profiles, active_name))
 
 
 @profile_app.command(name="diff")
@@ -252,7 +236,7 @@ def profile_diff(
 
     _setup(data_dir, use_global)
     diff = ProfileDiffResponse.from_diff(_run(lambda: profiles.diff(_store(), name)))
-    _emit(diff, lambda: _render_diff(diff))
+    emit(diff, lambda: _render_diff(diff))
 
 
 def _apply_json(
@@ -297,7 +281,7 @@ def profile_apply(
     elif reindexed is not None:
         _line(f"Rebuilt: {reindexed} documents ingested")
     elif result.reindex_required:
-        _line(_REBUILD_HINT, theme.WARNING)
+        _line(REBUILD_HINT, theme.WARNING)
     if reindex_error is not None:
         raise typer.Exit(1)
 
@@ -320,7 +304,7 @@ def profile_new(
     location = ProfileLocationResponse.from_location(
         _run(lambda: profiles.new(_store(), name, target, from_name=from_profile))
     )
-    _emit(location, lambda: _render_location("Wrote", location))
+    emit(location, lambda: _render_location("Wrote", location))
 
 
 @profile_app.command(name="save")
@@ -336,7 +320,7 @@ def profile_save(
 
     _setup(data_dir, use_global)
     result = ProfileSaveResponse.from_save(_run(lambda: profiles.save_as(name, target)))
-    _emit(result, lambda: _render_save("Saved", result))
+    emit(result, lambda: _render_save("Saved", result))
 
 
 @profile_app.command(name="update")
@@ -350,7 +334,7 @@ def profile_update(
 
     _setup(data_dir, use_global)
     result = ProfileSaveResponse.from_save(_run(lambda: profiles.update(_store())))
-    _emit(result, lambda: _render_save("Updated", result))
+    emit(result, lambda: _render_save("Updated", result))
 
 
 @profile_app.command(name="discard")
@@ -364,7 +348,7 @@ def profile_discard(
 
     _setup(data_dir, use_global)
     result = ProfileDiscardResponse.from_result(_run(profiles.discard))
-    _emit(result, lambda: _render_discard(result))
+    emit(result, lambda: _render_discard(result))
 
 
 @profile_app.command(name="duplicate")
@@ -383,7 +367,7 @@ def profile_duplicate(
     location = ProfileLocationResponse.from_location(
         _run(lambda: profiles.duplicate(_store(), name, new_name, target))
     )
-    _emit(location, lambda: _render_location("Wrote", location))
+    emit(location, lambda: _render_location("Wrote", location))
 
 
 @profile_app.command(name="rename")
@@ -401,7 +385,7 @@ def profile_rename(
     location = ProfileLocationResponse.from_location(
         _run(lambda: profiles.rename(_store(), name, new_name))
     )
-    _emit(location, lambda: _render_location("Renamed to", location))
+    emit(location, lambda: _render_location("Renamed to", location))
 
 
 @profile_app.command(name="delete")
@@ -416,7 +400,7 @@ def profile_delete(
 
     _setup(data_dir, use_global)
     location = ProfileLocationResponse.from_location(_run(lambda: profiles.delete(_store(), name)))
-    _emit(location, lambda: _render_location("Deleted", location))
+    emit(location, lambda: _render_location("Deleted", location))
 
 
 @profile_app.command(name="export")
@@ -435,7 +419,7 @@ def profile_export(
     location = ProfileLocationResponse.from_location(
         _run(lambda: profiles.export(_store(), name, path, overwrite=overwrite))
     )
-    _emit(location, lambda: _render_location("Exported", location))
+    emit(location, lambda: _render_location("Exported", location))
 
 
 @profile_app.command(name="import")
@@ -456,7 +440,7 @@ def profile_import(
     location = ProfileLocationResponse.from_location(
         _run(lambda: profiles.import_profile(_store(), file, target, overwrite=overwrite))
     )
-    _emit(location, lambda: _render_location("Imported", location))
+    emit(location, lambda: _render_location("Imported", location))
 
 
 def _render_validation(result: ProfileValidationResponse) -> None:
@@ -481,6 +465,6 @@ def profile_validate(
 
     _setup(data_dir, use_global)
     result = ProfileValidationResponse.from_validation(profiles.validate(file, folder))
-    _emit(result, lambda: _render_validation(result))
+    emit(result, lambda: _render_validation(result))
     if not result.valid:
         raise typer.Exit(1)
