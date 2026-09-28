@@ -1,5 +1,6 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -17,7 +18,7 @@ from lilbee.core.config import (
     config_scope,
     validate_ocr_timeout,
 )
-from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX, env_var_name
 from lilbee.core.config.model import value_is_set
 from lilbee.core.config.resolve import read_layers
 
@@ -970,6 +971,62 @@ class TestSemanticChunkingConfig:
         assert parse(0) is False
         assert parse([1]) is True
         assert parse([]) is False
+
+
+class TestSoftFieldWarningNamesItsRealSource:
+    """A warn-and-fall-back Config field names where the bad value actually came from."""
+
+    def test_env_source_names_the_env_var(self, tmp_path, caplog) -> None:
+        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.n_gpu_layers is None
+        messages = [rec.message for rec in caplog.records]
+        assert any(env_var_name("n_gpu_layers") in m for m in messages)
+
+    def test_config_toml_source_names_the_file_not_the_env_var(self, tmp_path, caplog) -> None:
+        (tmp_path / "config.toml").write_text('n_gpu_layers = "not-a-number"\n', encoding="utf-8")
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.n_gpu_layers is None
+        messages = [rec.message for rec in caplog.records]
+        assert any("config.toml" in m for m in messages)
+        assert not any(env_var_name("n_gpu_layers") in m for m in messages)
+
+    def test_profile_source_names_the_profile_not_the_env_var(self, tmp_path, caplog) -> None:
+        (tmp_path / "config.toml").write_text(
+            '[profile]\nname = "my-profile"\n\n[profile.values]\nenable_ocr = "maybe"\n',
+            encoding="utf-8",
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.enable_ocr is None
+        messages = [rec.message for rec in caplog.records]
+        assert any("my-profile" in m for m in messages)
+        assert not any(env_var_name("enable_ocr") in m for m in messages)
+
+    def test_profile_source_with_no_name_uses_the_generic_phrase(self, tmp_path, caplog) -> None:
+        """A hand-edited [profile] table with values but no name key still says something."""
+        (tmp_path / "config.toml").write_text(
+            '[profile]\n\n[profile.values]\nenable_ocr = "maybe"\n', encoding="utf-8"
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+        ):
+            c = Config()
+        assert c.enable_ocr is None
+        messages = [rec.message for rec in caplog.records]
+        assert any("the applied profile" in m for m in messages)
 
 
 class TestResolveDefaultsValidator:

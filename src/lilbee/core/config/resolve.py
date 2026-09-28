@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import os
 import tomllib
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -20,12 +20,33 @@ from pydantic_core import PydanticUndefined
 from .defaults import CONFIG_FILE_NAME, SKIP_TOML_ENV, env_var_name
 from .enums import ProfileScope, SettingSource
 from .model import Config, value_is_set
+from .parsing import (
+    parse_bool,
+    parse_gpu_device_list,
+    parse_optional_int,
+    parse_tristate_bool,
+)
 
 log = logging.getLogger(__name__)
 
 PROFILE_TABLE = "profile"
 PROFILE_NAME_KEY = "name"
 PROFILE_VALUES_KEY = "values"
+
+# Fields whose Config validator falls back to a default instead of refusing on an
+# unparseable value. The validator has no way to know which layer supplied a bad
+# value, so `sanitize_soft_fields` catches it here, where the resolver already
+# knows, and substitutes the built-in default before Config ever sees the raw value.
+_SOFT_FIELD_PARSERS: Mapping[str, Callable[[str], Any]] = MappingProxyType(
+    {
+        "enable_ocr": parse_tristate_bool,
+        "flash_attention": parse_tristate_bool,
+        "n_gpu_layers": lambda raw: parse_optional_int(raw, aliases={"cpu": 0}),
+        "main_gpu": parse_optional_int,
+        "gpu_devices": parse_gpu_device_list,
+        "semantic_chunking": parse_bool,
+    }
+)
 
 # Built from data_root at construction; their pydantic default is an unresolved sentinel.
 ROOT_DERIVED_FIELDS: frozenset[str] = frozenset(
@@ -172,3 +193,42 @@ def resolve(key: str, layers: SettingLayers) -> Resolved:
 def resolve_all(layers: SettingLayers) -> dict[str, Resolved]:
     """Resolve every Config field."""
     return {key: resolve(key, layers) for key in Config.model_fields}
+
+
+def _source_label(key: str, source: SettingSource, root: Path) -> str:
+    """User-facing name for the layer that supplied *key*'s value."""
+    if source is SettingSource.ENV:
+        return env_var_name(key)
+    if source is SettingSource.USER:
+        return str(root / CONFIG_FILE_NAME)
+    # SettingSource.PROFILE is the only other override layer a resolved value can carry.
+    name = read_profile_table(root).name
+    return f"the {name!r} profile" if name else "the applied profile"
+
+
+def sanitize_soft_fields(resolved: dict[str, Resolved], root: Path) -> dict[str, Resolved]:
+    """Replace an unparseable override of a soft-validated field with its built-in default.
+
+    Config's own validator for these fields falls back silently rather than refusing,
+    so without this it would still accept the bad value, but its warning has no way to
+    know the value came from a profile or config.toml and always names the env var.
+    This runs first, where the source is known, and warns with the real one instead.
+    """
+    sanitized = dict(resolved)
+    for key, parser in _SOFT_FIELD_PARSERS.items():
+        entry = sanitized[key]
+        if entry.source in (SettingSource.BUILT_IN, SettingSource.AUTO):
+            continue
+        if not isinstance(entry.value, str):
+            continue
+        try:
+            parser(entry.value)
+        except ValueError:
+            log.warning(
+                "Ignoring %s: %s=%r is invalid, using the built-in default",
+                _source_label(key, entry.source, root),
+                key,
+                entry.value,
+            )
+            sanitized[key] = Resolved(builtin_value(key), entry.source)
+    return sanitized
