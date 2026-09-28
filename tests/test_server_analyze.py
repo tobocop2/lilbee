@@ -87,7 +87,7 @@ def test_a_run_streams_progress_in_order_then_the_report(client, notes):
     cfg.batch_extraction_size = 1
     assert not notes.is_relative_to(cfg.data_root)
     resp = client.post("/api/analyze", json={"directory": str(notes)})
-    assert resp.status_code == 201
+    assert resp.status_code == 200
     events = _events(resp.text)
     names = [name for name, _ in events]
     assert names == [EventType.ANALYZE] * 3 + ["done"]

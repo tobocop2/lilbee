@@ -24,7 +24,7 @@ def _request(data: AnalyzeRequestBody) -> AnalyzeRequest:
     )
 
 
-@post("/api/analyze", media_type=SSE_MEDIA_TYPE)
+@post("/api/analyze", media_type=SSE_MEDIA_TYPE, status_code=HTTP_200_OK)
 async def analyze_route(data: AnalyzeRequestBody | None = None) -> Stream:
     """Read the corpus or a folder and recommend a profile, streaming ``analyze`` progress.
 
