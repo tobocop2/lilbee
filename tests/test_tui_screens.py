@@ -2347,6 +2347,24 @@ async def test_reset_with_the_wiki_already_off_offers_nothing(tmp_path):
         offer.assert_not_called()
 
 
+async def test_reset_that_leaves_ocr_off_with_a_vision_model_toasts_the_warning(tmp_path):
+    """A reset toasts the warning its settings update reports, as /set does."""
+    (tmp_path / "config.toml").write_text(
+        "enable_ocr = true\n[profile.values]\nenable_ocr = false\n", encoding="utf-8"
+    )
+    cfg.enable_ocr = True
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app, "notify") as notify:
+            assert app.reset_settings(["enable_ocr"]) == ["enable_ocr"]
+            app.reset_settings(["top_k"])
+        notify.assert_called_once()
+        assert "enable_ocr" in notify.call_args.args[0]
+        assert notify.call_args.kwargs.get("severity") == "warning"
+        assert cfg.enable_ocr is False
+
+
 async def test_reset_theme_applies_the_resolved_theme(tmp_path):
     """Resetting the theme repaints with the resolved theme, not only cfg."""
     default = builtin_value("theme")

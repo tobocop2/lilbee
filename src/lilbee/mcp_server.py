@@ -1115,6 +1115,7 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
         "command": "settings_reset",
         "updated": result.updated,
         "reindex_required": result.reindex_required,
+        "warnings": list(result.warnings),
     }
 
 
