@@ -16,7 +16,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
-from lilbee.core.config.defaults import ENV_PREFIX
+from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
 
 if TYPE_CHECKING:
@@ -188,7 +188,7 @@ def _user_pill(_key: str) -> Content:
 
 
 def _env_pill(key: str) -> Content:
-    return pill(f"{ENV_PREFIX}{key.upper()}", "$warning", "$text")
+    return pill(env_var_name(key), "$warning", "$text")
 
 
 _SOURCE_PILLS: dict[SettingSource, Callable[[str], Content]] = {

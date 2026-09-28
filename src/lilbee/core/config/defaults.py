@@ -270,3 +270,8 @@ DEFAULT_CORS_ORIGIN_REGEX = (
     r"|https?://127\.0\.0\.1(:\d+)?"
     r"|https?://\[::1\](:\d+)?)$"
 )
+
+
+def env_var_name(field: str) -> str:
+    """The ``LILBEE_<FIELD>`` environment variable that sets a config field."""
+    return f"{ENV_PREFIX}{field.upper()}"

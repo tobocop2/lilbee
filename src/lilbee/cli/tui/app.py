@@ -42,7 +42,7 @@ from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
 from lilbee.core.config import cfg
-from lilbee.core.config.defaults import ENV_PREFIX
+from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
 from lilbee.providers.roles import WorkerRole
 
@@ -503,7 +503,7 @@ class LilbeeApp(App[None]):
                         label=label,
                         original=canon.original,
                         reason=reason,
-                        env_var=f"{ENV_PREFIX}{field.upper()}",
+                        env_var=env_var_name(field),
                     )
                 )
                 continue
