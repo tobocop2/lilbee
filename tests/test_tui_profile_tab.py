@@ -701,7 +701,11 @@ async def test_update_toasts_the_warning_it_leaves_behind() -> None:
         screen = await _loaded(app, pilot, "ocr-off")
         with mock.patch.object(app, "notify") as notify:
             await _press(pilot, screen.query_one("#profile-update", ConfirmPill))
-            assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
+
+            def _warned() -> bool:
+                return any(c.kwargs.get("severity") == "warning" for c in notify.call_args_list)
+
+            assert await _until(pilot, _warned)
     warnings = [c for c in notify.call_args_list if c.kwargs.get("severity") == "warning"]
     assert len(warnings) == 1
     assert "enable_ocr" in warnings[0].args[0]
