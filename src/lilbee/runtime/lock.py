@@ -13,9 +13,11 @@ import logging
 import sqlite3
 import threading
 import time
+import uuid
 from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from filelock import FileLock, ReadWriteLock
@@ -42,6 +44,7 @@ _SERVER_LOCK_NAME = "server.lock"
 _SCOPE_LOCK_NAME = "server.scope.lock"
 _SCOPE_OWNER_NAME = "server.scope.owner.json"
 _SYNC_LOCK_NAME = "sync.lock"
+_SYNC_PROBE_PREFIX = "sync.probe."
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
 # database, or a mount that refuses its locks). A busy lock arrives as filelock's
@@ -53,6 +56,14 @@ _SYNC_LOCK_UNKNOWN = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
     "Stop every lilbee process, delete {path}, and reset again."
 )
+_NO_LOCKING_REFUSED = (
+    "{root} is on a filesystem that does not support file locking, so a reset cannot tell "
+    "whether a sync or import is running. Move the data directory to a local disk to reset it."
+)
+_NO_LOCKING_WARNING = (
+    "%s is on a filesystem that does not support file locking; syncs run, but a reset refuses."
+)
+_PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -149,6 +160,9 @@ def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
     path = data_root / _SYNC_LOCK_NAME
     try:
         data_root.mkdir(parents=True, exist_ok=True)
+        if not _filesystem_locks(data_root):
+            _locking_unsupported(data_root, write=write)
+            return None
         lock = ReadWriteLock(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, write=write)
@@ -166,6 +180,41 @@ def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
         _sync_lock_unavailable(path, exc, write=write)
         return None
     return lock
+
+
+@lru_cache(maxsize=8)
+def _filesystem_locks(data_root: Path) -> bool:
+    """Whether *data_root*'s filesystem grants a lock on a file nobody else holds.
+
+    Without a lock daemon an NFS mount reports every lock busy, which reads as a
+    running sync. Cached, since the answer is a property of the mount.
+    """
+    # Unique per call: a probe shared with another thread or host would read its hold as busy.
+    probe_path = data_root / f"{_SYNC_PROBE_PREFIX}{uuid.uuid4().hex}"
+    probe = ReadWriteLock(probe_path, is_singleton=False)
+    try:
+        probe.acquire_write(blocking=False)
+    except FileLockTimeout:
+        return False
+    finally:
+        probe.close()
+        _remove_probe(probe_path)
+    return True
+
+
+def _remove_probe(probe_path: Path) -> None:
+    """Delete a lock probe; a leftover probe is harmless, so a failure only warns."""
+    try:
+        probe_path.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning(_PROBE_LEFT, probe_path, exc)
+
+
+def _locking_unsupported(data_root: Path, *, write: bool) -> None:
+    """Refuse a reset on a filesystem without locking; warn and let a sync run unmarked."""
+    if write:
+        raise ResetRefusedError(_NO_LOCKING_REFUSED.format(root=data_root))
+    log.warning(_NO_LOCKING_WARNING, data_root)
 
 
 def _sync_lock_unavailable(path: Path, error: Exception, *, write: bool) -> None:

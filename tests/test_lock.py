@@ -1,11 +1,17 @@
 """Tests for write locking and file locking."""
 
 import asyncio
+import logging
+import re
+import sqlite3
 import threading
 import time
 from pathlib import Path
+from unittest import mock
 
 import pytest
+from filelock import _read_write as filelock_read_write
+from filelock._read_write import _ForkSafeConnection
 
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
@@ -254,6 +260,38 @@ except ResetRefusedError:
 """
 
 
+class _NoLockDaemonConnection(_ForkSafeConnection):
+    """SQLite on a mount with no lock daemon: every lock reports busy until its busy timeout."""
+
+    unblock = threading.Event()
+
+    def executescript(self, sql_script: str) -> sqlite3.Cursor:
+        if "BEGIN" not in sql_script:
+            return super().executescript(sql_script)
+        pragma = re.search(r"busy_timeout=(\d+)", sql_script)
+        (busy_ms,) = (
+            self.execute("PRAGMA busy_timeout").fetchone()
+            if pragma is None
+            else (int(pragma.group(1)),)
+        )
+        self.unblock.wait(busy_ms / 1000)
+        raise sqlite3.OperationalError("database is locked")
+
+
+@pytest.fixture
+def no_lock_daemon():
+    """Route filelock's SQLite connections through a filesystem whose locks never succeed."""
+
+    def _connect(database: str, *, factory: type, timeout: float) -> _ForkSafeConnection:
+        return real_connect(database, factory=_NoLockDaemonConnection, timeout=timeout)
+
+    real_connect = filelock_read_write._connect
+    _NoLockDaemonConnection.unblock.clear()
+    with mock.patch.object(filelock_read_write, "_connect", _connect):
+        yield
+    _NoLockDaemonConnection.unblock.set()
+
+
 def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
@@ -387,3 +425,73 @@ class TestSyncMark:
         ):
             async with sync_running(tmp_path):
                 pass
+
+    @pytest.mark.usefixtures("no_lock_daemon")
+    async def test_a_mount_without_locking_runs_a_sync_with_a_warning(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        ran = []
+        with caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"):
+
+            async def _sync() -> None:
+                async with sync_running(tmp_path):
+                    ran.append("sync")
+
+            try:
+                await asyncio.wait_for(_sync(), 5)
+            finally:
+                _NoLockDaemonConnection.unblock.set()
+
+        assert ran == ["sync"]
+        assert _lock_warnings(caplog) == 1
+        assert f"{tmp_path} is on a filesystem that does not support file locking" in caplog.text
+        assert not list(tmp_path.glob("sync.probe.*"))
+
+    @pytest.mark.usefixtures("no_lock_daemon")
+    def test_a_mount_without_locking_refuses_a_reset_without_blaming_a_sync(
+        self, tmp_path: Path
+    ) -> None:
+        ran = []
+        with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+            ran.append("reset")
+
+        assert ran == []
+        assert f"{tmp_path} is on a filesystem that does not support file locking" in str(
+            caught.value
+        )
+        assert "is running on this library" not in str(caught.value)
+        assert not list(tmp_path.glob("sync.probe.*"))
+
+    async def test_a_lockable_mount_leaves_no_probe_behind(self, tmp_path: Path) -> None:
+        async with sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError, match="is running on this library"):
+                with no_sync_running(tmp_path):
+                    pass
+        with no_sync_running(tmp_path):
+            pass
+
+        assert (tmp_path / "sync.lock").is_file()
+        assert not list(tmp_path.glob("sync.probe.*"))
+
+    def test_a_probe_that_cannot_be_deleted_still_lets_a_reset_run(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        real_unlink = Path.unlink
+
+        def _unlink(path: Path, missing_ok: bool = False) -> None:
+            if path.name.startswith("sync.probe."):
+                raise PermissionError("Access is denied")
+            real_unlink(path, missing_ok=missing_ok)
+
+        ran = []
+        with (
+            mock.patch.object(Path, "unlink", _unlink),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            no_sync_running(tmp_path),
+        ):
+            ran.append("reset")
+
+        assert ran == ["reset"]
+        assert _lock_warnings(caplog) == 1
+        assert "Could not delete the lock probe" in caplog.text
+        assert len(list(tmp_path.glob("sync.probe.*"))) == 1
