@@ -1,20 +1,21 @@
 """Tests for write locking and file locking."""
 
 import asyncio
+import errno
 import logging
-import re
-import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
 from unittest import mock
 
 import pytest
-from filelock import _read_write as filelock_read_write
-from filelock._read_write import _ForkSafeConnection
+from filelock import FileLock, ReadWriteLock
+from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
+    LockingUnsupportedError,
     LockTimeoutError,
     ResetRefusedError,
     _lock_path,
@@ -260,36 +261,34 @@ except ResetRefusedError:
 """
 
 
-class _NoLockDaemonConnection(_ForkSafeConnection):
-    """SQLite on a mount with no lock daemon: every lock reports busy until its busy timeout."""
-
+@pytest.fixture
+def no_lock_daemon():
+    """Make every SQLite lock report busy until its timeout, as on a mount without a lock daemon."""
     unblock = threading.Event()
 
-    def executescript(self, sql_script: str) -> sqlite3.Cursor:
-        if "BEGIN" not in sql_script:
-            return super().executescript(sql_script)
-        pragma = re.search(r"busy_timeout=(\d+)", sql_script)
-        (busy_ms,) = (
-            self.execute("PRAGMA busy_timeout").fetchone()
-            if pragma is None
-            else (int(pragma.group(1)),)
-        )
-        self.unblock.wait(busy_ms / 1000)
-        raise sqlite3.OperationalError("database is locked")
+    def _busy(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> None:
+        if blocking:
+            unblock.wait(None if timeout == -1 else timeout)
+        raise FileLockTimeout(lock.lock_file)
+
+    with (
+        mock.patch.object(ReadWriteLock, "acquire_read", _busy),
+        mock.patch.object(ReadWriteLock, "acquire_write", _busy),
+    ):
+        yield unblock
+    unblock.set()
 
 
 @pytest.fixture
-def no_lock_daemon():
-    """Route filelock's SQLite connections through a filesystem whose locks never succeed."""
+def no_lock_daemon_for_file_locks():
+    """Make every file lock fail with ENOLCK, as on a mount without a lock daemon."""
+    import fcntl  # POSIX only; the tests that use this fixture skip on Windows
 
-    def _connect(database: str, *, factory: type, timeout: float) -> _ForkSafeConnection:
-        return real_connect(database, factory=_NoLockDaemonConnection, timeout=timeout)
+    def _flock(_fd: int, _operation: int) -> None:
+        raise OSError(errno.ENOLCK, "No locks available")
 
-    real_connect = filelock_read_write._connect
-    _NoLockDaemonConnection.unblock.clear()
-    with mock.patch.object(filelock_read_write, "_connect", _connect):
+    with mock.patch.object(fcntl, "flock", _flock):
         yield
-    _NoLockDaemonConnection.unblock.set()
 
 
 def _lock_warnings(caplog) -> int:
@@ -426,25 +425,26 @@ class TestSyncMark:
             async with sync_running(tmp_path):
                 pass
 
-    @pytest.mark.usefixtures("no_lock_daemon")
-    async def test_a_mount_without_locking_runs_a_sync_with_a_warning(
-        self, tmp_path: Path, caplog
+    async def test_a_mount_without_locking_refuses_a_sync(
+        self, tmp_path: Path, no_lock_daemon: threading.Event
     ) -> None:
         ran = []
-        with caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"):
 
-            async def _sync() -> None:
-                async with sync_running(tmp_path):
-                    ran.append("sync")
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
+                ran.append("sync")
 
-            try:
+        try:
+            with pytest.raises(LockingUnsupportedError) as caught:
                 await asyncio.wait_for(_sync(), 5)
-            finally:
-                _NoLockDaemonConnection.unblock.set()
+        finally:
+            no_lock_daemon.set()
 
-        assert ran == ["sync"]
-        assert _lock_warnings(caplog) == 1
-        assert f"{tmp_path} is on a filesystem that does not support file locking" in caplog.text
+        assert ran == []
+        assert str(caught.value) == (
+            f"{tmp_path} is on a filesystem that does not support file locking. "
+            "Move the data directory to a local disk."
+        )
         assert not list(tmp_path.glob("sync.probe.*"))
 
     @pytest.mark.usefixtures("no_lock_daemon")
@@ -461,6 +461,30 @@ class TestSyncMark:
         )
         assert "is running on this library" not in str(caught.value)
         assert not list(tmp_path.glob("sync.probe.*"))
+
+    def test_a_busy_probe_is_probed_again_on_the_next_reset(self, tmp_path: Path) -> None:
+        real_acquire_write = ReadWriteLock.acquire_write
+        probes = []
+
+        def _first_probe_busy(lock: ReadWriteLock, *args, **kwargs) -> None:
+            if Path(lock.lock_file).name.startswith("sync.probe."):
+                probes.append(lock.lock_file)
+                if len(probes) == 1:
+                    raise FileLockTimeout(lock.lock_file)
+            real_acquire_write(lock, *args, **kwargs)
+
+        ran = []
+        with mock.patch.object(ReadWriteLock, "acquire_write", _first_probe_busy):
+            with (
+                pytest.raises(ResetRefusedError, match="does not support file locking"),
+                no_sync_running(tmp_path),
+            ):
+                ran.append("refused reset")
+            with no_sync_running(tmp_path):
+                ran.append("reset")
+
+        assert ran == ["reset"]
+        assert len(probes) == 2
 
     async def test_a_lockable_mount_leaves_no_probe_behind(self, tmp_path: Path) -> None:
         async with sync_running(tmp_path):
@@ -495,3 +519,41 @@ class TestSyncMark:
         assert _lock_warnings(caplog) == 1
         assert "Could not delete the lock probe" in caplog.text
         assert len(list(tmp_path.glob("sync.probe.*"))) == 1
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
+@pytest.mark.usefixtures("no_lock_daemon_for_file_locks")
+class TestFileLocksWithoutLockDaemon:
+    """A file lock the filesystem refuses with ENOLCK names the directory and the cause."""
+
+    def test_the_store_write_lock_names_the_directory(self, tmp_path: Path) -> None:
+        lancedb_dir = tmp_path / "lancedb"
+        ran = []
+        with pytest.raises(LockingUnsupportedError) as caught, write_lock(lancedb_dir, timeout=2):
+            ran.append("write")
+
+        assert ran == []
+        assert str(caught.value).startswith(
+            f"{lancedb_dir} is on a filesystem that does not support file locking."
+        )
+        assert isinstance(caught.value.__cause__, OSError)
+
+    def test_the_server_lock_names_the_directory(self, tmp_path: Path) -> None:
+        with pytest.raises(
+            LockingUnsupportedError, match="does not support file locking"
+        ) as caught:
+            acquire_server_lock(tmp_path, timeout=1)
+
+        assert str(tmp_path) in str(caught.value)
+
+
+def test_a_file_lock_error_other_than_enolck_propagates(tmp_path: Path) -> None:
+    refused = OSError(errno.EIO, "Input/output error")
+    with (
+        mock.patch.object(FileLock, "acquire", side_effect=refused),
+        pytest.raises(OSError, match="Input/output error") as caught,
+        write_lock(tmp_path / "lancedb", timeout=1),
+    ):
+        pass
+
+    assert caught.value is refused

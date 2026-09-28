@@ -26,6 +26,7 @@ from lilbee.cli.commands.serve_logging import (
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     SERVER_LOCK_TIMEOUT,
+    LockingUnsupportedError,
     acquire_scope_lock,
     acquire_server_lock,
     read_scope_owner,
@@ -159,14 +160,17 @@ def serve(
 
     # One server per data dir: a second instance would overwrite server.port
     # and spawn a second engine fleet against the same models and vector store.
-    server_lock = acquire_server_lock(cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+    message = (
+        "Another lilbee server is already running for this data directory. "
+        "Stop it or wait for it to exit, then retry."
+    )
+    try:
+        server_lock = acquire_server_lock(cfg.data_dir, timeout=SERVER_LOCK_TIMEOUT)
+    except LockingUnsupportedError as exc:
+        server_lock, message = None, str(exc)
     if server_lock is None:
         if scope_hold is not None:
             scope_hold.release()
-        message = (
-            "Another lilbee server is already running for this data directory. "
-            "Stop it or wait for it to exit, then retry."
-        )
         _refuse_to_start(message)
 
     import uvicorn
