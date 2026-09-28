@@ -66,14 +66,14 @@ uv run lilbee rebuild
 ## Configuration
 All settings override via environment variables:
 - `LILBEE_DATA` — data directory path
-- `LILBEE_CHAT_MODEL` — LLM model (default: `qwen3:8b`)
-- `LILBEE_EMBEDDING_MODEL` — embedding model (default: `nomic-embed-text`)
+- `LILBEE_CHAT_MODEL` — LLM used for chat generation (default: none; onboarding or `lilbee model pull` sets one)
+- `LILBEE_EMBEDDING_MODEL` — model used to embed document chunks (default: none; set the same way)
 - `LILBEE_EMBEDDING_DIM` — embedding dimensions (default: `768`)
 - `LILBEE_CHUNK_SIZE` — tokens per chunk (default: `512`)
 - `LILBEE_CHUNK_OVERLAP` — overlap tokens (default: `100`)
-- `LILBEE_TOP_K` — retrieval result count (default: `5`)
+- `LILBEE_TOP_K` — retrieval result count (default: `12`)
 - `LILBEE_ANN_INDEX_THRESHOLD` — chunk count at/above which sync builds an approximate (ANN) vector index for fast search at scale (default: `50000`, `0` = always exact flat search)
-- `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.9`). Higher = more results, lower = stricter filtering
+- `LILBEE_MAX_DISTANCE` — cosine distance threshold, 0-1 (default: `0.75`). Higher = more results, lower = stricter filtering
 - `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
 - `LILBEE_AUTO_SYNC` — run a sync before `lilbee ask` (default: `true`); set to `false` on large static corpora to skip the pre-answer re-hash
 - `LILBEE_VISION_MODEL` — vision OCR model, used instead of Tesseract when set (default: none).
@@ -87,7 +87,7 @@ All settings override via environment variables:
 - `LILBEE_LLAMA_SERVER_PATH`: path to a `llama-server` binary; when set it always wins, even over the bundled wheel (default: the bundled wheel's binary, else PATH)
 - `LILBEE_OLLAMA_BASE_URL` — Ollama server URL (blank uses `http://localhost:11434`)
 - `LILBEE_LM_STUDIO_BASE_URL` — LM Studio server URL (blank uses `http://localhost:1234/v1`)
-- `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `3`)
+- `LILBEE_DIVERSITY_MAX_PER_SOURCE` — max chunks per source in results (default: `5`)
 - `LILBEE_MMR_LAMBDA` — MMR relevance/diversity tradeoff, 0-1 (default: `0.5`)
 - `LILBEE_CANDIDATE_MULTIPLIER` — extra candidates for MMR reranking (default: `3`)
 - `LILBEE_QUERY_EXPANSION_COUNT` — LLM-generated query variants, 0=disabled (default: `3`)
