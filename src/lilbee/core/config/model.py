@@ -41,7 +41,12 @@ from .enums import (
     TableModel,
     WikiEntityMode,
 )
-from .parsing import parse_bool
+from .parsing import (
+    parse_bool,
+    parse_gpu_device_list,
+    parse_optional_int,
+    parse_tristate_bool,
+)
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -1235,15 +1240,16 @@ class Config(BaseSettings):
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
             try:
-                return parse_bool(v)
+                return parse_tristate_bool(v)
             except ValueError:
                 # bool() on a non-empty string is True, so falling through here
                 # turned an unparseable value into "on". Warn and auto-detect,
-                # matching the sibling validators.
-                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
+                # matching the sibling validators. The resolver has already
+                # named the real source for an env/config.toml/profile value
+                # by the time it reaches here; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid enable_ocr=%r, using auto", v)
                 return None
         return bool(v)
 
@@ -1292,11 +1298,12 @@ class Config(BaseSettings):
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
             try:
-                return parse_bool(v)
+                return parse_tristate_bool(v)
             except ValueError:
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
                 log.warning("Invalid flash_attention=%r, using auto", v)
                 return None
         return bool(v)
@@ -1308,15 +1315,13 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "none"):
-                return None
-            if label == "cpu":
-                return 0
             try:
-                return int(label)
+                return parse_optional_int(v, aliases={"cpu": 0})
             except ValueError:
-                log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid n_gpu_layers=%r, using auto", v)
                 return None
         return int(v)
 
@@ -1327,13 +1332,13 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "none"):
-                return None
             try:
-                return int(label)
+                return parse_optional_int(v)
             except ValueError:
-                log.warning("Invalid LILBEE_MAIN_GPU=%r, using auto", v)
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid main_gpu=%r, using auto", v)
                 return None
         return int(v)
 
@@ -1344,17 +1349,14 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "all", "none"):
+            try:
+                return parse_gpu_device_list(v)
+            except ValueError:
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid gpu_devices=%r, ignoring", v)
                 return None
-            parts = [p.strip() for p in v.split(",") if p.strip()]
-            if not parts:
-                return None
-            for part in parts:
-                if not part.lstrip("-").isdigit():
-                    log.warning("Invalid LILBEE_GPU_DEVICES=%r, ignoring", v)
-                    return None
-            return ",".join(parts)
         return str(v)
 
     @field_validator("placement", mode="before")
@@ -1386,7 +1388,10 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid semantic_chunking=%r, using default False", v)
                 return False
         return bool(v)
 
@@ -1615,9 +1620,10 @@ class _ResolvedSource:
 
     def __call__(self) -> dict[str, Any]:
         # circular: resolve -> model via Config
-        from .resolve import read_layers, resolve_all
+        from .resolve import read_layers, resolve_all, sanitize_soft_fields
 
-        return {key: value.value for key, value in resolve_all(read_layers(self._root)).items()}
+        resolved = sanitize_soft_fields(resolve_all(read_layers(self._root)), self._root)
+        return {key: entry.value for key, entry in resolved.items()}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
