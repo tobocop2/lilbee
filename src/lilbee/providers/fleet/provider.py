@@ -18,7 +18,6 @@ import re
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TypeVar, overload
@@ -76,6 +75,7 @@ from lilbee.providers.warm_progress import (
     WarmProgressTracker,
     is_active_warm,
 )
+from lilbee.runtime.daemon_call import DaemonCall
 from lilbee.runtime.engine_lock import (
     ENGINE_DIR_ENV,
     UserLockHold,
@@ -2116,9 +2116,7 @@ class FleetProvider:
         except Exception as exc:
             if isinstance(exc, RuntimeError) and sys.is_finalizing():
                 # A fast CLI exit can tear down the interpreter while this daemon
-                # thread is still warming; pool submission then raises "cannot
-                # schedule new futures after interpreter shutdown". The process is
-                # leaving anyway, so drop it quietly instead of stack-tracing.
+                # thread is still warming; the process is leaving, so drop it quietly.
                 log.debug("Engine warm-up abandoned during interpreter shutdown: %s", exc)
             else:
                 # A warm-up failure is handled (roles lazy-load on first use), so
@@ -2203,13 +2201,18 @@ class FleetProvider:
         if not pools:
             return
         listeners = (on_spawning, on_spawned)
-        chains = _warm_chains(list(pools), device_sets)
-        with ThreadPoolExecutor(
-            max_workers=len(chains), thread_name_prefix="fleet-preload"
-        ) as pool:
-            futures = [pool.submit(self._warm_chain, chain, pools, listeners) for chain in chains]
-            for future in futures:
-                future.result()
+        calls = [
+            DaemonCall(
+                functools.partial(self._warm_chain, chain, pools, listeners),
+                name=f"fleet-preload-{'+'.join(role.value for role in chain)}",
+            )
+            for chain in _warm_chains(list(pools), device_sets)
+        ]
+        # Every chain finishes before the first chain's error, in chain order, is raised.
+        for call in calls:
+            call.wait()
+        for call in calls:
+            call.result()
 
     def _warm_chain(
         self,

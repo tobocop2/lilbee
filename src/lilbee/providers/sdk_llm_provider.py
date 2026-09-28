@@ -48,8 +48,11 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
+from lilbee.runtime.daemon_call import DaemonCall
 
 log = logging.getLogger(__name__)
+
+_VISION_OCR_TIMEOUT_ERROR = "Vision OCR did not finish within {timeout:g} seconds."
 
 
 def _api_base_for(ref: ProviderModelRef) -> str | None:
@@ -299,23 +302,19 @@ class SdkLLMProvider(LLMProvider):
         *,
         timeout: float | None = None,
     ) -> str:
-        """OCR via a multipart chat completion; ``timeout`` enforced via thread pool."""
+        """OCR via a multipart chat completion; ``timeout`` enforced on a daemon thread."""
         from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
         messages = build_vision_messages(prompt or resolve_ocr_prompt(model), png_bytes)
         if timeout and timeout > 0:
-            from concurrent.futures import ThreadPoolExecutor
-
-            # Don't use the context manager: its __exit__ shutdown(wait=True) would
-            # block until a hung call returns, so the caller would not be freed at
-            # the deadline. Shut down without waiting (matching the fleet OCR path);
-            # a wedged call's worker thread lives until the backend httpx timeout.
-            pool = ThreadPoolExecutor(max_workers=1)
-            try:
-                future = pool.submit(self.chat, messages, stream=False, model=model)
-                result = future.result(timeout=timeout)
-            finally:
-                pool.shutdown(wait=False, cancel_futures=True)
+            # The caller is freed at the deadline; a wedged call's thread lives until
+            # the backend httpx timeout, and exit does not wait for it.
+            call = DaemonCall(
+                lambda: self.chat(messages, stream=False, model=model), name="vision-ocr"
+            )
+            if not call.wait(timeout):
+                raise TimeoutError(_VISION_OCR_TIMEOUT_ERROR.format(timeout=timeout))
+            result = call.result()
         else:
             result = self.chat(messages, stream=False, model=model)
         if not isinstance(result, ChatResult):
