@@ -208,7 +208,7 @@ def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
 def get_setting(key: str) -> SettingInfo:
     """Return the ``SettingInfo`` for one writable non-secret key."""
     if not _is_settable(key):
-        raise KeyError(f"Unknown or read-only setting: {key}")
+        raise ValueError(f"Unknown or read-only setting: {key}")
     if _is_write_only(key):
         raise KeyError(f"Setting '{key}' is write-only and cannot be read back")
     layers = read_layers(cfg.data_root)
