@@ -74,7 +74,7 @@ from lilbee.cli.tui.widgets.autocomplete import (
 )
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.context_chip import ContextChip
-from lilbee.cli.tui.widgets.drawer import drawer_holding
+from lilbee.cli.tui.widgets.drawer import drawer_holding, first_direct_child
 from lilbee.cli.tui.widgets.fleet_body import FleetBody
 from lilbee.cli.tui.widgets.fleet_drawer import FleetDrawer
 from lilbee.cli.tui.widgets.fork_picker import ForkPicker, fork_points
@@ -2581,11 +2581,10 @@ class ChatScreen(Screen[None]):
         """Jump Tab into the open Fleet drawer's first toggle so the placement
         editor is reachable without tabbing past every widget; once focus is
         inside the drawer, Tab cycles within it as usual."""
-        drawers = self.screen.query(FleetDrawer)
-        if not drawers:
+        drawer = first_direct_child(self.screen, FleetDrawer)
+        if drawer is None:
             self.screen.focus_next()
             return
-        drawer = drawers.first()
         focused = self.screen.focused
         inside = focused is not None and drawer in focused.ancestors_with_self
         toggles = drawer.query(".dev-toggle")
