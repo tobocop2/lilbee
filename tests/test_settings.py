@@ -221,6 +221,49 @@ class TestSettingsWriteLockSpansEveryEntryPoint:
         assert b_reached.is_set()  # B did eventually run, just not concurrently
 
 
+class TestApplyProfileLayerSoftFieldWarning:
+    def test_names_the_profile_not_the_env_var(self, caplog):
+        """A profile apply that hits an unparseable soft field names the profile.
+
+        sync_from_resolver re-reads config.toml after apply_profile_layer writes
+        the ``[profile]`` table, so this exercises the resolver's warning at the
+        same call site a live ``lilbee profile apply`` uses, not just Config()
+        construction.
+        """
+        from lilbee.app import settings as appset
+
+        with caplog.at_level("WARNING"):
+            appset.apply_profile_layer("my-profile", {"enable_ocr": "maybe"})
+        assert appset.cfg.enable_ocr is None
+        assert "my-profile" in caplog.text
+        assert "LILBEE_ENABLE_OCR" not in caplog.text
+
+
+class TestApplySettingsUpdateSoftFieldWarning:
+    @pytest.mark.parametrize(
+        ("field", "bad_value"),
+        [
+            ("n_gpu_layers", "not-a-number"),
+            ("flash_attention", "maybe?"),
+            ("main_gpu", "garbage"),
+            ("gpu_devices", "rtx-4060"),
+        ],
+    )
+    def test_warns_without_naming_a_source(self, caplog, field, bad_value) -> None:
+        """apply_settings_update is the TUI/HTTP/MCP entry point for a live setting edit.
+
+        Its raw value has no resolver-layer source, so the warning it triggers
+        must name only the field, never an env var it was never set through.
+        """
+        from lilbee.app import settings as appset
+
+        with caplog.at_level("WARNING"):
+            appset.apply_settings_update({field: bad_value})
+        assert getattr(appset.cfg, field) is None
+        assert field in caplog.text
+        assert "LILBEE_" not in caplog.text
+
+
 class TestProviderResetRunsOutsideTheLock:
     """A provider switch's fleet teardown must not hold _settings_write_lock:
     it can block for the whole fleet's stop, and every other settings write

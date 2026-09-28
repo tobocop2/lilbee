@@ -23,6 +23,7 @@ from lilbee.core.config.resolve import (
     Resolved,
     read_layers,
     resolve_all,
+    sanitize_soft_fields,
 )
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
@@ -179,8 +180,9 @@ def _assign_resolved(
     config: Config, resolved: Mapping[str, Resolved], keys: Iterable[str], root: Path
 ) -> None:
     """Set each of *keys* on *config* to its resolved value, warning on one the field rejects."""
+    sanitized = sanitize_soft_fields(dict(resolved), root)
     for key in keys:
-        entry = resolved[key]
+        entry = sanitized[key]
         try:
             setattr(config, key, entry.value)
         except (ValueError, TypeError) as exc:
