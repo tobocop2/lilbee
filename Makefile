@@ -38,17 +38,21 @@ typecheck:
 	# the release rather than a test.
 	uv run mypy tools/readme_media.py tools/gen_formats_table.py hatch_build.py
 
+# A replaced worker deadlocks --dist loadgroup (pytest-dev/pytest-xdist#1378),
+# so a worker that dies fails the run instead.
+XDIST := -n logical --dist loadgroup --max-worker-restart=0
+
 test:
-	uv run pytest --cov=lilbee --cov-report=term-missing -v -n logical --dist loadgroup
+	uv run pytest --cov=lilbee --cov-report=term-missing -v $(XDIST)
 
 test-ci:
-	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v -n logical --dist loadgroup
+	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html $(COV_FLAGS) -v $(XDIST)
 
 test-ci-serial:
 	uv run pytest --cov=lilbee --cov-report=term-missing --cov-report=html -v -p no:xdist
 
 test-ci-forked:
-	uv run pytest --forked -v -n logical --dist loadgroup
+	uv run pytest --forked -v $(XDIST)
 
 imports-check:
 	uv run python -c "import lilbee; from lilbee import cli; from lilbee.core import config; from lilbee.data.extract import chunk, code_chunker; from lilbee.data import store, ingest; from lilbee.retrieval import embedder, query"
