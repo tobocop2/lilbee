@@ -215,6 +215,7 @@ class ProfileTab(Vertical):
         def _done(result: profiles.SaveResult) -> None:
             self.app.publish_settings(result.absorbed)
             self.notify(msg.PROFILE_UPDATED.format(name=result.location.name))
+            self.app.notify_warnings(result.warnings)
             self._stale()
 
         run_profile_op(self, lambda: profiles.update(ProfileStore()), _done)
@@ -238,6 +239,7 @@ class ProfileTab(Vertical):
             self.app.publish_settings(result.absorbed)
             location = result.location
             self.notify(msg.PROFILE_SAVED.format(name=location.name, path=location.path))
+            self.app.notify_warnings(result.warnings)
             self._stale()
 
         run_profile_op(self, lambda: profiles.save_as(request.name, request.folder), _done)

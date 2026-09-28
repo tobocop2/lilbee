@@ -288,6 +288,30 @@ async def test_apply_keeps_your_own_values(sources) -> None:
     assert 'fts_language = "French"' in config.read_text(encoding="utf-8")
 
 
+async def test_apply_toasts_the_ocr_warning_it_leaves_behind(sources) -> None:
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    signals = _signals(
+        failed=(),
+        pdf=PdfSignals(10, 100, 0, 0.0, 0, 0, 10.0),
+        file_types={"md": 8, "pdf": 2},
+        languages=(),
+    )
+    report = _report(signals)
+    name = report.recommendation.name
+    assert name is not None
+    assert report.recommendation.values.get("enable_ocr") is False
+    app = _ReportApp(report)
+    async with app.run_test(size=_NARROW) as pilot:
+        screen = await _report_open(app, pilot)
+        await _press(pilot, screen.query_one("#analyze-apply", ConfirmPill))
+        dialog = await _dialog(app, pilot)
+        await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
+        assert await _until(pilot, lambda: not isinstance(app.screen, AnalyzeReportScreen))
+    warnings = [n for n in app._notifications if n.severity == "warning"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0].message
+
+
 async def test_the_apply_dialog_starts_on_cancel_so_enter_applies_nothing(sources) -> None:
     report = _report()
     name = report.recommendation.name
@@ -380,6 +404,23 @@ async def test_when_default_fits_apply_offers_default_and_there_is_no_save(sourc
         await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
         assert await _until(pilot, lambda: not isinstance(app.screen, AnalyzeReportScreen))
     assert profiles.active(ProfileStore()).name == "Default"
+
+
+async def test_apply_default_toasts_the_ocr_warning_it_leaves_behind(sources) -> None:
+    (cfg.data_root / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+    profiles.apply(ProfileStore(), "Notes and markdown")
+    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    app = _ReportApp(_fits_default())
+    async with app.run_test(size=_NARROW) as pilot:
+        screen = await _report_open(app, pilot)
+        await _press(pilot, screen.query_one("#analyze-apply", ConfirmPill))
+        dialog = await _dialog(app, pilot)
+        await _press(pilot, dialog.query_one("#apply-apply", ConfirmPill))
+        assert await _until(pilot, lambda: not isinstance(app.screen, AnalyzeReportScreen))
+    assert profiles.active(ProfileStore()).name == "Default"
+    warnings = [n for n in app._notifications if n.severity == "warning"]
+    assert len(warnings) == 1
+    assert "enable_ocr" in warnings[0].message
 
 
 async def test_a_report_with_no_changes_says_so() -> None:
