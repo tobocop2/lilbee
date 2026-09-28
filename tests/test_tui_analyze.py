@@ -38,7 +38,7 @@ from lilbee.core.project_state import mark_analyzed, read_state
 from lilbee.data.analyze import CorpusSignals, FileFailure, LanguageShare, PdfSignals
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import AnalyzeEvent, EventType
-from tests._async_wait import wait_until
+from tests._async_wait import press_widget, wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._profile_fixtures import (
     gate_releases_at_once,  # noqa: F401 -- autouse fixture, applied by import
@@ -46,8 +46,7 @@ from tests._profile_fixtures import (
     sources_totaling,
 )
 
-# 300 pauses still missed a ConfirmPill focus event on a loaded Windows runner (#958).
-_PAUSES = 900
+_PAUSES = 300
 _TIP_SHOWS = "lilbee.cli.tui.widgets.arg_hint.tip_shows"
 _NARROW = (80, 24)
 _WIDE = (120, 40)
@@ -63,9 +62,7 @@ async def _until(pilot: Pilot, predicate: Callable[[], bool]) -> bool:
 
 
 async def _press(pilot: Pilot, widget: Widget, key: str = "enter") -> None:
-    widget.focus()
-    assert await _until(pilot, lambda: widget.has_focus), widget
-    await pilot.press(key)
+    await press_widget(pilot, widget, key, max_pauses=_PAUSES)
 
 
 def _signals(**overrides: Any) -> CorpusSignals:
