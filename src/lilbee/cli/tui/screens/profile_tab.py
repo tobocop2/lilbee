@@ -31,7 +31,7 @@ from lilbee.cli.tui.screens.profile_dialogs import (
 )
 from lilbee.cli.tui.screens.profile_library import ProfileLibrary
 from lilbee.cli.tui.screens.settings_widgets import user_pill
-from lilbee.cli.tui.widgets.confirm_dialog import ConfirmDialog, ConfirmPill
+from lilbee.cli.tui.widgets.confirm_dialog import ConfirmPill
 from lilbee.core.profile_files import ProfileCatalog, ProfileFolder, ProfileStore
 
 if TYPE_CHECKING:
@@ -253,17 +253,9 @@ class ProfileTab(Vertical):
             self.app.notify_warnings(result.warnings)
             self._stale()
             if result.reindex_required:
-                self._offer_rebuild(name)
+                self.app.offer_rebuild(msg.PROFILE_DISCARD_REINDEX_MESSAGE.format(name=name))
 
         run_profile_op(self, profiles.discard, _done)
-
-    def _offer_rebuild(self, name: str) -> None:
-        def _answered(rebuild: bool | None) -> None:
-            if rebuild:
-                self.app.start_rebuild()
-
-        message = msg.PROFILE_DISCARD_REINDEX_MESSAGE.format(name=name)
-        self.app.push_screen(ConfirmDialog(msg.CMD_REBUILD_CONFIRM_TITLE, message), _answered)
 
     def _reapply(self, snapshot: ProfileSnapshot) -> None:
         start_profile_switch(self.app, self, snapshot.active.name, self._stale)
