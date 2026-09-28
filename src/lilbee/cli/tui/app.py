@@ -634,6 +634,7 @@ class LilbeeApp(App[None]):
         """
         wiki_was_on = cfg.wiki
         result = reset_settings(keys, skip_unresettable=skip_unresettable)
+        self._notify_update_warnings(result)
         for key in result.updated:
             self._publish_setting(key)
         if wiki_was_on and cfg.wiki is False:

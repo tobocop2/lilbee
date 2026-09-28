@@ -2006,6 +2006,18 @@ class TestSettingsMcp:
         assert "temperature" not in stored
         assert stored["top_k"] == 7
 
+    def test_settings_reset_warns_when_it_leaves_ocr_off_with_a_vision_model(self, isolated_env):
+        cfg.data_root = isolated_env
+        (isolated_env / "config.toml").write_text(
+            "enable_ocr = true\n[profile.values]\nenable_ocr = false\n", encoding="utf-8"
+        )
+        cfg.enable_ocr = True
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        result = settings_reset(["enable_ocr"])
+        assert len(result["warnings"]) == 1
+        assert "enable_ocr" in result["warnings"][0]
+        assert settings_reset(["top_k"])["warnings"] == []
+
     def test_settings_reset_with_duplicate_keys_removes_the_key_once(self, isolated_env):
         from lilbee.core import settings as persistent
 
