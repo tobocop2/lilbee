@@ -110,3 +110,45 @@ async def test_resetting_a_setting_that_needs_no_rebuild_offers_none() -> None:
             assert await _until(pilot, lambda: cfg.top_k != 9)
             assert await _no_offer(app, pilot)
     rebuild.assert_not_called()
+
+
+def _dialogs(app: LilbeeAppHost) -> list[ConfirmDialog]:
+    return [s for s in app.screen_stack if isinstance(s, ConfirmDialog)]
+
+
+async def _one_dialog_saying(app: LilbeeAppHost, pilot: Pilot, message: str) -> ConfirmDialog:
+    """Wait for a dialog with *message* on top, and check it is the only one open."""
+
+    def _shown() -> bool:
+        top = app.screen
+        return isinstance(top, ConfirmDialog) and (
+            str(top.query_one("#confirm-message", Label).render()) == message
+        )
+
+    assert await _until(pilot, _shown), message
+    assert len(_dialogs(app)) == 1
+    return _dialogs(app)[0]
+
+
+async def test_a_reset_that_also_turns_the_wiki_off_asks_one_question_at_a_time() -> None:
+    apply_settings_update({_REBUILD_KEY: 900, "wiki": True})
+    app = _SettingsApp()
+    with (
+        mock.patch.object(LilbeeAppHost, "start_rebuild") as rebuild,
+        mock.patch("lilbee.cli.tui.screens.wiki.wiki_has_content", return_value=True),
+        mock.patch("lilbee.cli.tui.screens.wiki.start_wiki_wipe") as wipe,
+    ):
+        async with app.run_test(size=(120, 40)) as pilot:
+            screen = await _editors(app, pilot)
+            field = screen.query_one(f"#ed-{_PLAIN_KEY}", Input)
+            await press_widget(pilot, field, "ctrl+shift+r", max_pauses=300)
+            reset_all = await _one_dialog_saying(app, pilot, msg.SETTINGS_RESET_ALL_CONFIRM_MESSAGE)
+            await _press(pilot, reset_all.query_one("#confirm-yes", ConfirmPill))
+            offer = await _one_dialog_saying(app, pilot, msg.SETTINGS_REINDEX_MESSAGE)
+            await _press(pilot, offer.query_one("#confirm-no", ConfirmPill))
+            wipe_offer = await _one_dialog_saying(app, pilot, msg.WIKI_WIPE_DISABLED_MESSAGE)
+            await _press(pilot, wipe_offer.query_one("#confirm-no", ConfirmPill))
+            assert await _until(pilot, lambda: app.screen is screen)
+    assert cfg.wiki is False
+    rebuild.assert_not_called()
+    wipe.assert_not_called()
