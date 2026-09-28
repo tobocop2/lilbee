@@ -76,7 +76,7 @@ def perform_reset() -> ResetResult:
             # it, so content reappears after a "factory reset". Other settings survive:
             # reset deletes data, not configuration.
             settings.delete_value(cfg.data_root, "linked_roots")
-            cfg.linked_roots = {}
+            settings.sync_from_resolver(cfg, ["linked_roots"])
             clear_skip_markers(cfg.data_root)
     except SkipRecordsLockError as error:
         raise ResetRefusedError(str(error)) from error

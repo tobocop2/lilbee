@@ -240,17 +240,16 @@ class _FakeProviderServices:
 
 
 def test_set_persists_and_reloads_live_fleet(monkeypatch):
-    writes = {}
     services = _FakeProviderServices()
     monkeypatch.setattr(app_placement, "resolve_placement_plan", lambda spec, **_kw: _resolved())
     monkeypatch.setattr(app_placement, "_active_spec", lambda: None)
-    monkeypatch.setattr(app_placement.settings, "update_values", lambda root, d: writes.update(d))
     monkeypatch.setattr(app_placement, "peek_services", lambda: services)
     prior = app_placement.cfg.placement
     spec = PlacementSpec({WorkerRole.CHAT: RolePlacement(devices=(0, 1), tensor_split=(1, 1))})
     try:
         app_placement.set_placement(spec)
-        assert writes["placement"] == spec.to_json()
+        persisted = app_placement.settings.load(app_placement.cfg.data_root)
+        assert persisted["placement"] == spec.to_json()
         # The live fleet applied the change surgically and synchronously.
         assert services.provider.reloads == [True]
         assert app_placement.cfg.placement == spec.to_json()

@@ -475,7 +475,7 @@ def _refuse_model_roles(keys: Iterable[str]) -> None:
 
 def _settle(keys: set[str], *, embed_in_batch: bool) -> SettingsUpdateResult:
     """Set *keys* on cfg from the resolver, then rederive, invalidate and report."""
-    persistent_settings.sync_from_resolver(keys)
+    persistent_settings.sync_from_resolver(cfg, keys)
     _rederive_from_resolved(keys)
     _invalidate_caches(keys)
     reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & keys)
