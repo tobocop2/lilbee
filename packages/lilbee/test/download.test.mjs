@@ -274,15 +274,14 @@ test("a landed download leaves a live rival's in-progress temp file alone", asyn
 test("a download whose temp file vanished adopts the binary a rival landed", async () => {
   const dir = tmpDir();
   const dest = path.join(dir, "v9", "bin");
-  const tmp = `${dest}.download.${process.pid}`;
   const logs = [];
   // The rival lands dest and removes our temp file at the moment we go to chmod it.
   const realChmod = fs.chmodSync;
   fs.chmodSync = (target, mode) => {
-    if (target !== tmp) return realChmod(target, mode);
+    if (!target.startsWith(`${dest}.download.${process.pid}.`)) return realChmod(target, mode);
     fs.chmodSync = realChmod;
     fs.writeFileSync(dest, PAYLOAD);
-    fs.rmSync(tmp, { force: true });
+    fs.rmSync(target, { force: true });
     return realChmod(target, mode);
   };
   try {
@@ -292,7 +291,128 @@ test("a download whose temp file vanished adopts the binary a rival landed", asy
   }
   assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD));
   assert.ok(logs.some((l) => /another process finished/.test(l)));
-  assert.ok(!fs.existsSync(tmp));
+  assert.deepEqual(fs.readdirSync(path.join(dir, "v9")), ["bin"]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** Resolve once `check()` is true; reject after `timeoutMs`. */
+async function waitFor(check, what, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+}
+
+/** Bytes written so far to each in-progress temp entry of `dir`, a file or a directory of files. */
+function tempBytes(dir) {
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.includes(".download."))
+    .map((name) => {
+      const entry = path.join(dir, name);
+      if (!fs.statSync(entry).isDirectory()) return fs.statSync(entry).size;
+      return fs.readdirSync(entry).reduce((sum, f) => sum + fs.statSync(path.join(entry, f)).size, 0);
+    });
+}
+
+/** A body that yields `before`, waits for `gate`, then yields `after`. */
+function gatedBody(before, gate, after) {
+  async function* parts() {
+    yield* before;
+    await gate;
+    yield* after;
+  }
+  return Readable.from(parts());
+}
+
+test("two overlapping downloads to one dest in one process each land a complete, closed file", async () => {
+  const dir = tmpDir();
+  const releaseDir = path.join(dir, "v9");
+  const dest = path.join(releaseDir, "bin");
+  const [c0, c1, c2, c3] = chunks(PAYLOAD);
+  let openA;
+  let openB;
+  const gateA = new Promise((resolve) => (openA = resolve));
+  const gateB = new Promise((resolve) => (openB = resolve));
+  const first = download({ release: release(), dest, fetch: fetchWith([gatedBody([c0, c1], gateA, [c2, c3])]).fetch });
+  await waitFor(() => fs.existsSync(releaseDir) && tempBytes(releaseDir).includes(c0.length * 2), "the first download's two chunks");
+  const second = download({ release: release(), dest, fetch: fetchWith([gatedBody([c0], gateB, [c1, c2, c3])]).fetch });
+  await waitFor(() => tempBytes(releaseDir).includes(c0.length), "the second download's first chunk");
+  openA();
+  await first;
+  assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD), "the first download landed a complete file");
+  if (process.platform === "linux") {
+    const open = fs.readdirSync("/proc/self/fd").map((fd) => {
+      try {
+        return fs.readlinkSync(`/proc/self/fd/${fd}`);
+      } catch {
+        return null;
+      }
+    });
+    assert.ok(!open.includes(dest), "no write handle is open on the landed file");
+  }
+  openB();
+  await second;
+  assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD));
+  assert.deepEqual(fs.readdirSync(releaseDir), ["bin"]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a landed download leaves a live rival's per-call temp dir alone", async () => {
+  const dir = tmpDir();
+  const dest = path.join(dir, "v9", "lilbee-macos-arm64");
+  const rival = `${dest}.download.${process.ppid}.x1Y2z3`;
+  fs.mkdirSync(rival, { recursive: true });
+  fs.writeFileSync(path.join(rival, "lilbee-macos-arm64"), "partial");
+  await download({ release: release(), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch });
+  assert.deepEqual(fs.readdirSync(path.join(dir, "v9")).sort(), ["lilbee-macos-arm64", path.basename(rival)]);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+/** Make the next rename onto `dest` fail with `code`, after `before()` runs; returns the restore. */
+function failRenameOnto(dest, code, before = () => {}) {
+  const realRename = fs.renameSync;
+  fs.renameSync = (from, to) => {
+    if (to !== dest) return realRename(from, to);
+    fs.renameSync = realRename;
+    before();
+    throw Object.assign(new Error(`${code}: rename '${from}' -> '${to}'`), { code });
+  };
+  return () => (fs.renameSync = realRename);
+}
+
+for (const code of ["EPERM", "EACCES", "EBUSY"]) {
+  test(`a rename refused with ${code} adopts the binary a rival landed during the download`, async () => {
+    const dir = tmpDir();
+    const dest = path.join(dir, "v9", "bin");
+    const logs = [];
+    const restore = failRenameOnto(dest, code, () => fs.writeFileSync(dest, PAYLOAD));
+    try {
+      await download({ release: release(), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch, log: (m) => logs.push(m) });
+    } finally {
+      restore();
+    }
+    assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD));
+    assert.ok(logs.some((l) => /another process finished/.test(l)));
+    assert.deepEqual(fs.readdirSync(path.join(dir, "v9")), ["bin"]);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+}
+
+test("a refused rename over a binary that was there before the download fails and leaves no temp", async () => {
+  const dir = tmpDir();
+  const dest = path.join(dir, "v9", "bin");
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.writeFileSync(dest, "running build");
+  const restore = failRenameOnto(dest, "EPERM");
+  try {
+    await assert.rejects(download({ release: release(), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch }), (err) => err.code === "EPERM");
+  } finally {
+    restore();
+  }
+  assert.equal(fs.readFileSync(dest, "utf8"), "running build");
+  assert.deepEqual(fs.readdirSync(path.join(dir, "v9")), ["bin"]);
   fs.rmSync(dir, { recursive: true, force: true });
 });
 

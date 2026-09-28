@@ -160,10 +160,12 @@ function toReadable(body) {
 }
 
 const TEMP_INFIX = ".download.";
+/** Codes Windows gives a rename onto a binary that is running. */
+const DEST_BUSY = new Set(["EPERM", "EACCES", "EBUSY"]);
 
-/** True while the process that owns a `.download.<pid>` temp file is still running. */
+/** True while the process that owns a `.download.<pid>[.<suffix>]` temp entry is still running. */
 function tempOwnerAlive(name) {
-  const pid = Number(name.slice(name.lastIndexOf(TEMP_INFIX) + TEMP_INFIX.length));
+  const pid = Number(name.slice(name.lastIndexOf(TEMP_INFIX) + TEMP_INFIX.length).split(".")[0]);
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
@@ -258,6 +260,7 @@ export async function download({
 }) {
   if (signal?.aborted) throw new DownloadCanceledError();
   if (!release.digest && requireDigest) throw new LauncherError("no-digest", NO_DIGEST(release.assetName));
+  const replacing = fs.existsSync(dest);
   const dir = path.dirname(dest);
   fs.mkdirSync(dir, { recursive: true });
   await assertFreeSpace(dir, release.size);
@@ -270,37 +273,42 @@ export async function download({
   if (!release.digest) {
     log(`lilbee: release asset ${release.assetName} has no published digest; skipping sha256 verification.`);
   }
-  // Per-process temp file: concurrent first runs must not interleave writes into one path.
-  const tmp = `${dest}${TEMP_INFIX}${process.pid}`;
+  // A temp dir per call: overlapping downloads, in one process or several, never share a file.
+  const tmpDir = fs.mkdtempSync(`${dest}${TEMP_INFIX}${process.pid}.`);
+  const tmp = path.join(tmpDir, path.basename(dest));
 
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      const got = await transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeoutMs });
-      if (release.digest && got !== release.digest) {
-        throw new LauncherError("digest-mismatch", `sha256 mismatch for ${release.assetName}: expected ${release.digest}, got ${got}`);
+  try {
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        const got = await transfer({ release, tmp, fetchImpl, onProgress, signal, idleTimeoutMs });
+        if (release.digest && got !== release.digest) {
+          throw new LauncherError("digest-mismatch", `sha256 mismatch for ${release.assetName}: expected ${release.digest}, got ${got}`);
+        }
+        break;
+      } catch (err) {
+        if (isDownloadCanceled(err)) throw err;
+        if (fs.existsSync(dest)) {
+          log("lilbee: another process finished this download first; using it.");
+          return;
+        }
+        if (attempt >= DOWNLOAD_ATTEMPTS) throw err;
+        log(`lilbee: download failed (${err.message}), retrying once…`);
       }
-      break;
+    }
+
+    try {
+      fs.chmodSync(tmp, 0o755);
+      fs.renameSync(tmp, dest);
     } catch (err) {
-      fs.rmSync(tmp, { force: true });
-      if (isDownloadCanceled(err)) throw err;
-      if (fs.existsSync(dest)) {
+      const rivalLanded = err.code === "ENOENT" || (!replacing && DEST_BUSY.has(err.code));
+      if (rivalLanded && fs.existsSync(dest)) {
         log("lilbee: another process finished this download first; using it.");
         return;
       }
-      if (attempt >= DOWNLOAD_ATTEMPTS) throw err;
-      log(`lilbee: download failed (${err.message}), retrying once…`);
+      throw err;
     }
-  }
-
-  try {
-    fs.chmodSync(tmp, 0o755);
-    fs.renameSync(tmp, dest);
-  } catch (err) {
-    if (err.code === "ENOENT" && fs.existsSync(dest)) {
-      log("lilbee: another process finished this download first; using it.");
-      return;
-    }
-    throw err;
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
   removeSiblings(dest);
   log(`lilbee: installed ${dest}`);
