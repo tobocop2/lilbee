@@ -3502,6 +3502,19 @@ class TestSdkLLMProviderVisionOcr:
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.01)
         assert str(exc_info.value) == "Vision OCR did not finish within 0.01 seconds."
 
+    def test_error_inside_the_deadline_reaches_the_caller(self) -> None:
+        from lilbee.providers.base import ProviderError
+
+        provider = self._make_provider()
+        error = ProviderError("backend refused the image", provider="litellm")
+        with (
+            mock.patch.object(provider, "chat", side_effect=error),
+            pytest.raises(ProviderError) as exc_info,
+        ):
+            provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=5.0)
+        assert exc_info.value is error
+        assert str(exc_info.value) == "backend refused the image"
+
     def test_timeout_frees_caller_without_waiting_for_hung_call(self) -> None:
         # On timeout the caller must be freed at the deadline, not blocked until
         # the hung call returns.

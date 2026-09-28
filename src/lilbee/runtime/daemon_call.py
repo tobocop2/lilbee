@@ -34,10 +34,9 @@ class DaemonCall(Generic[T]):
         self._thread.join(timeout)
         return not self._thread.is_alive()
 
-    def result(self, timeout: float | None = None) -> T:
-        """Return the call's value; re-raise its exception, or raise TimeoutError past *timeout*."""
-        if not self.wait(timeout):
-            raise TimeoutError(f"{self._thread.name} did not finish within {timeout}s")
+    def result(self) -> T:
+        """Wait for the call, then return its value or re-raise its exception."""
+        self.wait()
         if self._error is not None:
             raise self._error
         return cast(T, self._value)
