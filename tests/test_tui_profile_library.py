@@ -250,8 +250,7 @@ async def test_duplicate_by_keyboard_at_80x24_refuses_a_builtin_name_then_writes
             pilot, lambda: _text(error) == "A built-in profile already has this name."
         )
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is dialog
+        assert await _until(pilot, lambda: app.screen is dialog)
         for pill in dialog.query("#save-actions ConfirmPill"):
             assert _inside(pill.region, dialog.region), pill.id
         name.value = ""
@@ -397,8 +396,7 @@ async def test_import_copies_a_file_into_the_folder_chosen(tmp_path) -> None:
         assert ok.has_class("-disabled")
         assert _text(dialog.query_one("#path-error", Static)) == "Type a path."
         await pilot.press("enter")
-        await pilot.pause()
-        assert app.screen is dialog
+        assert await _until(pilot, lambda: app.screen is dialog)
         dialog.query_one("#path-folder", Select).value = ProfileFolder.PROJECT
         path.value = str(source)
         assert await _until(pilot, lambda: not ok.has_class("-disabled"))
