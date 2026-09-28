@@ -17,7 +17,7 @@ from typing import Any
 from pydantic.fields import FieldInfo
 from pydantic_core import PydanticUndefined
 
-from .defaults import CONFIG_FILE_NAME, ENV_PREFIX, SKIP_TOML_ENV
+from .defaults import CONFIG_FILE_NAME, SKIP_TOML_ENV, env_var_name
 from .enums import ProfileScope, SettingSource
 from .model import Config, value_is_set
 
@@ -79,7 +79,7 @@ def _env_layer() -> dict[str, str]:
     """The set ``LILBEE_<FIELD>`` values, keyed by field name; a blank value counts as empty."""
     layer: dict[str, str] = {}
     for name in Config.model_fields:
-        raw = os.environ.get(f"{ENV_PREFIX}{name.upper()}")
+        raw = os.environ.get(env_var_name(name))
         if raw is not None and value_is_set(name, raw.strip()):
             layer[name] = raw
     return layer

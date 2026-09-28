@@ -24,6 +24,7 @@ from .defaults import (
     DEFAULT_GENERAL_SYSTEM_PROMPT,
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
+    ENV_PREFIX,
     SKIP_TOML_ENV,
 )
 from .enums import (
@@ -95,7 +96,7 @@ class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
 
     model_config = SettingsConfigDict(
-        env_prefix="LILBEE_",
+        env_prefix=ENV_PREFIX,
         validate_assignment=True,
         arbitrary_types_allowed=True,
         extra="ignore",
