@@ -504,6 +504,9 @@ def apply_settings_update(
         if not allow_model_roles:
             _refuse_model_roles(updates)
         _validate(updates)
+        null_keys = [key for key, value in updates.items() if value is None]
+        if null_keys:
+            _refuse_invalid_fallbacks(_values_after_reset(null_keys), _LayerChange.APPLY)
         embed_in_batch = "embedding_model" in updates
         if embed_in_batch:
             # Pin the OLD ref into store meta before mutation, otherwise the

@@ -4186,6 +4186,17 @@ class TestUpdateConfig:
         stored = s.load(cfg.data_root)
         assert "temperature" not in stored
 
+    async def test_update_config_null_over_invalid_profile_value_is_refused(self, tmp_path):
+        from lilbee.core import settings as s
+
+        s.update_values(tmp_path, {"rerank_min_score": 0.4})
+        s.write_profile_table(tmp_path, "scanned", {"rerank_min_score": "banana"})
+        cfg.rerank_min_score = 0.4
+        with pytest.raises(ValueError, match="Cannot apply 'rerank_min_score'"):
+            await handlers.update_config({"rerank_min_score": None})
+        assert cfg.rerank_min_score == 0.4
+        assert s.load(cfg.data_root)["rerank_min_score"] == 0.4
+
     async def test_config_schema_reads_settings_off_the_event_loop(self):
         from lilbee.server.handlers import config as config_handlers
 
