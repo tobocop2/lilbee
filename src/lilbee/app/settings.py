@@ -543,18 +543,35 @@ def _refuse_model_roles(keys: Iterable[str]) -> None:
         )
 
 
-def _settle(keys: set[str], *, embed_in_batch: bool) -> SettingsUpdateResult:
-    """Set *keys* on cfg from the resolver, then rederive, invalidate and report."""
+def _settle(
+    keys: set[str],
+    *,
+    embed_in_batch: bool,
+    changed: set[str] | None = None,
+    reindex_changed: set[str] | None = None,
+) -> SettingsUpdateResult:
+    """Set *keys* on cfg from the resolver; rederive, invalidate and report for *changed*.
+
+    *changed* narrows the fleet-reload and cache-invalidation side effects to the
+    keys whose resolved value actually differs from what THIS process's cfg held;
+    it defaults to *keys* for callers where every key is already known to be a
+    real change (a PATCH and a profile apply). *reindex_changed* narrows the
+    reindex verdict the same way but from config.toml's own before/after resolved
+    value, never cfg, since the persisted vector store is a cross-process
+    resource a stale cfg cannot speak for; it defaults to *changed*.
+    """
+    effective = keys if changed is None else changed
+    reindex_effective = effective if reindex_changed is None else reindex_changed
     persistent_settings.sync_from_resolver(cfg, keys)
-    _rederive_from_resolved(keys)
-    _invalidate_caches(keys)
-    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & keys)
+    _rederive_from_resolved(effective)
+    _invalidate_caches(effective)
+    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & reindex_effective)
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
         updated=sorted(keys),
         reindex_required=reindex_required,
-        warnings=_update_warnings(keys),
+        warnings=_update_warnings(effective),
     )
 
 
@@ -667,16 +684,38 @@ def reset_settings(
             if key in _NO_RESET_FIELDS and not skip_unresettable:
                 raise ValueError(f"'{key}' has no default to reset to; set a folder path instead.")
         targets = [key for key in keys if key not in _NO_RESET_FIELDS]
+        before = _values_before_reset(targets)
         fallbacks = _values_after_reset(targets)
-        _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
+        coerced = _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
         _validate({key: entry.value for key, entry in fallbacks.items()})
-        embed_in_batch = "embedding_model" in targets
-        if embed_in_batch:
+        # coerced holds each fallback after the same type coercion cfg applies, so an
+        # env var's raw string cannot misread as "changed" against cfg's own value.
+        # Scoped to THIS process's live cfg (and therefore its engine), which is
+        # exactly what fleet reload, cache invalidation and the meta pin below need
+        # to know moved.
+        changed = {key for key in targets if getattr(cfg, key) != coerced[key]}
+        # config.toml's own before/after resolved value, never cfg: a second writer
+        # (another CLI invocation, a hand edit) can change the file's effective
+        # value without this process's cfg ever observing it, and the persisted
+        # vector store is a cross-process resource a stale cfg cannot speak for.
+        reindex_changed = {key for key in targets if before[key].value != fallbacks[key].value}
+        if "embedding_model" in changed:
             _pin_legacy_store_meta()
         persistent_settings.delete_values(cfg.data_root, targets)
         # Decide the reset now, before settle's other steps can raise.
-        txn.needs_provider_reset = bool(set(targets) & PROVIDER_SWITCHING_KEYS)
-        return _settle(set(targets), embed_in_batch=embed_in_batch)
+        txn.needs_provider_reset = bool(changed & PROVIDER_SWITCHING_KEYS)
+        return _settle(
+            set(targets),
+            embed_in_batch="embedding_model" in reindex_changed,
+            changed=changed,
+            reindex_changed=reindex_changed,
+        )
+
+
+def _values_before_reset(keys: list[str]) -> dict[str, Resolved]:
+    """The value and source each of *keys* currently resolves to, saved value included."""
+    layers = read_layers(cfg.data_root)
+    return {key: resolve(key, layers) for key in keys}
 
 
 def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
@@ -688,8 +727,15 @@ def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
     return {key: resolve(key, remaining) for key in keys}
 
 
-def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: _LayerChange) -> None:
-    """Refuse an *action* when a key would resolve to a value its field rejects."""
+def _refuse_invalid_fallbacks(
+    fallbacks: dict[str, Resolved], action: _LayerChange
+) -> dict[str, Any]:
+    """Refuse an *action* when a key would resolve to a value its field rejects.
+
+    Returns each key's value after the same coercion a cfg assignment applies
+    (e.g. an env var's raw string cast to int), so a caller can compare it
+    against cfg's current value in the same terms.
+    """
     trial = cfg.model_copy()
     for key, entry in fallbacks.items():
         try:
@@ -699,6 +745,7 @@ def _refuse_invalid_fallbacks(fallbacks: dict[str, Resolved], action: _LayerChan
                 f"Cannot {action.value} '{key}': its {entry.source.value} value {entry.value!r} is "
                 "invalid. Fix or remove that value first."
             ) from exc
+    return {key: getattr(trial, key) for key in fallbacks}
 
 
 def apply_profile_layer(

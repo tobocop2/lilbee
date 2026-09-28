@@ -1518,6 +1518,48 @@ class TestResetRemovesTheUserValue:
         assert path.stat().st_mtime_ns == before
         assert settings.load(root) == {"chunk_size": 900}
 
+    def test_reset_of_a_key_already_at_its_default_reports_no_reindex(self):
+        """A key with no saved value already resolves to the default; resetting
+        it changes nothing, so it must not be counted toward reindex_required."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+        from lilbee.core.config.resolve import builtin_value
+
+        root = self._write_config("top_k = 7\n")
+        cfg.chunk_size = builtin_value("chunk_size")
+        result = appset.reset_settings(["chunk_size"])
+        assert result.reindex_required is False
+        assert cfg.chunk_size == builtin_value("chunk_size")
+        assert settings.load(root) == {"top_k": 7}
+
+    def test_reset_of_an_env_shadowed_key_reports_no_reindex(self, monkeypatch):
+        """A LILBEE_* env var outranks the profile and the built-in, so removing
+        the saved value leaves the resolved value exactly where it was."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("LILBEE_CHUNK_SIZE", "800")
+        root = self._write_config("chunk_size = 2048\n")
+        cfg.chunk_size = 800
+        result = appset.reset_settings(["chunk_size"])
+        assert result.reindex_required is False
+        assert cfg.chunk_size == 800
+        assert "chunk_size" not in settings.load(root)
+
+    def test_reset_reports_reindex_from_disk_even_when_cfg_is_stale(self):
+        """A second writer (another process, or a hand edit) can change config.toml
+        without this process's cfg ever observing it; the reindex verdict must come
+        from the file's own before/after resolved value, never from cfg."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+        from lilbee.core.config.resolve import builtin_value
+
+        root = self._write_config("chunk_size = 2048\n")
+        cfg.chunk_size = builtin_value("chunk_size")  # stale: never observed the write above
+        result = appset.reset_settings(["chunk_size"])
+        assert result.reindex_required is True
+        assert "chunk_size" not in settings.load(root)
+
     def test_reset_with_no_config_file_creates_none(self):
         from lilbee.app import settings as appset
         from lilbee.core.config import cfg
@@ -1569,6 +1611,33 @@ class TestResetRemovesTheUserValue:
         monkeypatch.setattr(appset, "_embed_reindex_required", lambda: True)
         result = appset.reset_settings(["embedding_model"])
         assert calls == ["acme/b-GGUF/b.gguf"]
+        assert result.reindex_required is True
+        assert cfg.embedding_model == builtin_value("embedding_model")
+        assert "embedding_model" not in settings.load(root)
+
+    def test_reset_of_a_drifted_embedding_model_checks_the_store_but_skips_the_pin(
+        self, monkeypatch
+    ):
+        """cfg never observed a second writer's embedding_model override, so cfg is
+        already at what the reset resolves to (skip the pin, nothing for cfg to
+        lose), but the store's own meta must still be checked against disk's real
+        change, which the resolved fallback alone cannot see."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+        from lilbee.core.config.resolve import builtin_value
+
+        root = self._write_config('embedding_model = "acme/b-GGUF/b.gguf"\n')
+        cfg.embedding_model = builtin_value("embedding_model")  # stale: never observed the write
+        pin_calls: list[None] = []
+        embed_check_calls: list[None] = []
+        monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: pin_calls.append(None))
+        monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
+        monkeypatch.setattr(
+            appset, "_embed_reindex_required", lambda: embed_check_calls.append(None) or True
+        )
+        result = appset.reset_settings(["embedding_model"])
+        assert pin_calls == []
+        assert embed_check_calls == [None]
         assert result.reindex_required is True
         assert cfg.embedding_model == builtin_value("embedding_model")
         assert "embedding_model" not in settings.load(root)

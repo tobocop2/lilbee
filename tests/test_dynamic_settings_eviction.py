@@ -352,6 +352,20 @@ def test_sampling_param_change_does_not_touch_fleet():
         _restore_services()
 
 
+def test_reset_of_an_unset_load_key_does_not_drop_the_fleet():
+    """num_ctx has no saved override and already sits at its built-in default,
+    so resetting it changes nothing and must not force a fleet reload."""
+    from lilbee.app.settings import reset_settings
+
+    provider = _install_recording_provider()
+    try:
+        reset_settings(["num_ctx"])
+        assert provider.reloaded_roles == []
+        assert provider.dropped == 0
+    finally:
+        _restore_services()
+
+
 def test_unknown_key_does_not_touch_fleet():
     """An unrelated setting change is a no-op for the fleet."""
     provider = _install_recording_provider()
