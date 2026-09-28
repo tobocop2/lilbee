@@ -3252,59 +3252,39 @@ class TestRouteModel:
         assert _route_model(ref, None) == "lm_studio/some-model"
 
 
-class TestInjectProviderKeys:
-    def test_injects_keys_from_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.sdk_llm_provider import inject_provider_keys
-
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
-        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-        cfg.openai_api_key = "sk-test-openai"
-        cfg.anthropic_api_key = "sk-test-anthropic"
-        cfg.gemini_api_key = ""
-
-        inject_provider_keys()
-
-        import os
-
-        assert os.environ.get("OPENAI_API_KEY") == "sk-test-openai"
-        assert os.environ.get("ANTHROPIC_API_KEY") == "sk-test-anthropic"
-        assert os.environ.get("GEMINI_API_KEY") is None
-
-    def test_does_not_override_existing_env_vars(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from lilbee.providers.sdk_llm_provider import inject_provider_keys
-
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-existing")
-        cfg.openai_api_key = "sk-from-config"
-
-        inject_provider_keys()
-
-        import os
-
-        assert os.environ["OPENAI_API_KEY"] == "sk-existing"
-
-    def test_every_provider_key_routes_to_its_env_var(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Each PROVIDER_KEYS entry round-trips cfg field -> env var.
-
-        Iterates the canonical PROVIDER_KEYS tuple so a newly added
-        provider is exercised here without a hand-edited assertion.
-        """
-        import os
-
+class TestHostedRequestKey:
+    def test_every_provider_sends_its_own_config_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Each PROVIDER_KEYS entry's cfg field is the key its hosted request carries."""
+        from lilbee.providers.model_ref import parse_model_ref
         from lilbee.providers.sdk_backend import PROVIDER_KEYS
-        from lilbee.providers.sdk_llm_provider import inject_provider_keys
+        from lilbee.providers.sdk_llm_provider import _api_key_for
 
         marker = "sk-pk-{}"
+        cfg.llm_api_key = "sk-generic"
         for _prov, cfg_field, env_var, _label in PROVIDER_KEYS:
             monkeypatch.delenv(env_var, raising=False)
-            setattr(cfg, cfg_field, marker.format(env_var))
+            setattr(cfg, cfg_field, marker.format(cfg_field))
 
-        inject_provider_keys()
+        for prov, cfg_field, _env_var, _label in PROVIDER_KEYS:
+            assert _api_key_for(parse_model_ref(f"{prov}/m")) == marker.format(cfg_field)
 
-        for _prov, _cfg_field, env_var, _label in PROVIDER_KEYS:
-            assert os.environ.get(env_var) == marker.format(env_var)
+    def test_local_server_ref_sends_llm_api_key(self) -> None:
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_llm_provider import _api_key_for
+
+        cfg.llm_api_key = "sk-generic"
+        cfg.openai_api_key = "sk-openai"
+        assert _api_key_for(parse_model_ref("ollama/llama3")) == "sk-generic"
+
+    def test_no_key_sends_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_llm_provider import _api_key_for
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg.llm_api_key = ""
+        cfg.openai_api_key = ""
+        assert _api_key_for(parse_model_ref("openai/gpt-4o")) is None
+        assert _api_key_for(parse_model_ref("ollama/llama3")) is None
 
 
 class TestLiteLLMListModelsRouting:
@@ -3340,7 +3320,8 @@ class TestLiteLLMListModelsRouting:
         from lilbee.providers.local_servers import LM_STUDIO
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LitellmSdkBackend(), api_key="sk-test")
+        cfg.llm_api_key = "sk-test"
+        provider = SdkLLMProvider(LitellmSdkBackend())
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -3381,7 +3362,8 @@ class TestLiteLLMListModelsRouting:
         from lilbee.providers.local_servers import LM_STUDIO
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
-        provider = SdkLLMProvider(LitellmSdkBackend(), api_key="sk-secret")
+        cfg.llm_api_key = "sk-secret"
+        provider = SdkLLMProvider(LitellmSdkBackend())
         mock_resp = mock.MagicMock()
         mock_resp.json.return_value = {"data": []}
         mock_resp.raise_for_status = mock.MagicMock()
@@ -3645,20 +3627,19 @@ class TestChatApiBaseRouting:
         call_kwargs = fake.completion.call_args[1]
         assert "api_base" not in call_kwargs
 
-    def test_chat_calls_inject_provider_keys(self) -> None:
+    def test_chat_sends_the_provider_key_to_litellm(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.litellm_sdk import LitellmSdkBackend
         from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg.openai_api_key = "sk-openai"
         provider = SdkLLMProvider(LitellmSdkBackend())
         fake = self._make_fake_litellm()
 
-        with (
-            inject_modules({"litellm": fake}),
-            mock.patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject,
-        ):
+        with inject_modules({"litellm": fake}):
             provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
 
-        mock_inject.assert_called_once()
+        assert fake.completion.call_args[1]["api_key"] == "sk-openai"
 
 
 class TestEmbedApiBaseRouting:
@@ -3707,6 +3688,7 @@ class TestSdkRerank:
 
     def test_rerank_returns_scores_in_candidate_order(self) -> None:
         cfg.reranker_model = "cohere/rerank-english-v3.0"
+        cfg.llm_api_key = "sk-rerank"
         provider = self._make_sdk_provider()
         fake_response = {
             "results": [
@@ -3724,6 +3706,19 @@ class TestSdkRerank:
         assert kwargs["query"] == "q"
         assert kwargs["documents"] == ["a", "b", "c"]
         assert "cohere" in kwargs["model"]
+        assert kwargs["api_key"] == "sk-rerank"
+
+    def test_rerank_sends_the_hosted_provider_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg.reranker_model = "openai/rerank-model"
+        cfg.openai_api_key = "sk-openai-rerank"
+        cfg.llm_api_key = "sk-generic"
+        provider = self._make_sdk_provider()
+        fake_litellm = mock.MagicMock()
+        fake_litellm.rerank.return_value = {"results": [{"index": 0, "relevance_score": 0.5}]}
+        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+            provider.rerank("q", ["a"])
+        assert fake_litellm.rerank.call_args.kwargs["api_key"] == "sk-openai-rerank"
 
     def test_rerank_empty_candidates_short_circuits(self) -> None:
         cfg.reranker_model = "cohere/rerank-english-v3.0"

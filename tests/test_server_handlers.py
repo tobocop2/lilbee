@@ -4253,16 +4253,15 @@ class TestUpdateConfig:
         assert stored["temperature"] == 0.7
         assert stored["top_k"] == 5
 
-    async def test_api_key_update_injects_provider_keys(self, tmp_path):
-        with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:
-            result = await handlers.update_config({"openai_api_key": "sk-new"})
-        assert result.updated == ["openai_api_key"]
-        mock_inject.assert_called_once()
+    async def test_api_key_update_reaches_the_next_request(self, tmp_path, monkeypatch):
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_llm_provider import _api_key_for
 
-    async def test_non_key_update_skips_injection(self, tmp_path):
-        with patch("lilbee.providers.sdk_llm_provider.inject_provider_keys") as mock_inject:
-            await handlers.update_config({"temperature": 0.5})
-        mock_inject.assert_not_called()
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        await handlers.update_config({"openai_api_key": "sk-old"})
+        result = await handlers.update_config({"openai_api_key": "sk-new"})
+        assert result.updated == ["openai_api_key"]
+        assert _api_key_for(parse_model_ref("openai/gpt-4o")) == "sk-new"
 
     async def test_update_config_rejects_chat_model(self):
         """Role fields only move via PUT /api/models/<role>; PATCH must 422."""

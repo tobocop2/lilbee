@@ -71,10 +71,7 @@ class RoutingProvider(LLMProvider):
         if self._sdk_provider is None:
             with self._init_lock:
                 if self._sdk_provider is None:
-                    self._sdk_provider = SdkLLMProvider(
-                        LitellmSdkBackend(),
-                        api_key=cfg.llm_api_key,
-                    )
+                    self._sdk_provider = SdkLLMProvider(LitellmSdkBackend())
         return self._sdk_provider
 
     def _pick_backend(self, ref: ProviderModelRef) -> LLMProvider:

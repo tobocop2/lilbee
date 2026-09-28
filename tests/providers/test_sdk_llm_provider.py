@@ -2,8 +2,8 @@
 
 These tests inject an inline ``FakeBackend`` satisfying the
 ``LlmSdkBackend`` Protocol, so they never touch ``litellm`` or any
-other third-party SDK. They verify message formatting, auth-key
-injection, option translation, error wrapping, streaming, and the
+other third-party SDK. They verify message formatting, the API key each
+request carries, option translation, error wrapping, streaming, and the
 "optional method returns not-supported" paths.
 """
 
@@ -26,10 +26,7 @@ from lilbee.providers.sdk_backend import (
     EmbeddingResult,
     StreamChunk,
 )
-from lilbee.providers.sdk_llm_provider import (
-    SdkLLMProvider,
-    inject_provider_keys,
-)
+from lilbee.providers.sdk_llm_provider import SdkLLMProvider
 
 
 @dataclass
@@ -149,24 +146,6 @@ def _reset_chat_model() -> Iterator[None]:
     cfg.json_mode = json_snapshot
     cfg.ollama_base_url = ollama_snapshot
     cfg.lm_studio_base_url = lm_studio_snapshot
-
-
-class TestInjectProviderKeys:
-    def test_copies_config_values_into_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        cfg.openai_api_key = "sk-abc"
-        inject_provider_keys()
-        import os
-
-        assert os.environ["OPENAI_API_KEY"] == "sk-abc"
-
-    def test_does_not_overwrite_existing_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-existing")
-        cfg.openai_api_key = "sk-from-config"
-        inject_provider_keys()
-        import os
-
-        assert os.environ["OPENAI_API_KEY"] == "sk-existing"
 
 
 class TestChatNonStream:
@@ -315,9 +294,11 @@ class TestChatNonStream:
         assert req.ref.name == "gpt-4o"
         assert req.api_base is None
 
-    def test_passes_api_key_when_configured(self) -> None:
+    def test_passes_api_key_when_configured(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg.openai_api_key = "sk-x"
         backend = FakeBackend()
-        provider = SdkLLMProvider(backend, api_key="sk-x")
+        provider = SdkLLMProvider(backend)
         provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
         assert backend.complete_calls[-1].api_key == "sk-x"
 
@@ -343,16 +324,6 @@ class TestChatNonStream:
         provider = SdkLLMProvider(backend)
         with pytest.raises(ProviderError, match="original"):
             provider.chat([{"role": "user", "content": "hi"}])
-
-    def test_calls_inject_provider_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        cfg.openai_api_key = "sk-injected"
-        backend = FakeBackend()
-        provider = SdkLLMProvider(backend)
-        provider.chat([{"role": "user", "content": "hi"}], model="openai/gpt-4o")
-        import os
-
-        assert os.environ.get("OPENAI_API_KEY") == "sk-injected"
 
     def test_configure_logging_called_with_false_when_json_mode_off(self) -> None:
         cfg.json_mode = False
@@ -385,7 +356,7 @@ class TestChatNonStream:
     def test_initialization_shared_across_chat_and_embed(self) -> None:
         # Pins _ensure_initialized idempotence across methods on the same
         # instance: a chat followed by an embed must only invoke
-        # configure_logging and inject_provider_keys once each.
+        # configure_logging once.
         backend = FakeBackend()
         provider = SdkLLMProvider(backend)
         provider.chat([{"role": "user", "content": "hi"}])
@@ -541,19 +512,14 @@ class TestEmbed:
         with pytest.raises(ProviderError, match="already"):
             provider.embed(["hi"])
 
-    def test_embed_injects_provider_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        # Parity with chat(): a remote embedding model must see the
-        # configured API key in the environment on first use, or hosted
-        # embeddings will fail with a 401.
+    def test_embed_sends_the_provider_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         cfg.openai_api_key = "sk-embed"
         cfg.embedding_model = "openai/text-embedding-3-small"
         backend = FakeBackend()
         provider = SdkLLMProvider(backend)
         provider.embed(["hi"])
-        import os
-
-        assert os.environ.get("OPENAI_API_KEY") == "sk-embed"
+        assert backend.embed_calls[-1].api_key == "sk-embed"
 
 
 class TestListModels:

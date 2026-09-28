@@ -18,7 +18,6 @@ from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
-    PROVIDER_API_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.schema import field_type_name
@@ -368,11 +367,6 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         services = peek_services()
         if services is not None:
             sync_xberg_backend(BackendKind.TOKENIZER, services.provider)
-    if changed_keys & PROVIDER_API_KEYS:
-        # heavy: sdk_llm_provider pulls litellm fanout (~145 ms)
-        from lilbee.providers.sdk_llm_provider import inject_provider_keys
-
-        inject_provider_keys()
     if changed_keys & PROVIDER_SWITCHING_KEYS:
         # Swap requires reconstructing the provider singleton via
         # providers.factory.create_provider, only called at services init.
