@@ -9,7 +9,8 @@ import pytest
 from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
-from lilbee.core.config.resolve import builtin_value
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import builtin_value, read_layers, resolve
 from lilbee.core.project_state import ProjectState
 
 # The analyze settings that are genuine Config; every other analyze or profile name is state.
@@ -991,6 +992,7 @@ class TestOverlayPersistedSettings:
             assert cfg.vision_model == ""
             assert cfg.chunk_size == 900
             assert cfg.top_k == 9
+            assert resolve("vision_model", read_layers(tmp_path)).source is SettingSource.USER
         finally:
             cfg.vision_model, cfg.chunk_size, cfg.top_k = originals
 
