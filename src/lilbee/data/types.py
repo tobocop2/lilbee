@@ -39,8 +39,9 @@ SKIPPED_OCR_OFF_NOTE = ": OCR is off (enable_ocr = false)"
 class ShardId:
     """Which slice of the corpus one ingest worker owns.
 
-    *records_root* is the data root holding the corpus's skip records, which
-    every worker reads and writes in place of its own private data root.
+    *records_root* is the data root holding the corpus's skip records and its
+    data-root ``.lilbeeignore``, which every worker uses in place of its own
+    private data root.
     """
 
     index: int

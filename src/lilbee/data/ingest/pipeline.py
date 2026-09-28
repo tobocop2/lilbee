@@ -896,7 +896,7 @@ def _clear_skip_records(records_root: Path, *, force_rebuild: bool, retry_skippe
 def _prepare_skip_records(
     shard: ShardId | None, *, force_rebuild: bool, retry_skipped: bool
 ) -> Path:
-    """The data root whose skip records this sync reads and writes.
+    """The data root whose skip records and ``.lilbeeignore`` this sync uses.
 
     Only a sync that is not a worker clears them, so a fan-out clears once: a
     worker clearing the shared records would erase a sibling's verdicts.
@@ -1178,7 +1178,7 @@ async def _sync_across_workers(
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
     if prune_ignored:
         result.removed = await to_ingest_thread(
-            _forget_ignored, store.get_sources(), IgnoreRules.for_corpus()
+            _forget_ignored, store.get_sources(), IgnoreRules.for_corpus(active_config().data_root)
         )
     await _run_post_ingest_passes(
         store,
@@ -1273,7 +1273,7 @@ async def sync(
         )
         return merged.model_copy(update={"index_mismatch": index_mismatch})
 
-    rules = IgnoreRules.for_corpus()
+    rules = IgnoreRules.for_corpus(records_root)
     scan = discover_corpus(shard, rules)
     disk_files = scan.files
     sources = _store.get_sources()

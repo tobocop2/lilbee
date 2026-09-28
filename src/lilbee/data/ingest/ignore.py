@@ -67,11 +67,9 @@ class IgnoreRules:
         self._chains: dict[Path, tuple[tuple[Path, PathSpec], ...]] = {}
 
     @classmethod
-    def for_corpus(cls) -> IgnoreRules:
-        """Build rules carrying the corpus-wide layer from the resolved data root."""
-        from lilbee.core.config import active_config
-
-        return cls(_load_spec(active_config().data_root / IGNORE_FILENAME))
+    def for_corpus(cls, data_root: Path) -> IgnoreRules:
+        """Build rules carrying the corpus-wide layer from the ignore file in *data_root*."""
+        return cls(_load_spec(data_root / IGNORE_FILENAME))
 
     def _spec_for(self, directory: Path) -> PathSpec | None:
         if directory not in self._specs:
