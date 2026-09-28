@@ -41,6 +41,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
     RESET_BUTTON_ID_PREFIX,
     RESET_BUTTON_LABEL,
     ROW_ID_PREFIX,
+    active_profile_name,
     config_toml_path,
     displayed_text,
     effective_value,
@@ -249,9 +250,10 @@ class SettingsScreen(Screen[None]):
         """Repaint every queued row's title and editor from one read of the setting sources."""
         keys, self._stale_source_keys = self._stale_source_keys, set()
         sources = setting_sources()
+        profile_name = active_profile_name()
         for key in keys:
             for title in self.query(f"#{ROW_ID_PREFIX}{key} > .setting-title").results(Static):
-                title.update(title_content(key, SETTINGS_MAP[key], sources[key]))
+                title.update(title_content(key, SETTINGS_MAP[key], sources[key], profile_name))
             self._sync_editor(key)
         self.reload_profile()
 
@@ -336,15 +338,16 @@ class SettingsScreen(Screen[None]):
                 )
             )
         sources = setting_sources()
+        profile_name = active_profile_name()
         for key, defn in group.items:
-            widgets.append(self._build_setting_row(key, defn, sources[key]))
+            widgets.append(self._build_setting_row(key, defn, sources[key], profile_name))
         return widgets
 
     def _build_setting_row(
-        self, key: str, defn: SettingDef, source: SettingSource
+        self, key: str, defn: SettingDef, source: SettingSource, profile_name: str | None
     ) -> VerticalGroup:
         """Construct one setting row with its title, help, editor, and reset."""
-        title = Static(title_content(key, defn, source), classes="setting-title")
+        title = Static(title_content(key, defn, source, profile_name), classes="setting-title")
         help_widget = Static(help_content(key, defn), classes="setting-help")
         children: list[Widget] = [title, help_widget]
         if key in model_field_to_picker_scope():

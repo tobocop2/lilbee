@@ -15442,19 +15442,93 @@ def _row_title(app, key: str) -> str:
 
 
 def test_settings_title_content_pill_per_source():
-    """title_content pills the two override sources only."""
+    """title_content pills user, env and profile; built-in and auto stay bare."""
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.settings_widgets import title_content
     from lilbee.core.config.enums import SettingSource
 
     defn = SETTINGS_MAP["top_k"]
-    titles = {source: title_content("top_k", defn, source).plain for source in SettingSource}
+    titles = {
+        source: title_content("top_k", defn, source, "Court filings").plain
+        for source in SettingSource
+    }
     assert msg.SETTINGS_SOURCE_USER_PILL in titles[SettingSource.USER]
     assert "LILBEE_TOP_K" in titles[SettingSource.ENV]
-    for source in (SettingSource.PROFILE, SettingSource.BUILT_IN, SettingSource.AUTO):
+    assert "Court filings" in titles[SettingSource.PROFILE]
+    for source in (SettingSource.BUILT_IN, SettingSource.AUTO):
         assert msg.SETTINGS_SOURCE_USER_PILL not in titles[source]
         assert "LILBEE_TOP_K" not in titles[source]
+        assert "Court filings" not in titles[source]
+
+
+def test_profile_pill_names_the_profile():
+    """The profile pill names the profile name it is given."""
+    from lilbee.cli.tui.screens.settings_widgets import source_pill
+    from lilbee.core.config.enums import SettingSource
+
+    pill_content = source_pill("top_k", SettingSource.PROFILE, "Court filings")
+    assert pill_content is not None
+    assert "Court filings" in pill_content.plain
+
+
+def test_profile_pill_falls_back_unnamed():
+    """A None profile name (a hand-edited [profile] table with no name key) still pills."""
+    from lilbee.cli.tui.screens.settings_widgets import source_pill
+    from lilbee.core.config.enums import SettingSource
+
+    pill_content = source_pill("top_k", SettingSource.PROFILE, None)
+    assert pill_content is not None
+    assert "profile" in pill_content.plain.lower()
+
+
+async def test_profile_source_shows_pill_in_settings_screen(tmp_path):
+    """A profile-set value's row shows the profile pill; an untouched sibling row does not."""
+    (tmp_path / "config.toml").write_text(
+        '[profile]\nname = "Court filings"\n\n[profile.values]\ntop_k = 77\n',
+        encoding="utf-8",
+    )
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
+        assert "Court filings" in _row_title(app, "top_k")
+        assert "Court filings" not in _row_title(app, "chunk_overlap")
+
+
+async def test_profile_pill_reads_the_profile_table_once_per_build(tmp_path):
+    """Several profile-set rows in one pane build share a single config.toml read.
+
+    top_k and max_distance are both in the Retrieval group and both profile-settable,
+    so populating that one pane renders two profile pills; the read must not scale
+    with the row count. Uses the real lazy-tab ``SettingsScreen`` (not the
+    ``SettingsTestApp`` fixture, which eagerly builds every pane on mount and would
+    make this assert on the pane count instead of the row count).
+    """
+    from textual.widgets import TabbedContent
+
+    from lilbee.cli.tui.app import LilbeeApp
+    from lilbee.cli.tui.screens import settings_widgets
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    (tmp_path / "config.toml").write_text(
+        '[profile]\nname = "Court filings"\n\n[profile.values]\ntop_k = 77\nmax_distance = 0.5\n',
+        encoding="utf-8",
+    )
+    app = LilbeeApp()
+    with patch.object(
+        settings_widgets, "read_profile_table", wraps=settings_widgets.read_profile_table
+    ) as read_spy:
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            app.push_screen(SettingsScreen())
+            await pilot.pause()
+            tabbed = app.screen.query_one("#settings-tabs", TabbedContent)
+            tabbed.active = "settings-tab-retrieval"
+            await wait_until(pilot, lambda: bool(app.screen.query("#row-top_k")))
+            await wait_until(pilot, lambda: bool(app.screen.query("#row-max_distance")))
+            assert "Court filings" in _row_title(app, "top_k")
+            assert "Court filings" in _row_title(app, "max_distance")
+    assert read_spy.call_count == 1
 
 
 async def test_env_pill_hidden_for_empty_env_var(monkeypatch):

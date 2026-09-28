@@ -18,6 +18,7 @@ from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
 from lilbee.core.config.defaults import env_var_name
 from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import read_profile_table
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -191,24 +192,43 @@ def user_pill() -> Content:
     return pill(msg.SETTINGS_SOURCE_USER_PILL, "$accent", "$text")
 
 
-def _user_pill(_key: str) -> Content:
+def _user_pill(_key: str, _profile_name: str | None) -> Content:
     return user_pill()
 
 
-def _env_pill(key: str) -> Content:
+def _env_pill(key: str, _profile_name: str | None) -> Content:
     return pill(env_var_name(key), "$warning", "$text")
 
 
-_SOURCE_PILLS: dict[SettingSource, Callable[[str], Content]] = {
+def _profile_pill(_key: str, profile_name: str | None) -> Content:
+    label = (
+        msg.SETTINGS_SOURCE_PROFILE_NAMED_PILL.format(name=profile_name)
+        if profile_name
+        else msg.SETTINGS_SOURCE_PROFILE_PILL
+    )
+    return pill(label, "$secondary", "$text")
+
+
+_SOURCE_PILLS: dict[SettingSource, Callable[[str, str | None], Content]] = {
     SettingSource.USER: _user_pill,
     SettingSource.ENV: _env_pill,
+    SettingSource.PROFILE: _profile_pill,
 }
 
 
-def source_pill(key: str, source: SettingSource) -> Content | None:
-    """Pill for a value the user or an env var overrides; None for any other source."""
+def active_profile_name() -> str | None:
+    """The active profile's name, one config.toml read; call once per render, not per row."""
+    return read_profile_table(cfg.data_root).name
+
+
+def source_pill(key: str, source: SettingSource, profile_name: str | None = None) -> Content | None:
+    """Pill for a value the user, an env var, or a profile overrides; None for any other source.
+
+    *profile_name* is the caller's own ``active_profile_name()`` read, passed in rather than
+    read here, so a pane with several profile-set rows shares one config.toml read.
+    """
     build = _SOURCE_PILLS.get(source)
-    return None if build is None else build(key)
+    return None if build is None else build(key, profile_name)
 
 
 def help_content(key: str, defn: SettingDef) -> Content:
@@ -223,10 +243,12 @@ def help_content(key: str, defn: SettingDef) -> Content:
     return help_text if note is None else Content.assemble(help_text, "\n", note)
 
 
-def title_content(key: str, defn: SettingDef, source: SettingSource) -> Content:
+def title_content(
+    key: str, defn: SettingDef, source: SettingSource, profile_name: str | None = None
+) -> Content:
     """Assemble the setting-row title: key name, type pill, and the source pill for an override."""
     parts: list[Content] = [Content(key + "  "), type_pill(defn)]
-    source_badge = source_pill(key, source)
+    source_badge = source_pill(key, source, profile_name)
     if source_badge is not None:
         parts.append(Content("  "))
         parts.append(source_badge)
