@@ -536,6 +536,18 @@ def test_a_reserved_name_is_refused_on_every_http_write(client, name):
     assert not _global_dir().exists()
 
 
+@pytest.mark.parametrize("new_name", ["new", "New", "CON", "com1"])
+def test_a_reserved_name_is_refused_on_the_rename_route(client, new_name):
+    dup = client.post(_url("Scanned archive", "/duplicate"), json={"new_name": "My scans"})
+    assert dup.status_code == 200
+
+    renamed = client.patch(_url("my scans"), json={"new_name": new_name})
+
+    assert renamed.status_code == 400
+    assert renamed.json()["detail"] == f"Reserved name: {new_name} cannot name a profile"
+    assert (_global_dir() / "my-scans.toml").exists()
+
+
 def test_a_name_clash_is_409_and_bad_input_stays_400(client):
     _write(_global_dir(), "taken", '[profile]\nname = "Taken"\n[values]\n')
     clashes = [
