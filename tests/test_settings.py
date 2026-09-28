@@ -1,5 +1,6 @@
 """Tests for persistent settings (config.toml)."""
 
+import threading
 from dataclasses import fields as dataclass_fields
 from unittest import mock
 
@@ -47,6 +48,278 @@ class TestApplySettingsRollback:
         with pytest.raises(ValueError):
             appset.apply_settings_update({"chunk_size": original + 64})
         assert appset.cfg.chunk_size == original
+
+    def test_a_failing_writer_cannot_clobber_a_concurrent_success(self, monkeypatch):
+        """Two threads update the same key; one fails at persist and rolls back.
+
+        The failing writer's snapshot is taken before its own mutation, so its
+        rollback must not run while a second writer's fully-committed value is
+        live in cfg. Forced interleave: writer A mutates cfg, then (unlocked)
+        writer B is free to run to completion before A's rollback fires,
+        restoring cfg to the value from before EITHER writer ran and silently
+        erasing B's persisted, settled state.
+        """
+        from lilbee.app import settings as appset
+
+        original = appset.cfg.top_k
+        value_a = original + 1
+        value_b = original + 2
+        real_update_values = appset.persistent_settings.update_values
+
+        a_mutated = threading.Event()
+        b_finished = threading.Event()
+
+        def fake_update_values(data_root, updates):
+            if updates.get("top_k") == value_a:
+                a_mutated.set()
+                # Give a concurrent writer a bounded window to run to completion
+                # before this one's persist failure triggers its rollback.
+                b_finished.wait(timeout=2.0)
+                raise OSError("simulated write failure")
+            return real_update_values(data_root, updates)
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", fake_update_values)
+
+        errors: list[Exception] = []
+
+        def run_a():
+            try:
+                appset.apply_settings_update({"top_k": value_a})
+            except OSError:
+                pass
+            except Exception as exc:  # pragma: no cover - failure diagnostics
+                errors.append(exc)
+
+        def run_b():
+            assert a_mutated.wait(timeout=2.0), "writer A never reached persist"
+            try:
+                appset.apply_settings_update({"top_k": value_b})
+            finally:
+                b_finished.set()
+
+        thread_a = threading.Thread(target=run_a)
+        thread_b = threading.Thread(target=run_b)
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=5.0)
+        thread_b.join(timeout=5.0)
+
+        assert not thread_a.is_alive()
+        assert not thread_b.is_alive()
+        assert not errors
+        assert appset.cfg.top_k == value_b
+
+
+def _blocked_call(monkeypatch, obj, attr):
+    """Patch ``obj.attr`` so every call signals it arrived, then blocks until
+    the test releases it. Returns (arrived, release); the real function still
+    runs once released. A deterministic seam for proving mutual exclusion,
+    not a sleep: under correct locking, a second caller cannot even reach
+    this seam while the first holds it open, however long the test waits.
+    """
+    arrived = threading.Event()
+    release = threading.Event()
+    real = getattr(obj, attr)
+
+    def gated(*args, **kwargs):
+        arrived.set()
+        assert release.wait(timeout=2.0), f"{attr} was never released by the test"
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(obj, attr, gated)
+    return arrived, release
+
+
+class TestSettingsWriteLockSpansEveryEntryPoint:
+    """``_settings_write_lock`` must serialize apply_settings_update against
+    reset_settings and apply_profile_layer too, not just against itself: all
+    three mutate cfg and settle from the same resolved layers. Each test
+    holds writer A open on an Event while checking that writer B cannot
+    reach its own persist call in a bounded window; the wait is a check for
+    an event that is structurally impossible under correct locking, not a
+    sleep used to manufacture a race.
+    """
+
+    def test_apply_and_reset_never_persist_concurrently(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        a_arrived, a_release = _blocked_call(
+            monkeypatch, appset.persistent_settings, "update_values"
+        )
+
+        b_reached = threading.Event()
+        real_delete_values = appset.persistent_settings.delete_values
+
+        def fake_delete_values(data_root, keys):
+            b_reached.set()
+            return real_delete_values(data_root, keys)
+
+        monkeypatch.setattr(appset.persistent_settings, "delete_values", fake_delete_values)
+
+        thread_apply = threading.Thread(
+            target=lambda: appset.apply_settings_update({"top_k": appset.cfg.top_k + 1})
+        )
+        thread_apply.start()
+        assert a_arrived.wait(timeout=2.0), "writer A never reached persist"
+
+        thread_reset = threading.Thread(target=lambda: appset.reset_settings(["chunk_overlap"]))
+        thread_reset.start()
+
+        # B has a bounded window to try reaching its own persist call while A
+        # is held open. Under the lock this can never fire, whatever the
+        # bound; it is not a race to make wider, just a wait for an event.
+        b_got_in_while_a_held = b_reached.wait(timeout=0.3)
+        a_release.set()
+
+        thread_apply.join(timeout=5.0)
+        thread_reset.join(timeout=5.0)
+
+        assert not thread_apply.is_alive()
+        assert not thread_reset.is_alive()
+        assert not b_got_in_while_a_held
+        assert b_reached.is_set()  # B did eventually run, just not concurrently
+
+    def test_apply_and_apply_profile_layer_never_persist_concurrently(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        a_arrived, a_release = _blocked_call(
+            monkeypatch, appset.persistent_settings, "update_values"
+        )
+
+        b_reached = threading.Event()
+        real_write_profile_table = appset.persistent_settings.write_profile_table
+
+        def fake_write_profile_table(data_root, name, values, drop=()):
+            b_reached.set()
+            return real_write_profile_table(data_root, name, values, drop=drop)
+
+        monkeypatch.setattr(
+            appset.persistent_settings, "write_profile_table", fake_write_profile_table
+        )
+
+        thread_apply = threading.Thread(
+            target=lambda: appset.apply_settings_update({"top_k": appset.cfg.top_k + 1})
+        )
+        thread_apply.start()
+        assert a_arrived.wait(timeout=2.0), "writer A never reached persist"
+
+        thread_profile = threading.Thread(
+            target=lambda: appset.apply_profile_layer("scratch-profile", {})
+        )
+        thread_profile.start()
+
+        b_got_in_while_a_held = b_reached.wait(timeout=0.3)
+        a_release.set()
+
+        thread_apply.join(timeout=5.0)
+        thread_profile.join(timeout=5.0)
+
+        assert not thread_apply.is_alive()
+        assert not thread_profile.is_alive()
+        assert not b_got_in_while_a_held
+        assert b_reached.is_set()  # B did eventually run, just not concurrently
+
+
+class TestProviderResetRunsOutsideTheLock:
+    """A provider switch's fleet teardown must not hold _settings_write_lock:
+    it can block for the whole fleet's stop, and every other settings write
+    funnels through the same lock.
+    """
+
+    def test_slow_provider_reset_does_not_hold_the_lock(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config.enums import LlmProvider
+
+        reset_arrived = threading.Event()
+        reset_release = threading.Event()
+
+        def fake_reset_services():
+            reset_arrived.set()
+            assert reset_release.wait(timeout=2.0), "reset_services was never released"
+
+        monkeypatch.setattr("lilbee.app.services.reset_services", fake_reset_services)
+
+        other_done = threading.Event()
+
+        thread_switch = threading.Thread(
+            target=lambda: appset.apply_settings_update({"llm_provider": LlmProvider.REMOTE.value})
+        )
+
+        def run_other_writer():
+            assert reset_arrived.wait(timeout=2.0), "provider switch never reached reset_services"
+            appset.apply_settings_update({"top_k": appset.cfg.top_k + 1})
+            other_done.set()
+
+        thread_other = threading.Thread(target=run_other_writer)
+
+        thread_switch.start()
+        thread_other.start()
+
+        # The second writer must complete while reset_services is still
+        # blocked: proof the lock was released before the slow reset ran.
+        assert other_done.wait(timeout=2.0), "the second writer waited behind the blocked reset"
+        reset_release.set()
+
+        thread_switch.join(timeout=5.0)
+        thread_other.join(timeout=5.0)
+        assert not thread_switch.is_alive()
+        assert not thread_other.is_alive()
+
+    def test_reset_still_dispatched_when_a_later_settle_step_raises(self, monkeypatch):
+        """A batch that also changes mcp_tool_threads, whose own cache
+        invalidation raises, must still tear the provider singleton down:
+        llm_provider was already persisted by the time that later step
+        runs, so a missed reset would leave the running provider silently
+        stale. The exception itself must still reach the caller.
+        """
+        from lilbee.app import settings as appset
+        from lilbee.core.config.enums import LlmProvider
+
+        reset_calls: list[bool] = []
+        monkeypatch.setattr("lilbee.app.services.reset_services", lambda: reset_calls.append(True))
+
+        def _boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("lilbee.server.app.reapply_thread_pool_ceiling", _boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            appset.apply_settings_update(
+                {"llm_provider": LlmProvider.REMOTE.value, "mcp_tool_threads": 4}
+            )
+
+        assert appset.cfg.llm_provider == LlmProvider.REMOTE
+        assert reset_calls == [True]
+
+    def test_double_failure_logs_the_reset_and_raises_the_original(self, caplog, monkeypatch):
+        """Both the settle step and the deferred reset fail in the same call.
+
+        The caller must see the settle step's exception, not the reset's:
+        a bare ``finally`` would let the reset's failure replace it. The
+        reset's own failure is logged instead of being silently discarded.
+        """
+        from lilbee.app import settings as appset
+        from lilbee.core.config.enums import LlmProvider
+
+        def _reset_boom():
+            raise ValueError("reset failed")
+
+        monkeypatch.setattr("lilbee.app.services.reset_services", _reset_boom)
+
+        def _settle_boom():
+            raise RuntimeError("settle failed")
+
+        monkeypatch.setattr("lilbee.server.app.reapply_thread_pool_ceiling", _settle_boom)
+
+        with (
+            caplog.at_level("ERROR", logger="lilbee.app.settings"),
+            pytest.raises(RuntimeError, match="settle failed"),
+        ):
+            appset.apply_settings_update(
+                {"llm_provider": LlmProvider.REMOTE.value, "mcp_tool_threads": 4}
+            )
+
+        assert "Provider reset failed" in caplog.text
 
 
 class TestLoad:

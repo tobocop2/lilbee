@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import errno
 import logging
-from collections.abc import Callable, Collection, Iterable, Mapping
+import threading
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -67,6 +69,11 @@ _OCR_ENGINE_NOTES = {
 # stays as None). Resetting these via the boundary would corrupt the
 # install, so they are refused at the reset gate.
 _NO_RESET_FIELDS: frozenset[str] = frozenset({"documents_dir"})
+
+# Serializes a whole settings update (apply, save, rollback, settle) across
+# threads. Held only inside _settings_transaction, so a plain lock (not
+# reentrant) is enough.
+_settings_write_lock = threading.Lock()
 
 
 class _LayerChange(StrEnum):
@@ -380,7 +387,13 @@ def config_write_failure_message(exc: OSError) -> str:
 
 
 def _invalidate_caches(changed_keys: set[str]) -> None:
-    """Drop every read-side cache whose freshness depends on a changed setting."""
+    """Drop every read-side cache whose freshness depends on a changed setting.
+
+    Never decides the provider-reset question: ``_settings_transaction``'s
+    callers compute that independently, from *changed_keys* directly,
+    before calling this function, so an exception raised here cannot
+    suppress it.
+    """
     if not changed_keys:
         return
     if changed_keys & MODEL_ROLE_FIELDS:
@@ -405,12 +418,6 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.providers.sdk_llm_provider import inject_provider_keys
 
         inject_provider_keys()
-    if changed_keys & PROVIDER_SWITCHING_KEYS:
-        # Swap requires reconstructing the provider singleton via
-        # providers.factory.create_provider, only called at services init.
-        from lilbee.app.services import reset_services
-
-        reset_services()
     if "mcp_tool_threads" in changed_keys:
         # Resize the running server's thread pool now instead of only at startup.
         from lilbee.server.app import reapply_thread_pool_ceiling
@@ -422,6 +429,54 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.catalog.picks import reset_picks
 
         reset_picks()
+
+
+def _run_deferred_provider_reset(needed: bool, *, after_failure: bool = False) -> None:
+    """Tear down the Services singleton for a provider switch, once the lock has released.
+
+    Blocks on the whole fleet stopping (each engine's stop-then-reap can
+    take a few seconds), which is why ``_settings_transaction`` defers it
+    until after ``_settings_write_lock`` releases.
+    """
+    if not needed:
+        return
+    from lilbee.app.services import reset_services
+
+    if not after_failure:
+        reset_services()
+        return
+    try:
+        reset_services()
+    except Exception:
+        log.exception("Provider reset failed while handling another exception")
+
+
+@dataclass
+class _SettingsTransaction:
+    """State one locked settings update carries to its exit-time provider reset."""
+
+    needs_provider_reset: bool = False
+
+
+@contextmanager
+def _settings_transaction() -> Iterator[_SettingsTransaction]:
+    """Hold ``_settings_write_lock`` for one settings update.
+
+    The body sets ``needs_provider_reset`` on the yielded transaction before
+    returning. The reset then runs after the lock releases: if the body
+    raised, a reset failure is logged and swallowed so the body's exception
+    reaches the caller unchanged; otherwise a reset failure propagates
+    normally.
+    """
+    txn = _SettingsTransaction()
+    try:
+        with _settings_write_lock:
+            yield txn
+    except Exception:
+        _run_deferred_provider_reset(txn.needs_provider_reset, after_failure=True)
+        raise
+    else:
+        _run_deferred_provider_reset(txn.needs_provider_reset)
 
 
 def apply_settings_update(
@@ -441,31 +496,37 @@ def apply_settings_update(
     ``embedding_model`` / ``vision_model`` / ``reranker_model`` at the
     boundary; the HTTP PATCH /api/config surface uses this to route role
     writes through PUT /api/models/<role>.
+
+    Runs inside ``_settings_transaction``, which holds the lock and owns
+    the provider-reset exception contract.
     """
-    if not allow_model_roles:
-        _refuse_model_roles(updates)
-    _validate(updates)
-    embed_in_batch = "embedding_model" in updates
-    if embed_in_batch:
-        # Pin the OLD ref into store meta before mutation, otherwise the
-        # next read lazy-initializes meta from the NEW cfg and silently
-        # hides the dimension drift. Runs even when the value is unchanged
-        # so a legacy meta row is always canonicalized on the first swap
-        # attempt.
-        _pin_legacy_store_meta()
-    to_persist, to_delete, snapshot = _apply_with_rollback(updates)
-    try:
-        if to_persist:
-            persistent_settings.update_values(cfg.data_root, to_persist)
-        if to_delete:
-            persistent_settings.delete_values(cfg.data_root, to_delete)
-    except (OSError, ValueError):
-        # OSError from the write, or a TOMLDecodeError (ValueError) when
-        # update/delete reloads a corrupt on-disk config.toml: either way the
-        # in-memory snapshot must be restored so cfg matches what was persisted.
-        _restore_snapshot(snapshot)
-        raise
-    return _settle(set(updates), embed_in_batch=embed_in_batch)
+    with _settings_transaction() as txn:
+        if not allow_model_roles:
+            _refuse_model_roles(updates)
+        _validate(updates)
+        embed_in_batch = "embedding_model" in updates
+        if embed_in_batch:
+            # Pin the OLD ref into store meta before mutation, otherwise the
+            # next read lazy-initializes meta from the NEW cfg and silently
+            # hides the dimension drift. Runs even when the value is unchanged
+            # so a legacy meta row is always canonicalized on the first swap
+            # attempt.
+            _pin_legacy_store_meta()
+        to_persist, to_delete, snapshot = _apply_with_rollback(updates)
+        try:
+            if to_persist:
+                persistent_settings.update_values(cfg.data_root, to_persist)
+            if to_delete:
+                persistent_settings.delete_values(cfg.data_root, to_delete)
+        except (OSError, ValueError):
+            # OSError from the write, or a TOMLDecodeError (ValueError) when
+            # update/delete reloads a corrupt on-disk config.toml: either way the
+            # in-memory snapshot must be restored so cfg matches what was persisted.
+            _restore_snapshot(snapshot)
+            raise
+        # Decide the reset now, before settle's other steps can raise.
+        txn.needs_provider_reset = bool(set(updates) & PROVIDER_SWITCHING_KEYS)
+        return _settle(set(updates), embed_in_batch=embed_in_batch)
 
 
 def _refuse_model_roles(keys: Iterable[str]) -> None:
@@ -590,23 +651,29 @@ def reset_settings(
 
     ``documents_dir`` has no default to fall back to, so it is refused; pass
     ``skip_unresettable=True`` for bulk gestures that skip it instead.
+
+    Runs inside ``_settings_transaction``, which holds the lock and owns
+    the provider-reset exception contract.
     """
-    if not allow_model_roles:
-        _refuse_model_roles(keys)
-    for key in keys:
-        if not _is_settable(key):
-            raise ValueError(f"Unknown or read-only setting: {key}")
-        if key in _NO_RESET_FIELDS and not skip_unresettable:
-            raise ValueError(f"'{key}' has no default to reset to; set a folder path instead.")
-    targets = [key for key in keys if key not in _NO_RESET_FIELDS]
-    fallbacks = _values_after_reset(targets)
-    _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
-    _validate({key: entry.value for key, entry in fallbacks.items()})
-    embed_in_batch = "embedding_model" in targets
-    if embed_in_batch:
-        _pin_legacy_store_meta()
-    persistent_settings.delete_values(cfg.data_root, targets)
-    return _settle(set(targets), embed_in_batch=embed_in_batch)
+    with _settings_transaction() as txn:
+        if not allow_model_roles:
+            _refuse_model_roles(keys)
+        for key in keys:
+            if not _is_settable(key):
+                raise ValueError(f"Unknown or read-only setting: {key}")
+            if key in _NO_RESET_FIELDS and not skip_unresettable:
+                raise ValueError(f"'{key}' has no default to reset to; set a folder path instead.")
+        targets = [key for key in keys if key not in _NO_RESET_FIELDS]
+        fallbacks = _values_after_reset(targets)
+        _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
+        _validate({key: entry.value for key, entry in fallbacks.items()})
+        embed_in_batch = "embedding_model" in targets
+        if embed_in_batch:
+            _pin_legacy_store_meta()
+        persistent_settings.delete_values(cfg.data_root, targets)
+        # Decide the reset now, before settle's other steps can raise.
+        txn.needs_provider_reset = bool(set(targets) & PROVIDER_SWITCHING_KEYS)
+        return _settle(set(targets), embed_in_batch=embed_in_batch)
 
 
 def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
@@ -645,25 +712,31 @@ def apply_profile_layer(
     Each *absorb* key, which *values* must hold, leaves config.toml in the same write.
     Applying a profile hides the analyze tip.
     *write_first* runs once validation passes, before config.toml changes.
+
+    Runs inside ``_settings_transaction``, which holds the lock and owns
+    the provider-reset exception contract.
     """
-    refused = sorted(set(values) - set(PROFILE_FIELDS))
-    if refused:
-        raise ValueError(f"Profiles cannot set {refused[0]}")
-    stray = sorted(set(absorb) - set(values))
-    if stray:
-        raise ValueError(f"The profile does not hold {stray[0]}, so it cannot take it over")
-    layers = read_layers(cfg.data_root)
-    user = {key: value for key, value in layers.user.items() if key not in absorb}
-    after = replace(layers, user=user, profile=dict(values))
-    keys = set(layers.profile) | set(values)
-    resolved = {key: resolve(key, after) for key in sorted(keys)}
-    _refuse_invalid_fallbacks(resolved, _LayerChange.APPLY)
-    _validate({key: entry.value for key, entry in resolved.items()})
-    if write_first is not None:
-        write_first()
-    persistent_settings.write_profile_table(cfg.data_root, name, values, drop=absorb)
-    _hide_analyze_tip()
-    return _settle(keys, embed_in_batch=False)
+    with _settings_transaction() as txn:
+        refused = sorted(set(values) - set(PROFILE_FIELDS))
+        if refused:
+            raise ValueError(f"Profiles cannot set {refused[0]}")
+        stray = sorted(set(absorb) - set(values))
+        if stray:
+            raise ValueError(f"The profile does not hold {stray[0]}, so it cannot take it over")
+        layers = read_layers(cfg.data_root)
+        user = {key: value for key, value in layers.user.items() if key not in absorb}
+        after = replace(layers, user=user, profile=dict(values))
+        keys = set(layers.profile) | set(values)
+        resolved = {key: resolve(key, after) for key in sorted(keys)}
+        _refuse_invalid_fallbacks(resolved, _LayerChange.APPLY)
+        _validate({key: entry.value for key, entry in resolved.items()})
+        if write_first is not None:
+            write_first()
+        persistent_settings.write_profile_table(cfg.data_root, name, values, drop=absorb)
+        _hide_analyze_tip()
+        # Decide the reset now, before settle's other steps can raise.
+        txn.needs_provider_reset = bool(keys & PROVIDER_SWITCHING_KEYS)
+        return _settle(keys, embed_in_batch=False)
 
 
 def _hide_analyze_tip() -> None:
