@@ -87,6 +87,15 @@ def test_list_reflects_a_user_value_and_its_source(project):
     assert row["source"] == "user"
 
 
+def test_list_reflects_a_profile_value_and_its_source(project):
+    (project / "config.toml").write_text(
+        '[profile]\nname = "custom"\n\n[profile.values]\ntop_k = 77\n', encoding="utf-8"
+    )
+    row = {e["key"]: e for e in _json(project, "list")["settings"]}["top_k"]
+    assert row["value"] == 77
+    assert row["source"] == "profile"
+
+
 def test_list_unknown_group_is_an_error(project):
     result = _invoke(project, "list", "--group", "bogus")
     assert result.exit_code == 1
@@ -105,6 +114,17 @@ def test_get_shows_value_source_and_help(project):
     assert "source: built in" in result.output
     assert "Number of chunks returned by search" in result.output
     assert _json(project, "get", "top_k")["source"] == "built_in"
+
+
+def test_get_reflects_a_profile_value_and_its_source(project):
+    (project / "config.toml").write_text(
+        '[profile]\nname = "custom"\n\n[profile.values]\ntop_k = 77\n', encoding="utf-8"
+    )
+    result = _invoke(project, "get", "top_k")
+    assert result.exit_code == 0, result.output
+    assert "top_k = 77" in result.output
+    assert "source: profile" in result.output
+    assert _json(project, "get", "top_k")["source"] == "profile"
 
 
 def test_get_unknown_key_is_an_error(project):
@@ -266,3 +286,16 @@ def test_unset_refuses_a_model_role_field(project):
     result = _invoke(project, "unset", "chat_model")
     assert result.exit_code == 1
     assert "dedicated model route" in result.output
+
+
+# -- unknown key, across commands ------------------------------------------
+
+
+def test_get_set_and_unset_print_the_same_unknown_key_message(project):
+    expected = "Error: Unknown or read-only setting: not-a-real-setting\n"
+    get_result = _invoke(project, "get", "not-a-real-setting")
+    set_result = _invoke(project, "set", "not-a-real-setting", "1")
+    unset_result = _invoke(project, "unset", "not-a-real-setting")
+    assert get_result.output == expected
+    assert set_result.output == expected
+    assert unset_result.output == expected
