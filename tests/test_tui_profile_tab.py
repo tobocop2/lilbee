@@ -653,7 +653,7 @@ async def test_discarding_a_reindex_setting_offers_a_rebuild(pill_id: str, rebui
             assert _text(dialog.query_one("#confirm-title", Static)) == (
                 msg.CMD_REBUILD_CONFIRM_TITLE
             )
-            assert not screen.query_one("#profile-changes").display
+            assert await _until(pilot, lambda: not screen.query_one("#profile-changes").display)
             await _press(pilot, dialog.query_one(f"#{pill_id}", ConfirmPill))
             assert await _until(pilot, lambda: app.screen is screen)
     assert rebuild.call_count == rebuilds
