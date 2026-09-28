@@ -3497,9 +3497,10 @@ class TestSdkLLMProviderVisionOcr:
 
         with (
             mock.patch.object(provider, "chat", side_effect=slow_chat),
-            pytest.raises(TimeoutError),
+            pytest.raises(TimeoutError) as exc_info,
         ):
             provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "p", timeout=0.01)
+        assert str(exc_info.value) == "Vision OCR did not finish within 0.01 seconds."
 
     def test_timeout_frees_caller_without_waiting_for_hung_call(self) -> None:
         # On timeout the caller must be freed at the deadline, not blocked until

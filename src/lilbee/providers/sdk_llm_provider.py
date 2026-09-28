@@ -52,6 +52,8 @@ from lilbee.runtime.daemon_call import DaemonCall
 
 log = logging.getLogger(__name__)
 
+_VISION_OCR_TIMEOUT_ERROR = "Vision OCR did not finish within {timeout:g} seconds."
+
 
 def _api_base_for(ref: ProviderModelRef) -> str | None:
     """Endpoint for a local-server ref; ``None`` for hosted APIs (no base needed)."""
@@ -307,9 +309,12 @@ class SdkLLMProvider(LLMProvider):
         if timeout and timeout > 0:
             # The caller is freed at the deadline; a wedged call's thread lives until
             # the backend httpx timeout, and exit does not wait for it.
-            result = DaemonCall(
+            call = DaemonCall(
                 lambda: self.chat(messages, stream=False, model=model), name="vision-ocr"
-            ).result(timeout)
+            )
+            if not call.wait(timeout):
+                raise TimeoutError(_VISION_OCR_TIMEOUT_ERROR.format(timeout=timeout))
+            result = call.result()
         else:
             result = self.chat(messages, stream=False, model=model)
         if not isinstance(result, ChatResult):
