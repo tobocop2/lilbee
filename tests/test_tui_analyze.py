@@ -350,8 +350,7 @@ async def test_stray_keys_on_the_open_report_act_on_nothing(sources) -> None:
     async with app.run_test(size=_NARROW) as pilot:
         screen = await _report_open(app, pilot)
         await pilot.press("enter", "space", "a", "s", "enter")
-        await pilot.pause()
-        assert app.screen is screen
+        assert await _until(pilot, lambda: app.screen is screen)
     assert ProfileStore().scan().find(name) is None
     assert profiles.active(ProfileStore()).name == "Default"
     assert not config.exists()
