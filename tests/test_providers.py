@@ -3676,6 +3676,18 @@ class TestSdkRerank:
         assert "cohere" in kwargs["model"]
         assert kwargs["api_key"] == "sk-rerank"
 
+    def test_rerank_sends_the_hosted_provider_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        cfg.reranker_model = "openai/rerank-model"
+        cfg.openai_api_key = "sk-openai-rerank"
+        cfg.llm_api_key = "sk-generic"
+        provider = self._make_sdk_provider()
+        fake_litellm = mock.MagicMock()
+        fake_litellm.rerank.return_value = {"results": [{"index": 0, "relevance_score": 0.5}]}
+        with mock.patch.dict(sys.modules, {"litellm": fake_litellm}):
+            provider.rerank("q", ["a"])
+        assert fake_litellm.rerank.call_args.kwargs["api_key"] == "sk-openai-rerank"
+
     def test_rerank_empty_candidates_short_circuits(self) -> None:
         cfg.reranker_model = "cohere/rerank-english-v3.0"
         provider = self._make_sdk_provider()
