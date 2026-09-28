@@ -58,6 +58,10 @@ MODEL_ENV_PIN_UNUSABLE = (
     "{label} model {original!r} is unavailable ({reason}). {env_var} sets it, so lilbee keeps it. "
     "Unset {env_var} or point it at an installed model."
 )
+MODEL_CLI_PIN_UNUSABLE = (
+    "{label} model {original!r} is unavailable ({reason}). The --model flag sets it, so lilbee "
+    "keeps it. Pass a different model to --model or drop the flag."
+)
 MODEL_UNUSABLE_NO_FALLBACK = (
     "{label} model {original!r} is unavailable ({reason}) and nothing is installed to fall back "
     "to. Pick one from the catalog."

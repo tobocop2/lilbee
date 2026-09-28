@@ -572,16 +572,33 @@ class TestAppCanonicalizeFallbackNotice:
         finally:
             cfg.chat_model = snapshot_chat
 
-    async def test_env_pinned_unusable_model_is_named_not_swapped(self, monkeypatch) -> None:
-        """An unusable model pinned by LILBEE_CHAT_MODEL stays pinned; the toast names the var."""
+    @pytest.mark.parametrize(
+        ("set_cli_override", "original", "named_source", "unnamed_source"),
+        [
+            pytest.param(False, "env/model", "LILBEE_CHAT_MODEL", "--model", id="env-only"),
+            pytest.param(True, "cli/model", "--model", "LILBEE_CHAT_MODEL", id="cli-over-env"),
+        ],
+    )
+    async def test_pinned_unusable_model_names_its_real_source(
+        self, monkeypatch, set_cli_override, original, named_source, unnamed_source
+    ) -> None:
+        """An unusable pinned model stays pinned; the toast names whichever source set it.
+
+        --model outranks LILBEE_CHAT_MODEL, so with both set the toast must name
+        the flag, never the variable (or its value).
+        """
+        from lilbee.cli.app import apply_overrides
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
 
         app = LilbeeApp()
-        monkeypatch.setenv("LILBEE_CHAT_MODEL", "missing/model")
-        monkeypatch.setattr(cfg, "chat_model", "missing/model")
+        monkeypatch.setenv("LILBEE_CHAT_MODEL", "env/model")
+        if set_cli_override:
+            apply_overrides(model=original)
+        else:
+            monkeypatch.setattr(cfg, "chat_model", original)
         chat_canon = CanonicalRef(
-            original="missing/model",
+            original=original,
             effective="fallback/model",
             status=ValidationResult.NOT_INSTALLED,
             reason="it isn't installed",
@@ -605,10 +622,11 @@ class TestAppCanonicalizeFallbackNotice:
             ),
         ):
             app.canonicalize_persisted_models()
-        assert cfg.chat_model == "missing/model"
+        assert cfg.chat_model == original
         assert "chat_model" not in persistent_settings.load(cfg.data_root)
         toast = notifications[0][0]
-        assert "LILBEE_CHAT_MODEL" in toast and "isn't installed" in toast
+        assert named_source in toast and "isn't installed" in toast
+        assert unnamed_source not in toast
         assert "fallback/model" not in toast
 
     async def test_swap_rejection_does_not_crash_startup(self, caplog) -> None:
