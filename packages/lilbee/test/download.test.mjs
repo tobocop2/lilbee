@@ -382,6 +382,49 @@ function failRenameOnto(dest, code, before = () => {}) {
   return () => (fs.renameSync = realRename);
 }
 
+/** Make the next rmSync of a `.download.` temp dir throw with `code`; self-restoring. Returns the restore. */
+function failRmSyncOnTmp(code) {
+  const realRmSync = fs.rmSync;
+  fs.rmSync = (target, opts) => {
+    if (!String(target).includes(".download.")) return realRmSync(target, opts);
+    fs.rmSync = realRmSync;
+    throw Object.assign(new Error(`${code}: rmSync '${target}'`), { code });
+  };
+  return () => (fs.rmSync = realRmSync);
+}
+
+test("a temp-dir cleanup that fails does not turn an adopted rival download into a rejection", async () => {
+  const dir = tmpDir();
+  const dest = path.join(dir, "v9", "bin");
+  const restoreRename = failRenameOnto(dest, "EPERM", () => fs.writeFileSync(dest, PAYLOAD));
+  const restoreRm = failRmSyncOnTmp("EBUSY");
+  try {
+    await download({ release: release(), dest, fetch: fetchWith([webBody(chunks(PAYLOAD))]).fetch });
+  } finally {
+    restoreRename();
+    restoreRm();
+  }
+  assert.ok(Buffer.from(fs.readFileSync(dest)).equals(PAYLOAD));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("a temp-dir cleanup that fails does not replace a real transfer failure with the cleanup's error", async () => {
+  const dir = tmpDir();
+  const dest = path.join(dir, "v9", "bin");
+  const { fetch, calls } = fetchWith([() => webBody(chunks(PAYLOAD))]);
+  const restoreRm = failRmSyncOnTmp("EBUSY");
+  try {
+    await assert.rejects(
+      download({ release: release({ digest: "0".repeat(64) }), dest, fetch }),
+      (err) => err instanceof LauncherError && err.code === "digest-mismatch"
+    );
+  } finally {
+    restoreRm();
+  }
+  assert.equal(calls.length, 2);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 for (const code of ["EPERM", "EACCES", "EBUSY"]) {
   test(`a rename refused with ${code} adopts the binary a rival landed during the download`, async () => {
     const dir = tmpDir();

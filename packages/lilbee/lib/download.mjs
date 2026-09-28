@@ -308,7 +308,11 @@ export async function download({
       throw err;
     }
   } finally {
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // a busy temp dir on Windows: cleanup is best effort, never the download's outcome
+    }
   }
   removeSiblings(dest);
   log(`lilbee: installed ${dest}`);
