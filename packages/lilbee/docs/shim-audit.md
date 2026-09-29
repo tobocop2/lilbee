@@ -43,8 +43,9 @@ audits reject), no wasted download in CI paths that never run the binary.
 
 ## Resilience
 
-- Per-pid temp file + adopt-rival-download: two concurrent first runs
-  cannot corrupt the cache (esbuild had this class of install race).
+- Per-download temp dir + adopt-rival-download: two concurrent downloads,
+  in one process or several, cannot corrupt the cache (esbuild had this
+  class of install race).
 - One retry on failed transfer; multi-hundred-MB downloads reset sometimes.
 - No HTTP Range resume (a full restart on retry). Playwright resumes;
   worth adding if first-run reports show flaky networks. Minor.

@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Literal
 from cachetools import TTLCache
 from pydantic import BaseModel
 
+from lilbee.app.models import list_models_data
 from lilbee.app.services import get_services
 from lilbee.app.settings import apply_settings_update
 from lilbee.catalog import (
@@ -29,7 +30,7 @@ from lilbee.modelhub.model_manager import classify_all_remote_models, discover_a
 from lilbee.modelhub.model_manager.types import RemoteModel
 from lilbee.modelhub.role_validator import MODEL_FIELD_TO_TASK, validate_model_task_assignment
 from lilbee.providers.key_check import provider_key_status
-from lilbee.providers.local_servers import canonical_local_ref, local_server_for_label
+from lilbee.providers.local_servers import local_server_for_label
 from lilbee.providers.model_ref import format_remote_ref, parse_model_ref
 from lilbee.providers.sdk_backend import PROVIDER_KEYS
 from lilbee.runtime.cancellation import TaskCancelledError
@@ -46,7 +47,6 @@ from lilbee.server.handlers.sse import SseStream, sse_error, sse_event
 from lilbee.server.models import (
     CatalogEntryResponse,
     ExternalModelsResponse,
-    InstalledModelEntry,
     ModelsCatalogResponse,
     ModelsDeleteResponse,
     ModelsInstalledResponse,
@@ -505,24 +505,11 @@ async def models_catalog(
     )
 
 
-def _installed_entries_sync() -> list[InstalledModelEntry]:
-    """Blocking body of :func:`models_installed`: list installs and their sources."""
-    manager = get_services().model_manager
-    entries = []
-    for name in manager.list_installed():
-        source = manager.get_source(name) or ModelSource.REMOTE
-        entries.append(
-            InstalledModelEntry(name=canonical_local_ref(name, source.value), source=source)
-        )
-    return entries
-
-
-async def models_installed() -> ModelsInstalledResponse:
-    """Return installed models with their granular source and canonical ref."""
-    # list_installed walks the model filesystem and, on TTL expiry, queries the
-    # configured local servers over HTTP; offload it like list_models does.
-    entries = await asyncio.to_thread(_installed_entries_sync)
-    return ModelsInstalledResponse(models=entries)
+async def models_installed(task: ModelTask | None = None) -> ModelsInstalledResponse:
+    """Installed models across every source, only those of *task* when given."""
+    # Walks the model filesystem and queries the local servers over HTTP.
+    result = await asyncio.to_thread(list_models_data, task=task)
+    return ModelsInstalledResponse(models=result.models)
 
 
 async def enforce_pull_arch_compat(

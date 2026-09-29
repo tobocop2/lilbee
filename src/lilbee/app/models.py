@@ -8,7 +8,8 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from lilbee.app.services import get_services
-from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.catalog.query import reclassify_by_name
+from lilbee.catalog.types import ModelCompat, ModelSource, ModelTask
 from lilbee.core.config import cfg
 from lilbee.modelhub.registry import ModelRegistry
 
@@ -16,7 +17,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from lilbee.catalog import CatalogModel, DownloadProgress
-    from lilbee.catalog.types import ModelSource
     from lilbee.modelhub.model_manager import RemoteModel
     from lilbee.modelhub.registry import ModelManifest
     from lilbee.runtime.cancellation import CancelSignal
@@ -56,10 +56,10 @@ class PullEvent(StrEnum):
 
 
 class ModelEntry(BaseModel):
-    """One row of `lilbee model list` output."""
+    """One installed model, as `lilbee model list`, MCP and the installed route report it."""
 
     name: str
-    source: str
+    source: ModelSource
     task: ModelTask | None = None
     size_gb: float | None = None
     display_name: str = ""
@@ -68,12 +68,11 @@ class ModelEntry(BaseModel):
     def from_native(cls, ref: str, manifest: ModelManifest | None) -> ModelEntry:
         # heavy: lilbee.catalog (>50ms; huggingface_hub) + lilbee.modelhub.model_manager (>50ms)
         from lilbee.catalog import clean_display_name
-        from lilbee.catalog.types import ModelSource
 
         return cls(
             name=ref,
-            source=ModelSource.NATIVE.value,
-            task=manifest.task if manifest else None,
+            source=ModelSource.NATIVE,
+            task=ModelTask(reclassify_by_name(ref, manifest.task)) if manifest else None,
             size_gb=_bytes_to_gb(manifest.disk_size_bytes) if manifest else None,
             display_name=clean_display_name(manifest.hf_repo) if manifest else "",
         )
@@ -84,10 +83,10 @@ class ModelEntry(BaseModel):
 
         return cls(
             name=canonical_local_ref(ref, source.value),
-            source=source.value,
+            source=source,
             task=remote.task if remote else None,
             size_gb=None,
-            display_name=remote.parameter_size if remote else "",
+            display_name=ref,
         )
 
 
@@ -246,9 +245,6 @@ def _resolve_native_path(ref: str) -> str | None:
 
 
 def _collect_native_entries() -> list[ModelEntry]:
-    # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.catalog.types import ModelSource
-
     manifests = _native_manifest_index()
     refs = get_services().model_manager.list_installed(source=ModelSource.NATIVE)
     return [ModelEntry.from_native(ref, manifests.get(ref)) for ref in refs]
@@ -256,7 +252,6 @@ def _collect_native_entries() -> list[ModelEntry]:
 
 def _collect_backend_entries() -> list[ModelEntry]:
     # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.catalog.types import ModelSource
     from lilbee.modelhub.model_manager import classify_all_remote_models
     from lilbee.providers.local_servers import local_server_for_label
 
@@ -280,11 +275,8 @@ def list_models_data(
     """Build the list of installed models with source and task metadata.
 
     Discovers remote models via a single HTTP call with a short timeout
-    so the command stays responsive when the backend is down.
+    so the listing stays responsive when the backend is down.
     """
-    # heavy: lilbee.modelhub.model_manager (>50ms; huggingface_hub fanout)
-    from lilbee.catalog.types import ModelSource
-
     entries: list[ModelEntry] = []
     if source is None or source is ModelSource.NATIVE:
         entries.extend(_collect_native_entries())
@@ -293,7 +285,7 @@ def list_models_data(
         # A specific local-server source (ollama/lm_studio/frontier) narrows the
         # backend list; REMOTE and None keep every backend entry.
         if source is not None and source is not ModelSource.REMOTE:
-            backend = [e for e in backend if e.source == source.value]
+            backend = [e for e in backend if e.source is source]
         entries.extend(backend)
     if task:
         entries = [e for e in entries if e.task == task]

@@ -3733,73 +3733,90 @@ class TestModelsCatalogFiltersBeforePaging:
 
 
 class TestModelsInstalled:
-    async def test_returns_installed_models(self):
-        mock_manager = MagicMock()
-        mock_manager.list_installed.return_value = ["ollama/qwen3:8b", "ollama/mistral:7b"]
-        from lilbee.catalog.types import ModelSource
+    """Each installed model carries its task, size and display name."""
 
-        mock_manager.get_source.return_value = ModelSource.REMOTE
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
+    _CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q4_K_M.gguf"
+
+    @pytest.fixture(autouse=True)
+    def installed(self):
+        from lilbee.catalog.types import ModelTask
+        from lilbee.modelhub.model_manager import RemoteModel
+        from lilbee.modelhub.registry import ModelManifest
+
+        manifest = ModelManifest(
+            hf_repo="Qwen/Qwen3-0.6B-GGUF",
+            gguf_filename="Qwen3-0.6B-Q4_K_M.gguf",
+            size_bytes=2 * 1024**3,
+            task=ModelTask.CHAT,
+            downloaded_at="2026-09-27T00:00:00+00:00",
+        )
+        manager = MagicMock()
+        manager.list_installed.return_value = [manifest.ref]
+        remote = [
+            RemoteModel(
+                name="nomic-embed-text:latest",
+                task=ModelTask.EMBEDDING,
+                family="nomic-bert",
+                parameter_size="137M",
+                provider="Ollama",
+            ),
+            RemoteModel(
+                name="qwen3:0.6b",
+                task=ModelTask.CHAT,
+                family="qwen3",
+                parameter_size="751M",
+                provider="Ollama",
+            ),
+        ]
+        with (
+            patch(
+                "lilbee.app.models.get_services",
+                return_value=MagicMock(model_manager=manager),
+            ),
+            patch(
+                "lilbee.app.models._native_manifest_index",
+                return_value={manifest.ref: manifest},
+            ),
+            patch(
+                "lilbee.modelhub.model_manager.classify_all_remote_models",
+                return_value=remote,
+            ),
         ):
-            result = await handlers.models_installed()
-        assert len(result.models) == 2
-        assert result.models[0].source == "remote"
+            yield
 
-    async def test_unknown_source_defaults_to_litellm(self):
-        mock_manager = MagicMock()
-        mock_manager.list_installed.return_value = ["unknown"]
-        mock_manager.get_source.return_value = None
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
-        ):
-            result = await handlers.models_installed()
-        assert result.models[0].source == "remote"
+    @staticmethod
+    def _by_name(result) -> dict:
+        entries = {m.name: m for m in result.models}
+        assert entries
+        return entries
 
-    async def test_ollama_model_reports_granular_source_and_canonical_ref(self):
-        """A bare Ollama name surfaces as source 'ollama' with the prefixed ref."""
-        from lilbee.catalog.types import ModelSource
+    async def test_native_model_carries_manifest_task_size_and_display_name(self):
+        entry = self._by_name(await handlers.models_installed())[self._CHAT_REF]
+        assert entry.source == "native"
+        assert entry.task == "chat"
+        assert entry.size_gb == 2.0
+        assert entry.display_name == "Qwen3 0.6B"
 
-        mock_manager = MagicMock()
-        mock_manager.list_installed.return_value = ["qwen3:0.6b"]
-        mock_manager.get_source.return_value = ModelSource.OLLAMA
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
-        ):
-            result = await handlers.models_installed()
-        assert result.models[0].name == "ollama/qwen3:0.6b"
-        assert result.models[0].source == "ollama"
+    async def test_ollama_model_carries_classified_task_and_no_size(self):
+        entry = self._by_name(await handlers.models_installed())["ollama/qwen3:0.6b"]
+        assert entry.source == "ollama"
+        assert entry.task == "chat"
+        assert entry.size_gb is None
+        assert entry.display_name == "qwen3:0.6b"
 
-    async def test_already_prefixed_ollama_ref_not_double_prefixed(self):
-        from lilbee.catalog.types import ModelSource
+    async def test_task_filter_keeps_only_that_task(self):
+        from lilbee.catalog.types import ModelTask
 
-        mock_manager = MagicMock()
-        mock_manager.list_installed.return_value = ["ollama/qwen3:0.6b"]
-        mock_manager.get_source.return_value = ModelSource.OLLAMA
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
-        ):
-            result = await handlers.models_installed()
-        assert result.models[0].name == "ollama/qwen3:0.6b"
+        result = await handlers.models_installed(task=ModelTask.EMBEDDING)
+        assert [m.name for m in result.models] == ["ollama/nomic-embed-text:latest"]
 
-    async def test_lm_studio_model_reports_granular_source_and_canonical_ref(self):
-        """A bare LM Studio name surfaces as source 'lm_studio' with the prefixed ref."""
-        from lilbee.catalog.types import ModelSource
-
-        mock_manager = MagicMock()
-        mock_manager.list_installed.return_value = ["qwen2.5-coder"]
-        mock_manager.get_source.return_value = ModelSource.LM_STUDIO
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
-        ):
-            result = await handlers.models_installed()
-        assert result.models[0].name == "lm_studio/qwen2.5-coder"
-        assert result.models[0].source == "lm_studio"
+    async def test_no_task_lists_every_source(self):
+        names = set(self._by_name(await handlers.models_installed()))
+        assert names == {
+            self._CHAT_REF,
+            "ollama/qwen3:0.6b",
+            "ollama/nomic-embed-text:latest",
+        }
 
 
 def _thread_recorder(result):
@@ -3856,9 +3873,13 @@ class TestModelHandlersRunBlockingWorkOffLoop:
         mock_manager = MagicMock()
         mock_manager.list_installed.side_effect = stub
 
-        with patch(
-            "lilbee.server.handlers.models.get_services",
-            return_value=MagicMock(model_manager=mock_manager),
+        with (
+            patch(
+                "lilbee.app.models.get_services",
+                return_value=MagicMock(model_manager=mock_manager),
+            ),
+            patch("lilbee.app.models._native_manifest_index", return_value={}),
+            patch("lilbee.modelhub.model_manager.classify_all_remote_models", return_value=[]),
         ):
             await handlers.models_installed()
 

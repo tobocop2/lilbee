@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
+from lilbee.app.models import ModelEntry
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
@@ -461,17 +462,10 @@ class ModelsCatalogResponse(BaseModel):
     truncated: bool = False
 
 
-class InstalledModelEntry(BaseModel):
-    """A single installed model."""
-
-    name: str
-    source: ModelSource
-
-
 class ModelsInstalledResponse(BaseModel):
     """Response for GET /api/models/installed."""
 
-    models: list[InstalledModelEntry]
+    models: list[ModelEntry]
 
 
 class ModelsDeleteResponse(BaseModel):

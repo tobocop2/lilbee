@@ -205,7 +205,7 @@ class TestModelEntryFactories:
         entry = ModelEntry.from_backend(_OLLAMA_REF, remote, ModelSource.OLLAMA)
         assert entry.source == "ollama"
         assert entry.task == "chat"
-        assert entry.display_name == "8B"
+        assert entry.display_name == _OLLAMA_REF
 
     def test_from_backend_prefixes_bare_name(self):
         remote = _remote("qwen2.5-coder", task="chat", parameter_size="7B")
@@ -217,7 +217,14 @@ class TestModelEntryFactories:
         entry = ModelEntry.from_backend(_OLLAMA_REF, None, ModelSource.OLLAMA)
         assert entry.source == "ollama"
         assert entry.task is None
-        assert entry.display_name == ""
+        assert entry.display_name == _OLLAMA_REF
+
+    def test_from_native_task_follows_the_name_like_role_assignment(self):
+        repo = "Qwen/Qwen3-Embedding-0.6B-GGUF"
+        filename = "Qwen3-Embedding-0.6B-Q8_0.gguf"
+        manifest = _manifest(repo, filename, size=1024**3, task="chat")
+        entry = ModelEntry.from_native(f"{repo}/{filename}", manifest)
+        assert entry.task == "embedding"
 
 
 class TestRemoveModelDataFreedSize:
