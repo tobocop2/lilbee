@@ -8,19 +8,21 @@ is attested automatically.
 
 ## Versions
 
-Release tags carry a build suffix that npm rejects, so the tag maps to a semver
-prerelease: `v0.6.90b423` becomes `0.6.90-b423`. The full tag also goes into the
-`lilbee.release` field, which is how the launcher finds the release assets.
-`node packages/lilbee/tools/stamp-release.mjs <tag>` writes both fields and
-prints the npm version. CI runs it; nothing is committed back.
+CI publishes `packages/lilbee/package.json` exactly as committed. The launcher
+downloads the latest GitHub release at run time, so npm needs a new version
+only when the launcher itself changes.
+
+To ship a new npm version, bump `version` in a PR. In the same PR, move
+`lilbee.release` to a recent tested release. The launcher uses that release
+when it cannot look up the latest one. If the version is already on npm, the
+job skips the publish.
 
 ## One-time setup
 
 1. Create an npmjs.com account, or log into the existing one. Turn on 2FA.
 
-2. Claim the name with one manual publish. Trusted publishing is configured on
-   a package that already exists, so this has to come first. From this branch,
-   with the version still at `0.6.90`:
+2. The `lilbee` package already exists on npm, so trusted publishing can be
+   configured on it. A manual publish needs `npm login` first:
 
    ```bash
    npm login
@@ -55,8 +57,7 @@ publishing, and passes. Releases do not break.
 - Trusted publishing needs npm 11.5.1 or newer. The job installs `npm@latest`
   and prints the version.
 - OIDC needs `id-token: write` on the job. The `npm` job sets it.
-- CI publishes `0.6.90-b423`-style prereleases. npm still moves the `latest`
-  tag to them, so `npm install lilbee` gets the newest release, but a `^0.6.90`
-  range does not match a prerelease.
-- To republish a tag by hand, dispatch the workflow with only this channel:
+- To run the job by hand, dispatch the workflow with only this channel:
   `gh workflow run publish-packages.yml -f tag=v0.6.90b423 -f channels=npm`.
+  It publishes the committed version, and only if that version is not on npm
+  yet.
