@@ -1108,9 +1108,116 @@ def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat.return_value = "ocr text"
+    client.chat_abortable.return_value = "ocr text"
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+
+
+def test_vision_ocr_waiting_for_a_slot_stops_on_cancel(monkeypatch) -> None:
+    # A page queued behind a full vision server gives up its wait once the run is
+    # cancelled, instead of taking the slot and running a model call nobody wants.
+    import threading
+
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    client = _fake_client()
+    client.chat_abortable.return_value = "ocr text"
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    cancel = threading.Event()
+    raised: list[BaseException] = []
+
+    def _page() -> None:
+        try:
+            p.vision_ocr(b"png", "org/repo/v.gguf", cancel=cancel)
+        except BaseException as exc:
+            raised.append(exc)
+
+    with prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(client, 1)]):
+        waiter = threading.Thread(target=_page, daemon=True)
+        waiter.start()
+        waiter.join(timeout=0.3)
+        assert waiter.is_alive()  # parked behind the held slot
+        cancel.set()
+        waiter.join(timeout=5.0)
+        assert not waiter.is_alive()
+    assert [type(exc) for exc in raised] == [TaskCancelledError]
+    client.chat_abortable.assert_not_called()
+
+
+_HELD_PAGE_BODY = b'data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
+_HELD_PAGE_RESPONSE = (
+    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n"
+    b"content-length: %d\r\n\r\n%s" % (len(_HELD_PAGE_BODY), _HELD_PAGE_BODY)
+)
+
+
+class _HeldHeadersServer:
+    """A loopback server that holds a request's response headers for five seconds."""
+
+    def __init__(self) -> None:
+        import socket
+
+        self.release = threading.Event()
+        self.disconnected = threading.Event()
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        conn, _addr = self._listener.accept()
+        with conn:
+            conn.recv(1 << 20)  # the request; its body is not needed
+            held_until = time.monotonic() + 5.0
+            while not self.release.wait(0.05):
+                if time.monotonic() >= held_until:
+                    conn.settimeout(5.0)
+                    conn.sendall(_HELD_PAGE_RESPONSE)
+                    return
+                conn.settimeout(0.0)
+                try:
+                    closed = conn.recv(1 << 16) == b""
+                except BlockingIOError:
+                    closed = False
+                except ConnectionResetError:
+                    closed = True
+                if closed:
+                    self.disconnected.set()
+                    return
+
+    def close(self) -> None:
+        self.release.set()
+        self._thread.join(timeout=5.0)
+        self._listener.close()
+
+
+@pytest.mark.parametrize("timeout", [300.0, 0.0], ids=["timed", "no-timeout"])
+def test_vision_ocr_cancel_aborts_a_page_whose_headers_have_not_arrived(
+    monkeypatch, timeout: float
+) -> None:
+    # A page sent to a server that is still holding its response headers (queued
+    # behind other pages, or encoding the image) stops within a second of the cancel,
+    # and its connection closes so the server can drop the request.
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    server = _HeldHeadersServer()
+    try:
+        client = LlamaServerClient(server.url, "vision-model")
+        p = _provider_with_clients({WorkerRole.VISION: [client]})
+        cancel = threading.Event()
+        threading.Timer(0.3, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(TaskCancelledError):
+            p.vision_ocr(b"png", "org/repo/v.gguf", timeout=timeout, cancel=cancel)
+        after_cancel = time.monotonic() - started - 0.3
+        assert after_cancel < 1.0, f"the cancel took {after_cancel:.1f}s to stop the page"
+        assert server.disconnected.wait(2.0)
+        assert client.in_flight == 0
+    finally:
+        server.close()
 
 
 def test_vision_ocr_model_override_raises(monkeypatch) -> None:
@@ -1143,27 +1250,38 @@ def test_chat_model_override_error_is_bad_request_kind(monkeypatch) -> None:
     assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST
 
 
-def test_vision_call_returns_text() -> None:
+@pytest.mark.parametrize(("timeout", "deadline_s"), [(None, None), (0.0, None), (5.0, 5.0)])
+def test_vision_call_streams_every_page_under_its_deadline(
+    timeout: float | None, deadline_s: float | None
+) -> None:
+    # Every OCR timeout setting streams through the abortable call; 0 means no deadline.
     client = _fake_client()
-    client.chat.return_value = "OCR text"
-    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None) == "OCR text"
+    client.chat_abortable.return_value = "OCR text"
+    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], timeout) == "OCR text"
+    assert client.chat_abortable.call_args.kwargs["deadline_s"] == deadline_s
+    client.chat.assert_not_called()
 
 
-def test_vision_call_enforces_timeout() -> None:
+def test_vision_ocr_hands_the_cancel_to_the_streamed_page(monkeypatch) -> None:
+    # The page in flight on the server stops streaming when the run is cancelled.
+    import threading
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat_bounded.return_value = "OCR text"
-    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 5.0) == "OCR text"
-    client.chat_bounded.assert_called_once()
-    client.chat.assert_not_called()  # the timed path streams via chat_bounded, not chat
+    client.chat_abortable.return_value = "ocr text"
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    cancel = threading.Event()
+    assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=30.0, cancel=cancel) == "ocr text"
+    assert client.chat_abortable.call_args.kwargs["cancel"] is cancel
 
 
 def test_vision_call_caps_output_tokens_and_sets_repeat_penalty(monkeypatch) -> None:
     # The repeat penalty stops a page looping one line; the token cap backstops it.
     monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 4096)
     client = _fake_client()
-    client.chat.return_value = "OCR text"
+    client.chat_abortable.return_value = "OCR text"
     prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
-    assert client.chat.call_args.kwargs["options"] == {
+    assert client.chat_abortable.call_args.kwargs["options"] == {
         "max_tokens": 4096,
         "repeat_penalty": 1.1,
         "repeat_last_n": 64,
@@ -1171,24 +1289,20 @@ def test_vision_call_caps_output_tokens_and_sets_repeat_penalty(monkeypatch) -> 
 
 
 def test_vision_ocr_timed_request_carries_repeat_penalty(monkeypatch) -> None:
-    # The ingest path runs with ocr_timeout set, so the options go out via chat_bounded.
+    # The ingest path runs with ocr_timeout set; the options go out on the abortable call.
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 1024)
     client = _fake_client()
-    client.chat_bounded.return_value = "ocr text"
+    client.chat_abortable.return_value = "ocr text"
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
-    sent = client.chat_bounded.call_args.kwargs["options"]
+    sent = client.chat_abortable.call_args.kwargs["options"]
     assert sent == {"max_tokens": 1024, "repeat_penalty": 1.1, "repeat_last_n": 64}
 
 
-@pytest.mark.parametrize(
-    ("timeout", "streamed"),
-    [(300.0, True), (None, False)],
-    ids=["timed-ingest", "untimed"],
-)
+@pytest.mark.parametrize("timeout", [300.0, None, 0.0], ids=["timed-ingest", "untimed", "zero"])
 def test_vision_ocr_request_body_carries_sampler_options(
-    monkeypatch, timeout: float | None, streamed: bool
+    monkeypatch, timeout: float | None
 ) -> None:
     # A real client over a mock transport: the options must reach the posted JSON body.
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
@@ -1197,18 +1311,17 @@ def test_vision_ocr_request_body_carries_sampler_options(
 
     def handler(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
-        if streamed:
-            return httpx.Response(
-                200, text='data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
-            )
-        return httpx.Response(200, json={"choices": [{"message": {"content": "page"}}]})
+        return httpx.Response(
+            200, text='data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
+        )
 
-    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu")
-    client = LlamaServerClient("http://gpu", "vision-model", http=http)
+    client = LlamaServerClient(
+        "http://gpu", "vision-model", async_transport=httpx.MockTransport(handler)
+    )
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=timeout) == "page"
     (body,) = bodies
-    assert body["stream"] is streamed
+    assert body["stream"] is True  # llama-server stops generating only for a closed stream
     assert body["messages"]  # the page image and prompt are in the same body
     assert body["max_tokens"] == 1024
     assert body["repeat_penalty"] == 1.1
@@ -1224,10 +1337,10 @@ def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    client.chat.side_effect = [busy, busy, "ocr text"]
+    client.chat_abortable.side_effect = [busy, busy, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
-    assert client.chat.call_count == 3
+    assert client.chat_abortable.call_count == 3
 
 
 def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
@@ -1241,11 +1354,10 @@ def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    # timeout > 0 routes through the bounded (chat_bounded) path.
-    client.chat_bounded.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
+    client.chat_abortable.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
-    assert client.chat_bounded.call_count == prov_mod._VISION_BUSY_RETRIES + 6
+    assert client.chat_abortable.call_count == prov_mod._VISION_BUSY_RETRIES + 6
 
 
 def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
@@ -1264,7 +1376,7 @@ def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
         raise ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
 
     client = _fake_client()
-    client.chat_bounded.side_effect = _busy
+    client.chat_abortable.side_effect = _busy
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError) as excinfo:
         p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
@@ -1284,7 +1396,7 @@ def test_vision_ocr_deadline_passed_before_generation_raises_timeout(monkeypatch
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="timed out waiting for a free vision slot"):
         p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
-    client.chat.assert_not_called()  # the deadline lapsed before any generation ran
+    client.chat_abortable.assert_not_called()  # the deadline lapsed before any generation ran
 
 
 def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
@@ -1294,11 +1406,11 @@ def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat.side_effect = ProviderError("boom", provider="llama-server")
+    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="boom"):
         p.vision_ocr(b"png", "org/repo/v.gguf")
-    assert client.chat.call_count == 1
+    assert client.chat_abortable.call_count == 1
 
 
 def test_vision_pool_pairs_each_replica_with_its_fitted_slots(monkeypatch) -> None:
@@ -1484,6 +1596,31 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
             [prov_mod._VisionReplica(lone, 1)],
             lambda c: c.chat([], options={}, stream=False),
         )
+
+
+def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
+    # The failover waits for a slot on another replica; a cancel ends that wait too.
+    import threading
+
+    import httpx as _httpx
+
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    cancel = threading.Event()
+    dead, busy = _fake_client(), _fake_client()
+
+    def _refuse(*_args, **_kwargs):
+        cancel.set()
+        raise _httpx.ConnectError("refused")
+
+    dead.chat.side_effect = _refuse
+    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1)]
+    with (
+        prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(busy, 1)]),
+        pytest.raises(TaskCancelledError),
+    ):
+        prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False), cancel)
+    busy.chat.assert_not_called()
 
 
 _EXITED_BODY = "llama-swap-error: [embed-0] upstream command exited prematurely"
@@ -3194,9 +3331,7 @@ class _FakeReplica:
             raise self.fail
         return [0.5] * len(candidates)
 
-    def chat(
-        self, messages: object, options: object = None, stream: bool = False, **_kw: object
-    ) -> str:
+    def chat_abortable(self, messages: object, **_kw: object) -> str:
         self.calls += 1
         if self.fail is not None:
             raise self.fail
@@ -3409,22 +3544,25 @@ class TestReplicaHealthRouting:
 
 
 class TestVisionTimeout:
-    def test_deadline_signal_maps_to_vision_timeout_error(self) -> None:
+    @pytest.mark.parametrize(("timeout", "shown"), [(12.0, "12s"), (0.5, "0.5s")])
+    def test_deadline_signal_maps_to_vision_timeout_error(self, timeout, shown) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.fleet.client import ChatDeadlineError
 
         client = _fake_client(0)
-        client.chat_bounded.side_effect = ChatDeadlineError("deadline", provider="llama-server")
-        with pytest.raises(ProviderError, match="Vision OCR timed out after 12s") as excinfo:
-            prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 12.0)
+        client.chat_abortable.side_effect = ChatDeadlineError("deadline", provider="llama-server")
+        with pytest.raises(
+            ProviderError, match=f"Vision OCR timed out after {shown}\\."
+        ) as excinfo:
+            prov_mod._vision_call(client, [{"role": "user", "content": "x"}], timeout)
         # A timeout is not a connection failure, so failover must not retry it.
         assert not prov_mod.is_connection_failure(excinfo.value)
 
-    def test_bounded_call_passes_the_deadline_to_chat_bounded(self) -> None:
+    def test_bounded_call_passes_the_deadline_to_the_abortable_chat(self) -> None:
         client = _fake_client(0)
-        client.chat_bounded.return_value = "text"
+        client.chat_abortable.return_value = "text"
         assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 9.0) == "text"
-        assert client.chat_bounded.call_args.kwargs["deadline_s"] == 9.0
+        assert client.chat_abortable.call_args.kwargs["deadline_s"] == 9.0
 
 
 class TestReloadSingleFlight:

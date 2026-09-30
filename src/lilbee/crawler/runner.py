@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import threading
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -31,7 +30,7 @@ from lilbee.crawler.events import (
     _handle_crawl_teardown_error,
     _pages_cap,
 )
-from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CrawlResult
+from lilbee.crawler.models import CRAWL_PAGES_UNLIMITED, CancelToken, CrawlResult
 from lilbee.crawler.save import METADATA_FLUSH_INTERVAL, CrawlMeta
 from lilbee.crawler.url_filter import validate_crawl_url
 from lilbee.runtime.progress import (
@@ -167,7 +166,7 @@ async def crawl_recursive(
     max_depth: int | None = None,
     max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
-    cancel: threading.Event | None = None,
+    cancel: CancelToken | None = None,
     *,
     quiet: bool = False,
     include_subdomains: bool = False,
@@ -276,12 +275,12 @@ async def crawl_recursive(
     return results
 
 
-async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]]) -> None:
+async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]], cancel: CancelToken | None) -> None:
     """Fire off a background sync if the ``crawl_sync_interval`` has elapsed.
 
     Skips when periodic sync is disabled (``interval=0``) or another sync
     is already running. The spawned task is added to ``tasks`` so the
-    caller can drain it before returning.
+    caller can drain it before returning. The sync stops on the crawl's *cancel*.
     """
     interval = cfg.crawl_sync_interval
     sync_state = get_services().crawler_sync_state
@@ -299,7 +298,7 @@ async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]]) -> None:
         try:
             from lilbee.data.ingest import sync
 
-            await sync(quiet=True)
+            await sync(quiet=True, cancel=cancel)
         except Exception as exc:
             log.warning("Periodic sync during crawl failed: %s", exc)
         finally:
@@ -373,7 +372,7 @@ async def _run_crawl(
     depth: int | None,
     max_pages: int | None,
     on_progress: DetailedProgressCallback | None,
-    cancel: threading.Event | None,
+    cancel: CancelToken | None,
     quiet: bool,
     include_subdomains: bool,
     flush_page: Callable[[Any], Awaitable[Path | None]],
@@ -423,7 +422,7 @@ async def crawl_and_save(
     depth: int | None = None,
     max_pages: int | None = None,
     on_progress: DetailedProgressCallback | None = None,
-    cancel: threading.Event | None = None,
+    cancel: CancelToken | None = None,
     quiet: bool = False,
     include_subdomains: bool = False,
     render_mode: CrawlRenderMode | None = None,
@@ -483,7 +482,7 @@ async def crawl_and_save(
 
         cancelled = cancel is not None and cancel.is_set()
         if not cancelled:
-            await _maybe_periodic_sync(tasks)
+            await _maybe_periodic_sync(tasks, cancel)
 
         if on_progress:
             on_progress(

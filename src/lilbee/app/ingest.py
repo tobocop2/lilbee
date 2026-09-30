@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import logging
-from collections.abc import Generator, Iterable
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,6 +26,12 @@ from lilbee.data.ingest.skip_marker import (
     update_skip_records,
 )
 from lilbee.data.store.types import RemoveResult
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+
+_ADD_CANCELLED_ONE = "Add cancelled. {name} was not added."
+_ADD_CANCELLED_MANY = "Add cancelled. {names} were not added."
+_ALSO_HIT_ERROR = " It also hit an error: {error}."
+_CANCEL_ERRORS = (asyncio.CancelledError, TaskCancelledError, KeyboardInterrupt)
 
 
 @dataclass
@@ -357,6 +364,86 @@ def forget_roots(names: list[str]) -> list[str]:
     return unregistered
 
 
+@dataclass
+class AddRollback:
+    """The roots an interrupted add un-registered, and any error it hit once stopped."""
+
+    not_added: list[str] = field(default_factory=list)
+    error: str | None = None
+
+    def message(self, nothing_dropped: str) -> str:
+        """Why the add stopped, naming what it did not add and any error it also hit."""
+        stopped = self._stopped(nothing_dropped)
+        return stopped if self.error is None else stopped + _ALSO_HIT_ERROR.format(error=self.error)
+
+    def note_error(self, exc: BaseException) -> None:
+        """Log *exc*, raised once the add was stopped, and name it unless it is a cancel."""
+        if isinstance(exc, _CANCEL_ERRORS):
+            return
+        log.warning("A stopped sync also hit an error", exc_info=exc)
+        self.error = str(exc) or type(exc).__name__
+
+    def _stopped(self, nothing_dropped: str) -> str:
+        match self.not_added:
+            case []:
+                return nothing_dropped
+            case [name]:
+                return _ADD_CANCELLED_ONE.format(name=name)
+            case _:
+                return _ADD_CANCELLED_MANY.format(names=", ".join(self.not_added))
+
+
+def _under_root(name: str, label: str) -> bool:
+    return name == label or name.startswith(f"{label}/")
+
+
+def indexed_stamps(labels: list[str]) -> dict[str, str]:
+    """The ``ingested_at`` stamp of every indexed source under the roots *labels*."""
+    if not labels:
+        return {}
+    return {
+        source["filename"]: source["ingested_at"]
+        for source in get_services().store.get_sources()
+        if any(_under_root(source["filename"], label) for label in labels)
+    }
+
+
+def forget_unfinished_roots(labels: list[str], before: dict[str, str]) -> list[str]:
+    """Un-register each root in *labels* with no file indexed since *before*; returns them.
+
+    A file is indexed since *before* when its source is new or its stamp changed.
+    """
+    finished = [name for name, stamp in indexed_stamps(labels).items() if before.get(name) != stamp]
+    unfinished = [
+        label for label in labels if not any(_under_root(name, label) for name in finished)
+    ]
+    return forget_roots(unfinished) if unfinished else []
+
+
+@contextmanager
+def forget_unfinished_on_cancel(
+    labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
+) -> Generator[AddRollback, None, None]:
+    """Wrap an add after registration; anything raised while *cancel* is set leaves as a cancel."""
+    rollback = AddRollback()
+    try:
+        before = indexed_stamps(labels)
+    except Exception as exc:
+        if not cancel.is_set():
+            raise
+        rollback.note_error(exc)
+        before = {}  # a read that fails once stopped keeps every root with an indexed file
+    try:
+        yield rollback
+    except BaseException as exc:
+        if not cancel.is_set():
+            raise
+        rollback.note_error(exc)
+        if user_cancelled():
+            rollback.not_added = forget_unfinished_roots(labels, before)
+        raise asyncio.CancelledError from exc
+
+
 def _hold_out_removed(names: list[str], roots: list[str]) -> None:
     """Hold each of *names* out of later syncs as a removal, except under an un-registered root.
 
@@ -366,7 +453,7 @@ def _hold_out_removed(names: list[str], roots: list[str]) -> None:
     hashes: dict[str, str] = {}
     unreachable: list[str] = []
     for name in names:
-        if any(name == root or name.startswith(root + "/") for root in roots):
+        if any(_under_root(name, root) for root in roots):
             continue  # the root is gone; discovery won't resurrect these
         path = resolve_source_path(name)
         if path.exists():

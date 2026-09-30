@@ -15,55 +15,25 @@ from __future__ import annotations
 
 import threading
 import time
-from contextlib import asynccontextmanager
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
 
 import anyio
 import pytest
-from mcp.shared.memory import create_client_server_memory_streams
+from tests._mcp_client import mcp_client
 from tools.qa.mcp_stdio_probe import CORE_TOOLS
 
-from lilbee.mcp_server import _offload_sync, build_mcp_server
+from lilbee.mcp_server import _offload_sync
 from lilbee.mcp_server import sync as mcp_sync
-from mcp import ClientSession
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
-
-
-@asynccontextmanager
-async def _client(server: Any = None) -> AsyncIterator[tuple[ClientSession, Any]]:
-    """A connected client session and the result of its initialize handshake."""
-    server = server if server is not None else build_mcp_server()
-    lowlevel = server._lowlevel_server
-    async with (
-        create_client_server_memory_streams() as (client_streams, server_streams),
-        anyio.create_task_group() as tg,
-    ):
-
-        async def _serve() -> None:
-            await lowlevel.run(
-                server_streams[0],
-                server_streams[1],
-                lowlevel.create_initialization_options(),
-                raise_exceptions=False,
-            )
-
-        tg.start_soon(_serve)
-        async with ClientSession(client_streams[0], client_streams[1]) as session:
-            yield session, await session.initialize()
-        tg.cancel_scope.cancel()
 
 
 async def test_the_handshake_identifies_lilbee() -> None:
-    async with _client() as (_session, init):
+    async with mcp_client() as (_session, init, _drop):
         pass
     assert init.server_info.name == "lilbee"
 
 
 async def test_the_core_tools_reach_a_real_client() -> None:
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         names = {tool.name for tool in (await session.list_tools()).tools}
     assert names >= CORE_TOOLS
 
@@ -74,7 +44,7 @@ async def test_the_wire_schema_stays_trimmed_through_the_client() -> None:
     Guards the schema attribute the 2.x rename moved: reading the wrong one
     would surface here as untrimmed titles rather than as an import error.
     """
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         tools = (await session.list_tools()).tools
     for tool in tools:
         schema = tool.input_schema
@@ -85,7 +55,7 @@ async def test_the_wire_schema_stays_trimmed_through_the_client() -> None:
 
 
 async def test_tool_descriptions_arrive_flattened() -> None:
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         tools = (await session.list_tools()).tools
     for tool in tools:
         if tool.description:
@@ -93,7 +63,7 @@ async def test_tool_descriptions_arrive_flattened() -> None:
 
 
 async def test_a_tool_call_round_trips_a_result() -> None:
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         result = await session.call_tool("settings_list", {})
     assert not result.is_error
     assert result.content
@@ -101,14 +71,14 @@ async def test_a_tool_call_round_trips_a_result() -> None:
 
 async def test_a_refused_call_round_trips_the_error_envelope() -> None:
     """The envelope is a normal result, not a protocol error, so agents can read it."""
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         result = await session.call_tool("search", {"query": "   "})
     assert not result.is_error
     assert "query must not be empty" in str(result.content)
 
 
 async def test_an_unknown_tool_is_a_protocol_error() -> None:
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         result = await session.call_tool("no_such_tool", {})
     assert result.is_error
 
@@ -177,7 +147,7 @@ async def test_a_running_crawl_can_be_cancelled_through_a_real_client(monkeypatc
     task.status = task_mod.TaskStatus.RUNNING
     monkeypatch.setitem(task_mod._registry.tasks, "probe", task)
 
-    async with _client() as (session, _init):
+    async with mcp_client() as (session, _init, _drop):
         result = await session.call_tool("crawl_cancel", {"task_id": "probe"})
         missing = await session.call_tool("crawl_cancel", {"task_id": "no-such-task"})
 

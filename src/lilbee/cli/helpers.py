@@ -231,13 +231,14 @@ def add_paths(
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
-    run_sync: Callable[[], object] | None = None,
+    run_sync: Callable[[list[str]], object] | None = None,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after registering. *run_sync*
-    overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
-    runner); it defaults to a plain ``asyncio.run(sync())``.
+    overrides the foreground sync call and receives the newly registered root
+    labels (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
+    ``asyncio.run(sync())``.
     """
     registration = register_paths(paths, con, force=force)
     summary = describe_registration(registration)
@@ -254,7 +255,7 @@ def add_paths(
         run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = run_sync() if run_sync is not None else _run_foreground_sync()
+    result = run_sync(registration.registered) if run_sync is not None else _run_foreground_sync()
     con.print(result)
 
 
@@ -274,11 +275,14 @@ def sync_result_to_json(result: object) -> dict:
     return {"command": "sync", **result.model_dump()}
 
 
-def auto_sync(con: PlainConsole, *, background: bool = False) -> None:
+def auto_sync(
+    con: PlainConsole, run_sync: Callable[[], object], *, background: bool = False
+) -> None:
     """Run document sync before queries.
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
-    sync blocks until complete (for ``lilbee ask``).
+    *run_sync* (the CLI's Ctrl+C-cancellable runner) blocks until the sync
+    completes (for ``lilbee ask``).
     """
     if background:
         from lilbee.cli.sync import run_sync_background
@@ -287,13 +291,16 @@ def auto_sync(con: PlainConsole, *, background: bool = False) -> None:
         return
 
     from lilbee.cli.sync import _format_sync_summary
-    from lilbee.data.ingest import sync
+    from lilbee.data.ingest import SyncResult
 
     try:
-        result = asyncio.run(sync())
+        result = run_sync()
     except RuntimeError as exc:
         print_prefixed(con, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
+    # The sync runner is typed to return object; narrow it before reading counts.
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     summary = _format_sync_summary(
         len(result.added),
         len(result.updated),

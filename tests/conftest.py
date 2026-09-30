@@ -508,6 +508,17 @@ def _shutdown_ingest_pool():
     deterministic. No-op when ingest never ran.
     """
     yield
+    _join_shared_ingest_pool()
+
+
+@pytest.fixture
+def joined_ingest_pool():
+    """Join the shared ingest pool after a test that drives ingest outside a sync."""
+    yield
+    _join_shared_ingest_pool()
+
+
+def _join_shared_ingest_pool() -> None:
     from lilbee.data import offload
 
     if offload._ingest_executor.cache_info().currsize:

@@ -36,7 +36,12 @@ from textual.widgets import Footer, Markdown, Select, Static
 from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
-from lilbee.app.ingest import removable_names, remove_documents_durably
+from lilbee.app.ingest import (
+    RegisterResult,
+    forget_unfinished_on_cancel,
+    removable_names,
+    remove_documents_durably,
+)
 from lilbee.app.services import get_services, reset_store
 from lilbee.app.session_export import write_session_markdown
 from lilbee.app.settings_map import SETTINGS_MAP
@@ -105,6 +110,7 @@ from lilbee.retrieval.query.compaction import (
 from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
+from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
@@ -857,12 +863,27 @@ class ChatScreen(Screen[None]):
     ) -> None:
         """Register source roots and run sync. Called on worker thread with a reporter."""
         from lilbee.app.ingest import register_sources
-        from lilbee.data.ingest import sync
 
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
         reporter.update(0, f"Adding {label}...", indeterminate=True)
         reg_result = register_sources(paths, force=force)
         registered = reg_result.registered
+        self._notify_registration(reg_result)
+        if not reg_result.reached_corpus:
+            return
+        try:
+            with forget_unfinished_on_cancel(
+                registered, reporter, reporter.cancelled_by_user
+            ) as rollback:
+                self._sync_added(registered, reporter)
+        except asyncio.CancelledError as exc:
+            raise TaskCancelledError(rollback.message(msg.SYNC_CANCELLED_RESUME)) from exc
+        except BaseException:
+            unregister_added_roots(registered)
+            raise
+
+    def _notify_registration(self, reg_result: RegisterResult) -> None:
+        """Toast each source the add skipped, and a warning when nothing reached the corpus."""
         for name in reg_result.name_taken:
             call_from_thread(self, self.notify, msg.CMD_ADD_NAME_TAKEN.format(name=name))
         if reg_result.tracked:
@@ -874,29 +895,22 @@ class ChatScreen(Screen[None]):
             call_from_thread(self, self.notify, msg.CMD_ADD_OVERLAPPING.format(names=names))
         if not reg_result.reached_corpus:
             call_from_thread(self, self.notify, msg.CMD_ADD_NOTHING, severity="warning")
-            return
-        reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
 
-        try:
-            sync_result = asyncio_loop.run(
-                sync(quiet=True, on_progress=build_add_progress_callback(reporter))
-            )
-        except BaseException:
-            # On cancel or any failure, un-register the roots this /add created so
-            # the next sync doesn't silently re-ingest the source the user just
-            # cancelled. Only entries this invocation created are dropped;
-            # sources the user put in documents/ themselves are never touched.
-            unregister_added_roots(registered)
-            raise
+    def _sync_added(self, registered: list[str], reporter: ProgressReporter) -> None:
+        """Sync after /add and report the result; raises when the add's own roots failed."""
+        from lilbee.data.ingest import sync
+
+        reporter.update(0, f"Added {len(registered)} source(s), syncing...", indeterminate=True)
+        sync_result = asyncio_loop.run(
+            sync(quiet=True, on_progress=build_add_progress_callback(reporter), cancel=reporter)
+        )
         if sync_result.failed:
-            unregister_added_roots(registered)
             raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
         if sync_result.skipped:
             # Files yielding no text beside indexed siblings are a partial
             # success; only an add whose own roots contributed nothing failed.
             skipped_msg = msg.sync_skipped_message(sync_result, tui_log_path())
             if registered and not add_indexed_anything(registered, sync_result):
-                unregister_added_roots(registered)
                 raise RuntimeError(skipped_msg)
             call_from_thread(self, self.notify, skipped_msg, severity="warning")
         self._report_unsaved_skip_records(sync_result)
@@ -1126,11 +1140,13 @@ class ChatScreen(Screen[None]):
                 depth=depth,
                 max_pages=max_pages,
                 on_progress=on_progress,
+                cancel=reporter,
                 quiet=True,
                 include_subdomains=include_subdomains,
                 render_mode=render_mode,
             )
         )
+        reporter.check_cancelled()
         call_from_thread(self, self.notify, msg.CMD_CRAWL_SUCCESS.format(count=len(paths), url=url))
         if failures:
             call_from_thread(
@@ -2435,12 +2451,13 @@ class ChatScreen(Screen[None]):
                 sync(
                     quiet=True,
                     on_progress=on_progress,
+                    cancel=reporter,
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
                 )
             )
         except asyncio.CancelledError as exc:
-            raise RuntimeError(msg.SYNC_CANCELLED_RESUME) from exc
+            raise TaskCancelledError(msg.SYNC_CANCELLED_RESUME) from exc
         if prune_ignored:
             call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
         if result.failed:

@@ -41,6 +41,13 @@ class TaskType(StrEnum):
     EXPORT = "export"
 
 
+class CancelOrigin(StrEnum):
+    """Who cancelled a task: the user, or the app on its way out."""
+
+    USER = "user"
+    EXIT = "exit"
+
+
 TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)
 
 
@@ -78,6 +85,8 @@ class Task:
     # freeze the elapsed-time display so it doesn't keep ticking during
     # the 2-second post-finish flash.
     completed_at: float | None = None
+    # Set with the CANCELLED status; None while the task is not cancelled.
+    cancel_origin: CancelOrigin | None = None
 
 
 class TaskQueue:
@@ -293,7 +302,7 @@ class TaskQueue:
                 self._remove_from_queue_locked(task_id, task.task_type)
         self._notify()
 
-    def cancel(self, task_id: str) -> bool:
+    def cancel(self, task_id: str, origin: CancelOrigin = CancelOrigin.USER) -> bool:
         """Cancel a queued or active task. Returns True if cancelled.
 
         Marks the row only. Stopping a running download needs
@@ -315,12 +324,21 @@ class TaskQueue:
             if task.status in TERMINAL_STATUSES:
                 return False
             task.status = TaskStatus.CANCELLED
+            task.cancel_origin = origin
             task.completed_at = time.monotonic()
             self._history.append(task)
             self._remove_from_active_locked(task_id, task.task_type)
             self._remove_from_queue_locked(task_id, task.task_type)
         self._notify()
         return True
+
+    def set_cancel_reason(self, task_id: str, detail: str) -> None:
+        """Show *detail* as the reason on a cancelled row; other rows are left alone."""
+        with self._lock:
+            task = self._tasks.get(task_id)
+            if task and task.status is TaskStatus.CANCELLED:
+                task.detail = detail
+        self._notify()
 
     def advance(self, task_type: str | None = None) -> Task | None:
         """Pop the next queued task of this type and mark it active.

@@ -137,12 +137,11 @@ def remember_from_input(raw: str) -> RememberOutcome:
 
 
 def unregister_added_roots(labels: list[str]) -> None:
-    """Un-register roots a /add invocation created, for cancel/failure cleanup.
+    """Un-register roots a /add invocation created, when its finished sync failed them.
 
-    Called on cancel or failure of the add task so a cancelled source is not
-    re-found on the next sync. Only the registry entries this invocation added are
-    dropped, with the skip records its sync wrote under them; the source bytes on
-    disk and files the user owns are never touched.
+    Only the registry entries this invocation added are dropped, with the skip
+    records its sync wrote under them; the source bytes on disk and files the
+    user owns are never touched.
     """
     from lilbee.app.ingest import forget_roots
 

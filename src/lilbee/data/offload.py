@@ -13,9 +13,9 @@ import contextvars
 import functools
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from concurrent.futures import Executor, ThreadPoolExecutor
-from typing import ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
 _MAX_WORKERS_ENV = "LILBEE_INGEST_MAX_WORKERS"
+_POOL_THREAD_PREFIX = "lilbee-ingest"
 
 # Files per embed replica to keep in flight during ingest. A replica interleaves
 # its file's extraction with embedding, so a handful of files per card must be
@@ -99,8 +100,31 @@ def max_workers() -> int:
 
 @functools.cache
 def _ingest_executor() -> ThreadPoolExecutor:
-    """The shared ingest pool, created on first use (cache makes it a singleton)."""
-    return ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix="lilbee-ingest")
+    """The shared ingest pool for work outside an ingest run, created on first use."""
+    return ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix=_POOL_THREAD_PREFIX)
+
+
+_run_pool: contextvars.ContextVar[ThreadPoolExecutor | None] = contextvars.ContextVar(
+    "lilbee_ingest_run_pool", default=None
+)
+
+
+def owns_ingest_pool(
+    run: Callable[_P, Coroutine[Any, Any, _R]],
+) -> Callable[_P, Coroutine[Any, Any, _R]]:
+    """Give each call of the async *run* its own ingest pool, shut down when the call ends."""
+
+    @functools.wraps(run)
+    async def _with_pool(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        pool = ThreadPoolExecutor(max_workers=max_workers(), thread_name_prefix=_POOL_THREAD_PREFIX)
+        token = _run_pool.set(pool)
+        try:
+            return await run(*args, **kwargs)
+        finally:
+            _run_pool.reset(token)
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    return _with_pool
 
 
 async def to_executor(
@@ -119,5 +143,5 @@ async def to_executor(
 
 
 async def to_ingest_thread(fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
-    """Run *fn* on the shared ingest executor."""
-    return await to_executor(_ingest_executor(), fn, *args, **kwargs)
+    """Run *fn* on the current ingest run's pool, or on the shared pool outside a run."""
+    return await to_executor(_run_pool.get() or _ingest_executor(), fn, *args, **kwargs)

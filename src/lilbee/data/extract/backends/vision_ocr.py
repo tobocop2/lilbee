@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from lilbee.data.types import MARKDOWN_MIME, OcrBackendName
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.vision import resolve_ocr_prompt
 
 from .registry import BackendKind, XbergBinding, register_binding
@@ -34,6 +35,7 @@ class OcrRequestContext:
 
     on_page: Callable[[], None] | None = None
     timeout: float = 0.0
+    cancel: CancelSignal | None = None
 
 
 class _OcrRequestRegistry:
@@ -65,10 +67,14 @@ ocr_requests = _OcrRequestRegistry()
 
 @contextmanager
 def ocr_request(
-    *, on_page: Callable[[], None] | None = None, timeout: float = 0.0
+    *,
+    on_page: Callable[[], None] | None = None,
+    timeout: float = 0.0,
+    cancel: CancelSignal | None = None,
 ) -> Generator[str, None, None]:
     """Register a per-extraction context and yield its token for OcrConfig.backend_options."""
-    token = ocr_requests.register(OcrRequestContext(on_page=on_page, timeout=timeout))
+    context = OcrRequestContext(on_page=on_page, timeout=timeout, cancel=cancel)
+    token = ocr_requests.register(context)
     try:
         yield token
     finally:
@@ -107,7 +113,14 @@ class _OcrConfigView:
 class _OcrFn(Protocol):
     # Positional-only so the provider's vision_ocr (named png_bytes) matches structurally.
     def __call__(
-        self, image_bytes: bytes, model: str, prompt: str, /, *, timeout: float
+        self,
+        image_bytes: bytes,
+        model: str,
+        prompt: str,
+        /,
+        *,
+        timeout: float,
+        cancel: CancelSignal | None,
     ) -> str: ...
 
 
@@ -166,7 +179,11 @@ class VisionOcrBackend:
         model = self._model_ref_fn()
         prompt = view.vlm_prompt or resolve_ocr_prompt(model)
         ctx = ocr_requests.get(view.request_token)
-        text = self._ocr_fn(image_bytes, model, prompt, timeout=ctx.timeout if ctx else 0.0)
+        cancel = ctx.cancel if ctx is not None else None
+        if cancel is not None and cancel.is_set():
+            raise TaskCancelledError
+        timeout = ctx.timeout if ctx is not None else 0.0
+        text = self._ocr_fn(image_bytes, model, prompt, timeout=timeout, cancel=cancel)
         if ctx is not None and ctx.on_page is not None:
             ctx.on_page()
         return ExtractedDocument(content=text, mime_type=MARKDOWN_MIME)

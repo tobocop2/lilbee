@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import threading
+
+import pytest
+
 from lilbee.data.extract.backends.vision_ocr import (
     VisionOcrBackend,
     backend_options_for,
@@ -9,13 +13,14 @@ from lilbee.data.extract.backends.vision_ocr import (
     ocr_requests,
 )
 from lilbee.data.types import MARKDOWN_MIME, OcrBackendName
+from lilbee.runtime.cancellation import TaskCancelledError
 
 
 def _backend(ocr_fn=None, model="vendor/glm-ocr"):
     calls: list[tuple] = []
 
-    def default_fn(image_bytes, model, prompt, *, timeout):
-        calls.append((image_bytes, model, prompt, timeout))
+    def default_fn(image_bytes, model, prompt, *, timeout, cancel):
+        calls.append((image_bytes, model, prompt, timeout, cancel))
         return "# extracted"
 
     be = VisionOcrBackend(ocr_fn=ocr_fn or default_fn, model_ref_fn=lambda: model)
@@ -108,7 +113,7 @@ class TestProcessImage:
     def test_passes_model_and_resolved_prompt(self):
         be, calls = _backend(model="vendor/glm-ocr")
         be.process_image(b"PNG", _cfg())
-        _, model, prompt, _ = calls[0]
+        _, model, prompt, _, _ = calls[0]
         assert model == "vendor/glm-ocr"
         # glm-ocr has a native prompt; resolve_ocr_prompt picks it, not the generic one.
         assert prompt == "OCR"
@@ -125,6 +130,17 @@ class TestProcessImage:
             be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
         assert calls[0][3] == 12.5
         assert ticks == [1]
+
+    def test_a_set_cancel_stops_the_next_page_before_the_model_call(self):
+        cancel = threading.Event()
+        be, calls = _backend()
+        with ocr_request(cancel=cancel) as token:
+            options = _cfg(backend_options=backend_options_for(token))
+            be.process_image(b"PAGE1", options)
+            cancel.set()
+            with pytest.raises(TaskCancelledError):
+                be.process_image(b"PAGE2", options)
+        assert [(call[0], call[4]) for call in calls] == [(b"PAGE1", cancel)]
 
     def test_non_string_token_is_ignored(self):
         ticks: list[int] = []

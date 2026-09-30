@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest import mock
@@ -364,6 +365,7 @@ class TestRoutingProvider:
             "noctrex/LightOnOCR-2-1B-GGUF/LightOnOCR-2-1B-Q4_K_M.gguf",
             "ocr",
             timeout=None,
+            cancel=None,
         )
         mock_litellm.vision_ocr.assert_not_called()
 
@@ -375,10 +377,11 @@ class TestRoutingProvider:
         rp._local = mock_llama
         rp._sdk_provider = mock_litellm
 
-        result = rp.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0)
+        cancel = threading.Event()
+        result = rp.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0, cancel=cancel)
         assert result == "remote text"
         mock_litellm.vision_ocr.assert_called_once_with(
-            b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0
+            b"\x89PNG", "ollama/llava:7b", "ocr", timeout=30.0, cancel=cancel
         )
         mock_llama.vision_ocr.assert_not_called()
 
@@ -3443,6 +3446,19 @@ class TestSdkLLMProviderVisionOcr:
         assert content[1]["text"] == "ocr please"
         assert mock_chat.call_args[1]["model"] == "ollama/llava:7b"
         assert mock_chat.call_args[1]["stream"] is False
+
+    def test_a_set_cancel_sends_no_request(self) -> None:
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        provider = self._make_provider()
+        cancel = threading.Event()
+        cancel.set()
+        with (
+            mock.patch.object(provider, "chat") as mock_chat,
+            pytest.raises(TaskCancelledError),
+        ):
+            provider.vision_ocr(b"\x89PNG", "ollama/llava:7b", "ocr please", cancel=cancel)
+        mock_chat.assert_not_called()
 
     def test_empty_prompt_uses_default_ocr_prompt(self) -> None:
         from lilbee.providers.base import ChatResult, FinishReason

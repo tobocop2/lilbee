@@ -3,6 +3,7 @@ scanned pages/images through the registered backend; chunk + embed the result.""
 
 from __future__ import annotations
 
+import asyncio
 import contextvars
 import logging
 import time
@@ -30,6 +31,7 @@ from lilbee.data.types import (
     OcrReport,
 )
 from lilbee.providers.base import aux_options
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -523,6 +525,7 @@ async def ingest_document(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
+    cancel: CancelSignal | None = None,
 ) -> DocumentRecords:
     """Extract, chunk, and embed a document in a single xberg pass, with its metadata.
 
@@ -536,7 +539,7 @@ async def ingest_document(
     """
     del quiet
     doc, ocr = await _extract_document(
-        path, source_name, content_type, content_type_to_mode(content_type), on_progress
+        path, source_name, content_type, content_type_to_mode(content_type), on_progress, cancel
     )
     records, meta = await _records_from_document(
         doc,
@@ -555,6 +558,7 @@ async def ingest_archive(
     content_type: str,
     *,
     on_progress: DetailedProgressCallback = noop_callback,
+    cancel: CancelSignal | None = None,
 ) -> list[MemberRecords]:
     """Extract an archive once and build records for every member, nested archives included.
 
@@ -563,7 +567,7 @@ async def ingest_archive(
     zip-bomb limits, so depth and size are enforced before this runs.
     """
     doc, ocr = await _extract_document(
-        path, source_name, content_type, ExtractMode.PAGINATED, on_progress
+        path, source_name, content_type, ExtractMode.PAGINATED, on_progress, cancel
     )
     members: list[MemberRecords] = []
     await _collect_members(doc, source_name, members, on_progress, ocr.backend)
@@ -673,8 +677,14 @@ async def _extract_document(
     content_type: str,
     mode: ExtractMode,
     on_progress: DetailedProgressCallback,
+    cancel: CancelSignal | None,
 ) -> tuple[ExtractedDocument, OcrReport]:
-    """Run one xberg pass over *path*, with per-page OCR progress and the extraction trace."""
+    """Run one xberg pass over *path*, with per-page OCR progress and the extraction trace.
+
+    A set *cancel* stops vision OCR before its next page, and a pass that
+    ends under a set *cancel* raises ``CancelledError`` instead of returning a
+    partial document.
+    """
     from .xberg import aextract_document
 
     data = path.read_bytes()
@@ -704,7 +714,7 @@ async def _extract_document(
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
     backend = ocr_backend()
     started = time.perf_counter()
-    with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout()) as token:
+    with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout(), cancel=cancel) as token:
         batcher = active_extract_batcher()
         if batcher is not None:
             doc = await batcher.submit(mode, data, path.name, token)
@@ -712,6 +722,8 @@ async def _extract_document(
             config = extraction_config(mode, ocr_token=token)
             # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
             doc = await aextract_document(data, filename=path.name, config=config)
+    if cancel is not None and cancel.is_set():
+        raise asyncio.CancelledError
     elapsed = time.perf_counter() - started
     ocr = OcrReport(backend=backend, pages=_ocr_page_count(doc))
 

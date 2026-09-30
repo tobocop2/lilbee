@@ -30,6 +30,7 @@ from lilbee.cli.app import (
     top_p_option,
 )
 from lilbee.cli.commands._shared import CHUNK_PREVIEW_LEN
+from lilbee.cli.commands.ingest_sync import run_sync_with_signal_cancel
 from lilbee.cli.helpers import (
     announce_cold_start,
     announce_ready,
@@ -309,9 +310,9 @@ def ask(
         get_services().embedder.validate_model()
         if cfg.auto_sync and not no_sync:
             if cfg.json_mode:
-                auto_sync(PlainConsole(quiet=True))
+                auto_sync(PlainConsole(quiet=True), run_sync_with_signal_cancel)
             else:
-                auto_sync(console)
+                auto_sync(console, run_sync_with_signal_cancel)
 
         chunk_type = scope_to_chunk_type(scope)
 
