@@ -146,7 +146,7 @@ class TestStatus:
     def test_status_shows_ocr_when_enabled(self):
         cfg.enable_ocr = True
         result = runner.invoke(app, ["status"])
-        assert "OCR:        enabled" in result.output
+        assert "Tesseract OCR: enabled" in result.output
 
     def test_status_hides_ocr_when_none(self):
         cfg.enable_ocr = None
@@ -2540,6 +2540,14 @@ class TestStatusJson:
         data = json.loads(result.output.strip())
         assert "enable_ocr" not in data["config"]
 
+    def test_status_json_with_ocr_off_and_a_vision_model_names_vision_and_warns_nothing(self):
+        cfg.enable_ocr = False
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        result = runner.invoke(app, ["--json", "status"])
+        data = json.loads(result.output.strip())
+        assert "used instead of Tesseract" in data["ocr_note"]
+        assert "ocr_warning" not in data
+
 
 # ---------------------------------------------------------------------------
 # JSON sync/rebuild/add tests (Task 4)
@@ -3187,6 +3195,22 @@ class TestOcrFlags:
         assert result.exit_code == 0
         assert cfg.ocr_timeout == 120.0
 
+    def test_no_ocr_flag_keeps_a_set_vision_model_reading_scans(self):
+        from lilbee.data.extract.document import ocr_backend
+        from lilbee.runtime.progress import OcrBackendUsed
+
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        observed: list[OcrBackendUsed] = []
+
+        async def fake_sync(*_args, **_kwargs):
+            observed.append(ocr_backend())
+            return _SYNC_NOOP
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            result = runner.invoke(app, ["sync", "--no-ocr"])
+        assert result.exit_code == 0, result.output
+        assert observed == [OcrBackendUsed.VISION]
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_no_ocr_flag_disables(self, mock_sync):
         """--no-ocr sets cfg.enable_ocr to False."""
@@ -3194,13 +3218,13 @@ class TestOcrFlags:
         assert result.exit_code == 0
         assert cfg.enable_ocr is False
 
-    def test_ocr_help_says_off_applies_to_every_backend(self):
-        """--no-ocr's help text must say it turns off every OCR backend, vision included,
-        or a reader keeps thinking a vision model overrides it."""
+    def test_ocr_help_says_it_governs_tesseract_only(self):
+        """--no-ocr's help text must say it turns off Tesseract and a vision model still runs."""
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
         normalized = _plain_help_text(result.output)
-        assert "off applies to every backend, vision included" in normalized
+        assert "Turn Tesseract OCR on/off for scanned PDFs" in normalized
+        assert "A set vision model always runs" in normalized
 
     def test_ocr_help_says_on_matches_leaving_it_unset(self):
         """--ocr's help text must say true behaves like leaving the option unset,

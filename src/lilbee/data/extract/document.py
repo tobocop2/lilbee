@@ -220,7 +220,7 @@ def ocr_override(
 
 
 def ocr_backend() -> OcrBackendUsed:
-    """The OCR backend for this extraction; ``enable_ocr`` False wins over a vision model."""
+    """The OCR backend for this extraction; a set vision model always reads scanned pages."""
     return OcrBackendUsed.chosen(_effective_enable_ocr(), active_config().vision_model)
 
 
@@ -255,14 +255,14 @@ def _ocr_strategy() -> OcrStrategy:
 
     config = active_config()
     # xberg rejects scanned_pages when OCR is disabled.
-    if _effective_enable_ocr() is False or config.ocr_strategy is OcrPageStrategy.AUTO:
+    if ocr_backend() is OcrBackendUsed.NONE or config.ocr_strategy is OcrPageStrategy.AUTO:
         return OcrStrategy(OcrPageStrategy.AUTO.value)
     return OcrStrategy.scanned_pages(config.ocr_scan_confidence)
 
 
 def _force_ocr_pages() -> list[int] | None:
     """cfg.force_ocr_pages for xberg; None when empty or OCR is off."""
-    if _effective_enable_ocr() is False:
+    if ocr_backend() is OcrBackendUsed.NONE:
         return None
     return list(active_config().force_ocr_pages) or None
 

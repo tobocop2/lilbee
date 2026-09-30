@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
-from lilbee.app.settings import ocr_engine_note, ocr_off_warning
+from lilbee.app.settings import ocr_engine_note
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
@@ -142,8 +142,6 @@ class StatusResult(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
-    ocr_warning: str | None = None
-    """Set when a vision model is configured but ``enable_ocr`` is false."""
     ocr_note: str | None = None
     """Which OCR engine runs for scanned pages; None when OCR is off."""
 
@@ -197,7 +195,6 @@ def gather_status() -> StatusResult:
         entities=entity_status(),
         skipped=skipped,
         skipped_total=skipped_total,
-        ocr_warning=ocr_off_warning(),
         ocr_note=ocr_engine_note(),
     )
 

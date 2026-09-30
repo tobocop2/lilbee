@@ -11,7 +11,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
-from lilbee.app.settings import OCR_SETTING_KEYS, ocr_engine_note, ocr_off_warning
+from lilbee.app.settings import OCR_SETTING_KEYS, ocr_engine_note
 from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
@@ -153,9 +153,6 @@ def help_content(key: str, defn: SettingDef) -> Content:
     help_text = Content(defn.help_text)
     if key not in OCR_SETTING_KEYS:
         return help_text
-    warning = ocr_off_warning()
-    if warning is not None:
-        return Content.assemble(help_text, "\n", Content.styled(warning, "$warning"))
     note = ocr_engine_note()
     return help_text if note is None else Content.assemble(help_text, "\n", note)
 

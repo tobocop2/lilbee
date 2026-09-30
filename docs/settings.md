@@ -53,7 +53,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Cross-encoder model for result reranking (empty = off). |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `str` | `auto` | yes | yes | yes | no | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
-| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Vision model for scanned PDF OCR; when set it is used instead of Tesseract. Clear it (empty value, including an empty LILBEE_VISION_MODEL) to use Tesseract. |
+| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Vision model for scanned PDF OCR; when set it reads every scanned page, whatever enable_ocr says. Clear it (empty value, including an empty LILBEE_VISION_MODEL) to use Tesseract, or to turn OCR off when enable_ocr is false. |
 
 ## Retrieval
 
@@ -142,7 +142,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `batch_extraction_size` | `LILBEE_BATCH_EXTRACTION_SIZE` | `int` | `8` | yes | yes | yes | no | Max files per extract_batch call when batch extraction is on. |
 | `chunk_overlap` | `LILBEE_CHUNK_OVERLAP` | `int` | `100` | yes | yes | yes | no | Tokens of overlap between adjacent chunks (preserves context across boundaries). **Reindex** with `lilbee rebuild` after changing. |
 | `chunk_size` | `LILBEE_CHUNK_SIZE` | `int` | `512` | yes | yes | yes | no | Document chunk size in tokens (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
-| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | OCR for scanned PDFs: the vision model when one is set, else Tesseract (empty or true = on, since only false is checked; false = off for every backend, the vision model included). |
+| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | Tesseract OCR for scanned PDFs when no vision model is set (empty or true = on, false = off). A set vision model always runs. |
 | `entity_extraction` | `LILBEE_ENTITY_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Extract typed entities automatically at sync (schema induced on first run). |
 | `extraction_threads` | `LILBEE_EXTRACTION_THREADS` | `int` | `0` | yes | yes | yes | no | Threads xberg uses for PDF rendering, OCR and layout models, and the most Tesseract OCR sessions that run at once (0 = auto, half the available cores). Takes full effect after a restart. |
 | `extraction_timeout` | `LILBEE_EXTRACTION_TIMEOUT` | `int` | `0` | yes | yes | yes | no | Wall-clock seconds one file gets to extract before ingest gives up on it (0 = no limit). |

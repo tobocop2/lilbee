@@ -2442,47 +2442,6 @@ class TestAppSetActiveModelTaskGuard:
             cfg.embedding_model = embed_default
 
 
-class TestAppToastsOcrOffWarning:
-    """The TUI toasts the warning a settings update reports for OCR off with a vision model."""
-
-    async def test_turning_ocr_off_with_a_vision_model_toasts_the_warning(self) -> None:
-        from lilbee.cli.tui.app import LilbeeApp
-
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-        app = LilbeeApp()
-        with (
-            mock.patch.object(
-                app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
-            ),
-            mock.patch("lilbee.app.settings.persistent_settings.update_values"),
-        ):
-            app.set_setting("enable_ocr", False)
-            app.set_setting("enable_ocr", True)
-        assert len(notify_calls) == 1
-        args, kwargs = notify_calls[0]
-        assert "enable_ocr" in args[0] and cfg.vision_model in args[0]
-        assert kwargs.get("severity") == "warning"
-
-    async def test_assigning_a_vision_model_toasts_the_update_warning(self) -> None:
-        from lilbee.app.settings import SettingsUpdateResult
-        from lilbee.cli.tui.app import LilbeeApp
-
-        notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-        app = LilbeeApp()
-        result = SettingsUpdateResult(
-            updated=["vision_model"], reindex_required=False, warnings=("OCR is off",)
-        )
-        with (
-            mock.patch.object(
-                app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
-            ),
-            mock.patch("lilbee.cli.tui.app.apply_settings_update", return_value=result),
-        ):
-            app.set_active_model("vision_model", "org/V-GGUF/v.gguf")
-        assert [(a[0], kw.get("severity")) for a, kw in notify_calls] == [("OCR is off", "warning")]
-
-
 class TestAppSetActiveModelDownloadGuard:
     """`set_active_model` refuses a ref whose download is still queued or active."""
 
@@ -2688,8 +2647,16 @@ class TestModelInfoExceptionBranches:
         assert info.embed_arch == "sentinel"
 
 
-def test_enable_ocr_help_says_false_turns_off_every_backend() -> None:
+def test_enable_ocr_help_says_it_governs_tesseract_only() -> None:
     from lilbee.app.settings import get_setting
 
     help_text = get_setting("enable_ocr").help_text
-    assert "false = off for every backend, the vision model included" in help_text
+    assert help_text.startswith("Tesseract OCR for scanned PDFs when no vision model is set")
+    assert "A set vision model always runs" in help_text
+
+
+def test_vision_model_help_says_clearing_it_with_ocr_off_leaves_no_ocr() -> None:
+    from lilbee.app.settings import get_setting
+
+    help_text = get_setting("vision_model").help_text
+    assert help_text.endswith("to use Tesseract, or to turn OCR off when enable_ocr is false")

@@ -49,11 +49,7 @@ async def update_config(updates: dict[str, Any]) -> ConfigUpdateResponse:
     if requires_services_reset(updates):
         raise ValueError(provider_reset_refused_message("Switching"))
     result = apply_settings_update(updates, allow_model_roles=False)
-    return ConfigUpdateResponse(
-        updated=result.updated,
-        reindex_required=result.reindex_required,
-        warnings=list(result.warnings),
-    )
+    return ConfigUpdateResponse(updated=result.updated, reindex_required=result.reindex_required)
 
 
 async def get_config() -> ConfigResponse:
