@@ -951,9 +951,6 @@ class FleetProvider:
         # across concurrent callers, so the off-thread warm-up and an on-demand call
         # can't start two swaps. Held only during startup, NOT while routing.
         self._build_lock = threading.Lock()
-        # Single-flight for starting vision on request: concurrent OCR pages wait
-        # for the first page's re-plan instead of each re-planning.
-        self._vision_request_lock = threading.Lock()
         # Spawn-lifecycle listeners (set by the TUI via add_spawn_listener). Stored
         # so warm-up can report per-role progress as it pre-loads each upstream.
         self._on_spawning: Callable[[WorkerRole], None] | None = None
@@ -1928,7 +1925,6 @@ class FleetProvider:
         only when no matching launch snapshot exists (a reload can momentarily
         drop it between two reads).
         """
-        self._serve_vision_on_request()
         clients = self._require_clients(WorkerRole.VISION)
         launches = self._role_launches(WorkerRole.VISION)
         if launches and len(launches) == len(clients):
@@ -1938,28 +1934,6 @@ class FleetProvider:
             ]
         fallback_slots = max(1, cfg.vision_ocr_concurrency)
         return [_VisionReplica(client, fallback_slots) for client in clients]
-
-    def _serve_vision_on_request(self) -> None:
-        """Re-plan the fleet with vision for an OCR call that ``enable_ocr`` false left out.
-
-        Only a request that turned OCR on reaches vision OCR while the setting is
-        off, so the call itself is the demand. The re-plan is the diff-driven pass
-        a vision model change runs: it restarts the groups whose launches change,
-        which includes chat where chat and vision share one group. A failed
-        re-plan drops the grant, so the next page tries again.
-        """
-        ref = str(cfg.vision_model)
-        if not ref:
-            return
-        with self._vision_request_lock:
-            if planning.vision_role_wanted(ref):
-                return
-            planning.grant_vision_on_request()
-            try:
-                self._dispatch_reload("fleet-vision-on-request", wait=True)
-            except BaseException:
-                planning.revoke_vision_on_request()
-                raise
 
     # PDF/image OCR now runs inside xberg via the registered lilbee-vision
     # backend (see data.extract.backends.vision_ocr); this provider only exposes
@@ -2407,11 +2381,8 @@ class FleetProvider:
 
         The whole fleet is re-planned, but only the roles whose launches changed
         restart, so the other roles' loaded models stay resident (*role* names
-        the change for the thread label; the diff decides what restarts). A vision
-        setting change drops any on-request vision, so the plan follows the setting.
+        the change for the thread label; the diff decides what restarts).
         """
-        if role is WorkerRole.VISION:
-            planning.revoke_vision_on_request()
         self._dispatch_reload(f"fleet-reload-{role.value}", wait=wait)
 
     def reload_placement(self, *, wait: bool = False) -> None:
@@ -2672,6 +2643,4 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
-        # The on-request vision grant is process-wide; the next provider starts from the setting.
-        planning.revoke_vision_on_request()
         self._shutdown_swap()

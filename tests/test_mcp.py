@@ -431,6 +431,22 @@ class TestSync:
 
         assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
 
+    async def test_sync_enable_ocr_false_keeps_a_set_vision_model_reading_scans(self):
+        from lilbee.data.extract.document import ocr_backend
+        from lilbee.runtime.progress import OcrBackendUsed
+
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        observed: list[OcrBackendUsed] = []
+
+        async def fake_sync(*_args, **_kwargs):
+            observed.append(ocr_backend())
+            return _SYNC_NOOP
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            await sync(enable_ocr=False)
+
+        assert observed == [OcrBackendUsed.VISION]
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_sync_rejects_negative_ocr_timeout(self, mock_sync):
         """A negative ocr_timeout is a clean error; sync never runs."""
@@ -1850,13 +1866,15 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
-    def test_settings_set_warns_when_ocr_off_leaves_the_vision_model_unused(self, isolated_env):
+    def test_settings_set_ocr_off_with_a_vision_model_returns_no_warning(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         result = settings_set({"enable_ocr": False})
-        assert len(result["warnings"]) == 1
-        assert "enable_ocr" in result["warnings"][0]
-        assert settings_set({"top_k": 3})["warnings"] == []
+        assert result == {
+            "command": "settings_set",
+            "updated": ["enable_ocr"],
+            "reindex_required": False,
+        }
 
     def test_settings_set_empty_vision_model_clears_it_for_tesseract(self, isolated_env):
         cfg.data_root = isolated_env

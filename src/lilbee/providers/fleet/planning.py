@@ -56,7 +56,6 @@ from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
 from lilbee.providers.model_ref import parse_model_ref
 from lilbee.providers.roles import ROLE_REGISTRY, EngineBackend, RerankMode, WorkerRole
-from lilbee.runtime.progress.types import OcrBackendUsed
 
 log = logging.getLogger(__name__)
 
@@ -3142,57 +3141,8 @@ def _planned_launches(
     )
 
 
-class _VisionRequestGrant:
-    """Whether a request that turned OCR on has asked for the vision role this process."""
-
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._granted = False
-
-    @property
-    def granted(self) -> bool:
-        with self._lock:
-            return self._granted
-
-    def set(self, granted: bool) -> None:
-        with self._lock:
-            self._granted = granted
-
-
-_vision_request_grant = _VisionRequestGrant()
-
-
-def grant_vision_on_request() -> None:
-    """Plan the vision role even with ``enable_ocr`` false, for a request that turned OCR on."""
-    _vision_request_grant.set(True)
-
-
-def revoke_vision_on_request() -> None:
-    """Plan the vision role from the OCR setting alone again."""
-    _vision_request_grant.set(False)
-
-
-def vision_role_wanted(ref: str) -> bool:
-    """Whether a plan serves vision on *ref*: the OCR setting uses it, or a request asked."""
-    from lilbee.core.config import cfg
-
-    chosen = OcrBackendUsed.chosen(cfg.enable_ocr, ref)
-    return chosen is OcrBackendUsed.VISION or _vision_request_grant.granted
-
-
-def _launched_roles() -> tuple[WorkerRole, ...]:
-    """The roles a launch plan may serve: vision only while OCR can reach it."""
-    from lilbee.core.config import cfg
-
-    return tuple(
-        role
-        for role in ROLE_REGISTRY
-        if role is not WorkerRole.VISION or vision_role_wanted(str(cfg.vision_model))
-    )
-
-
 def plan_all_launches() -> FleetPlan:
-    """Apply GPU env, probe devices, and plan launches for the configured roles.
+    """Apply GPU env, probe devices, and plan launches for every configured role.
 
     Disables crash-prone Vulkan layers / dual-vendor ICDs and applies any
     ``cfg.gpu_devices`` pin before the probe and plan (both inherit the env).
@@ -3208,4 +3158,4 @@ def plan_all_launches() -> FleetPlan:
     with _one_engine_per_pass():
         devices = _plan_devices(binary)
         by_index = {d.index: d for d in devices}
-        return plan_launches(_launched_roles(), binary, by_index, devices)
+        return plan_launches(None, binary, by_index, devices)
