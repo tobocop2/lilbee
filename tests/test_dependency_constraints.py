@@ -73,14 +73,6 @@ def test_mcp_admits_the_current_major_and_stops_below_the_next() -> None:
     assert not req.specifier.contains("3.0.0b1", prereleases=True)
 
 
-def test_crawler_extra_excludes_redos_soupsieve() -> None:
-    # 2.9.0 fixes GHSA-j934-xhv5-fg8f and GHSA-gjv8-xp57-g29c.
-    req = _extra_requirement("crawler", "soupsieve")
-    assert not req.specifier.contains("2.8.4")
-    assert req.specifier.contains("2.9.0")
-    assert req.specifier.contains("2.9.2")
-
-
 def test_qa_matrix_excludes_vulnerable_anyio() -> None:
     # 4.14.2 fixes GHSA-82r6-8w77-94w6 and GHSA-5p39-cfhj-2xmp.
     req = _qa_requirement("anyio")

@@ -4,7 +4,7 @@ title = "lilbee gitleaks config"
 useDefault = true
 
 # unittest.mock patch / patch.object calls pass a quoted symbol name as the
-# target, for example: `patch.object(api_mod, "Crawl4aiFetcher", ...)`. The
+# target, for example: `patch.object(api_mod, "CrawlbergFetcher", ...)`. The
 # default generic-api-key rule can match these CamelCase identifiers on
 # entropy alone. Suppress the pattern globally because it is a language
 # idiom, not a secret.

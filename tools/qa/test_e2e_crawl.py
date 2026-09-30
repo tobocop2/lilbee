@@ -97,8 +97,8 @@ def chromium_ready(lane: Lane, qa_models_dir: Path) -> str:
         timeout=HTTP_FAST_TIMEOUT,
     )
     combined = runtime_probe.stdout + runtime_probe.stderr
-    if "Web crawling requires" in combined or "crawl4ai" in combined.lower():
-        _gate("crawl4ai not available at runtime in this artifact")
+    if "Web crawling requires" in combined or "crawlberg" in combined.lower():
+        _gate("crawlberg not available at runtime in this artifact")
     return "ok"
 
 

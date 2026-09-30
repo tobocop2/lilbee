@@ -378,32 +378,41 @@ jobs:
           SPACY_MODEL_URL: https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
         run: bash scripts/ci_retry.sh 5 uv pip install "${SPACY_MODEL_URL}"
 
-      # Keyed on the browser revision, not uv.lock: the browsers do not change when
-      # an unrelated dependency does, and hashing the lock minted a fresh ~300 MB
-      # entry per OS on every bump while the old ones sat on the cap until evicted.
+      # Keyed on the headless shell revision the locked Playwright expects, not
+      # uv.lock: the browser does not change when an unrelated dependency does, and
+      # hashing the lock minted a fresh entry per OS on every bump.
+      - name: Read the headless shell revision
+        if: matrix.full-crawl
+        id: pw-rev
+        shell: bash
+        run: |
+          revision="$(uv run python -c 'import sys; from lilbee.crawler.bootstrap import _expected_chromium_revision as expected; revision = expected(); sys.exit("Playwright names no headless shell revision") if revision is None else print(revision)')"
+          echo "revision=${revision}" >> "${GITHUB_OUTPUT}"
+
       - name: Restore Playwright cache
         if: matrix.full-crawl
         id: pw-cache
         uses: actions/cache/restore@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
-          key: playwright-${{ runner.os }}-chromium-v1
+          key: playwright-${{ runner.os }}-headless-shell-${{ steps.pw-rev.outputs.revision }}
 
-      # Always runs in the full-crawl cell: it is a no-op when the cached revision
-      # matches, and installs the expected revision when the cache holds another.
-      - name: Install Chromium for browser-mode crawls
+      # Runs on a cache hit too: it returns at once when the shell is on disk.
+      - name: Install the headless Chromium for browser-mode crawls
         if: matrix.full-crawl
+        id: pw-install
         run: uv run lilbee setup crawler
+        continue-on-error: true
         env:
           PYTHONIOENCODING: utf-8
           PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
 
       - name: Save Playwright cache
-        if: matrix.full-crawl && steps.pw-cache.outputs.cache-hit != 'true'
+        if: matrix.full-crawl && steps.pw-cache.outputs.cache-hit != 'true' && steps.pw-install.outcome == 'success'
         uses: actions/cache/save@v6
         with:
           path: ${{ github.workspace }}/.playwright-browsers
-          key: playwright-${{ runner.os }}-chromium-v1
+          key: playwright-${{ runner.os }}-headless-shell-${{ steps.pw-rev.outputs.revision }}
 
       # GGUF models come from the ci-models release (restore-ci-models below), so
       # nothing ever wrote ~/.cache/huggingface/hub. The cache block that used to

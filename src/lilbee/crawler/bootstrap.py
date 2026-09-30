@@ -1,4 +1,4 @@
-"""Playwright Chromium detection and install."""
+"""Playwright headless Chromium shell detection and install."""
 
 from __future__ import annotations
 
@@ -26,11 +26,28 @@ class CrawlerBrowserError(RuntimeError):
     """Playwright is installed but its Chromium browser binary is not."""
 
 
+class ChromiumMissingError(CrawlerBrowserError):
+    """The headless Chromium shell a browser-mode crawl launches is not on disk."""
+
+
 class CrawlerBackendError(RuntimeError):
-    """The ``crawler`` extra (crawl4ai) was never installed."""
+    """The ``crawler`` extra was never installed."""
 
 
+CHROMIUM_MISSING_MESSAGE = (
+    "The headless Chromium browser is not installed. "
+    "Run 'lilbee setup crawler' to enable browser-mode crawling."
+)
 _CHROMIUM_COMPONENT = "chromium"
+# Playwright's name for the headless shell in browsers.json, and its cache directory prefix.
+_HEADLESS_SHELL_BROWSER = "chromium-headless-shell"
+_HEADLESS_SHELL_DIR_PREFIX = "chromium_headless_shell-"
+# The file Playwright writes into a browser directory once its install has finished.
+_INSTALL_COMPLETE_MARKER = "INSTALLATION_COMPLETE"
+# File names Playwright gives the headless shell executable on each platform.
+_HEADLESS_SHELL_NAMES = frozenset(
+    {"chrome-headless-shell", "chrome-headless-shell.exe", "headless_shell"}
+)
 
 # A Chromium unpack runs into the minutes on a slow link, so a caller queued
 # behind one waits well past any normal request timeout before giving up.
@@ -73,7 +90,7 @@ def _browsers_cache_path() -> Path:
 
 
 def _read_chromium_revision(browsers_json: Path) -> str | None:
-    """Pull the ``chromium`` revision out of a Playwright ``browsers.json``."""
+    """Pull the headless shell revision out of a Playwright ``browsers.json``."""
     import json
 
     try:
@@ -81,7 +98,7 @@ def _read_chromium_revision(browsers_json: Path) -> str | None:
     except (OSError, ValueError):
         return None
     for browser in data.get("browsers", []):
-        if browser.get("name") == _CHROMIUM_COMPONENT:
+        if browser.get("name") == _HEADLESS_SHELL_BROWSER:
             revision = browser.get("revision")
             return str(revision) if revision is not None else None
     return None
@@ -102,21 +119,41 @@ def _expected_chromium_revision() -> str | None:
     return None
 
 
-def chromium_installed() -> bool:
-    """Return True if the Chromium revision Playwright expects is on disk.
+def _shell_in(directory: Path) -> Path | None:
+    """The headless shell executable under *directory*, if Playwright finished installing it."""
+    if not (directory / _INSTALL_COMPLETE_MARKER).is_file():
+        return None
+    matches = (
+        path
+        for path in sorted(directory.rglob("*"))
+        if path.name in _HEADLESS_SHELL_NAMES and path.is_file() and os.access(path, os.X_OK)
+    )
+    return next(matches, None)
 
-    Matching by any ``chromium-*`` directory isn't enough: when the
-    system has chromium-1217 but the bundled Playwright driver expects
-    chromium-1208, launch fails with ``Executable doesn't exist`` even
-    though the bootstrap check thought everything was ready.
+
+def headless_shell_executable() -> Path | None:
+    """The headless shell binary at the revision Playwright expects, or None if absent.
+
+    With the revision unknown, any installed revision counts.
     """
     root = _browsers_cache_path()
-    if not root.exists():
-        return False
+    if not root.is_dir():
+        return None
     expected = _expected_chromium_revision()
     if expected is None:
-        return any(p.is_dir() and p.name.startswith("chromium-") for p in root.iterdir())
-    return (root / f"{_CHROMIUM_COMPONENT}-{expected}").is_dir()
+        candidates = sorted(root.glob(f"{_HEADLESS_SHELL_DIR_PREFIX}*"))
+    else:
+        candidates = [root / f"{_HEADLESS_SHELL_DIR_PREFIX}{expected}"]
+    for directory in candidates:
+        executable = _shell_in(directory)
+        if executable is not None:
+            return executable
+    return None
+
+
+def chromium_installed() -> bool:
+    """Return True if the headless shell a browser-mode crawl launches is on disk."""
+    return headless_shell_executable() is not None
 
 
 def _bootstrap_lock_path() -> Path:
@@ -223,7 +260,7 @@ _PLAYWRIGHT_MISSING_HINT = (
 
 
 def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
-    """Return ``(argv_prefix, env)`` for invoking ``playwright install chromium``.
+    """Return ``(argv_prefix, env)`` for invoking ``playwright install``.
 
     Spawns Playwright's bundled Node driver directly so the call works under a
     pip install, ``uv tool install``, or a frozen (Nuitka onefile) binary. Falls
@@ -247,7 +284,7 @@ def _resolve_playwright_runner() -> tuple[list[str], dict[str, str]]:
 async def bootstrap_chromium(
     on_progress: DetailedProgressCallback | None = None,
 ) -> None:
-    """Run ``playwright install chromium`` as a subprocess, emitting events.
+    """Run ``playwright install --only-shell chromium`` as a subprocess, emitting events.
 
     Short-circuits when ``chromium_installed()`` is already True. Emits
     ``setup_start`` before spawning, ``setup_progress`` for each recognizable
@@ -298,6 +335,7 @@ async def _install_chromium(on_progress: DetailedProgressCallback | None) -> Non
     proc = await asyncio.create_subprocess_exec(
         *runner,
         "install",
+        "--only-shell",
         "chromium",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
