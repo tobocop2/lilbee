@@ -5,11 +5,10 @@ from __future__ import annotations
 import inspect
 import logging
 import math
-import threading
 from collections.abc import Callable
 from typing import Any
 
-from lilbee.crawler.models import CrawlResult, FetchedPage
+from lilbee.crawler.models import CancelToken, CrawlResult, FetchedPage
 from lilbee.runtime.progress import (
     CrawlPageEvent,
     CrawlPageFailedEvent,
@@ -59,7 +58,7 @@ async def _drain_page_stream(
     on_result: Callable[[CrawlResult], Any] | None,
     sitemap_total: int,
     pages_cap: float,
-    cancel: threading.Event | None,
+    cancel: CancelToken | None,
 ) -> list[CrawlResult]:
     """Consume a fetcher's page stream, emitting events and flushing per page.
 
@@ -107,7 +106,7 @@ def _handle_crawl_teardown_error(
     url: str,
     exc: Exception,
     *,
-    cancel: threading.Event | None,
+    cancel: CancelToken | None,
     results: list[CrawlResult],
 ) -> None:
     """Classify a recursive-crawl exception: cancel-teardown vs real failure.

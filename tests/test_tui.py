@@ -72,9 +72,89 @@ class TestRunTui:
     def test_run_tui_forwards_initial_view(self, mock_run: mock.MagicMock) -> None:
         from lilbee.cli.tui import run_tui
 
-        with mock.patch("lilbee.cli.tui.app.LilbeeApp.__init__", return_value=None) as init:
+        with (
+            mock.patch("lilbee.cli.tui.app.LilbeeApp.__init__", return_value=None) as init,
+            mock.patch("lilbee.cli.tui.app.LilbeeApp.task_bar", create=True),
+        ):
             run_tui(initial_view="Catalog")
         init.assert_called_once_with(initial_view="Catalog")
+
+    def test_quitting_cancels_a_running_task_and_waits_before_teardown(self) -> None:
+        import threading
+
+        from lilbee.cli.tui import run_tui
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+
+        saw_cancel = threading.Event()
+        worker_done = threading.Event()
+        done_at_teardown: list[bool] = []
+
+        def _target(reporter) -> None:
+            for _ in range(200):
+                if reporter.is_set():
+                    saw_cancel.set()
+                    break
+                threading.Event().wait(0.05)
+            worker_done.set()
+
+        def _run(app: LilbeeApp) -> None:
+            app.task_bar.start_task("Sync", TaskType.SYNC, _target)
+
+        with (
+            mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch(
+                "lilbee.cli.tui.reset_services_on_exit",
+                side_effect=lambda: done_at_teardown.append(worker_done.is_set()),
+            ),
+            mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang"),
+        ):
+            run_tui()
+        assert saw_cancel.is_set()
+        assert done_at_teardown == [True]
+
+    def test_quitting_unwinds_a_sync_waiting_on_a_page_before_teardown(self) -> None:
+        """A sync awaiting a page that never returns still flushes before the services go."""
+        import asyncio
+        import threading
+        import time
+
+        from lilbee.cli.tui import run_tui
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.task_queue import TaskType
+        from lilbee.data.offload import to_ingest_thread
+        from lilbee.runtime import asyncio_loop
+
+        flushed = threading.Event()
+        flushed_at_teardown: list[bool] = []
+
+        async def _sync_on_a_page_that_never_returns() -> None:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await to_ingest_thread(flushed.set)
+
+        def _target(_reporter) -> None:
+            asyncio_loop.run(_sync_on_a_page_that_never_returns())
+
+        def _run(app: LilbeeApp) -> None:
+            app.task_bar.start_task("Sync", TaskType.SYNC, _target)
+            time.sleep(0.2)
+
+        started = time.monotonic()
+        with (
+            mock.patch.object(LilbeeApp, "run", autospec=True, side_effect=_run),
+            mock.patch("lilbee.cli.sync.shutdown_executor"),
+            mock.patch(
+                "lilbee.cli.tui.reset_services_on_exit",
+                side_effect=lambda: flushed_at_teardown.append(flushed.is_set()),
+            ),
+            mock.patch("lilbee.cli.tui.exit_when_stragglers_would_hang"),
+        ):
+            run_tui()
+        assert flushed_at_teardown == [True]
+        assert time.monotonic() - started < 4.0
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")

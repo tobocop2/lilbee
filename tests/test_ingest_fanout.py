@@ -9,6 +9,7 @@ import sys
 import threading
 
 import pytest
+import rich.progress
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
@@ -438,6 +439,30 @@ class TestRunWorkers:
         )
         assert [verdict.index for verdict in verdicts] == [0, 1]
         assert max(data.current for _, data in events) == 4
+
+    @pytest.mark.parametrize("quiet", [True, False])
+    async def test_the_bar_never_uses_rich_s_global_console(self, fake_context, monkeypatch, quiet):
+        """Rich's global console fixes its terminal detection when first built; a bar skips it."""
+
+        def _global_console():
+            raise AssertionError("the fan-out bar asked for rich's global console")
+
+        def fake_shard(spec, options, messages, stop):
+            done = fanout.ShardDone(
+                kind="done", index=spec.shard.index, result=SyncResult(), error=None
+            )
+            messages.put(done)
+
+        monkeypatch.setattr(rich.progress, "get_console", _global_console)
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        verdicts = await fanout.run_workers(
+            [_spec(0)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=quiet,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        assert [verdict.error for verdict in verdicts] == [None]
 
     async def test_a_worker_that_dies_without_a_verdict_is_recorded_as_failed(
         self, fake_context, monkeypatch

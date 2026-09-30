@@ -1,11 +1,14 @@
 """Tests for the MCP server tools."""
 
 import asyncio
+import contextlib
 import os
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
+from mcp.shared.exceptions import MCPError
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
@@ -50,6 +53,7 @@ from lilbee.mcp_server import (
 )
 from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
+from tests._mcp_client import mcp_client
 
 
 @pytest.fixture(autouse=True)
@@ -838,6 +842,82 @@ class TestAdd:
         assert not result.get("error")
         assert "real.txt" in result["copied"]
         assert result["warning"] == "some files could not be processed"
+
+    @staticmethod
+    async def _stop_add_mid_sync(src, *, agent_cancels: bool) -> None:
+        """Call add through a real client; stop it mid-sync by an agent cancel or a drop.
+
+        Returns once the server's sync has been cancelled and unwound.
+        """
+        started, unwound = anyio.Event(), anyio.Event()
+
+        async def _parked(**kwargs):
+            started.set()
+            try:
+                await anyio.sleep(30)
+            finally:
+                unwound.set()
+
+        with mock.patch("lilbee.data.ingest.sync", new=_parked):
+            async with mcp_client() as (session, _init, drop):
+
+                async def _call_add() -> None:
+                    with contextlib.suppress(MCPError):  # the dropped connection
+                        await session.call_tool("add", {"paths": [str(src)]})
+
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(_call_add)
+                    await started.wait()
+                    assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+                    if not agent_cancels:
+                        await drop()
+                    tg.cancel_scope.cancel()
+                with anyio.fail_after(10):
+                    await unwound.wait()
+                await drop()
+
+    @pytest.mark.parametrize("agent_cancels", [True, False], ids=["agent_cancel", "dropped"])
+    async def test_a_stopped_add_keeps_the_source_for_the_next_sync(self, tmp_path, agent_cancels):
+        """Neither an agent cancel nor a dropped connection un-registers what the add registered."""
+        src = tmp_path / "scan.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        await self._stop_add_mid_sync(src, agent_cancels=agent_cancels)
+
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+
+    async def test_a_cancelled_in_process_call_keeps_the_source(self, tmp_path):
+        """A cancelled direct call keeps what the add registered."""
+        src = tmp_path / "scan.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        with (
+            mock.patch(
+                "lilbee.data.ingest.sync",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError,
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await add([str(src)])
+
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+
+    async def test_a_failed_sync_keeps_the_source_for_the_next_sync(self, tmp_path):
+        """A sync that raises keeps what the add registered."""
+        src = tmp_path / "scan.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        with mock.patch(
+            "lilbee.data.ingest.sync",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("sync exploded"),
+        ):
+            async with mcp_client() as (session, _init, _drop):
+                result = await session.call_tool("add", {"paths": [str(src)]})
+
+        assert result.is_error
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, mock_sync, tmp_path):

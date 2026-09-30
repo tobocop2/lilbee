@@ -1916,7 +1916,7 @@ class TestPeriodicSync:
 
         tasks: set[asyncio.Task[None]] = set()
         with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync(tasks)
+            await _maybe_periodic_sync(tasks, None)
             mock_sync.assert_not_awaited()
         assert not tasks
 
@@ -1931,7 +1931,7 @@ class TestPeriodicSync:
         tasks: set[asyncio.Task[None]] = set()
         try:
             with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
-                await _maybe_periodic_sync(tasks)
+                await _maybe_periodic_sync(tasks, None)
                 mock_sync.assert_not_awaited()
         finally:
             sync_state.lock.release()
@@ -1947,7 +1947,7 @@ class TestPeriodicSync:
 
         tasks: set[asyncio.Task[None]] = set()
         with patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as mock_sync:
-            await _maybe_periodic_sync(tasks)
+            await _maybe_periodic_sync(tasks, None)
             mock_sync.assert_not_awaited()
 
     async def test_sync_fires_when_interval_elapsed(self, isolated_env):
@@ -1960,7 +1960,7 @@ class TestPeriodicSync:
         tasks: set[asyncio.Task[None]] = set()
         mock_sync = AsyncMock()
         with patch("lilbee.data.ingest.sync", mock_sync):
-            await _maybe_periodic_sync(tasks)
+            await _maybe_periodic_sync(tasks, None)
             # Drain the spawned task so the awaited assertion is deterministic.
             await asyncio.gather(*tasks, return_exceptions=True)
             mock_sync.assert_awaited_once()
@@ -1975,7 +1975,7 @@ class TestPeriodicSync:
         tasks: set[asyncio.Task[None]] = set()
         mock_sync = AsyncMock(side_effect=RuntimeError("sync failed"))
         with patch("lilbee.data.ingest.sync", mock_sync):
-            await _maybe_periodic_sync(tasks)
+            await _maybe_periodic_sync(tasks, None)
             await asyncio.gather(*tasks, return_exceptions=True)
 
         # Lock should be released after failure
@@ -2832,6 +2832,48 @@ class TestStreamingFlush:
         # No new pending tasks leak past the call.
         leaked = {t for t in asyncio.all_tasks() if t not in before and not t.done()}
         assert not leaked
+
+    async def test_a_crawl_cancel_stops_its_periodic_sync(self, isolated_env):
+        """The periodic sync a crawl starts stops on that crawl's cancel."""
+        import threading
+
+        cfg.crawl_sync_interval = 1
+        reset_services()
+        sync_state = get_services().crawler_sync_state
+        sync_state.last_run = 0.0
+        cancel = threading.Event()
+        started = asyncio.Event()
+        seen: list[object] = []
+
+        async def _sync_until_cancelled(**kwargs):
+            seen.append(kwargs.get("cancel"))
+            started.set()
+            for _ in range(200):
+                if cancel.is_set() and kwargs.get("cancel") is cancel:
+                    raise asyncio.CancelledError
+                await asyncio.sleep(0.01)
+            raise AssertionError("the periodic sync never saw the crawl's cancel")
+
+        async def _fake_single(
+            url: str, *, quiet: bool = False, on_progress=None, render_mode=None
+        ) -> CrawlResult:
+            return CrawlResult(url=url, markdown="# page")
+
+        with (
+            patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
+            patch("lilbee.data.ingest.sync", _sync_until_cancelled),
+        ):
+            crawl = asyncio.create_task(
+                crawl_and_save("https://example.com/c", depth=0, cancel=cancel)
+            )
+            await asyncio.wait_for(started.wait(), timeout=5)
+            cancel.set()
+            paths = await asyncio.wait_for(crawl, timeout=5)
+        assert len(paths) == 1
+        assert seen == [cancel]
+        # The cancelled sync still releases the lock for the next one.
+        assert sync_state.lock.acquire(blocking=False)
+        sync_state.lock.release()
 
     async def test_concurrent_crawl_and_save_calls_isolated_tasks(self, isolated_env):
         """Two concurrent crawl_and_save calls each own their own local task set."""

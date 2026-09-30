@@ -268,6 +268,7 @@ def test_do_crawl_reports_setup_progress() -> None:
         depth,
         max_pages,
         on_progress,
+        cancel=None,
         quiet=False,
         include_subdomains=False,
         render_mode=None,
@@ -323,6 +324,7 @@ def test_do_crawl_reports_page_progress() -> None:
         depth,
         max_pages,
         on_progress,
+        cancel=None,
         quiet=False,
         include_subdomains=False,
         render_mode=None,
@@ -372,6 +374,7 @@ def test_do_crawl_notifies_page_failures() -> None:
         depth,
         max_pages,
         on_progress,
+        cancel=None,
         quiet=False,
         include_subdomains=False,
         render_mode=None,
@@ -492,7 +495,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     from lilbee.data.ingest import SyncResult
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=2),
@@ -529,7 +532,7 @@ def test_do_sync_done_event_reports_completion() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.SYNC_DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
@@ -574,7 +577,7 @@ def test_do_sync_reports_what_pruning_dropped() -> None:
     reporter = MagicMock(spec=ProgressReporter)
     notes: list[str] = []
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         assert prune_ignored is True
         return SyncResult(removed=["vendor/lib.min.js"])
 
@@ -613,7 +616,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         return SyncResult(failed=["broken.pdf"])
 
     captured: list[Exception] = []
@@ -633,16 +636,18 @@ def test_do_sync_raises_on_sync_failed() -> None:
     assert "broken.pdf" in str(captured[0])
 
 
-def test_do_sync_translates_cancellation() -> None:
-    """asyncio.CancelledError becomes a RuntimeError the controller can surface."""
+def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
+    """asyncio.CancelledError becomes a task cancel that carries the resume hint."""
     import threading
 
+    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.runtime.cancellation import TaskCancelledError
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         import asyncio as _asyncio
 
         raise _asyncio.CancelledError
@@ -660,8 +665,68 @@ def test_do_sync_translates_cancellation() -> None:
     t.start()
     t.join(timeout=5)
     assert captured, "_do_sync should have raised"
-    assert isinstance(captured[0], RuntimeError)
-    assert "cancelled" in str(captured[0]).lower()
+    assert isinstance(captured[0], TaskCancelledError)
+    assert str(captured[0]) == msg.SYNC_CANCELLED_RESUME
+
+
+def test_do_sync_hands_the_task_reporter_to_sync_as_its_cancel() -> None:
+    """Cancelling the task reaches the sync itself, not only its progress callback."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest import SyncResult
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    received: list[object] = []
+
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+        received.append(cancel)
+        return SyncResult()
+
+    def _worker() -> None:
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            screen._do_sync(reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert received == [reporter]
+
+
+def test_do_add_hands_the_task_reporter_to_sync_as_its_cancel(tmp_path: Path) -> None:
+    """Cancelling an /add task reaches the sync itself, not only its progress callback."""
+    import threading
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest import SyncResult
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    received: list[object] = []
+
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+        received.append(cancel)
+        return SyncResult(added=[src.name])
+
+    def _worker() -> None:
+        screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+        with (
+            patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(registered=[src.name]),
+            ),
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+        ):
+            screen._do_add([src], reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert received == [reporter]
 
 
 @pytest.mark.asyncio
@@ -1001,7 +1066,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
@@ -1051,7 +1116,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         # Per-page rasterization progress fires while the file is being
         # processed (FILE_START has already named it via the relative source
         # name); the BATCH_PROGRESS event itself is emitted by the OCR
@@ -1121,7 +1186,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         # Three files start concurrently. The pipeline emits FILE_START for each.
         on_progress(
             EventType.FILE_START, FileStartEvent(file="a.pdf", current_file=1, total_files=3)
@@ -1312,6 +1377,7 @@ def test_do_add_names_ocr_off_when_the_only_file_skipped_with_ocr_off(tmp_path: 
     )
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
+    reporter.is_set.return_value = False  # a failed add, not a cancel
     captured: list[Exception] = []
 
     def _worker() -> None:
@@ -1453,6 +1519,7 @@ def test_do_add_raises_when_nothing_indexed(tmp_path: Path) -> None:
     src.write_bytes(b"x")
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
+    reporter.is_set.return_value = False  # a failed add, not a cancel
 
     from lilbee.app.ingest import RegisterResult
 
@@ -1493,6 +1560,7 @@ def test_do_add_other_sources_do_not_mask_a_dead_add(tmp_path: Path) -> None:
     src.write_bytes(b"x")
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
+    reporter.is_set.return_value = False  # a failed add, not a cancel
 
     from lilbee.app.ingest import RegisterResult
 
@@ -1543,6 +1611,75 @@ async def test_cmd_crawl_with_valid_url_routes_to_start_crawl() -> None:
         mock_start.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> None:
+    """Cancelling a /crawl task stops the crawl's sync and skips the follow-up sync."""
+    import asyncio
+    import threading
+    from unittest.mock import AsyncMock
+
+    from lilbee.app.services import CrawlerSyncState, get_services
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config.enums import CrawlRenderMode
+    from lilbee.crawler.models import CrawlResult
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(cfg, "documents_dir", tmp_path / "documents")
+    monkeypatch.setattr(cfg, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    monkeypatch.setattr(cfg, "crawl_sync_interval", 1)
+    (tmp_path / "documents").mkdir()
+    (tmp_path / "data").mkdir()
+    sync_started = threading.Event()
+    seen: list[object] = []
+
+    async def _sync_until_cancelled(**kwargs):
+        cancel = kwargs.get("cancel")
+        seen.append(cancel)
+        sync_started.set()
+        for _ in range(200):
+            if cancel is not None and cancel.is_set():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.01)
+        raise AssertionError("the crawl's sync never saw the task's cancel")
+
+    async def _fake_single(url, *, quiet=False, on_progress=None, render_mode=None):
+        return CrawlResult(url=url, markdown="# page")
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        services = get_services()
+        services.crawler_semaphore = None
+        services.crawler_sync_state = CrawlerSyncState()
+        notified: list[str] = []
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch("lilbee.crawler.runner._ensure_crawler_ready", new_callable=AsyncMock),
+            patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
+            patch("lilbee.data.ingest.sync", _sync_until_cancelled),
+            patch.object(screen, "_run_sync") as follow_up_sync,
+        ):
+            screen._cmd_crawl("https://example.com/c --depth 0")
+            assert await wait_until(pilot, sync_started.is_set, max_pauses=500)
+            crawl = next(
+                t for t in app.task_bar.queue.active_tasks if t.task_type == TaskType.CRAWL.value
+            )
+            app.task_bar.cancel_task(crawl.task_id)
+            worker = next(t for t in threading.enumerate() if t.name == f"task-{crawl.task_id}")
+            await asyncio.to_thread(worker.join, 5)
+            assert not worker.is_alive()
+            await pilot.pause()
+        assert len(seen) == 1
+        assert seen[0] is not None and seen[0].is_set()
+        follow_up_sync.assert_not_called()
+        success = msg.CMD_CRAWL_SUCCESS.format(count=1, url="https://example.com/c")
+        assert success not in notified
+
+
 def test_do_sync_throttles_rapid_embed_events() -> None:
     """Two EMBED events within the throttle window → only the first updates."""
     import threading
@@ -1553,7 +1690,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 
@@ -1583,3 +1720,149 @@ async def test_run_task_worker_noop_when_target_popped_before_start() -> None:
         # Simulate the race: entry popped before worker body runs.
         controller._task_targets.pop(task_id, None)
         controller._run_task_worker(task_id)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_an_add_whose_sync_is_cancelled_ends_as_a_cancelled_task(tmp_path: Path) -> None:
+    """An /add whose sync raises CancelledError finalizes its row as cancelled."""
+    import asyncio
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from tests._async_wait import wait_until
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+
+    async def fake_sync(**_kwargs):
+        raise asyncio.CancelledError
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        screen = ChatScreen.__new__(ChatScreen)
+        screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+        with (
+            patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(registered=[src.name]),
+            ),
+            patch("lilbee.cli.tui.screens.chat.unregister_added_roots"),
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+        ):
+            task_id = controller.start_task(
+                "Add doc.pdf", TaskType.ADD, lambda reporter: screen._do_add([src], reporter)
+            )
+            await wait_until(
+                pilot, lambda: controller.queue.get_task(task_id).status is not TaskStatus.ACTIVE
+            )
+        assert controller.queue.get_task(task_id).status is TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_sync_row_shows_the_resume_hint() -> None:
+    """Cancelling a TUI sync leaves the row cancelled with the hint to press S."""
+    import asyncio
+    import threading
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from tests._async_wait import wait_until
+
+    async def fake_sync(*, cancel, **_kwargs):
+        while not cancel.is_set():
+            await asyncio.sleep(0.02)
+        raise asyncio.CancelledError
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        screen = ChatScreen.__new__(ChatScreen)
+        started = threading.Event()
+
+        def _target(reporter: ProgressReporter) -> None:
+            started.set()
+            screen._do_sync(reporter)
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            task_id = controller.start_task("Sync", TaskType.SYNC, _target)
+            started.wait(5.0)
+            controller.cancel_task(task_id)
+            await wait_until(pilot, lambda: task_id not in controller._task_targets)
+            await wait_until(pilot, lambda: controller.queue.get_task(task_id).detail != "")
+        task = controller.queue.get_task(task_id)
+        assert task.status is TaskStatus.CANCELLED
+        assert task.detail == msg.SYNC_CANCELLED_RESUME
+
+
+@pytest.mark.asyncio
+async def test_stop_all_cancels_queued_and_running_tasks_within_its_budget() -> None:
+    """A wedged worker costs at most the budget; queued rows are cancelled too."""
+    import threading
+    import time
+
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        running = controller.start_task(
+            "wedged", TaskType.SYNC, lambda _reporter: release.wait(10.0)
+        )
+        queued = controller.start_task("next", TaskType.SYNC, lambda _reporter: None)
+        started = time.monotonic()
+        controller.stop_all(budget_s=0.2)
+        elapsed = time.monotonic() - started
+        release.set()
+        assert elapsed < 2.0
+        statuses = {
+            task_id: controller.queue.get_task(task_id).status for task_id in (running, queued)
+        }
+        assert statuses == {running: TaskStatus.CANCELLED, queued: TaskStatus.CANCELLED}
+
+
+@pytest.mark.asyncio
+async def test_a_sync_stopped_at_exit_starts_no_pending_detection() -> None:
+    """The re-detect a sync starts on its way out does not run into the exit teardown."""
+    import threading
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        detected: list[bool] = []
+
+        def _sync_target(reporter: ProgressReporter) -> None:
+            try:
+                while not reporter.is_set():
+                    threading.Event().wait(0.02)
+            finally:
+                controller.start_detect_pending()
+
+        with patch.object(controller, "_run_detect_pending", lambda: detected.append(True)):
+            controller.start_task("Sync", TaskType.SYNC, _sync_target)
+            controller.stop_all(budget_s=2.0)
+        assert detected == []
+        assert controller._detect_thread is None
+
+
+@pytest.mark.asyncio
+async def test_stop_all_waits_for_a_detection_already_running() -> None:
+    """A detection in flight when the app exits finishes before the teardown."""
+    import threading
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        finished = threading.Event()
+
+        def _detect() -> None:
+            release.wait(5.0)
+            finished.set()
+
+        with patch.object(controller, "_run_detect_pending", _detect):
+            controller.start_detect_pending()
+            threading.Timer(0.2, release.set).start()
+            controller.stop_all(budget_s=3.0)
+        assert finished.is_set()

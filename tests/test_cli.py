@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import sys
+import threading
 from pathlib import Path
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -249,7 +250,7 @@ class TestSync:
     def test_sync_error_prints_a_bracketed_path_literally(self):
         """A sync error can carry a document path, which must not go through markup."""
         with mock.patch(
-            "lilbee.cli.commands.ingest_sync._run_sync_with_signal_cancel",
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
             side_effect=RuntimeError("locked: notes[draft].txt"),
         ):
             result = runner.invoke(app, ["sync"])
@@ -276,7 +277,7 @@ class TestRebuild:
 
     def test_rebuild_error_prints_a_bracketed_path_literally(self):
         with mock.patch(
-            "lilbee.cli.commands.ingest_sync._run_sync_with_signal_cancel",
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
             side_effect=RuntimeError("locked: notes[draft].txt"),
         ):
             result = runner.invoke(app, ["rebuild"])
@@ -430,7 +431,7 @@ class TestAdd:
         src.parent.mkdir()
         src.write_text("content", encoding="utf-8")
         with mock.patch(
-            "lilbee.cli.commands.ingest_sync._run_sync_with_signal_cancel",
+            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
             side_effect=RuntimeError("locked: notes[draft].txt"),
         ):
             result = runner.invoke(app, ["add", str(src)])
@@ -860,8 +861,16 @@ class TestAutoSync:
 
         con = Console()
         with mock.patch("lilbee.cli.sync.run_sync_background") as mock_bg:
-            auto_sync(con, background=True)
+            auto_sync(con, mock.Mock(), background=True)
             mock_bg.assert_called_once_with(con)
+
+    def test_auto_sync_rejects_a_runner_result_that_is_not_a_sync_result(self) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import auto_sync
+
+        with pytest.raises(TypeError, match="Expected SyncResult, got str"):
+            auto_sync(Console(quiet=True), lambda: "not-a-result")
 
     def test_auto_sync_error_prints_a_bracketed_path_literally(self) -> None:
         """A sync error can carry a document path, which must not go through markup."""
@@ -870,16 +879,12 @@ class TestAutoSync:
         from lilbee.cli.helpers import auto_sync
 
         con = Console(quiet=True)
-        with (
-            mock.patch(
-                "lilbee.data.ingest.sync",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("locked: notes[draft].txt"),
-            ),
-            mock.patch.object(con, "print") as mock_print,
-            pytest.raises(SystemExit),
-        ):
-            auto_sync(con)
+
+        def _locked_sync() -> object:
+            raise RuntimeError("locked: notes[draft].txt")
+
+        with mock.patch.object(con, "print") as mock_print, pytest.raises(SystemExit):
+            auto_sync(con, _locked_sync)
         printed = mock_print.call_args.args[0]
         assert "locked: notes[draft].txt" in printed.plain
 
@@ -3273,6 +3278,7 @@ class TestLogLevel:
 
 
 class TestIngestShutdownError:
+    @pytest.mark.usefixtures("joined_ingest_pool")
     def test_process_one_converts_shutdown_error(self):
         """RuntimeError from executor shutdown is converted to CancelledError."""
         import asyncio
@@ -3312,7 +3318,7 @@ class TestBatchIngestNoEagerWarm:
         """Batch ingest is headless: by the time the sync runs, the eager warm is
         off, so services init never spawns the chat role's server."""
         import lilbee.data.ingest as ingest_mod
-        from lilbee.cli.commands.ingest_sync import _run_sync_with_signal_cancel
+        from lilbee.cli.commands.ingest_sync import run_sync_with_signal_cancel
 
         monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
         seen: dict[str, object] = {}
@@ -3322,7 +3328,7 @@ class TestBatchIngestNoEagerWarm:
             return object()
 
         monkeypatch.setattr(ingest_mod, "sync", _fake_sync)
-        _run_sync_with_signal_cancel()
+        run_sync_with_signal_cancel()
         assert seen["eager"] is False
 
 
@@ -6582,3 +6588,355 @@ def test_self_check_applies_expert_offload_to_embed_like_the_fleet(monkeypatch, 
 
     assert captured, "build_server_argv was never reached; the test proves nothing"
     assert captured.get("cpu_moe") is True, "embed self-check dropped the fleet's offload"
+
+
+def _source_rows(stamps: dict[str, str]) -> list[dict[str, str]]:
+    """Source table rows carrying *stamps* as each file's ``ingested_at``."""
+    return [{"filename": name, "ingested_at": stamp} for name, stamp in stamps.items()]
+
+
+async def _ctrl_c_sync(*, cancel, **_kwargs):
+    """A sync the user stops with Ctrl+C: the handler sets the cancel, the sync raises."""
+    import asyncio
+
+    cancel.set()
+    raise asyncio.CancelledError
+
+
+_DISK_FULL_NOTE = "It also hit an error: [Errno 28] No space left on device."
+
+
+async def _ctrl_c_then_disk_full(*, cancel, **_kwargs):
+    """A sync the user stops with Ctrl+C that then fails on a full disk."""
+    import errno
+
+    cancel.set()
+    raise OSError(errno.ENOSPC, "No space left on device")
+
+
+def _cancel_error_records(caplog) -> list[logging.LogRecord]:
+    """The WARNING-or-higher records the add's cancel scope logged with an exception."""
+    return [
+        r
+        for r in caplog.records
+        if r.name == "lilbee.app.ingest" and r.levelno >= logging.WARNING and r.exc_info
+    ]
+
+
+class TestSyncCancelledExit:
+    """A sync cancelled by Ctrl+C ends the command with status 130 and no traceback."""
+
+    @pytest.mark.parametrize("command", [["sync"], ["rebuild"]])
+    def test_a_cancelled_sync_exits_130_with_a_message(self, mock_svc, command):
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
+            result = runner.invoke(app, command)
+        assert result.exit_code == 130, result.output
+        assert "Sync cancelled." in result.output
+        assert isinstance(result.exception, SystemExit)
+
+    @staticmethod
+    def _source(tmp_path: Path, name: str = "scan.txt") -> Path:
+        src = tmp_path / "source" / name
+        src.parent.mkdir(exist_ok=True)
+        src.write_text("content", encoding="utf-8")
+        return src
+
+    def test_a_cancelled_add_removes_the_file_it_did_not_add(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        import asyncio
+
+        src = self._source(tmp_path)
+        registered_during_sync: list[dict[str, str]] = []
+
+        async def cancelled_sync(*, cancel, **_kwargs):
+            registered_during_sync.append(dict(cfg.linked_roots))
+            cancel.set()  # the Ctrl+C handler
+            raise asyncio.CancelledError
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=cancelled_sync):
+            result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 130, result.output
+        assert "Add cancelled. scan.txt was not added." in result.output
+        assert "Traceback" not in result.output
+        assert registered_during_sync == [{"scan.txt": str(src.resolve())}]
+        assert cfg.linked_roots == {}  # the next sync does not resume it
+
+    def test_a_cancelled_add_names_every_file_it_did_not_add(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        first, second = self._source(tmp_path, "a.txt"), self._source(tmp_path, "b.txt")
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
+            result = runner.invoke(app, ["add", str(first), str(second)])
+        assert result.exit_code == 130, result.output
+        assert "Add cancelled. a.txt, b.txt were not added." in result.output
+        assert cfg.linked_roots == {}
+
+    def test_a_failed_add_keeps_its_source_for_the_next_sync(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        # Only a cancel drops what the add did not finish; a failed sync is retried.
+        src = self._source(tmp_path)
+        with mock.patch(
+            "lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom")
+        ):
+            result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 1, result.output
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+
+    def test_a_cancelled_add_keeps_a_file_that_finished(self, isolated_env, tmp_path, mock_svc):
+        import asyncio
+
+        done, pending = self._source(tmp_path, "done.txt"), self._source(tmp_path, "pending.txt")
+        mock_svc.store.get_sources.return_value = _source_rows({"done.txt": "old"})
+
+        async def cancelled_sync(*, cancel, **_kwargs):
+            # done.txt was re-indexed before the cancel; pending.txt never was.
+            mock_svc.store.get_sources.return_value = _source_rows({"done.txt": "new"})
+            cancel.set()
+            raise asyncio.CancelledError
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=cancelled_sync):
+            result = runner.invoke(app, ["add", str(done), str(pending)])
+        assert result.exit_code == 130, result.output
+        assert "Add cancelled. pending.txt was not added." in result.output
+        assert cfg.linked_roots == {"done.txt": str(done.resolve())}
+
+    def test_a_cancelled_add_does_not_count_a_file_indexed_before_it(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        # A source indexed under the label before the add, with its stamp unchanged,
+        # was not finished by this add, so the root still goes.
+        src = self._source(tmp_path)
+        mock_svc.store.get_sources.return_value = _source_rows({"scan.txt": "old"})
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
+            result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 130, result.output
+        assert "Add cancelled. scan.txt was not added." in result.output
+        assert cfg.linked_roots == {}
+
+    def test_a_cancelled_add_does_not_count_a_file_under_a_sibling_with_the_same_prefix(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        # corpus-2/b.txt finished; it sits under corpus-2, not under corpus.
+        import asyncio
+
+        corpus = tmp_path / "source" / "corpus"
+        sibling = tmp_path / "source" / "corpus-2"
+        for root, name in ((corpus, "a.txt"), (sibling, "b.txt")):
+            root.mkdir(parents=True)
+            (root / name).write_text("content", encoding="utf-8")
+        mock_svc.store.get_sources.return_value = _source_rows({})
+
+        async def cancelled_sync(*, cancel, **_kwargs):
+            mock_svc.store.get_sources.return_value = _source_rows({"corpus-2/b.txt": "new"})
+            cancel.set()
+            raise asyncio.CancelledError
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=cancelled_sync):
+            result = runner.invoke(app, ["add", str(corpus), str(sibling)])
+        assert result.exit_code == 130, result.output
+        assert "Add cancelled. corpus was not added." in result.output
+        assert cfg.linked_roots == {"corpus-2": str(sibling.resolve())}
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            pytest.param(["sync"], "Sync cancelled.", id="sync"),
+            pytest.param(["add"], "Add cancelled. scan.txt was not added.", id="add"),
+        ],
+    )
+    def test_an_error_after_ctrl_c_is_logged_and_named(
+        self, isolated_env, tmp_path, mock_svc, caplog, command, expected
+    ):
+        args = [*command, str(self._source(tmp_path))] if command == ["add"] else command
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.app.ingest"),
+            mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_then_disk_full),
+        ):
+            result = runner.invoke(app, args)
+        assert result.exit_code == 130, result.output
+        assert " ".join(result.output.split()).endswith(f"{expected} {_DISK_FULL_NOTE}")
+        assert [type(r.exc_info[1]) for r in _cancel_error_records(caplog)] == [OSError]
+
+    def test_a_plain_ctrl_c_logs_no_error(self, isolated_env, tmp_path, mock_svc, caplog):
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.app.ingest"),
+            mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync),
+        ):
+            result = runner.invoke(app, ["add", str(self._source(tmp_path))])
+        assert result.exit_code == 130, result.output
+        assert "Add cancelled. scan.txt was not added." in result.output
+        assert "error" not in result.output
+        assert _cancel_error_records(caplog) == []
+
+    def test_an_error_after_ctrl_c_in_a_json_add_is_named(
+        self, isolated_env, tmp_path, mock_svc, caplog
+    ):
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.app.ingest"),
+            mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_then_disk_full),
+        ):
+            result = runner.invoke(app, ["--json", "add", str(self._source(tmp_path))])
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {
+            "error": f"Add cancelled. scan.txt was not added. {_DISK_FULL_NOTE}",
+            "not_added": ["scan.txt"],
+        }
+        assert [type(r.exc_info[1]) for r in _cancel_error_records(caplog)] == [OSError]
+
+    def test_a_cancelled_sync_reports_json_in_json_mode(self, mock_svc):
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
+            result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {"error": "Sync cancelled."}
+
+    def test_a_cancelled_json_add_reports_json_and_exits_130(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync) as fake_sync:
+            result = runner.invoke(app, ["--json", "add", str(src)])
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {
+            "error": "Add cancelled. test.txt was not added.",
+            "not_added": ["test.txt"],
+        }
+        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        assert cfg.linked_roots == {}
+
+    @staticmethod
+    def _ctrl_c_at(stage: str, events: list[threading.Event]):
+        """Patch the real sync so the user's Ctrl+C lands at *stage*."""
+        import signal
+
+        from lilbee.data import ingest as ingest_mod
+        from lilbee.data.ingest import pipeline
+
+        real_sync = ingest_mod.sync
+
+        async def _sync(**kwargs):
+            events.append(kwargs["cancel"])
+            return await real_sync(**kwargs)
+
+        if stage == "registration":
+            from lilbee.app.ingest import register_sources
+
+            def _register(paths, **kwargs):
+                result = register_sources(paths, **kwargs)
+                signal.raise_signal(signal.SIGINT)
+                return result
+
+            # The human add registers through the CLI helpers, the JSON add directly.
+            stage_patch = contextlib.ExitStack()
+            for target in ("lilbee.cli.helpers", "lilbee.cli.commands.ingest_sync"):
+                stage_patch.enter_context(mock.patch(f"{target}.register_sources", _register))
+        elif stage == "planning":
+            real_discover = pipeline.discover_corpus
+
+            def _discover(*args, **kwargs):
+                signal.raise_signal(signal.SIGINT)
+                return real_discover(*args, **kwargs)
+
+            stage_patch = mock.patch.object(pipeline, "discover_corpus", _discover)
+        else:
+            real_passes = pipeline._run_post_ingest_passes
+
+            async def _passes(*args, **kwargs):
+                signal.raise_signal(signal.SIGINT)
+                return await real_passes(*args, **kwargs)
+
+            stage_patch = mock.patch.object(pipeline, "_run_post_ingest_passes", _passes)
+        return stage_patch, mock.patch.object(ingest_mod, "sync", _sync)
+
+    @pytest.mark.parametrize(
+        ("stage", "expected", "kept"),
+        [
+            pytest.param(
+                "registration", "Add cancelled. corpus was not added.", False, id="registration"
+            ),
+            pytest.param("planning", "Add cancelled. corpus was not added.", False, id="planning"),
+            pytest.param("post_ingest", "Sync cancelled.", True, id="post_ingest"),
+        ],
+    )
+    def test_ctrl_c_at_any_stage_of_an_add_exits_130_by_one_rule(
+        self, isolated_env, tmp_path, monkeypatch, stage, expected, kept
+    ):
+        from tests._ingesting_services import ingesting_services
+
+        corpus = tmp_path / "source" / "corpus"
+        corpus.mkdir(parents=True)
+        (corpus / "notes.txt").write_text("hello world " * 50, encoding="utf-8")
+        services, sources = ingesting_services()
+        svc_mod.set_services(services)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        events: list[threading.Event] = []
+        stage_patch, sync_patch = self._ctrl_c_at(stage, events)
+        with stage_patch, sync_patch:
+            result = runner.invoke(app, ["add", "--data-dir", str(tmp_path), str(corpus)])
+        assert events and events[0].is_set()
+        assert result.exit_code == 130, result.output
+        assert expected in result.output
+        assert isinstance(result.exception, SystemExit)
+        assert ("corpus/notes.txt" in sources) is (stage == "post_ingest")
+        assert ("corpus" in cfg.linked_roots) is kept
+
+    def test_ctrl_c_while_a_json_add_registers_reports_what_was_not_added(
+        self, isolated_env, tmp_path, monkeypatch
+    ):
+        from tests._ingesting_services import ingesting_services
+
+        src = self._source(tmp_path)
+        services, sources = ingesting_services()
+        svc_mod.set_services(services)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        events: list[threading.Event] = []
+        stage_patch, sync_patch = self._ctrl_c_at("registration", events)
+        with stage_patch, sync_patch:
+            result = runner.invoke(app, ["--json", "add", "--data-dir", str(tmp_path), str(src)])
+        assert events and events[0].is_set()
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {
+            "error": "Add cancelled. scan.txt was not added.",
+            "not_added": ["scan.txt"],
+        }
+        assert sources == {}
+        assert cfg.linked_roots == {}
+
+    def test_ctrl_c_while_a_sync_plans_exits_130(self, isolated_env, tmp_path, monkeypatch):
+        (tmp_path / "documents" / "notes.txt").write_text("hello world", encoding="utf-8")
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        events: list[threading.Event] = []
+        stage_patch, sync_patch = self._ctrl_c_at("planning", events)
+        with stage_patch, sync_patch:
+            result = runner.invoke(app, ["sync", "--data-dir", str(tmp_path)])
+        assert events and events[0].is_set()
+        assert result.exit_code == 130, result.output
+        assert "Sync cancelled." in result.output
+        assert isinstance(result.exception, SystemExit)
+
+    def test_a_cancelled_sync_before_ask_exits_130_without_answering(self, mock_svc):
+        import asyncio
+
+        with mock.patch(
+            "lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=asyncio.CancelledError
+        ) as fake_sync:
+            result = runner.invoke(app, ["ask", "q"])
+        assert result.exit_code == 130, result.output
+        assert "Sync cancelled." in result.output
+        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        mock_svc.searcher.ask_stream.assert_not_called()
+
+    def test_a_cancelled_sync_before_json_ask_reports_json_and_exits_130(self, mock_svc):
+        import asyncio
+
+        with mock.patch(
+            "lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=asyncio.CancelledError
+        ) as fake_sync:
+            result = runner.invoke(app, ["--json", "ask", "q"])
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {"error": "Sync cancelled."}
+        assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
+        mock_svc.searcher.ask_raw.assert_not_called()

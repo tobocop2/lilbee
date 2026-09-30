@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import json
@@ -38,6 +39,7 @@ from lilbee.providers.base import (
 from lilbee.providers.fleet.adapters import LLM_RERANK_CONCURRENCY
 from lilbee.providers.fleet.normalize import ChatMessage, to_alternating
 from lilbee.providers.roles import RerankMode
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _PROVIDER_NAME = "llama-server"
 
@@ -438,6 +440,8 @@ _TRANSIENT_KINDS = frozenset(
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
+# How often an abortable chat checks its cancel signal.
+_CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
 # processing, and readiness/monitor polls must not block on the request timeout.
 _HEALTH_TIMEOUT_S = 5.0
@@ -531,6 +535,7 @@ class LlamaServerClient:
         model: str,
         *,
         http: httpx.Client | None = None,
+        async_transport: httpx.AsyncBaseTransport | None = None,
         token_cap: int | None = None,
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
@@ -557,6 +562,8 @@ class LlamaServerClient:
         self._http = http or httpx.Client(
             base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
         )
+        self._timeout = timeout
+        self._async_transport = async_transport
         self._owns_http = http is None
         # Chat-role clients re-inline server-extracted reasoning as <think> text;
         # the other roles (vision OCR) keep dropping it, as their servers already did.
@@ -710,39 +717,62 @@ class LlamaServerClient:
             if tail:
                 yield tail
 
-    def chat_bounded(
+    def chat_abortable(
         self,
         messages: Sequence[Mapping[str, Any]],
         *,
         options: dict[str, Any] | None = None,
-        deadline_s: float,
+        deadline_s: float | None = None,
+        cancel: CancelSignal | None = None,
     ) -> str:
-        """Stream a chat completion and return its text, bounded by a total deadline.
+        """Stream a chat completion and return its text, aborted by a deadline or *cancel*.
 
-        httpx float timeouts are per-phase (connect/read/...), never a total
-        budget, so a steadily trickling upstream can pin a worker past its
-        deadline. Streaming in the caller's own thread and checking a monotonic
-        deadline per frame bounds total time: on expiry the ``with`` block closes
-        the stream (releasing the in-flight slot) and raises
-        :class:`ChatDeadlineError`.
+        The request runs as an asyncio task on a private loop, so cancelling it
+        closes the connection whether or not response headers have arrived, and
+        llama-server stops generating for a closed stream. A passed *deadline_s*
+        (total seconds, ``None`` for no limit) raises :class:`ChatDeadlineError`;
+        a set *cancel* raises ``TaskCancelledError``.
         """
-        payload: dict[str, Any] = {"model": self._model, "messages": messages, **(options or {})}
-        deadline = time.monotonic() + deadline_s
+        payload = {"model": self._model, "messages": messages, **(options or {}), "stream": True}
+        with self._track():
+            return asyncio.run(self._chat_until_stopped(payload, deadline_s, cancel))
+
+    async def _chat_until_stopped(
+        self, payload: dict[str, Any], deadline_s: float | None, cancel: CancelSignal | None
+    ) -> str:
+        async with httpx.AsyncClient(
+            base_url=self._base,
+            timeout=self._timeout,
+            verify=_LOOPBACK_SSL_CONTEXT,
+            transport=self._async_transport,
+        ) as http:
+            chat = asyncio.ensure_future(self._stream_text(http, payload))
+            try:
+                async with asyncio.timeout(deadline_s):
+                    while not chat.done():
+                        if cancel is not None and cancel.is_set():
+                            raise TaskCancelledError
+                        await asyncio.wait({chat}, timeout=_CANCEL_POLL_S)
+            except TimeoutError:
+                raise ChatDeadlineError(
+                    f"llama-server chat exceeded its {deadline_s:g}s deadline.",
+                    provider=_PROVIDER_NAME,
+                ) from None
+            finally:
+                chat.cancel()
+                await asyncio.gather(chat, return_exceptions=True)
+            return chat.result()
+
+    async def _stream_text(self, http: httpx.AsyncClient, payload: dict[str, Any]) -> str:
         inliner = _ThinkInliner(enabled=self._inline_reasoning)
         parts: list[str] = []
-        with (
-            self._track(),
-            self._http.stream("POST", _CHAT_PATH, json={**payload, "stream": True}) as resp,
-        ):
+        async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
+            if not resp.is_success:
+                await resp.aread()
             _raise_for_status(resp)
-            for line in resp.iter_lines():
-                if time.monotonic() >= deadline:
-                    raise ChatDeadlineError(
-                        f"llama-server chat exceeded its {deadline_s:.0f}s deadline.",
-                        provider=_PROVIDER_NAME,
-                    )
+            async for line in resp.aiter_lines():
                 parts.append(inliner.feed(*_parse_sse_deltas(line)))
-            parts.append(inliner.finish())
+        parts.append(inliner.finish())
         return "".join(parts)
 
     def chat_tools(

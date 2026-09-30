@@ -1,14 +1,17 @@
 """Tests for the document sync engine (mocked: no live server needed)."""
 
 import asyncio
+import contextlib
 import json
 import sys
+import threading
 from pathlib import Path
 from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+import rich.progress
 from xberg import Metadata
 
 import lilbee.app.services as svc_mod
@@ -811,6 +814,24 @@ class TestSync:
         assert "bar.txt" in result.added
         assert (capsys.readouterr().out == "") is quiet
 
+    @pytest.mark.parametrize("quiet", [True, False])
+    async def test_the_bar_never_uses_rich_s_global_console(
+        self, mock_extract_file, quiet, isolated_env, capsys, monkeypatch
+    ):
+        """Rich's global console fixes its terminal detection when first built; a bar skips it."""
+
+        def _global_console():
+            raise AssertionError("the ingest bar asked for rich's global console")
+
+        monkeypatch.setattr(rich.progress, "get_console", _global_console)
+        (isolated_env / "bar.txt").write_text("Bar or no bar.", encoding="utf-8")
+        from lilbee.data.ingest import sync
+
+        result = await sync(quiet=quiet)
+
+        assert "bar.txt" in result.added
+        assert (capsys.readouterr().out == "") is quiet
+
     async def test_batch_progress_measures_the_corpus_not_the_plan_so_far(
         self, mock_extract_file, isolated_env
     ):
@@ -1421,8 +1442,11 @@ class TestSyncDropsNewlyIgnored:
 class TestSyncCancellation:
     """Tests for cancel support and atomic per-file delete in sync."""
 
-    async def test_cancel_stops_file_discovery(self, mock_extract_file, isolated_env):
-        """Setting cancel before sync starts prevents any file processing."""
+    async def test_cancel_stops_file_discovery(
+        self, mock_extract_file, isolated_env, mock_svc, caplog
+    ):
+        """A cancel set before sync starts processes no file and raises the cancel."""
+        import asyncio
         import threading
 
         (isolated_env / "a.txt").write_text("file a")
@@ -1431,10 +1455,11 @@ class TestSyncCancellation:
 
         cancel = threading.Event()
         cancel.set()
-        result = await sync(quiet=True, cancel=cancel)
-        # Cancel was set before the loop, so no files should be processed
-        assert result.added == []
-        assert result.unchanged == 0
+        with caplog.at_level("WARNING"), pytest.raises(asyncio.CancelledError):
+            await sync(quiet=True, cancel=cancel)
+        mock_svc.store.write_chunks_batch.assert_not_called()
+        # The unplanned corpus is not reconciled as a silent drop.
+        assert "Sync reconciliation" not in caplog.text
 
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
@@ -1536,6 +1561,7 @@ class TestSyncCancellation:
         self, mock_extract_file, isolated_env, mock_svc
     ):
         """If cancel is set before a modified file is processed, no write happens."""
+        import asyncio
         import threading
 
         from lilbee.data.ingest import sync
@@ -1549,7 +1575,8 @@ class TestSyncCancellation:
         f.write_text("Version 2, modified content")
         cancel = threading.Event()
         cancel.set()
-        await sync(quiet=True, cancel=cancel)
+        with pytest.raises(asyncio.CancelledError):
+            await sync(quiet=True, cancel=cancel)
 
         # Cancel fired before the file was processed, so nothing was written and
         # the old chunks were never deleted.
@@ -2492,6 +2519,7 @@ class TestZeroChunkPageTextPersistence:
         quiet=False,
         on_progress=None,
         page_texts_out=None,
+        cancel=None,
     ):
         from lilbee.data.store import SourceMeta
         from lilbee.data.types import DocumentRecords
@@ -3590,6 +3618,105 @@ class TestCollectResultsSkipped:
         assert sibling_cancelled.is_set()
 
 
+class TestCancelDuringThresholdFlush:
+    """A cancel landing on a threshold flush waits for it, so the buffer is written once."""
+
+    @pytest.mark.parametrize("cancels", [1, 2])
+    async def test_the_buffer_is_flushed_once(self, monkeypatch, cancels):
+        import asyncio
+        import threading
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+
+        monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", 1)
+        entered = threading.Event()
+        release = threading.Event()
+        guard = threading.Lock()
+        active: list[int] = [0]
+        overlaps: list[int] = []
+        flushed: list[list[str]] = []
+
+        def _slow_flush(buffer: list[_IngestResult]) -> None:
+            with guard:
+                active[0] += 1
+                overlaps.append(active[0])
+                flushed.append([r.name for r in buffer])
+            entered.set()
+            release.wait(5)
+            with guard:
+                active[0] -= 1
+
+        async def _done() -> _IngestResult:
+            return _IngestResult("a.txt", Path("a.txt"), chunk_count=1, error=None)
+
+        async def _never() -> _IngestResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("the sibling should have been cancelled")
+
+        monkeypatch.setattr(pipeline, "_flush_batch", _slow_flush)
+        task = asyncio.create_task(
+            pipeline._collect_results(_feed([_done(), _never()]), {}, {}, {}, {}, window=2)
+        )
+        assert await asyncio.to_thread(entered.wait, 5)
+        for _ in range(cancels):
+            task.cancel()
+            await asyncio.sleep(0.2)  # time for a second flush to start, if one would
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert flushed == [["a.txt"]]
+        assert overlaps == [1]
+
+    async def test_a_second_cancel_waits_for_the_final_flush(self, monkeypatch):
+        """The sync does not end while the flush on its way out is still writing."""
+        import asyncio
+        import threading
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+
+        entered = threading.Event()
+        release = threading.Event()
+        written: list[str] = []
+
+        def _slow_flush(buffer: list[_IngestResult]) -> None:
+            entered.set()
+            release.wait(5)
+            written.extend(r.name for r in buffer)
+
+        async def _done() -> _IngestResult:
+            return _IngestResult("a.txt", Path("a.txt"), chunk_count=1, error=None)
+
+        async def _never() -> _IngestResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("the sibling should have been cancelled")
+
+        buffered = asyncio.Event()
+        monkeypatch.setattr(pipeline, "_flush_batch", _slow_flush)
+        task = asyncio.create_task(
+            pipeline._collect_results(
+                _feed([_done(), _never()]),
+                {},
+                {},
+                {},
+                {},
+                window=2,
+                on_progress=lambda *_args: buffered.set(),
+            )
+        )
+        await asyncio.wait_for(buffered.wait(), 5)  # a.txt is buffered below the threshold
+        task.cancel()
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()  # lands on the final flush
+        await asyncio.sleep(0.2)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert written == ["a.txt"]
+
+
 class TestStreamedPlan:
     """The plan pass is sharded and overlapped with ingest, not a barrier before it."""
 
@@ -3824,20 +3951,25 @@ class TestStreamedPlan:
 
         (isolated_env / "only.txt").write_text("the one file in this corpus")
         cancel = threading.Event()
+        embedded: list[int] = []
 
-        def _extract(*_args, **_kwargs):
+        def _embed_then_cancel(texts, **_kwargs):
+            # After extraction, so the file finishes instead of raising.
             cancel.set()
-            return _make_xberg_result()
+            embedded.append(len(texts))
+            return [[0.1] * 768 for _ in texts]
 
+        mock_svc.embedder.embed_batch.side_effect = _embed_then_cancel
         with (
             mock.patch(
                 "lilbee.data.extract.xberg.aextract_document",
                 new_callable=mock.AsyncMock,
-                side_effect=_extract,
+                return_value=_make_xberg_result(),
             ),
             pytest.raises(asyncio.CancelledError),
         ):
             await sync(quiet=True, cancel=cancel)
+        assert embedded, "the cancel must land after extraction, in the embed step"
         # Cancelled before the marker pass: the file is not skip-marked.
         from lilbee.data.ingest.skip_marker import load_skip_markers
 
@@ -5946,6 +6078,120 @@ class TestForceOcrRoutesToBackend:
         assert "clean native text layer" not in content
 
 
+class TestVisionOcrStopsOnCancel:
+    """A set cancel stops the vision model before each page, against real xberg."""
+
+    _PAGES = 4
+
+    @pytest.fixture(autouse=True)
+    def _forced_vision(self, isolated_env, monkeypatch):
+        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _vision_backend(calls: list[bytes], set_on_call: threading.Event | None):
+        from xberg import register_ocr_backend, unregister_ocr_backend
+
+        from lilbee.data.extract.backends.vision_ocr import VisionOcrBackend
+
+        def _ocr(image_bytes, _model, _prompt, *, timeout, cancel):
+            calls.append(image_bytes)
+            if set_on_call is not None:
+                set_on_call.set()
+            return "OCR-TEXT"
+
+        backend = VisionOcrBackend(ocr_fn=_ocr, model_ref_fn=lambda: cfg.vision_model)
+        register_ocr_backend(backend)
+        try:
+            yield
+        finally:
+            unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+
+    async def _extract(self, tmp_path, cancel, calls: list[bytes], *, cancel_on_call=False) -> None:
+        from lilbee.data.extract.document import _extract_document
+
+        pdf = tmp_path / "scan.pdf"
+        pdf.write_bytes(make_pdf(pages=self._PAGES))
+        with (
+            self._vision_backend(calls, cancel if cancel_on_call else None),
+            mock.patch(
+                "lilbee.data.extract.backends.vision_ocr.resolve_ocr_prompt",
+                return_value="OCR",
+            ),
+        ):
+            await _extract_document(
+                pdf, "scan.pdf", "pdf", ExtractMode.PAGINATED, lambda *_a: None, cancel
+            )
+
+    async def test_every_page_reaches_the_model_without_a_cancel(self, tmp_path):
+        calls: list[bytes] = []
+        await self._extract(tmp_path, threading.Event(), calls)
+        assert len(calls) == self._PAGES
+
+    async def test_a_set_cancel_sends_no_page_to_the_model(self, tmp_path):
+        cancel = threading.Event()
+        cancel.set()
+        calls: list[bytes] = []
+        with pytest.raises(RuntimeError, match="TaskCancelledError"):
+            await self._extract(tmp_path, cancel, calls)
+        assert calls == []
+
+    @pytest.mark.parametrize("archived", [False, True])
+    async def test_a_cancelled_sync_sends_no_page_to_the_model(
+        self, isolated_env, mock_svc, archived
+    ):
+        """The sync's cancel reaches vision OCR for a file and for an archive member."""
+        import zipfile
+
+        from lilbee.data.ingest import sync
+        from lilbee.runtime.progress import EventType
+
+        mock_svc.provider.vision_slot_capacity.return_value = 1
+        pdf = make_pdf(pages=self._PAGES)
+        if archived:
+            with zipfile.ZipFile(isolated_env / "scans.zip", "w") as archive:
+                archive.writestr("scan.pdf", pdf)
+        else:
+            (isolated_env / "scan.pdf").write_bytes(pdf)
+        cancel = threading.Event()
+
+        def _on_progress(event_type, _data) -> None:
+            if event_type is EventType.FILE_START:
+                cancel.set()
+
+        uncancelled: list[bytes] = []
+        with (
+            self._vision_backend(uncancelled, None),
+            mock.patch(
+                "lilbee.data.extract.backends.vision_ocr.resolve_ocr_prompt",
+                return_value="OCR",
+            ),
+        ):
+            await sync(quiet=True, force_rebuild=True, cancel=threading.Event())
+        assert len(uncancelled) == self._PAGES  # the fixture does reach the vision model
+
+        calls: list[bytes] = []
+        with (
+            self._vision_backend(calls, None),
+            mock.patch(
+                "lilbee.data.extract.backends.vision_ocr.resolve_ocr_prompt",
+                return_value="OCR",
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await sync(quiet=True, force_rebuild=True, on_progress=_on_progress, cancel=cancel)
+        assert cancel.is_set()
+        assert calls == []
+
+    async def test_a_cancel_during_extraction_returns_no_partial_document(self, tmp_path):
+        cancel = threading.Event()
+        calls: list[bytes] = []
+        with pytest.raises(asyncio.CancelledError):
+            await self._extract(tmp_path, cancel, calls, cancel_on_call=True)
+        assert calls  # a page was read before the cancel, so xberg had a document to return
+
+
 class TestChunkAndEmbedPagesEmpty:
     async def test_empty_page_texts_returns_empty(self):
         from lilbee.data.extract.document import chunk_and_embed_pages
@@ -6802,7 +7048,7 @@ class TestCliSurface:
         asyncio.run(sync(quiet=True))
         remove_documents_durably(["corpus/gone.txt"])
 
-        add_paths([corpus], Console(), run_sync=lambda: asyncio.run(sync(quiet=True)))
+        add_paths([corpus], Console(), run_sync=lambda _added: asyncio.run(sync(quiet=True)))
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
 
@@ -6819,7 +7065,7 @@ class TestCliSurface:
         runs: list[int] = []
         console = Console(record=True, width=120)
 
-        add_paths([drawing], console, run_sync=lambda: runs.append(1))
+        add_paths([drawing], console, run_sync=lambda _added: runs.append(1))
 
         assert runs == []
         assert "Registered 0 source(s)" in console.export_text()
@@ -6856,7 +7102,7 @@ class TestCliSurface:
         runs: list[int] = []
         console = Console(record=True, width=120)
 
-        add_paths([two], console, run_sync=lambda: runs.append(1))
+        add_paths([two], console, run_sync=lambda _added: runs.append(1))
 
         assert runs == []
         assert "is taken by another source" in console.export_text()
@@ -7018,7 +7264,65 @@ class TestHttpSurface:
         assert summary.sync is None
 
 
+class TestIngestPoolLifetime:
+    def test_the_ingest_threads_a_sync_used_end_with_it(self, isolated_env, mock_svc):
+        """A sync on a private loop leaves none of its ingest worker threads behind."""
+        from lilbee.data import offload
+        from lilbee.data.ingest import pipeline, sync
+
+        (isolated_env / "note.txt").write_text("some words to index", encoding="utf-8")
+        flush_threads: list[threading.Thread] = []
+        # Holding the run's pool keeps it from being collected, so only an explicit
+        # shutdown can end its idle workers.
+        run_pools: list[object] = []
+        real_flush = pipeline._flush_writes
+
+        def _recording_flush(*args, **kwargs):
+            flush_threads.append(threading.current_thread())
+            run_pools.append(offload._run_pool.get())
+            return real_flush(*args, **kwargs)
+
+        with mock.patch.object(pipeline, "_flush_writes", _recording_flush):
+            result = asyncio.run(sync(quiet=True))
+        assert result.added == ["note.txt"]
+        assert flush_threads
+        assert all(t.name.startswith("lilbee-ingest") for t in flush_threads)
+        assert None not in run_pools
+        for thread in flush_threads:
+            thread.join(timeout=2.0)
+        assert [t.name for t in flush_threads if t.is_alive()] == []
+
+
 class TestTuiSurface:
+    def test_do_sync_cancelled_mid_extraction_holds_no_file_out(self, isolated_env, mock_svc):
+        """A TUI sync cancelled while a file extracts ends cancelled, with no skip marker."""
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.data.ingest.skip_marker import load_skip_markers
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+        cancelled = threading.Event()
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.side_effect = cancelled.is_set
+
+        async def _extract(*_args, config, **_kwargs):
+            if config.disable_ocr:
+                raise RuntimeError("probe")  # the page-count probe; its failure is ignored
+            cancelled.set()
+            raise RuntimeError("process_image failed: TaskCancelledError")
+
+        screen = ChatScreen.__new__(ChatScreen)
+        with (
+            mock.patch("lilbee.runtime.asyncio_loop.run", new=asyncio.run),
+            mock.patch("lilbee.data.extract.xberg.aextract_document", side_effect=_extract),
+            pytest.raises(TaskCancelledError, match=msg.SYNC_CANCELLED_RESUME),
+        ):
+            screen._do_sync(reporter)
+        assert cancelled.is_set()
+        assert load_skip_markers(cfg.data_root) == {}
+
     async def test_do_add_reindexes_a_removed_source(self, isolated_env, mock_svc, tmp_path):
         """The TUI's /add worker body, with the real registration primitive."""
         import asyncio
@@ -7050,6 +7354,8 @@ class TestTuiSurface:
                 screen = await await_chat(app, pilot)
                 assert screen is not None
                 errors: list[BaseException] = []
+                reporter = MagicMock(spec=ProgressReporter)
+                reporter.is_set.return_value = False
 
                 def _worker() -> None:
                     try:
@@ -7059,7 +7365,7 @@ class TestTuiSurface:
                             "lilbee.runtime.asyncio_loop.run",
                             new=lambda coro: asyncio.run(coro),
                         ):
-                            screen._do_add([corpus], MagicMock(spec=ProgressReporter))
+                            screen._do_add([corpus], reporter)
                     except BaseException as exc:  # pragma: no cover - surfaced below
                         errors.append(exc)
 
@@ -7418,7 +7724,7 @@ class TestArchiveResult:
         pages_done = [0]
 
         result = await pipeline._archive_result(
-            entry, lambda t, d: events.append((t, d)), pages_done
+            entry, lambda t, d: events.append((t, d)), pages_done, None
         )
 
         assert result.chunk_count == 3

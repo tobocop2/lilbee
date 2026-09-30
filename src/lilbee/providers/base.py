@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.core.vectors import Vector
 from lilbee.providers.roles import WorkerRole
+from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
     from lilbee.providers.warm_progress import WarmProgress
@@ -424,8 +425,12 @@ class LLMProvider(Protocol):
         prompt: str = "",
         *,
         timeout: float | None = None,
+        cancel: CancelSignal | None = None,
     ) -> str:
-        """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap."""
+        """OCR one page image; ``timeout`` seconds, ``None``/``0`` = no cap.
+
+        A set *cancel* raises ``TaskCancelledError`` instead of starting the page.
+        """
         ...
 
     def vision_slot_capacity(self) -> int | None:

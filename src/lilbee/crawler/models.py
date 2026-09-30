@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass, field
 from typing import TypeAlias
+
+from lilbee.runtime.cancellation import CancelSignal
 
 # Explicit "no page limit" for a crawl. Distinct from None, which means
 # "unspecified, use the protective default cfg.crawl_safety_max_pages".
@@ -86,10 +87,10 @@ class FilterSpec:
     include_subdomains: bool = False
 
 
-CancelToken: TypeAlias = threading.Event
+CancelToken: TypeAlias = CancelSignal
 """Cancellation handle the orchestration layer passes to a fetcher.
 
-An already-``set()`` event means "stop as soon as you can". The
+A token whose ``is_set()`` is True means "stop as soon as you can". The
 crawl4ai adapter polls it in both its streaming loop and its BFS
 strategy's ``should_cancel`` hook; a future adapter can poll it
 in whatever granularity it supports.

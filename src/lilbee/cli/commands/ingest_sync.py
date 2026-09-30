@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import typer
 from rich.text import Text
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterator
 
     from lilbee.runtime.progress import DetailedProgressCallback
 
 from lilbee.app.ingest import (
+    AddRollback,
     RegisterResult,
     expand_remove_targets,
+    forget_unfinished_on_cancel,
     register_sources,
     removable_names,
     remove_documents_durably,
@@ -41,6 +44,10 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.crawler import is_url
 from lilbee.data.ingest.skip_marker import SkipRecordsLockError
+
+_SYNC_CANCELLED_MESSAGE = "Sync cancelled."
+# The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
+_EXIT_INTERRUPTED = 130
 
 _ocr_option = typer.Option(
     None,
@@ -255,22 +262,6 @@ def _run_crawl_with_signal_cancel(
     which crawl_recursive polls between pages so it can close the stream and
     stop dispatch cleanly.
     """
-    import signal
-
-    # signal.signal raises ValueError when called off the main thread (e.g.
-    # under pytest-xdist workers). Skip the SIGINT hook in that case; the
-    # cancel_event can still be driven externally.
-    _on_main_thread = threading.current_thread() is threading.main_thread()
-    previous_handler = signal.getsignal(signal.SIGINT) if _on_main_thread else None
-
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        # Set the cancel event that crawl_recursive polls between pages, so
-        # a Ctrl-C flows through as a clean cancel instead of asyncio.run's
-        # default KeyboardInterrupt-raising dance.
-        cancel_event.set()
-
-    if _on_main_thread:
-        signal.signal(signal.SIGINT, _on_sigint)
     # Manage the event loop explicitly. In the CLI this runs once per process,
     # but under pytest-xdist the same worker thread runs many tests; leaving a
     # closed loop set as the "current" loop for the thread poisons every later
@@ -288,13 +279,12 @@ def _run_crawl_with_signal_cancel(
             quiet=cfg.json_mode,
             include_subdomains=include_subdomains,
         )
-        result: list[Path] = loop.run_until_complete(coro)
+        with _ctrl_c_sets(cancel_event):
+            result: list[Path] = loop.run_until_complete(coro)
         return result
     finally:
         loop.close()
         asyncio.set_event_loop(None)
-        if _on_main_thread:
-            signal.signal(signal.SIGINT, previous_handler)
 
 
 def _cancellable_progress(
@@ -317,21 +307,57 @@ def _cancellable_progress(
     return _callback
 
 
-def _run_sync_with_signal_cancel(
+def _exit_sync_cancelled(rollback: AddRollback) -> NoReturn:
+    """Report a cancelled sync and exit with the Ctrl+C status."""
+    message = rollback.message(_SYNC_CANCELLED_MESSAGE)
+    not_added = rollback.not_added
+    if cfg.json_mode:
+        json_output({"error": message, "not_added": not_added} if not_added else {"error": message})
+    else:
+        console.print(Text(message, style=theme.WARNING))
+    raise SystemExit(_EXIT_INTERRUPTED) from None
+
+
+@contextmanager
+def _ctrl_c_sets(cancel_event: threading.Event) -> Iterator[None]:
+    """Make Ctrl+C set *cancel_event* instead of raising KeyboardInterrupt, for the block."""
+    import signal
+
+    # signal.signal raises ValueError off the main thread (e.g. under pytest-xdist
+    # workers); the cancel_event can still be driven externally there.
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    def _on_sigint(_signum: int, _frame: object) -> None:
+        cancel_event.set()
+
+    previous_handler = signal.signal(signal.SIGINT, _on_sigint)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous_handler)
+
+
+def run_sync_with_signal_cancel(
     *,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
+    added_roots: list[str] | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> object:
     """Run ``sync`` on a dedicated loop with a SIGINT->cancel hook (no traceback on Ctrl+C).
 
     Mirrors the crawl path: a plain signal handler sets a ``threading.Event``
     that ``sync`` polls between files and the OCR loop polls between pages, so
-    Ctrl+C aborts cleanly rather than raising KeyboardInterrupt mid-ingest.
+    Ctrl+C aborts cleanly rather than raising KeyboardInterrupt mid-ingest. A
+    cancel at any stage of the sync ends the command with exit status 130.
+    A root in *added_roots* that the stopped sync indexed nothing under is
+    un-registered, and the message names it. An add passes the *cancel_event*
+    its Ctrl+C already sets, so a Ctrl+C during registration stops the sync too.
     """
-    import signal
-
     from lilbee.data.ingest import sync
     from lilbee.runtime.progress import noop_callback
 
@@ -341,37 +367,32 @@ def _run_sync_with_signal_cancel(
     # holding an idle chat server's VRAM for the whole build.
     cfg.worker_pool_eager_start = False
 
-    cancel_event = threading.Event()
+    if cancel_event is None:
+        cancel_event = threading.Event()
     callback = _cancellable_progress(cancel_event, on_progress or noop_callback)
-    # signal.signal raises ValueError when called off the main thread (e.g.
-    # under pytest-xdist workers). Skip the SIGINT hook in that case; the
-    # cancel_event can still be driven externally.
-    _on_main_thread = threading.current_thread() is threading.main_thread()
-    previous_handler = signal.getsignal(signal.SIGINT) if _on_main_thread else None
-
-    def _on_sigint(_signum: int, _frame: object) -> None:
-        cancel_event.set()
-
-    if _on_main_thread:
-        signal.signal(signal.SIGINT, _on_sigint)
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        return loop.run_until_complete(
-            sync(
-                force_rebuild=force_rebuild,
-                quiet=cfg.json_mode,
-                on_progress=callback,
-                cancel=cancel_event,
-                retry_skipped=retry_skipped,
-                prune_ignored=prune_ignored,
+        # Only the user's Ctrl+C sets this cancel.
+        with (
+            _ctrl_c_sets(cancel_event),
+            forget_unfinished_on_cancel(added_roots or [], cancel_event, lambda: True) as rollback,
+        ):
+            return loop.run_until_complete(
+                sync(
+                    force_rebuild=force_rebuild,
+                    quiet=cfg.json_mode,
+                    on_progress=callback,
+                    cancel=cancel_event,
+                    retry_skipped=retry_skipped,
+                    prune_ignored=prune_ignored,
+                )
             )
-        )
+    except asyncio.CancelledError:
+        _exit_sync_cancelled(rollback)
     finally:
         loop.close()
         asyncio.set_event_loop(None)
-        if _on_main_thread:
-            signal.signal(signal.SIGINT, previous_handler)
 
 
 def sync_cmd(
@@ -393,7 +414,7 @@ def sync_cmd(
         cfg.ingest_processes = processes
 
     try:
-        result = _run_sync_with_signal_cancel(
+        result = run_sync_with_signal_cancel(
             retry_skipped=retry_skipped, prune_ignored=prune_ignored
         )
     except RuntimeError as exc:
@@ -426,7 +447,7 @@ def rebuild(
     from lilbee.data.ingest import SyncResult
 
     try:
-        result = _run_sync_with_signal_cancel(force_rebuild=True)
+        result = run_sync_with_signal_cancel(force_rebuild=True)
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
@@ -520,18 +541,23 @@ def _crawl_urls_step(
     return crawled_paths
 
 
-def _add_json_mode(file_paths: list[Path], crawled_paths: list[Path], *, force: bool) -> None:
+def _add_json_mode(
+    file_paths: list[Path],
+    crawled_paths: list[Path],
+    *,
+    force: bool,
+    cancel_event: threading.Event,
+) -> None:
     """Run the JSON-mode finish: register roots, sync, emit one structured result."""
-    from lilbee.data.ingest import sync
-
     reg_result = RegisterResult()
     if file_paths:
         reg_result = register_sources(file_paths, force=force)
-    # Headless one-shot ingest: only the embed server is needed, so suppress eager
-    # start (matching the interactive path) instead of warming every role's VRAM.
-    cfg.worker_pool_eager_start = False
     # A sync is a whole-vault pass; run it only when something named reached the corpus.
-    result = asyncio.run(sync(quiet=True)) if reg_result.reached_corpus or crawled_paths else None
+    result = (
+        run_sync_with_signal_cancel(added_roots=reg_result.registered, cancel_event=cancel_event)
+        if reg_result.reached_corpus or crawled_paths
+        else None
+    )
     json_output(
         {
             "command": "add",
@@ -571,6 +597,8 @@ def add(
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
 
+    # Set by Ctrl+C from registration on, so a Ctrl+C there stops the sync as a cancel.
+    cancel_event = threading.Event()
     try:
         crawled_paths = _crawl_urls_step(
             urls,
@@ -581,14 +609,23 @@ def add(
         )
 
         if cfg.json_mode:
-            _add_json_mode(file_paths, crawled_paths, force=force)
+            with _ctrl_c_sets(cancel_event):
+                _add_json_mode(file_paths, crawled_paths, force=force, cancel_event=cancel_event)
             return
 
         if file_paths:
-            add_paths(file_paths, console, force=force, run_sync=_run_sync_with_signal_cancel)
+            with _ctrl_c_sets(cancel_event):
+                add_paths(
+                    file_paths,
+                    console,
+                    force=force,
+                    run_sync=lambda added: run_sync_with_signal_cancel(
+                        added_roots=added, cancel_event=cancel_event
+                    ),
+                )
         elif urls:
             # URLs already saved; just trigger sync (Ctrl+C-cancellable)
-            result = _run_sync_with_signal_cancel()
+            result = run_sync_with_signal_cancel()
             console.print(result)
     except RuntimeError as exc:
         if cfg.json_mode:

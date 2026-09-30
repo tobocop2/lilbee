@@ -25,6 +25,7 @@ from rich.progress import (
 from lilbee.core.config import active_config
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.types import ShardId, SyncResult
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.engine_lock import ENGINE_DIR_ENV
 from lilbee.runtime.progress import (
@@ -294,6 +295,7 @@ def _shard_progress_bar(quiet: bool) -> Progress:
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
+        console=PlainConsole(),
         disable=quiet,
     )
 
