@@ -147,10 +147,6 @@ MODEL_ROLE_FIELDS: frozenset[str] = frozenset(MODEL_FIELD_TO_ROLE)
 """The cfg ``*_model`` field names, as a set (settings overlay + reload routing)."""
 
 
-ROLE_GATE_FIELD_TO_ROLE: dict[str, WorkerRole] = {"enable_ocr": WorkerRole.VISION}
-"""Non-model settings that decide whether a role is planned; a change reloads that role."""
-
-
 REPLICATED_ROLES: tuple[WorkerRole, ...] = tuple(
     role for role, info in ROLE_REGISTRY.items() if info.replicated
 )

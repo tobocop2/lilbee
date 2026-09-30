@@ -88,6 +88,7 @@ from lilbee.data.ingest.skip_marker import (
 from lilbee.data.offload import (
     embed_inflight_target,
     max_workers,
+    owns_ingest_pool,
     to_executor,
     to_ingest_thread,
 )
@@ -119,6 +120,7 @@ from lilbee.data.types import (
 )
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.lock import LockTimeoutError, sync_running
 from lilbee.runtime.progress import (
@@ -274,6 +276,7 @@ async def produce_records(
     quiet: bool = False,
     on_progress: DetailedProgressCallback = noop_callback,
     page_texts_out: list[PageTextRecord] | None = None,
+    cancel: CancelSignal | None = None,
 ) -> DocumentRecords:
     """Extract, chunk, and embed a single file into its records, metadata and OCR report.
 
@@ -303,6 +306,7 @@ async def produce_records(
             quiet=quiet,
             on_progress=on_progress,
             page_texts_out=page_texts,
+            cancel=cancel,
         )
 
     for record in records:
@@ -1227,6 +1231,7 @@ def _marks_sync_running(
 
 
 @_marks_sync_running
+@owns_ingest_pool
 async def sync(
     force_rebuild: bool = False,
     quiet: bool = False,
@@ -1240,9 +1245,8 @@ async def sync(
     """Sync documents/ with the vector store.
     Returns a SyncResult with the added/updated/removed/unchanged/failed/skipped lists.
     When *quiet* is True, the Rich progress bar is suppressed (for JSON output).
-    When *cancel* is set mid-run, planning and processing stop between files
-    without data loss (completed work is flushed) and CancelledError is raised;
-    a cancel already set on entry returns an empty result instead.
+    When *cancel* is set, planning and processing stop between files without
+    data loss (completed work is flushed) and CancelledError is raised.
     When *retry_skipped* is set, the failed-file skip markers are cleared so this
     sync attempts those files again; *force_rebuild* clears removals too.
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
@@ -1347,11 +1351,11 @@ async def sync(
                     flush_failed=flush_failed,
                     reasons=reasons,
                 )
-            if cancel is not None and cancel.is_set():
-                # The stream stops feeding on cancel, so ingest can drain its
-                # admitted files and return without raising. A cancelled run must
-                # not go on to write skip markers or reconcile an unplanned corpus.
-                raise asyncio.CancelledError
+        if cancel is not None and cancel.is_set():
+            # The stream stops feeding on cancel, so ingest can drain its
+            # admitted files and return without raising. A cancelled run must
+            # not go on to write skip markers or reconcile an unplanned corpus.
+            raise asyncio.CancelledError
     finally:
         # Idempotent, and the only close when the stream is never consumed.
         await plan_batches.aclose()
@@ -1456,6 +1460,7 @@ def _ingest_progress_bar(quiet: bool) -> Progress:
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
+        console=PlainConsole(),
         transient=True,
         disable=quiet,
     )
@@ -1526,11 +1531,14 @@ def _failed_result(
 
 
 async def _archive_result(
-    entry: FileToProcess, on_progress: DetailedProgressCallback, pages_done: list[int]
+    entry: FileToProcess,
+    on_progress: DetailedProgressCallback,
+    pages_done: list[int],
+    cancel: CancelSignal | None,
 ) -> _IngestResult:
     """Ingest an archive: its members become sources, the archive row keeps the disk stat."""
     members = await ingest_archive(
-        entry.path, entry.name, entry.content_type, on_progress=on_progress
+        entry.path, entry.name, entry.content_type, on_progress=on_progress, cancel=cancel
     )
     concept_batches = [await build_concept_records(m.records, m.name) for m in members]
     entity_rows = [
@@ -1670,7 +1678,7 @@ async def ingest_stream(
                 # transaction as the new write (see _flush_writes), so cleanup is
                 # carried on the result rather than run eagerly here.
                 if entry.content_type in archive_content_types():
-                    return await _archive_result(entry, on_progress, pages_done)
+                    return await _archive_result(entry, on_progress, pages_done, cancel)
                 page_texts: list[PageTextRecord] = []
                 records, meta, ocr = await produce_records(
                     entry.path,
@@ -1679,6 +1687,7 @@ async def ingest_stream(
                     quiet=quiet,
                     on_progress=on_progress,
                     page_texts_out=page_texts,
+                    cancel=cancel,
                 )
                 concept_records = await build_concept_records(records, name)
                 entity_rows = await build_entity_records(records, name)
@@ -1950,9 +1959,7 @@ async def _collect_results(
         # The inner finally guarantees the sibling cancel even if the flush
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
-            await to_ingest_thread(
-                _flush_writes, buffer, added, updated, failed, skipped, flush_failed
-            )
+            await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed)
             await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
             try:
@@ -1991,9 +1998,36 @@ async def _buffer_and_maybe_flush(
     # Zero-chunk files count one unit so the buffer stays bounded.
     buffered_chunks += max(result.chunk_count, 1)
     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-        await to_ingest_thread(_flush_writes, buffer, added, updated, failed, skipped, flush_failed)
+        await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed)
         buffered_chunks = 0
     return buffered_chunks
+
+
+async def _flush_to_end(
+    buffer: list[_IngestResult],
+    added: dict[str, None],
+    updated: dict[str, None],
+    failed: dict[str, None],
+    skipped: dict[str, OcrReport | None],
+    flush_failed: set[str] | None,
+) -> None:
+    """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
+
+    The write thread owns *buffer* until it returns, so a flush the cancel abandoned
+    would run beside the next flush of the same buffer.
+    """
+    flush = asyncio.ensure_future(
+        to_ingest_thread(_flush_writes, buffer, added, updated, failed, skipped, flush_failed)
+    )
+    cancelled = False
+    while not flush.done():
+        try:
+            await asyncio.shield(flush)
+        except asyncio.CancelledError:
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    flush.result()
 
 
 def _report_file_progress(

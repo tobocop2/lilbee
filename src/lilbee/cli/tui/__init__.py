@@ -111,6 +111,8 @@ def run_tui(*, initial_view: str | None = None) -> None:
     except KeyboardInterrupt:
         pass  # Ctrl-C exits the TUI; cleanup runs in the finally block
     finally:
+        # Tasks stop through their own cancel while the executors and services live.
+        app.task_bar.stop_all()
         _restore_native_stderr(stderr_redirect)
         shutdown_executor()
         reset_services_on_exit()

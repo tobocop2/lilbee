@@ -458,36 +458,6 @@ class TestStatus:
         ]
         assert result.skipped_total == 7
 
-    async def test_status_carries_the_ocr_warning(self):
-        """The OCR warning must survive the StatusResponse mapping; a missing
-        field there drops it from the HTTP surface without any error."""
-        from lilbee.app.status import StatusConfig, StatusResult
-
-        base_config = StatusConfig(
-            documents_dir="docs",
-            data_dir="data",
-            chat_model="test:latest",
-            embedding_model="embed:latest",
-        )
-        warned = StatusResult(
-            document_count=0,
-            config=base_config,
-            sources=[],
-            total_chunks=0,
-            ocr_warning="OCR is off (enable_ocr = false), so the vision model is not used.",
-        )
-        with patch("lilbee.server.handlers.gather_status", return_value=warned):
-            result = await handlers.status()
-        assert (
-            result.ocr_warning
-            == "OCR is off (enable_ocr = false), so the vision model is not used."
-        )
-
-        clear = StatusResult(document_count=0, config=base_config, sources=[], total_chunks=0)
-        with patch("lilbee.server.handlers.gather_status", return_value=clear):
-            result = await handlers.status()
-        assert result.ocr_warning is None
-
     async def test_status_carries_the_ocr_engine_note(self):
         """The OCR engine note must survive the StatusResponse mapping to reach HTTP clients."""
         from lilbee.app.status import StatusConfig, StatusResult
@@ -508,6 +478,13 @@ class TestStatus:
         with patch("lilbee.server.handlers.gather_status", return_value=noted):
             result = await handlers.status()
         assert result.ocr_note == note
+
+    async def test_status_with_ocr_off_and_a_vision_model_names_vision_and_warns_nothing(self):
+        cfg.vision_model = _VISION_REF
+        cfg.enable_ocr = False
+        payload = (await handlers.status()).model_dump()
+        assert "used instead of Tesseract" in payload["ocr_note"]
+        assert "ocr_warning" not in payload
 
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
@@ -2199,6 +2176,23 @@ class TestSyncStreamDoneDelivery:
             _ = [e async for e in handlers.sync_stream(ocr_timeout=17.0)]
 
         assert observed["ocr_timeout"] == 17.0
+
+    async def test_enable_ocr_false_keeps_a_set_vision_model_reading_scans(self):
+        """A request with enable_ocr false still OCRs scanned pages with the vision model."""
+        from lilbee.data.extract.document import ocr_backend
+        from lilbee.runtime.progress import OcrBackendUsed
+
+        cfg.vision_model = _VISION_REF
+        observed: list[OcrBackendUsed] = []
+
+        async def fake_sync(*_args, **_kwargs):
+            observed.append(ocr_backend())
+            return SyncResult(added=[])
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            _ = [e async for e in handlers.sync_stream(enable_ocr=False)]
+
+        assert observed == [OcrBackendUsed.VISION]
 
 
 class TestDrainFallback:
@@ -4148,17 +4142,10 @@ class TestUpdateConfig:
         assert result.reindex_required is False
         assert cfg.temperature == 0.7
 
-    async def test_update_config_warns_when_ocr_off_leaves_the_vision_model_unused(self, tmp_path):
+    async def test_update_config_ocr_off_with_a_vision_model_returns_no_warning(self, tmp_path):
         cfg.vision_model = _VISION_REF
         result = await handlers.update_config({"enable_ocr": False})
-        assert len(result.warnings) == 1
-        assert "enable_ocr" in result.warnings[0] and _VISION_REF in result.warnings[0]
-        assert (await handlers.update_config({"enable_ocr": True})).warnings == []
-
-    async def test_update_config_unrelated_key_carries_no_ocr_warning(self, tmp_path):
-        cfg.vision_model = _VISION_REF
-        cfg.enable_ocr = False
-        assert (await handlers.update_config({"temperature": 0.3})).warnings == []
+        assert result.model_dump() == {"updated": ["enable_ocr"], "reindex_required": False}
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
@@ -4621,11 +4608,11 @@ class TestSetVisionModel:
         assert cfg.vision_model == _VISION_REF
 
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_setting_a_vision_model_with_ocr_off_warns(self, mock_svc, tmp_path):
+    async def test_setting_a_vision_model_with_ocr_off_returns_no_warning(self, mock_svc, tmp_path):
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
         cfg.enable_ocr = False
         result = await handlers.set_vision_model(_VISION_REF)
-        assert len(result.warnings) == 1 and "enable_ocr" in result.warnings[0]
+        assert result.model_dump() == {"model": _VISION_REF, "reindex_required": False}
 
     @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
+import time
 from collections.abc import Callable
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -12,7 +14,7 @@ from textual.app import App
 
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.task_queue import Task, TaskQueue, TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import CancelOrigin, Task, TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
 from lilbee.runtime import asyncio_loop
@@ -28,6 +30,8 @@ log = logging.getLogger(__name__)
 # transfers neither share a xet session nor die with a cancelled sibling.
 _DOWNLOAD_CONCURRENCY = 4
 _BYTES_PER_MB = 1024 * 1024
+# Seconds the running task workers get, together, to stop at app exit.
+_EXIT_STOP_BUDGET_S = 5.0
 
 
 class TaskOutcome(StrEnum):
@@ -55,12 +59,17 @@ class ProgressReporter:
         return self._task_id
 
     def is_set(self) -> bool:
-        """True once the UI cancelled this task; the ``CancelSignal`` a download polls."""
+        """True once this task is cancelled, by the user or at exit; the signal a run polls."""
         task = self._controller.queue.get_task(self._task_id)
         return task is not None and task.status is TaskStatus.CANCELLED
 
+    def cancelled_by_user(self) -> bool:
+        """True once the user cancelled this task; a stop at app exit is not a user cancel."""
+        task = self._controller.queue.get_task(self._task_id)
+        return task is not None and task.cancel_origin is CancelOrigin.USER
+
     def check_cancelled(self) -> None:
-        """Raise ``TaskCancelledError`` if the task was cancelled from the UI."""
+        """Raise ``TaskCancelledError`` if the task was cancelled, by the user or at exit."""
         if self.is_set():
             raise TaskCancelledError
 
@@ -122,12 +131,16 @@ class TaskBarController:
         # task_id -> (target, on_success). Worker looks up its target here
         # so we don't capture in a closure that outlives the task.
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
+        # task_id -> its running worker thread, joined by stop_all at exit.
+        self._workers: dict[str, threading.Thread] = {}
         # Number of files in documents/ that are out of date with the store.
         # Set by start_detect_pending; read by TaskBar to render the
         # "N docs to sync · S to sync" hint when no live tasks are running.
         # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
         self.pending_sync_count: int = 0
         self._detect_thread: threading.Thread | None = None
+        # Set by stop_all at app exit; no new detection starts after it.
+        self._stopped = False
         # Roles whose worker is currently in the spawn window (1-3 s cold
         # start). Surfaced as a single TaskBar hint instead of one toast
         # per role so the chat screen isn't drowned in implementation
@@ -258,6 +271,8 @@ class TaskBarController:
         failed detect just leaves the previous count in place rather
         than blocking the UI.
         """
+        if self._stopped:
+            return
         if self._detect_thread is not None and self._detect_thread.is_alive():
             return
         thread = threading.Thread(
@@ -361,7 +376,24 @@ class TaskBarController:
             daemon=True,
             name=f"task-{task_id}",
         )
+        self._workers[task_id] = thread
         thread.start()
+
+    def stop_all(self, budget_s: float = _EXIT_STOP_BUDGET_S) -> None:
+        """Cancel every task as an exit, unwind their coroutines on the loop, then join the workers.
+
+        Draining the loop cancels each task's pending await, so a sync waiting on
+        a model page runs its cleanup now, while the executors still accept work.
+        """
+        self._stopped = True
+        for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
+            self.queue.cancel(task.task_id, CancelOrigin.EXIT)
+        asyncio_loop.shutdown()
+        deadline = time.monotonic() + budget_s
+        threads = [*self._workers.values(), self._detect_thread]
+        for thread in threads:
+            if thread is not None:
+                thread.join(max(0.0, deadline - time.monotonic()))
 
     def _run_task_worker(self, task_id: str) -> None:
         """Body of the daemon worker thread."""
@@ -374,9 +406,9 @@ class TaskBarController:
         reporter = ProgressReporter(self, task_id)
         try:
             target(reporter)
-        except TaskCancelledError:
+        except (TaskCancelledError, asyncio.CancelledError) as exc:
             log.info("Task %s cancelled", task_id)
-            self._post_finalize(task_id, TaskOutcome.CANCELLED, "", task_type)
+            self._post_finalize(task_id, TaskOutcome.CANCELLED, str(exc), task_type)
         except Exception as exc:
             log.warning("Task %s failed: %s", task_id, exc)
             self._post_finalize(task_id, TaskOutcome.FAILED, str(exc), task_type)
@@ -389,6 +421,7 @@ class TaskBarController:
                     log.warning("on_success for %s raised", task_id, exc_info=True)
         finally:
             self._task_targets.pop(task_id, None)
+            self._workers.pop(task_id, None)
 
     def _post_finalize(
         self, task_id: str, outcome: TaskOutcome, detail: str, task_type: str | None
@@ -419,6 +452,8 @@ class TaskBarController:
             self.queue.fail_task(task_id, detail)
         elif outcome is TaskOutcome.CANCELLED:
             self.queue.cancel(task_id)
+            if detail:
+                self.queue.set_cancel_reason(task_id, detail)
         if task_type:
             self._try_start_next(task_type)
 

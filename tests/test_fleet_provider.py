@@ -30,7 +30,6 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._exit_probe import assert_probe_exits
 
 _GB = 1024**3
-_real_plan_all_launches = planning_mod.plan_all_launches
 
 
 def _fake_client(in_flight: int = 0) -> MagicMock:
@@ -1105,9 +1104,116 @@ def test_fit_chat_context_raises_when_even_the_floor_cannot_fit() -> None:
 def test_vision_ocr_routes_to_engine_for_configured_model(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat.return_value = "ocr text"
+    client.chat_abortable.return_value = "ocr text"
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+
+
+def test_vision_ocr_waiting_for_a_slot_stops_on_cancel(monkeypatch) -> None:
+    # A page queued behind a full vision server gives up its wait once the run is
+    # cancelled, instead of taking the slot and running a model call nobody wants.
+    import threading
+
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
+    client = _fake_client()
+    client.chat_abortable.return_value = "ocr text"
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    cancel = threading.Event()
+    raised: list[BaseException] = []
+
+    def _page() -> None:
+        try:
+            p.vision_ocr(b"png", "org/repo/v.gguf", cancel=cancel)
+        except BaseException as exc:
+            raised.append(exc)
+
+    with prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(client, 1)]):
+        waiter = threading.Thread(target=_page, daemon=True)
+        waiter.start()
+        waiter.join(timeout=0.3)
+        assert waiter.is_alive()  # parked behind the held slot
+        cancel.set()
+        waiter.join(timeout=5.0)
+        assert not waiter.is_alive()
+    assert [type(exc) for exc in raised] == [TaskCancelledError]
+    client.chat_abortable.assert_not_called()
+
+
+_HELD_PAGE_BODY = b'data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
+_HELD_PAGE_RESPONSE = (
+    b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n"
+    b"content-length: %d\r\n\r\n%s" % (len(_HELD_PAGE_BODY), _HELD_PAGE_BODY)
+)
+
+
+class _HeldHeadersServer:
+    """A loopback server that holds a request's response headers for five seconds."""
+
+    def __init__(self) -> None:
+        import socket
+
+        self.release = threading.Event()
+        self.disconnected = threading.Event()
+        self._listener = socket.create_server(("127.0.0.1", 0))
+        self.url = f"http://127.0.0.1:{self._listener.getsockname()[1]}"
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self) -> None:
+        conn, _addr = self._listener.accept()
+        with conn:
+            conn.recv(1 << 20)  # the request; its body is not needed
+            held_until = time.monotonic() + 5.0
+            while not self.release.wait(0.05):
+                if time.monotonic() >= held_until:
+                    conn.settimeout(5.0)
+                    conn.sendall(_HELD_PAGE_RESPONSE)
+                    return
+                conn.settimeout(0.0)
+                try:
+                    closed = conn.recv(1 << 16) == b""
+                except BlockingIOError:
+                    closed = False
+                except ConnectionResetError:
+                    closed = True
+                if closed:
+                    self.disconnected.set()
+                    return
+
+    def close(self) -> None:
+        self.release.set()
+        self._thread.join(timeout=5.0)
+        self._listener.close()
+
+
+@pytest.mark.parametrize("timeout", [300.0, 0.0], ids=["timed", "no-timeout"])
+def test_vision_ocr_cancel_aborts_a_page_whose_headers_have_not_arrived(
+    monkeypatch, timeout: float
+) -> None:
+    # A page sent to a server that is still holding its response headers (queued
+    # behind other pages, or encoding the image) stops within a second of the cancel,
+    # and its connection closes so the server can drop the request.
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    server = _HeldHeadersServer()
+    try:
+        client = LlamaServerClient(server.url, "vision-model")
+        p = _provider_with_clients({WorkerRole.VISION: [client]})
+        cancel = threading.Event()
+        threading.Timer(0.3, cancel.set).start()
+        started = time.monotonic()
+        with pytest.raises(TaskCancelledError):
+            p.vision_ocr(b"png", "org/repo/v.gguf", timeout=timeout, cancel=cancel)
+        after_cancel = time.monotonic() - started - 0.3
+        assert after_cancel < 1.0, f"the cancel took {after_cancel:.1f}s to stop the page"
+        assert server.disconnected.wait(2.0)
+        assert client.in_flight == 0
+    finally:
+        server.close()
 
 
 def test_vision_ocr_model_override_raises(monkeypatch) -> None:
@@ -1140,27 +1246,38 @@ def test_chat_model_override_error_is_bad_request_kind(monkeypatch) -> None:
     assert excinfo.value.kind is ProviderErrorKind.BAD_REQUEST
 
 
-def test_vision_call_returns_text() -> None:
+@pytest.mark.parametrize(("timeout", "deadline_s"), [(None, None), (0.0, None), (5.0, 5.0)])
+def test_vision_call_streams_every_page_under_its_deadline(
+    timeout: float | None, deadline_s: float | None
+) -> None:
+    # Every OCR timeout setting streams through the abortable call; 0 means no deadline.
     client = _fake_client()
-    client.chat.return_value = "OCR text"
-    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None) == "OCR text"
+    client.chat_abortable.return_value = "OCR text"
+    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], timeout) == "OCR text"
+    assert client.chat_abortable.call_args.kwargs["deadline_s"] == deadline_s
+    client.chat.assert_not_called()
 
 
-def test_vision_call_enforces_timeout() -> None:
+def test_vision_ocr_hands_the_cancel_to_the_streamed_page(monkeypatch) -> None:
+    # The page in flight on the server stops streaming when the run is cancelled.
+    import threading
+
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat_bounded.return_value = "OCR text"
-    assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 5.0) == "OCR text"
-    client.chat_bounded.assert_called_once()
-    client.chat.assert_not_called()  # the timed path streams via chat_bounded, not chat
+    client.chat_abortable.return_value = "ocr text"
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    cancel = threading.Event()
+    assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=30.0, cancel=cancel) == "ocr text"
+    assert client.chat_abortable.call_args.kwargs["cancel"] is cancel
 
 
 def test_vision_call_caps_output_tokens_and_sets_repeat_penalty(monkeypatch) -> None:
     # The repeat penalty stops a page looping one line; the token cap backstops it.
     monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 4096)
     client = _fake_client()
-    client.chat.return_value = "OCR text"
+    client.chat_abortable.return_value = "OCR text"
     prov_mod._vision_call(client, [{"role": "user", "content": "x"}], None)
-    assert client.chat.call_args.kwargs["options"] == {
+    assert client.chat_abortable.call_args.kwargs["options"] == {
         "max_tokens": 4096,
         "repeat_penalty": 1.1,
         "repeat_last_n": 64,
@@ -1168,24 +1285,20 @@ def test_vision_call_caps_output_tokens_and_sets_repeat_penalty(monkeypatch) -> 
 
 
 def test_vision_ocr_timed_request_carries_repeat_penalty(monkeypatch) -> None:
-    # The ingest path runs with ocr_timeout set, so the options go out via chat_bounded.
+    # The ingest path runs with ocr_timeout set; the options go out on the abortable call.
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     monkeypatch.setattr(cfg, "vision_ocr_max_tokens", 1024)
     client = _fake_client()
-    client.chat_bounded.return_value = "ocr text"
+    client.chat_abortable.return_value = "ocr text"
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
-    sent = client.chat_bounded.call_args.kwargs["options"]
+    sent = client.chat_abortable.call_args.kwargs["options"]
     assert sent == {"max_tokens": 1024, "repeat_penalty": 1.1, "repeat_last_n": 64}
 
 
-@pytest.mark.parametrize(
-    ("timeout", "streamed"),
-    [(300.0, True), (None, False)],
-    ids=["timed-ingest", "untimed"],
-)
+@pytest.mark.parametrize("timeout", [300.0, None, 0.0], ids=["timed-ingest", "untimed", "zero"])
 def test_vision_ocr_request_body_carries_sampler_options(
-    monkeypatch, timeout: float | None, streamed: bool
+    monkeypatch, timeout: float | None
 ) -> None:
     # A real client over a mock transport: the options must reach the posted JSON body.
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
@@ -1194,18 +1307,17 @@ def test_vision_ocr_request_body_carries_sampler_options(
 
     def handler(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
-        if streamed:
-            return httpx.Response(
-                200, text='data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
-            )
-        return httpx.Response(200, json={"choices": [{"message": {"content": "page"}}]})
+        return httpx.Response(
+            200, text='data: {"choices":[{"delta":{"content":"page"}}]}\n\ndata: [DONE]\n\n'
+        )
 
-    http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu")
-    client = LlamaServerClient("http://gpu", "vision-model", http=http)
+    client = LlamaServerClient(
+        "http://gpu", "vision-model", async_transport=httpx.MockTransport(handler)
+    )
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=timeout) == "page"
     (body,) = bodies
-    assert body["stream"] is streamed
+    assert body["stream"] is True  # llama-server stops generating only for a closed stream
     assert body["messages"]  # the page image and prompt are in the same body
     assert body["max_tokens"] == 1024
     assert body["repeat_penalty"] == 1.1
@@ -1221,10 +1333,10 @@ def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    client.chat.side_effect = [busy, busy, "ocr text"]
+    client.chat_abortable.side_effect = [busy, busy, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
-    assert client.chat.call_count == 3
+    assert client.chat_abortable.call_count == 3
 
 
 def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
@@ -1238,11 +1350,10 @@ def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    # timeout > 0 routes through the bounded (chat_bounded) path.
-    client.chat_bounded.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
+    client.chat_abortable.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
-    assert client.chat_bounded.call_count == prov_mod._VISION_BUSY_RETRIES + 6
+    assert client.chat_abortable.call_count == prov_mod._VISION_BUSY_RETRIES + 6
 
 
 def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
@@ -1261,7 +1372,7 @@ def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
         raise ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
 
     client = _fake_client()
-    client.chat_bounded.side_effect = _busy
+    client.chat_abortable.side_effect = _busy
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError) as excinfo:
         p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
@@ -1281,7 +1392,7 @@ def test_vision_ocr_deadline_passed_before_generation_raises_timeout(monkeypatch
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="timed out waiting for a free vision slot"):
         p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
-    client.chat.assert_not_called()  # the deadline lapsed before any generation ran
+    client.chat_abortable.assert_not_called()  # the deadline lapsed before any generation ran
 
 
 def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
@@ -1291,11 +1402,11 @@ def test_vision_ocr_does_not_retry_non_busy_errors(monkeypatch) -> None:
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     client = _fake_client()
-    client.chat.side_effect = ProviderError("boom", provider="llama-server")
+    client.chat_abortable.side_effect = ProviderError("boom", provider="llama-server")
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError, match="boom"):
         p.vision_ocr(b"png", "org/repo/v.gguf")
-    assert client.chat.call_count == 1
+    assert client.chat_abortable.call_count == 1
 
 
 def test_vision_pool_pairs_each_replica_with_its_fitted_slots(monkeypatch) -> None:
@@ -1349,184 +1460,6 @@ def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
 def test_vision_slot_capacity_none_before_fleet_up() -> None:
     # No launch snapshot yet: the fan-out keeps its own estimate.
     assert FleetProvider().vision_slot_capacity() is None
-
-
-@pytest.fixture
-def ocr_gated_engine(monkeypatch, tmp_path: Path):
-    """An engine planned by the real plan_all_launches, one fake launch per enrolled role."""
-    swap = _install_engine(monkeypatch, tmp_path, launches=[])
-    by_role = {role: _fake_launch(role) for role in (WorkerRole.CHAT, WorkerRole.VISION)}
-    plans: list[set[WorkerRole]] = []
-
-    def _plan(roles, *_args) -> planning_mod.FleetPlan:
-        plans.append(set(roles))
-        return planning_mod.FleetPlan(tuple(by_role[role] for role in by_role if role in roles))
-
-    ocr_client = _fake_client()
-    ocr_client.chat.return_value = "ocr text"
-    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: ocr_client)
-    monkeypatch.setattr(planning_mod, "plan_all_launches", _real_plan_all_launches)
-    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
-    monkeypatch.setattr(
-        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
-    )
-    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
-    monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
-    monkeypatch.setattr(planning_mod, "plan_launches", _plan)
-    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    yield SimpleNamespace(swap=swap, plans=plans)
-    planning_mod.revoke_vision_on_request()
-
-
-def _started_roles(swap: _FakeSwap) -> set[WorkerRole]:
-    return {launch.role for launches in swap.started for launch in launches}
-
-
-@pytest.mark.parametrize(("enable_ocr", "vision_warmed"), [(False, False), (True, True)])
-def test_warm_up_starts_and_warms_vision_only_when_ocr_is_on(
-    monkeypatch, ocr_gated_engine, enable_ocr: bool, vision_warmed: bool
-) -> None:
-    monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
-    warmed: list[WorkerRole] = []
-    monkeypatch.setattr(prov_mod, "_warm_role", lambda role, _client: warmed.append(role))
-    p = FleetProvider()
-    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
-    p._warm_up_blocking()
-    assert WorkerRole.CHAT in warmed  # the warm ran
-    assert (WorkerRole.VISION in warmed) is vision_warmed
-    assert (WorkerRole.VISION in _started_roles(ocr_gated_engine.swap)) is vision_warmed
-
-
-@pytest.mark.parametrize("enable_ocr", [False, True])
-def test_toggling_ocr_at_runtime_replans_the_vision_role(
-    monkeypatch, ocr_gated_engine, enable_ocr: bool
-) -> None:
-    monkeypatch.setattr(cfg, "enable_ocr", not enable_ocr)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
-    p._ensure_fleet()
-    assert (WorkerRole.VISION in p._clients) is not enable_ocr
-    monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
-    p.reload_role(WorkerRole.VISION, wait=True)
-    assert (WorkerRole.VISION in p._clients) is enable_ocr
-    assert WorkerRole.CHAT in p._clients
-
-
-def test_vision_ocr_with_ocr_off_starts_vision_for_the_request(
-    monkeypatch, ocr_gated_engine
-) -> None:
-    monkeypatch.setattr(cfg, "enable_ocr", False)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
-    p._ensure_fleet()
-    assert WorkerRole.VISION not in p._clients
-    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
-    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
-    assert WorkerRole.VISION in _started_roles(ocr_gated_engine.swap)
-    assert len(ocr_gated_engine.plans) == 3  # demand, build, then one re-plan for vision
-
-
-def test_vision_ocr_with_ocr_on_does_not_replan(monkeypatch, ocr_gated_engine) -> None:
-    monkeypatch.setattr(cfg, "enable_ocr", True)
-    p = FleetProvider()
-    p._ensure_fleet()
-    plans_after_build = len(ocr_gated_engine.plans)
-    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
-    assert len(ocr_gated_engine.plans) == plans_after_build
-
-
-def test_vision_ocr_without_a_vision_model_does_not_replan(monkeypatch, ocr_gated_engine) -> None:
-    from lilbee.providers.base import ProviderError
-
-    monkeypatch.setattr(cfg, "vision_model", "")
-    p = FleetProvider()
-    p._ensure_fleet()
-    plans_after_build = len(ocr_gated_engine.plans)
-    with pytest.raises(ProviderError):
-        p.vision_ocr(b"png", "")
-    assert len(ocr_gated_engine.plans) == plans_after_build
-    assert WorkerRole.CHAT in p._clients  # the fleet came up without vision
-
-
-def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
-    monkeypatch, ocr_gated_engine
-) -> None:
-    monkeypatch.setattr(cfg, "enable_ocr", False)
-    p = FleetProvider()
-    p._ensure_fleet()
-    real_thread = threading.Thread
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    pages = 4
-    arrived = threading.Condition()
-    arrivals = {"n": 0}
-    serve = p._serve_vision_on_request
-
-    def _counted_serve() -> None:
-        with arrived:
-            arrivals["n"] += 1
-            arrived.notify_all()
-        serve()
-
-    plan = planning_mod.plan_launches
-
-    def _held_plan(roles, *args) -> planning_mod.FleetPlan:
-        if WorkerRole.VISION in roles:
-            # Hold the first vision re-plan until every page is inside the start.
-            with arrived:
-                assert arrived.wait_for(lambda: arrivals["n"] == pages, timeout=10)
-        return plan(roles, *args)
-
-    monkeypatch.setattr(p, "_serve_vision_on_request", _counted_serve)
-    monkeypatch.setattr(planning_mod, "plan_launches", _held_plan)
-    results: list[object] = []
-
-    def _page() -> None:
-        try:
-            results.append(p.vision_ocr(b"png", "org/repo/v.gguf"))
-        except Exception as exc:
-            results.append(exc)
-
-    workers = [real_thread(target=_page) for _ in range(pages)]
-    for worker in workers:
-        worker.start()
-    for worker in workers:
-        worker.join(timeout=20)
-    assert results == ["ocr text"] * pages
-    assert sum(WorkerRole.VISION in plan for plan in ocr_gated_engine.plans) == 1
-
-
-def test_a_failed_vision_start_lets_the_next_page_retry(monkeypatch, ocr_gated_engine) -> None:
-    from lilbee.providers.base import ProviderError
-
-    monkeypatch.setattr(cfg, "enable_ocr", False)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
-    p._ensure_fleet()
-    reload_pass = p._reload_pass
-    failures = iter([ProviderError("engine refused", provider="llama-server")])
-
-    def _fail_once(*args, **kwargs) -> None:
-        failure = next(failures, None)
-        if failure is not None:
-            raise failure
-        reload_pass(*args, **kwargs)
-
-    monkeypatch.setattr(p, "_reload_pass", _fail_once)
-    with pytest.raises(ProviderError, match="engine refused"):
-        p.vision_ocr(b"png", "org/repo/v.gguf")
-    assert not planning_mod.vision_role_wanted("org/repo/v.gguf")  # the grant was dropped
-    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"  # the next page retried
-
-
-def test_a_vision_setting_reload_revokes_the_request_grant(monkeypatch, ocr_gated_engine) -> None:
-    monkeypatch.setattr(cfg, "enable_ocr", False)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
-    p._ensure_fleet()
-    p.vision_ocr(b"png", "org/repo/v.gguf")
-    assert WorkerRole.VISION in p._clients
-    p.reload_role(WorkerRole.VISION, wait=True)
-    assert WorkerRole.VISION not in p._clients
 
 
 def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
@@ -1659,6 +1592,31 @@ def test_dispatch_vision_fails_over_and_marks_health() -> None:
             [prov_mod._VisionReplica(lone, 1)],
             lambda c: c.chat([], options={}, stream=False),
         )
+
+
+def test_dispatch_vision_failover_wait_stops_on_cancel() -> None:
+    # The failover waits for a slot on another replica; a cancel ends that wait too.
+    import threading
+
+    import httpx as _httpx
+
+    from lilbee.runtime.cancellation import TaskCancelledError
+
+    cancel = threading.Event()
+    dead, busy = _fake_client(), _fake_client()
+
+    def _refuse(*_args, **_kwargs):
+        cancel.set()
+        raise _httpx.ConnectError("refused")
+
+    dead.chat.side_effect = _refuse
+    pool = [prov_mod._VisionReplica(dead, 2), prov_mod._VisionReplica(busy, 1)]
+    with (
+        prov_mod._VISION_DISPATCHER.slot([prov_mod._VisionReplica(busy, 1)]),
+        pytest.raises(TaskCancelledError),
+    ):
+        prov_mod._dispatch_vision(pool, lambda c: c.chat([], options={}, stream=False), cancel)
+    busy.chat.assert_not_called()
 
 
 _EXITED_BODY = "llama-swap-error: [embed-0] upstream command exited prematurely"
@@ -3369,9 +3327,7 @@ class _FakeReplica:
             raise self.fail
         return [0.5] * len(candidates)
 
-    def chat(
-        self, messages: object, options: object = None, stream: bool = False, **_kw: object
-    ) -> str:
+    def chat_abortable(self, messages: object, **_kw: object) -> str:
         self.calls += 1
         if self.fail is not None:
             raise self.fail
@@ -3584,22 +3540,25 @@ class TestReplicaHealthRouting:
 
 
 class TestVisionTimeout:
-    def test_deadline_signal_maps_to_vision_timeout_error(self) -> None:
+    @pytest.mark.parametrize(("timeout", "shown"), [(12.0, "12s"), (0.5, "0.5s")])
+    def test_deadline_signal_maps_to_vision_timeout_error(self, timeout, shown) -> None:
         from lilbee.providers.base import ProviderError
         from lilbee.providers.fleet.client import ChatDeadlineError
 
         client = _fake_client(0)
-        client.chat_bounded.side_effect = ChatDeadlineError("deadline", provider="llama-server")
-        with pytest.raises(ProviderError, match="Vision OCR timed out after 12s") as excinfo:
-            prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 12.0)
+        client.chat_abortable.side_effect = ChatDeadlineError("deadline", provider="llama-server")
+        with pytest.raises(
+            ProviderError, match=f"Vision OCR timed out after {shown}\\."
+        ) as excinfo:
+            prov_mod._vision_call(client, [{"role": "user", "content": "x"}], timeout)
         # A timeout is not a connection failure, so failover must not retry it.
         assert not prov_mod.is_connection_failure(excinfo.value)
 
-    def test_bounded_call_passes_the_deadline_to_chat_bounded(self) -> None:
+    def test_bounded_call_passes_the_deadline_to_the_abortable_chat(self) -> None:
         client = _fake_client(0)
-        client.chat_bounded.return_value = "text"
+        client.chat_abortable.return_value = "text"
         assert prov_mod._vision_call(client, [{"role": "user", "content": "x"}], 9.0) == "text"
-        assert client.chat_bounded.call_args.kwargs["deadline_s"] == 9.0
+        assert client.chat_abortable.call_args.kwargs["deadline_s"] == 9.0
 
 
 class TestReloadSingleFlight:
@@ -4984,59 +4943,6 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     assert stopped == [machine]  # the partially dead engine was stopped...
     assert built and built[0] == machine  # ...and rebuilt in the machine slot
     holder.release_and_check_last()
-
-
-def test_a_services_reset_drops_the_request_vision_grant(monkeypatch, ocr_gated_engine) -> None:
-    from lilbee.app.services import reset_services, set_services
-
-    monkeypatch.setattr(cfg, "enable_ocr", False)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
-    p._ensure_fleet()
-    p.vision_ocr(b"png", "org/repo/v.gguf")
-    assert planning_mod.vision_role_wanted("org/repo/v.gguf")  # the request granted vision
-    services = MagicMock()
-    services.provider = p
-    set_services(services)
-    reset_services()
-    assert not planning_mod.vision_role_wanted("org/repo/v.gguf")
-
-
-def test_ladder_rebuilds_a_pin_equal_engine_that_lacks_the_vision_role(
-    monkeypatch, tmp_path: Path
-) -> None:
-    """enable_ocr is not in the pin, so an OCR-on process rebuilds an OCR-off peer's engine.
-
-    The peer's engine serves only wanted pairs and shares the pin, so the ladder
-    treats it as this contract's own partial cover and rebuilds it in place,
-    restarting the peer's roles, instead of loading a second fleet beside it.
-    """
-    from lilbee.runtime.engine_lock import hold_user_lock
-
-    vision = InstanceLaunch(
-        role=WorkerRole.VISION, argv=["/bin/llama-server"], env_overrides={}, model="m-vision"
-    )
-    _swap, machine, built = _install_ladder(
-        monkeypatch, tmp_path, launches=[_chat_launch(), vision]
-    )
-    stopped: list[Path] = []
-    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
-    monkeypatch.setattr(
-        prov_mod,
-        "_configured_model_for",
-        lambda role: {"chat": "m-chat", "vision": "m-vision"}.get(role.value, ""),
-    )
-    # The OCR-off peer built chat alone; it is still live.
-    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
-    peer = hold_user_lock(machine, pid=999_777)
-    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
-    p = FleetProvider()
-    try:
-        assert p._ensure_fleet() is True
-    finally:
-        peer.release_and_check_last()
-    assert stopped == [machine]  # the peer's engine was stopped...
-    assert built and built[0] == machine  # ...and rebuilt in place with vision
 
 
 def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(

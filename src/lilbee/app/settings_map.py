@@ -100,8 +100,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         writable=False,
         group=SettingGroup.MODELS,
         help_text=(
-            "Vision model for scanned PDF OCR; when set it is used instead of Tesseract. "
-            "Clear it (empty value, including an empty LILBEE_VISION_MODEL) to use Tesseract"
+            "Vision model for scanned PDF OCR; when set it reads every scanned page, "
+            "whatever enable_ocr says. Clear it (empty value, including an empty "
+            "LILBEE_VISION_MODEL) to use Tesseract, or to turn OCR off when enable_ocr is false"
         ),
     ),
     "enable_ocr": SettingDef(
@@ -109,9 +110,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=True,
         group=SettingGroup.INGEST,
         help_text=(
-            "OCR for scanned PDFs: the vision model when one is set, else Tesseract "
-            "(empty or true = on, since only false is checked; false = off for every "
-            "backend, the vision model included)"
+            "Tesseract OCR for scanned PDFs when no vision model is set "
+            "(empty or true = on, false = off). A set vision model always runs"
         ),
     ),
     "ocr_timeout": SettingDef(

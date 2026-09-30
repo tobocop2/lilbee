@@ -163,8 +163,8 @@ async def _set_model(
     model: str,
 ) -> SetModelResponse:
     """Persist a model field through the shared write boundary."""
-    result = apply_settings_update({field: model})
-    return SetModelResponse(model=model, warnings=list(result.warnings))
+    apply_settings_update({field: model})
+    return SetModelResponse(model=model)
 
 
 def _resolve_via_available_repo(model: str, available: set[str]) -> str | None:

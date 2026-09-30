@@ -47,6 +47,7 @@ from lilbee.providers.sdk_backend import (
     LlmSdkBackend,
     RerankRequest,
 )
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.daemon_call import DaemonCall
 
 log = logging.getLogger(__name__)
@@ -275,9 +276,13 @@ class SdkLLMProvider(LLMProvider):
         prompt: str = "",
         *,
         timeout: float | None = None,
+        cancel: CancelSignal | None = None,
     ) -> str:
         """OCR via a multipart chat completion; ``timeout`` enforced on a daemon thread."""
         from lilbee.vision import build_vision_messages, resolve_ocr_prompt
+
+        if cancel is not None and cancel.is_set():
+            raise TaskCancelledError
 
         messages = build_vision_messages(prompt or resolve_ocr_prompt(model), png_bytes)
         if timeout and timeout > 0:

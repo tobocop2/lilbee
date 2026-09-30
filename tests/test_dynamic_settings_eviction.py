@@ -319,15 +319,13 @@ def test_chat_and_vision_model_change_reloads_those_roles(monkeypatch):
         _restore_services()
 
 
-def test_enable_ocr_change_reloads_the_vision_role():
-    """Turning OCR on or off re-plans the vision role without dropping the fleet."""
-    from lilbee.providers.roles import WorkerRole
-
+def test_enable_ocr_change_does_not_touch_fleet():
+    """enable_ocr governs Tesseract only, so no engine role restarts when it changes."""
     provider = _install_recording_provider()
     try:
         apply_settings_update({"enable_ocr": False})
         apply_settings_update({"enable_ocr": True})
-        assert provider.reloaded_roles == [WorkerRole.VISION, WorkerRole.VISION]
+        assert provider.reloaded_roles == []
         assert provider.dropped == 0
     finally:
         _restore_services()
@@ -426,6 +424,26 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
             app.set_setting("temperature", 0.5)
             await pilot.pause()
             assert provider.dropped == 1
+    finally:
+        _restore_services()
+
+
+async def test_turning_ocr_off_with_a_vision_model_toasts_nothing(_patch_chat_setup):
+    """Turning Tesseract off beside a vision model is a normal change, not a warning."""
+    _install_recording_provider()
+    try:
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            toasts: list[tuple[object, object]] = []
+            app.notify = lambda message, *a, **kw: toasts.append(  # type: ignore[method-assign]
+                (message, kw.get("severity"))
+            )
+            app.set_setting("enable_ocr", False)
+            await pilot.pause()
+            assert cfg.enable_ocr is False
+            assert [t for t in toasts if t[1] == "warning"] == []
     finally:
         _restore_services()
 

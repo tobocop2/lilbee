@@ -1516,15 +1516,16 @@ Tesseract, or a vision model), it still gets embedded, so you still need an
 embedding model installed.
 
 For PDFs without embedded text, lilbee supports two OCR backends. When a
-vision model is configured, it takes precedence.
+vision model is configured, it reads every scanned page.
 
-`enable_ocr = false` (or `lilbee add --no-ocr`) turns off every OCR backend,
-the vision model included. A set vision model does not turn OCR back on. With
-OCR off, lilbee skips a PDF that has no text layer, and the skip message says
-that OCR is off. `lilbee status` warns when a vision model is set while OCR is off.
+`enable_ocr` controls Tesseract only. `enable_ocr = false` (or
+`lilbee add --no-ocr`) turns Tesseract off, and a set vision model still runs.
+With no vision model and OCR off, lilbee skips a PDF that has no text layer,
+and the skip message says that OCR is off. To stop vision OCR, clear
+`vision_model`.
 
-To use Tesseract while a vision model is set, clear `vision_model`. Every
-surface can clear it:
+To use Tesseract while a vision model is set, clear `vision_model` and leave
+`enable_ocr` unset or true. Every surface can clear it:
 
 - TUI: pick "(disabled, no model)" in the `vision_model` picker under `/settings`, or run `/set vision_model` with no value or with `none`.
 - Environment: set `LILBEE_VISION_MODEL=""`. An empty value clears the vision model for that process. An unset variable leaves the `config.toml` value in place.
@@ -1577,7 +1578,8 @@ slide with a full-page background image grades `0.5`, so lower the value to
 listed pages get OCR in every PDF, and `auto` and `scanned_pages` do not apply.
 Page numbers start at 1, for example `LILBEE_FORCE_OCR_PAGES=1,3`.
 
-If OCR is off (`enable_ocr = false`), lilbee ignores all three settings.
+If OCR is off (`enable_ocr = false` and no vision model), lilbee ignores all
+three settings.
 A change to these settings applies to files that lilbee extracts afterwards.
 To apply it to files that are already indexed, run `lilbee rebuild`
 (`/rebuild` in the TUI).

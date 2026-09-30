@@ -27,6 +27,7 @@ from lilbee.providers.litellm_sdk import LitellmSdkBackend
 from lilbee.providers.model_ref import ProviderModelRef, parse_model_ref, routes_to_native_gguf
 from lilbee.providers.roles import ROLE_REGISTRY, WorkerRole
 from lilbee.providers.sdk_llm_provider import SdkLLMProvider
+from lilbee.runtime.cancellation import CancelSignal
 
 if TYPE_CHECKING:
     from lilbee.providers.warm_progress import WarmProgress
@@ -190,10 +191,12 @@ class RoutingProvider(LLMProvider):
         prompt: str = "",
         *,
         timeout: float | None = None,
+        cancel: CancelSignal | None = None,
     ) -> str:
         """Dispatch by ``model``'s ref prefix, same rules as :meth:`chat`."""
         ref = parse_model_ref(model)
-        return self._pick_backend(ref).vision_ocr(png_bytes, model, prompt, timeout=timeout)
+        backend = self._pick_backend(ref)
+        return backend.vision_ocr(png_bytes, model, prompt, timeout=timeout, cancel=cancel)
 
     def vision_slot_capacity(self) -> int | None:
         """Delegate to the local fleet, but never build it just to size the fan-out."""
