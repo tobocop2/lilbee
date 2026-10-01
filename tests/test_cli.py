@@ -1410,7 +1410,7 @@ class TestRetiredOcrEnvVarsAreRefused:
         assert failed == {}
         assert runner.invoke(app, ["--version"], env=env).exit_code == 0
 
-    def test_every_command_refuses_when_it_runs(self):
+    def test_every_command_is_built_as_the_refusing_class(self):
         from typer.core import TyperGroup
 
         from lilbee.cli.app import RetiredOcrEnvCommand
