@@ -21,6 +21,7 @@ from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.config.schema import field_type_name
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
@@ -188,6 +189,13 @@ def _is_settable(key: str) -> bool:
     return key in WRITABLE_CONFIG_FIELDS or key in MODEL_ROLE_FIELDS
 
 
+def _refuse_unsettable(key: str) -> None:
+    """Raise ValueError for a key no writer accepts, naming ``ocr`` for a retired OCR key."""
+    refuse_retired_ocr_keys([key])
+    if not _is_settable(key):
+        raise ValueError(f"Unknown or read-only setting: {key}")
+
+
 def _is_nullable(key: str) -> bool:
     """Return True if ``key`` accepts ``None`` to clear the persisted entry."""
     if key in WRITABLE_CONFIG_FIELDS:
@@ -219,8 +227,7 @@ def _as_int_setting(value: Any) -> int | None:
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
-        if not _is_settable(key):
-            raise ValueError(f"Unknown or read-only setting: {key}")
+        _refuse_unsettable(key)
         if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
@@ -548,8 +555,7 @@ def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> Setti
     those fields rather than failing the whole batch.
     """
     for key in keys:
-        if not _is_settable(key):
-            raise ValueError(f"Unknown or read-only setting: {key}")
+        _refuse_unsettable(key)
         if key in _NO_RESET_FIELDS and not skip_unresettable:
             raise ValueError(
                 f"'{key}' has no resettable default; pass an explicit value via settings_set."

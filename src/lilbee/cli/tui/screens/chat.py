@@ -86,6 +86,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
@@ -1428,6 +1429,11 @@ class ChatScreen(Screen[None]):
         key = parts[0]
         value = parts[1] if len(parts) > 1 else ""
 
+        try:
+            refuse_retired_ocr_keys([key])
+        except ValueError as exc:
+            self.notify(str(exc), severity="warning")
+            return
         if key not in SETTINGS_MAP:
             self.notify(msg.CMD_SET_UNKNOWN.format(key=key), severity="warning")
             return
