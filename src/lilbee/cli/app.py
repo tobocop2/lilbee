@@ -12,6 +12,7 @@ from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
 from lilbee.core.config import cfg, config_load_error
+from lilbee.core.config.parsing import refuse_retired_ocr_env
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
@@ -150,6 +151,18 @@ def apply_overrides(
             setattr(cfg, attr, value)
 
 
+def _refuse_retired_ocr_env(json_output: bool) -> None:
+    """Exit with one error line when the environment sets a retired OCR variable."""
+    try:
+        refuse_retired_ocr_env(os.environ)
+    except ValueError as exc:
+        if json_output:
+            json_out({"error": str(exc)})
+        else:
+            typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from None
+
+
 @app.callback()
 def _default(
     ctx: typer.Context,
@@ -171,6 +184,7 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
+    _refuse_retired_ocr_env(json_output)
 
     if config_load_error is not None and not json_output:
         # Print to stderr so JSON-mode output stays parseable.
