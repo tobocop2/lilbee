@@ -19,7 +19,7 @@ from lilbee.core.config import (
     validate_ocr_timeout,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
-from lilbee.core.config.enums import OcrMode
+from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import _TomlSource, value_is_set
 from lilbee.runtime.progress import OcrBackendUsed
 
@@ -2026,6 +2026,74 @@ class TestBuildCfgFallback:
             built_cfg, error = _build_cfg()
         assert error is None
         assert built_cfg.max_tokens == 4096
+
+
+class TestABadEnumInConfigTomlKeepsTheRest:
+    """One invalid enum value in config.toml drops that key alone, with a warning."""
+
+    @staticmethod
+    def _build(tmp_path, toml: str, **env: str):
+        from lilbee.core.config.model import _build_cfg
+
+        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+            return _build_cfg()
+
+    @pytest.mark.parametrize(
+        ("key", "bad", "default"),
+        [
+            ("ocr", '"OFF"', OcrMode.AUTO),
+            ("ocr", "true", OcrMode.AUTO),
+            ("kv_cache_type", '"q9"', KvCacheType.Q8_0),
+            ("fts_language", '"Klingon"', FtsLanguage.ENGLISH),
+            ("chat_mode", '"banter"', ChatMode.SEARCH),
+        ],
+    )
+    def test_the_bad_key_takes_its_default_and_every_other_key_loads(
+        self, tmp_path, caplog, key, bad, default
+    ):
+        toml = (
+            f"{key} = {bad}\ntop_k = 7\n"
+            f'vision_model = "{_SAMPLE_VISION_REF}"\ngemini_api_key = "sk-kept"\n'
+        )
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            built, error = self._build(tmp_path, toml)
+        assert error is None
+        assert getattr(built, key) == default
+        assert built.top_k == 7
+        assert built.vision_model == _SAMPLE_VISION_REF
+        assert built.gemini_api_key == "sk-kept"
+        assert f"config.toml: {key} = " in caplog.text
+
+    def test_the_warning_names_the_key_the_value_and_the_allowed_values(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            self._build(tmp_path, 'ocr = "OFF"\n')
+        assert (
+            "config.toml: ocr = 'OFF' is not one of auto, all, off; ocr uses its default"
+            in caplog.text
+        )
+
+    @pytest.mark.parametrize(
+        ("key", "stored", "loaded"),
+        [("fts_language", "german", FtsLanguage.GERMAN), ("chat_mode", "CHAT", ChatMode.CHAT)],
+    )
+    def test_a_value_the_field_normalizes_is_kept(self, tmp_path, caplog, key, stored, loaded):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            built, error = self._build(tmp_path, f'{key} = "{stored}"\n')
+        assert error is None
+        assert getattr(built, key) is loaded
+        assert "config.toml:" not in caplog.text
+
+    def test_a_valid_env_value_still_wins_over_the_bad_toml_value(self, tmp_path):
+        built, error = self._build(tmp_path, 'ocr = "OFF"\ntop_k = 7\n', LILBEE_OCR="all")
+        assert error is None
+        assert built.ocr is OcrMode.ALL
+        assert built.top_k == 7
+
+    def test_a_bad_value_on_a_field_that_is_not_an_enum_still_falls_back(self, tmp_path):
+        built, error = self._build(tmp_path, 'top_k = "many"\nocr = "off"\n')
+        assert error is not None
+        assert built.ocr is OcrMode.AUTO
 
 
 class TestChatCtxTargetDefault:
