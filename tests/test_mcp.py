@@ -921,9 +921,9 @@ class TestAdd:
     @pytest.mark.parametrize(
         ("tool", "arguments", "detail"),
         [
-            ("add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is no longer accepted"),
-            ("add", {"paths": ["x"], "force_ocr": True}, "force_ocr is no longer accepted"),
-            ("sync", {"enable_ocr": False}, "enable_ocr is no longer accepted"),
+            ("add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is replaced by ocr"),
+            ("add", {"paths": ["x"], "force_ocr": True}, "force_ocr is replaced by ocr"),
+            ("sync", {"enable_ocr": False}, "enable_ocr is replaced by ocr"),
             ("add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
         ],
     )
@@ -2004,6 +2004,13 @@ class TestSettingsMcp:
             "warnings": [],
         }
         assert cfg.ocr is OcrMode.OFF
+
+    @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
+    def test_settings_set_and_reset_name_ocr_for_a_retired_key(self, isolated_env, key):
+        cfg.data_root = isolated_env
+        replaced = f"{key} is replaced by ocr; set ocr to one of auto, all, off"
+        assert settings_set({key: False}) == {"error": replaced}
+        assert settings_reset([key]) == {"error": replaced}
 
     def test_settings_set_vision_model_with_ocr_off_returns_the_notice(self, isolated_env):
         cfg.data_root = isolated_env

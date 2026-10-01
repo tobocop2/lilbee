@@ -735,10 +735,20 @@ class TestRetiredOcrKeysMigrate:
         loaded = self._load(tmp_path, 'enable_ocr = false\nocr = "all"\n')
         assert loaded.ocr is OcrMode.ALL
 
-    def test_the_migration_warns_with_the_replacement(self, tmp_path, caplog):
+    @pytest.mark.parametrize(
+        ("toml", "warning"),
+        [
+            ("enable_ocr = false\n", "config.toml: enable_ocr is replaced by ocr;"),
+            (
+                "enable_ocr = false\nforce_ocr = true\n",
+                "config.toml: enable_ocr and force_ocr are replaced by ocr;",
+            ),
+        ],
+    )
+    def test_the_migration_warns_with_the_replacement(self, tmp_path, caplog, toml, warning):
         with caplog.at_level("WARNING", logger="lilbee.core.config.parsing"):
-            self._load(tmp_path, "enable_ocr = false\n")
-        assert "config.toml key enable_ocr is replaced by ocr" in caplog.text
+            self._load(tmp_path, toml)
+        assert warning in caplog.text
 
 
 class TestMigrationMatchesTheOldEngineChoice:

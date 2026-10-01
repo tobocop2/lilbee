@@ -442,11 +442,11 @@ class TestAddEndpoint:
         ("route", "body", "detail"),
         [
             ("/api/add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
-            ("/api/add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is no longer"),
-            ("/api/add", {"paths": ["x"], "force_ocr": True}, "force_ocr is no longer"),
+            ("/api/add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is replaced by ocr"),
+            ("/api/add", {"paths": ["x"], "force_ocr": True}, "force_ocr is replaced by ocr"),
             ("/api/sync", {"ocr": "some"}, "'auto', 'all' or 'off'"),
-            ("/api/sync", {"enable_ocr": False}, "enable_ocr is no longer"),
-            ("/api/sync", {"force_ocr": True}, "force_ocr is no longer"),
+            ("/api/sync", {"enable_ocr": False}, "enable_ocr is replaced by ocr"),
+            ("/api/sync", {"force_ocr": True}, "force_ocr is replaced by ocr"),
         ],
     )
     async def test_a_bad_or_retired_ocr_field_is_a_400(
@@ -604,8 +604,14 @@ class TestIngestStreamTerminalEvent:
         ("params", "detail"),
         [
             ({"ocr": "some"}, "ocr must be one of auto, all, off; got 'some'"),
-            ({"enable_ocr": "false"}, "enable_ocr is no longer accepted; use ocr"),
-            ({"force_ocr": "true"}, "force_ocr is no longer accepted; use ocr"),
+            (
+                {"enable_ocr": "false"},
+                "enable_ocr is replaced by ocr; set ocr to one of auto, all, off",
+            ),
+            (
+                {"force_ocr": "true"},
+                "force_ocr is replaced by ocr; set ocr to one of auto, all, off",
+            ),
         ],
     )
     async def test_upload_refuses_a_bad_or_retired_ocr_query(

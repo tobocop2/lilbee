@@ -58,21 +58,24 @@ def migrate_ocr_keys(data: dict[str, Any], vision_model: str) -> dict[str, Any]:
     return migrated
 
 
+def _replaced_by_ocr(retired: list[str]) -> str:
+    """'<keys> is/are replaced by ocr' for the retired OCR keys named."""
+    verb = "is" if len(retired) == 1 else "are"
+    return f"{' and '.join(retired)} {verb} replaced by ocr"
+
+
 def warn_retired_ocr_keys(data: dict[str, Any]) -> None:
     """Warn that config.toml still carries a retired OCR key."""
     retired = [key for key in RETIRED_OCR_KEYS if key in data]
     if retired:
-        log.warning(
-            "config.toml key %s is replaced by ocr; the next settings write saves it",
-            " and ".join(retired),
-        )
+        log.warning("config.toml: %s; the next settings write saves it", _replaced_by_ocr(retired))
 
 
 def refuse_retired_ocr_keys(keys: Iterable[str]) -> None:
-    """Raise ValueError when a request names a retired OCR key instead of ``ocr``."""
+    """Raise ValueError when a request or setting names a retired OCR key instead of ``ocr``."""
     retired = sorted(set(keys) & set(RETIRED_OCR_KEYS))
     if retired:
         raise ValueError(
-            f"{' and '.join(retired)} is no longer accepted; "
-            f"use ocr with one of {', '.join(mode.value for mode in OcrMode)}"
+            f"{_replaced_by_ocr(retired)}; "
+            f"set ocr to one of {', '.join(mode.value for mode in OcrMode)}"
         )

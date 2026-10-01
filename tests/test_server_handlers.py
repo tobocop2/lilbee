@@ -4157,7 +4157,9 @@ class TestUpdateConfig:
 
     @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
     async def test_update_config_refuses_a_retired_ocr_key(self, tmp_path, key):
-        with pytest.raises(ValueError, match=key):
+        with pytest.raises(
+            ValueError, match=f"^{key} is replaced by ocr; set ocr to one of auto, all, off$"
+        ):
             await handlers.update_config({key: False})
 
     async def test_update_config_reindex(self, tmp_path):
@@ -5408,7 +5410,9 @@ class TestParseOcrParams:
 
     @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
     def test_a_retired_key_is_refused_by_name(self, key):
-        with pytest.raises(ValueError, match=f"{key} is no longer accepted; use ocr"):
+        with pytest.raises(
+            ValueError, match=f"{key} is replaced by ocr; set ocr to one of auto, all, off"
+        ):
             _ingest_h._parse_ocr_params({key: False})
 
 
