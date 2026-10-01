@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 _BOOL_TRUE = frozenset({"true", "t", "yes", "y", "on", "1"})
 _BOOL_FALSE = frozenset({"false", "f", "no", "n", "off", "0"})
 
-# Retired config.toml keys that the ``ocr`` setting replaces, each with its retired env var.
+# Retired config.toml keys that ``ocr`` replaces, each with the retired env var the CLI refuses.
 RETIRED_OCR_KEYS = {"enable_ocr": "LILBEE_ENABLE_OCR", "force_ocr": "LILBEE_OCR_FORCE"}
 _OCR_ENV_VAR = "LILBEE_OCR"
 
