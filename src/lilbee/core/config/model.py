@@ -9,10 +9,11 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
+from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
@@ -1515,10 +1516,29 @@ class _PlainEnvSource:
         return result
 
 
+def _enum_fields(settings_cls: type[BaseSettings]) -> dict[str, type[Enum]]:
+    """The fields of *settings_cls* typed as an enum, by name."""
+    return {
+        name: field.annotation
+        for name, field in settings_cls.model_fields.items()
+        if isinstance(field.annotation, type) and issubclass(field.annotation, Enum)
+    }
+
+
+def _accepts(probe: BaseSettings, key: str, value: Any) -> bool:
+    """Whether the field's own validators accept *value*, assigned on the throwaway *probe*."""
+    try:
+        type(probe).__pydantic_validator__.validate_assignment(probe, key, value)
+    except ValidationError:
+        return False
+    return True
+
+
 class _TomlSource:
     """Custom pydantic-settings source that reads config.toml."""
 
     def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
+        self._settings_cls = settings_cls
         self._path = path
 
     def __call__(self) -> dict[str, Any]:
@@ -1533,7 +1553,22 @@ class _TomlSource:
         # An empty string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
-        return {k: v for k, v in data.items() if value_is_set(k, v)}
+        return self._without_invalid_enums({k: v for k, v in data.items() if value_is_set(k, v)})
+
+    def _without_invalid_enums(self, values: dict[str, Any]) -> dict[str, Any]:
+        """*values* less each enum value the field refuses, so one typo keeps the rest."""
+        enums = _enum_fields(self._settings_cls)
+        probe = self._settings_cls.model_construct()
+        invalid = [key for key in enums if key in values and not _accepts(probe, key, values[key])]
+        for key in invalid:
+            log.warning(
+                "config.toml: %s = %r is not one of %s; %s uses its default",
+                key,
+                values[key],
+                ", ".join(str(member.value) for member in enums[key]),
+                key,
+            )
+        return {key: value for key, value in values.items() if key not in invalid}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
