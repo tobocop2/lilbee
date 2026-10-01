@@ -41,7 +41,12 @@ from .enums import (
     TableModel,
     WikiEntityMode,
 )
-from .parsing import migrate_ocr_keys, parse_bool, warn_retired_ocr_keys
+from .parsing import (
+    migrate_ocr_keys,
+    parse_bool,
+    refused_value_fallback,
+    warn_retired_ocr_keys,
+)
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -1562,11 +1567,11 @@ class _TomlSource:
         invalid = [key for key in enums if key in values and not _accepts(probe, key, values[key])]
         for key in invalid:
             log.warning(
-                "config.toml: %s = %r is not one of %s; %s uses its default",
+                "config.toml: %s = %r is not one of %s; %s",
                 key,
                 values[key],
                 ", ".join(str(member.value) for member in enums[key]),
-                key,
+                refused_value_fallback(key, values),
             )
         return {key: value for key, value in values.items() if key not in invalid}
 
