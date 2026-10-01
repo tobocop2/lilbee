@@ -1495,6 +1495,13 @@ def _started_roles(swap: _FakeSwap) -> set[WorkerRole]:
     return {launch.role for launches in swap.started for launch in launches}
 
 
+def _provider_without_preload(monkeypatch) -> FleetProvider:
+    """A FleetProvider whose reloads load no model off-thread."""
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_preload_restarted", lambda _restarted: None)
+    return p
+
+
 @pytest.mark.parametrize(("ocr_on", "vision_warmed"), [(False, False), (True, True)])
 def test_warm_up_starts_and_warms_vision_only_when_ocr_is_on(
     monkeypatch, ocr_gated_engine, ocr_on: bool, vision_warmed: bool
@@ -1515,8 +1522,7 @@ def test_toggling_ocr_at_runtime_replans_the_vision_role(
     monkeypatch, ocr_gated_engine, ocr_on: bool
 ) -> None:
     monkeypatch.setattr(cfg, "ocr", OcrMode.OFF if ocr_on else OcrMode.AUTO)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
+    p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     assert (WorkerRole.VISION in p._clients) is not ocr_on
     monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO if ocr_on else OcrMode.OFF)
@@ -1529,8 +1535,7 @@ def test_vision_ocr_with_ocr_off_starts_vision_for_the_request(
     monkeypatch, ocr_gated_engine
 ) -> None:
     monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
+    p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     assert WorkerRole.VISION not in p._clients
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
@@ -1565,10 +1570,8 @@ def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
     monkeypatch, ocr_gated_engine
 ) -> None:
     monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
-    p = FleetProvider()
+    p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
-    real_thread = threading.Thread
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
     pages = 4
     arrived = threading.Condition()
     arrivals = {"n": 0}
@@ -1599,7 +1602,7 @@ def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
         except Exception as exc:
             results.append(exc)
 
-    workers = [real_thread(target=_page) for _ in range(pages)]
+    workers = [threading.Thread(target=_page) for _ in range(pages)]
     for worker in workers:
         worker.start()
     for worker in workers:
@@ -1612,8 +1615,7 @@ def test_a_failed_vision_start_lets_the_next_page_retry(monkeypatch, ocr_gated_e
     from lilbee.providers.base import ProviderError
 
     monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
+    p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     reload_pass = p._reload_pass
     failures = iter([ProviderError("engine refused", provider="llama-server")])
@@ -1633,8 +1635,7 @@ def test_a_failed_vision_start_lets_the_next_page_retry(monkeypatch, ocr_gated_e
 
 def test_a_vision_setting_reload_revokes_the_request_grant(monkeypatch, ocr_gated_engine) -> None:
     monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
+    p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     p.vision_ocr(b"png", "org/repo/v.gguf")
     assert WorkerRole.VISION in p._clients
@@ -5129,8 +5130,7 @@ def test_a_services_reset_drops_the_request_vision_grant(monkeypatch, ocr_gated_
     from lilbee.app.services import reset_services, set_services
 
     monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
-    monkeypatch.setattr(prov_mod.threading, "Thread", MagicMock())  # no off-thread preload
-    p = FleetProvider()
+    p = _provider_without_preload(monkeypatch)
     p._ensure_fleet()
     p.vision_ocr(b"png", "org/repo/v.gguf")
     assert planning_mod.vision_role_wanted("org/repo/v.gguf")  # the request granted vision

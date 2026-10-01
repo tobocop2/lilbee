@@ -361,6 +361,15 @@ def _join_fleet_background_threads():
 
 
 @pytest.fixture(autouse=True)
+def _drop_the_fleet_plan_snapshot():
+    """Clear the process-wide plan snapshot, so no later test's reload probes real devices."""
+    yield
+    from lilbee.providers.fleet import planning
+
+    planning.clear_plan_probe()
+
+
+@pytest.fixture(autouse=True)
 def _ignore_user_global_config(monkeypatch):
     """Skip the platform-default config.toml for unit tests.
 
