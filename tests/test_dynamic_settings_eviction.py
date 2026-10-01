@@ -462,6 +462,38 @@ async def test_picking_a_vision_model_while_ocr_is_off_toasts_the_notice(
         _restore_services()
 
 
+@pytest.mark.parametrize(("ocr", "notified"), [(OcrMode.OFF, True), (OcrMode.AUTO, False)])
+async def test_slash_set_of_a_vision_model_while_ocr_is_off_toasts_the_notice(
+    _patch_chat_setup, ocr, notified
+):
+    """/set vision_model keeps ocr off and says the pages stay skipped."""
+    _install_recording_provider()
+    ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    try:
+        cfg.ocr = ocr
+        cfg.vision_model = ""
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            toasts: list[tuple[object, object]] = []
+            app.notify = lambda message, *a, **kw: toasts.append(  # type: ignore[method-assign]
+                (message, kw.get("severity"))
+            )
+            app.screen._cmd_set(f"vision_model {ref}")
+            await pilot.pause()
+            assert cfg.vision_model == ref
+            assert cfg.ocr is ocr
+            assert any("vision_model" in str(message) for message, _ in toasts)  # /set ran
+            warnings = [message for message, severity in toasts if severity == "warning"]
+            expected = (
+                "Scanned pages stay skipped because ocr is off. "
+                f"Set ocr to auto to read them with {ref}."
+            )
+            assert warnings == ([expected] if notified else [])
+    finally:
+        _restore_services()
+
+
 async def test_provider_availability_signal_fires_for_api_keys(_patch_chat_setup):
     """Adding an API key republishes on provider_availability_changed_signal."""
     # Light host: the fan-out is wired on the app itself, so observing it needs
