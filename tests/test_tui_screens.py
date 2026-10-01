@@ -8642,9 +8642,7 @@ def test_add_and_sync_progress_callbacks_show_tesseract_ocr() -> None:
     from lilbee.runtime.progress import EventType, OcrStartEvent
 
     expected = msg.SYNC_TESSERACT_OCR.format(total=212, file="scan.pdf")
-    assert expected == (
-        "Running Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file)"
-    )
+    assert expected == "Running Tesseract OCR on every page of scan.pdf (212 pages)"
     for build in (build_add_progress_callback, build_sync_progress_callback):
         reporter = MagicMock(spec=ProgressReporter)
         build(reporter)(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
