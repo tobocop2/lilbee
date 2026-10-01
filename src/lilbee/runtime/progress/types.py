@@ -146,7 +146,7 @@ class OcrStartEvent(BaseModel):
     """Emitted once when Tesseract starts OCR on a file, which reports no per-page progress.
 
     ``total_pages`` is the file's page count, read before extraction. Tesseract
-    OCRs the pages that lack a text layer, which may be fewer.
+    OCRs every page of a file that has a page without a text layer.
     """
 
     file: str
@@ -155,10 +155,7 @@ class OcrStartEvent(BaseModel):
     @property
     def status_text(self) -> str:
         """The progress line for this event, naming the file's page count."""
-        return (
-            f"Tesseract OCR on the scanned pages of {self.file} "
-            f"({self.total_pages} pages in the file)"
-        )
+        return f"Tesseract OCR on every page of {self.file} ({self.total_pages} pages)"
 
 
 class EmbedEvent(BaseModel):

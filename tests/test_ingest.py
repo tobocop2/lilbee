@@ -793,7 +793,7 @@ class TestSync:
         assert totals == {1}  # the bar measures the one-file corpus
 
         assert descriptions == [
-            "Tesseract OCR on the scanned pages of scan.pdf (8 pages in the file)",
+            "Tesseract OCR on every page of scan.pdf (8 pages)",
             "Tesseract OCR scan.pdf (page 8/8)",
             "Embedding scan.pdf (3/5)",
             "Ingested scan.pdf",
@@ -4996,7 +4996,7 @@ class TestPhaseProgressCallback:
         cb = _phase_progress_callback(progress, "task-1", lambda *_: None)
         cb(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
         desc = progress.update.call_args.kwargs["description"]
-        assert desc == "Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file)"
+        assert desc == "Tesseract OCR on every page of scan.pdf (212 pages)"
 
     def test_embed_event_updates_bar_description(self):
         from lilbee.data.ingest.pipeline import _phase_progress_callback

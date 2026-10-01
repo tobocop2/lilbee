@@ -229,7 +229,7 @@ def ocr_backend() -> OcrBackendUsed:
 def _ocr_config(ocr_token: str | None) -> OcrConfig | None:
     """xberg's OcrConfig for the backend ``ocr_backend`` picks, or None when OCR is off.
 
-    xberg auto-OCRs only the pages that lack a text layer.
+    xberg OCRs every page of a PDF that has a page without a text layer.
     """
     from xberg import OcrConfig
 

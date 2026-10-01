@@ -3248,8 +3248,8 @@ class TestOcrFlags:
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
         normalized = _plain_help_text(result.output)
-        assert "auto reads pages without usable text" in normalized
-        assert "all reads every page, off skips them" in normalized
+        assert "auto reads every page of a file that has a page without usable text" in normalized
+        assert "all reads every page of every file, off skips them" in normalized
         assert "Leave it out to use the ocr setting" in normalized
 
 
@@ -5381,9 +5381,7 @@ class TestChatSyncCallback:
         status.pending = 2
         cb = _chat_sync_callback(status)
         cb(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
-        assert status.text == (
-            "⟳ Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file) (+2 queued)"
-        )
+        assert status.text == "⟳ Tesseract OCR on every page of scan.pdf (212 pages) (+2 queued)"
 
     def test_ocr_start_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback
