@@ -6213,7 +6213,7 @@ class TestTesseractUnderRealXberg:
     """ocr modes against real xberg with Tesseract, no vision model."""
 
     @pytest.fixture(autouse=True)
-    def _tesseract(self, isolated_env):
+    def _tesseract(self, isolated_env, tessdata_ready):
         cfg.vision_model = ""
 
     @staticmethod

@@ -523,8 +523,8 @@ def _shutdown_ingest_pool():
     _join_shared_ingest_pool()
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _tessdata_ready(tmp_path_factory):
+@pytest.fixture(scope="session")
+def tessdata_ready(tmp_path_factory):
     """Have xberg fetch Tesseract's language data once, under a lock every worker shares.
 
     xberg downloads a missing language file on first use through one fixed temp
