@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from lilbee.core.config.enums import OcrMode
+
 
 class EventType(StrEnum):
     """Progress event types emitted during sync/ingest.
@@ -104,11 +106,11 @@ class OcrBackendUsed(StrEnum):
     VISION = "vision"
 
     @classmethod
-    def chosen(cls, enable_ocr: bool | None, vision_model: str) -> "OcrBackendUsed":
-        """The backend a configuration picks: the vision model, else Tesseract unless OCR is off."""
-        if vision_model:
-            return cls.VISION
-        return cls.NONE if enable_ocr is False else cls.TESSERACT
+    def chosen(cls, ocr: OcrMode, vision_model: str) -> "OcrBackendUsed":
+        """The backend a configuration picks: none when OCR is off, else vision or Tesseract."""
+        if ocr is OcrMode.OFF:
+            return cls.NONE
+        return cls.VISION if vision_model else cls.TESSERACT
 
 
 _EXTRACT_STEP_NAMES: dict[OcrBackendUsed, str] = {

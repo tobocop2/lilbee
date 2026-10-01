@@ -101,9 +101,10 @@ def test_a_bracketed_documents_dir_and_model_ref_render_literally() -> None:
     assert any("org/model[q4].gguf" in s for s in strings)
 
 
-def test_the_ocr_engine_note_is_printed_when_status_carries_one() -> None:
+def test_the_scanned_pages_line_is_printed_under_its_label() -> None:
     status = _status()
-    status.ocr_note = "A vision model is set (v), so it is used instead of Tesseract."
+    status.ocr_note = "skipped (ocr = off)"
     _tables, strings = _texts(status)
-    assert any("used instead of Tesseract" in s for s in strings)
-    assert not any("used instead of Tesseract" in s for s in _texts(_status())[1])
+    assert any(
+        s.startswith("Scanned pages:") and s.endswith("skipped (ocr = off)") for s in strings
+    )

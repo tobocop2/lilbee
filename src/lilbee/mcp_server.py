@@ -23,6 +23,7 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.types import CallToolResult, InputRequiredResult
 from mcp.types import Tool as MCPTool
 
 from lilbee.app.memory import (
@@ -54,7 +55,8 @@ from lilbee.app.settings import (
 )
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
-from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.config.enums import CrawlRenderMode, OcrMode
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
@@ -325,14 +327,13 @@ async def sync(
     force_rebuild: bool = False,
     retry_skipped: bool = False,
     prune_ignored: bool = False,
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Sync the documents directory into the vector store.
 
-    ``force_rebuild`` drops every table and re-ingests. ``retry_skipped``
-    clears failed-file skip markers. ``prune_ignored`` also drops sources a
-    ``.lilbeeignore`` now excludes.
+    ``force_rebuild`` re-ingests everything. ``retry_skipped`` retries failed
+    files. ``prune_ignored`` drops sources ``.lilbeeignore`` excludes.
     """
     from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
@@ -341,7 +342,7 @@ async def sync(
         validate_ocr_timeout(ocr_timeout)
     except ValueError as exc:
         return _error(str(exc))
-    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
+    with temporary_ocr_config(ocr, ocr_timeout), _cancel_token() as cancel:
         try:
             result = await run_sync(
                 quiet=True,
@@ -356,7 +357,7 @@ async def sync(
 
 
 async def _sync_after_add(
-    reached_corpus: bool, enable_ocr: bool | None, ocr_timeout: float | None
+    reached_corpus: bool, ocr: OcrMode | None, ocr_timeout: float | None
 ) -> dict[str, Any] | None:
     """The sync that follows an add, or None when nothing named reached the corpus."""
     from lilbee.app.ingest import temporary_ocr_config
@@ -364,7 +365,7 @@ async def _sync_after_add(
 
     if not reached_corpus:
         return None
-    with temporary_ocr_config(enable_ocr, ocr_timeout), _cancel_token() as cancel:
+    with temporary_ocr_config(ocr, ocr_timeout), _cancel_token() as cancel:
         return (await run_sync(quiet=True, cancel=cancel)).model_dump()
 
 
@@ -394,7 +395,7 @@ async def _crawl_add_urls(
 async def add(
     paths: list[str],
     force: bool = False,
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
@@ -449,7 +450,7 @@ async def add(
         return _error(str(exc))
     errors.extend(reg_result.refused)
     reached = reg_result.reached_corpus or bool(crawled_count)
-    sync_result = await _sync_after_add(reached, enable_ocr, ocr_timeout)
+    sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
     result: dict[str, Any] = {
         "command": "add",
         "copied": reg_result.registered,
@@ -1091,7 +1092,7 @@ def settings_get(key: str) -> dict[str, Any]:
 @_tool
 def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
     """Atomically update writable settings; rolls back on validation error.
-    Persists to config.toml; returns ``{updated, reindex_required}``."""
+    Persists to config.toml; returns updated, reindex_required, warnings."""
     if _transport.http_mounted and requires_services_reset(updates):
         return _error(provider_reset_refused_message("Switching"))
     try:
@@ -1104,6 +1105,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
         "command": "settings_set",
         "updated": result.updated,
         "reindex_required": result.reindex_required,
+        "warnings": list(result.warnings),
     }
 
 
@@ -1382,6 +1384,32 @@ def _flatten_tool_description(text: str) -> str:
     return "\n".join(line.strip() for line in text.strip().splitlines())
 
 
+_DEF_REF_PREFIX = "#/$defs/"
+
+
+def _inline_enum_defs(schema: dict[str, Any]) -> None:
+    """Inline each ``$defs`` enum a property references, dropping the def's title.
+
+    A def something else still references stays in ``$defs``.
+    """
+    defs = schema.get("$defs")
+    properties = schema.get("properties")
+    if not isinstance(defs, dict) or not isinstance(properties, dict):
+        return
+    for prop in properties.values():
+        ref = prop.get("$ref") if isinstance(prop, dict) else None
+        target = defs.get(ref.removeprefix(_DEF_REF_PREFIX)) if isinstance(ref, str) else None
+        if isinstance(target, dict) and "enum" in target:
+            prop.pop("$ref")
+            prop.update({key: value for key, value in target.items() if key != "title"})
+    still_used = json.dumps([properties, defs])
+    kept = {name: d for name, d in defs.items() if f'"{_DEF_REF_PREFIX}{name}"' in still_used}
+    if kept:
+        schema["$defs"] = kept
+    else:
+        schema.pop("$defs")
+
+
 def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
     """Trim auto-generated noise from a tool's input schema, on a copy.
 
@@ -1394,6 +1422,7 @@ def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
       every ``dict[str, Any]`` but it's the JSON Schema default behavior.
     - The ``null`` arm of ``anyOf: [{type: X}, {type: null}]`` unions for
       ``T | None`` defaults; the null branch is implicit.
+    - The ``$defs`` indirection for an enum parameter, which is inlined.
 
     A roughly 25-35% reduction in the serialized tools payload, which matters
     most for small-context (16K) chat models where the tools surface was
@@ -1406,6 +1435,7 @@ def _strip_schema(schema: dict[str, Any]) -> dict[str, Any]:
         for prop in properties.values():
             if isinstance(prop, dict):
                 _strip_property_noise(prop)
+    _inline_enum_defs(schema)
     return schema
 
 
@@ -1414,6 +1444,13 @@ _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 
 class LilbeeMCP(MCPServer):
     """MCP server that trims its tools wire and keeps it current with config."""
+
+    async def call_tool(
+        self, name: str, arguments: dict[str, Any], context: Context | None = None
+    ) -> CallToolResult | InputRequiredResult:
+        """Refuse a retired OCR argument by name instead of ignoring it, then call the tool."""
+        refuse_retired_ocr_keys(arguments)
+        return await super().call_tool(name, arguments, context)
 
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.

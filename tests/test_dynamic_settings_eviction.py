@@ -11,6 +11,7 @@ from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.providers.base import LLMProvider
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 
@@ -319,13 +320,15 @@ def test_chat_and_vision_model_change_reloads_those_roles(monkeypatch):
         _restore_services()
 
 
-def test_enable_ocr_change_does_not_touch_fleet():
-    """enable_ocr governs Tesseract only, so no engine role restarts when it changes."""
+def test_ocr_change_reloads_the_vision_role():
+    """Turning OCR on or off re-plans the vision role without dropping the fleet."""
+    from lilbee.providers.roles import WorkerRole
+
     provider = _install_recording_provider()
     try:
-        apply_settings_update({"enable_ocr": False})
-        apply_settings_update({"enable_ocr": True})
-        assert provider.reloaded_roles == []
+        apply_settings_update({"ocr": "off"})
+        apply_settings_update({"ocr": "auto"})
+        assert provider.reloaded_roles == [WorkerRole.VISION, WorkerRole.VISION]
         assert provider.dropped == 0
     finally:
         _restore_services()
@@ -428,11 +431,16 @@ async def test_app_set_setting_evicts_via_boundary(_patch_chat_setup):
         _restore_services()
 
 
-async def test_turning_ocr_off_with_a_vision_model_toasts_nothing(_patch_chat_setup):
-    """Turning Tesseract off beside a vision model is a normal change, not a warning."""
+@pytest.mark.parametrize(("ocr", "notified"), [(OcrMode.OFF, True), (OcrMode.AUTO, False)])
+async def test_picking_a_vision_model_while_ocr_is_off_toasts_the_notice(
+    _patch_chat_setup, ocr, notified
+):
+    """The model-bar pick keeps ocr off and says the pages stay skipped."""
     _install_recording_provider()
+    ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     try:
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.ocr = ocr
+        cfg.vision_model = ""
         app = LilbeeApp()
         async with app.run_test(size=(120, 40)) as pilot:
             await await_chat(app, pilot)
@@ -440,10 +448,16 @@ async def test_turning_ocr_off_with_a_vision_model_toasts_nothing(_patch_chat_se
             app.notify = lambda message, *a, **kw: toasts.append(  # type: ignore[method-assign]
                 (message, kw.get("severity"))
             )
-            app.set_setting("enable_ocr", False)
+            app.set_active_model("vision_model", ref)
             await pilot.pause()
-            assert cfg.enable_ocr is False
-            assert [t for t in toasts if t[1] == "warning"] == []
+            assert cfg.vision_model == ref
+            assert cfg.ocr is ocr
+            warnings = [message for message, severity in toasts if severity == "warning"]
+            expected = (
+                "Scanned pages stay skipped because ocr is off. "
+                f"Set ocr to auto to read them with {ref}."
+            )
+            assert warnings == ([expected] if notified else [])
     finally:
         _restore_services()
 

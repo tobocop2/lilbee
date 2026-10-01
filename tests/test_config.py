@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION, clean_env
 from lilbee.core.config import (
@@ -18,10 +19,13 @@ from lilbee.core.config import (
     validate_ocr_timeout,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
+from lilbee.core.config.enums import OcrMode
 from lilbee.core.config.model import _TomlSource, value_is_set
+from lilbee.runtime.progress import OcrBackendUsed
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+_SAMPLE_VISION_REF = "Qwen/Qwen2.5-VL-3B-Instruct-GGUF/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
 
 
 class TestFromEnvDefaults:
@@ -535,14 +539,14 @@ class TestTomlConfigFile:
             c = Config()
             assert c.rag_system_prompt == "Be brief."
 
-    def test_enable_ocr_from_toml(self, tmp_path):
+    def test_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text("enable_ocr = true\n")
+        toml_path.write_text('ocr = "off"\n', encoding="utf-8")
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.enable_ocr is True
+            assert c.ocr is OcrMode.OFF
 
     def test_list_field_from_toml_stays_a_list(self, tmp_path):
         """A TOML array maps to a native list, not its stringified repr."""
@@ -661,82 +665,115 @@ class TestTomlConfigFile:
             assert c.seed == 123
 
 
-class TestEnableOcrConfig:
-    def test_default_is_none(self, tmp_path) -> None:
+class TestOcrModeConfig:
+    def test_default_is_auto(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            assert c.enable_ocr is None
+            assert Config().ocr is OcrMode.AUTO
 
-    def test_true_from_env(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "true"}):
-            c = Config()
-            assert c.enable_ocr is True
+    @pytest.mark.parametrize("raw", ["auto", "all", "off"])
+    def test_from_env(self, tmp_path, raw) -> None:
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), "LILBEE_OCR": raw}, clear=True):
+            assert Config().ocr is OcrMode(raw)
 
-    def test_false_from_env(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "false"}):
-            c = Config()
-            assert c.enable_ocr is False
-
-    def test_empty_string_means_auto(self, tmp_path) -> None:
-        with mock.patch.dict(
-            os.environ, {**clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
+    def test_unknown_mode_is_refused(self, tmp_path) -> None:
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            pytest.raises(ValidationError, match="'auto', 'all' or 'off'"),
         ):
-            c = Config()
-            assert c.enable_ocr is None
+            Config(ocr="some")
 
-    def test_auto_string_means_none(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "auto"}):
-            c = Config()
-            assert c.enable_ocr is None
+    @pytest.mark.parametrize("env_var", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
+    def test_retired_env_vars_are_not_read(self, tmp_path, env_var) -> None:
+        """No shim: the retired variables set nothing, only LILBEE_OCR does."""
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), env_var: "0"}, clear=True):
+            assert Config().ocr is OcrMode.AUTO
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), env_var: "1"}, clear=True):
+            assert Config().ocr is OcrMode.AUTO
 
-    def test_yes_no_variants(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "yes"}):
-            c = Config()
-            assert c.enable_ocr is True
 
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "no"}):
-            c = Config()
-            assert c.enable_ocr is False
+class TestRetiredOcrKeysMigrate:
+    """A config.toml written before the ocr setting loads as the mode it meant."""
 
-    def test_numeric_variants(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "1"}):
-            c = Config()
-            assert c.enable_ocr is True
+    @staticmethod
+    def _load(tmp_path, toml: str, **env: str) -> Config:
+        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+            return Config()
 
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "0"}):
-            c = Config()
-            assert c.enable_ocr is False
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ("enable_ocr = false\n", OcrMode.OFF),
+            (f'enable_ocr = false\nvision_model = "{_SAMPLE_VISION_REF}"\n', OcrMode.AUTO),
+            ("enable_ocr = true\n", OcrMode.AUTO),
+            ('enable_ocr = "auto"\n', OcrMode.AUTO),
+            ('enable_ocr = "none"\n', OcrMode.AUTO),
+            ('enable_ocr = "off"\n', OcrMode.OFF),
+            ('enable_ocr = "maybe"\n', OcrMode.AUTO),
+            ("force_ocr = true\n", OcrMode.ALL),
+            ("enable_ocr = true\nforce_ocr = true\n", OcrMode.ALL),
+            ("enable_ocr = false\nforce_ocr = true\n", OcrMode.OFF),
+            (
+                f'enable_ocr = false\nforce_ocr = true\nvision_model = "{_SAMPLE_VISION_REF}"\n',
+                OcrMode.ALL,
+            ),
+            ("force_ocr = false\n", OcrMode.AUTO),
+        ],
+    )
+    def test_stored_values_become_the_mode_they_meant(self, tmp_path, toml, expected):
+        assert self._load(tmp_path, toml).ocr is expected
 
-    def test_case_insensitive(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "TRUE"}):
-            c = Config()
-            assert c.enable_ocr is True
+    def test_a_vision_model_from_the_env_counts(self, tmp_path):
+        """The migration sees the merged settings, so an env vision model keeps OCR on."""
+        loaded = self._load(
+            tmp_path, "enable_ocr = false\n", LILBEE_VISION_MODEL=_SAMPLE_VISION_REF
+        )
+        assert loaded.vision_model == _SAMPLE_VISION_REF
+        assert loaded.ocr is OcrMode.AUTO
 
-    def test_from_toml(self, tmp_path) -> None:
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text("enable_ocr = true\n")
-        env = clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.enable_ocr is True
+    def test_an_explicit_ocr_wins_over_a_retired_key(self, tmp_path):
+        loaded = self._load(tmp_path, 'enable_ocr = false\nocr = "all"\n')
+        assert loaded.ocr is OcrMode.ALL
 
-    def test_garbage_value_falls_back_to_auto(self) -> None:
-        """An unparseable value must not turn OCR on.
+    def test_the_migration_warns_with_the_replacement(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.parsing"):
+            self._load(tmp_path, "enable_ocr = false\n")
+        assert "config.toml key enable_ocr is replaced by ocr" in caplog.text
 
-        This used to fall through to ``bool()``, and ``bool("maybe")`` is True,
-        so a typo silently enabled an expensive pass. The sibling bool
-        validators warn and take their default; this one now does too.
-        """
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
-            c = Config()
-            assert c.enable_ocr is None
 
-    def test_whitespace_only_means_auto(self) -> None:
-        """Whitespace-only strings hit the auto/none branch and return None."""
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "   "}):
-            c = Config()
-            assert c.enable_ocr is None
+class TestMigrationMatchesTheOldEngineChoice:
+    """Differential: a migrated enable_ocr picks the engine the old setting picked."""
+
+    @staticmethod
+    def _old_backend(stored: object, vision_model: str) -> OcrBackendUsed:
+        """The engine choice before the ocr setting: vision first, then enable_ocr."""
+        from lilbee.core.config.parsing import parse_bool
+
+        if vision_model:
+            return OcrBackendUsed.VISION
+        if isinstance(stored, bool):
+            enabled: bool | None = stored
+        elif isinstance(stored, str):
+            auto = stored.strip().lower() in ("", "auto", "none")
+            try:
+                enabled = None if auto else parse_bool(stored)
+            except ValueError:
+                enabled = None
+        else:
+            enabled = bool(stored)
+        return OcrBackendUsed.NONE if enabled is False else OcrBackendUsed.TESSERACT
+
+    @pytest.mark.parametrize("vision_model", ["", _SAMPLE_VISION_REF])
+    @pytest.mark.parametrize(
+        "stored", [True, False, "true", "false", "", "auto", "none", "off", "on", "maybe", 0, 1, 2]
+    )
+    def test_the_engine_is_unchanged(self, stored, vision_model):
+        from lilbee.core.config.parsing import migrate_ocr_keys
+
+        migrated = OcrMode(migrate_ocr_keys({"enable_ocr": stored}, vision_model)["ocr"])
+        assert OcrBackendUsed.chosen(migrated, vision_model) is self._old_backend(
+            stored, vision_model
+        )
 
 
 class TestFlashAttentionConfig:
@@ -1408,28 +1445,6 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_enable_ocr_none_allowed(self, tmp_path):
-        """enable_ocr is nullable, None means auto."""
-        c = Config(
-            data_root=tmp_path,
-            documents_dir=tmp_path / "docs",
-            data_dir=tmp_path / "data",
-            lancedb_dir=tmp_path / "data" / "lancedb",
-            models_dir=tmp_path / "models",
-            chat_model=_SAMPLE_CHAT_REF,
-            embedding_model=_SAMPLE_EMBED_REF,
-            embedding_dim=768,
-            chunk_size=512,
-            chunk_overlap=100,
-            max_embed_chars=2000,
-            top_k=10,
-            max_distance=0.7,
-            rag_system_prompt="You are helpful.",
-            ignore_dirs=frozenset(),
-            enable_ocr=None,
-        )
-        assert c.enable_ocr is None
-
 
 class TestEmptyStringToNone:
     def test_empty_temperature_falls_back_to_default(self, tmp_path):
@@ -1453,15 +1468,6 @@ class TestIgnoreDirsFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config(ignore_dirs=42)  # type: ignore[arg-type]
         assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
-
-
-class TestParseEnableOcrFallback:
-    def test_non_string_non_bool_coerced_via_bool(self):
-        """An integer like 42 falls through to bool(v)."""
-        from lilbee.core.config import Config
-
-        assert Config._parse_enable_ocr(42) is True
-        assert Config._parse_enable_ocr(0) is False
 
 
 class TestDefaultCrawlExcludePatterns:
@@ -1748,7 +1754,7 @@ class TestEmptyValueClearsModelRole:
             ("chunk_size", "", False),
             ("chunk_size", "5", True),
             ("chunk_size", 0, True),
-            ("enable_ocr", False, True),
+            ("ocr", "off", True),
         ],
     )
     def test_value_is_set(self, field, raw, expected):
@@ -2141,19 +2147,13 @@ class TestBoolVocabularyMatchesPydantic:
             parse_bool("maybe")
 
     @pytest.mark.parametrize(
-        ("raw", "expected"), [("off", False), ("on", True), ("n", False), ("y", True)]
+        ("raw", "expected"), [("off", OcrMode.OFF), ("on", OcrMode.AUTO), ("n", OcrMode.OFF)]
     )
-    def test_enable_ocr_agrees_with_pydantic(self, raw, expected):
-        """enable_ocr routed through parse_bool; 'off' used to come back True."""
-        from lilbee.core.config.model import Config
+    def test_a_stored_enable_ocr_reads_with_the_same_vocabulary(self, raw, expected):
+        """A retired enable_ocr string migrates through parse_bool's vocabulary."""
+        from lilbee.core.config.parsing import migrate_ocr_keys
 
-        assert Config(enable_ocr=raw).enable_ocr is expected
-
-    def test_enable_ocr_unknown_value_falls_back_to_auto(self):
-        """An unparseable value must not silently become True via bool()."""
-        from lilbee.core.config.model import Config
-
-        assert Config(enable_ocr="maybe").enable_ocr is None
+        assert migrate_ocr_keys({"enable_ocr": raw}, "")["ocr"] == expected
 
 
 class TestCrawlExclusionsMatchWholeSegments:

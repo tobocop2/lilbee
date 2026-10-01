@@ -14,6 +14,7 @@ import tomli_w
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.config.model import value_is_set
+from lilbee.core.config.parsing import migrate_ocr_keys
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
@@ -50,13 +51,23 @@ def load(data_root: Path) -> dict[str, Any]:
     Values keep the types TOML gave them. Stringifying here used to turn a
     ``true`` into ``"True"`` in memory, which the next save then wrote back
     quoted, so the file drifted away from valid types for its own fields.
+    Retired OCR keys come back as ``ocr``, so the next write saves the replacement.
     """
     path = _config_path(data_root)
     if not path.exists():
         return {}
     harden_private_file(path)
     with path.open("rb") as f:
-        return dict(tomllib.load(f))
+        persisted = dict(tomllib.load(f))
+    return migrate_ocr_keys(persisted, _vision_model_for(persisted))
+
+
+def _vision_model_for(persisted: dict[str, Any]) -> str:
+    """The vision model a root resolves to: LILBEE_VISION_MODEL, else config.toml, else none."""
+    env = os.environ.get("LILBEE_VISION_MODEL")
+    if value_is_set("vision_model", env):
+        return str(env)
+    return str(persisted.get("vision_model") or "")
 
 
 def save(data_root: Path, settings: dict[str, Any]) -> None:

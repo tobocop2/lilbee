@@ -17,6 +17,7 @@ from xberg import Metadata
 import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.data.types import ExtractMode, OcrBackendName
 from lilbee.runtime.progress import OcrBackendUsed
 from tests.conftest import make_pdf
@@ -1583,30 +1584,6 @@ class TestSyncCancellation:
         mock_svc.store.write_chunks_batch.assert_not_called()
 
 
-class TestOcrForceRequested:
-    """cfg-independent LILBEE_OCR_FORCE lever that OCRs every page, text layer or not."""
-
-    def test_false_when_env_unset(self, monkeypatch):
-        from lilbee.data.extract.document import _ocr_force_requested
-
-        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
-        assert _ocr_force_requested() is False
-
-    @pytest.mark.parametrize("value", ["1", "true", "YES"])
-    def test_true_when_env_set(self, monkeypatch, value):
-        from lilbee.data.extract.document import _ocr_force_requested
-
-        monkeypatch.setenv("LILBEE_OCR_FORCE", value)
-        assert _ocr_force_requested() is True
-
-    @pytest.mark.parametrize("value", ["0", "false", "no", "", "  "])
-    def test_false_for_non_truthy_values(self, monkeypatch, value):
-        from lilbee.data.extract.document import _ocr_force_requested
-
-        monkeypatch.setenv("LILBEE_OCR_FORCE", value)
-        assert _ocr_force_requested() is False
-
-
 class TestIngestHelpers:
     """Cover edge cases in ingest_document and ingest_code_sync."""
 
@@ -2368,75 +2345,55 @@ class TestStatusExposesTheIndexEmbedder:
         assert gather_status().index is None
 
 
-class TestStatusSaysWhichOcrEngineRuns:
-    """Status names the OCR engine: the vision model when one is set, else Tesseract."""
+class TestStatusSaysWhatHappensToScannedPages:
+    """Status carries one scanned-pages line: skipped, or read by which engine."""
 
-    @pytest.mark.parametrize("enable_ocr", [None, True, False])
-    def test_a_set_vision_model_is_used_instead_of_tesseract(self, mock_svc, enable_ocr):
-        from lilbee.app.status import gather_status
-
-        mock_svc.store.get_meta.return_value = None
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        cfg.enable_ocr = enable_ocr
-        note = gather_status().ocr_note
-        assert note is not None
-        assert "used instead of Tesseract" in note and cfg.vision_model in note
+    _VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
     @pytest.mark.parametrize(
-        ("enable_ocr", "after_clearing"),
+        ("ocr", "vision_model", "expected"),
         [
-            (None, "Clear vision_model to use Tesseract."),
-            (True, "Clear vision_model to use Tesseract."),
-            (False, "Clear vision_model to turn OCR off."),
+            (OcrMode.AUTO, _VISION, f"read by {_VISION}"),
+            (OcrMode.AUTO, "", "read by Tesseract (eng+deu)"),
+            (OcrMode.ALL, _VISION, f"every page read by {_VISION} (ocr = all)"),
+            (OcrMode.ALL, "", "every page read by Tesseract (eng+deu) (ocr = all)"),
+            (OcrMode.OFF, _VISION, "skipped (ocr = off)"),
+            (OcrMode.OFF, "", "skipped (ocr = off)"),
         ],
     )
-    def test_the_vision_note_says_what_clearing_the_model_gives(
-        self, mock_svc, enable_ocr, after_clearing
-    ):
+    def test_the_line_follows_ocr_and_the_engine(self, mock_svc, ocr, vision_model, expected):
         from lilbee.app.status import gather_status
 
         mock_svc.store.get_meta.return_value = None
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        cfg.enable_ocr = enable_ocr
-        note = gather_status().ocr_note
-        assert note is not None
-        assert note.endswith(after_clearing)
+        cfg.vision_model = vision_model
+        cfg.ocr = ocr
+        cfg.ocr_language = ["eng", "deu"]
+        assert gather_status().ocr_note == expected
 
-    def test_tesseract_runs_when_no_vision_model_is_set(self, mock_svc):
+    def test_status_config_reports_the_mode(self, mock_svc):
         from lilbee.app.status import gather_status
 
         mock_svc.store.get_meta.return_value = None
-        cfg.vision_model = ""
-        cfg.enable_ocr = None
-        note = gather_status().ocr_note
-        assert note is not None
-        assert "Tesseract runs OCR" in note
-
-    def test_no_engine_note_when_ocr_is_off_and_no_vision_model_is_set(self, mock_svc):
-        from lilbee.app.status import gather_status
-
-        mock_svc.store.get_meta.return_value = None
-        cfg.vision_model = ""
-        cfg.enable_ocr = False
-        assert gather_status().ocr_note is None
+        cfg.ocr = OcrMode.ALL
+        assert gather_status().config.ocr is OcrMode.ALL
 
 
 class TestOcrBackendChosen:
-    """A set vision model wins; enable_ocr false turns off only Tesseract."""
+    """ocr = off reads no page with either engine; otherwise a set vision model wins."""
 
     @pytest.mark.parametrize(
-        ("enable_ocr", "vision_model", "expected"),
+        ("ocr", "vision_model", "expected"),
         [
-            (False, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
-            (False, "", OcrBackendUsed.NONE),
-            (None, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
-            (True, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
-            (None, "", OcrBackendUsed.TESSERACT),
-            (True, "", OcrBackendUsed.TESSERACT),
+            (OcrMode.OFF, "org/V-GGUF/v.gguf", OcrBackendUsed.NONE),
+            (OcrMode.OFF, "", OcrBackendUsed.NONE),
+            (OcrMode.AUTO, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
+            (OcrMode.ALL, "org/V-GGUF/v.gguf", OcrBackendUsed.VISION),
+            (OcrMode.AUTO, "", OcrBackendUsed.TESSERACT),
+            (OcrMode.ALL, "", OcrBackendUsed.TESSERACT),
         ],
     )
-    def test_chosen(self, enable_ocr, vision_model, expected):
-        assert OcrBackendUsed.chosen(enable_ocr, vision_model) is expected
+    def test_chosen(self, ocr, vision_model, expected):
+        assert OcrBackendUsed.chosen(ocr, vision_model) is expected
 
 
 class TestStatusReportsHeldOutFiles:
@@ -4662,18 +4619,24 @@ class TestProbePages:
         assert text.pages == 3 and text.has_scanned_pages is False
 
 
-class TestHasScannedPages:
+class TestScannedPages:
     def test_no_format_metadata_has_no_scanned_pages(self):
-        from lilbee.data.extract.document import _has_scanned_pages
+        from lilbee.data.extract.document import _scanned_pages
 
-        assert _has_scanned_pages(mock.MagicMock(metadata=Metadata())) is False
+        assert _scanned_pages(mock.MagicMock(metadata=Metadata())) == []
 
     def test_non_pdf_format_has_no_scanned_pages(self):
         """An image's format metadata carries no PDF block."""
-        from lilbee.data.extract.document import _has_scanned_pages
+        from lilbee.data.extract.document import _scanned_pages
 
         metadata = mock.MagicMock(format=mock.MagicMock(pdf=None))
-        assert _has_scanned_pages(mock.MagicMock(metadata=metadata)) is False
+        assert _scanned_pages(mock.MagicMock(metadata=metadata)) == []
+
+    def test_a_pdf_without_a_scanned_page_list_has_none(self):
+        from lilbee.data.extract.document import _scanned_pages
+
+        metadata = mock.MagicMock(format=mock.MagicMock(pdf=mock.MagicMock(scanned_pages=None)))
+        assert _scanned_pages(mock.MagicMock(metadata=metadata)) == []
 
 
 class TestOcrPageSelection:
@@ -4681,7 +4644,7 @@ class TestOcrPageSelection:
 
     @pytest.fixture(autouse=True)
     def _ocr_on(self, monkeypatch):
-        monkeypatch.setattr(cfg, "enable_ocr", None)
+        monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
 
     def test_auto_sends_the_auto_strategy_and_no_forced_pages(self):
         from lilbee.data.ingest import ExtractMode, extraction_config
@@ -4711,7 +4674,7 @@ class TestOcrPageSelection:
         """xberg rejects scanned_pages when OCR is disabled."""
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setattr(cfg, "enable_ocr", False)
+        monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
         monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
         monkeypatch.setattr(cfg, "force_ocr_pages", [2])
         for mode in ExtractMode:
@@ -4720,38 +4683,38 @@ class TestOcrPageSelection:
             assert config.force_ocr_pages is None
 
     def test_per_request_ocr_off_sends_auto_and_no_forced_pages(self, monkeypatch):
-        """The HTTP/MCP enable_ocr=False override also drops the page selection."""
+        """The HTTP/MCP ocr=off override also drops the page selection."""
         from lilbee.data.extract.document import ocr_override
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
         monkeypatch.setattr(cfg, "force_ocr_pages", [2])
-        with ocr_override(enable_ocr=False):
+        with ocr_override(ocr=OcrMode.OFF):
             for mode in ExtractMode:
                 config = extraction_config(mode)
                 assert config.ocr_strategy.mode == "auto"
                 assert config.force_ocr_pages is None
 
-    def test_vision_with_ocr_off_keeps_the_page_selection(self, monkeypatch):
-        """A set vision model still OCRs, so the configured pages still apply."""
+    def test_vision_with_ocr_off_drops_the_page_selection(self, monkeypatch):
+        """ocr = off stops the vision model too, so no page selection applies."""
         from lilbee.data.extract.document import ocr_override
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         monkeypatch.setattr(cfg, "vision_model", "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf")
         monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
         monkeypatch.setattr(cfg, "force_ocr_pages", [2])
-        with ocr_override(enable_ocr=False):
+        with ocr_override(ocr=OcrMode.OFF):
             for mode in ExtractMode:
                 config = extraction_config(mode)
-                assert config.ocr_strategy.mode == "scanned_pages"
-                assert config.force_ocr_pages == [2]
+                assert config.ocr_strategy.mode == "auto"
+                assert config.force_ocr_pages is None
 
-    @pytest.mark.parametrize("enable_ocr", [None, False])
-    def test_real_xberg_accepts_the_built_config(self, monkeypatch, enable_ocr):
+    @pytest.mark.parametrize("ocr", list(OcrMode))
+    def test_real_xberg_accepts_the_built_config(self, monkeypatch, ocr):
         from lilbee.data.extract.xberg import extract_document
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setattr(cfg, "enable_ocr", enable_ocr)
+        monkeypatch.setattr(cfg, "ocr", ocr)
         monkeypatch.setattr(cfg, "ocr_strategy", "scanned_pages")
         monkeypatch.setattr(cfg, "force_ocr_pages", [1])
         for mode in ExtractMode:
@@ -5080,34 +5043,34 @@ class TestOcrOverrideContextVar:
     def test_override_does_not_mutate_global_cfg(self, isolated_env):
         from lilbee.data.extract.document import ocr_override
 
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         cfg.ocr_timeout = 11.0
-        with ocr_override(enable_ocr=True, ocr_timeout=99.0):
+        with ocr_override(ocr=OcrMode.ALL, ocr_timeout=99.0):
             pass
-        assert cfg.enable_ocr is False
+        assert cfg.ocr is OcrMode.OFF
         assert cfg.ocr_timeout == 11.0
 
     def test_effective_values_reflect_override_then_revert(self, isolated_env):
         from lilbee.data.extract.document import (
-            _effective_enable_ocr,
+            _effective_ocr_mode,
             _effective_ocr_timeout,
             ocr_override,
         )
 
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         cfg.ocr_timeout = 11.0
-        with ocr_override(enable_ocr=True, ocr_timeout=99.0):
-            assert _effective_enable_ocr() is True
+        with ocr_override(ocr=OcrMode.ALL, ocr_timeout=99.0):
+            assert _effective_ocr_mode() is OcrMode.ALL
             assert _effective_ocr_timeout() == 99.0
-        assert _effective_enable_ocr() is False
+        assert _effective_ocr_mode() is OcrMode.OFF
         assert _effective_ocr_timeout() == 11.0
 
     def test_none_arguments_keep_cfg_defaults(self, isolated_env):
-        from lilbee.data.extract.document import _effective_enable_ocr, ocr_override
+        from lilbee.data.extract.document import _effective_ocr_mode, ocr_override
 
-        cfg.enable_ocr = True
-        with ocr_override(enable_ocr=None, ocr_timeout=None):
-            assert _effective_enable_ocr() is True
+        cfg.ocr = OcrMode.ALL
+        with ocr_override(ocr=None, ocr_timeout=None):
+            assert _effective_ocr_mode() is OcrMode.ALL
 
     def test_overrides_isolated_across_contexts(self, isolated_env):
         # Two copied contexts must each see only their own override; this is the
@@ -5368,7 +5331,7 @@ class TestPageTextAccumulator:
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_ocr_pages_captured(self, mock_kf, isolated_env, mock_svc):
         # xberg OCRs scanned pages in-pass; the OCR'd text arrives in result.pages.
-        cfg.enable_ocr = True
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = ""
         mock_kf.return_value = _make_xberg_result(
             text="OCR page text. " * 10, num_chunks=2, has_pages=True
@@ -6046,22 +6009,27 @@ class TestRemovingHeldOutFiles:
 
 
 class TestOcrConfigSelection:
-    """extraction_config picks the OCR backend from enable_ocr + vision_model."""
+    """extraction_config picks the OCR backend from ocr + vision_model."""
 
+    _VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+    @pytest.mark.parametrize("vision_model", ["", _VISION])
     @pytest.mark.parametrize("mode", [ExtractMode.PAGINATED, ExtractMode.MARKDOWN])
-    def test_no_ocr_block_when_enable_ocr_false(self, isolated_env, mode):
+    def test_no_ocr_block_when_ocr_is_off(self, isolated_env, mode, vision_model):
         from lilbee.data.ingest import extraction_config
 
-        cfg.enable_ocr = False
-        config = extraction_config(mode)
+        cfg.ocr = OcrMode.OFF
+        cfg.vision_model = vision_model
+        config = extraction_config(mode, ocr_token="tok-123")
         assert config.ocr is None
         assert config.disable_ocr is True
+        assert config.force_ocr is False
 
     @pytest.mark.parametrize("mode", [ExtractMode.PAGINATED, ExtractMode.MARKDOWN])
-    def test_ocr_not_disabled_when_enable_ocr_on(self, isolated_env, mode):
+    def test_tesseract_reads_when_no_vision_model_is_set(self, isolated_env, mode):
         from lilbee.data.ingest import extraction_config
 
-        cfg.enable_ocr = True
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = ""
         config = extraction_config(mode)
         assert config.ocr.backend == OcrBackendName.TESSERACT
@@ -6070,59 +6038,42 @@ class TestOcrConfigSelection:
     def test_vision_backend_with_token_when_model_set(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        cfg.enable_ocr = None
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        cfg.ocr = OcrMode.AUTO
+        cfg.vision_model = self._VISION
         config = extraction_config(ExtractMode.PAGINATED, ocr_token="tok-123")
         assert config.ocr.backend == "lilbee-vision"
         assert json.loads(config.ocr.backend_options)["req"] == "tok-123"
 
-    def test_force_ocr_off_by_default(self, isolated_env, monkeypatch):
+    def test_force_ocr_off_under_auto(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        config = extraction_config(ExtractMode.PAGINATED)
-        assert config.force_ocr is False
+        cfg.ocr = OcrMode.AUTO
+        cfg.vision_model = self._VISION
+        assert extraction_config(ExtractMode.PAGINATED).force_ocr is False
 
-    @pytest.mark.parametrize("mode_name", ["PAGINATED", "MARKDOWN"])
-    def test_force_ocr_set_when_env_and_vision_model(self, isolated_env, monkeypatch, mode_name):
-        from lilbee.data.ingest import ExtractMode, extraction_config
-
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        config = extraction_config(getattr(ExtractMode, mode_name))
-        assert config.force_ocr is True
-
-    def test_force_ocr_ignored_without_vision_model(self, isolated_env, monkeypatch):
-        # Tesseract path: force is a vision/GPU re-OCR lever, so it stays off here.
-        from lilbee.data.ingest import ExtractMode, extraction_config
-
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
-        cfg.vision_model = ""
-        config = extraction_config(ExtractMode.PAGINATED)
-        assert config.ocr.backend == "tesseract"
-        assert config.force_ocr is False
-
+    @pytest.mark.parametrize(
+        ("vision_model", "backend"),
+        [(_VISION, OcrBackendName.LILBEE_VISION), ("", OcrBackendName.TESSERACT)],
+    )
     @pytest.mark.parametrize("mode", [ExtractMode.PAGINATED, ExtractMode.MARKDOWN])
-    def test_a_set_vision_model_reads_scans_with_enable_ocr_false(self, isolated_env, mode):
+    def test_ocr_all_forces_ocr_for_either_engine(self, isolated_env, mode, vision_model, backend):
         from lilbee.data.ingest import extraction_config
 
-        cfg.enable_ocr = False
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        config = extraction_config(mode, ocr_token="tok-123")
-        assert config.ocr.backend == OcrBackendName.LILBEE_VISION
-        assert json.loads(config.ocr.backend_options)["req"] == "tok-123"
-        assert config.disable_ocr is False
+        cfg.ocr = OcrMode.ALL
+        cfg.vision_model = vision_model
+        config = extraction_config(mode)
+        assert config.ocr.backend == backend
+        assert config.force_ocr is True
 
-    def test_force_ocr_applies_to_vision_with_enable_ocr_false(self, isolated_env, monkeypatch):
+    def test_a_per_request_all_forces_ocr_over_the_setting(self, isolated_env):
+        from lilbee.data.extract.document import ocr_override
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
-        cfg.enable_ocr = False
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        config = extraction_config(ExtractMode.PAGINATED)
-        assert config.ocr.backend == OcrBackendName.LILBEE_VISION
-        assert config.force_ocr is True
+        cfg.ocr = OcrMode.AUTO
+        cfg.vision_model = ""
+        with ocr_override(ocr=OcrMode.ALL):
+            assert extraction_config(ExtractMode.PAGINATED).force_ocr is True
+        assert extraction_config(ExtractMode.PAGINATED).force_ocr is False
 
 
 class _CountingVisionBackend:
@@ -6181,8 +6132,8 @@ class _CountingVisionBackend:
 
 
 class TestForceOcrRoutesToBackend:
-    """Behavioral contract against real xberg: LILBEE_OCR_FORCE must OCR every page
-    of a born-digital PDF through the registered vision backend, defeating xberg's
+    """Behavioral contract against real xberg: ocr = all must OCR every page of a
+    born-digital PDF through the registered vision backend, defeating xberg's
     text-layer short-circuit. This is the guard that a future xberg bump can't
     silently disable forced re-OCR (the way rc25's short-circuit did)."""
 
@@ -6202,20 +6153,20 @@ class TestForceOcrRoutesToBackend:
         finally:
             unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
 
-    def test_native_text_skips_ocr_without_force(self, isolated_env, monkeypatch):
+    def test_native_text_skips_ocr_without_force(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.delenv("LILBEE_OCR_FORCE", raising=False)
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
         calls, content = self._extract(make_pdf(pages=2), config)
         assert calls == 0
         assert "clean native text layer" in content
 
-    def test_force_ocrs_every_page(self, isolated_env, monkeypatch):
+    def test_ocr_all_reads_every_page(self, isolated_env):
         from lilbee.data.ingest import ExtractMode, extraction_config
 
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+        cfg.ocr = OcrMode.ALL
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         config = extraction_config(ExtractMode.PAGINATED)
         calls, content = self._extract(make_pdf(pages=2), config)
@@ -6224,14 +6175,79 @@ class TestForceOcrRoutesToBackend:
         assert "clean native text layer" not in content
 
 
+def _mixed_pdf() -> bytes:
+    """A three-page PDF whose page 2 is an image of text with no text layer."""
+    import io
+
+    from PIL import Image, ImageDraw
+    from reportlab.lib.utils import ImageReader
+    from reportlab.pdfgen import canvas
+
+    scan = Image.new("RGB", (1240, 1754), "white")
+    draw = ImageDraw.Draw(scan)
+    for line in range(20):
+        draw.text((100, 100 + line * 60), f"Scanned page line {line} with words", fill="black")
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf)
+    pdf.drawString(72, 720, "Page 1 with a perfectly clean native text layer.")
+    pdf.showPage()
+    pdf.drawImage(ImageReader(scan), 0, 0, width=595, height=842)
+    pdf.showPage()
+    pdf.drawString(72, 720, "Page 3 with a perfectly clean native text layer.")
+    pdf.showPage()
+    pdf.save()
+    return buf.getvalue()
+
+
+class TestTesseractUnderRealXberg:
+    """ocr modes against real xberg with Tesseract, no vision model."""
+
+    @pytest.fixture(autouse=True)
+    def _tesseract(self, isolated_env):
+        cfg.vision_model = ""
+
+    @staticmethod
+    def _ocr_pages(pdf: bytes, ocr: OcrMode) -> list[int]:
+        from lilbee.data.extract.xberg import extract_document
+        from lilbee.data.ingest import ExtractMode, extraction_config
+
+        cfg.ocr = ocr
+        config = extraction_config(ExtractMode.PAGINATED)
+        doc = extract_document(pdf, "application/pdf", filename="f.pdf", config=config)
+        return [page.page_number for page in doc.pages if page.ocr_confidence is not None]
+
+    def test_ocr_all_rereads_a_born_digital_pdf(self):
+        assert self._ocr_pages(make_pdf(pages=2), OcrMode.AUTO) == []
+        assert self._ocr_pages(make_pdf(pages=2), OcrMode.ALL) == [1, 2]
+
+    def test_auto_reads_only_the_scanned_page_and_off_reads_none(self):
+        assert self._ocr_pages(_mixed_pdf(), OcrMode.AUTO) == [2]
+        assert self._ocr_pages(_mixed_pdf(), OcrMode.OFF) == []
+
+    @pytest.mark.parametrize(("ocr", "warned"), [(OcrMode.OFF, True), (OcrMode.AUTO, False)])
+    async def test_a_mixed_pdf_under_ocr_off_names_its_skipped_pages(
+        self, isolated_env, mock_svc, caplog, ocr, warned
+    ):
+        from lilbee.data.ingest import ingest_document
+
+        cfg.ocr = ocr
+        f = isolated_env / "mixed.pdf"
+        f.write_bytes(_mixed_pdf())
+        with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
+            records = await ingest_document(f, "mixed.pdf", "pdf")
+        assert records.records  # the text pages are indexed either way
+        expected = "Indexed mixed.pdf without its scanned pages 2: OCR is off (ocr = off)"
+        assert (expected in caplog.text) is warned
+
+
 class TestVisionOcrStopsOnCancel:
     """A set cancel stops the vision model before each page, against real xberg."""
 
     _PAGES = 4
 
     @pytest.fixture(autouse=True)
-    def _forced_vision(self, isolated_env, monkeypatch):
-        monkeypatch.setenv("LILBEE_OCR_FORCE", "1")
+    def _forced_vision(self, isolated_env):
+        cfg.ocr = OcrMode.ALL
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
     @staticmethod
@@ -6430,7 +6446,7 @@ class TestIngestDocumentOcrPath:
     async def test_page_count_probe_sends_no_ocr_block(self, mock_kf, isolated_env, mock_svc):
         """The probe carries no OCR block: xberg 1.2.7 OCRs page images under any OCR block."""
         cfg.vision_model = ""
-        cfg.enable_ocr = True
+        cfg.ocr = OcrMode.AUTO
         probe_result = mock.MagicMock(counts=mock.MagicMock(pages=5))
         configs = []
 
@@ -6490,7 +6506,7 @@ class TestTesseractOcrStartEvent:
         from lilbee.runtime.progress import EventType, OcrStartEvent
 
         cfg.vision_model = ""
-        cfg.enable_ocr = True
+        cfg.ocr = OcrMode.AUTO
         order = await self._ingest(mock_kf, isolated_env, self._probe(8, [1, 2, 3]))
         starts = [ev for et, ev in order if et is EventType.OCR_START]
         assert starts == [OcrStartEvent(file="scan.pdf", total_pages=8)]
@@ -6508,7 +6524,7 @@ class TestTesseractOcrStartEvent:
         from lilbee.runtime.progress import EventType
 
         cfg.vision_model = ""
-        cfg.enable_ocr = True
+        cfg.ocr = OcrMode.AUTO
         probe = self._probe(2, [])
         text_pdf = _make_xberg_result(num_chunks=2, has_pages=True)
         for page in text_pdf.pages:
@@ -6530,27 +6546,27 @@ class TestTesseractOcrStartEvent:
         assert [(ev.page, ev.ocr_backend) for ev in extracts] == [(2, OcrBackendUsed.NONE)]
 
     @pytest.mark.parametrize(
-        ("vision_model", "enable_ocr", "scanned"),
+        ("vision_model", "ocr", "scanned"),
         [
-            pytest.param("", True, [], id="text-pdf-needs-no-ocr"),
+            pytest.param("", OcrMode.AUTO, [], id="text-pdf-needs-no-ocr"),
             pytest.param(
                 "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf",
-                True,
+                OcrMode.AUTO,
                 [1, 2],
                 id="vision-ticks-per-page",
             ),
-            pytest.param("", False, [1, 2], id="ocr-off"),
+            pytest.param("", OcrMode.OFF, [1, 2], id="ocr-off"),
         ],
     )
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_announces_nothing_when_tesseract_does_not_ocr(
-        self, mock_kf, vision_model, enable_ocr, scanned, isolated_env, mock_svc
+        self, mock_kf, vision_model, ocr, scanned, isolated_env, mock_svc
     ):
         """No OCR_START unless Tesseract is the backend and the probe found a scanned page."""
         from lilbee.runtime.progress import EventType
 
         cfg.vision_model = vision_model
-        cfg.enable_ocr = enable_ocr
+        cfg.ocr = ocr
         order = await self._ingest(mock_kf, isolated_env, self._probe(8, scanned))
         assert "extract" in [et for et, _ in order]
         assert EventType.OCR_START not in [et for et, _ in order]
@@ -6569,14 +6585,14 @@ class TestOcrOffSendsNoOcrBlock:
     """
 
     @pytest.mark.parametrize(
-        ("enable_ocr", "expected"),
-        [(False, (None, True)), (True, (OcrBackendName.TESSERACT, False))],
+        ("ocr", "expected"),
+        [(OcrMode.OFF, (None, True)), (OcrMode.AUTO, (OcrBackendName.TESSERACT, False))],
     )
-    async def test_single_file_extraction(self, isolated_env, enable_ocr, expected):
+    async def test_single_file_extraction(self, isolated_env, ocr, expected):
         from lilbee.data.ingest import ingest_document
 
         cfg.vision_model = ""
-        cfg.enable_ocr = enable_ocr
+        cfg.ocr = ocr
         extractions = []
 
         async def fake_extract(_input, config):
@@ -6591,16 +6607,16 @@ class TestOcrOffSendsNoOcrBlock:
         assert [_ocr_sent(c) for c in extractions] == [expected]
 
     @pytest.mark.parametrize(
-        ("enable_ocr", "expected"),
-        [(False, (None, True)), (True, (OcrBackendName.TESSERACT, False))],
+        ("ocr", "expected"),
+        [(OcrMode.OFF, (None, True)), (OcrMode.AUTO, (OcrBackendName.TESSERACT, False))],
     )
-    async def test_batch_extraction(self, isolated_env, enable_ocr, expected):
+    async def test_batch_extraction(self, isolated_env, ocr, expected):
         from lilbee.data.extract.batch import reset_active_batcher, set_active_batcher
         from lilbee.data.extract.document import make_extract_batcher
         from lilbee.data.ingest import ingest_document
 
         cfg.vision_model = ""
-        cfg.enable_ocr = enable_ocr
+        cfg.ocr = ocr
         cfg.batch_extraction = True
         sent = []
 
@@ -7447,7 +7463,7 @@ class TestHttpSurface:
         remove_documents_durably(["corpus/gone.txt"])
 
         summary = await _run_add(
-            paths=[str(corpus)], force=False, enable_ocr=None, ocr_timeout=None, sse=SseStream()
+            paths=[str(corpus)], force=False, ocr=None, ocr_timeout=None, sse=SseStream()
         )
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
@@ -7466,7 +7482,7 @@ class TestHttpSurface:
             summary = await _run_add(
                 paths=[str(drawing)],
                 force=False,
-                enable_ocr=None,
+                ocr=None,
                 ocr_timeout=None,
                 sse=SseStream(),
             )
@@ -7490,7 +7506,7 @@ class TestHttpSurface:
 
         with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock) as run_sync:
             summary = await _run_add(
-                paths=[str(two)], force=False, enable_ocr=None, ocr_timeout=None, sse=SseStream()
+                paths=[str(two)], force=False, ocr=None, ocr_timeout=None, sse=SseStream()
             )
 
         run_sync.assert_not_called()
@@ -7895,12 +7911,12 @@ class TestIngestArchive:
     ):
         """A scanned PDF member with no text gets the same backend-aware warning as a
         top-level scan: the archive's OCR choice threads into each member's warning,
-        so OCR-off names enable_ocr instead of the Tesseract advice."""
+        so OCR-off names the ocr setting instead of the Tesseract advice."""
         import logging
 
         from lilbee.data.extract.document import ingest_archive
 
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         cfg.vision_model = ""
         mock_kf.return_value = _make_archive_result(
             [_member("scan.pdf", "application/pdf", _make_xberg_result(num_chunks=0))]
@@ -7912,7 +7928,7 @@ class TestIngestArchive:
             members = await ingest_archive(f, "docs.zip", "zip")
 
         assert [m.records for m in members] == [[]]
-        assert "OCR is off (enable_ocr = false)" in caplog.text
+        assert "OCR is off (ocr = off)" in caplog.text
         assert "configure a vision model" not in caplog.text
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
@@ -7921,13 +7937,13 @@ class TestIngestArchive:
     ):
         """The archive's OCR choice threads through the nested-archive recursion too:
         a scanned PDF inside an archive inside an archive gets the same backend-aware
-        warning as a member one level deep, so OCR-off still names enable_ocr instead
-        of the Tesseract advice."""
+        warning as a member one level deep, so OCR-off still names the ocr setting
+        instead of the Tesseract advice."""
         import logging
 
         from lilbee.data.extract.document import ingest_archive
 
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         cfg.vision_model = ""
         inner = _make_archive_result(
             [_member("scan.pdf", "application/pdf", _make_xberg_result(num_chunks=0))]
@@ -7942,7 +7958,7 @@ class TestIngestArchive:
             members = await ingest_archive(f, "docs.zip", "zip")
 
         assert [m.records for m in members] == [[]]
-        assert "OCR is off (enable_ocr = false)" in caplog.text
+        assert "OCR is off (ocr = off)" in caplog.text
         assert "configure a vision model" not in caplog.text
 
 
@@ -8059,44 +8075,50 @@ class TestIngestSizingAsksTheOcrChooser:
 
     _VISION_MODEL = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
-    async def test_ocr_off_with_no_vision_model_requests_no_vision_slots(
-        self, isolated_env, mock_svc
-    ):
+    @pytest.mark.parametrize("vision_model", ["", _VISION_MODEL])
+    async def test_ocr_off_requests_no_vision_slots(self, isolated_env, mock_svc, vision_model):
         from lilbee.app.services import get_services
 
-        cfg.enable_ocr = False
-        cfg.vision_model = ""
-        result, _ = await _sync_scan(isolated_env, [None])
+        cfg.ocr = OcrMode.OFF
+        cfg.vision_model = vision_model
+        result, config = await _sync_scan(isolated_env, [None])
         assert result.skipped == ["scan.pdf"]  # the scan went through the ingest run
+        assert config.ocr is None
         get_services().provider.vision_slot_capacity.assert_not_called()
 
-    async def test_ocr_off_with_a_vision_model_requests_vision_slots(self, isolated_env, mock_svc):
-        from lilbee.app.services import get_services
-
-        cfg.enable_ocr = False
-        cfg.vision_model = self._VISION_MODEL
-        await _sync_scan(isolated_env, ["lilbee-vision"])
-        get_services().provider.vision_slot_capacity.assert_called_once_with()
-
-    async def test_ocr_unset_with_a_vision_model_requests_vision_slots(
-        self, isolated_env, mock_svc
+    @pytest.mark.parametrize("ocr", [OcrMode.AUTO, OcrMode.ALL])
+    async def test_ocr_on_with_a_vision_model_requests_vision_slots(
+        self, isolated_env, mock_svc, ocr
     ):
         from lilbee.app.services import get_services
 
-        cfg.enable_ocr = None
+        cfg.ocr = ocr
         cfg.vision_model = self._VISION_MODEL
         await _sync_scan(isolated_env, ["lilbee-vision"])
         get_services().provider.vision_slot_capacity.assert_called_once_with()
 
-    async def test_per_request_ocr_off_with_a_vision_model_requests_vision_slots(
+    async def test_per_request_ocr_off_with_a_vision_model_requests_no_vision_slots(
         self, isolated_env, mock_svc
     ):
         from lilbee.app.ingest import temporary_ocr_config
         from lilbee.app.services import get_services
 
-        cfg.enable_ocr = None
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = self._VISION_MODEL
-        with temporary_ocr_config(enable_ocr=False):
+        with temporary_ocr_config(ocr=OcrMode.OFF):
+            _, config = await _sync_scan(isolated_env, [None])
+        assert config.ocr is None
+        get_services().provider.vision_slot_capacity.assert_not_called()
+
+    async def test_per_request_auto_over_ocr_off_reads_with_the_vision_model(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.app.ingest import temporary_ocr_config
+        from lilbee.app.services import get_services
+
+        cfg.ocr = OcrMode.OFF
+        cfg.vision_model = self._VISION_MODEL
+        with temporary_ocr_config(ocr=OcrMode.AUTO):
             _, config = await _sync_scan(isolated_env, ["lilbee-vision"])
         assert config.ocr.backend == OcrBackendName.LILBEE_VISION
         get_services().provider.vision_slot_capacity.assert_called_once_with()
@@ -8107,28 +8129,17 @@ class TestSkippedScanReportsTheOcrThatRan:
 
     _VISION_MODEL = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
-    async def test_ocr_off_with_a_vision_model_runs_vision_ocr(self, isolated_env, mock_svc):
-        from lilbee.data.types import OcrReport
-        from lilbee.runtime.progress import OcrBackendUsed
-
-        cfg.enable_ocr = False
-        cfg.vision_model = self._VISION_MODEL
-        result, config = await _sync_scan(isolated_env, ["lilbee-vision"] * 3)
-
-        assert config.ocr.backend == OcrBackendName.LILBEE_VISION
-        assert config.disable_ocr is False
-        assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.VISION, pages=3)}
-
-    async def test_ocr_off_with_no_vision_model_reports_ocr_off(
-        self, isolated_env, mock_svc, caplog
+    @pytest.mark.parametrize("vision_model", ["", _VISION_MODEL])
+    async def test_ocr_off_reports_ocr_off_whatever_the_engine(
+        self, isolated_env, mock_svc, caplog, vision_model
     ):
         from lilbee.cli.tui.log_routing import tui_log_path
         from lilbee.cli.tui.messages import sync_skipped_message
         from lilbee.data.types import OcrReport
         from lilbee.runtime.progress import OcrBackendUsed
 
-        cfg.enable_ocr = False
-        cfg.vision_model = ""
+        cfg.ocr = OcrMode.OFF
+        cfg.vision_model = vision_model
         with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
             result, config = await _sync_scan(isolated_env, [None, None, None])
 
@@ -8137,11 +8148,11 @@ class TestSkippedScanReportsTheOcrThatRan:
         assert result.skipped == ["scan.pdf"]
         assert result.skipped_ocr == {"scan.pdf": OcrReport(backend=OcrBackendUsed.NONE)}
         message = sync_skipped_message(result, tui_log_path())
-        assert "OCR is off" in message and "enable_ocr" in message
+        assert "OCR is off" in message and "Set ocr to auto" in message
         assert "vision OCR returned no text" not in message
-        assert "scan.pdf[/yellow]: OCR is off (enable_ocr = false)" in str(result)
-        # the log line names enable_ocr, not the Tesseract advice
-        assert "OCR is off (enable_ocr = false)" in caplog.text
+        assert "scan.pdf[/yellow]: ocr is off" in str(result)
+        # the log line names the ocr setting, not the Tesseract advice
+        assert "OCR is off (ocr = off)" in caplog.text
         assert "configure a vision model" not in caplog.text
 
     async def test_vision_that_returns_no_text_names_the_tui_log(
@@ -8152,7 +8163,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         from lilbee.data.types import OcrReport
         from lilbee.runtime.progress import OcrBackendUsed
 
-        cfg.enable_ocr = None
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = self._VISION_MODEL
         with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
             result, _ = await _sync_scan(isolated_env, ["lilbee-vision"] * 3)
@@ -8179,7 +8190,7 @@ class TestSkippedScanReportsTheOcrThatRan:
         from lilbee.data.types import OcrReport
         from lilbee.runtime.progress import OcrBackendUsed
 
-        cfg.enable_ocr = True
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = ""
         with caplog.at_level("WARNING", logger="lilbee.data.extract.document"):
             result, _ = await _sync_scan(isolated_env, ["tesseract", None])
@@ -8188,12 +8199,12 @@ class TestSkippedScanReportsTheOcrThatRan:
             "scan.pdf": OcrReport(backend=OcrBackendUsed.TESSERACT, pages=1)
         }
         assert "Configure a vision_model" in sync_skipped_message(result, tui_log_path())
-        # OCR already ran (Tesseract); the log line advises a vision model, not enable_ocr
+        # OCR already ran (Tesseract); the log line advises a vision model, not the ocr setting
         assert "configure a vision model via PUT /api/models/vision" in caplog.text
         assert "OCR is off" not in caplog.text
 
     async def test_trace_line_names_the_backend_and_ocr_pages(self, isolated_env, mock_svc, caplog):
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         cfg.vision_model = ""
         caplog.set_level("INFO", logger="lilbee.ingest.trace")
         await _sync_scan(isolated_env, [None, None])
@@ -8202,7 +8213,7 @@ class TestSkippedScanReportsTheOcrThatRan:
     async def test_markdown_never_reaches_ocr_and_has_no_report(self, isolated_env, mock_svc):
         from lilbee.data.ingest import sync
 
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         (isolated_env / "empty.md").write_text("   ", encoding="utf-8")
         result = await sync(quiet=True)
         assert result.skipped == ["empty.md"]

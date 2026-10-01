@@ -40,21 +40,7 @@ def _isolated_cfg(tmp_path: Any) -> Any:
 
 
 class TestStatusHelpers:
-    """Branches in `_ocr_label`, `_ocr_pill`, `_data_dir_pill` that the
-    other status tests didn't reach (auto / missing-dir paths)."""
-
-    def test_ocr_label_auto_when_none(self) -> None:
-        from lilbee.cli.tui.screens.status import _ocr_label
-
-        cfg.enable_ocr = None  # type: ignore[assignment]
-        assert _ocr_label() == "auto"
-
-    def test_ocr_pill_auto_when_none(self) -> None:
-        from lilbee.cli.tui.screens.status import _ocr_pill
-
-        cfg.enable_ocr = None  # type: ignore[assignment]
-        result = _ocr_pill()
-        assert "auto" in str(result.plain)
+    """Branches in `_data_dir_pill` that the other status tests didn't reach."""
 
     def test_data_dir_pill_missing_when_dir_absent(self, tmp_path: Any) -> None:
         from lilbee.cli.tui.screens.status import _data_dir_pill
@@ -1387,7 +1373,7 @@ class TestSyncSkippedMessageBranches:
 
         cfg.vision_model = "stub/vision"
         msg = sync_skipped_message(self._result(OcrBackendUsed.NONE), Path("unused.log"))
-        assert "OCR is off" in msg and "enable_ocr" in msg and "a.pdf" in msg
+        assert "OCR is off" in msg and "Set ocr to auto" in msg and "a.pdf" in msg
         assert "vision OCR returned no text" not in msg
 
     def test_returns_vision_failed_naming_the_tui_log(self) -> None:
@@ -2647,16 +2633,20 @@ class TestModelInfoExceptionBranches:
         assert info.embed_arch == "sentinel"
 
 
-def test_enable_ocr_help_says_it_governs_tesseract_only() -> None:
+def test_ocr_help_names_every_mode_and_the_engine_rule() -> None:
     from lilbee.app.settings import get_setting
 
-    help_text = get_setting("enable_ocr").help_text
-    assert help_text.startswith("Tesseract OCR for scanned PDFs when no vision model is set")
-    assert "A set vision model always runs" in help_text
+    info = get_setting("ocr")
+    assert info.choices == ("auto", "all", "off")
+    assert info.group == "Ingest"
+    assert "auto reads pages without usable text" in info.help_text
+    assert "all reads every page on every future ingest" in info.help_text
+    assert "vision_model picks the engine" in info.help_text
 
 
-def test_vision_model_help_says_clearing_it_with_ocr_off_leaves_no_ocr() -> None:
+def test_vision_model_help_says_it_picks_the_engine_only() -> None:
     from lilbee.app.settings import get_setting
 
     help_text = get_setting("vision_model").help_text
-    assert help_text.endswith("to use Tesseract, or to turn OCR off when enable_ocr is false")
+    assert help_text.startswith("Picks the OCR engine")
+    assert help_text.endswith("The ocr setting decides whether pages are read")

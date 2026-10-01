@@ -33,6 +33,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
     EDITOR_ID_PREFIX,
+    GATED_ROWS,
     LIST_ERROR_ID_PREFIX,
     LIST_ERROR_VISIBLE_CLASS,
     LIST_RESTORE_PREFIX,
@@ -47,6 +48,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
     model_field_to_picker_scope,
     model_picker_label,
     picker_scope_to_task,
+    row_visible,
     set_widget_value,
     stringify_default,
     title_content,
@@ -273,11 +275,13 @@ class SettingsScreen(Screen[None]):
                 classes="setting-editor-row",
             )
             children.append(editor_row)
-        return VerticalGroup(
+        row = VerticalGroup(
             *children,
             classes="setting-row",
             id=f"{ROW_ID_PREFIX}{key}",
         )
+        row.display = row_visible(key)
+        return row
 
     def _build_model_picker_row(self, key: str) -> Horizontal:
         """A button-style row that opens the same ModelPickerModal as the chat bar."""
@@ -438,6 +442,15 @@ class SettingsScreen(Screen[None]):
             return
         for ocr_key in OCR_SETTING_KEYS:
             self._update_help_row(ocr_key, SETTINGS_MAP[ocr_key])
+        for gated_key in GATED_ROWS:
+            self._update_row_visibility(gated_key)
+
+    def _update_row_visibility(self, key: str) -> None:
+        """Show or hide a gated row; an unpopulated pane applies the gate when it builds."""
+        try:
+            self.query_one(f"#{ROW_ID_PREFIX}{key}", VerticalGroup).display = row_visible(key)
+        except Exception:
+            log.debug("No row to show or hide for %s", key, exc_info=True)
 
     def _update_help_row(self, key: str, defn: SettingDef) -> None:
         """Re-render one row's help text."""
