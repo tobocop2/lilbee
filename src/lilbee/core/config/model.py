@@ -33,13 +33,14 @@ from .enums import (
     FtsLanguage,
     KvCacheType,
     LlmProvider,
+    OcrMode,
     OcrPageStrategy,
     ReasoningMode,
     RerankerType,
     TableModel,
     WikiEntityMode,
 )
-from .parsing import parse_bool
+from .parsing import migrate_ocr_keys, parse_bool, warn_retired_ocr_keys
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -250,11 +251,8 @@ class Config(BaseSettings):
             "Use a .lilbeeignore file for per-library patterns"
         ),
     )
-    # OCR for scanned PDFs via vision-capable chat model.
-    # None = auto-detect (use OCR if chat model is vision-capable).
-    # True = force OCR regardless of detection.
-    # False = disable OCR entirely.
-    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+    # Which pages OCR reads; vision_model picks the engine (set: vision, empty: Tesseract).
+    ocr: OcrMode = ConfigField(default=OcrMode.AUTO, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
     # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
     # needs matching headroom here.
@@ -1129,31 +1127,6 @@ class Config(BaseSettings):
             valid = ", ".join(repr(m.value) for m in ChatMode)
             raise ValueError(f"chat_mode must be one of {{{valid}}}, got {v!r}") from exc
 
-    @field_validator("enable_ocr", mode="before")
-    @classmethod
-    def _parse_enable_ocr(cls, v: Any) -> bool | None:
-        """Parse enable_ocr from env var string or direct value.
-
-        Accepts: true/false/1/0/yes/no (case-insensitive), empty string
-        or None for auto-detect.
-        """
-        if v is None:
-            return None
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
-            try:
-                return parse_bool(v)
-            except ValueError:
-                # bool() on a non-empty string is True, so falling through here
-                # turned an unparseable value into "on". Warn and auto-detect,
-                # matching the sibling validators.
-                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
-                return None
-        return bool(v)
-
     @field_validator("ocr_language", mode="before")
     @classmethod
     def _parse_ocr_language(cls, v: Any) -> list[str]:
@@ -1397,6 +1370,15 @@ class Config(BaseSettings):
             parts = frozenset(str(x).upper() for x in v)
             return parts or DEFAULT_ALLOWED_NER_LABELS
         return DEFAULT_ALLOWED_NER_LABELS
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_retired_ocr_keys(cls, data: Any) -> Any:
+        """Replace stored enable_ocr and force_ocr values with the ocr mode they stand for."""
+        if not isinstance(data, dict):
+            return data
+        warn_retired_ocr_keys(data)
+        return migrate_ocr_keys(data, str(data.get("vision_model") or ""))
 
     @model_validator(mode="before")
     @classmethod

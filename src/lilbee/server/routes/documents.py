@@ -17,6 +17,7 @@ from litestar.response import Stream
 from pydantic import BaseModel, Field
 
 from lilbee.core.config import validate_ocr_timeout
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.server import handlers
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
@@ -46,7 +47,7 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
     Pass ``{"prune_ignored": true}`` to also drop sources a ``.lilbeeignore``
     now excludes; without it, sync leaves already-indexed sources alone.
     """
-    enable_ocr = data.enable_ocr if data else None
+    ocr = data.ocr if data else None
     ocr_timeout = data.ocr_timeout if data else None
     force_rebuild = data.force_rebuild if data else False
     retry_skipped = data.retry_skipped if data else False
@@ -57,7 +58,7 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
         raise ValidationException(str(exc)) from exc
     return Stream(
         handlers.sync_stream(
-            enable_ocr=enable_ocr,
+            ocr=ocr,
             ocr_timeout=ocr_timeout,
             force_rebuild=force_rebuild,
             retry_skipped=retry_skipped,
@@ -71,13 +72,11 @@ async def sync_route(data: SyncRequest | None = None) -> Stream:
 async def add_route(data: AddRequest) -> Stream:
     """Add files to the knowledge base with streaming SSE progress."""
     try:
-        paths, force, enable_ocr, ocr_timeout = handlers.validate_add_paths(data.model_dump())
+        paths, force, ocr, ocr_timeout = handlers.validate_add_paths(data.model_dump())
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     return Stream(
-        handlers.add_files_stream(
-            paths, force=force, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout
-        ),
+        handlers.add_files_stream(paths, force=force, ocr=ocr, ocr_timeout=ocr_timeout),
         media_type=SSE_MEDIA_TYPE,
         status_code=201,
     )
@@ -85,8 +84,9 @@ async def add_route(data: AddRequest) -> Stream:
 
 @post("/api/add/upload", media_type=SSE_MEDIA_TYPE)
 async def add_upload_route(
+    request: Request,
     data: MultipartBody[list[UploadFile]],
-    enable_ocr: FromQuery[bool | None] = None,
+    ocr: FromQuery[str | None] = None,
     ocr_timeout: FromQuery[float | None] = None,
 ) -> Stream:
     """Ingest uploaded file content with streaming SSE progress.
@@ -95,19 +95,21 @@ async def add_upload_route(
     file bytes. That lets a client whose files the server cannot read by path --
     e.g. the plugin or CLI in external mode against a remote lilbee / GPU box --
     ingest its own local files by uploading them straight to the server.
-    ``enable_ocr`` and ``ocr_timeout`` are query parameters because the request
+    ``ocr`` and ``ocr_timeout`` are query parameters because the request
     body is the upload's raw multipart file list.
     """
     # Names first, bytes second: reading every part before validating cost a
     # full in-memory copy of a payload that was going to be rejected anyway.
     try:
         names = handlers.validate_upload_names([upload.filename for upload in data])
+        refuse_retired_ocr_keys(request.query_params.keys())
+        ocr_mode = handlers.parse_ocr_mode(ocr)
         validate_ocr_timeout(ocr_timeout)
     except ValueError as exc:
         raise ValidationException(str(exc)) from exc
     cleaned = [(name, await upload.read()) for name, upload in zip(names, data, strict=True)]
     return Stream(
-        handlers.add_uploads_stream(cleaned, enable_ocr=enable_ocr, ocr_timeout=ocr_timeout),
+        handlers.add_uploads_stream(cleaned, ocr=ocr_mode, ocr_timeout=ocr_timeout),
         media_type=SSE_MEDIA_TYPE,
         status_code=201,
     )

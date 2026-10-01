@@ -73,8 +73,12 @@ SYNC_SKIPPED_NO_VISION = (
 )
 SYNC_SKIPPED_OCR_OFF = (
     "Skipped (no text extracted, OCR is off): {files}. "
-    "Set enable_ocr to true in Settings to OCR scanned PDFs."
+    "Set ocr to auto in Settings to read scanned pages."
 )
+# Picker labels for settings whose raw values read poorly, keyed by setting then value.
+SETTING_CHOICE_LABELS: dict[str, dict[str, str]] = {
+    "ocr": {"auto": "Read", "all": "Read every page", "off": "Skip"},
+}
 SYNC_SKIPPED_VISION_FAILED = (
     "Skipped (vision OCR returned no text): {files}. See {log_path} for the underlying error."
 )

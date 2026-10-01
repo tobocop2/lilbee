@@ -28,6 +28,7 @@ class SettingGroup(StrEnum):
     GENERATION = "Generation"
     RETRIEVAL = "Retrieval"
     INGEST = "Ingest"
+    OCR_TUNING = "OCR-Tuning"
     WIKI = "Wiki"
     MEMORY = "Memory"
     CRAWLING = "Crawling"
@@ -100,30 +101,31 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         writable=False,
         group=SettingGroup.MODELS,
         help_text=(
-            "Vision model for scanned PDF OCR; when set it reads every scanned page, "
-            "whatever enable_ocr says. Clear it (empty value, including an empty "
-            "LILBEE_VISION_MODEL) to use Tesseract, or to turn OCR off when enable_ocr is false"
+            "Picks the OCR engine: a set vision model reads scanned pages, an empty one "
+            "(including an empty LILBEE_VISION_MODEL) leaves them to Tesseract. "
+            "The ocr setting decides whether pages are read"
         ),
     ),
-    "enable_ocr": SettingDef(
-        bool,
-        nullable=True,
+    "ocr": SettingDef(
+        str,
+        nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Tesseract OCR for scanned PDFs when no vision model is set "
-            "(empty or true = on, false = off). A set vision model always runs"
+            "Scanned pages: auto reads pages without usable text, all reads every page "
+            "on every future ingest (text layers included), off skips them. "
+            "vision_model picks the engine"
         ),
     ),
     "ocr_timeout": SettingDef(
         float,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text="Per-page timeout in seconds for vision OCR (0 = no limit)",
     ),
     "vision_load_budget_s": SettingDef(
         float,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text=(
             "Wall-clock seconds reserved for the vision worker to load the"
             " model. Total PDF-OCR budget = load_budget + ocr_timeout * pages."
@@ -132,7 +134,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "vision_ocr_max_tokens": SettingDef(
         int,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text=(
             "Hard cap on tokens generated per OCR page (bounds runaway repetition"
             " loops); raising it lengthens page generation, so give ocr_timeout headroom"
@@ -141,7 +143,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "vision_ocr_concurrency": SettingDef(
         int,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text="Pages OCR'd concurrently per vision server; each slot adds KV cache memory",
     ),
     "extraction_timeout": SettingDef(
@@ -981,7 +983,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "ocr_strategy": SettingDef(
         str,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text=(
             "PDF pages to OCR: auto (pages whose text layer is missing or garbled) or"
             " scanned_pages (also every page that looks like a scan, e.g. a scanned"
@@ -991,7 +993,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "ocr_scan_confidence": SettingDef(
         float,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text=(
             "How sure xberg must be that a page is a scan before it OCRs it (0-1)."
             " Applies only when ocr_strategy is scanned_pages. Lower it to 0.5 to"
@@ -1001,7 +1003,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "force_ocr_pages": SettingDef(
         list,
         nullable=False,
-        group=SettingGroup.INGEST,
+        group=SettingGroup.OCR_TUNING,
         help_text=(
             "PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3)"
             " or one per line"
@@ -1095,7 +1097,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
     "vision_replicas": SettingDef(
         int,
         nullable=False,
-        group=SettingGroup.GENERATION,
+        group=SettingGroup.OCR_TUNING,
         help_text="Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count)",
     ),
     "candidate_multiplier": SettingDef(

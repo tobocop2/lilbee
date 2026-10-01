@@ -12,6 +12,7 @@ from mcp.shared.exceptions import MCPError
 
 import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
@@ -277,22 +278,18 @@ class TestStatus:
         assert result["sources"][0]["filename"] == "test.pdf"
         assert result["total_chunks"] == 10
 
-    def test_status_includes_enable_ocr_when_set(self):
-        cfg.enable_ocr = True
+    def test_status_includes_the_ocr_mode(self):
+        cfg.ocr = OcrMode.ALL
         result = status()
-        assert result["config"]["enable_ocr"] is True
+        assert result["config"]["ocr"] == "all"
+        assert "enable_ocr" not in result["config"]
 
-    def test_status_names_the_ocr_engine(self, mock_svc):
-        cfg.enable_ocr = None
+    def test_status_carries_the_scanned_pages_line(self, mock_svc):
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        assert "used instead of Tesseract" in status()["ocr_note"]
-        cfg.vision_model = ""
-        assert "Tesseract runs OCR" in status()["ocr_note"]
-
-    def test_status_enable_ocr_none_by_default(self):
-        cfg.enable_ocr = None
-        result = status()
-        assert result["config"]["enable_ocr"] is None
+        assert status()["ocr_note"] == f"read by {cfg.vision_model}"
+        cfg.ocr = OcrMode.OFF
+        assert status()["ocr_note"] == "skipped (ocr = off)"
 
     def test_status_includes_entities_when_enabled(self, mock_svc):
         cfg.entity_extraction = True
@@ -420,22 +417,24 @@ class TestSync:
         assert kwargs["retry_skipped"] is False
 
     async def test_sync_ocr_options_reach_the_effective_ocr_config(self):
-        """sync(enable_ocr=..., ocr_timeout=...) overrides OCR for this sync only."""
-        from lilbee.data.extract.document import _effective_enable_ocr, _effective_ocr_timeout
+        """sync(ocr=..., ocr_timeout=...) overrides OCR for this sync only."""
+        from lilbee.data.extract.document import _effective_ocr_mode, _effective_ocr_timeout
 
+        cfg.ocr = OcrMode.AUTO
         observed: dict[str, object] = {}
 
         async def fake_sync(*args, **kwargs):
-            observed["enable_ocr"] = _effective_enable_ocr()
+            observed["ocr"] = _effective_ocr_mode()
             observed["ocr_timeout"] = _effective_ocr_timeout()
             return _SYNC_NOOP
 
         with mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-            await sync(enable_ocr=False, ocr_timeout=17.0)
+            await sync(ocr=OcrMode.OFF, ocr_timeout=17.0)
 
-        assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
+        assert observed == {"ocr": OcrMode.OFF, "ocr_timeout": 17.0}
+        assert cfg.ocr is OcrMode.AUTO
 
-    async def test_sync_enable_ocr_false_keeps_a_set_vision_model_reading_scans(self):
+    async def test_sync_ocr_off_stops_a_set_vision_model(self):
         from lilbee.data.extract.document import ocr_backend
         from lilbee.runtime.progress import OcrBackendUsed
 
@@ -447,9 +446,9 @@ class TestSync:
             return _SYNC_NOOP
 
         with mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-            await sync(enable_ocr=False)
+            await sync(ocr=OcrMode.OFF)
 
-        assert observed == [OcrBackendUsed.VISION]
+        assert observed == [OcrBackendUsed.NONE]
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_sync_rejects_negative_ocr_timeout(self, mock_sync):
@@ -919,6 +918,44 @@ class TestAdd:
         assert result.is_error
         assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
 
+    @pytest.mark.parametrize(
+        ("tool", "arguments", "detail"),
+        [
+            ("add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is no longer accepted"),
+            ("add", {"paths": ["x"], "force_ocr": True}, "force_ocr is no longer accepted"),
+            ("sync", {"enable_ocr": False}, "enable_ocr is no longer accepted"),
+            ("add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
+        ],
+    )
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_a_bad_or_retired_ocr_argument_is_an_error(
+        self, mock_sync, tool, arguments, detail
+    ):
+        """Over the wire, a retired OCR argument is refused by name, never ignored."""
+        async with mcp_client() as (session, _init, _drop):
+            result = await session.call_tool(tool, arguments)
+
+        assert result.is_error
+        assert detail in result.content[0].text
+        mock_sync.assert_not_called()
+
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    async def test_ocr_over_the_wire_reaches_the_sync(self, mock_sync, tmp_path):
+        from lilbee.data.extract.document import _effective_ocr_mode
+
+        observed: list[OcrMode] = []
+
+        async def fake_sync(*_args, **_kwargs):
+            observed.append(_effective_ocr_mode())
+            return _SYNC_NOOP
+
+        mock_sync.side_effect = fake_sync
+        async with mcp_client() as (session, _init, _drop):
+            result = await session.call_tool("sync", {"ocr": "all"})
+
+        assert not result.is_error
+        assert observed == [OcrMode.ALL]
+
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_single_file(self, mock_sync, tmp_path):
         src = tmp_path / "test.txt"
@@ -1022,26 +1059,36 @@ class TestAdd:
         assert cfg.linked_roots == {"mydir": str(src_dir.resolve())}
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_add_with_enable_ocr(self, mock_sync, tmp_path):
+    async def test_add_with_ocr_applies_to_that_sync_only(self, mock_sync, tmp_path):
+        from lilbee.data.extract.document import _effective_ocr_mode
+
         src = tmp_path / "scan.pdf"
         src.write_bytes(b"%PDF-fake")
-        original_ocr = cfg.enable_ocr
+        cfg.ocr = OcrMode.AUTO
+        observed: list[OcrMode] = []
 
-        await add([str(src)], enable_ocr=True)
+        async def fake_sync(*_args, **_kwargs):
+            observed.append(_effective_ocr_mode())
+            return _SYNC_NOOP
 
-        # enable_ocr should be restored after the call
-        assert cfg.enable_ocr == original_ocr
+        mock_sync.side_effect = fake_sync
+        await add([str(src)], ocr=OcrMode.ALL)
+
+        assert observed == [OcrMode.ALL]
+        assert cfg.ocr is OcrMode.AUTO
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("boom"))
-    async def test_add_enable_ocr_restored_on_error(self, mock_sync, tmp_path):
+    async def test_add_ocr_override_ends_on_error(self, mock_sync, tmp_path):
+        from lilbee.data.extract.document import _effective_ocr_mode
+
         src = tmp_path / "file.txt"
         src.write_text("content")
-        original_ocr = cfg.enable_ocr
+        cfg.ocr = OcrMode.AUTO
 
         with pytest.raises(RuntimeError, match="boom"):
-            await add([str(src)], enable_ocr=True)
+            await add([str(src)], ocr=OcrMode.OFF)
 
-        assert cfg.enable_ocr == original_ocr
+        assert _effective_ocr_mode() is OcrMode.AUTO
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     async def test_add_rejects_negative_ocr_timeout(self, mock_sync, tmp_path):
@@ -1134,13 +1181,13 @@ class TestAddWithUrls:
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     @mock.patch("lilbee.crawler.crawl_and_save", new_callable=AsyncMock)
-    async def test_add_url_with_enable_ocr(self, mock_crawl, mock_sync, isolated_env):
-        """enable_ocr is temporarily applied during sync."""
+    async def test_add_url_with_ocr(self, mock_crawl, mock_sync, isolated_env):
+        """ocr applies to the sync after a URL add and leaves the setting alone."""
         mock_crawl.return_value = []
-        old_ocr = cfg.enable_ocr
+        cfg.ocr = OcrMode.AUTO
         with mock.patch("lilbee.crawler.crawler_available", return_value=True):
-            await add(paths=["https://example.com"], enable_ocr=True)
-        assert cfg.enable_ocr == old_ocr
+            await add(paths=["https://example.com"], ocr=OcrMode.OFF)
+        assert cfg.ocr is OcrMode.AUTO
 
     @mock.patch("lilbee.crawler.crawler_available", return_value=True)
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
@@ -1946,15 +1993,29 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
-    def test_settings_set_ocr_off_with_a_vision_model_returns_no_warning(self, isolated_env):
+    def test_settings_set_ocr_returns_no_warning(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        result = settings_set({"enable_ocr": False})
+        result = settings_set({"ocr": "off"})
         assert result == {
             "command": "settings_set",
-            "updated": ["enable_ocr"],
+            "updated": ["ocr"],
             "reindex_required": False,
+            "warnings": [],
         }
+        assert cfg.ocr is OcrMode.OFF
+
+    def test_settings_set_vision_model_with_ocr_off_returns_the_notice(self, isolated_env):
+        cfg.data_root = isolated_env
+        cfg.ocr = OcrMode.OFF
+        ref = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        with mock.patch("lilbee.app.settings._invalidate_caches"):
+            result = settings_set({"vision_model": ref})
+        assert result["warnings"] == [
+            "Scanned pages stay skipped because ocr is off. "
+            f"Set ocr to auto to read them with {ref}."
+        ]
+        assert cfg.ocr is OcrMode.OFF
 
     def test_settings_set_empty_vision_model_clears_it_for_tesseract(self, isolated_env):
         cfg.data_root = isolated_env
@@ -2508,6 +2569,46 @@ _DEFAULT_TOOL_NAMES = frozenset(
         "sync",
     }
 )
+
+
+class TestInlineEnumDefs:
+    """The tools wire inlines an enum parameter's ``$defs`` entry, without its title."""
+
+    @staticmethod
+    def _enum() -> dict[str, object]:
+        return {"title": "Mode", "description": "d", "enum": ["a", "b"], "type": "string"}
+
+    def test_an_enum_parameter_is_inlined_and_defs_go(self):
+        from lilbee.mcp_server import _strip_schema
+
+        schema = {
+            "$defs": {"Mode": self._enum()},
+            "properties": {"mode": {"$ref": "#/$defs/Mode", "title": "Mode"}},
+        }
+        assert _strip_schema(schema) == {
+            "properties": {"mode": {"description": "d", "enum": ["a", "b"], "type": "string"}}
+        }
+
+    def test_a_def_still_referenced_elsewhere_stays(self):
+        from lilbee.mcp_server import _strip_schema
+
+        model = {"properties": {"x": {"type": "integer"}}, "type": "object"}
+        schema = {
+            "$defs": {"Mode": self._enum(), "Model": model},
+            "properties": {
+                "mode": {"$ref": "#/$defs/Mode"},
+                "items": {"items": {"$ref": "#/$defs/Model"}, "type": "array"},
+            },
+        }
+        stripped = _strip_schema(schema)
+        assert stripped["$defs"] == {"Model": model}
+        assert stripped["properties"]["mode"]["enum"] == ["a", "b"]
+
+    def test_a_schema_without_defs_is_unchanged(self):
+        from lilbee.mcp_server import _strip_schema
+
+        schema = {"properties": {"n": {"type": "integer"}}}
+        assert _strip_schema(schema) == schema
 
 
 class TestToolsSchemaSize:

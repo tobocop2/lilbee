@@ -53,6 +53,7 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.RETRIEVAL,
     SettingGroup.GENERATION,
     SettingGroup.INGEST,
+    SettingGroup.OCR_TUNING,
     SettingGroup.WIKI,
     SettingGroup.MEMORY,
     SettingGroup.CRAWLING,
@@ -119,11 +120,6 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
     "LILBEE_INGEST_TRACE_FILE": ("File the ingest trace is written to", False),
     "LILBEE_EXCLUSIVE_SCOPE": (
         "A directory that at most one server may serve at a time, for a plugin's shared root",
-        False,
-    ),
-    "LILBEE_OCR_FORCE": (
-        "Force vision OCR on pages that already carry a text layer. It has no "
-        "effect on those pages today; set `vlm_fallback` instead",
         False,
     ),
     # Internal: not settings, and documenting them would invite misuse.

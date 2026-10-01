@@ -13,6 +13,7 @@ from litestar.testing import TestClient
 
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
 from tests.server.conftest import parse_sse_events
@@ -758,7 +759,7 @@ class TestSyncRoute:
         assert resp.status_code == 201
         assert b"event: done" in resp.content
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=False,
@@ -766,11 +767,11 @@ class TestSyncRoute:
         )
 
     @mock.patch("lilbee.server.handlers.sync_stream")
-    def test_enable_ocr(self, mock_stream, client):
+    def test_ocr_plumbs_through(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        client.post("/api/sync", json={"enable_ocr": True})
+        client.post("/api/sync", json={"ocr": "all"})
         mock_stream.assert_called_once_with(
-            enable_ocr=True,
+            ocr=OcrMode.ALL,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=False,
@@ -784,7 +785,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"ocr_timeout": 45})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=45,
             force_rebuild=False,
             retry_skipped=False,
@@ -805,7 +806,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"force_rebuild": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=True,
             retry_skipped=False,
@@ -819,7 +820,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"retry_skipped": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=True,
@@ -833,7 +834,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"prune_ignored": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=False,

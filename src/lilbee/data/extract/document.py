@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config
-from lilbee.core.config.enums import OcrPageStrategy
+from lilbee.core.config.enums import OcrMode, OcrPageStrategy
 from lilbee.data.offload import to_ingest_thread
 from lilbee.data.store import ChunkType, PageTextRecord, SourceMeta
 from lilbee.data.title import derive_title, source_meta_from_extraction
@@ -87,8 +87,8 @@ def _page_text_record(source: str, page: int, text: str, content_type: str) -> P
     return PageTextRecord(source=source, page=page, text=text, content_type=content_type)
 
 
-_ocr_enable_override: contextvars.ContextVar[bool | None] = contextvars.ContextVar(
-    "lilbee_ocr_enable_override", default=None
+_ocr_mode_override: contextvars.ContextVar[OcrMode | None] = contextvars.ContextVar(
+    "lilbee_ocr_mode_override", default=None
 )
 _ocr_timeout_override: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "lilbee_ocr_timeout_override", default=None
@@ -173,14 +173,14 @@ def _enrich_texts(texts: list[str], doc_head: str, source_name: str) -> list[str
     return enriched
 
 
-def _effective_enable_ocr() -> bool | None:
-    """``cfg.enable_ocr`` unless a per-request OCR override is active.
+def _effective_ocr_mode() -> OcrMode:
+    """``cfg.ocr`` unless a per-request OCR override is active.
 
     The override is a ContextVar, not a global cfg mutation, so concurrent
     ingests on the shared HTTP daemon each see their own setting.
     """
-    override = _ocr_enable_override.get()
-    return active_config().enable_ocr if override is None else override
+    override = _ocr_mode_override.get()
+    return active_config().ocr if override is None else override
 
 
 def _extraction_timeout_secs() -> int | None:
@@ -201,7 +201,7 @@ def _effective_ocr_timeout() -> float:
 
 @contextmanager
 def ocr_override(
-    enable_ocr: bool | None = None, ocr_timeout: float | None = None
+    ocr: OcrMode | None = None, ocr_timeout: float | None = None
 ) -> Generator[None, None, None]:
     """Scope per-request OCR settings without mutating the global cfg.
 
@@ -211,8 +211,8 @@ def ocr_override(
     """
     tokens: list[tuple[contextvars.ContextVar[Any], contextvars.Token[Any]]] = []
     try:
-        if enable_ocr is not None:
-            tokens.append((_ocr_enable_override, _ocr_enable_override.set(enable_ocr)))
+        if ocr is not None:
+            tokens.append((_ocr_mode_override, _ocr_mode_override.set(ocr)))
         if ocr_timeout is not None:
             tokens.append((_ocr_timeout_override, _ocr_timeout_override.set(ocr_timeout)))
         yield
@@ -222,8 +222,8 @@ def ocr_override(
 
 
 def ocr_backend() -> OcrBackendUsed:
-    """The OCR backend for this extraction; a set vision model always reads scanned pages."""
-    return OcrBackendUsed.chosen(_effective_enable_ocr(), active_config().vision_model)
+    """The OCR backend for this extraction: none when OCR is off, else vision or Tesseract."""
+    return OcrBackendUsed.chosen(_effective_ocr_mode(), active_config().vision_model)
 
 
 def _ocr_config(ocr_token: str | None) -> OcrConfig | None:
@@ -267,13 +267,6 @@ def _force_ocr_pages() -> list[int] | None:
     if ocr_backend() is OcrBackendUsed.NONE:
         return None
     return list(active_config().force_ocr_pages) or None
-
-
-def _ocr_force_requested() -> bool:
-    """Whether LILBEE_OCR_FORCE forces vision OCR on every page (targeted re-ingest lever)."""
-    import os
-
-    return os.environ.get("LILBEE_OCR_FORCE", "").strip().lower() in {"1", "true", "yes"}
 
 
 # Header/footer band stripped when layout detection is on: outermost 5%.
@@ -336,10 +329,9 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # disabled; 1.2.9 fixes that) and sets disable_ocr (without it, xberg auto-OCRs a
     # PDF that has no text layer).
     disable_ocr = ocr is None
-    # Defeats xberg's text-layer short-circuit; vision path only (GPU re-OCR lever).
-    force_ocr = (
-        _ocr_force_requested() and ocr is not None and ocr.backend == OcrBackendName.LILBEE_VISION
-    )
+    # ocr = all defeats xberg's text-layer short-circuit for either engine; xberg
+    # rejects force_ocr together with disable_ocr.
+    force_ocr = ocr is not None and _effective_ocr_mode() is OcrMode.ALL
     if mode is ExtractMode.PAGINATED:
         paginated = ExtractionConfig(
             chunking=chunking,
@@ -497,7 +489,7 @@ def _warn_empty_ocr(source_name: str, media: str, backend: OcrBackendUsed) -> No
     if backend is OcrBackendUsed.NONE:
         log.warning(
             "Skipped %s: text extraction produced no usable text. "
-            "OCR is off (enable_ocr = false); set it to true to OCR %s.",
+            "OCR is off (ocr = off); set ocr to auto to read %s.",
             source_name,
             media,
         )
@@ -515,6 +507,18 @@ def _warn_empty_ocr(source_name: str, media: str, backend: OcrBackendUsed) -> No
         source_name,
         media,
     )
+
+
+def _warn_skipped_scanned_pages(doc: ExtractedDocument, source_name: str) -> None:
+    """Warn that OCR being off left the scanned pages of an indexed PDF unread."""
+    skipped = _scanned_pages(doc)
+    if skipped:
+        log.warning(
+            "Indexed %s without its scanned pages %s: OCR is off (ocr = off). "
+            "Set ocr to auto to read them.",
+            source_name,
+            ", ".join(str(page) for page in skipped),
+        )
 
 
 async def ingest_document(
@@ -639,11 +643,11 @@ class _PageProbe:
     has_scanned_pages: bool = False
 
 
-def _has_scanned_pages(doc: ExtractedDocument) -> bool:
-    """Whether xberg found a PDF page with no usable text layer."""
+def _scanned_pages(doc: ExtractedDocument) -> list[int]:
+    """The PDF pages xberg found with no usable text layer."""
     fmt = doc.metadata.format
     pdf = fmt.pdf if fmt is not None else None
-    return bool(pdf is not None and pdf.scanned_pages)
+    return list(pdf.scanned_pages or []) if pdf is not None else []
 
 
 async def _probe_pages(data: bytes, filename: str) -> _PageProbe:
@@ -660,7 +664,7 @@ async def _probe_pages(data: bytes, filename: str) -> _PageProbe:
     except Exception:
         log.debug("Page-count probe failed for %s; OCR progress total stays unknown", filename)
         return _PageProbe()
-    return _PageProbe(pages=doc.counts.pages, has_scanned_pages=_has_scanned_pages(doc))
+    return _PageProbe(pages=doc.counts.pages, has_scanned_pages=bool(_scanned_pages(doc)))
 
 
 def _announce_tesseract_ocr(
@@ -768,6 +772,8 @@ async def _records_from_document(
             _warn_empty_ocr(source_name, "scanned documents", ocr_backend)
         return [], meta
 
+    if ocr_backend is OcrBackendUsed.NONE:
+        _warn_skipped_scanned_pages(doc, source_name)
     enforce_chunk_limit(len(doc.chunks or []) + len(tables))
     _capture_result_page_texts(doc, source_name, content_type, page_texts_out)
 

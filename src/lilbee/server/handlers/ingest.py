@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING, Any, TypeVar
 from lilbee.app.ingest import register_sources
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg, validate_ocr_timeout
+from lilbee.core.config.enums import OcrMode
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.ingest_lock import IngestLockRegistry
@@ -35,7 +37,7 @@ _Payload = TypeVar("_Payload")
 
 async def _run_sync_with_sentinel(
     sse: SseStream,
-    enable_ocr: bool | None,
+    ocr: OcrMode | None,
     ocr_timeout: float | None = None,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
@@ -46,7 +48,7 @@ async def _run_sync_with_sentinel(
     from lilbee.data.ingest import sync
 
     try:
-        with temporary_ocr_config(enable_ocr, ocr_timeout):
+        with temporary_ocr_config(ocr, ocr_timeout):
             return await sync(
                 quiet=True,
                 on_progress=sse.callback,
@@ -61,7 +63,7 @@ async def _run_sync_with_sentinel(
 
 async def sync_stream(
     *,
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
     force_rebuild: bool = False,
     retry_skipped: bool = False,
@@ -78,9 +80,7 @@ async def sync_stream(
     """
     sse = SseStream()
     task = asyncio.create_task(
-        _run_sync_with_sentinel(
-            sse, enable_ocr, ocr_timeout, force_rebuild, retry_skipped, prune_ignored
-        )
+        _run_sync_with_sentinel(sse, ocr, ocr_timeout, force_rebuild, retry_skipped, prune_ignored)
     )
     async for event in sse.drain(task, "Sync stream"):
         yield event
@@ -92,7 +92,7 @@ async def sync_stream(
 async def _run_add(
     paths: list[str],
     force: bool,
-    enable_ocr: bool | None,
+    ocr: OcrMode | None,
     ocr_timeout: float | None,
     sse: SseStream,
 ) -> AddSummary:
@@ -125,7 +125,7 @@ async def _run_add(
         if not reg_result.reached_corpus:
             return AddSummary(copied=[], name_taken=reg_result.name_taken, errors=errors)
 
-        with temporary_ocr_config(enable_ocr, ocr_timeout):
+        with temporary_ocr_config(ocr, ocr_timeout):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
 
         return AddSummary(
@@ -142,7 +142,7 @@ async def _run_add(
 
 def validate_add_paths(
     data: dict[str, Any],
-) -> tuple[list[str], bool, bool | None, float | None]:
+) -> tuple[list[str], bool, OcrMode | None, float | None]:
     """Validate add-files input. Raises ValueError on bad input."""
     paths = data.get("paths")
     if not isinstance(paths, list) or not paths:
@@ -161,23 +161,33 @@ def validate_add_paths(
         validate_path_within(cfg.documents_dir / name, cfg.documents_dir)
 
     force = bool(data.get("force", False))
-    enable_ocr, ocr_timeout = _parse_ocr_params(data)
-    return paths, force, enable_ocr, ocr_timeout
+    ocr, ocr_timeout = _parse_ocr_params(data)
+    return paths, force, ocr, ocr_timeout
 
 
-def _parse_ocr_params(data: dict[str, Any]) -> tuple[bool | None, float | None]:
-    """Extract, coerce, and validate OCR parameters from a request dict.
+def parse_ocr_mode(value: Any) -> OcrMode | None:
+    """Decode a request's ``ocr`` value; raises ValueError naming the accepted modes."""
+    if value is None:
+        return None
+    try:
+        return OcrMode(value)
+    except ValueError as exc:
+        accepted = ", ".join(mode.value for mode in OcrMode)
+        raise ValueError(f"ocr must be one of {accepted}; got {value!r}") from exc
 
-    Raises ValueError on a non-numeric or out-of-bound ocr_timeout.
+
+def _parse_ocr_params(data: dict[str, Any]) -> tuple[OcrMode | None, float | None]:
+    """Extract, decode, and validate OCR parameters from a request dict.
+
+    Raises ValueError on a retired OCR key, an unknown ocr mode, or a
+    non-numeric or out-of-bound ocr_timeout.
     """
-    enable_ocr = data.get("enable_ocr")
+    refuse_retired_ocr_keys(data)
     ocr_timeout = data.get("ocr_timeout")
-    if enable_ocr is not None:
-        enable_ocr = bool(enable_ocr)
     if ocr_timeout is not None:
         ocr_timeout = float(ocr_timeout)
     validate_ocr_timeout(ocr_timeout)
-    return enable_ocr, ocr_timeout
+    return parse_ocr_mode(data.get("ocr")), ocr_timeout
 
 
 async def _ingest_stream(
@@ -233,7 +243,7 @@ async def add_files_stream(
     paths: list[str],
     *,
     force: bool = False,
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
 ) -> AsyncGenerator[str, None]:
     """Copy server-side files, sync, and yield SSE progress events.
@@ -243,7 +253,7 @@ async def add_files_stream(
     """
     async for event in _ingest_stream(
         [(IngestLockRegistry.canonical_source_name(p), p) for p in paths],
-        lambda locked, sse: _run_add(locked, force, enable_ocr, ocr_timeout, sse),
+        lambda locked, sse: _run_add(locked, force, ocr, ocr_timeout, sse),
         "Add files stream",
     ):
         yield event
@@ -295,7 +305,7 @@ def validate_upload_names(names: list[str | None]) -> list[str]:
 async def _run_upload(
     files: list[tuple[str, bytes]],
     sse: SseStream,
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
 ) -> AddSummary:
     """Write uploaded file bytes into ``cfg.documents_dir``, then sync.
@@ -319,7 +329,7 @@ async def _run_upload(
             if not _move_same_content(name, content, dest):
                 dest.write_bytes(content)
             written.append(name)
-        with temporary_ocr_config(enable_ocr, ocr_timeout):
+        with temporary_ocr_config(ocr, ocr_timeout):
             sync_result = await sync(quiet=True, on_progress=sse.callback, cancel=sse.cancel)
         return AddSummary(
             copied=written,
@@ -351,7 +361,7 @@ def _move_same_content(name: str, content: bytes, dest: Path) -> bool:
 async def add_uploads_stream(
     files: list[tuple[str, bytes]],
     *,
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
 ) -> AsyncGenerator[str, None]:
     """Ingest uploaded file content, yielding the same SSE progress as add_files_stream.
@@ -361,7 +371,7 @@ async def add_uploads_stream(
     """
     async for event in _ingest_stream(
         [(name, (name, content)) for name, content in files],
-        lambda locked, sse: _run_upload(locked, sse, enable_ocr, ocr_timeout),
+        lambda locked, sse: _run_upload(locked, sse, ocr, ocr_timeout),
         "Add uploads stream",
     ):
         yield event

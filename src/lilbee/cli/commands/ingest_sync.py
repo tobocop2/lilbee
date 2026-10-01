@@ -42,6 +42,7 @@ from lilbee.cli.helpers import (
     sync_result_to_json,
 )
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
 from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 
@@ -51,10 +52,10 @@ _EXIT_INTERRUPTED = 130
 
 _ocr_option = typer.Option(
     None,
-    "--ocr/--no-ocr",
+    "--ocr",
     help=(
-        "Turn Tesseract OCR on/off for scanned PDFs. A set vision model always "
-        "runs, and on behaves the same as leaving this option unset."
+        "Scanned pages for this run: auto reads pages without usable text, all "
+        "reads every page, off skips them. Leave it out to use the ocr setting."
     ),
 )
 _retry_skipped_option = typer.Option(
@@ -74,8 +75,8 @@ _ocr_timeout_option = typer.Option(
 )
 
 
-def _apply_ocr_overrides(ocr: bool | None, ocr_timeout: float | None) -> None:
-    """Apply --ocr/--no-ocr and --ocr-timeout CLI overrides to config.
+def _apply_ocr_overrides(ocr: OcrMode | None, ocr_timeout: float | None) -> None:
+    """Apply --ocr and --ocr-timeout CLI overrides to config.
 
     The CLI is a single-shot, single-process invocation, so mutating the global
     cfg here is safe (it mirrors ``apply_overrides`` for the data dir). The
@@ -83,7 +84,7 @@ def _apply_ocr_overrides(ocr: bool | None, ocr_timeout: float | None) -> None:
     ``temporary_ocr_config``.
     """
     if ocr is not None:
-        cfg.enable_ocr = ocr
+        cfg.ocr = ocr
     if ocr_timeout is not None:
         cfg.ocr_timeout = ocr_timeout
 
@@ -398,7 +399,7 @@ def run_sync_with_signal_cancel(
 def sync_cmd(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
-    ocr: bool | None = _ocr_option,
+    ocr: OcrMode | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     retry_skipped: bool = _retry_skipped_option,
     prune_ignored: bool = _prune_ignored_option,
@@ -432,7 +433,7 @@ def sync_cmd(
 def rebuild(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
-    ocr: bool | None = _ocr_option,
+    ocr: OcrMode | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     max_cpus: int | None = _max_cpus_option,
     processes: int | None = _processes_option,
@@ -577,7 +578,7 @@ def add(
     data_dir: Path | None = data_dir_option,
     use_global: bool = global_option,
     force: bool = _force_option,
-    ocr: bool | None = _ocr_option,
+    ocr: OcrMode | None = _ocr_option,
     ocr_timeout: float | None = _ocr_timeout_option,
     crawl: bool = _crawl_option,
     depth: int | None = _depth_option,

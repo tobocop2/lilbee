@@ -7,13 +7,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
+from lilbee.core.config.enums import CrawlRenderMode, KvCacheType, OcrMode
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
@@ -80,7 +81,21 @@ class ChatRequest(BaseModel):
         return decode_chunk_type(v)
 
 
-class SyncRequest(BaseModel):
+class _OcrRequest(BaseModel):
+    """Per-request OCR fields shared by /api/sync and /api/add."""
+
+    ocr: OcrMode | None = None
+    ocr_timeout: float | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired_ocr_keys(cls, data: Any) -> Any:
+        if isinstance(data, dict):
+            refuse_retired_ocr_keys(data)
+        return data
+
+
+class SyncRequest(_OcrRequest):
     """Request body for /api/sync.
 
     ``force_rebuild`` triggers a full drop-and-reingest equivalent to ``lilbee rebuild``.
@@ -94,20 +109,16 @@ class SyncRequest(BaseModel):
     the patterns govern what sync takes in, not what a past sync already indexed.
     """
 
-    enable_ocr: bool | None = None
-    ocr_timeout: float | None = None
     force_rebuild: bool = False
     retry_skipped: bool = False
     prune_ignored: bool = False
 
 
-class AddRequest(BaseModel):
+class AddRequest(_OcrRequest):
     """Request body for /api/add."""
 
     paths: list[str]
     force: bool = False
-    enable_ocr: bool | None = None
-    ocr_timeout: float | None = None
 
 
 class SetModelRequest(BaseModel):
@@ -180,7 +191,7 @@ class StatusConfigInfo(BaseModel):
     embedding_model: str
     vision_model: str = ""
     reranker_model: str = ""
-    enable_ocr: bool | None = None
+    ocr: OcrMode = OcrMode.AUTO
     num_ctx: int | None = None
     num_ctx_max: int | None = None
     chat_n_ctx_target: int | None = None
@@ -222,8 +233,8 @@ class StatusResponse(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
-    ocr_note: str | None = None
-    """Which OCR engine runs for scanned pages; None when OCR is off."""
+    ocr_note: str = ""
+    """What happens to scanned pages: skipped, or read by which engine."""
 
 
 class ShutdownResponse(BaseModel):
@@ -315,10 +326,13 @@ class SetModelResponse(BaseModel):
     the model that built the persisted vector store. The chat, vision, and reranker
     handlers always return ``False`` because their changes do not invalidate stored
     vectors. Mirrors the ``reindex_required`` flag on ``ConfigUpdateResponse``.
+    ``warnings`` holds notices about the result, such as a vision model that
+    ``ocr = off`` leaves unused.
     """
 
     model: str
     reindex_required: bool = False
+    warnings: list[str] = []
 
 
 class ConfigUpdateResponse(BaseModel):

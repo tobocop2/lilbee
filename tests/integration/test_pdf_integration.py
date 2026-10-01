@@ -20,6 +20,7 @@ import pytest
 from lilbee.app.services import get_services
 from lilbee.app.services import reset_services as reset_provider
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.data.ingest import sync
 from tests.integration.conftest import EMBED_ENTRY
 
@@ -310,7 +311,7 @@ class TestForceOcrPagesReplacesAutomaticOcr:
     @pytest.fixture(autouse=True)
     def _tesseract(self, monkeypatch):
         monkeypatch.setattr(cfg, "vision_model", "")
-        monkeypatch.setattr(cfg, "enable_ocr", None)
+        monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
 
     def test_default_settings_ocr_every_scanned_page(self, monkeypatch):
         monkeypatch.setattr(cfg, "force_ocr_pages", [])
