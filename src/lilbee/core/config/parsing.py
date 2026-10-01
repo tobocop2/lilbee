@@ -59,6 +59,25 @@ def migrate_ocr_keys(data: dict[str, Any], vision_model: str) -> dict[str, Any]:
     return migrated
 
 
+def without_refused_ocr(data: dict[str, Any]) -> dict[str, Any]:
+    """*data* less an ``ocr`` value OcrMode refuses, when a retired OCR key can stand in for it."""
+    if "ocr" not in data or not any(key in data for key in RETIRED_OCR_KEYS):
+        return data
+    try:
+        OcrMode(data["ocr"])
+    except ValueError:
+        return {key: value for key, value in data.items() if key != "ocr"}
+    return data
+
+
+def refused_value_fallback(key: str, values: dict[str, Any]) -> str:
+    """What stands in for a refused config.toml value: a retired OCR key, else the default."""
+    retired = [name for name in RETIRED_OCR_KEYS if name in values]
+    if key == "ocr" and retired:
+        return f"ocr comes from {' and '.join(retired)}"
+    return f"{key} uses its default"
+
+
 def _replaced_by(retired: list[str], replacement: str = "ocr") -> str:
     """'<names> is/are replaced by <replacement>' for the retired names given."""
     verb = "is" if len(retired) == 1 else "are"

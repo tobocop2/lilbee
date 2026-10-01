@@ -735,6 +735,46 @@ class TestRetiredOcrKeysMigrate:
         loaded = self._load(tmp_path, 'enable_ocr = false\nocr = "all"\n')
         assert loaded.ocr is OcrMode.ALL
 
+    def test_an_invalid_ocr_keeps_off_from_enable_ocr_through_a_write(self, tmp_path, caplog):
+        """Load, write another key, reload: OCR stays off and the warning names its source."""
+        import tomllib
+
+        from lilbee.core import settings
+
+        with caplog.at_level("WARNING"):
+            loaded = self._load(tmp_path, 'enable_ocr = false\nocr = "OFF"\ntop_k = 7\n')
+        assert loaded.ocr is OcrMode.OFF
+        assert (
+            "config.toml: ocr = 'OFF' is not one of auto, all, off; ocr comes from enable_ocr"
+            in caplog.text
+        )
+        assert "ocr uses its default" not in caplog.text
+
+        settings.set_value(tmp_path, "top_k", 9)
+        stored = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+        assert stored == {"ocr": "off", "top_k": 9}
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            reloaded = Config()
+        assert (reloaded.ocr, reloaded.top_k) == (OcrMode.OFF, 9)
+
+    def test_a_write_keeps_a_valid_ocr_over_a_retired_key(self, tmp_path):
+        import tomllib
+
+        from lilbee.core import settings
+
+        (tmp_path / "config.toml").write_text('enable_ocr = false\nocr = "all"\n', encoding="utf-8")
+        settings.set_value(tmp_path, "top_k", 9)
+        stored = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+        assert stored == {"ocr": "all", "top_k": 9}
+
+    def test_an_invalid_ocr_without_a_retired_key_uses_the_default(self, tmp_path, caplog):
+        with caplog.at_level("WARNING"):
+            loaded = self._load(tmp_path, 'ocr = "OFF"\n')
+        assert loaded.ocr is OcrMode.AUTO
+        assert "config.toml: ocr = 'OFF' is not one of auto, all, off; ocr uses its default" in (
+            caplog.text
+        )
+
     @pytest.mark.parametrize(
         ("toml", "warning"),
         [
