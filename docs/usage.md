@@ -1525,7 +1525,7 @@ pages are read, and `vision_model` decides which engine reads them.
 
 | `ocr` | TUI label | Effect |
 |---|---|---|
-| `auto` (default) | Read | Reads each page that has no usable text. If the file has almost no text in all, fewer than 64 characters across its pages, it reads every page. A PDF with enough text on every page is not read. |
+| `auto` (default) | Read | Reads each page that has no usable text. If the file has almost no text in all, fewer than 64 non-blank characters across its pages, it reads every page. A PDF with enough text on every page is not read. |
 | `all` | Read every page | Reads every page, text layers included, in every file lilbee extracts. To re-read files that are already indexed, run `lilbee rebuild --ocr all`. |
 | `off` | Skip | Reads no page. A scanned PDF or image is skipped, and a PDF with some scanned pages is indexed without them, with a warning that names those pages. |
 
@@ -1582,10 +1582,10 @@ running text. Use a vision model for tables, forms and multi-column layouts.
 
 By default (`ocr_strategy = "auto"`), lilbee OCRs only the PDF pages whose
 text layer is missing or garbled. If the PDF has almost no text in all, fewer
-than 64 characters across its pages, xberg OCRs every page. Some scans carry a
-hidden text layer of poor quality, and that layer can pass the check. To OCR
-those pages too, set `ocr_strategy` to `scanned_pages`. xberg then also OCRs
-every page that it grades as a scan.
+than 64 non-blank characters across its pages, xberg OCRs every page. Some
+scans carry a hidden text layer of poor quality, and that layer can pass the
+check. To OCR those pages too, set `ocr_strategy` to `scanned_pages`. xberg
+then also OCRs every page that it grades as a scan.
 
 `ocr_scan_confidence` sets how sure xberg must be that a page is a scan. It
 applies only when `ocr_strategy` is `scanned_pages`. The default is `0.7`. A
