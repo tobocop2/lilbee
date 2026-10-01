@@ -312,7 +312,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
 | `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
-| `LILBEE_ENABLE_OCR` | Retired: lilbee refuses to start while it is set. Use `LILBEE_OCR` |
+| `LILBEE_ENABLE_OCR` | Retired: any non-blank value stops every command with an error. Use `LILBEE_OCR` |
 | `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
 | `LILBEE_INGEST_CONCURRENCY` | Extraction-admission mode: `static` (the default), `adaptive-conservative`, or `adaptive-aggressive` |
@@ -321,5 +321,5 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_INGEST_TRACE_FILE` | File the ingest trace is written to |
 | `LILBEE_LOG_LEVEL` | Logging level: DEBUG, INFO, WARNING, or ERROR. `--log-level` overrides it |
 | `LILBEE_NO_SPLASH` | Set to any value to suppress the startup splash animation |
-| `LILBEE_OCR_FORCE` | Retired: lilbee refuses to start while it is set. Use `LILBEE_OCR` |
+| `LILBEE_OCR_FORCE` | Retired: any non-blank value stops every command with an error. Use `LILBEE_OCR` |
 | `LILBEE_TOKEN` | Auth token for the HTTP server. The launchers set it to the live session token so no literal token is written to a config file on disk |
