@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from typer._click import Context
+from typer.core import TyperCommand
 
 from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
@@ -163,6 +165,23 @@ def _refuse_retired_ocr_env(json_output: bool) -> None:
         raise SystemExit(1) from None
 
 
+class RetiredOcrEnvCommand(TyperCommand):
+    """A command that refuses a retired OCR env var when it runs, after its --help is parsed."""
+
+    def invoke(self, ctx: Context) -> Any:
+        _refuse_retired_ocr_env(cfg.json_mode)
+        return super().invoke(ctx)
+
+
+def refuse_retired_ocr_env_in(typer_app: typer.Typer) -> None:
+    """Make every command registered on *typer_app*, nested groups included, a refusing one."""
+    for command in typer_app.registered_commands:
+        command.cls = RetiredOcrEnvCommand
+    for group in typer_app.registered_groups:
+        if group.typer_instance is not None:
+            refuse_retired_ocr_env_in(group.typer_instance)
+
+
 @app.callback()
 def _default(
     ctx: typer.Context,
@@ -184,7 +203,6 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
-    _refuse_retired_ocr_env(json_output)
 
     if config_load_error is not None and not json_output:
         # Print to stderr so JSON-mode output stays parseable.
@@ -233,6 +251,7 @@ def _default(
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:
+        _refuse_retired_ocr_env(json_output)
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)
