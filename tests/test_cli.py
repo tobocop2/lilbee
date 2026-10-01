@@ -1382,6 +1382,55 @@ class TestRetiredOcrEnvVarsAreRefused:
         assert f"Error: {env_var} is {self._REFUSAL}" in result.output
         status.assert_not_called()
 
+    @staticmethod
+    def _command_paths() -> list[tuple[list[str], object]]:
+        """Every command in click's own tree, as (argv path, click command)."""
+        import typer.main
+        from typer.core import TyperGroup
+
+        paths: list[tuple[list[str], object]] = []
+        pending: list[tuple[list[str], object]] = [([], typer.main.get_command(app))]
+        while pending:
+            path, command = pending.pop()
+            if path:
+                paths.append((path, command))
+            if isinstance(command, TyperGroup):  # groups nest their subcommands
+                pending.extend(([*path, name], sub) for name, sub in command.commands.items())
+        return paths
+
+    def test_help_and_version_work_for_every_command(self, tmp_path):
+        paths = self._command_paths()
+        assert len(paths) > 60
+        env = {"LILBEE_ENABLE_OCR": "false", "LILBEE_DATA": str(tmp_path)}
+        failed = {}
+        for path, _command in paths:
+            result = runner.invoke(app, [*path, "--help"], env=env)
+            if result.exit_code != 0 or "Usage" not in result.output:
+                failed[" ".join(path)] = (result.exit_code, result.output[-200:])
+        assert failed == {}
+        assert runner.invoke(app, ["--version"], env=env).exit_code == 0
+
+    def test_every_command_refuses_when_it_runs(self):
+        from typer.core import TyperGroup
+
+        from lilbee.cli.app import RetiredOcrEnvCommand
+
+        leaves = [(path, c) for path, c in self._command_paths() if not isinstance(c, TyperGroup)]
+        assert len(leaves) > 50
+        not_refusing = [
+            " ".join(path) for path, c in leaves if not isinstance(c, RetiredOcrEnvCommand)
+        ]
+        assert not_refusing == []
+
+    def test_a_nested_command_is_refused(self, tmp_path):
+        with mock.patch("lilbee.cli.model.list_models_data") as listed:
+            result = runner.invoke(
+                app, ["model", "list", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
+            )
+        assert result.exit_code == 1
+        assert f"Error: LILBEE_OCR_FORCE is {self._REFUSAL}" in result.output
+        listed.assert_not_called()
+
     def test_json_mode_refuses_with_a_json_error(self, tmp_path):
         result = runner.invoke(
             app, ["--json", "status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
