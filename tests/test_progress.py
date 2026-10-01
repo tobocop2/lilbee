@@ -103,7 +103,7 @@ class TestEventModels:
 
     def test_ocr_start_status_text_names_the_file_page_count(self) -> None:
         ev = OcrStartEvent(file="mixed.pdf", total_pages=3)
-        assert ev.status_text == "Tesseract OCR on every page of mixed.pdf (3 pages)"
+        assert ev.status_text == "Tesseract OCR on mixed.pdf (3 pages in the file)"
 
     def test_embed_event(self) -> None:
         ev = EmbedEvent(file="notes.md", chunk=5, total_chunks=20)

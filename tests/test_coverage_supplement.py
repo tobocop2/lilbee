@@ -2639,7 +2639,10 @@ def test_ocr_help_names_every_mode_and_the_engine_rule() -> None:
     info = get_setting("ocr")
     assert info.choices == ("auto", "all", "off")
     assert info.group == "Ingest"
-    assert "auto reads every page of a file that has a page without usable text" in info.help_text
+    assert (
+        "auto reads each page without usable text, and every page of a file with almost no"
+        " text in all"
+    ) in info.help_text
     assert "all reads every page of every file on every future ingest" in info.help_text
     assert "vision_model picks the engine" in info.help_text
 

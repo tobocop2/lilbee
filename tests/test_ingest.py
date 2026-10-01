@@ -793,7 +793,7 @@ class TestSync:
         assert totals == {1}  # the bar measures the one-file corpus
 
         assert descriptions == [
-            "Tesseract OCR on every page of scan.pdf (8 pages)",
+            "Tesseract OCR on scan.pdf (8 pages in the file)",
             "Tesseract OCR scan.pdf (page 8/8)",
             "Embedding scan.pdf (3/5)",
             "Ingested scan.pdf",
@@ -4996,7 +4996,7 @@ class TestPhaseProgressCallback:
         cb = _phase_progress_callback(progress, "task-1", lambda *_: None)
         cb(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
         desc = progress.update.call_args.kwargs["description"]
-        assert desc == "Tesseract OCR on every page of scan.pdf (212 pages)"
+        assert desc == "Tesseract OCR on scan.pdf (212 pages in the file)"
 
     def test_embed_event_updates_bar_description(self):
         from lilbee.data.ingest.pipeline import _phase_progress_callback
@@ -6029,8 +6029,12 @@ class TestForceOcrRoutesToBackend:
         assert "clean native text layer" not in content
 
 
-def _mixed_pdf() -> bytes:
-    """A three-page PDF whose page 2 is an image of text with no text layer."""
+_SHORT_TEXT_LINES = ("a perfectly clean native text layer.",)
+_LONG_TEXT_LINES = ("a long and perfectly clean native text layer with many words.",) * 4
+
+
+def _layout_pdf(layout: str, text_lines: tuple[str, ...] = _SHORT_TEXT_LINES) -> bytes:
+    """A PDF with one page per letter of *layout*: T has a text layer, S is an image of text."""
     import io
 
     from PIL import Image, ImageDraw
@@ -6043,14 +6047,20 @@ def _mixed_pdf() -> bytes:
         draw.text((100, 100 + line * 60), f"Scanned page line {line} with words", fill="black")
     buf = io.BytesIO()
     pdf = canvas.Canvas(buf)
-    pdf.drawString(72, 720, "Page 1 with a perfectly clean native text layer.")
-    pdf.showPage()
-    pdf.drawImage(ImageReader(scan), 0, 0, width=595, height=842)
-    pdf.showPage()
-    pdf.drawString(72, 720, "Page 3 with a perfectly clean native text layer.")
-    pdf.showPage()
+    for number, kind in enumerate(layout, start=1):
+        if kind == "T":
+            for row, line in enumerate(text_lines):
+                pdf.drawString(72, 720 - row * 20, f"Page {number} with {line}")
+        else:
+            pdf.drawImage(ImageReader(scan), 0, 0, width=595, height=842)
+        pdf.showPage()
     pdf.save()
     return buf.getvalue()
+
+
+def _mixed_pdf() -> bytes:
+    """A three-page PDF whose page 2 is an image of text with no text layer."""
+    return _layout_pdf("TST")
 
 
 class TestTesseractUnderRealXberg:
@@ -6077,6 +6087,21 @@ class TestTesseractUnderRealXberg:
     def test_auto_reads_only_the_scanned_page_and_off_reads_none(self):
         assert self._ocr_pages(_mixed_pdf(), OcrMode.AUTO) == [2]
         assert self._ocr_pages(_mixed_pdf(), OcrMode.OFF) == []
+
+    @pytest.mark.parametrize(
+        ("layout", "text_lines", "expected"),
+        [
+            ("SST", _LONG_TEXT_LINES, [1, 2]),
+            ("SST", _SHORT_TEXT_LINES, [1, 2, 3]),
+            ("TSS", _SHORT_TEXT_LINES, [1, 2, 3]),
+            ("TTSS", _SHORT_TEXT_LINES, [3, 4]),
+        ],
+    )
+    def test_auto_reads_every_page_only_when_the_file_has_almost_no_text(
+        self, layout, text_lines, expected
+    ):
+        """The whole-file rule is the amount of text, not the share of scanned pages."""
+        assert self._ocr_pages(_layout_pdf(layout, text_lines), OcrMode.AUTO) == expected
 
     @pytest.mark.parametrize(("ocr", "warned"), [(OcrMode.OFF, True), (OcrMode.AUTO, False)])
     async def test_a_mixed_pdf_under_ocr_off_names_its_skipped_pages(
