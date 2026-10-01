@@ -1520,25 +1520,37 @@ indexing, not a substitute for it: however the text comes out (a native parser,
 Tesseract, or a vision model), it still gets embedded, so you still need an
 embedding model installed.
 
-For PDFs without embedded text, lilbee supports two OCR backends. When a
-vision model is configured, it reads every scanned page.
+Two settings decide what happens to scanned pages. `ocr` decides whether
+pages are read, and `vision_model` decides which engine reads them.
 
-`enable_ocr` controls Tesseract only. `enable_ocr = false` (or
-`lilbee add --no-ocr`) turns Tesseract off, and a set vision model still runs.
-With no vision model and OCR off, lilbee skips a PDF that has no text layer,
-and the skip message says that OCR is off. To stop vision OCR, clear
-`vision_model`.
+| `ocr` | TUI label | Effect |
+|---|---|---|
+| `auto` (default) | Read | Reads the pages that have no usable text layer. |
+| `all` | Read every page | Reads every page, text layers included, in every file lilbee extracts. To re-read files that are already indexed, run `lilbee rebuild --ocr all`. |
+| `off` | Skip | Reads no page. A scanned PDF or image is skipped, and a PDF with some scanned pages is indexed without them, with a warning that names those pages. |
 
-To use Tesseract while a vision model is set, clear `vision_model` and leave
-`enable_ocr` unset or true. Every surface can clear it:
+To change it for one run, pass `--ocr auto|all|off` to `lilbee add`,
+`lilbee sync` or `lilbee rebuild`. The `ocr` field on `POST /api/add` and
+`POST /api/sync`, the `ocr` query parameter on `POST /api/add/upload`, and the
+`ocr` argument of the MCP `add` and `sync` tools do the same for one request.
+`LILBEE_OCR` sets it for a process.
+
+When `vision_model` is set, the vision model reads the pages. When it is
+empty, Tesseract reads them. There is no Tesseract fallback when the vision
+model returns no text for a page. Picking a vision model while `ocr = off`
+does not change `ocr`: the pages stay skipped, and lilbee shows a notice.
+
+To use Tesseract while a vision model is set, clear `vision_model`. Every
+surface can clear it:
 
 - TUI: pick "(disabled, no model)" in the `vision_model` picker under `/settings`, or run `/set vision_model` with no value or with `none`.
 - Environment: set `LILBEE_VISION_MODEL=""`. An empty value clears the vision model for that process. An unset variable leaves the `config.toml` value in place.
 - MCP: `lilbee_settings_set({"vision_model": ""})`.
 - HTTP: `PUT /api/models/vision` with `{"model": ""}`.
 
-`lilbee status`, the TUI status screen and the OCR rows of `/settings` say
-which engine runs: the vision model when one is set, otherwise Tesseract.
+`lilbee status`, the TUI status screen and the OCR rows of `/settings` show one
+"Scanned pages" line: read by the vision model, read by Tesseract with its
+languages, every page read (`ocr = all`), or skipped (`ocr = off`).
 
 | | Tesseract | Vision model |
 |---|---|---|
@@ -1550,8 +1562,8 @@ which engine runs: the vision model when one is set, otherwise Tesseract.
 
 ### Settings for a scanned book
 
-For a scanned book that is mostly running text, use Tesseract. Set
-`enable_ocr = true` and clear `vision_model`.
+For a scanned book that is mostly running text, use Tesseract. Leave `ocr` at
+`auto` and clear `vision_model`.
 
 Leave `extraction_threads` at its default, `0`. A value of `4` measured the
 same speed. A value of `8` made OCR extraction slower, because it
@@ -1583,8 +1595,7 @@ slide with a full-page background image grades `0.5`, so lower the value to
 listed pages get OCR in every PDF, and `auto` and `scanned_pages` do not apply.
 Page numbers start at 1, for example `LILBEE_FORCE_OCR_PAGES=1,3`.
 
-If OCR is off (`enable_ocr = false` and no vision model), lilbee ignores all
-three settings.
+If OCR is off (`ocr = off`), lilbee ignores all three settings.
 A change to these settings applies to files that lilbee extracts afterwards.
 To apply it to files that are already indexed, run `lilbee rebuild`
 (`/rebuild` in the TUI).
