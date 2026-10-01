@@ -11,7 +11,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
-from lilbee.app.settings import OCR_SETTING_KEYS, ocr_engine_note
+from lilbee.app.settings import OCR_SETTING_KEYS, scanned_pages_line
 from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
@@ -149,12 +149,11 @@ def env_pill(key: str) -> Content | None:
 
 
 def help_content(key: str, defn: SettingDef) -> Content:
-    """Build help text, plus which OCR engine runs on an OCR row; the editor shows the value."""
+    """Build help text, plus the scanned-pages line on an OCR row; the editor shows the value."""
     help_text = Content(defn.help_text)
     if key not in OCR_SETTING_KEYS:
         return help_text
-    note = ocr_engine_note()
-    return help_text if note is None else Content.assemble(help_text, "\n", note)
+    return Content.assemble(help_text, "\n", scanned_pages_line())
 
 
 def title_content(key: str, defn: SettingDef) -> Content:
@@ -198,6 +197,20 @@ _FEATURE_GATED_GROUPS: dict[SettingGroup, Callable[[], bool]] = {
     SettingGroup.CRAWLING: _crawler_installed,
     SettingGroup.WIKI: _wiki_enabled,
 }
+
+
+def _tesseract_reads() -> bool:
+    return not cfg.vision_model
+
+
+# Rows shown only while their gate holds; the screen re-checks them on an OCR key change.
+GATED_ROWS: dict[str, Callable[[], bool]] = {"ocr_language": _tesseract_reads}
+
+
+def row_visible(key: str) -> bool:
+    """Whether a setting row shows now: ocr_language only while Tesseract reads."""
+    gate = GATED_ROWS.get(key)
+    return gate is None or gate()
 
 
 def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
@@ -272,7 +285,8 @@ def make_list_editor(key: str) -> Collapsible:
 
 def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     """Create a Select widget for choice-based settings."""
-    choices = [(c, c) for c in (defn.choices or ())]
+    labels = msg.SETTING_CHOICE_LABELS.get(key, {})
+    choices = [(labels.get(c, c), c) for c in (defn.choices or ())]
     if value in {c[1] for c in choices}:
         return Select(
             choices,

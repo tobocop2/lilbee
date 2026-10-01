@@ -86,6 +86,7 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
@@ -1421,6 +1422,18 @@ class ChatScreen(Screen[None]):
             _on_confirm,
         )
 
+    def _refuses_key(self, key: str) -> bool:
+        """Toast and return True for a /set key that is retired or unknown."""
+        try:
+            refuse_retired_ocr_keys([key])
+        except ValueError as exc:
+            self.notify(str(exc), severity="warning")
+            return True
+        if key not in SETTINGS_MAP:
+            self.notify(msg.CMD_SET_UNKNOWN.format(key=key), severity="warning")
+            return True
+        return False
+
     def _cmd_set(self, args: str) -> None:
         if not args:
             return
@@ -1428,8 +1441,7 @@ class ChatScreen(Screen[None]):
         key = parts[0]
         value = parts[1] if len(parts) > 1 else ""
 
-        if key not in SETTINGS_MAP:
-            self.notify(msg.CMD_SET_UNKNOWN.format(key=key), severity="warning")
+        if self._refuses_key(key):
             return
 
         defn = SETTINGS_MAP[key]

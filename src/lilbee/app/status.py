@@ -8,9 +8,9 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from lilbee.app.services import get_services
-from lilbee.app.settings import ocr_engine_note
+from lilbee.app.settings import scanned_pages_state
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import KvCacheType
+from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.ingest.skip_marker import describe_skips, held_out_names
 from lilbee.data.types import SkippedSource
@@ -92,7 +92,7 @@ class StatusConfig(BaseModel):
     embedding_model: str
     vision_model: str = ""
     reranker_model: str = ""
-    enable_ocr: bool | None = None
+    ocr: OcrMode = OcrMode.AUTO
     num_ctx: int | None = None
     num_ctx_max: int | None = None
     chat_n_ctx_target: int | None = None
@@ -142,8 +142,8 @@ class StatusResult(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
-    ocr_note: str | None = None
-    """Which OCR engine runs for scanned pages; None when OCR is off."""
+    ocr_note: str = ""
+    """What happens to scanned pages: skipped, or read by which engine."""
 
 
 def _index_status() -> IndexStatus | None:
@@ -169,7 +169,7 @@ def gather_status() -> StatusResult:
             embedding_model=cfg.embedding_model,
             vision_model=cfg.vision_model,
             reranker_model=cfg.reranker_model,
-            enable_ocr=cfg.enable_ocr,
+            ocr=cfg.ocr,
             num_ctx=cfg.num_ctx,
             num_ctx_max=cfg.num_ctx_max,
             chat_n_ctx_target=cfg.chat_n_ctx_target,
@@ -195,7 +195,7 @@ def gather_status() -> StatusResult:
         entities=entity_status(),
         skipped=skipped,
         skipped_total=skipped_total,
-        ocr_note=ocr_engine_note(),
+        ocr_note=scanned_pages_state(),
     )
 
 

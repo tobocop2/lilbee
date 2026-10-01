@@ -1,5 +1,6 @@
 """Shared test helpers."""
 
+import io
 import logging
 import os
 import shutil
@@ -12,6 +13,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
+from filelock import FileLock
+from PIL import Image, ImageDraw
 
 # Opt tests out of the per-role catalog-task validator at import time so
 # the many ``cfg.chat_model = "test-model"``-style fixtures don't trip
@@ -361,6 +364,15 @@ def _join_fleet_background_threads():
 
 
 @pytest.fixture(autouse=True)
+def _drop_the_fleet_plan_snapshot():
+    """Clear the process-wide plan snapshot, so no later test's reload probes real devices."""
+    yield
+    from lilbee.providers.fleet import planning
+
+    planning.clear_plan_probe()
+
+
+@pytest.fixture(autouse=True)
 def _ignore_user_global_config(monkeypatch):
     """Skip the platform-default config.toml for unit tests.
 
@@ -509,6 +521,24 @@ def _shutdown_ingest_pool():
     """
     yield
     _join_shared_ingest_pool()
+
+
+@pytest.fixture(scope="session")
+def tessdata_ready(tmp_path_factory):
+    """Have xberg fetch Tesseract's language data once, under a lock every worker shares.
+
+    xberg downloads a missing language file on first use through one fixed temp
+    name and no lock, so workers that OCR at once on a cold cache can read a partial file.
+    """
+    from xberg import ExtractionConfig, OcrConfig
+
+    image = Image.new("RGB", (400, 100), "white")
+    ImageDraw.Draw(image).text((10, 40), "tessdata ready", fill="black")
+    png = io.BytesIO()
+    image.save(png, format="PNG")
+    config = ExtractionConfig(ocr=OcrConfig(backend="tesseract", language=["eng"]), force_ocr=True)
+    with FileLock(tmp_path_factory.getbasetemp().parent / "tessdata.lock"):
+        _PRISTINE_EXTRACT_DOCUMENT(png.getvalue(), "image/png", filename="ready.png", config=config)
 
 
 @pytest.fixture
@@ -1026,8 +1056,6 @@ def make_pdf(*, pages: int = 1, title: str | None = None, author: str | None = N
     reportlab always writes a ``/Title``, defaulting to "untitled", so a PDF built
     without an explicit ``title`` still carries one rather than reporting none.
     """
-    import io
-
     from reportlab.pdfgen import canvas
 
     buf = io.BytesIO()
@@ -1089,8 +1117,6 @@ def held_records_lock(monkeypatch: pytest.MonkeyPatch):
     The code under test waits a few milliseconds instead of ten seconds. Request
     it after the fixture that sets ``cfg.data_root``.
     """
-    from filelock import FileLock
-
     from lilbee.data.ingest import skip_marker
 
     monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 0.05)

@@ -13,12 +13,12 @@ from conftest import PICKS_CHAT, PICKS_EMBEDDING, PICKS_RERANK
 from lilbee.app.ingest import RegisterResult
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import ChatMode
+from lilbee.core.config.enums import ChatMode, OcrMode
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import RagContext
-from lilbee.runtime.progress import SseErrorCode
+from lilbee.runtime.progress import OcrBackendUsed, SseErrorCode
 from lilbee.server import handlers
 from lilbee.server.handlers import (
     ingest as _ingest_h,
@@ -462,7 +462,7 @@ class TestStatus:
         """The OCR engine note must survive the StatusResponse mapping to reach HTTP clients."""
         from lilbee.app.status import StatusConfig, StatusResult
 
-        note = "No vision model is set, so Tesseract runs OCR."
+        note = "read by Tesseract (eng)"
         noted = StatusResult(
             document_count=0,
             config=StatusConfig(
@@ -479,12 +479,13 @@ class TestStatus:
             result = await handlers.status()
         assert result.ocr_note == note
 
-    async def test_status_with_ocr_off_and_a_vision_model_names_vision_and_warns_nothing(self):
+    async def test_status_with_ocr_off_and_a_vision_model_says_pages_are_skipped(self):
         cfg.vision_model = _VISION_REF
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         payload = (await handlers.status()).model_dump()
-        assert "used instead of Tesseract" in payload["ocr_note"]
-        assert "ocr_warning" not in payload
+        assert payload["ocr_note"] == "skipped (ocr = off)"
+        assert payload["config"]["ocr"] == "off"
+        assert "enable_ocr" not in payload["config"]
 
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
@@ -2177,12 +2178,16 @@ class TestSyncStreamDoneDelivery:
 
         assert observed["ocr_timeout"] == 17.0
 
-    async def test_enable_ocr_false_keeps_a_set_vision_model_reading_scans(self):
-        """A request with enable_ocr false still OCRs scanned pages with the vision model."""
+    @pytest.mark.parametrize(
+        ("ocr", "expected"),
+        [(OcrMode.OFF, OcrBackendUsed.NONE), (OcrMode.ALL, OcrBackendUsed.VISION)],
+    )
+    async def test_a_request_ocr_applies_to_that_sync_only(self, ocr, expected):
+        """A request's ocr beats the setting for that sync and leaves the setting alone."""
         from lilbee.data.extract.document import ocr_backend
-        from lilbee.runtime.progress import OcrBackendUsed
 
         cfg.vision_model = _VISION_REF
+        cfg.ocr = OcrMode.AUTO
         observed: list[OcrBackendUsed] = []
 
         async def fake_sync(*_args, **_kwargs):
@@ -2190,9 +2195,11 @@ class TestSyncStreamDoneDelivery:
             return SyncResult(added=[])
 
         with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-            _ = [e async for e in handlers.sync_stream(enable_ocr=False)]
+            _ = [e async for e in handlers.sync_stream(ocr=ocr)]
 
-        assert observed == [OcrBackendUsed.VISION]
+        assert observed == [expected]
+        assert ocr_backend() is OcrBackendUsed.VISION
+        assert cfg.ocr is OcrMode.AUTO
 
 
 class TestDrainFallback:
@@ -4142,10 +4149,18 @@ class TestUpdateConfig:
         assert result.reindex_required is False
         assert cfg.temperature == 0.7
 
-    async def test_update_config_ocr_off_with_a_vision_model_returns_no_warning(self, tmp_path):
+    async def test_update_config_sets_the_ocr_mode(self, tmp_path):
         cfg.vision_model = _VISION_REF
-        result = await handlers.update_config({"enable_ocr": False})
-        assert result.model_dump() == {"updated": ["enable_ocr"], "reindex_required": False}
+        result = await handlers.update_config({"ocr": "off"})
+        assert result.model_dump() == {"updated": ["ocr"], "reindex_required": False}
+        assert cfg.ocr is OcrMode.OFF
+
+    @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
+    async def test_update_config_refuses_a_retired_ocr_key(self, tmp_path, key):
+        with pytest.raises(
+            ValueError, match=f"^{key} is replaced by ocr; set ocr to one of auto, all, off$"
+        ):
+            await handlers.update_config({key: False})
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
@@ -4608,11 +4623,26 @@ class TestSetVisionModel:
         assert cfg.vision_model == _VISION_REF
 
     @patch("lilbee.server.handlers.models.get_services")
-    async def test_setting_a_vision_model_with_ocr_off_returns_no_warning(self, mock_svc, tmp_path):
+    async def test_setting_a_vision_model_with_ocr_off_returns_the_notice(self, mock_svc, tmp_path):
         mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
-        cfg.enable_ocr = False
+        cfg.ocr = OcrMode.OFF
         result = await handlers.set_vision_model(_VISION_REF)
-        assert result.model_dump() == {"model": _VISION_REF, "reindex_required": False}
+        assert result.warnings == [
+            "Scanned pages stay skipped because ocr is off. "
+            f"Set ocr to auto to read them with {_VISION_REF}."
+        ]
+        assert cfg.ocr is OcrMode.OFF
+
+    @patch("lilbee.server.handlers.models.get_services")
+    async def test_setting_a_vision_model_with_ocr_on_returns_no_warning(self, mock_svc, tmp_path):
+        mock_svc.return_value.provider.list_models.return_value = [_VISION_REF]
+        cfg.ocr = OcrMode.AUTO
+        result = await handlers.set_vision_model(_VISION_REF)
+        assert result.model_dump() == {
+            "model": _VISION_REF,
+            "reindex_required": False,
+            "warnings": [],
+        }
 
     @patch("lilbee.app.settings.persistent_settings.update_values")
     @patch("lilbee.server.handlers.models.get_services")
@@ -5365,10 +5395,25 @@ class TestReasoningCapHandling:
 class TestParseOcrParams:
     def test_ocr_timeout_coerced_to_float(self):
         """_parse_ocr_params coerces ocr_timeout to float."""
-        enable_ocr, ocr_timeout = _ingest_h._parse_ocr_params({"ocr_timeout": "60"})
+        ocr, ocr_timeout = _ingest_h._parse_ocr_params({"ocr_timeout": "60"})
         assert ocr_timeout == 60.0
         assert isinstance(ocr_timeout, float)
-        assert enable_ocr is None
+        assert ocr is None
+
+    @pytest.mark.parametrize("mode", ["auto", "all", "off"])
+    def test_ocr_decodes_to_the_mode(self, mode):
+        assert _ingest_h._parse_ocr_params({"ocr": mode})[0] is OcrMode(mode)
+
+    def test_an_unknown_ocr_names_the_accepted_modes(self):
+        with pytest.raises(ValueError, match="ocr must be one of auto, all, off; got 'some'"):
+            _ingest_h._parse_ocr_params({"ocr": "some"})
+
+    @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
+    def test_a_retired_key_is_refused_by_name(self, key):
+        with pytest.raises(
+            ValueError, match=f"{key} is replaced by ocr; set ocr to one of auto, all, off"
+        ):
+            _ingest_h._parse_ocr_params({key: False})
 
 
 class TestAddHandlerCancel:
@@ -5385,7 +5430,7 @@ class TestAddHandlerCancel:
             result = await _ingest_h._run_add(
                 paths=[],
                 force=False,
-                enable_ocr=None,
+                ocr=None,
                 ocr_timeout=None,
                 sse=sse,
             )

@@ -24,6 +24,7 @@ from lilbee.app.version import get_version
 from lilbee.cli import app
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
@@ -144,15 +145,23 @@ class TestStatus:
         result = runner.invoke(app, ["status"])
         assert "entities extracted" not in result.output
 
-    def test_status_shows_ocr_when_enabled(self):
-        cfg.enable_ocr = True
+    @pytest.mark.parametrize(
+        ("ocr", "vision_model", "line"),
+        [
+            (OcrMode.AUTO, "", "Scanned pages: read by Tesseract (eng)"),
+            (OcrMode.OFF, "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", "Scanned pages: skipped"),
+        ],
+    )
+    def test_status_shows_one_scanned_pages_line(self, ocr, vision_model, line):
+        cfg.ocr = ocr
+        cfg.vision_model = vision_model
+        cfg.ocr_language = ["eng"]
         result = runner.invoke(app, ["status"])
-        assert "Tesseract OCR: enabled" in result.output
-
-    def test_status_hides_ocr_when_none(self):
-        cfg.enable_ocr = None
-        result = runner.invoke(app, ["status"])
-        assert "OCR:" not in result.output
+        output = _plain_help_text(result.output)
+        assert line in output
+        assert output.count("Scanned pages:") == 1
+        assert "Tesseract OCR:" not in output
+        assert "OCR engine" not in output
 
     def test_status_with_indexed_docs(self, isolated_env, mock_svc):
         mock_svc.store.get_sources.return_value = [
@@ -1360,6 +1369,127 @@ class TestDefaultRequiresTerminal:
         assert called == [{}]
 
 
+class TestRetiredOcrEnvVarsAreRefused:
+    """LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE stop every entry with one line naming LILBEE_OCR."""
+
+    _REFUSAL = "replaced by LILBEE_OCR; set LILBEE_OCR to one of auto, all, off"
+
+    @pytest.mark.parametrize("env_var", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
+    def test_a_command_is_refused(self, tmp_path, env_var):
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(app, ["status", "-d", str(tmp_path)], env={env_var: "false"})
+        assert result.exit_code == 1
+        assert f"Error: {env_var} is {self._REFUSAL}" in result.output
+        status.assert_not_called()
+
+    @staticmethod
+    def _command_paths() -> list[tuple[list[str], object]]:
+        """Every command in click's own tree, as (argv path, click command)."""
+        import typer.main
+        from typer.core import TyperGroup
+
+        paths: list[tuple[list[str], object]] = []
+        pending: list[tuple[list[str], object]] = [([], typer.main.get_command(app))]
+        while pending:
+            path, command = pending.pop()
+            if path:
+                paths.append((path, command))
+            if isinstance(command, TyperGroup):  # groups nest their subcommands
+                pending.extend(([*path, name], sub) for name, sub in command.commands.items())
+        return paths
+
+    def test_help_and_version_work_for_every_command(self, tmp_path):
+        paths = self._command_paths()
+        assert len(paths) > 60
+        env = {"LILBEE_ENABLE_OCR": "false", "LILBEE_DATA": str(tmp_path)}
+        failed = {}
+        for path, _command in paths:
+            result = runner.invoke(app, [*path, "--help"], env=env)
+            if result.exit_code != 0 or "Usage" not in result.output:
+                failed[" ".join(path)] = (result.exit_code, result.output[-200:])
+        assert failed == {}
+        assert runner.invoke(app, ["--version"], env=env).exit_code == 0
+
+    def test_every_command_is_built_as_the_refusing_class(self):
+        from typer.core import TyperGroup
+
+        from lilbee.cli.app import RetiredOcrEnvCommand
+
+        leaves = [(path, c) for path, c in self._command_paths() if not isinstance(c, TyperGroup)]
+        assert len(leaves) > 50
+        not_refusing = [
+            " ".join(path) for path, c in leaves if not isinstance(c, RetiredOcrEnvCommand)
+        ]
+        assert not_refusing == []
+
+    def test_a_nested_command_is_refused(self, tmp_path):
+        with mock.patch("lilbee.cli.model.list_models_data") as listed:
+            result = runner.invoke(
+                app, ["model", "list", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
+            )
+        assert result.exit_code == 1
+        assert f"Error: LILBEE_OCR_FORCE is {self._REFUSAL}" in result.output
+        listed.assert_not_called()
+
+    def test_json_mode_refuses_with_a_json_error(self, tmp_path):
+        result = runner.invoke(
+            app, ["--json", "status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
+        )
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {"error": f"LILBEE_OCR_FORCE is {self._REFUSAL}"}
+
+    def test_both_are_named_in_one_line(self, tmp_path):
+        env = {"LILBEE_ENABLE_OCR": "false", "LILBEE_OCR_FORCE": "1"}
+        result = runner.invoke(app, ["status", "-d", str(tmp_path)], env=env)
+        assert result.exit_code == 1
+        assert f"LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE are {self._REFUSAL}" in result.output
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_a_blank_value_is_unset(self, tmp_path, value):
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(
+                app, ["status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": value}
+            )
+        assert result.exit_code == 0
+        status.assert_called_once()
+
+    def test_serve_is_refused_before_the_server_starts(self, tmp_path):
+        with mock.patch("lilbee.cli.commands.servers.setup_server_logging") as server_logging:
+            result = runner.invoke(
+                app, ["serve", "-d", str(tmp_path)], env={"LILBEE_ENABLE_OCR": "false"}
+            )
+        assert result.exit_code == 1
+        assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in result.output
+        server_logging.assert_not_called()
+
+    def test_the_tui_is_refused_before_it_starts(self, monkeypatch, capsys):
+        from lilbee.cli.app import _default
+
+        monkeypatch.setenv("LILBEE_ENABLE_OCR", "false")
+        ctx = mock.MagicMock()
+        ctx.invoked_subcommand = None
+        with (
+            mock.patch("lilbee.cli.tui.run_tui") as run_tui,
+            mock.patch("sys.stdin") as stdin,
+            mock.patch("sys.stdout") as stdout,
+            pytest.raises(SystemExit) as exited,
+        ):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            _default(
+                ctx,
+                data_dir=None,
+                model=None,
+                json_output=False,
+                use_global=False,
+                log_level=None,
+                show_version=False,
+            )
+        assert exited.value.code == 1
+        assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in capsys.readouterr().err
+        run_tui.assert_not_called()
+
+
 class TestChatLaunchesTui:
     """The chat subcommand launches TUI when on a TTY."""
 
@@ -2533,25 +2663,14 @@ class TestStatusJson:
         assert data["total_chunks"] == 10
         assert "documents_dir" in data["config"]
 
-    def test_status_json_includes_enable_ocr_when_set(self):
-        cfg.enable_ocr = True
-        result = runner.invoke(app, ["--json", "status"])
-        data = json.loads(result.output.strip())
-        assert data["config"]["enable_ocr"] is True
-
-    def test_status_json_excludes_enable_ocr_when_none(self):
-        cfg.enable_ocr = None
-        result = runner.invoke(app, ["--json", "status"])
-        data = json.loads(result.output.strip())
-        assert "enable_ocr" not in data["config"]
-
-    def test_status_json_with_ocr_off_and_a_vision_model_names_vision_and_warns_nothing(self):
-        cfg.enable_ocr = False
+    def test_status_json_carries_the_ocr_mode_and_line(self):
+        cfg.ocr = OcrMode.OFF
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         result = runner.invoke(app, ["--json", "status"])
         data = json.loads(result.output.strip())
-        assert "used instead of Tesseract" in data["ocr_note"]
-        assert "ocr_warning" not in data
+        assert data["config"]["ocr"] == "off"
+        assert "enable_ocr" not in data["config"]
+        assert data["ocr_note"] == "skipped (ocr = off)"
 
 
 # ---------------------------------------------------------------------------
@@ -3165,14 +3284,14 @@ def _plain_help_text(output: str) -> str:
 
 
 class TestOcrFlags:
-    """Tests for --ocr/--no-ocr and --ocr-timeout flags on sync, add, rebuild."""
+    """Tests for --ocr and --ocr-timeout flags on sync, add, rebuild."""
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_ocr_timeout_on_sync(self, mock_sync):
         """--ocr-timeout sets cfg.ocr_timeout for sync."""
-        result = runner.invoke(app, ["sync", "--ocr", "--ocr-timeout=60"])
+        result = runner.invoke(app, ["sync", "--ocr", "all", "--ocr-timeout=60"])
         assert result.exit_code == 0
-        assert cfg.enable_ocr is True
+        assert cfg.ocr is OcrMode.ALL
         assert cfg.ocr_timeout == 60.0
 
     def test_ocr_timeout_on_add(self, isolated_env, tmp_path, mock_svc):
@@ -3180,30 +3299,38 @@ class TestOcrFlags:
         src = tmp_path / "source" / "test.txt"
         src.parent.mkdir()
         src.write_text("content")
-        result = runner.invoke(app, ["add", "--ocr", "--ocr-timeout=90", str(src)])
+        result = runner.invoke(app, ["add", "--ocr", "off", "--ocr-timeout=90", str(src)])
         assert result.exit_code == 0
-        assert cfg.enable_ocr is True
+        assert cfg.ocr is OcrMode.OFF
         assert cfg.ocr_timeout == 90.0
 
     def test_ocr_timeout_on_rebuild(self, mock_svc):
         """--ocr-timeout sets cfg.ocr_timeout for rebuild."""
-        result = runner.invoke(app, ["rebuild", "--ocr", "--ocr-timeout=120"])
+        result = runner.invoke(app, ["rebuild", "--ocr", "all", "--ocr-timeout=120"])
         assert result.exit_code == 0
-        assert cfg.enable_ocr is True
+        assert cfg.ocr is OcrMode.ALL
         assert cfg.ocr_timeout == 120.0
 
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
     def test_no_ocr_timeout_leaves_default(self, mock_sync):
         """Without --ocr-timeout, cfg.ocr_timeout stays at default."""
         cfg.ocr_timeout = 120.0
-        result = runner.invoke(app, ["sync", "--ocr"])
+        result = runner.invoke(app, ["sync", "--ocr", "auto"])
         assert result.exit_code == 0
         assert cfg.ocr_timeout == 120.0
 
-    def test_no_ocr_flag_keeps_a_set_vision_model_reading_scans(self):
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_leaving_out_the_flag_keeps_the_setting(self, mock_sync):
+        cfg.ocr = OcrMode.OFF
+        result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert cfg.ocr is OcrMode.OFF
+
+    def test_ocr_off_stops_a_set_vision_model(self):
         from lilbee.data.extract.document import ocr_backend
         from lilbee.runtime.progress import OcrBackendUsed
 
+        cfg.ocr = OcrMode.AUTO
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         observed: list[OcrBackendUsed] = []
 
@@ -3212,32 +3339,41 @@ class TestOcrFlags:
             return _SYNC_NOOP
 
         with mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync):
-            result = runner.invoke(app, ["sync", "--no-ocr"])
+            result = runner.invoke(app, ["sync", "--ocr", "off"])
         assert result.exit_code == 0, result.output
-        assert observed == [OcrBackendUsed.VISION]
+        assert observed == [OcrBackendUsed.NONE]
 
-    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    def test_no_ocr_flag_disables(self, mock_sync):
-        """--no-ocr sets cfg.enable_ocr to False."""
-        result = runner.invoke(app, ["sync", "--no-ocr"])
-        assert result.exit_code == 0
-        assert cfg.enable_ocr is False
+    def test_ocr_all_is_not_persisted(self, isolated_env, tmp_path, mock_svc):
+        """--ocr is for this run: config.toml never gains an ocr key from it."""
+        src = tmp_path / "source" / "test.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        result = runner.invoke(
+            app, ["add", "--ocr", "all", "--data-dir", str(isolated_env), str(src)]
+        )
+        assert result.exit_code == 0, result.output
+        import tomllib
 
-    def test_ocr_help_says_it_governs_tesseract_only(self):
-        """--no-ocr's help text must say it turns off Tesseract and a vision model still runs."""
+        persisted = tomllib.loads((isolated_env / "config.toml").read_text(encoding="utf-8"))
+        assert "linked_roots" in persisted
+        assert "ocr" not in persisted
+
+    @pytest.mark.parametrize("flag", ["--no-ocr", "--ocr=some"])
+    def test_the_retired_and_unknown_flags_are_refused(self, flag):
+        result = runner.invoke(app, ["sync", flag])
+        assert result.exit_code == 2
+        output = _plain_help_text(result.output)
+        assert "No such option: --no-ocr" in output or "'some' is not one of" in output
+
+    def test_ocr_help_names_every_mode(self):
         result = runner.invoke(app, ["sync", "--help"])
         assert result.exit_code == 0
         normalized = _plain_help_text(result.output)
-        assert "Turn Tesseract OCR on/off for scanned PDFs" in normalized
-        assert "A set vision model always runs" in normalized
-
-    def test_ocr_help_says_on_matches_leaving_it_unset(self):
-        """--ocr's help text must say true behaves like leaving the option unset,
-        or a reader keeps thinking --ocr forces vision OCR over enable_ocr=None."""
-        result = runner.invoke(app, ["sync", "--help"])
-        assert result.exit_code == 0
-        normalized = _plain_help_text(result.output)
-        assert "on behaves the same as leaving this option unset" in normalized
+        assert (
+            "auto reads each page without usable text, and every page of a file with almost"
+            " no text in all; all reads every page of every file; off skips them"
+        ) in normalized
+        assert "Leave it out to use the ocr setting" in normalized
 
 
 class TestLogLevel:
@@ -5368,9 +5504,7 @@ class TestChatSyncCallback:
         status.pending = 2
         cb = _chat_sync_callback(status)
         cb(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
-        assert status.text == (
-            "⟳ Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file) (+2 queued)"
-        )
+        assert status.text == "⟳ Tesseract OCR on scan.pdf (212 pages in the file) (+2 queued)"
 
     def test_ocr_start_wrong_type_raises(self):
         from lilbee.cli.sync import SyncStatus, _chat_sync_callback

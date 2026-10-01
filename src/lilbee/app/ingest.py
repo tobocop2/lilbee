@@ -13,6 +13,7 @@ from pathlib import Path
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
+from lilbee.core.config.enums import OcrMode
 from lilbee.data.ingest.discovery import (
     excluded_extension_reasons,
     file_hash,
@@ -482,7 +483,7 @@ def forget_removed_from_wiki_index(removed: list[str]) -> None:
 
 @contextmanager
 def temporary_ocr_config(
-    enable_ocr: bool | None = None,
+    ocr: OcrMode | None = None,
     ocr_timeout: float | None = None,
 ) -> Generator[None, None, None]:
     """Override OCR config for the duration of the block, per request.
@@ -492,5 +493,5 @@ def temporary_ocr_config(
     """
     from lilbee.data.extract.document import ocr_override
 
-    with ocr_override(enable_ocr, ocr_timeout):
+    with ocr_override(ocr, ocr_timeout):
         yield

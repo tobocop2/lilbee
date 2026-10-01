@@ -16,12 +16,14 @@ from lilbee.config_meta import (
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.config.schema import field_type_name
-from lilbee.providers.roles import MODEL_FIELD_TO_ROLE
+from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
@@ -29,24 +31,16 @@ if TYPE_CHECKING:
 
 _MIN_CHUNK_SIZE = 64
 
-# Keys that decide which OCR engine runs.
-OCR_SETTING_KEYS = frozenset({"enable_ocr", "vision_model"})
-_OCR_ENGINE_NOTES = {
-    OcrBackendUsed.VISION: (
-        "A vision model is set ({model}), so it is used instead of Tesseract. "
-        "Clear vision_model to {after_clearing}."
-    ),
-    OcrBackendUsed.TESSERACT: (
-        "No vision model is set, so Tesseract runs OCR. "
-        "Set vision_model to use a vision model instead."
-    ),
-}
-
-# What clearing vision_model leaves, for the vision note.
-_OCR_AFTER_CLEARING_VISION = {
-    OcrBackendUsed.TESSERACT: "use Tesseract",
-    OcrBackendUsed.NONE: "turn OCR off",
-}
+# Keys that decide whether scanned pages are read, and by which engine.
+OCR_SETTING_KEYS = frozenset({"ocr", "vision_model"})
+SCANNED_PAGES_LABEL = "Scanned pages"
+_SCANNED_PAGES_OFF = "skipped (ocr = off)"
+_SCANNED_PAGES_READ = "read by {engine}"
+_SCANNED_PAGES_ALL = "every page read by {engine} (ocr = all)"
+_TESSERACT_ENGINE = "Tesseract ({languages})"
+OCR_OFF_VISION_NOTICE = (
+    "Scanned pages stay skipped because ocr is off. Set ocr to auto to read them with {model}."
+)
 
 # Path-typed writable fields whose pydantic "default" is the unresolved
 # sentinel ``Path()`` (a literal "."). The actual default is computed by
@@ -77,16 +71,33 @@ class SettingsUpdateResult:
 
     updated: list[str]
     reindex_required: bool
+    warnings: tuple[str, ...] = ()
 
 
-def ocr_engine_note() -> str | None:
-    """Which OCR engine runs for scanned pages, or None when OCR is off."""
-    backend = OcrBackendUsed.chosen(cfg.enable_ocr, cfg.vision_model)
-    note = _OCR_ENGINE_NOTES.get(backend)
-    if note is None:
-        return None
-    after_clearing = _OCR_AFTER_CLEARING_VISION[OcrBackendUsed.chosen(cfg.enable_ocr, "")]
-    return note.format(model=cfg.vision_model, after_clearing=after_clearing)
+def scanned_pages_state() -> str:
+    """What happens to scanned pages under the current ocr and vision_model settings."""
+    backend = OcrBackendUsed.chosen(cfg.ocr, cfg.vision_model)
+    if backend is OcrBackendUsed.NONE:
+        return _SCANNED_PAGES_OFF
+    engine = (
+        cfg.vision_model
+        if backend is OcrBackendUsed.VISION
+        else _TESSERACT_ENGINE.format(languages="+".join(cfg.ocr_language))
+    )
+    template = _SCANNED_PAGES_ALL if cfg.ocr is OcrMode.ALL else _SCANNED_PAGES_READ
+    return template.format(engine=engine)
+
+
+def scanned_pages_line() -> str:
+    """The one status line for scanned pages, shown on every surface."""
+    return f"{SCANNED_PAGES_LABEL}: {scanned_pages_state()}"
+
+
+def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
+    """The notice for a vision model picked while ocr = off keeps it unused."""
+    if "vision_model" in changed_keys and cfg.vision_model and cfg.ocr is OcrMode.OFF:
+        return (OCR_OFF_VISION_NOTICE.format(model=cfg.vision_model),)
+    return ()
 
 
 def _setting_default(key: str) -> Any:
@@ -178,6 +189,13 @@ def _is_settable(key: str) -> bool:
     return key in WRITABLE_CONFIG_FIELDS or key in MODEL_ROLE_FIELDS
 
 
+def _refuse_unsettable(key: str) -> None:
+    """Raise ValueError for a key no writer accepts, naming ``ocr`` for a retired OCR key."""
+    refuse_retired_ocr_keys([key])
+    if not _is_settable(key):
+        raise ValueError(f"Unknown or read-only setting: {key}")
+
+
 def _is_nullable(key: str) -> bool:
     """Return True if ``key`` accepts ``None`` to clear the persisted entry."""
     if key in WRITABLE_CONFIG_FIELDS:
@@ -209,8 +227,7 @@ def _as_int_setting(value: Any) -> int | None:
 def _validate(updates: dict[str, Any]) -> None:
     """Reject unknown keys, null on non-nullable, and out-of-range chunk sizes."""
     for key, value in updates.items():
-        if not _is_settable(key):
-            raise ValueError(f"Unknown or read-only setting: {key}")
+        _refuse_unsettable(key)
         if value is None and not _is_nullable(key):
             raise ValueError(f"Setting '{key}' does not accept null")
     new_ttl = _as_int_setting(updates.get("engine_idle_ttl_minutes"))
@@ -278,10 +295,11 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
 
     A model-role change (chat_model/embedding_model/reranker_model/vision_model)
     respawns only that role's server via the per-role reload, so unrelated roles
-    keep serving uninterrupted. A genuinely role-agnostic load key (num_ctx,
-    kv_cache_type) has no single owning role, so it falls back to dropping the
-    whole fleet. Both paths run off the caller's thread, so the settings write
-    never blocks on a slow stop-and-respawn.
+    keep serving uninterrupted; so does a setting that gates a role (ocr).
+    A genuinely role-agnostic load key (num_ctx, kv_cache_type) has no single
+    owning role, so it falls back to dropping the whole fleet. Both paths run off
+    the caller's thread, so the settings write never blocks on a slow
+    stop-and-respawn.
     """
     from lilbee.app.services import peek_services
 
@@ -289,8 +307,10 @@ def _reload_changed_roles(changed_keys: set[str]) -> None:
     if services is None:
         return
     changed_role_fields = changed_keys & MODEL_ROLE_FIELDS
-    for field in changed_role_fields:
-        services.reload_role(MODEL_FIELD_TO_ROLE[field])
+    field_to_role = MODEL_FIELD_TO_ROLE | ROLE_GATE_FIELD_TO_ROLE
+    reloaded = {field_to_role[field] for field in changed_keys & field_to_role.keys()}
+    for role in sorted(reloaded):
+        services.reload_role(role)
     if "vision_model" in changed_role_fields:
         # Register/unregister lilbee's xberg OCR backend on any vision-model
         # change (REST/MCP/TUI/CLI all funnel here), not just the REST route.
@@ -343,7 +363,7 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.modelhub.model_info import invalidate_cache as invalidate_arch_cache
 
         invalidate_arch_cache()
-    if changed_keys & LOAD_AFFECTING_KEYS:
+    if changed_keys & (LOAD_AFFECTING_KEYS | ROLE_GATE_FIELD_TO_ROLE.keys()):
         # heavy: app.services pulls the provider stack + lancedb (~70 ms)
         _reload_changed_roles(changed_keys)
     if "token_sizing" in changed_keys:
@@ -435,7 +455,11 @@ def apply_settings_update(
     reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
-    return SettingsUpdateResult(updated=sorted(updates), reindex_required=reindex_required)
+    return SettingsUpdateResult(
+        updated=sorted(updates),
+        reindex_required=reindex_required,
+        warnings=_update_warnings(set(updates)),
+    )
 
 
 def apply_ephemeral_model_swap(field: str, ref: str) -> None:
@@ -531,8 +555,7 @@ def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> Setti
     those fields rather than failing the whole batch.
     """
     for key in keys:
-        if not _is_settable(key):
-            raise ValueError(f"Unknown or read-only setting: {key}")
+        _refuse_unsettable(key)
         if key in _NO_RESET_FIELDS and not skip_unresettable:
             raise ValueError(
                 f"'{key}' has no resettable default; pass an explicit value via settings_set."

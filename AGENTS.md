@@ -77,6 +77,7 @@ All settings override via environment variables:
 - `LILBEE_ADAPTIVE_THRESHOLD` — enable adaptive threshold widening (default: `false`). When true, widens distance threshold if too few results found
 - `LILBEE_AUTO_SYNC` — run a sync before `lilbee ask` (default: `true`); set to `false` on large static corpora to skip the pre-answer re-hash
 - `LILBEE_VISION_MODEL` — vision OCR model, used instead of Tesseract when set (default: none).
+- `LILBEE_OCR` — scanned pages: `auto` reads each page without usable text, and every page of a file with almost no text in all (default), `all` reads every page of every file, `off` skips them.
 - `LILBEE_RERANKER_MODEL`: cross-encoder model for result reranking (default: none, reranking off).
 - For `LILBEE_VISION_MODEL` and `LILBEE_RERANKER_MODEL`, an empty value (in the env var or in `config.toml`) clears the model, and an unset variable leaves `config.toml` in place.
 - `LILBEE_RERANKER_TYPE` — reranker serving mode: `auto` (default), `cross_encoder`, or `llm`.
@@ -95,7 +96,7 @@ All settings override via environment variables:
 - `LILBEE_LOG_LEVEL` — logging level: DEBUG, INFO, WARNING, ERROR (default: `WARNING`)
 - `LILBEE_NO_SPLASH` — set to any non-empty value to suppress the startup bee animation
 
-CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr-timeout`, and `--log-level`.
+CLI also accepts `--model` / `-m` for chat model, `--data-dir` / `-d`, `--ocr` (`auto`, `all` or `off`, on add/sync/rebuild), `--ocr-timeout`, and `--log-level`.
 
 ## Code Quality Rules
 

@@ -32,7 +32,7 @@ IMAGE_CONTENT_TYPE = "image"
 MARKDOWN_OUTPUT = "markdown"
 MARKDOWN_MIME = "text/markdown"
 # Sync summary note for a skipped document whose extraction ran with OCR off.
-SKIPPED_OCR_OFF_NOTE = ": OCR is off (enable_ocr = false)"
+SKIPPED_OCR_OFF_NOTE = ": ocr is off"
 
 
 @dataclass(frozen=True)

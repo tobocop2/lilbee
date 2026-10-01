@@ -52,6 +52,65 @@ class TestLoad:
         assert settings.load(tmp_path) == {"chat_model": "llama3"}
 
 
+class TestRetiredOcrKeysOnDisk:
+    """config.toml keys from before the ocr setting read as ocr and are replaced on write."""
+
+    _VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ("enable_ocr = false\n", "off"),
+            (f'enable_ocr = false\nvision_model = "{_VISION}"\n', "auto"),
+            ("enable_ocr = true\n", "auto"),
+            ("force_ocr = true\n", "all"),
+        ],
+    )
+    def test_load_reads_them_as_ocr(self, tmp_path, monkeypatch, toml, expected):
+        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+        loaded = settings.load(tmp_path)
+        assert loaded["ocr"] == expected
+        assert "enable_ocr" not in loaded
+        assert "force_ocr" not in loaded
+
+    def test_the_vision_model_env_var_decides_over_config_toml(self, tmp_path, monkeypatch):
+        (tmp_path / "config.toml").write_text(
+            f'enable_ocr = false\nvision_model = "{self._VISION}"\n', encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_VISION_MODEL", "")
+        assert settings.load(tmp_path)["ocr"] == "off"
+        monkeypatch.delenv("LILBEE_VISION_MODEL")
+        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+        monkeypatch.setenv("LILBEE_VISION_MODEL", self._VISION)
+        assert settings.load(tmp_path)["ocr"] == "auto"
+
+    def test_the_first_settings_write_replaces_them(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "top_k", 5)
+        (tmp_path / "config.toml").write_text("enable_ocr = false\ntop_k = 5\n", encoding="utf-8")
+        appset.apply_settings_update({"top_k": 7})
+        written = (tmp_path / "config.toml").read_text(encoding="utf-8")
+        assert 'ocr = "off"' in written
+        assert "enable_ocr" not in written
+        assert "top_k = 7" in written
+
+    def test_the_data_dir_overlay_applies_the_mode(self, tmp_path, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import OcrMode
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+        monkeypatch.delenv("LILBEE_OCR", raising=False)
+        monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
+        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+        settings.overlay_persisted_settings(tmp_path)
+        assert cfg.ocr is OcrMode.OFF
+
+
 class TestSave:
     def test_save_creates_file(self, tmp_path):
         settings.save(tmp_path, {"chat_model": "llama3"})
@@ -459,7 +518,7 @@ class TestOcrPageSelectionSettings:
         assert SETTINGS_MAP["ocr_scan_confidence"].type is float
         assert SETTINGS_MAP["force_ocr_pages"].type is list
         for key in ("ocr_strategy", "ocr_scan_confidence", "force_ocr_pages"):
-            assert SETTINGS_MAP[key].group == "Ingest"
+            assert SETTINGS_MAP[key].group == "OCR-Tuning"
             assert key in WRITABLE_CONFIG_FIELDS
         assert get_default("ocr_strategy") == "auto"
         assert get_default("ocr_scan_confidence") == 0.7
@@ -552,7 +611,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is int
-        assert defn.group == "Ingest"
+        assert defn.group == "OCR-Tuning"
         assert get_default("vision_ocr_max_tokens") == 4096
 
     def test_vision_ocr_concurrency_in_settings_map(self):
@@ -561,7 +620,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is int
-        assert defn.group == "Ingest"
+        assert defn.group == "OCR-Tuning"
         assert get_default("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):

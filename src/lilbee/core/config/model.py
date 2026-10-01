@@ -9,10 +9,11 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
+from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
@@ -33,13 +34,19 @@ from .enums import (
     FtsLanguage,
     KvCacheType,
     LlmProvider,
+    OcrMode,
     OcrPageStrategy,
     ReasoningMode,
     RerankerType,
     TableModel,
     WikiEntityMode,
 )
-from .parsing import parse_bool
+from .parsing import (
+    migrate_ocr_keys,
+    parse_bool,
+    refused_value_fallback,
+    warn_retired_ocr_keys,
+)
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -250,11 +257,8 @@ class Config(BaseSettings):
             "Use a .lilbeeignore file for per-library patterns"
         ),
     )
-    # OCR for scanned PDFs via vision-capable chat model.
-    # None = auto-detect (use OCR if chat model is vision-capable).
-    # True = force OCR regardless of detection.
-    # False = disable OCR entirely.
-    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+    # Which pages OCR reads; vision_model picks the engine (set: vision, empty: Tesseract).
+    ocr: OcrMode = ConfigField(default=OcrMode.AUTO, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
     # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
     # needs matching headroom here.
@@ -1129,31 +1133,6 @@ class Config(BaseSettings):
             valid = ", ".join(repr(m.value) for m in ChatMode)
             raise ValueError(f"chat_mode must be one of {{{valid}}}, got {v!r}") from exc
 
-    @field_validator("enable_ocr", mode="before")
-    @classmethod
-    def _parse_enable_ocr(cls, v: Any) -> bool | None:
-        """Parse enable_ocr from env var string or direct value.
-
-        Accepts: true/false/1/0/yes/no (case-insensitive), empty string
-        or None for auto-detect.
-        """
-        if v is None:
-            return None
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
-            try:
-                return parse_bool(v)
-            except ValueError:
-                # bool() on a non-empty string is True, so falling through here
-                # turned an unparseable value into "on". Warn and auto-detect,
-                # matching the sibling validators.
-                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
-                return None
-        return bool(v)
-
     @field_validator("ocr_language", mode="before")
     @classmethod
     def _parse_ocr_language(cls, v: Any) -> list[str]:
@@ -1400,6 +1379,15 @@ class Config(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_retired_ocr_keys(cls, data: Any) -> Any:
+        """Replace stored enable_ocr and force_ocr values with the ocr mode they stand for."""
+        if not isinstance(data, dict):
+            return data
+        warn_retired_ocr_keys(data)
+        return migrate_ocr_keys(data, str(data.get("vision_model") or ""))
+
+    @model_validator(mode="before")
+    @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
         from lilbee.core.system import (
             canonical_data_root,
@@ -1533,10 +1521,29 @@ class _PlainEnvSource:
         return result
 
 
+def _enum_fields(settings_cls: type[BaseSettings]) -> dict[str, type[Enum]]:
+    """The fields of *settings_cls* typed as an enum, by name."""
+    return {
+        name: field.annotation
+        for name, field in settings_cls.model_fields.items()
+        if isinstance(field.annotation, type) and issubclass(field.annotation, Enum)
+    }
+
+
+def _accepts(probe: BaseSettings, key: str, value: Any) -> bool:
+    """Whether the field's own validators accept *value*, assigned on the throwaway *probe*."""
+    try:
+        type(probe).__pydantic_validator__.validate_assignment(probe, key, value)
+    except ValidationError:
+        return False
+    return True
+
+
 class _TomlSource:
     """Custom pydantic-settings source that reads config.toml."""
 
     def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
+        self._settings_cls = settings_cls
         self._path = path
 
     def __call__(self) -> dict[str, Any]:
@@ -1551,7 +1558,22 @@ class _TomlSource:
         # An empty string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
-        return {k: v for k, v in data.items() if value_is_set(k, v)}
+        return self._without_invalid_enums({k: v for k, v in data.items() if value_is_set(k, v)})
+
+    def _without_invalid_enums(self, values: dict[str, Any]) -> dict[str, Any]:
+        """*values* less each enum value the field refuses, so one typo keeps the rest."""
+        enums = _enum_fields(self._settings_cls)
+        probe = self._settings_cls.model_construct()
+        invalid = [key for key in enums if key in values and not _accepts(probe, key, values[key])]
+        for key in invalid:
+            log.warning(
+                "config.toml: %s = %r is not one of %s; %s",
+                key,
+                values[key],
+                ", ".join(str(member.value) for member in enums[key]),
+                refused_value_fallback(key, values),
+            )
+        return {key: value for key, value in values.items() if key not in invalid}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:

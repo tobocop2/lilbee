@@ -19,6 +19,7 @@ from xberg import Metadata
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.server import auth as _auth_mod
 from tests._async_wait import poll_until
 from tests.server.conftest import parse_sse_events as _parse_sse_events
@@ -409,24 +410,56 @@ class TestAddEndpoint:
         assert file_start["total_files"] >= 1
         assert file_start["current_file"] >= 1
 
-    async def test_add_with_enable_ocr(self, mock_extract_file, isolated_env, tmp_path):
-        """enable_ocr parameter is temporarily set on cfg during sync."""
+    async def test_add_with_ocr_applies_to_that_request_only(
+        self, mock_extract_file, isolated_env, tmp_path
+    ):
+        """The ocr field overrides the setting during this add's extraction only."""
+        from lilbee.data.extract.document import _effective_ocr_mode
         from lilbee.server.app import create_app
 
-        src = tmp_path / "doc.txt"
-        src.write_text("Content for enable_ocr test.")
-        original_ocr = cfg.enable_ocr
+        src = tmp_path / "doc.pdf"
+        src.write_bytes(b"%PDF-1.4 content")
+        cfg.ocr = OcrMode.AUTO
+        observed: list[OcrMode] = []
 
+        async def _capture(*args, **kwargs):
+            observed.append(_effective_ocr_mode())
+            return _make_xberg_result()
+
+        mock_extract_file.side_effect = _capture
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post(
                 "/api/add",
-                json={"paths": [str(src)], "enable_ocr": True},
+                json={"paths": [str(src)], "ocr": "all"},
                 headers=_auth_headers(),
             )
 
         assert resp.status_code == 201
-        # enable_ocr should be restored after the call
-        assert cfg.enable_ocr == original_ocr
+        assert observed and set(observed) == {OcrMode.ALL}
+        assert cfg.ocr is OcrMode.AUTO
+
+    @pytest.mark.parametrize(
+        ("route", "body", "detail"),
+        [
+            ("/api/add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
+            ("/api/add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is replaced by ocr"),
+            ("/api/add", {"paths": ["x"], "force_ocr": True}, "force_ocr is replaced by ocr"),
+            ("/api/sync", {"ocr": "some"}, "'auto', 'all' or 'off'"),
+            ("/api/sync", {"enable_ocr": False}, "enable_ocr is replaced by ocr"),
+            ("/api/sync", {"force_ocr": True}, "force_ocr is replaced by ocr"),
+        ],
+    )
+    async def test_a_bad_or_retired_ocr_field_is_a_400(
+        self, mock_extract_file, isolated_env, route, body, detail
+    ):
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(route, json=body, headers=_auth_headers())
+
+        assert resp.status_code == 400
+        assert detail in resp.text
+        mock_extract_file.assert_not_called()
 
     async def test_add_emits_heartbeat_during_slow_sync(
         self, mock_extract_file, isolated_env, tmp_path
@@ -543,14 +576,14 @@ class TestIngestStreamTerminalEvent:
     async def test_upload_ocr_options_reach_the_extraction_config(
         self, mock_extract_file, isolated_env
     ):
-        """POST /api/add/upload?enable_ocr=...&ocr_timeout=... overrides OCR for this upload."""
-        from lilbee.data.extract.document import _effective_enable_ocr, _effective_ocr_timeout
+        """POST /api/add/upload?ocr=...&ocr_timeout=... overrides OCR for this upload."""
+        from lilbee.data.extract.document import _effective_ocr_mode, _effective_ocr_timeout
         from lilbee.server.app import create_app
 
         observed: dict[str, object] = {}
 
         async def _capture(*args, **kwargs):
-            observed["enable_ocr"] = _effective_enable_ocr()
+            observed["ocr"] = _effective_ocr_mode()
             observed["ocr_timeout"] = _effective_ocr_timeout()
             return _make_xberg_result()
 
@@ -559,13 +592,44 @@ class TestIngestStreamTerminalEvent:
         async with AsyncTestClient(create_app()) as client:
             resp = await client.post(
                 "/api/add/upload",
-                params={"enable_ocr": "false", "ocr_timeout": "17"},
+                params={"ocr": "off", "ocr_timeout": "17"},
                 files=[("data", ("scan.pdf", b"content", "application/pdf"))],
                 headers=_auth_headers(),
             )
 
         assert resp.status_code == 201
-        assert observed == {"enable_ocr": False, "ocr_timeout": 17.0}
+        assert observed == {"ocr": OcrMode.OFF, "ocr_timeout": 17.0}
+
+    @pytest.mark.parametrize(
+        ("params", "detail"),
+        [
+            ({"ocr": "some"}, "ocr must be one of auto, all, off; got 'some'"),
+            (
+                {"enable_ocr": "false"},
+                "enable_ocr is replaced by ocr; set ocr to one of auto, all, off",
+            ),
+            (
+                {"force_ocr": "true"},
+                "force_ocr is replaced by ocr; set ocr to one of auto, all, off",
+            ),
+        ],
+    )
+    async def test_upload_refuses_a_bad_or_retired_ocr_query(
+        self, mock_extract_file, isolated_env, params, detail
+    ):
+        from lilbee.server.app import create_app
+
+        async with AsyncTestClient(create_app()) as client:
+            resp = await client.post(
+                "/api/add/upload",
+                params=params,
+                files=[("data", ("scan.pdf", b"content", "application/pdf"))],
+                headers=_auth_headers(),
+            )
+
+        assert resp.status_code == 400
+        assert detail in resp.text
+        mock_extract_file.assert_not_called()
 
     async def test_upload_rejects_negative_ocr_timeout(self, mock_extract_file, isolated_env):
         """A negative ocr_timeout is a 400; extraction never runs."""

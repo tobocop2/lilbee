@@ -4,6 +4,8 @@ from enum import StrEnum
 
 from pydantic import BaseModel
 
+from lilbee.core.config.enums import OcrMode
+
 
 class EventType(StrEnum):
     """Progress event types emitted during sync/ingest.
@@ -104,11 +106,11 @@ class OcrBackendUsed(StrEnum):
     VISION = "vision"
 
     @classmethod
-    def chosen(cls, enable_ocr: bool | None, vision_model: str) -> "OcrBackendUsed":
-        """The backend a configuration picks: the vision model, else Tesseract unless OCR is off."""
-        if vision_model:
-            return cls.VISION
-        return cls.NONE if enable_ocr is False else cls.TESSERACT
+    def chosen(cls, ocr: OcrMode, vision_model: str) -> "OcrBackendUsed":
+        """The backend a configuration picks: none when OCR is off, else vision or Tesseract."""
+        if ocr is OcrMode.OFF:
+            return cls.NONE
+        return cls.VISION if vision_model else cls.TESSERACT
 
 
 _EXTRACT_STEP_NAMES: dict[OcrBackendUsed, str] = {
@@ -143,8 +145,7 @@ class ExtractEvent(BaseModel):
 class OcrStartEvent(BaseModel):
     """Emitted once when Tesseract starts OCR on a file, which reports no per-page progress.
 
-    ``total_pages`` is the file's page count, read before extraction. Tesseract
-    OCRs the pages that lack a text layer, which may be fewer.
+    ``total_pages`` is the file's page count, read before extraction.
     """
 
     file: str
@@ -153,10 +154,7 @@ class OcrStartEvent(BaseModel):
     @property
     def status_text(self) -> str:
         """The progress line for this event, naming the file's page count."""
-        return (
-            f"Tesseract OCR on the scanned pages of {self.file} "
-            f"({self.total_pages} pages in the file)"
-        )
+        return f"Tesseract OCR on {self.file} ({self.total_pages} pages in the file)"
 
 
 class EmbedEvent(BaseModel):
