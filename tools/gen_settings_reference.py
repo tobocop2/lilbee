@@ -110,6 +110,14 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         False,
     ),
     "LILBEE_NO_SPLASH": ("Set to any value to suppress the startup splash animation", False),
+    "LILBEE_ENABLE_OCR": (
+        "Retired: lilbee refuses to start while it is set. Use `LILBEE_OCR`",
+        False,
+    ),
+    "LILBEE_OCR_FORCE": (
+        "Retired: lilbee refuses to start while it is set. Use `LILBEE_OCR`",
+        False,
+    ),
     "LILBEE_INGEST_CONCURRENCY": (
         "Extraction-admission mode: `static` (the default), "
         "`adaptive-conservative`, or `adaptive-aggressive`",

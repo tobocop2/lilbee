@@ -1369,6 +1369,77 @@ class TestDefaultRequiresTerminal:
         assert called == [{}]
 
 
+class TestRetiredOcrEnvVarsAreRefused:
+    """LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE stop every entry with one line naming LILBEE_OCR."""
+
+    _REFUSAL = "replaced by LILBEE_OCR; set LILBEE_OCR to one of auto, all, off"
+
+    @pytest.mark.parametrize("env_var", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
+    def test_a_command_is_refused(self, tmp_path, env_var):
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(app, ["status", "-d", str(tmp_path)], env={env_var: "false"})
+        assert result.exit_code == 1
+        assert f"Error: {env_var} is {self._REFUSAL}" in result.output
+        status.assert_not_called()
+
+    def test_json_mode_refuses_with_a_json_error(self, tmp_path):
+        result = runner.invoke(
+            app, ["--json", "status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
+        )
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {"error": f"LILBEE_OCR_FORCE is {self._REFUSAL}"}
+
+    def test_both_are_named_in_one_line(self, tmp_path):
+        env = {"LILBEE_ENABLE_OCR": "false", "LILBEE_OCR_FORCE": "1"}
+        result = runner.invoke(app, ["status", "-d", str(tmp_path)], env=env)
+        assert result.exit_code == 1
+        assert f"LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE are {self._REFUSAL}" in result.output
+
+    def test_an_empty_value_is_unset(self, tmp_path):
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(
+                app, ["status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": ""}
+            )
+        assert result.exit_code == 0
+        status.assert_called_once()
+
+    def test_serve_is_refused_before_the_server_starts(self, tmp_path):
+        with mock.patch("lilbee.cli.commands.servers.setup_server_logging") as server_logging:
+            result = runner.invoke(
+                app, ["serve", "-d", str(tmp_path)], env={"LILBEE_ENABLE_OCR": "false"}
+            )
+        assert result.exit_code == 1
+        assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in result.output
+        server_logging.assert_not_called()
+
+    def test_the_tui_is_refused_before_it_starts(self, monkeypatch, capsys):
+        from lilbee.cli.app import _default
+
+        monkeypatch.setenv("LILBEE_ENABLE_OCR", "false")
+        ctx = mock.MagicMock()
+        ctx.invoked_subcommand = None
+        with (
+            mock.patch("lilbee.cli.tui.run_tui") as run_tui,
+            mock.patch("sys.stdin") as stdin,
+            mock.patch("sys.stdout") as stdout,
+            pytest.raises(SystemExit) as exited,
+        ):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            _default(
+                ctx,
+                data_dir=None,
+                model=None,
+                json_output=False,
+                use_global=False,
+                log_level=None,
+                show_version=False,
+            )
+        assert exited.value.code == 1
+        assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in capsys.readouterr().err
+        run_tui.assert_not_called()
+
+
 class TestChatLaunchesTui:
     """The chat subcommand launches TUI when on a TTY."""
 
