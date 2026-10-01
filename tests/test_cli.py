@@ -1444,10 +1444,11 @@ class TestRetiredOcrEnvVarsAreRefused:
         assert result.exit_code == 1
         assert f"LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE are {self._REFUSAL}" in result.output
 
-    def test_an_empty_value_is_unset(self, tmp_path):
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_a_blank_value_is_unset(self, tmp_path, value):
         with mock.patch("lilbee.cli.commands.meta.render_status") as status:
             result = runner.invoke(
-                app, ["status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": ""}
+                app, ["status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": value}
             )
         assert result.exit_code == 0
         status.assert_called_once()
