@@ -40,13 +40,13 @@ def _qa_requirement(name: str) -> Requirement:
 
 
 def test_litellm_extra_stops_before_the_next_major() -> None:
-    # 1.98.0 ships cp310-abi3 wheels for macOS (x86_64/arm64), Windows, and
+    # 1.103.2 ships cp310-abi3 wheels for macOS (x86_64/arm64), Windows, and
     # manylinux, so the maturin-build wheel gap that capped the line at <1.92
-    # is closed. The <1.99 cap only keeps the next line's prereleases off the
+    # is closed. The <1.104 cap only keeps the next line's prereleases off the
     # --prerelease=allow channel.
     req = _extra_requirement("litellm", "litellm")
-    assert not req.specifier.contains("1.99.0rc1", prereleases=True)
-    assert not req.specifier.contains("1.99.0")
+    assert not req.specifier.contains("1.104.0rc1", prereleases=True)
+    assert not req.specifier.contains("1.104.0")
 
 
 def test_litellm_extra_admits_locked_stable() -> None:
@@ -54,6 +54,7 @@ def test_litellm_extra_admits_locked_stable() -> None:
     assert req.specifier.contains("1.89.1")
     assert req.specifier.contains("1.91.0")
     assert req.specifier.contains("1.98.0")
+    assert req.specifier.contains("1.103.2")
 
 
 def test_mcp_rejects_the_line_without_the_mcpserver_module() -> None:
