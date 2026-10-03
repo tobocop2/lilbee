@@ -386,8 +386,9 @@ def discover_corpus(shard: ShardId | None = None, rules: IgnoreRules | None = No
 
 def discover_dir(directory: Path) -> CorpusScan:
     """Scan *directory* as ``add`` would walk it, with the ``.lilbeeignore`` rules applied."""
-    rules = IgnoreRules.for_corpus()
-    ignore_dirs = active_config().ignore_dirs
+    config = active_config()
+    rules = IgnoreRules.for_corpus(config.data_root)
+    ignore_dirs = config.ignore_dirs
     return _as_scan(_walk_root(directory, None, ignore_dirs, _ScanProgress(), rules))
 
 
