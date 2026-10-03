@@ -537,8 +537,10 @@ def test_two_identical_tags_in_one_span_are_each_demoted():
 
 
 _SIZE_STEP = 16
-# Linear growth over a 16x step is 16x and quadratic is 256x; 64x sits 4x from both,
-# so a loaded runner's noise cannot reach either side.
+# The step is 16x in input size. Linear code reads about 16x and quadratic code reads
+# 256x in theory; the limit of 64x catches quadratic growth. Measured quadratic
+# regressions read 72x to 434x, so the weakest case (the HTML block) clears it narrowly.
+# The limit does not detect n log n or n^1.5 growth.
 _LINEAR_GROWTH_LIMIT = 64.0
 
 
