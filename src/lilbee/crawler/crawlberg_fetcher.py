@@ -31,7 +31,7 @@ log = logging.getLogger(__name__)
 
 _Network = TypeVar("_Network", ipaddress.IPv4Network, ipaddress.IPv6Network)
 
-# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.8.0, DEFAULT_DENY_NET_CIDRS).
+# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.9.0, DEFAULT_DENY_NET_CIDRS).
 CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -42,6 +42,7 @@ CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, 
         "169.254.0.0/16",
         "0.0.0.0/8",
         "224.0.0.0/4",
+        "240.0.0.0/4",
         "100.64.0.0/10",
         "::1/128",
         "::/128",

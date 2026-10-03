@@ -14,6 +14,7 @@ _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("192.168.0.0/16"),
     ipaddress.ip_network("169.254.0.0/16"),
     ipaddress.ip_network("100.64.0.0/10"),  # RFC 6598 shared / CGNAT
+    ipaddress.ip_network("240.0.0.0/4"),  # RFC 1112 reserved; holds broadcast 255.255.255.255
     ipaddress.ip_network("::/128"),  # IPv6 unspecified
     ipaddress.ip_network("::1/128"),
     ipaddress.ip_network("fe80::/10"),  # IPv6 link-local

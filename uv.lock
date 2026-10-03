@@ -679,14 +679,15 @@ toml = [
 
 [[package]]
 name = "crawlberg"
-version = "1.8.0+lilbee.56d9989"
-source = { registry = "https://github.com/tobocop2/crawlberg/releases/expanded_assets/v1.8.0%2Blilbee.56d9989" }
+version = "1.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/60/5d/29449d533103f4bf6ac34c64725a9645cd674e5de431784511995013a5e3/crawlberg-1.9.0.tar.gz", hash = "sha256:98de42091853a35af29301b2e32a791267145a0fdb92df36be59c89379236bf4", size = 118703, upload-time = "2026-10-03T21:18:43.508Z" }
 wheels = [
-    { url = "https://github.com/tobocop2/crawlberg/releases/download/v1.8.0%2Blilbee.56d9989/crawlberg-1.8.0+lilbee.56d9989-cp310-abi3-macosx_11_0_arm64.whl" },
-    { url = "https://github.com/tobocop2/crawlberg/releases/download/v1.8.0%2Blilbee.56d9989/crawlberg-1.8.0+lilbee.56d9989-cp310-abi3-macosx_11_0_x86_64.whl" },
-    { url = "https://github.com/tobocop2/crawlberg/releases/download/v1.8.0%2Blilbee.56d9989/crawlberg-1.8.0+lilbee.56d9989-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl" },
-    { url = "https://github.com/tobocop2/crawlberg/releases/download/v1.8.0%2Blilbee.56d9989/crawlberg-1.8.0+lilbee.56d9989-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl" },
-    { url = "https://github.com/tobocop2/crawlberg/releases/download/v1.8.0%2Blilbee.56d9989/crawlberg-1.8.0+lilbee.56d9989-cp310-abi3-win_amd64.whl" },
+    { url = "https://files.pythonhosted.org/packages/9b/0c/13279317659310de2b886177c6a237a19ad61ff92951b46fd02ab9bca7b8/crawlberg-1.9.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:d516a317e7f76e595ae11cad5bd12b2702d6c24f492d97a27680819f09b29ccf", size = 11265187, upload-time = "2026-10-03T21:18:33.099Z" },
+    { url = "https://files.pythonhosted.org/packages/50/56/a95fa09d138f9597916c2db6cb32066c5ec205f7bdd9314492938f263a26/crawlberg-1.9.0-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:fcb76c7a96000c5cb190ddba636d654b93ab29f70f451cf9163ea00947b3b1f1", size = 11717811, upload-time = "2026-10-03T21:18:35.119Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/8e/fe5c6520bd37a84311196a6834288805ee9c63696cab1cc8545a3bd3d1b3/crawlberg-1.9.0-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:30eb73895949eb913383940c4682aed5bae98dc7f0c438ca208f3edc372ba97e", size = 12366780, upload-time = "2026-10-03T21:18:37.137Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/0f/576d295fbb84d20f89711f7cd2a1467341ec32f6ee4d61328d9582fb8413/crawlberg-1.9.0-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:d76bee35404e27ffe3709e1d6a8a00743f40ddd072f910c58724f3790aabc2cc", size = 12311735, upload-time = "2026-10-03T21:18:39.332Z" },
+    { url = "https://files.pythonhosted.org/packages/b8/80/86eabee4b67393e93ab288becb0df682dd8f82670be45776b69058cd729a/crawlberg-1.9.0-cp310-abi3-win_amd64.whl", hash = "sha256:e658efa7fc1001080247e32fdced3f66ae9e7683c38882ac895e7cace59b81f3", size = 18514349, upload-time = "2026-10-03T21:18:41.57Z" },
 ]
 
 [[package]]
@@ -1158,6 +1159,19 @@ wheels = [
 ]
 
 [[package]]
+name = "h2"
+version = "4.4.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "hpack" },
+    { name = "hyperframe" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e7/85/7c366e69d84c17bb778fe41419e1fbcce3033d5b7ce29bbffff0a98b859f/h2-4.4.1.tar.gz", hash = "sha256:4e866ffb1a869ae14dd9b5e6beb5c24a13da0495ad72b65925ded182521c1516", size = 2157281, upload-time = "2026-08-03T11:45:09.509Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7e/22/e85faf23bd72a92d1921e37d674ca56eb298a3c8be31fdecef0ff2b3aaac/h2-4.4.1-py3-none-any.whl", hash = "sha256:0e25f1462b23c9cb82d9eb02e28bc706dac2a68cb457c6a0d74d63c8a2a5d0e6", size = 62636, upload-time = "2026-08-03T11:44:59.164Z" },
+]
+
+[[package]]
 name = "hf-xet"
 version = "1.5.2"
 source = { registry = "https://pypi.org/simple" }
@@ -1179,6 +1193,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/07/a9/c050bc2743a2bcd68928bfee157b08681667a164a24ec95fbfcfcd717e08/hf_xet-1.5.2-cp38-abi3-musllinux_1_2_x86_64.whl", hash = "sha256:cde8cd167126bb6109b2ceb19b844433a4988643e8f3e01dd9dd0e4a34535097", size = 4636716, upload-time = "2026-07-16T17:29:51.62Z" },
     { url = "https://files.pythonhosted.org/packages/e9/f8/68b01c5c2edb56ac9a67b3d076ffddcb90867abaee923923eb34e7a14e76/hf_xet-1.5.2-cp38-abi3-win_amd64.whl", hash = "sha256:ecf63d1cb69a9a7319910f8f83fcf9b46e7a32dfcf4b8f8eeddb55f647306e65", size = 3988373, upload-time = "2026-07-16T17:29:53.395Z" },
     { url = "https://files.pythonhosted.org/packages/39/c6/988383e9dc17294d536fcbcd6fd16eed882e411ad16c954984a53e47b09c/hf_xet-1.5.2-cp38-abi3-win_arm64.whl", hash = "sha256:1da28519496eb7c8094c11e4d25509b4a468457a0302d58136099db2fd9a671d", size = 3816957, upload-time = "2026-07-16T17:29:54.991Z" },
+]
+
+[[package]]
+name = "hpack"
+version = "4.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/26/5b/fcabf6028144a8723726318b07a32c2f3314acdff6265743cf08a344b18e/hpack-4.2.0.tar.gz", hash = "sha256:0895cfa3b5531fc65fe439c05eb65144f123bf7a394fcaa56aa423548d8e45c0", size = 51300, upload-time = "2026-06-23T18:34:46.667Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/71/b4/4a9fcfb2aef6ba44d9073ecd301443aa00b3dac95de5619f2a7de7ec8a91/hpack-4.2.0-py3-none-any.whl", hash = "sha256:858ac0b02280fa582b5080d68db0899c62a80375e0e5413a74970c5e518b6986", size = 34246, upload-time = "2026-06-23T18:34:45.472Z" },
 ]
 
 [[package]]
@@ -1220,6 +1243,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/b1/df/48c586a5fe32a0f01324ee087459e112ebb7224f646c0b5023f5e79e9956/httpx-0.28.1.tar.gz", hash = "sha256:75e98c5f16b0f35b567856f597f06ff2270a374470a5c2392242528e3e3e42fc", size = 141406, upload-time = "2024-12-06T15:37:23.222Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2a/39/e50c7c3a983047577ee07d2a9e53faf5a69493943ec3f6a384bdc792deb2/httpx-0.28.1-py3-none-any.whl", hash = "sha256:d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad", size = 73517, upload-time = "2024-12-06T15:37:21.509Z" },
+]
+
+[package.optional-dependencies]
+http2 = [
+    { name = "h2" },
 ]
 
 [[package]]
@@ -1266,6 +1294,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/3e/9b/ddf3d02a8681f1b9ce52fda03d755dad6b74c4f8172304c4c8d2975450f9/huggingface_hub-1.27.0.tar.gz", hash = "sha256:c1fed40ea82a6b41b477f5243546549b792ae0a93abcea608cff66089bf8f8df", size = 942668, upload-time = "2026-08-07T12:48:05.161Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/de/d8/95b735e183957c1f26d94c52977f09d466d55119cbbc1558ea4975e4c216/huggingface_hub-1.27.0-py3-none-any.whl", hash = "sha256:7df6827c2f956c60fbaa64646e979e566db76f619dd0a9729dfb8c5a3eb4f68d", size = 784926, upload-time = "2026-08-07T12:48:02.905Z" },
+]
+
+[[package]]
+name = "hyperframe"
+version = "6.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/02/e7/94f8232d4a74cc99514c13a9f995811485a6903d48e5d952771ef6322e30/hyperframe-6.1.0.tar.gz", hash = "sha256:f630908a00854a7adeabd6382b43923a4c4cd4b821fcb527e6ab9e15382a3b08", size = 26566, upload-time = "2025-01-22T21:41:49.302Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/48/30/47d0bf6072f7252e6521f3447ccfa40b421b6824517f82854703d0f5a98b/hyperframe-6.1.0-py3-none-any.whl", hash = "sha256:b03380493a519fce58ea5af42e4a42317bf9bd425596f7a0835ffce80f1a42e5", size = 13007, upload-time = "2025-01-22T21:41:47.295Z" },
 ]
 
 [[package]]
@@ -1720,7 +1757,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cachetools", specifier = ">=7.1.4" },
-    { name = "crawlberg", marker = "extra == 'crawler'", specifier = "==1.8.0+lilbee.56d9989", index = "https://github.com/tobocop2/crawlberg/releases/expanded_assets/v1.8.0%2Blilbee.56d9989" },
+    { name = "crawlberg", marker = "extra == 'crawler'", specifier = ">=1.9.0" },
     { name = "diskcache", specifier = ">=5.6.1" },
     { name = "filelock", specifier = ">=3.29.5,<4.1" },
     { name = "gguf", specifier = ">=0.19" },
