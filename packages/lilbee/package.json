@@ -55,6 +55,6 @@
     "privacy"
   ],
   "optionalDependencies": {
-    "undici": "^6.19.0"
+    "undici": "^6.28.1"
   }
 }
