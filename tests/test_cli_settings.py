@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from lilbee.app import services as svc_mod
+from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.cli.app import app
 from lilbee.core.config import cfg
 from tests.conftest import make_mock_services
@@ -95,6 +96,17 @@ def test_list_reflects_a_profile_value_and_its_source(project):
     row = {e["key"]: e for e in _json(project, "list")["settings"]}["top_k"]
     assert row["value"] == 77
     assert row["source"] == "profile"
+
+
+def test_list_and_get_report_which_settings_are_advanced(project):
+    advanced_by_key = {e["key"]: e["advanced"] for e in _json(project, "list")["settings"]}
+    assert advanced_by_key["ocr_timeout"] is True
+    assert advanced_by_key["top_k"] is False
+    assert {key for key, advanced in advanced_by_key.items() if advanced} == {
+        key for key in advanced_by_key if key in SETTINGS_MAP and SETTINGS_MAP[key].advanced
+    }
+    assert _json(project, "get", "ocr_timeout")["advanced"] is True
+    assert _json(project, "get", "top_k")["advanced"] is False
 
 
 def test_list_unknown_group_is_an_error(project):
