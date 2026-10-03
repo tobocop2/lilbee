@@ -459,6 +459,7 @@ class SettingValueResponse(BaseModel):
     choices: list[str] | None
     reindex_required: bool
     source: SettingSource
+    advanced: bool
 
     @classmethod
     def from_info(cls, info: SettingInfo) -> SettingValueResponse:
@@ -473,6 +474,7 @@ class SettingValueResponse(BaseModel):
             choices=list(info.choices) if info.choices else None,
             reindex_required=info.reindex_required,
             source=info.source,
+            advanced=info.advanced,
         )
 
 

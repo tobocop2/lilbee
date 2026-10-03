@@ -71,6 +71,7 @@ def test_list_shows_every_setting_in_the_group_with_value_and_source(project):
         "choices": None,
         "reindex_required": False,
         "source": "built_in",
+        "advanced": False,
     }
 
 
