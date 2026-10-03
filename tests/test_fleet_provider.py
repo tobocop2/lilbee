@@ -112,12 +112,16 @@ def _no_real_probe(monkeypatch, tmp_path_factory):
 
     capture_plan_probe and placeable_total_vram both resolve the engine binary
     and spawn device probes; on a host without the bundled engine (CI) they raise,
-    and on a dev box they silently probe the real GPUs. machine_engine_dir would
-    otherwise let parallel tests collide on one real directory. Tests that
-    exercise these override the stubs with their own recorders; placeability is
-    stubbed true so a configured role is placeable unless a test says otherwise.
+    and on a dev box they silently probe the real GPUs. refresh_plan_devices
+    spawns one too when an earlier test in the worker left a snapshot behind, and
+    that spawn never returns under a test that replaces threading.Thread.
+    machine_engine_dir would otherwise let parallel tests collide on one real
+    directory. Tests that exercise these override the stubs with their own
+    recorders; placeability is stubbed true so a configured role is placeable
+    unless a test says otherwise.
     """
     monkeypatch.setattr(planning_mod, "capture_plan_probe", lambda: None)
+    monkeypatch.setattr(planning_mod, "refresh_plan_devices", lambda: None)
     monkeypatch.setattr(planning_mod, "assert_engine_probeable", lambda: None)
     monkeypatch.setattr(planning_mod, "placeable_total_vram", lambda: 0)
     monkeypatch.setattr(planning_mod, "role_model_placeable", lambda _role, _ref, _vram: True)
