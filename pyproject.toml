@@ -43,7 +43,7 @@ dependencies = [
     "xberg>=1.2.7",
     # The engine user-lock protocol leans on release(), is_singleton reentrancy
     # and the SoftFileLock fallback; the ceiling is the line verified against it.
-    "filelock>=3.29.5,<3.33",
+    "filelock>=3.29.5,<4.1",
     "tree-sitter-language-pack>=1.8.0,<2.0",
     "typer>=0.12",
     "tiktoken",
@@ -99,7 +99,7 @@ dependencies = [
 # specifier names a pre-release, to let plain `pip` resolve the beta-versioned
 # wheels without `--pre`.
 engine = ["lilbee-engine>=0.6.90b1"]
-litellm = ["litellm>=1.84.0,<1.99"]
+litellm = ["litellm>=1.84.0,<1.104"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # Floor for transitive soupsieve (crawl4ai -> beautifulsoup4 -> soupsieve):
 # 2.9.0 fixes GHSA-j934-xhv5-fg8f and GHSA-gjv8-xp57-g29c. beautifulsoup4 asks
