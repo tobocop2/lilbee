@@ -36,6 +36,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
     API_KEYS_GROUP,
     API_KEYS_WARNING_CLASS,
     EDITOR_ID_PREFIX,
+    EDITOR_KINDS,
     LIST_ERROR_ID_PREFIX,
     LIST_ERROR_VISIBLE_CLASS,
     LIST_RESTORE_PREFIX,
@@ -43,6 +44,7 @@ from lilbee.cli.tui.screens.settings_widgets import (
     RESET_BUTTON_ID_PREFIX,
     RESET_BUTTON_LABEL,
     ROW_ID_PREFIX,
+    SettingEditor,
     active_profile_name,
     config_toml_path,
     displayed_text,
@@ -379,9 +381,7 @@ class SettingsScreen(Screen[None]):
             children.append(self._build_model_picker_row(key))
         elif defn.writable:
             editor = make_editor(key, defn)
-            baseline = self._mount_baseline(key, defn, editor)
-            if baseline is not None:
-                self._mount_display[key] = baseline
+            self._mount_display[key] = self._mount_baseline(key, defn, editor)
             editor_row = Horizontal(
                 editor,
                 Button(
@@ -400,8 +400,8 @@ class SettingsScreen(Screen[None]):
         )
 
     @staticmethod
-    def _mount_baseline(key: str, defn: SettingDef, editor: Widget) -> str | None:
-        """The text a freshly built editor will show once mounted, or None if untracked.
+    def _mount_baseline(key: str, defn: SettingDef, editor: Collapsible | SettingEditor) -> str:
+        """The text a freshly built editor will show once mounted.
 
         A ``Select``'s ``value`` reactive is not populated from its
         constructor kwarg until the widget mounts, so reading it off
@@ -409,7 +409,8 @@ class SettingsScreen(Screen[None]):
         would see the pre-mount default rather than what it will display;
         this recomputes the same choice match ``make_select`` used instead.
         """
-        if defn.type is list:
+        # A list setting's editor is a Collapsible that holds the text area.
+        if isinstance(editor, Collapsible):
             return list_editor_text(key)
         if defn.choices:
             return select_shown_value(defn, effective_value(key))
@@ -741,14 +742,10 @@ class SettingsScreen(Screen[None]):
         # prevent() only covers a Changed message this call posts, not one already queued.
         with widget.prevent(Checkbox.Changed):
             set_widget_value(widget, value)
-        # Every writable key with a trackable editor is already seeded into
-        # _mount_display at row construction, list-typed and checkbox keys
-        # included; this guard only stops a future editor kind from gaining a
-        # baseline here before its construction path starts tracking it too.
-        if key in self._mount_display:
-            baseline = displayed_text(widget)
-            if baseline is not None:
-                self._mount_display[key] = baseline
+        # Every writable key with an editor is seeded into _mount_display at row
+        # construction, so a key that is absent has no baseline to refresh.
+        if key in self._mount_display and isinstance(widget, EDITOR_KINDS):
+            self._mount_display[key] = displayed_text(widget)
 
     def action_go_back(self) -> None:
         self.app.go_back()

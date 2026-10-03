@@ -95,8 +95,13 @@ def set_widget_value(widget: Widget, value: object) -> None:
             widget.load_text("" if value is None else str(value))
 
 
-def displayed_text(widget: Widget) -> str | None:
-    """The raw text a settings editor currently shows, or None for an untracked type.
+SettingEditor = Input | TextArea | Checkbox | Select[str]
+"""Every widget kind that edits one setting's value."""
+EDITOR_KINDS = (Input, TextArea, Checkbox, Select)
+
+
+def displayed_text(widget: SettingEditor) -> str:
+    """The raw text a settings editor currently shows.
 
     Covers every editor kind a save handler compares a new value against to
     tell an edit from a field that was never touched (whether it shows a
@@ -112,9 +117,7 @@ def displayed_text(widget: Widget) -> str | None:
         return widget.text
     if isinstance(widget, Checkbox):
         return str(widget.value)
-    if isinstance(widget, Select):
-        return "" if widget.value == Select.BLANK else str(widget.value)
-    return None
+    return "" if widget.value == Select.BLANK else str(widget.value)
 
 
 def list_editor_text(key: str, value: list[object] | None = None) -> str:
@@ -294,7 +297,7 @@ def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
     return dict(groups)
 
 
-def make_editor(key: str, defn: SettingDef) -> Widget:
+def make_editor(key: str, defn: SettingDef) -> Collapsible | SettingEditor:
     """Create the appropriate editor widget for a setting."""
     # A list never reaches an Input: str(list) would be saved back as the value.
     if defn.type is list:
