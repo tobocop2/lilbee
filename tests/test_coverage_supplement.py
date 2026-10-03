@@ -17,6 +17,7 @@ from unittest import mock
 import pytest
 
 from lilbee.catalog.types import ModelTask
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.data.types import OcrReport, SyncResult
 from lilbee.runtime.progress import OcrBackendUsed
@@ -342,6 +343,29 @@ class TestSettingsFeatureGating:
         # Still settable through the CLI / env path.
         assert "sse_heartbeat_interval" in SETTINGS_MAP
 
+    def test_make_list_editor_reads_cfg_once(self) -> None:
+        """make_list_editor reads a list setting's cfg value exactly once (bb-p284w.17).
+
+        The row count and the editor's text both derive from the same
+        value; the count must not trigger its own separate cfg read.
+        """
+        import builtins
+
+        from lilbee.cli.tui.screens import settings_widgets as settings_widgets_mod
+
+        real_getattr = builtins.getattr
+        reads: list[str] = []
+
+        def counting_getattr(obj: object, name: str, *default: object) -> object:
+            if obj is cfg and name == "crawl_exclude_patterns":
+                reads.append(name)
+            return real_getattr(obj, name, *default)
+
+        with mock.patch.object(settings_widgets_mod, "getattr", counting_getattr, create=True):
+            settings_widgets_mod.make_list_editor("crawl_exclude_patterns")
+
+        assert len(reads) == 1, f"expected exactly one cfg read, got {len(reads)}"
+
     def test_every_writable_memory_field_has_a_settings_map_entry(self) -> None:
         """Each writable memory_* config field must be in SETTINGS_MAP.
 
@@ -551,7 +575,8 @@ class TestAppCanonicalizeFallbackNotice:
                     side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
                 ),
                 mock.patch(
-                    "lilbee.app.settings.persistent_settings.update_values"
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
                 ) as mock_update_values,
                 caplog.at_level(logging.WARNING, logger="lilbee.cli.tui.app"),
             ):
@@ -569,6 +594,63 @@ class TestAppCanonicalizeFallbackNotice:
             )
         finally:
             cfg.chat_model = snapshot_chat
+
+    @pytest.mark.parametrize(
+        ("set_cli_override", "original", "named_source", "unnamed_source"),
+        [
+            pytest.param(False, "env/model", "LILBEE_CHAT_MODEL", "--model", id="env-only"),
+            pytest.param(True, "cli/model", "--model", "LILBEE_CHAT_MODEL", id="cli-over-env"),
+        ],
+    )
+    async def test_pinned_unusable_model_names_its_real_source(
+        self, monkeypatch, set_cli_override, original, named_source, unnamed_source
+    ) -> None:
+        """An unusable pinned model stays pinned; the toast names whichever source set it.
+
+        --model outranks LILBEE_CHAT_MODEL, so with both set the toast must name
+        the flag, never the variable (or its value).
+        """
+        from lilbee.cli.app import apply_overrides
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.modelhub.model_manager import CanonicalRef, ValidationResult
+
+        app = LilbeeApp()
+        monkeypatch.setenv("LILBEE_CHAT_MODEL", "env/model")
+        if set_cli_override:
+            apply_overrides(model=original)
+        else:
+            monkeypatch.setattr(cfg, "chat_model", original)
+        chat_canon = CanonicalRef(
+            original=original,
+            effective="fallback/model",
+            status=ValidationResult.NOT_INSTALLED,
+            reason="it isn't installed",
+        )
+        embed_canon = CanonicalRef(
+            original="ok/embed", effective="ok/embed", status=ValidationResult.OK
+        )
+        notifications: list[Any] = []
+        with (
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_chat_model", return_value=chat_canon
+            ),
+            mock.patch(
+                "lilbee.modelhub.model_manager.canonicalize_embedding_model",
+                return_value=embed_canon,
+            ),
+            mock.patch.object(app, "notify", side_effect=lambda *a, **kw: notifications.append(a)),
+            mock.patch(
+                "lilbee.cli.tui.app.call_from_thread",
+                side_effect=lambda _node, fn, *a, **k: fn(*a, **k),
+            ),
+        ):
+            app.canonicalize_persisted_models()
+        assert cfg.chat_model == original
+        assert "chat_model" not in persistent_settings.load(cfg.data_root)
+        toast = notifications[0][0]
+        assert named_source in toast and "isn't installed" in toast
+        assert unnamed_source not in toast
+        assert "fallback/model" not in toast
 
     async def test_swap_rejection_does_not_crash_startup(self, caplog) -> None:
         """A rejected fallback swap is logged and skipped, never fatal.
@@ -1317,7 +1399,7 @@ class TestSettingsTabNavFallbacks:
             await pilot.pause()
             # Drop the active pane from the screen's bookkeeping so the
             # boundary path hits the early-return guard.
-            screen._pane_groups = {}
+            screen._pane_ids = []
             screen.action_next_field_or_pane()
             await pilot.pause()
             # Active pane stays put because the boundary guard returned early.
@@ -2451,11 +2533,8 @@ class TestAppToastsOcrOffWarning:
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
         notify_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         app = LilbeeApp()
-        with (
-            mock.patch.object(
-                app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
-            ),
-            mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+        with mock.patch.object(
+            app, "notify", side_effect=lambda *a, **kw: notify_calls.append((a, kw))
         ):
             app.set_setting("enable_ocr", False)
             app.set_setting("enable_ocr", True)
@@ -2555,7 +2634,10 @@ class TestAppSetActiveModelDownloadGuard:
         app = LilbeeApp()
         try:
             app.task_bar.queue.enqueue(lambda: None, "some other model", TaskType.DOWNLOAD.value)
-            with mock.patch("lilbee.app.settings.persistent_settings.update_values"):
+            with mock.patch(
+                "lilbee.app.settings.persistent_settings.update_values",
+                wraps=persistent_settings.update_values,
+            ):
                 app.set_active_model("chat_model", ref)
             assert cfg.chat_model == ref
         finally:

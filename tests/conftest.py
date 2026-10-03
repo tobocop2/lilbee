@@ -4,8 +4,10 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 import threading
 import warnings
+from collections.abc import Iterator
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -35,7 +37,11 @@ os.environ.setdefault("LILBEE_SKIP_TOML_CONFIG", "1")
 from lilbee.catalog import CatalogModel
 from lilbee.catalog.refs import format_native_gguf_ref
 from lilbee.catalog.types import ModelCompat, ModelTask
+from lilbee.cli.app import clear_overrides
+from lilbee.core import profile_files
 from lilbee.core.config import cfg
+from lilbee.core.profile_files import profile_folders
+from lilbee.core.system import default_data_dir
 from lilbee.data.extract import xberg as _xberg_extract
 from lilbee.data.ingest import file_hash
 from lilbee.data.store import CitationRecord
@@ -50,6 +56,16 @@ _PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 pytest_plugins = ["tests._hang_watchdog"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+
+# The developer's platform data root, read before any test redirects it.
+REAL_GLOBAL_ROOT = default_data_dir()
+# The package's own profiles folder; the suite reads a session copy of it.
+REAL_PACKAGE_PROFILES_DIR = profile_files.PACKAGE_PROFILES_DIR
+# The variables that root derives from, with their real values.
+HOME_VARIABLES = ("HOME", "USERPROFILE", "XDG_DATA_HOME", "LOCALAPPDATA")
+REAL_HOME_ENVIRONMENT = {name: os.environ.get(name) for name in HOME_VARIABLES}
+_SESSION_SCRATCH = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
+_PACKAGE_PROFILES_STATE = pytest.StashKey[dict[str, bytes]]()
 
 
 def _patch_executor_daemon_threads() -> None:
@@ -361,15 +377,96 @@ def _join_fleet_background_threads():
 
 
 @pytest.fixture(autouse=True)
-def _ignore_user_global_config(monkeypatch):
-    """Skip the platform-default config.toml for unit tests.
+def _ignore_user_global_config(monkeypatch, tmp_path, request):
+    """Point every config.toml read at the test's own data root, never the developer's.
 
-    A developer's persisted ``~/Library/Application Support/lilbee/config.toml``
-    can hold values from a previous schema. ``Config()`` would crash at
-    construction. Setting this env var tells ``settings_customise_sources``
-    not to add the toml source: env + defaults only.
+    ``LILBEE_DATA`` matches the ``cfg.data_root`` that ``_isolate_cfg`` sets, so a
+    fresh ``Config()``, the CLI overlay and the settings resolver all read the same
+    scratch directory. The platform default root (``--global``) is a second scratch
+    directory, reached by redirecting the environment it derives from.
+    Integration tests keep the real one, which holds their models. The
+    skip flag set at import is cleared: a settings write must read back the
+    config.toml it just wrote.
     """
-    monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+    monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "data_root"))
+    if "integration" not in request.node.nodeid.split("/"):
+        redirect_global_root(monkeypatch, tmp_path / "home")
+
+
+@pytest.fixture(autouse=True)
+def _package_profiles_untouched(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Fail the test that changes a file in the package's own profiles folder."""
+    yield
+    after = folder_state(REAL_PACKAGE_PROFILES_DIR)
+    if after != request.config.stash[_PACKAGE_PROFILES_STATE]:
+        request.config.stash[_PACKAGE_PROFILES_STATE] = after
+        pytest.fail(
+            f"The test changed {REAL_PACKAGE_PROFILES_DIR}; "
+            "tests read and write the session copy at profile_files.PACKAGE_PROFILES_DIR"
+        )
+
+
+def redirect_global_root(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    """Point every variable the platform data root derives from under *home*."""
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("XDG_DATA_HOME", str(home / ".local" / "share"))
+    monkeypatch.setenv("LOCALAPPDATA", str(home / "AppData" / "Local"))
+
+
+def restore_real_home(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give back the real value of every variable the platform data root derives from."""
+    for name, value in REAL_HOME_ENVIRONMENT.items():
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+
+def folder_state(root: Path) -> dict[str, bytes]:
+    """Every file under *root*, by its relative path, with its bytes."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
+
+
+def profile_folders_under_real_root(data_root: Path) -> list[Path]:
+    """The profile folders for *data_root* that resolve under the real global root."""
+    folders = [path for _, path in profile_folders(data_root)]
+    return [path for path in folders if path.is_relative_to(REAL_GLOBAL_ROOT)]
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionstart(session: pytest.Session) -> Iterator[None]:
+    """Redirect the global root and the package profiles folder before collection.
+
+    Stops when a profile folder escapes the redirected global root.
+
+    Runs after xdist starts its workers, so each worker reads the real root at import.
+    """
+    yield
+    scratch = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
+    session.config.stash[_SESSION_SCRATCH] = scratch
+    redirect_global_root(pytest.MonkeyPatch(), Path(scratch.name) / "home")
+    package_copy = Path(scratch.name) / "package-profiles"
+    shutil.copytree(REAL_PACKAGE_PROFILES_DIR, package_copy)
+    pytest.MonkeyPatch().setattr(profile_files, "PACKAGE_PROFILES_DIR", package_copy)
+    session.config.stash[_PACKAGE_PROFILES_STATE] = folder_state(REAL_PACKAGE_PROFILES_DIR)
+    leaks = profile_folders_under_real_root(Path(scratch.name) / "data_root")
+    if leaks:
+        raise pytest.UsageError(f"Profile folders resolve under the real global root: {leaks}")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_protocol(item: pytest.Item, nextitem: pytest.Item | None) -> Iterator[None]:
+    """Run an integration test, and the fixtures it sets up at any scope, on the real root."""
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        if "integration" in item.nodeid.split("/"):
+            restore_real_home(monkeypatch)
+        yield
 
 
 @pytest.fixture(scope="session")
@@ -416,18 +513,6 @@ def permissive_umask():
     previous = os.umask(0)
     yield
     os.umask(previous)
-
-
-@pytest.fixture
-def overlay_reads_config_toml(monkeypatch):
-    """Opt a test back into the config.toml overlay path.
-
-    The suite runs with ``LILBEE_SKIP_TOML_CONFIG=1`` for hermeticity, and
-    ``overlay_persisted_settings`` honors that flag. Tests that specifically
-    exercise the overlay-applies behavior (writing a config.toml to a controlled
-    root and asserting it lands on cfg) must clear the flag so overlay runs.
-    """
-    monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
 
 
 @pytest.fixture(autouse=True)
@@ -599,10 +684,19 @@ def _isolate_cfg(tmp_path, request):
         setattr(cfg, field, "")
     if "integration" not in request.node.nodeid.split("/"):
         cfg.documents_dir = tmp_path / "documents"
+    clear_overrides()
     yield
+    clear_overrides()
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
     cfg.clear_model_defaults()
+
+
+@pytest.fixture
+def monkeypatch(_isolate_cfg: None) -> Iterator[pytest.MonkeyPatch]:
+    """pytest's ``monkeypatch``, undone before ``_isolate_cfg`` restores cfg."""
+    with pytest.MonkeyPatch.context() as patcher:
+        yield patcher
 
 
 def _default_provider_mock():

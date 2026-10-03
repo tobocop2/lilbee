@@ -40,14 +40,14 @@ class TestSessionsDisabled:
         ],
         ids=["list", "show", "rename", "delete", "fork", "export"],
     )
-    def test_command_reports_sessions_are_off(self, argv):
-        cfg.sessions_enabled = False
+    def test_command_reports_sessions_are_off(self, argv, monkeypatch):
+        monkeypatch.setenv("LILBEE_SESSIONS_ENABLED", "false")
         result = runner.invoke(app, argv)
         assert result.exit_code == 0, result.output
         assert "sessions are off" in result.output.lower()
 
-    def test_json_mode_reports_the_error_envelope(self):
-        cfg.sessions_enabled = False
+    def test_json_mode_reports_the_error_envelope(self, monkeypatch):
+        monkeypatch.setenv("LILBEE_SESSIONS_ENABLED", "false")
         result = runner.invoke(app, ["--json", "sessions", "list"])
         assert result.exit_code == 0, result.output
         assert "sessions are off" in json.loads(result.output)["error"].lower()
@@ -56,7 +56,7 @@ class TestSessionsDisabled:
         """The refusal happens before the store is opened, so a disabled run
         cannot create the sessions directory or take the append lock.
         """
-        cfg.sessions_enabled = False
+        monkeypatch.setenv("LILBEE_SESSIONS_ENABLED", "false")
         constructed: list[object] = []
         monkeypatch.setattr(
             "lilbee.cli.sessions.SessionStore",

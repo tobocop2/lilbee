@@ -3,6 +3,7 @@
 from collections.abc import Callable
 
 from lilbee.runtime.progress.types import (
+    AnalyzeEvent,
     BatchProgressEvent,
     CrawlDoneEvent,
     CrawlPageEvent,
@@ -39,6 +40,7 @@ ProgressEvent = (
     | SetupDoneEvent
     | WikiPhaseEvent
     | WikiPageEvent
+    | AnalyzeEvent
 )
 
 DetailedProgressCallback = Callable[[EventType, ProgressEvent], None]

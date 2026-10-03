@@ -145,6 +145,16 @@ class TestSurfaceColumns:
         assert generator._cli_cell("top_k") == "no"
         assert "use-embedder" in generator._cli_cell("embedding_model")
 
+    def test_advanced_column_matches_the_settings_map_flag(self, generator):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        for key, defn in SETTINGS_MAP.items():
+            expected = "yes" if defn.advanced else "no"
+            assert generator._advanced_cell(key) == expected
+        # A field with no SettingDef entry (env/config-file only) is never advanced.
+        for key in set(Config.model_fields) - set(SETTINGS_MAP):
+            assert generator._advanced_cell(key) == "no"
+
 
 class TestToolGateSettings:
     """The reference's reconnect rule is generated from TOOL_GATE_SETTINGS."""

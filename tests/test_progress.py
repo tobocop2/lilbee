@@ -141,3 +141,14 @@ class TestEventModels:
         assert dumped == {"file": "f.txt", "chunk": 1, "total_chunks": 10}
         restored = EmbedEvent(**dumped)
         assert restored == ev
+
+
+def test_analyze_event_type_and_payload() -> None:
+    from lilbee.runtime.progress import AnalyzeEvent
+
+    assert EventType.ANALYZE == "analyze"
+    assert AnalyzeEvent(done=2, total=5, file="a.pdf").model_dump() == {
+        "done": 2,
+        "total": 5,
+        "file": "a.pdf",
+    }

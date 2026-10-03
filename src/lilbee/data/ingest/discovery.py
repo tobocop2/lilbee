@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
@@ -17,7 +17,7 @@ from lilbee.core.config import active_config
 from lilbee.core.system import is_ignored_dir
 from lilbee.data.extract.code_chunker import is_code_file
 from lilbee.data.ingest.ignore import IgnoreRules
-from lilbee.data.types import IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE, ShardId
+from lilbee.data.types import CODE_CONTENT_TYPE, IMAGE_CONTENT_TYPE, PDF_CONTENT_TYPE, ShardId
 
 log = logging.getLogger(__name__)
 
@@ -202,7 +202,7 @@ def classify_file(path: Path) -> str | None:
     if doc_type is not None:
         return doc_type
     if is_code_file(path):
-        return "code"
+        return CODE_CONTENT_TYPE
     return None
 
 
@@ -363,21 +363,33 @@ def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
             yield entry
 
 
-def discover_corpus(shard: ShardId | None = None, rules: IgnoreRules | None = None) -> CorpusScan:
-    """Scan the owned documents dir and every registered root into a :class:`CorpusScan`.
-
-    A refused file (see ``excluded_extension_reasons``) lands in ``excluded``, not ``files``.
-    """
+def _as_scan(entries: Iterable[ScannedFile]) -> CorpusScan:
+    """Split walked entries into the files to ingest and the refused ones."""
     files: dict[str, Path] = {}
     excluded: dict[str, ExclusionReason] = {}
-    for entry in _walk_corpus(rules):
-        if shard is not None and not shard.owns(entry.key):
-            continue
+    for entry in entries:
         if entry.excluded is not None:
             excluded[entry.key] = entry.excluded
         else:
             files[entry.key] = entry.path
     return CorpusScan(files, excluded)
+
+
+def discover_corpus(shard: ShardId | None = None, rules: IgnoreRules | None = None) -> CorpusScan:
+    """Scan the owned documents dir and every registered root into a :class:`CorpusScan`.
+
+    A refused file (see ``excluded_extension_reasons``) lands in ``excluded``, not ``files``.
+    """
+    entries = _walk_corpus(rules)
+    return _as_scan(e for e in entries if shard is None or shard.owns(e.key))
+
+
+def discover_dir(directory: Path) -> CorpusScan:
+    """Scan *directory* as ``add`` would walk it, with the ``.lilbeeignore`` rules applied."""
+    config = active_config()
+    rules = IgnoreRules.for_corpus(config.data_root)
+    ignore_dirs = config.ignore_dirs
+    return _as_scan(_walk_root(directory, None, ignore_dirs, _ScanProgress(), rules))
 
 
 def discover_files(

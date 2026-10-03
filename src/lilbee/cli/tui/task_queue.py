@@ -39,6 +39,7 @@ class TaskType(StrEnum):
     SETUP = "setup"
     IMPORT = "import"
     EXPORT = "export"
+    ANALYZE = "analyze"
 
 
 TERMINAL_STATUSES = (TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED)

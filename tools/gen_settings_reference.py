@@ -31,7 +31,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from lilbee.app.settings import _setting_default, _setting_help  # noqa: E402
+from lilbee.app.settings import _setting_help  # noqa: E402
 from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup  # noqa: E402
 from lilbee.config_meta import (  # noqa: E402
     PUBLIC_CONFIG_FIELDS,
@@ -40,6 +40,7 @@ from lilbee.config_meta import (  # noqa: E402
 )
 from lilbee.core.config import Config  # noqa: E402
 from lilbee.core.config.keys import PROVIDER_SWITCHING_KEYS  # noqa: E402
+from lilbee.core.config.resolve import builtin_value  # noqa: E402
 from lilbee.core.config.schema import field_type_name  # noqa: E402
 from lilbee.mcp_server import TOOL_GATE_SETTINGS  # noqa: E402
 from lilbee.providers.roles import MODEL_ROLE_FIELDS  # noqa: E402
@@ -173,7 +174,7 @@ def _render_default(key: str) -> str:
     """Render a field's default as a short, table-safe cell."""
     if key in HOST_SCALED:
         return HOST_SCALED[key]
-    value: Any = _setting_default(key)
+    value: Any = builtin_value(key)
     if value is None:
         rendered = "*(none)*"
     elif isinstance(value, bool):
@@ -226,6 +227,11 @@ def _cli_cell(key: str) -> str:
     return CLI_COMMANDS.get(key, "no")
 
 
+def _advanced_cell(key: str) -> str:
+    definition = SETTINGS_MAP.get(key)
+    return "yes" if definition is not None and definition.advanced else "no"
+
+
 def _notes(key: str) -> list[str]:
     """Per-setting warnings that change what a caller must do after writing."""
     notes: list[str] = []
@@ -257,14 +263,15 @@ def _row(key: str) -> str:
         _mcp_cell(key),
         _http_cell(key),
         _cli_cell(key),
+        _advanced_cell(key),
         _description_cell(key),
     )
     return "| " + " | ".join(cells) + " |"
 
 
 HEADER = (
-    "| Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |\n"
-    "|---|---|---|---|---|---|---|---|---|"
+    "| Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Advanced | Description |\n"
+    "|---|---|---|---|---|---|---|---|---|---|"
 )
 
 

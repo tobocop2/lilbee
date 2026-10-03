@@ -1,12 +1,20 @@
 """Tests for persistent settings (config.toml)."""
 
+import threading
+from dataclasses import fields as dataclass_fields
 from unittest import mock
 
 import pytest
 
-from lilbee.app.settings_map import SETTINGS_MAP, get_default
+from lilbee.app.settings_map import SETTINGS_MAP
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import builtin_value, read_layers, resolve
+from lilbee.core.project_state import ProjectState
+
+# The analyze settings that are genuine Config; every other analyze or profile name is state.
+ANALYZE_SETTINGS = {"analyze_max_files"}
 
 
 class TestChunkSizeOverlapInvariant:
@@ -41,6 +49,321 @@ class TestApplySettingsRollback:
         with pytest.raises(ValueError):
             appset.apply_settings_update({"chunk_size": original + 64})
         assert appset.cfg.chunk_size == original
+
+    def test_a_failing_writer_cannot_clobber_a_concurrent_success(self, monkeypatch):
+        """Two threads update the same key; one fails at persist and rolls back.
+
+        The failing writer's snapshot is taken before its own mutation, so its
+        rollback must not run while a second writer's fully-committed value is
+        live in cfg. Forced interleave: writer A mutates cfg, then (unlocked)
+        writer B is free to run to completion before A's rollback fires,
+        restoring cfg to the value from before EITHER writer ran and silently
+        erasing B's persisted, settled state.
+        """
+        from lilbee.app import settings as appset
+
+        original = appset.cfg.top_k
+        value_a = original + 1
+        value_b = original + 2
+        real_update_values = appset.persistent_settings.update_values
+
+        a_mutated = threading.Event()
+        b_finished = threading.Event()
+
+        def fake_update_values(data_root, updates):
+            if updates.get("top_k") == value_a:
+                a_mutated.set()
+                # Give a concurrent writer a bounded window to run to completion
+                # before this one's persist failure triggers its rollback.
+                b_finished.wait(timeout=2.0)
+                raise OSError("simulated write failure")
+            return real_update_values(data_root, updates)
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", fake_update_values)
+
+        errors: list[Exception] = []
+
+        def run_a():
+            try:
+                appset.apply_settings_update({"top_k": value_a})
+            except OSError:
+                pass
+            except Exception as exc:  # pragma: no cover - failure diagnostics
+                errors.append(exc)
+
+        def run_b():
+            assert a_mutated.wait(timeout=2.0), "writer A never reached persist"
+            try:
+                appset.apply_settings_update({"top_k": value_b})
+            finally:
+                b_finished.set()
+
+        thread_a = threading.Thread(target=run_a)
+        thread_b = threading.Thread(target=run_b)
+        thread_a.start()
+        thread_b.start()
+        thread_a.join(timeout=5.0)
+        thread_b.join(timeout=5.0)
+
+        assert not thread_a.is_alive()
+        assert not thread_b.is_alive()
+        assert not errors
+        assert appset.cfg.top_k == value_b
+
+
+def _blocked_call(monkeypatch, obj, attr):
+    """Patch ``obj.attr`` so every call signals it arrived, then blocks until
+    the test releases it. Returns (arrived, release); the real function still
+    runs once released. A deterministic seam for proving mutual exclusion,
+    not a sleep: under correct locking, a second caller cannot even reach
+    this seam while the first holds it open, however long the test waits.
+    """
+    arrived = threading.Event()
+    release = threading.Event()
+    real = getattr(obj, attr)
+
+    def gated(*args, **kwargs):
+        arrived.set()
+        assert release.wait(timeout=2.0), f"{attr} was never released by the test"
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(obj, attr, gated)
+    return arrived, release
+
+
+class TestSettingsWriteLockSpansEveryEntryPoint:
+    """``_settings_write_lock`` must serialize apply_settings_update against
+    reset_settings and apply_profile_layer too, not just against itself: all
+    three mutate cfg and settle from the same resolved layers. Each test
+    holds writer A open on an Event while checking that writer B cannot
+    reach its own persist call in a bounded window; the wait is a check for
+    an event that is structurally impossible under correct locking, not a
+    sleep used to manufacture a race.
+    """
+
+    def test_apply_and_reset_never_persist_concurrently(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        a_arrived, a_release = _blocked_call(
+            monkeypatch, appset.persistent_settings, "update_values"
+        )
+
+        b_reached = threading.Event()
+        real_delete_values = appset.persistent_settings.delete_values
+
+        def fake_delete_values(data_root, keys):
+            b_reached.set()
+            return real_delete_values(data_root, keys)
+
+        monkeypatch.setattr(appset.persistent_settings, "delete_values", fake_delete_values)
+
+        thread_apply = threading.Thread(
+            target=lambda: appset.apply_settings_update({"top_k": appset.cfg.top_k + 1})
+        )
+        thread_apply.start()
+        assert a_arrived.wait(timeout=2.0), "writer A never reached persist"
+
+        thread_reset = threading.Thread(target=lambda: appset.reset_settings(["chunk_overlap"]))
+        thread_reset.start()
+
+        # B has a bounded window to try reaching its own persist call while A
+        # is held open. Under the lock this can never fire, whatever the
+        # bound; it is not a race to make wider, just a wait for an event.
+        b_got_in_while_a_held = b_reached.wait(timeout=0.3)
+        a_release.set()
+
+        thread_apply.join(timeout=5.0)
+        thread_reset.join(timeout=5.0)
+
+        assert not thread_apply.is_alive()
+        assert not thread_reset.is_alive()
+        assert not b_got_in_while_a_held
+        assert b_reached.is_set()  # B did eventually run, just not concurrently
+
+    def test_apply_and_apply_profile_layer_never_persist_concurrently(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        a_arrived, a_release = _blocked_call(
+            monkeypatch, appset.persistent_settings, "update_values"
+        )
+
+        b_reached = threading.Event()
+        real_write_profile_table = appset.persistent_settings.write_profile_table
+
+        def fake_write_profile_table(data_root, name, values, drop=()):
+            b_reached.set()
+            return real_write_profile_table(data_root, name, values, drop=drop)
+
+        monkeypatch.setattr(
+            appset.persistent_settings, "write_profile_table", fake_write_profile_table
+        )
+
+        thread_apply = threading.Thread(
+            target=lambda: appset.apply_settings_update({"top_k": appset.cfg.top_k + 1})
+        )
+        thread_apply.start()
+        assert a_arrived.wait(timeout=2.0), "writer A never reached persist"
+
+        thread_profile = threading.Thread(
+            target=lambda: appset.apply_profile_layer("scratch-profile", {})
+        )
+        thread_profile.start()
+
+        b_got_in_while_a_held = b_reached.wait(timeout=0.3)
+        a_release.set()
+
+        thread_apply.join(timeout=5.0)
+        thread_profile.join(timeout=5.0)
+
+        assert not thread_apply.is_alive()
+        assert not thread_profile.is_alive()
+        assert not b_got_in_while_a_held
+        assert b_reached.is_set()  # B did eventually run, just not concurrently
+
+
+class TestApplyProfileLayerSoftFieldWarning:
+    def test_names_the_profile_not_the_env_var(self, caplog):
+        """A profile apply that hits an unparseable soft field names the profile.
+
+        sync_from_resolver re-reads config.toml after apply_profile_layer writes
+        the ``[profile]`` table, so this exercises the resolver's warning at the
+        same call site a live ``lilbee profile apply`` uses, not just Config()
+        construction.
+        """
+        from lilbee.app import settings as appset
+
+        with caplog.at_level("WARNING"):
+            appset.apply_profile_layer("my-profile", {"enable_ocr": "maybe"})
+        assert appset.cfg.enable_ocr is None
+        assert "my-profile" in caplog.text
+        assert "LILBEE_ENABLE_OCR" not in caplog.text
+
+
+class TestApplySettingsUpdateSoftFieldWarning:
+    @pytest.mark.parametrize(
+        ("field", "bad_value"),
+        [
+            ("n_gpu_layers", "not-a-number"),
+            ("flash_attention", "maybe?"),
+            ("main_gpu", "garbage"),
+            ("gpu_devices", "rtx-4060"),
+        ],
+    )
+    def test_warns_without_naming_a_source(self, caplog, field, bad_value) -> None:
+        """apply_settings_update is the TUI/HTTP/MCP entry point for a live setting edit.
+
+        Its raw value has no resolver-layer source, so the warning it triggers
+        must name only the field, never an env var it was never set through.
+        """
+        from lilbee.app import settings as appset
+
+        with caplog.at_level("WARNING"):
+            appset.apply_settings_update({field: bad_value})
+        assert getattr(appset.cfg, field) is None
+        assert field in caplog.text
+        assert "LILBEE_" not in caplog.text
+
+
+class TestProviderResetRunsOutsideTheLock:
+    """A provider switch's fleet teardown must not hold _settings_write_lock:
+    it can block for the whole fleet's stop, and every other settings write
+    funnels through the same lock.
+    """
+
+    def test_slow_provider_reset_does_not_hold_the_lock(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config.enums import LlmProvider
+
+        reset_arrived = threading.Event()
+        reset_release = threading.Event()
+
+        def fake_reset_services():
+            reset_arrived.set()
+            assert reset_release.wait(timeout=2.0), "reset_services was never released"
+
+        monkeypatch.setattr("lilbee.app.services.reset_services", fake_reset_services)
+
+        other_done = threading.Event()
+
+        thread_switch = threading.Thread(
+            target=lambda: appset.apply_settings_update({"llm_provider": LlmProvider.REMOTE.value})
+        )
+
+        def run_other_writer():
+            assert reset_arrived.wait(timeout=2.0), "provider switch never reached reset_services"
+            appset.apply_settings_update({"top_k": appset.cfg.top_k + 1})
+            other_done.set()
+
+        thread_other = threading.Thread(target=run_other_writer)
+
+        thread_switch.start()
+        thread_other.start()
+
+        # The second writer must complete while reset_services is still
+        # blocked: proof the lock was released before the slow reset ran.
+        assert other_done.wait(timeout=2.0), "the second writer waited behind the blocked reset"
+        reset_release.set()
+
+        thread_switch.join(timeout=5.0)
+        thread_other.join(timeout=5.0)
+        assert not thread_switch.is_alive()
+        assert not thread_other.is_alive()
+
+    def test_reset_still_dispatched_when_a_later_settle_step_raises(self, monkeypatch):
+        """A batch that also changes mcp_tool_threads, whose own cache
+        invalidation raises, must still tear the provider singleton down:
+        llm_provider was already persisted by the time that later step
+        runs, so a missed reset would leave the running provider silently
+        stale. The exception itself must still reach the caller.
+        """
+        from lilbee.app import settings as appset
+        from lilbee.core.config.enums import LlmProvider
+
+        reset_calls: list[bool] = []
+        monkeypatch.setattr("lilbee.app.services.reset_services", lambda: reset_calls.append(True))
+
+        def _boom():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("lilbee.server.app.reapply_thread_pool_ceiling", _boom)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            appset.apply_settings_update(
+                {"llm_provider": LlmProvider.REMOTE.value, "mcp_tool_threads": 4}
+            )
+
+        assert appset.cfg.llm_provider == LlmProvider.REMOTE
+        assert reset_calls == [True]
+
+    def test_double_failure_logs_the_reset_and_raises_the_original(self, caplog, monkeypatch):
+        """Both the settle step and the deferred reset fail in the same call.
+
+        The caller must see the settle step's exception, not the reset's:
+        a bare ``finally`` would let the reset's failure replace it. The
+        reset's own failure is logged instead of being silently discarded.
+        """
+        from lilbee.app import settings as appset
+        from lilbee.core.config.enums import LlmProvider
+
+        def _reset_boom():
+            raise ValueError("reset failed")
+
+        monkeypatch.setattr("lilbee.app.services.reset_services", _reset_boom)
+
+        def _settle_boom():
+            raise RuntimeError("settle failed")
+
+        monkeypatch.setattr("lilbee.server.app.reapply_thread_pool_ceiling", _settle_boom)
+
+        with (
+            caplog.at_level("ERROR", logger="lilbee.app.settings"),
+            pytest.raises(RuntimeError, match="settle failed"),
+        ):
+            appset.apply_settings_update(
+                {"llm_provider": LlmProvider.REMOTE.value, "mcp_tool_threads": 4}
+            )
+
+        assert "Provider reset failed" in caplog.text
 
 
 class TestLoad:
@@ -318,17 +641,17 @@ class TestRerankerConfig:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.group == "Retrieval"
-        assert get_default("neighbor_expansion") == 0
+        assert builtin_value("neighbor_expansion") == 0
 
     def test_fusion_knobs_in_settings_map(self):
         """The four adaptive-fusion / structural-filter knobs (which gate the
         on-by-default fusion behavior) are on the settings surface with their
         shipped defaults, so a dropped or typo'd entry fails CI."""
 
-        assert get_default("lexical_fusion_weight") == 1.0
-        assert get_default("adaptive_fusion") is False
-        assert get_default("adaptive_fusion_margin") == 0.15
-        assert get_default("filter_structural_chunks") is False
+        assert builtin_value("lexical_fusion_weight") == 1.0
+        assert builtin_value("adaptive_fusion") is False
+        assert builtin_value("adaptive_fusion_margin") == 0.15
+        assert builtin_value("filter_structural_chunks") is False
         for key in (
             "lexical_fusion_weight",
             "adaptive_fusion",
@@ -367,14 +690,14 @@ class TestTableExtractionSetting:
     """The table-extraction flag is writable, grouped with ingest, and reindex-marked."""
 
     def test_table_extraction_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["table_extraction"]
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is bool
         assert defn.group == "Ingest"
-        assert get_default("table_extraction") is False
+        assert builtin_value("table_extraction") is False
 
     def test_table_extraction_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -387,14 +710,14 @@ class TestLayoutDetectionSetting:
     """The layout-detection flag is writable, grouped with ingest, and reindex-marked."""
 
     def test_layout_detection_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["layout_detection"]
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is bool
         assert defn.group == "Ingest"
-        assert get_default("layout_detection") is False
+        assert builtin_value("layout_detection") is False
 
     def test_layout_detection_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -407,7 +730,7 @@ class TestTableModelSetting:
     """The table-model choice is writable, grouped with ingest, and reindex-marked."""
 
     def test_table_model_in_settings_map(self):
-        from lilbee.app.settings_map import SETTINGS_MAP, get_default
+        from lilbee.app.settings_map import SETTINGS_MAP
 
         defn = SETTINGS_MAP["table_model"]
         assert defn.writable is True
@@ -422,7 +745,7 @@ class TestTableModelSetting:
             "slanet_wired",
             "slanet_wireless",
         )
-        assert get_default("table_model") == "slanet_auto"
+        assert builtin_value("table_model") == "slanet_auto"
 
     def test_table_model_requires_reindex(self):
         from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
@@ -451,6 +774,76 @@ class TestTableModelSetting:
         assert both.reindex_required is True
 
 
+class TestSemanticChunkingSetting:
+    """The semantic-chunking flag is writable, grouped with ingest, and reindex-marked."""
+
+    def test_semantic_chunking_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP["semantic_chunking"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is bool
+        assert defn.group == "Ingest"
+        assert builtin_value("semantic_chunking") is False
+
+    def test_semantic_chunking_requires_reindex(self):
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        assert "semantic_chunking" in WRITABLE_CONFIG_FIELDS
+        assert "semantic_chunking" in REINDEX_FIELDS
+
+    def test_semantic_chunking_change_flags_a_reindex(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        result = appset.apply_settings_update({"semantic_chunking": True})
+        assert result.updated == ["semantic_chunking"]
+        assert result.reindex_required is True
+
+
+class TestTopicThresholdSetting:
+    """The topic-threshold value is writable, grouped with ingest, reindex-marked, and
+    inert while semantic chunking is off (xberg reads it only inside that chunker)."""
+
+    def test_topic_threshold_in_settings_map(self):
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        defn = SETTINGS_MAP["topic_threshold"]
+        assert defn.writable is True
+        assert defn.nullable is False
+        assert defn.type is float
+        assert defn.group == "Ingest"
+        assert builtin_value("topic_threshold") == 0.75
+
+    def test_topic_threshold_requires_reindex(self):
+        from lilbee.config_meta import REINDEX_FIELDS, WRITABLE_CONFIG_FIELDS
+
+        assert "topic_threshold" in WRITABLE_CONFIG_FIELDS
+        assert "topic_threshold" in REINDEX_FIELDS
+
+    def test_topic_threshold_change_flags_no_reindex_while_semantic_chunking_is_off(
+        self, monkeypatch
+    ):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.cfg, "semantic_chunking", False)
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        result = appset.apply_settings_update({"topic_threshold": 0.5})
+        assert result.updated == ["topic_threshold"]
+        assert result.reindex_required is False
+
+    def test_topic_threshold_change_flags_a_reindex_once_semantic_chunking_is_on(self, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.setattr(appset.persistent_settings, "update_values", lambda *_a, **_k: None)
+        monkeypatch.setattr(appset.cfg, "semantic_chunking", True)
+        assert appset.apply_settings_update({"topic_threshold": 0.5}).reindex_required is True
+        monkeypatch.setattr(appset.cfg, "semantic_chunking", False)
+        both = appset.apply_settings_update({"topic_threshold": 0.6, "semantic_chunking": True})
+        assert both.reindex_required is True
+
+
 class TestOcrPageSelectionSettings:
     """The PDF OCR page-selection settings are writable and survive a config.toml reload."""
 
@@ -461,9 +854,9 @@ class TestOcrPageSelectionSettings:
         for key in ("ocr_strategy", "ocr_scan_confidence", "force_ocr_pages"):
             assert SETTINGS_MAP[key].group == "Ingest"
             assert key in WRITABLE_CONFIG_FIELDS
-        assert get_default("ocr_strategy") == "auto"
-        assert get_default("ocr_scan_confidence") == 0.7
-        assert get_default("force_ocr_pages") == []
+        assert builtin_value("ocr_strategy") == "auto"
+        assert builtin_value("ocr_scan_confidence") == 0.7
+        assert builtin_value("force_ocr_pages") == []
 
     def test_update_persists_and_reloads(self, tmp_path, monkeypatch):
         from lilbee.app import settings as appset
@@ -510,7 +903,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is True  # None = use model training_ctx as ceiling
         assert defn.group == "Generation"
-        assert get_default("num_ctx_max") is None
+        assert builtin_value("num_ctx_max") is None
 
     def test_chat_n_ctx_target_in_settings_map(self):
 
@@ -522,7 +915,7 @@ class TestMemoryTuningSettingsMap:
             "lilbee.core.system._read_total_memory_bytes",
             return_value=8 * 1024**3,
         ):
-            assert get_default("chat_n_ctx_target") == 8192
+            assert builtin_value("chat_n_ctx_target") == 8192
 
     def test_flash_attention_in_settings_map(self):
 
@@ -530,7 +923,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is True  # tri-state: None=auto
         assert defn.type is bool
-        assert get_default("flash_attention") is None
+        assert builtin_value("flash_attention") is None
 
     def test_kv_cache_type_in_settings_map(self):
         from lilbee.core.config.enums import KvCacheType
@@ -544,7 +937,7 @@ class TestMemoryTuningSettingsMap:
         defn = SETTINGS_MAP["n_gpu_layers"]
         assert defn.writable is True
         assert defn.nullable is True  # None = auto/all
-        assert get_default("n_gpu_layers") is None
+        assert builtin_value("n_gpu_layers") is None
 
     def test_vision_ocr_max_tokens_in_settings_map(self):
 
@@ -553,7 +946,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.nullable is False
         assert defn.type is int
         assert defn.group == "Ingest"
-        assert get_default("vision_ocr_max_tokens") == 4096
+        assert builtin_value("vision_ocr_max_tokens") == 4096
 
     def test_vision_ocr_concurrency_in_settings_map(self):
 
@@ -562,7 +955,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.nullable is False
         assert defn.type is int
         assert defn.group == "Ingest"
-        assert get_default("vision_ocr_concurrency") == 4
+        assert builtin_value("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):
         from lilbee.core.config.enums import CrawlRenderMode
@@ -583,12 +976,12 @@ class TestMemoryTuningSettingsMap:
         recycle = SETTINGS_MAP["crawl_browser_recycle_pages"]
         assert recycle.writable is True
         assert recycle.type is int
-        assert get_default("crawl_browser_recycle_pages") == 50
+        assert builtin_value("crawl_browser_recycle_pages") == 50
 
         extra = SETTINGS_MAP["crawl_browser_extra_args"]
         assert extra.writable is True
         assert extra.type is list
-        assert get_default("crawl_browser_extra_args") == [
+        assert builtin_value("crawl_browser_extra_args") == [
             "--disable-dev-shm-usage",
             "--disable-gpu",
         ]
@@ -694,26 +1087,27 @@ class TestOverlayPersistedSettings:
             cfg.vision_model, cfg.top_k = original_vision, original_top_k
 
     def test_empty_persisted_vision_model_clears_the_ambient_one(self, tmp_path, monkeypatch):
-        """A vision_model cleared into config.toml stays cleared; an empty chat_model is skipped."""
+        """A vision_model cleared into config.toml stays cleared; an empty chunk_size is unset."""
         from lilbee.core.config import cfg
 
-        originals = cfg.vision_model, cfg.chat_model, cfg.top_k
+        originals = cfg.vision_model, cfg.chunk_size, cfg.top_k
         try:
             monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
             monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
-            monkeypatch.delenv("LILBEE_CHAT_MODEL", raising=False)
+            monkeypatch.delenv("LILBEE_CHUNK_SIZE", raising=False)
             cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
-            cfg.chat_model = "ollama/ambient-chat:latest"
-            cfg.top_k = 5
             (tmp_path / "config.toml").write_text(
-                'vision_model = ""\nchat_model = ""\ntop_k = 9\n', encoding="utf-8"
+                'vision_model = ""\nchunk_size = ""\ntop_k = 9\n'
+                "[profile.values]\nchunk_size = 900\n",
+                encoding="utf-8",
             )
             settings.overlay_persisted_settings(tmp_path)
             assert cfg.vision_model == ""
-            assert cfg.chat_model == "ollama/ambient-chat:latest"
+            assert cfg.chunk_size == 900
             assert cfg.top_k == 9
+            assert resolve("vision_model", read_layers(tmp_path)).source is SettingSource.USER
         finally:
-            cfg.vision_model, cfg.chat_model, cfg.top_k = originals
+            cfg.vision_model, cfg.chunk_size, cfg.top_k = originals
 
     def test_config_toml_applies_when_env_absent(self, tmp_path, monkeypatch):
         """Without the env var, config.toml is still overlaid onto cfg."""
@@ -809,7 +1203,7 @@ class TestTitleSearchSettings:
         assert defn.writable is True
         assert defn.type is bool
         assert defn.group == "Retrieval"
-        assert get_default("title_search") is False
+        assert builtin_value("title_search") is False
 
     def test_title_search_weight_in_settings_map(self):
 
@@ -817,7 +1211,7 @@ class TestTitleSearchSettings:
         assert defn.writable is True
         assert defn.type is float
         assert defn.group == "Retrieval"
-        assert get_default("title_search_weight") == 0.5
+        assert builtin_value("title_search_weight") == 0.5
 
     def test_title_search_fields_are_writable_for_programmatic_surfaces(self):
 
@@ -982,3 +1376,443 @@ class TestEmbedReindexRequired:
         assert appset._embed_reindex_required() is True
         monkeypatch.setattr(appset.cfg, "embedding_model", "acme/built-GGUF/built.gguf")
         assert appset._embed_reindex_required() is False
+
+
+class TestResolverIsTheOnlyWriter:
+    """Every settings writer leaves cfg equal to what a fresh Config() resolves."""
+
+    @staticmethod
+    def _write_config(text: str):
+        from lilbee.core.config import cfg
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "config.toml").write_text(text, encoding="utf-8")
+        return cfg.data_root
+
+    def test_live_cfg_matches_fresh_config_after_updates_and_nulls(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config, cfg
+        from lilbee.core.config.resolve import ROOT_DERIVED_FIELDS
+        from lilbee.providers.roles import MODEL_ROLE_FIELDS
+
+        root = self._write_config(
+            'top_k = 7\n[profile]\nname = "x"\n[profile.values]\n'
+            "rerank_min_score = 0.7\nchunk_overlap = 50\n"
+        )
+        monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
+        settings.overlay_persisted_settings(root)
+        appset.apply_settings_update(
+            {"top_k": 9, "rerank_min_score": 0.3, "max_tokens": 1000, "seed": 5}
+        )
+        appset.apply_settings_update({"rerank_min_score": None, "seed": None})
+
+        fresh = Config()
+        keys = sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        diverged = {k: (getattr(cfg, k), getattr(fresh, k)) for k in keys}
+        diverged = {k: pair for k, pair in diverged.items() if pair[0] != pair[1]}
+        assert diverged == {}
+        assert (cfg.top_k, cfg.rerank_min_score, cfg.max_tokens, cfg.seed) == (9, 0.7, 2048, None)
+        assert cfg.chunk_overlap == 50
+
+    def test_update_under_env_keeps_env_value_in_cfg(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        cfg.top_k = 9
+        cfg.chunk_size = 512
+        appset.apply_settings_update({"top_k": 7, "chunk_size": 900})
+        assert cfg.top_k == 9
+        assert cfg.chunk_size == 900
+        assert settings.load(cfg.data_root)["top_k"] == 7
+
+    @pytest.mark.parametrize("env_model", ["acme/a-GGUF/a.gguf", None])
+    def test_embed_swap_keeps_the_width_of_the_live_model(self, monkeypatch, env_model):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        widths = {"acme/a-GGUF/a.gguf": 768, "acme/b-GGUF/b.gguf": 1024}
+        if env_model is not None:
+            monkeypatch.setenv("LILBEE_EMBEDDING_MODEL", env_model)
+        cfg.embedding_model = "acme/a-GGUF/a.gguf"
+        cfg.embedding_dim = 768
+        monkeypatch.setattr(
+            appset, "_embedder_dim_from_gguf", lambda ref, registry=None: widths[ref]
+        )
+        monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: None)
+        monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
+        monkeypatch.setattr(appset, "_embed_reindex_required", lambda: False)
+        appset.apply_settings_update({"embedding_model": "acme/b-GGUF/b.gguf"})
+        expected_model = env_model or "acme/b-GGUF/b.gguf"
+        assert (cfg.embedding_model, cfg.embedding_dim) == (expected_model, widths[expected_model])
+        assert settings.load(cfg.data_root)["embedding_model"] == "acme/b-GGUF/b.gguf"
+
+    def test_null_update_resolves_to_profile_value(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config("[profile.values]\nrerank_min_score = 0.7\n")
+        appset.apply_settings_update({"rerank_min_score": 0.3})
+        assert cfg.rerank_min_score == 0.3
+        appset.apply_settings_update({"rerank_min_score": None})
+        assert cfg.rerank_min_score == 0.7
+        assert "rerank_min_score" not in settings.load(cfg.data_root)
+
+    def test_blank_string_update_clears_a_sampling_field_like_null(self):
+        """REST and MCP forward raw JSON with no blank-stripping of their own;
+        the field validator is what makes "" behave like an explicit null."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        # temperature carries no profile scope, so this [profile.values] entry
+        # is dropped and the clear falls to the built-in default, same as null.
+        self._write_config("[profile.values]\ntemperature = 0.7\n")
+        appset.apply_settings_update({"temperature": 0.3})
+        assert cfg.temperature == 0.3
+        appset.apply_settings_update({"temperature": ""})
+        assert cfg.temperature == 0.1
+        assert "temperature" not in settings.load(cfg.data_root)
+
+    def test_null_update_refuses_an_invalid_profile_value_and_changes_nothing(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config(
+            'rerank_min_score = 0.4\n[profile.values]\nrerank_min_score = "banana"\n'
+        )
+        cfg.rerank_min_score = 0.4
+        with pytest.raises(
+            ValueError,
+            match=r"Cannot apply 'rerank_min_score': its profile value 'banana' is invalid",
+        ):
+            appset.apply_settings_update({"rerank_min_score": None})
+        assert cfg.rerank_min_score == 0.4
+        assert settings.load(cfg.data_root)["rerank_min_score"] == 0.4
+
+    def test_overlay_resets_key_absent_from_new_root(self, tmp_path):
+        from lilbee.core.config import cfg
+
+        first = tmp_path / "first"
+        first.mkdir()
+        (first / "config.toml").write_text("top_k = 7\nchunk_size = 900\n", encoding="utf-8")
+        second = tmp_path / "second"
+        second.mkdir()
+        (second / "config.toml").write_text("chunk_size = 700\n", encoding="utf-8")
+
+        settings.overlay_persisted_settings(first)
+        assert (cfg.top_k, cfg.chunk_size) == (7, 900)
+        settings.overlay_persisted_settings(second)
+        assert cfg.top_k == 12
+        assert cfg.chunk_size == 700
+
+    def test_overlay_keeps_the_root_derived_documents_dir(self, tmp_path):
+        from lilbee.core.config import cfg
+
+        root = tmp_path / "root"
+        root.mkdir()
+        (root / "config.toml").write_text("top_k = 7\n", encoding="utf-8")
+        cfg.documents_dir = root / "documents"
+        settings.overlay_persisted_settings(root)
+        assert cfg.documents_dir == root / "documents"
+        assert cfg.top_k == 7
+
+    def test_profile_table_survives_update_and_delete(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        self._write_config('[profile]\nname = "scanned"\n[profile.values]\ntop_k = 4\n')
+        appset.apply_settings_update({"chunk_size": 900})
+        appset.apply_settings_update({"seed": 3})
+        appset.apply_settings_update({"seed": None})
+        stored = settings.load(cfg.data_root)
+        assert stored["profile"] == {"name": "scanned", "values": {"top_k": 4}}
+        assert stored["chunk_size"] == 900
+        assert "seed" not in stored
+
+    def test_profile_is_not_a_settable_key(self):
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="Unknown or read-only setting: profile"):
+            appset.apply_settings_update({"profile": {"name": "x"}})
+
+    def test_no_config_field_holds_project_state(self):
+        from lilbee.core.config import Config
+        from lilbee.core.config.resolve import PROFILE_TABLE
+
+        fields = set(Config.model_fields)
+        state_keys = {field.name for field in dataclass_fields(ProjectState)}
+        assert "top_k" in fields
+        assert state_keys == {"analyzed_at", "tip_dismissed"}
+        assert not state_keys & fields
+        assert PROFILE_TABLE not in fields
+        prefixed = {name for name in fields if name.startswith(("profile", "analyze"))}
+        assert prefixed == ANALYZE_SETTINGS
+        assert PROFILE_TABLE not in WRITABLE_CONFIG_FIELDS
+
+
+class TestResetRemovesTheUserValue:
+    """Reset deletes the key from config.toml and cfg takes the resolver's next source."""
+
+    @staticmethod
+    def _write_config(text: str):
+        from lilbee.core.config import cfg
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "config.toml").write_text(text, encoding="utf-8")
+        return cfg.data_root
+
+    def test_reset_leaves_cfg_equal_to_a_fresh_config(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import Config, cfg
+        from lilbee.core.config.resolve import ROOT_DERIVED_FIELDS
+        from lilbee.providers.roles import MODEL_ROLE_FIELDS
+
+        root = self._write_config(
+            "top_k = 7\nmax_distance = 0.3\nmax_tokens = 1000\nchunk_size = 900\n"
+            "[profile.values]\nmax_distance = 0.7\n"
+        )
+        monkeypatch.setenv("LILBEE_MAX_TOKENS", "2048")
+        settings.overlay_persisted_settings(root)
+        appset.reset_settings(["top_k", "max_distance", "max_tokens", "seed"])
+
+        fresh = Config()
+        keys = sorted((set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS) - ROOT_DERIVED_FIELDS)
+        assert len(keys) > 100
+        diverged = {k: (getattr(cfg, k), getattr(fresh, k)) for k in keys}
+        diverged = {k: pair for k, pair in diverged.items() if pair[0] != pair[1]}
+        assert diverged == {}
+        assert (cfg.top_k, cfg.max_distance, cfg.max_tokens) == (12, 0.7, 2048)
+        assert settings.load(root) == {
+            "chunk_size": 900,
+            "profile": {"values": {"max_distance": 0.7}},
+        }
+
+    def test_reset_under_env_pin_keeps_env_and_removes_user_key(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("top_k = 7\nchunk_size = 900\n")
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        cfg.top_k = 9
+        result = appset.reset_settings(["top_k"])
+        assert result.updated == ["top_k"]
+        assert cfg.top_k == 9
+        assert settings.load(root) == {"chunk_size": 900}
+
+    def test_reset_resolves_to_the_profile_value(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config(
+            "max_distance = 0.3\ntop_k = 7\n[profile.values]\nmax_distance = 0.7\n"
+        )
+        cfg.max_distance = 0.3
+        cfg.top_k = 7
+        appset.reset_settings(["max_distance"])
+        assert cfg.max_distance == 0.7
+        assert cfg.top_k == 7
+        stored = settings.load(root)
+        assert "max_distance" not in stored
+        assert stored["top_k"] == 7
+        assert stored["profile"] == {"values": {"max_distance": 0.7}}
+
+    def test_reset_of_a_key_not_in_config_toml_writes_nothing(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("chunk_size = 900\n")
+        path = root / "config.toml"
+        before = path.stat().st_mtime_ns
+        cfg.top_k = 99
+        result = appset.reset_settings(["top_k"])
+        assert result.updated == ["top_k"]
+        assert cfg.top_k == 12
+        assert path.stat().st_mtime_ns == before
+        assert settings.load(root) == {"chunk_size": 900}
+
+    def test_reset_of_a_key_already_at_its_default_reports_no_reindex(self):
+        """A key with no saved value already resolves to the default; resetting
+        it changes nothing, so it must not be counted toward reindex_required."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+        from lilbee.core.config.resolve import builtin_value
+
+        root = self._write_config("top_k = 7\n")
+        cfg.chunk_size = builtin_value("chunk_size")
+        result = appset.reset_settings(["chunk_size"])
+        assert result.reindex_required is False
+        assert cfg.chunk_size == builtin_value("chunk_size")
+        assert settings.load(root) == {"top_k": 7}
+
+    def test_reset_of_an_env_shadowed_key_reports_no_reindex(self, monkeypatch):
+        """A LILBEE_* env var outranks the profile and the built-in, so removing
+        the saved value leaves the resolved value exactly where it was."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        monkeypatch.setenv("LILBEE_CHUNK_SIZE", "800")
+        root = self._write_config("chunk_size = 2048\n")
+        cfg.chunk_size = 800
+        result = appset.reset_settings(["chunk_size"])
+        assert result.reindex_required is False
+        assert cfg.chunk_size == 800
+        assert "chunk_size" not in settings.load(root)
+
+    def test_reset_reports_reindex_from_disk_even_when_cfg_is_stale(self):
+        """A second writer (another process, or a hand edit) can change config.toml
+        without this process's cfg ever observing it; the reindex verdict must come
+        from the file's own before/after resolved value, never from cfg."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+        from lilbee.core.config.resolve import builtin_value
+
+        root = self._write_config("chunk_size = 2048\n")
+        cfg.chunk_size = builtin_value("chunk_size")  # stale: never observed the write above
+        result = appset.reset_settings(["chunk_size"])
+        assert result.reindex_required is True
+        assert "chunk_size" not in settings.load(root)
+
+    def test_reset_with_no_config_file_creates_none(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        cfg.seed = 5
+        appset.reset_settings(["seed"])
+        assert cfg.seed is None
+        assert not (cfg.data_root / "config.toml").exists()
+
+    def test_reset_refuses_a_chunk_size_below_the_kept_overlap(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("chunk_size = 2048\nchunk_overlap = 1000\n")
+        cfg.chunk_size = 2048
+        cfg.chunk_overlap = 1000
+        with pytest.raises(
+            ValueError, match=r"chunk_overlap \(1000\) must be < chunk_size \(512\)"
+        ):
+            appset.reset_settings(["chunk_size"])
+        assert (cfg.chunk_size, cfg.chunk_overlap) == (2048, 1000)
+        assert settings.load(root) == {"chunk_size": 2048, "chunk_overlap": 1000}
+
+    def test_reset_refuses_model_roles_when_the_surface_owns_them_elsewhere(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config('chat_model = "acme/a-GGUF/a.gguf"\n')
+        with pytest.raises(ValueError, match="'chat_model' must be set through the dedicated"):
+            appset.reset_settings(["top_k", "chat_model"], allow_model_roles=False)
+        assert settings.load(root) == {"chat_model": "acme/a-GGUF/a.gguf"}
+        assert cfg.top_k == 12
+
+    def test_reset_embedding_model_pins_meta_first_and_reports_reindex(self, monkeypatch):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config('embedding_model = "acme/b-GGUF/b.gguf"\n')
+        cfg.embedding_model = "acme/b-GGUF/b.gguf"
+        calls: list[str] = []
+
+        def pin() -> None:
+            calls.append(settings.load(root).get("embedding_model", "<gone>"))
+
+        monkeypatch.setattr(appset, "_pin_legacy_store_meta", pin)
+        monkeypatch.setattr(appset, "_embedder_dim_from_gguf", lambda ref, registry=None: None)
+        monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
+        monkeypatch.setattr(appset, "_embed_reindex_required", lambda: True)
+        result = appset.reset_settings(["embedding_model"])
+        assert calls == ["acme/b-GGUF/b.gguf"]
+        assert result.reindex_required is True
+        assert cfg.embedding_model == builtin_value("embedding_model")
+        assert "embedding_model" not in settings.load(root)
+
+    def test_reset_of_a_drifted_embedding_model_checks_the_store_but_skips_the_pin(
+        self, monkeypatch
+    ):
+        """cfg never observed a second writer's embedding_model override, so cfg is
+        already at what the reset resolves to (skip the pin, nothing for cfg to
+        lose), but the store's own meta must still be checked against disk's real
+        change, which the resolved fallback alone cannot see."""
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+        from lilbee.core.config.resolve import builtin_value
+
+        root = self._write_config('embedding_model = "acme/b-GGUF/b.gguf"\n')
+        cfg.embedding_model = builtin_value("embedding_model")  # stale: never observed the write
+        pin_calls: list[None] = []
+        embed_check_calls: list[None] = []
+        monkeypatch.setattr(appset, "_pin_legacy_store_meta", lambda: pin_calls.append(None))
+        monkeypatch.setattr(appset, "_invalidate_caches", lambda keys: None)
+        monkeypatch.setattr(
+            appset, "_embed_reindex_required", lambda: embed_check_calls.append(None) or True
+        )
+        result = appset.reset_settings(["embedding_model"])
+        assert pin_calls == []
+        assert embed_check_calls == [None]
+        assert result.reindex_required is True
+        assert cfg.embedding_model == builtin_value("embedding_model")
+        assert "embedding_model" not in settings.load(root)
+
+    def test_reset_validates_the_profile_value_it_falls_back_to(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config(
+            "chunk_size = 2048\nchunk_overlap = 1000\n[profile.values]\nchunk_size = 1500\n"
+        )
+        cfg.chunk_size = 2048
+        cfg.chunk_overlap = 1000
+        appset.reset_settings(["chunk_size"])
+        assert (cfg.chunk_size, cfg.chunk_overlap) == (1500, 1000)
+        assert "chunk_size" not in settings.load(root)
+
+    def test_reset_refuses_an_invalid_profile_value_and_changes_nothing(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("max_distance = 0.3\n[profile.values]\nmax_distance = -5.0\n")
+        cfg.max_distance = 0.3
+        with pytest.raises(
+            ValueError, match=r"Cannot reset 'max_distance': its profile value -5\.0 is invalid"
+        ):
+            appset.reset_settings(["max_distance"])
+        assert cfg.max_distance == 0.3
+        assert settings.load(root)["max_distance"] == 0.3
+
+    def test_reset_with_duplicate_keys_removes_the_key_once(self):
+        from lilbee.app import settings as appset
+        from lilbee.core.config import cfg
+
+        root = self._write_config("top_k = 7\nseed = 3\n")
+        cfg.top_k = 7
+        assert appset.reset_settings(["top_k", "top_k"]).updated == ["top_k"]
+        assert settings.load(root) == {"seed": 3}
+        assert cfg.top_k == 12
+
+    def test_reset_keeps_refusing_documents_dir(self):
+        from lilbee.app import settings as appset
+
+        with pytest.raises(
+            ValueError, match="'documents_dir' has no default to reset to; set a folder path"
+        ):
+            appset.reset_settings(["documents_dir"])
+        assert appset.reset_settings(["documents_dir"], skip_unresettable=True).updated == []
+
+    def test_reset_unknown_key_is_refused(self):
+        from lilbee.app import settings as appset
+
+        with pytest.raises(ValueError, match="Unknown or read-only setting: nope"):
+            appset.reset_settings(["nope"])
+
+
+class TestDeleteValues:
+    def test_absent_keys_write_nothing(self, tmp_path):
+        settings.delete_values(tmp_path, ["top_k"])
+        assert not (tmp_path / "config.toml").exists()
+
+    def test_present_key_is_removed_and_others_kept(self, tmp_path):
+        settings.update_values(tmp_path, {"top_k": 7, "seed": 3})
+        settings.delete_values(tmp_path, ["top_k", "absent"])
+        assert settings.load(tmp_path) == {"seed": 3}

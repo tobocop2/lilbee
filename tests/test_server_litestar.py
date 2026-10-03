@@ -131,9 +131,27 @@ class TestSearchRoute:
         assert len(resp.json()) == 1
 
     @mock.patch("lilbee.server.handlers.search", new_callable=AsyncMock, return_value=[])
-    def test_default_top_k(self, mock_search, client):
+    def test_omitted_top_k_forwarded_as_none(self, mock_search, client):
+        """The route carries no hardcoded default; the handler resolves an omitted top_k."""
         client.get("/api/search", params={"q": "x"})
-        mock_search.assert_awaited_once_with("x", top_k=5, chunk_type=None)
+        mock_search.assert_awaited_once_with("x", top_k=None, chunk_type=None)
+
+    def test_omitted_top_k_uses_configured_value_end_to_end(self, client):
+        """The real route and handler resolve an omitted top_k from cfg, not a hardcoded default."""
+        from lilbee.app.services import set_services
+        from tests.conftest import make_mock_services
+
+        searcher = mock.MagicMock()
+        searcher.search.return_value = []
+        services = make_mock_services(searcher=searcher)
+        cfg.top_k = 7
+        set_services(services)
+        try:
+            resp = client.get("/api/search", params={"q": "x"})
+            assert resp.status_code == 200
+            searcher.search.assert_called_once_with("x", top_k=7, chunk_type=None)
+        finally:
+            set_services(None)
 
     def test_invalid_chunk_type_rejected_with_400(self, client):
         resp = client.get("/api/search", params={"q": "x", "chunk_type": "bogus"})
@@ -1139,6 +1157,41 @@ class TestConfigRoute:
         assert "rag_system_prompt" in resp.json()
 
 
+class TestConfigSourcesRoute:
+    def test_config_sources_route_covers_every_public_key(self, client):
+        """The sources payload names every key GET /api/config answers, and no other."""
+        config_keys = set(client.get("/api/config").json())
+        resp = client.get("/api/config/sources")
+        assert resp.status_code == 200
+        sources = resp.json()["sources"]
+        assert config_keys
+        assert set(sources) == config_keys
+
+    def test_each_key_carries_the_layer_that_supplies_it(self, client, isolated_env, monkeypatch):
+        """Env beats config.toml on top_k; chunk_size, named only in config.toml, stays user."""
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        monkeypatch.setenv("LILBEE_TEMPERATURE", "")
+        sources = client.get("/api/config/sources").json()["sources"]
+        assert sources["top_k"] == "env"
+        assert sources["chunk_size"] == "user"
+        assert sources["temperature"] == "built_in"
+        assert sources["num_ctx"] == "auto"
+
+    def test_get_config_shape_has_no_source_key(self, client, isolated_env):
+        """GET /api/config stays a flat key-to-value map beside the new route."""
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        cfg.top_k = 7
+        data = client.get("/api/config").json()
+        assert "sources" not in data
+        assert "source" not in data
+        assert data["top_k"] == 7
+
+
 class TestConfigDefaultsRoute:
     def test_returns_writable_defaults(self, client):
         from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
@@ -1242,6 +1295,17 @@ class TestConfigSchemaRoute:
         assert entry["group"] == SETTINGS_MAP["fts_language"].group.value
         assert entry["type"] == "str"
         assert entry["nullable"] is False
+
+    def test_advanced_flag_matches_the_settings_map(self, client):
+        """``advanced`` is read off SETTINGS_MAP, not restated per field."""
+        from lilbee.app.settings_map import SETTINGS_MAP
+
+        entries = self._by_key(client)
+        assert entries["reranker_type"]["advanced"] is True
+        assert entries["top_k"]["advanced"] is False
+        assert {key for key, entry in entries.items() if entry["advanced"]} == {
+            key for key, defn in SETTINGS_MAP.items() if defn.advanced
+        }
 
 
 class TestConfigUpdateRoute:
@@ -1354,6 +1418,122 @@ class TestConfigUpdateRoute:
         saved = settings.load(isolated_env)
         assert saved["documents_dir"] == str(vault / "lilbee")
         assert saved["vault_base"] == str(vault)
+
+
+class TestConfigResetRoute:
+    def test_removes_the_user_value_and_answers_the_reset_keys(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "chunk_size": 900})
+        cfg.top_k = 7
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+        assert settings.load(isolated_env) == {"chunk_size": 900}
+        assert cfg.top_k == 12
+
+    def test_resolves_to_the_env_value_when_one_is_set(self, client, isolated_env, monkeypatch):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        monkeypatch.setenv("LILBEE_TOP_K", "9")
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert cfg.top_k == 9
+        assert "top_k" not in settings.load(isolated_env)
+
+    def test_duplicate_keys_reset_the_key_once(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7, "seed": 3})
+        cfg.top_k = 7
+        resp = client.post("/api/config/reset", json={"keys": ["top_k", "top_k"]})
+        assert resp.status_code == 200
+        assert resp.json() == {"updated": ["top_k"], "reindex_required": False, "warnings": []}
+        assert settings.load(isolated_env) == {"seed": 3}
+        assert cfg.top_k == 12
+
+    def test_warns_when_the_reset_leaves_ocr_off_with_a_vision_model(self, client, isolated_env):
+        (isolated_env / "config.toml").write_text(
+            "enable_ocr = true\n[profile.values]\nenable_ocr = false\n", encoding="utf-8"
+        )
+        cfg.enable_ocr = True
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        resp = client.post("/api/config/reset", json={"keys": ["enable_ocr"]})
+        assert resp.status_code == 200
+        warnings = resp.json()["warnings"]
+        assert len(warnings) == 1
+        assert "enable_ocr" in warnings[0] and cfg.vision_model in warnings[0]
+        assert cfg.enable_ocr is False
+
+    def test_resolves_to_the_profile_value(self, client, isolated_env):
+        from lilbee.core import settings
+
+        (isolated_env / "config.toml").write_text(
+            "top_k = 99\nseed = 3\n[profile.values]\ntop_k = 7\n", encoding="utf-8"
+        )
+        cfg.top_k = 99
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 200
+        assert cfg.top_k == 7
+        assert settings.load(isolated_env) == {"seed": 3, "profile": {"values": {"top_k": 7}}}
+
+    def test_an_invalid_profile_value_answers_400_and_changes_nothing(self, client, isolated_env):
+        from lilbee.core import settings
+
+        (isolated_env / "config.toml").write_text(
+            "max_distance = 0.3\n[profile.values]\nmax_distance = -5.0\n", encoding="utf-8"
+        )
+        cfg.max_distance = 0.3
+        resp = client.post("/api/config/reset", json={"keys": ["max_distance"]})
+        assert resp.status_code == 400
+        assert "Cannot reset 'max_distance': its profile value -5.0 is invalid" in resp.text
+        assert cfg.max_distance == 0.3
+        assert settings.load(isolated_env)["max_distance"] == 0.3
+
+    def test_documents_dir_answers_400_without_naming_an_mcp_tool(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["documents_dir"]})
+        assert resp.status_code == 400
+        assert "'documents_dir' has no default to reset to; set a folder path" in resp.text
+        assert "settings_set" not in resp.text
+
+    def test_an_unknown_key_answers_400_naming_it(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["bogus"]})
+        assert resp.status_code == 400
+        assert "Unknown or read-only setting: bogus" in resp.text
+
+    def test_a_model_role_answers_400_and_changes_nothing(self, client, isolated_env):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"chat_model": "acme/a-GGUF/a.gguf"})
+        resp = client.post("/api/config/reset", json={"keys": ["chat_model"]})
+        assert resp.status_code == 400
+        assert "dedicated model route" in resp.text
+        assert settings.load(isolated_env) == {"chat_model": "acme/a-GGUF/a.gguf"}
+
+    def test_a_provider_switch_answers_400(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"keys": ["llm_provider"]})
+        assert resp.status_code == 400
+        assert "Resetting the model provider is unavailable on the HTTP server" in resp.text
+
+    def test_a_body_without_keys_answers_400(self, client, isolated_env):
+        resp = client.post("/api/config/reset", json={"top_k": 1})
+        assert resp.status_code == 400
+
+    def test_a_config_toml_held_open_answers_503(self, client, isolated_env, monkeypatch):
+        from lilbee.core import settings
+
+        settings.update_values(isolated_env, {"top_k": 7})
+        cfg.top_k = 7
+
+        def refuse(_src, _dst):
+            raise PermissionError(13, "The process cannot access the file")
+
+        monkeypatch.setattr(os, "replace", refuse)
+        resp = client.post("/api/config/reset", json={"keys": ["top_k"]})
+        assert resp.status_code == 503
+        assert "Close the program that holds config.toml open" in resp.json()["detail"]
+        assert cfg.top_k == 7
 
 
 class TestModelsSetEmbeddingRoute:

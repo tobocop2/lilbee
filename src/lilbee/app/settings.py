@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import errno
-from dataclasses import dataclass
+import logging
+import threading
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
-
-from pydantic_core import PydanticUndefined
 
 from lilbee.app.settings_map import SETTINGS_MAP, SettingDef, SettingGroup
 from lilbee.config_meta import (
@@ -16,16 +19,29 @@ from lilbee.config_meta import (
 )
 from lilbee.core import settings as persistent_settings
 from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config.enums import SettingSource
 from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.resolve import (
+    PROFILE_FIELDS,
+    Resolved,
+    SettingLayers,
+    builtin_value,
+    read_layers,
+    resolve,
+    resolve_all,
+)
 from lilbee.core.config.schema import field_type_name
+from lilbee.core.project_state import dismiss_tip
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
 
 if TYPE_CHECKING:
     from lilbee.modelhub.registry import ModelRegistry
+
+log = logging.getLogger(__name__)
 
 _MIN_CHUNK_SIZE = 64
 
@@ -53,6 +69,18 @@ _OCR_ENGINE_NOTES = {
 # install, so they are refused at the reset gate.
 _NO_RESET_FIELDS: frozenset[str] = frozenset({"documents_dir"})
 
+# Serializes a whole settings update (apply, save, rollback, settle) across
+# threads. Held only inside _settings_transaction, so a plain lock (not
+# reentrant) is enough.
+_settings_write_lock = threading.Lock()
+
+
+class _LayerChange(StrEnum):
+    """A change to the setting layers whose resolved values are checked before it is written."""
+
+    RESET = "reset"
+    APPLY = "apply"
+
 
 @dataclass(frozen=True)
 class SettingInfo:
@@ -67,6 +95,8 @@ class SettingInfo:
     help_text: str
     choices: tuple[str, ...] | None
     reindex_required: bool
+    source: SettingSource
+    advanced: bool
 
 
 @dataclass(frozen=True)
@@ -98,16 +128,6 @@ def _update_warnings(changed_keys: set[str]) -> tuple[str, ...]:
     return (warning,) if warning is not None else ()
 
 
-def _setting_default(key: str) -> Any:
-    """Return the pydantic default for ``key``, or ``None`` if unset."""
-    info = Config.model_fields[key]
-    if info.default_factory is not None:
-        return info.default_factory()  # type: ignore[call-arg]
-    if info.default is PydanticUndefined:
-        return None
-    return info.default
-
-
 def _is_write_only(key: str) -> bool:
     """Return True for fields persisted but never read back (API keys, hf_token)."""
     extra = Config.model_fields[key].json_schema_extra
@@ -133,21 +153,40 @@ def _setting_help(key: str, definition: SettingDef | None) -> str:
     return Config.model_fields[key].description or ""
 
 
-def _setting_info(key: str, definition: SettingDef | None) -> SettingInfo:
+def setting_sources() -> dict[str, SettingSource]:
+    """The source of every Config field's effective value, from one read of config.toml."""
+    return _sources(read_layers(cfg.data_root))
+
+
+def _sources(layers: SettingLayers) -> dict[str, SettingSource]:
+    """The source of every Config field's effective value under *layers*."""
+    return {key: entry.source for key, entry in resolve_all(layers).items()}
+
+
+def _reset_target(key: str, layers: SettingLayers) -> Any:
+    """The value a reset falls back to without an env var: the profile's, else the built-in."""
+    return layers.profile[key] if key in layers.profile else builtin_value(key)
+
+
+def _setting_info(key: str, layers: SettingLayers, source: SettingSource) -> SettingInfo:
+    definition = SETTINGS_MAP.get(key)
     nullable = _is_nullable(key)
     group = definition.group if definition else SettingGroup.MODELS
     help_text = _setting_help(key, definition)
     choices = definition.choices if definition else None
+    advanced = definition.advanced if definition else False
     return SettingInfo(
         key=key,
         value=getattr(cfg, key),
-        default=_setting_default(key),
+        default=_reset_target(key, layers),
         type=field_type_name(key),
         nullable=nullable,
         group=group,
         help_text=help_text,
         choices=choices,
         reindex_required=key in REINDEX_FIELDS,
+        source=source,
+        advanced=advanced,
     )
 
 
@@ -167,7 +206,9 @@ def _parse_group(group: SettingGroup | str) -> SettingGroup:
 
 def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
     """List every writable non-secret setting, optionally filtered by group (case-insensitive)."""
-    infos = [_setting_info(key, SETTINGS_MAP.get(key)) for key in _public_writable_keys()]
+    layers = read_layers(cfg.data_root)
+    sources = _sources(layers)
+    infos = [_setting_info(key, layers, sources[key]) for key in _public_writable_keys()]
     if group is not None:
         wanted = _parse_group(group)
         infos = [info for info in infos if info.group == wanted]
@@ -177,10 +218,11 @@ def list_settings(group: SettingGroup | str | None = None) -> list[SettingInfo]:
 def get_setting(key: str) -> SettingInfo:
     """Return the ``SettingInfo`` for one writable non-secret key."""
     if not _is_settable(key):
-        raise KeyError(f"Unknown or read-only setting: {key}")
+        raise ValueError(f"Unknown or read-only setting: {key}")
     if _is_write_only(key):
         raise KeyError(f"Setting '{key}' is write-only and cannot be read back")
-    return _setting_info(key, SETTINGS_MAP.get(key))
+    layers = read_layers(cfg.data_root)
+    return _setting_info(key, layers, _sources(layers)[key])
 
 
 def _is_settable(key: str) -> bool:
@@ -347,7 +389,13 @@ def config_write_failure_message(exc: OSError) -> str:
 
 
 def _invalidate_caches(changed_keys: set[str]) -> None:
-    """Drop every read-side cache whose freshness depends on a changed setting."""
+    """Drop every read-side cache whose freshness depends on a changed setting.
+
+    Never decides the provider-reset question: ``_settings_transaction``'s
+    callers compute that independently, from *changed_keys* directly,
+    before calling this function, so an exception raised here cannot
+    suppress it.
+    """
     if not changed_keys:
         return
     if changed_keys & MODEL_ROLE_FIELDS:
@@ -367,12 +415,6 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         services = peek_services()
         if services is not None:
             sync_xberg_backend(BackendKind.TOKENIZER, services.provider)
-    if changed_keys & PROVIDER_SWITCHING_KEYS:
-        # Swap requires reconstructing the provider singleton via
-        # providers.factory.create_provider, only called at services init.
-        from lilbee.app.services import reset_services
-
-        reset_services()
     if "mcp_tool_threads" in changed_keys:
         # Resize the running server's thread pool now instead of only at startup.
         from lilbee.server.app import reapply_thread_pool_ceiling
@@ -384,6 +426,54 @@ def _invalidate_caches(changed_keys: set[str]) -> None:
         from lilbee.catalog.picks import reset_picks
 
         reset_picks()
+
+
+def _run_deferred_provider_reset(needed: bool, *, after_failure: bool = False) -> None:
+    """Tear down the Services singleton for a provider switch, once the lock has released.
+
+    Blocks on the whole fleet stopping (each engine's stop-then-reap can
+    take a few seconds), which is why ``_settings_transaction`` defers it
+    until after ``_settings_write_lock`` releases.
+    """
+    if not needed:
+        return
+    from lilbee.app.services import reset_services
+
+    if not after_failure:
+        reset_services()
+        return
+    try:
+        reset_services()
+    except Exception:
+        log.exception("Provider reset failed while handling another exception")
+
+
+@dataclass
+class _SettingsTransaction:
+    """State one locked settings update carries to its exit-time provider reset."""
+
+    needs_provider_reset: bool = False
+
+
+@contextmanager
+def _settings_transaction() -> Iterator[_SettingsTransaction]:
+    """Hold ``_settings_write_lock`` for one settings update.
+
+    The body sets ``needs_provider_reset`` on the yielded transaction before
+    returning. The reset then runs after the lock releases: if the body
+    raised, a reset failure is logged and swallowed so the body's exception
+    reaches the caller unchanged; otherwise a reset failure propagates
+    normally.
+    """
+    txn = _SettingsTransaction()
+    try:
+        with _settings_write_lock:
+            yield txn
+    except Exception:
+        _run_deferred_provider_reset(txn.needs_provider_reset, after_failure=True)
+        raise
+    else:
+        _run_deferred_provider_reset(txn.needs_provider_reset)
 
 
 def apply_settings_update(
@@ -403,54 +493,82 @@ def apply_settings_update(
     ``embedding_model`` / ``vision_model`` / ``reranker_model`` at the
     boundary; the HTTP PATCH /api/config surface uses this to route role
     writes through PUT /api/models/<role>.
+
+    Runs inside ``_settings_transaction``, which holds the lock and owns
+    the provider-reset exception contract.
     """
-    if not allow_model_roles:
-        rejected = MODEL_ROLE_FIELDS & set(updates)
-        if rejected:
-            offender = sorted(rejected)[0]
-            raise ValueError(
-                f"'{offender}' must be set through the dedicated model route, "
-                "not the general settings update."
-            )
-    _validate(updates)
-    embed_in_batch = "embedding_model" in updates
-    # Derived (not user-writable) fields applied alongside the validated batch.
-    effective_updates = dict(updates)
-    if embed_in_batch:
-        # Pin the OLD ref into store meta before mutation, otherwise the
-        # next read lazy-initializes meta from the NEW cfg and silently
-        # hides the dimension drift. Runs even when the value is unchanged
-        # so a legacy meta row is always canonicalized on the first swap
-        # attempt.
-        _pin_legacy_store_meta()
-        # Track the new embedder's output width so a fresh index is built at
-        # the right dimension (embedding_dim is derived, not in SETTINGS_MAP).
-        dim = _embedder_dim_from_gguf(updates["embedding_model"])
-        if dim is not None:
-            effective_updates["embedding_dim"] = dim
-    to_persist, to_delete, snapshot = _apply_with_rollback(effective_updates)
-    # embedding_dim is derived and applied to cfg in-memory, but the overlay
-    # loader ignores it on reload (it is re-derived), so don't write it to disk.
-    to_persist.pop("embedding_dim", None)
-    try:
-        if to_persist:
-            persistent_settings.update_values(cfg.data_root, to_persist)
-        if to_delete:
-            persistent_settings.delete_values(cfg.data_root, to_delete)
-    except (OSError, ValueError):
-        # OSError from the write, or a TOMLDecodeError (ValueError) when
-        # update/delete reloads a corrupt on-disk config.toml: either way the
-        # in-memory snapshot must be restored so cfg matches what was persisted.
-        _restore_snapshot(snapshot)
-        raise
-    _invalidate_caches(set(effective_updates))
-    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & set(updates))
+    with _settings_transaction() as txn:
+        if not allow_model_roles:
+            _refuse_model_roles(updates)
+        _validate(updates)
+        null_keys = [key for key, value in updates.items() if value is None]
+        if null_keys:
+            _refuse_invalid_fallbacks(_values_after_reset(null_keys), _LayerChange.APPLY)
+        embed_in_batch = "embedding_model" in updates
+        if embed_in_batch:
+            # Pin the OLD ref into store meta before mutation, otherwise the
+            # next read lazy-initializes meta from the NEW cfg and silently
+            # hides the dimension drift. Runs even when the value is unchanged
+            # so a legacy meta row is always canonicalized on the first swap
+            # attempt.
+            _pin_legacy_store_meta()
+        to_persist, to_delete, snapshot = _apply_with_rollback(updates)
+        try:
+            if to_persist:
+                persistent_settings.update_values(cfg.data_root, to_persist)
+            if to_delete:
+                persistent_settings.delete_values(cfg.data_root, to_delete)
+        except (OSError, ValueError):
+            # OSError from the write, or a TOMLDecodeError (ValueError) when
+            # update/delete reloads a corrupt on-disk config.toml: either way the
+            # in-memory snapshot must be restored so cfg matches what was persisted.
+            _restore_snapshot(snapshot)
+            raise
+        # Decide the reset now, before settle's other steps can raise.
+        txn.needs_provider_reset = bool(set(updates) & PROVIDER_SWITCHING_KEYS)
+        return _settle(set(updates), embed_in_batch=embed_in_batch)
+
+
+def _refuse_model_roles(keys: Iterable[str]) -> None:
+    """Refuse model-role keys, which the dedicated model route owns."""
+    rejected = MODEL_ROLE_FIELDS & set(keys)
+    if rejected:
+        offender = sorted(rejected)[0]
+        raise ValueError(
+            f"'{offender}' must be set through the dedicated model route, "
+            "not the general settings update."
+        )
+
+
+def _settle(
+    keys: set[str],
+    *,
+    embed_in_batch: bool,
+    changed: set[str] | None = None,
+    reindex_changed: set[str] | None = None,
+) -> SettingsUpdateResult:
+    """Set *keys* on cfg from the resolver; rederive, invalidate and report for *changed*.
+
+    *changed* narrows the fleet-reload and cache-invalidation side effects to the
+    keys whose resolved value actually differs from what THIS process's cfg held;
+    it defaults to *keys* for callers where every key is already known to be a
+    real change (a PATCH and a profile apply). *reindex_changed* narrows the
+    reindex verdict the same way but from config.toml's own before/after resolved
+    value, never cfg, since the persisted vector store is a cross-process
+    resource a stale cfg cannot speak for; it defaults to *changed*.
+    """
+    effective = keys if changed is None else changed
+    reindex_effective = effective if reindex_changed is None else reindex_changed
+    persistent_settings.sync_from_resolver(cfg, keys)
+    _rederive_from_resolved(effective)
+    _invalidate_caches(effective)
+    reindex_required = bool((REINDEX_FIELDS - _inert_reindex_keys()) & reindex_effective)
     if embed_in_batch:
         reindex_required = reindex_required or _embed_reindex_required()
     return SettingsUpdateResult(
-        updated=sorted(updates),
+        updated=sorted(keys),
         reindex_required=reindex_required,
-        warnings=_update_warnings(set(updates)),
+        warnings=_update_warnings(effective),
     )
 
 
@@ -515,13 +633,25 @@ def reconcile_embedding_dim(registry: ModelRegistry | None = None) -> None:
         cfg.embedding_dim = dim
 
 
+def _rederive_from_resolved(keys: set[str]) -> None:
+    """Recompute each setting derived from one of *keys*, from that key's resolved value."""
+    if "embedding_model" in keys:
+        reconcile_embedding_dim()
+
+
 def _inert_reindex_keys() -> set[str]:
     """Reindex keys that change no extraction output under the effective config.
 
-    xberg reads ``table_model`` only inside layout detection, so a change to it
-    while ``layout_detection`` is off is not worth a rebuild.
+    ``table_model`` is read only inside layout detection, and ``topic_threshold``
+    only inside semantic chunking, so a change to either while its gating flag is
+    off is not worth a rebuild.
     """
-    return set() if cfg.layout_detection else {"table_model"}
+    inert: set[str] = set()
+    if not cfg.layout_detection:
+        inert.add("table_model")
+    if not cfg.semantic_chunking:
+        inert.add("topic_threshold")
+    return inert
 
 
 def _embed_reindex_required() -> bool:
@@ -537,29 +667,134 @@ def _embed_reindex_required() -> bool:
     return store.index_mismatch() is not None
 
 
-def reset_settings(keys: list[str], *, skip_unresettable: bool = False) -> SettingsUpdateResult:
-    """Reset each key to its pydantic default and apply through the write boundary.
+def reset_settings(
+    keys: list[str], *, skip_unresettable: bool = False, allow_model_roles: bool = True
+) -> SettingsUpdateResult:
+    """Remove each key from config.toml and set cfg to the value the resolver then gives.
 
-    Fields whose default is a known sentinel (currently ``documents_dir``,
-    which resolves to ``data_root/documents`` at process start) are
-    refused so a reset doesn't write the literal sentinel back. Pass
-    ``skip_unresettable=True`` for bulk-reset gestures that should drop
-    those fields rather than failing the whole batch.
+    ``documents_dir`` has no default to fall back to, so it is refused; pass
+    ``skip_unresettable=True`` for bulk gestures that skip it instead.
+
+    Runs inside ``_settings_transaction``, which holds the lock and owns
+    the provider-reset exception contract.
     """
-    for key in keys:
-        if not _is_settable(key):
-            raise ValueError(f"Unknown or read-only setting: {key}")
-        if key in _NO_RESET_FIELDS and not skip_unresettable:
+    with _settings_transaction() as txn:
+        if not allow_model_roles:
+            _refuse_model_roles(keys)
+        for key in keys:
+            if not _is_settable(key):
+                raise ValueError(f"Unknown or read-only setting: {key}")
+            if key in _NO_RESET_FIELDS and not skip_unresettable:
+                raise ValueError(f"'{key}' has no default to reset to; set a folder path instead.")
+        targets = [key for key in keys if key not in _NO_RESET_FIELDS]
+        before = _values_before_reset(targets)
+        fallbacks = _values_after_reset(targets)
+        coerced = _refuse_invalid_fallbacks(fallbacks, _LayerChange.RESET)
+        _validate({key: entry.value for key, entry in fallbacks.items()})
+        # coerced holds each fallback after the same type coercion cfg applies, so an
+        # env var's raw string cannot misread as "changed" against cfg's own value.
+        # Scoped to THIS process's live cfg (and therefore its engine), which is
+        # exactly what fleet reload, cache invalidation and the meta pin below need
+        # to know moved.
+        changed = {key for key in targets if getattr(cfg, key) != coerced[key]}
+        # config.toml's own before/after resolved value, never cfg: a second writer
+        # (another CLI invocation, a hand edit) can change the file's effective
+        # value without this process's cfg ever observing it, and the persisted
+        # vector store is a cross-process resource a stale cfg cannot speak for.
+        reindex_changed = {key for key in targets if before[key].value != fallbacks[key].value}
+        if "embedding_model" in changed:
+            _pin_legacy_store_meta()
+        persistent_settings.delete_values(cfg.data_root, targets)
+        # Decide the reset now, before settle's other steps can raise.
+        txn.needs_provider_reset = bool(changed & PROVIDER_SWITCHING_KEYS)
+        return _settle(
+            set(targets),
+            embed_in_batch="embedding_model" in reindex_changed,
+            changed=changed,
+            reindex_changed=reindex_changed,
+        )
+
+
+def _values_before_reset(keys: list[str]) -> dict[str, Resolved]:
+    """The value and source each of *keys* currently resolves to, saved value included."""
+    layers = read_layers(cfg.data_root)
+    return {key: resolve(key, layers) for key in keys}
+
+
+def _values_after_reset(keys: list[str]) -> dict[str, Resolved]:
+    """The value and source each of *keys* resolves to once its user entry is gone."""
+    layers = read_layers(cfg.data_root)
+    remaining = replace(
+        layers, user={key: value for key, value in layers.user.items() if key not in keys}
+    )
+    return {key: resolve(key, remaining) for key in keys}
+
+
+def _refuse_invalid_fallbacks(
+    fallbacks: dict[str, Resolved], action: _LayerChange
+) -> dict[str, Any]:
+    """Refuse an *action* when a key would resolve to a value its field rejects.
+
+    Returns each key's value after the same coercion a cfg assignment applies
+    (e.g. an env var's raw string cast to int), so a caller can compare it
+    against cfg's current value in the same terms.
+    """
+    trial = cfg.model_copy()
+    for key, entry in fallbacks.items():
+        try:
+            setattr(trial, key, entry.value)
+        except ValueError as exc:
             raise ValueError(
-                f"'{key}' has no resettable default; pass an explicit value via settings_set."
-            )
-    updates: dict[str, Any] = {}
-    for key in keys:
-        if key in _NO_RESET_FIELDS:
-            continue
-        default = _setting_default(key)
-        if default is None and _is_nullable(key):
-            updates[key] = None
-        else:
-            updates[key] = default
-    return apply_settings_update(updates)
+                f"Cannot {action.value} '{key}': its {entry.source.value} value {entry.value!r} is "
+                "invalid. Fix or remove that value first."
+            ) from exc
+    return {key: getattr(trial, key) for key in fallbacks}
+
+
+def apply_profile_layer(
+    name: str,
+    values: Mapping[str, Any],
+    *,
+    absorb: Collection[str] = (),
+    write_first: Callable[[], object] | None = None,
+) -> SettingsUpdateResult:
+    """Record *name* and *values* as the project's profile and set cfg from the new layers.
+
+    Every key the old or new profile holds is validated at the value it resolves to
+    under the new profile before anything is written; user and env values keep winning.
+    Each *absorb* key, which *values* must hold, leaves config.toml in the same write.
+    Applying a profile hides the analyze tip.
+    *write_first* runs once validation passes, before config.toml changes.
+
+    Runs inside ``_settings_transaction``, which holds the lock and owns
+    the provider-reset exception contract.
+    """
+    with _settings_transaction() as txn:
+        refused = sorted(set(values) - set(PROFILE_FIELDS))
+        if refused:
+            raise ValueError(f"Profiles cannot set {refused[0]}")
+        stray = sorted(set(absorb) - set(values))
+        if stray:
+            raise ValueError(f"The profile does not hold {stray[0]}, so it cannot take it over")
+        layers = read_layers(cfg.data_root)
+        user = {key: value for key, value in layers.user.items() if key not in absorb}
+        after = replace(layers, user=user, profile=dict(values))
+        keys = set(layers.profile) | set(values)
+        resolved = {key: resolve(key, after) for key in sorted(keys)}
+        _refuse_invalid_fallbacks(resolved, _LayerChange.APPLY)
+        _validate({key: entry.value for key, entry in resolved.items()})
+        if write_first is not None:
+            write_first()
+        persistent_settings.write_profile_table(cfg.data_root, name, values, drop=absorb)
+        _hide_analyze_tip()
+        # Decide the reset now, before settle's other steps can raise.
+        txn.needs_provider_reset = bool(keys & PROVIDER_SWITCHING_KEYS)
+        return _settle(keys, embed_in_batch=False)
+
+
+def _hide_analyze_tip() -> None:
+    """Hide the analyze tip once a profile is applied; a failed write must not fail the apply."""
+    try:
+        dismiss_tip(cfg.data_root)
+    except OSError as exc:
+        log.warning("Could not record that the analyze tip is hidden: %s", exc)

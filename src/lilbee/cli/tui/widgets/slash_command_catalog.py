@@ -78,7 +78,17 @@ CATALOG_GROUPS: tuple[CatalogGroup, ...] = (
     ),
     CatalogGroup(
         "SETTINGS & SYSTEM",
-        ("/settings", "/set", "/theme", "/reset", "/remove", "/login", "/version"),
+        (
+            "/settings",
+            "/set",
+            "/profile",
+            "/analyze",
+            "/theme",
+            "/reset",
+            "/remove",
+            "/login",
+            "/version",
+        ),
     ),
 )
 

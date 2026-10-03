@@ -16,7 +16,8 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from weakref import WeakKeyDictionary
@@ -25,6 +26,14 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.types import Tool as MCPTool
 
+from lilbee.app import profiles
+from lilbee.app.analyze import (
+    AnalyzeRequest,
+    hide_tip,
+    run_analysis,
+    server_directory,
+    tip_state,
+)
 from lilbee.app.memory import (
     MEMORY_DISABLED_HINT,
     forget,
@@ -55,6 +64,7 @@ from lilbee.app.settings import (
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.profile_files import ProfileFolder, ProfileStore, ProfileValidation
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
@@ -213,11 +223,17 @@ def _tool_if(when: Callable[[], bool]) -> Callable[[_F], _F]:
 # one over ``settings_set`` persists it, but the tool list only changes on the
 # next connection: MCP sends no ``tools/list_changed`` from here. The settings
 # reference documents that, and generates the list from this set.
-TOOL_GATE_SETTINGS: frozenset[str] = frozenset({"wiki", "memory_enabled", "mcp_sessions_enabled"})
+TOOL_GATE_SETTINGS: frozenset[str] = frozenset(
+    {"wiki", "memory_enabled", "mcp_sessions_enabled", "mcp_profiles_enabled"}
+)
 
 
 def _wiki_enabled() -> bool:
     return cfg.wiki
+
+
+def _profiles_enabled() -> bool:
+    return cfg.mcp_profiles_enabled
 
 
 def _error(msg: str) -> dict[str, Any]:
@@ -1049,6 +1065,8 @@ def _setting_info_to_dict(info: SettingInfo) -> dict[str, Any]:
         "help": info.help_text,
         "choices": list(info.choices) if info.choices else None,
         "reindex_required": info.reindex_required,
+        "source": info.source.value,
+        "advanced": info.advanced,
     }
 
 
@@ -1083,7 +1101,7 @@ def settings_get(key: str) -> dict[str, Any]:
 
     try:
         info = get_setting(key)
-    except KeyError as exc:
+    except (KeyError, ValueError) as exc:
         return _error(str(exc))
     return {"command": "settings_get", "setting": _setting_info_to_dict(info)}
 
@@ -1110,7 +1128,7 @@ def settings_set(updates: dict[str, Any]) -> dict[str, Any]:
 
 @_tool
 def settings_reset(keys: list[str]) -> dict[str, Any]:
-    """Reset writable settings to their built-in defaults."""
+    """Remove your values; env, profile or default applies."""
     if _transport.http_mounted and requires_services_reset(dict.fromkeys(keys)):
         return _error(provider_reset_refused_message("Resetting"))
     try:
@@ -1123,7 +1141,215 @@ def settings_reset(keys: list[str]) -> dict[str, Any]:
         "command": "settings_reset",
         "updated": result.updated,
         "reindex_required": result.reindex_required,
+        "warnings": list(result.warnings),
     }
+
+
+class ProfileAction(StrEnum):
+    """A profile file operation ``profile_manage`` runs."""
+
+    NEW = "new"
+    SAVE = "save"
+    UPDATE = "update"
+    DISCARD = "discard"
+    DUPLICATE = "duplicate"
+    RENAME = "rename"
+    DELETE = "delete"
+    EXPORT = "export"
+    IMPORT = "import"
+    VALIDATE = "validate"
+
+
+@dataclass(frozen=True)
+class _ManageArgs:
+    """The arguments of one ``profile_manage`` call."""
+
+    name: str
+    new_name: str
+    folder: ProfileFolder
+    content: str
+    filename: str
+    from_profile: str
+    overwrite: bool
+
+
+def _profile_call(operation: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    """Run a profile operation; a refusal returns its reason as the error."""
+    if not _profiles_enabled():
+        return _error(profiles.MCP_PROFILES_DISABLED_HINT)
+    try:
+        return operation()
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(profiles.file_failure_message(exc))
+
+
+def _profile_store() -> ProfileStore:
+    return get_services().profile_store
+
+
+def _location_dict(location: profiles.ProfileLocation) -> dict[str, Any]:
+    from lilbee.server.models import ProfileLocationResponse
+
+    return ProfileLocationResponse.from_location(location).model_dump(mode="json")
+
+
+def _save_dict(result: profiles.SaveResult) -> dict[str, Any]:
+    from lilbee.server.models import ProfileSaveResponse
+
+    return ProfileSaveResponse.from_save(result).model_dump(mode="json")
+
+
+def _discard_dict(result: profiles.DiscardResult) -> dict[str, Any]:
+    from lilbee.server.models import ProfileDiscardResponse
+
+    return ProfileDiscardResponse.from_result(result).model_dump(mode="json")
+
+
+def _validation_dict(result: ProfileValidation) -> dict[str, Any]:
+    from lilbee.server.models import ProfileValidationResponse
+
+    return ProfileValidationResponse.from_validation(result).model_dump(mode="json")
+
+
+def _export_dict(store: ProfileStore, args: _ManageArgs) -> dict[str, Any]:
+    exported = profiles.export_text(store, args.name)
+    return {
+        "name": exported.profile.name,
+        "folder": exported.folder,
+        "filename": exported.filename,
+        "content": exported.text,
+    }
+
+
+_MANAGE_ACTIONS: dict[ProfileAction, Callable[[ProfileStore, _ManageArgs], dict[str, Any]]] = {
+    ProfileAction.NEW: lambda store, a: _location_dict(
+        profiles.new(store, a.name, a.folder, from_name=a.from_profile or None)
+    ),
+    ProfileAction.SAVE: lambda _store, a: _save_dict(profiles.save_as(a.name, a.folder)),
+    ProfileAction.UPDATE: lambda store, _a: _save_dict(profiles.update(store)),
+    ProfileAction.DISCARD: lambda _store, _a: _discard_dict(profiles.discard()),
+    ProfileAction.DUPLICATE: lambda store, a: _location_dict(
+        profiles.duplicate(store, a.name, a.new_name, a.folder)
+    ),
+    ProfileAction.RENAME: lambda store, a: _location_dict(
+        profiles.rename(store, a.name, a.new_name)
+    ),
+    ProfileAction.DELETE: lambda store, a: _location_dict(profiles.delete(store, a.name)),
+    ProfileAction.EXPORT: _export_dict,
+    ProfileAction.IMPORT: lambda store, a: _location_dict(
+        profiles.import_text(store, a.content, a.filename, a.folder, overwrite=a.overwrite)
+    ),
+    ProfileAction.VALIDATE: lambda _store, a: _validation_dict(
+        profiles.validate_content(a.content, a.filename, a.folder)
+    ),
+}
+
+
+def _profile_listing() -> dict[str, Any]:
+    from lilbee.server.models import ActiveProfileResponse, ProfileEntryResponse
+
+    store = _profile_store()
+    active = ActiveProfileResponse.from_active(profiles.active(store))
+    entries = profiles.list_profiles(store).entries
+    return {
+        "active": active.model_dump(mode="json"),
+        "profiles": [ProfileEntryResponse.from_entry(e).model_dump(mode="json") for e in entries],
+    }
+
+
+def _profile_detail(name: str) -> dict[str, Any]:
+    from lilbee.server.models import ProfileDiffResponse, ProfileEntryResponse
+
+    store = _profile_store()
+    entry = profiles.show(store, name)
+    diff = profiles.diff(store, name) if entry.file is not None else None
+    return {
+        "profile": ProfileEntryResponse.from_entry(entry).model_dump(mode="json"),
+        "diff": ProfileDiffResponse.from_diff(diff).model_dump(mode="json") if diff else None,
+    }
+
+
+def _profile_applied(name: str) -> dict[str, Any]:
+    from lilbee.server.models import ProfileApplyResponse
+
+    result = profiles.apply(_profile_store(), name)
+    return ProfileApplyResponse.from_result(result).model_dump(mode="json")
+
+
+@_tool_if(_profiles_enabled)
+def profile_list() -> dict[str, Any]:
+    """The project's active profile and every profile, with credit and broken-file reasons."""
+    return _profile_call(_profile_listing)
+
+
+@_tool_if(_profiles_enabled)
+def profile_show(name: str) -> dict[str, Any]:
+    """One profile and what applying it changes (``diff`` is null for a broken file)."""
+    return _profile_call(lambda: _profile_detail(name))
+
+
+@_tool_if(_profiles_enabled)
+def profile_apply(name: str) -> dict[str, Any]:
+    """Make a profile the project's; your values stay. Rebuild when ``reindex_required``."""
+    return _profile_call(lambda: _profile_applied(name))
+
+
+@_tool_if(_profiles_enabled)
+def profile_manage(
+    action: ProfileAction,
+    name: str = "",
+    new_name: str = "",
+    folder: ProfileFolder = ProfileFolder.GLOBAL,
+    content: str = "",
+    filename: str = "",
+    from_profile: str = "",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Profile files: new, save (as name), update, discard, duplicate/rename (to new_name),
+    delete, export (returns its content), import/validate (a file's content and its name).
+    ``folder``: global or project."""
+    args = _ManageArgs(name, new_name, folder, content, filename, from_profile, overwrite)
+    return _profile_call(lambda: _MANAGE_ACTIONS[action](_profile_store(), args))
+
+
+@_tool_if(_profiles_enabled)
+async def analyze(
+    directory: str | None = None,
+    apply: bool = False,
+    save: str | None = None,
+    target: ProfileFolder | None = None,
+) -> dict[str, Any]:
+    """Read the corpus, or an absolute ``directory`` on the server, and recommend a profile.
+    ``apply`` saves it and switches to it; ``save`` saves it as that name without switching;
+    ``target`` (project or global) needs one of them. No AI model runs."""
+    from lilbee.server.models import AnalyzeResponse
+
+    if not _profiles_enabled():
+        return _error(profiles.MCP_PROFILES_DISABLED_HINT)
+    try:
+        request = AnalyzeRequest(server_directory(directory), apply, save, target)
+        with _cancel_token() as cancel:
+            report = await run_analysis(_profile_store(), request, cancel=cancel)
+    except ValueError as exc:
+        return _error(str(exc))
+    except OSError as exc:
+        return _error(profiles.file_failure_message(exc))
+    return AnalyzeResponse.from_report(report).model_dump(mode="json")
+
+
+def _tip_dismissed() -> dict[str, Any]:
+    from lilbee.server.models import AnalyzeStateResponse
+
+    hide_tip(cfg.data_root)
+    return AnalyzeStateResponse.from_state(tip_state(cfg.data_root)).model_dump(mode="json")
+
+
+@_tool_if(_profiles_enabled)
+def analyze_dismiss() -> dict[str, Any]:
+    """Hide the analyze tip for this project."""
+    return _profile_call(_tip_dismissed)
 
 
 @_tool

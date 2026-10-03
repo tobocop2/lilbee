@@ -22,6 +22,7 @@ from typer.testing import CliRunner
 from lilbee.app.services import reset_services as reset_provider
 from lilbee.catalog import download_model
 from lilbee.cli.app import app
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 
@@ -159,22 +160,28 @@ def isolated_env(tmp_path, real_models):
     cfg.lancedb_dir = tmp_path / "data" / "lancedb"
     cfg.data_root = tmp_path
 
-    cfg.llm_provider = "auto"
     cfg.models_dir = canonical_models_dir()
     from tests.integration.conftest import EMBEDDING_DIM, _resolve_installed_ref
 
-    cfg.chat_model = _resolve_installed_ref(_chat_model_entry().hf_repo)
-    cfg.embedding_model = _resolve_installed_ref(_embedding_model_entry().hf_repo)
     cfg.embedding_dim = EMBEDDING_DIM
-
-    cfg.concept_graph = False
-    cfg.query_expansion_count = 0
-    cfg.hyde = False
-    cfg.wiki = False
-    cfg.max_tokens = 512
-    cfg.chunk_size = 128
-    cfg.chunk_overlap = 20
     cfg.max_embed_chars = 500
+
+    # Each CLI invocation re-resolves these from config.toml, so they live there.
+    settings = {
+        "llm_provider": "auto",
+        "chat_model": _resolve_installed_ref(_chat_model_entry().hf_repo),
+        "embedding_model": _resolve_installed_ref(_embedding_model_entry().hf_repo),
+        "concept_graph": False,
+        "query_expansion_count": 0,
+        "hyde": False,
+        "wiki": False,
+        "max_tokens": 512,
+        "chunk_size": 128,
+        "chunk_overlap": 20,
+    }
+    persistent_settings.save(tmp_path, settings)
+    for name, value in settings.items():
+        setattr(cfg, name, value)
 
     reset_provider()
 

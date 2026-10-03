@@ -23,6 +23,7 @@ from lilbee.cli.tui.screens.catalog_utils import (
     LocalCatalogRow,
 )
 from lilbee.cli.tui.widgets.model_bar import ModelOption
+from lilbee.core import settings as persistent_settings
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat
 from tests._lilbee_app_test_host import ready_services as _ready_services
@@ -1181,7 +1182,10 @@ class TestModelPickerButton:
             btn = app.query_one("#model-pick-chat", ModelPickerButton)
             new_ref = "ollama/new-chat:latest"
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
             ):
                 btn._on_picker_dismissed(new_ref)
@@ -1236,7 +1240,10 @@ class TestModelPickerButton:
             services_mock = mock.MagicMock(store=store_mock)
             set_services(services_mock)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch("lilbee.cli.tui.widgets.model_bar.reset_services"),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
@@ -1313,7 +1320,10 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -1373,7 +1383,10 @@ class TestModelPickerButton:
             await pilot.pause()
             btn = app.query_one("#model-pick-embed", ModelPickerButton)
             with (
-                mock.patch("lilbee.app.settings.persistent_settings.update_values"),
+                mock.patch(
+                    "lilbee.app.settings.persistent_settings.update_values",
+                    wraps=persistent_settings.update_values,
+                ),
                 mock.patch(
                     "lilbee.cli.tui.widgets.model_pick.get_services",
                     return_value=services_mock,
@@ -2550,24 +2563,23 @@ class TestSlashSuggester:
         assert await s.get_suggestion("") is None
 
     def test_setting_names_exclude_non_settable(self) -> None:
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
 
-        names = SlashSuggester(use_cache=False)._get_setting_names()
+        names = ARG_SOURCES["/set"]()
         assert "wiki_dir" not in names  # read-only: would be refused by /set
         assert "chat_model" in names
 
     def test_model_and_document_lookups_log_and_return_empty_on_error(self) -> None:
         from unittest.mock import patch
 
-        from lilbee.cli.tui.widgets.suggester import SlashSuggester
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
 
-        s = SlashSuggester(use_cache=False)
         with patch(
             "lilbee.modelhub.models.list_installed_models", side_effect=RuntimeError("boom")
         ):
-            assert s._get_model_names() == []
+            assert ARG_SOURCES["/model"]() == []
         with patch("lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=RuntimeError):
-            assert s._get_document_names() == []
+            assert ARG_SOURCES["/delete"]() == []
 
     async def test_slash_prefix_suggests_command(self) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
@@ -2619,7 +2631,6 @@ class TestSlashSuggester:
         monkeypatch.setattr(autocomplete_mod, "get_services", lambda: fake)
 
         s = SlashSuggester(use_cache=False)
-        assert s._get_document_names() == ["notes.md", "todo.txt"]
         assert await s.get_suggestion("/delete no") == "/delete notes.md"
 
     async def test_delete_suggests_a_held_out_source(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2641,13 +2652,13 @@ class TestSlashSuggester:
         assert await s.get_suggestion("/delete no") == "/delete notes.md"
         assert await s.get_suggestion("/delete sc") == "/delete scan.pdf"
 
-    @mock.patch("lilbee.cli.tui.widgets.suggester.SlashSuggester._get_model_names")
-    async def test_suggest_model_arg(self, mock_names: mock.MagicMock) -> None:
+    async def test_suggest_model_arg(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
-        mock_names.return_value = ["qwen3:8b", "mistral:7b"]
         s = SlashSuggester(use_cache=False)
-        r = await s.get_suggestion("/model qw")
+        with mock.patch.dict(ARG_SOURCES, {"/model": lambda: ["qwen3:8b", "mistral:7b"]}):
+            r = await s.get_suggestion("/model qw")
         assert r is not None
         assert "qwen3:8b" in r
 
@@ -2659,13 +2670,13 @@ class TestSlashSuggester:
         assert r is not None
         assert "chat_model" in r
 
-    @mock.patch("lilbee.cli.tui.widgets.suggester.SlashSuggester._get_document_names")
-    async def test_suggest_delete_arg(self, mock_names: mock.MagicMock) -> None:
+    async def test_suggest_delete_arg(self) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
-        mock_names.return_value = ["readme.md", "notes.txt"]
         s = SlashSuggester(use_cache=False)
-        r = await s.get_suggestion("/delete rea")
+        with mock.patch.dict(ARG_SOURCES, {"/delete": lambda: ["readme.md", "notes.txt"]}):
+            r = await s.get_suggestion("/delete rea")
         assert r is not None
         assert "readme.md" in r
 
@@ -2697,30 +2708,24 @@ class TestSlashSuggester:
         r = s._suggest_from_list("/model alpha", "alpha", ["alpha"])
         assert r is None
 
-    def test_get_model_names_error(self) -> None:
+    async def test_model_lookup_error_suggests_nothing(self) -> None:
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
         s = SlashSuggester(use_cache=False)
-        with mock.patch(
-            "lilbee.cli.tui.widgets.suggester.SlashSuggester._get_model_names",
-            side_effect=Exception("fail"),
-        ):
-            # Calling through suggest_argument won't crash
-            pass
-        # Direct call with mock
         with mock.patch(
             "lilbee.modelhub.models.list_installed_models", side_effect=Exception("err")
         ):
-            assert s._get_model_names() == []
+            assert await s.get_suggestion("/model qw") is None
 
-    def test_get_document_names_error(self) -> None:
+    async def test_path_commands_get_no_inline_suggestion(self, tmp_path, monkeypatch) -> None:
+        from lilbee.cli.tui.widgets.autocomplete import ARG_SOURCES
         from lilbee.cli.tui.widgets.suggester import SlashSuggester
 
+        (tmp_path / "srcnotes.md").write_text("x", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        assert ARG_SOURCES["/add"]() == ["srcnotes.md"]
         s = SlashSuggester(use_cache=False)
-        with mock.patch(
-            "lilbee.cli.tui.widgets.autocomplete.get_services", side_effect=Exception("err")
-        ):
-            assert s._get_document_names() == []
+        assert await s.get_suggestion("/add sr") is None
 
 
 class TestGetCompletions:
