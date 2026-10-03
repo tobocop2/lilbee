@@ -1,10 +1,10 @@
 import asyncio
 import errno
 import json
-import sys
 from unittest import mock
 
 import pytest
+from filelock import FileLock
 from typer.testing import CliRunner
 
 from lilbee.cli import app
@@ -17,6 +17,11 @@ runner = CliRunner()
 def _close_coro(coro, *_args, **_kwargs):
     """Consume and close the coroutine so Python doesn't warn about it."""
     coro.close()
+
+
+def _no_locks_available() -> OSError:
+    """The error a file lock raises on a mount without a lock daemon, on any platform."""
+    return OSError(errno.ENOLCK, "No locks available")
 
 
 @pytest.fixture(autouse=True)
@@ -428,7 +433,6 @@ class TestServeSingleton:
         assert "already running" in result.output
         mock_asyncio_run.assert_not_called()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
     @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
@@ -436,12 +440,7 @@ class TestServeSingleton:
     def test_serve_refuses_a_data_directory_that_cannot_lock(
         self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
     ):
-        import fcntl  # POSIX only; skipped on Windows
-
-        def _flock(_fd: int, _operation: int) -> None:
-            raise OSError(errno.ENOLCK, "No locks available")
-
-        with mock.patch.object(fcntl, "flock", _flock):
+        with mock.patch.object(FileLock, "acquire", side_effect=_no_locks_available()):
             result = runner.invoke(app, ["serve"])
 
         assert result.exit_code == 3
@@ -449,7 +448,6 @@ class TestServeSingleton:
         assert "Errno" not in result.output
         mock_asyncio_run.assert_not_called()
 
-    @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
     @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
     @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
     @mock.patch("lilbee.cli.commands.servers.asyncio.run", side_effect=_close_coro)
@@ -463,14 +461,9 @@ class TestServeSingleton:
         tmp_path,
         monkeypatch,
     ):
-        import fcntl  # POSIX only; skipped on Windows
-
-        def _flock(_fd: int, _operation: int) -> None:
-            raise OSError(errno.ENOLCK, "No locks available")
-
         scope = tmp_path / "shared-root"
         monkeypatch.setenv("LILBEE_EXCLUSIVE_SCOPE", str(scope))
-        with mock.patch.object(fcntl, "flock", _flock):
+        with mock.patch.object(FileLock, "acquire", side_effect=_no_locks_available()):
             result = runner.invoke(app, ["serve"])
 
         assert result.exit_code == 3
