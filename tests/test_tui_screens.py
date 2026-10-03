@@ -15555,6 +15555,38 @@ async def test_user_pill_only_on_set_key(tmp_path):
         assert msg.SETTINGS_SOURCE_USER_PILL not in _row_title(app, "chunk_overlap")
 
 
+async def test_advanced_rows_show_their_own_source_pill(tmp_path, monkeypatch):
+    """Each row in a collapsed Advanced section shows the pill for its own source only."""
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.settings_widgets import ADVANCED_COLLAPSIBLE_CLASS, ROW_ID_PREFIX
+
+    (tmp_path / "config.toml").write_text(
+        "ocr_timeout = 120.0\n\n"
+        '[profile]\nname = "Court filings"\n\n[profile.values]\nrerank_candidates = 33\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("LILBEE_SEED", "7")
+    pill_text_by_key = {
+        "ocr_timeout": msg.SETTINGS_SOURCE_USER_PILL,
+        "seed": "LILBEE_SEED",
+        "rerank_candidates": "Court filings",
+    }
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        assert await wait_until(
+            pilot, lambda: all(app.screen.query(f"#row-{key}") for key in pill_text_by_key)
+        )
+        advanced_keys = [
+            str(row.id).removeprefix(ROW_ID_PREFIX)
+            for row in app.screen.query(f".{ADVANCED_COLLAPSIBLE_CLASS} .setting-row")
+        ]
+        assert set(pill_text_by_key) <= set(advanced_keys)
+        for key in advanced_keys:
+            title = _row_title(app, key)
+            for pilled_key, text in pill_text_by_key.items():
+                assert (text in title) is (key == pilled_key), (key, text)
+
+
 async def test_no_pill_on_built_in_or_auto():
     """A built-in or derived value follows lilbee's default and shows no source pill."""
     from lilbee.app.settings import setting_sources
