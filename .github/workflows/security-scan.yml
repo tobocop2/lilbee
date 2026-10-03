@@ -25,7 +25,7 @@ jobs:
           fetch-depth: 0
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.37.9
+        uses: github/codeql-action/init@v4.38.2
         with:
           languages: python
           # security-extended, not security-and-quality: the +quality queries are
@@ -34,7 +34,7 @@ jobs:
           config-file: ./.github/codeql-config.yml
 
       - name: Perform CodeQL analysis
-        uses: github/codeql-action/analyze@v4.37.9
+        uses: github/codeql-action/analyze@v4.38.2
         with:
           category: /language:python
 
@@ -148,7 +148,7 @@ jobs:
     # Complements pip-audit: OSV.dev aggregates advisories from GHSA, OSV,
     # Alpine SecDB, and others, catching CVEs that PyPI's advisory feed may
     # lag on. Suppressions live in osv-scanner.toml at the repo root.
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.5.1
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.6.0
     permissions:
       contents: read
       security-events: write
