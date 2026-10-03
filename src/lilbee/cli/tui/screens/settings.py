@@ -744,6 +744,8 @@ class SettingsScreen(Screen[None]):
             set_widget_value(widget, value)
         # Every writable key with an editor is seeded into _mount_display at row
         # construction, so a key that is absent has no baseline to refresh.
+        # The isinstance is never false: a widget with an editor id is one of these
+        # kinds. It narrows the Widget that query_one returns for displayed_text.
         if key in self._mount_display and isinstance(widget, EDITOR_KINDS):
             self._mount_display[key] = displayed_text(widget)
 
