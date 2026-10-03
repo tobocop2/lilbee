@@ -952,13 +952,17 @@ async def _declined_rebuild(app: LilbeeApp, pilot: Pilot) -> bool:
 
 async def _tui_reset(app: LilbeeApp, pilot: Pilot, _world: World) -> Outcome:
     screen = await _all_panes(app, pilot, RESET_KEYS)
-    seen = _seen(app)
     offered = False
+    warnings: list[str] = []
     for key in RESET_KEYS:
+        seen = _seen(app)
         await press(pilot, _editor(screen, key), "ctrl+r")
-        await until(pilot, partial(_not_yours, key))
+        assert await until(pilot, partial(_not_yours, key)), key
+        # Read before the wait for an offer: a toast expires, and that wait runs
+        # its whole budget when no offer comes.
+        warnings += _warnings(app, seen)
         offered = await _declined_rebuild(app, pilot) or offered
-    return Outcome(report={"reindex_required": offered, "warnings": _warnings(app, seen)})
+    return Outcome(report={"reindex_required": offered, "warnings": warnings})
 
 
 def _shown_source(screen: SettingsScreen, key: str, profile_name: str | None) -> str:
