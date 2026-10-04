@@ -24,6 +24,7 @@ from lilbee.crawler import bootstrap, save, sitemap
 from lilbee.crawler.bootstrap import (
     CHROMIUM_MISSING_MESSAGE,
     ChromiumMissingError,
+    CrawlEngineRefusedError,
     CrawlerBrowserError,
 )
 from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
@@ -97,12 +98,12 @@ def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
 
 
 async def _fetch_single_page(url: str, render_mode: CrawlRenderMode) -> CrawlResult:
-    """One single-URL fetch; any failure but a missing browser becomes a failed result."""
+    """One single-URL fetch; a failure to fetch the page becomes a failed result."""
     try:
         async with _fetcher(render_mode) as fetcher:
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
         return _fetched_to_result(page)
-    except CrawlerBrowserError:
+    except (CrawlerBrowserError, CrawlEngineRefusedError):
         raise
     except Exception as exc:
         log.warning("Failed to crawl %s: %s", url, exc)
@@ -224,7 +225,7 @@ async def crawl_recursive(
                 )
             finally:
                 await page_stream.aclose()
-    except CrawlerBrowserError:
+    except (CrawlerBrowserError, CrawlEngineRefusedError):
         raise
     except Exception as exc:
         _handle_crawl_teardown_error(url, exc, cancel=cancel, results=results)
@@ -338,10 +339,12 @@ async def _run_crawl(
 
     Resolves the depth ceiling here (permitting the seed-only ``0``) so a
     ``cfg.crawl_max_depth`` of 0 routes to the single-page path instead of
-    blowing up inside the recursive resolver.
-
+    blowing up inside the recursive resolver. A crawl whose ``cancel`` is
+    already set fetches nothing and builds no engine, at any depth.
     """
     depth = _resolve_depth(depth, cfg.crawl_max_depth)
+    if cancel is not None and cancel.is_set():
+        return 0
     if depth == 0:
         result = await crawl_single(url, render_mode=render_mode)
         try:

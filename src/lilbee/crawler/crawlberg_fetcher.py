@@ -19,8 +19,10 @@ from lilbee.crawler import bootstrap, url_filter
 from lilbee.crawler.bootstrap import (
     BROWSER_FLAGS_REFUSED_MESSAGE,
     CHROMIUM_MISSING_MESSAGE,
-    BrowserFlagsRefusedError,
+    CRAWL_REFUSED_MESSAGE,
+    EXCLUDE_PATTERN_REFUSED_MESSAGE,
     ChromiumMissingError,
+    CrawlEngineRefusedError,
 )
 from lilbee.crawler.models import CancelToken, ConcurrencySpec, FetchedPage, FilterSpec
 
@@ -66,8 +68,11 @@ _RATE_LIMIT_STATUSES = (429, 503)
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
-# The name crawlberg's errors give the launch flags of its browser config.
-_CHROME_ARGS_FIELD = "browser.chrome_args"
+# How crawlberg 1.9.0 starts its refusal of a setting, and the message that names that setting.
+_REFUSED_SETTING_MESSAGES = {
+    "invalid_config: browser.chrome_args": BROWSER_FLAGS_REFUSED_MESSAGE,
+    "invalid_config: invalid exclude_path regex": EXCLUDE_PATTERN_REFUSED_MESSAGE,
+}
 _NO_CONTENT = "No content extracted"
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 
@@ -261,18 +266,32 @@ def _crawl_config(
     )
 
 
+def _refusal_message(reason: str) -> str:
+    """crawlberg's *reason* for a refusal, with lilbee's setting named when the text tells it."""
+    # crawlberg's error has no type or attribute for the field; only the start of its text names it.
+    template = next(
+        (
+            message
+            for start, message in _REFUSED_SETTING_MESSAGES.items()
+            if reason.startswith(start)
+        ),
+        CRAWL_REFUSED_MESSAGE,
+    )
+    return template.format(reason=reason)
+
+
 def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle:
-    """The engine for *config*; a refusal of the launch flags names lilbee's setting."""
+    """The engine crawlberg builds for *config*.
+
+    An exception of any type from ``crawlberg.create_engine`` is a
+    :class:`CrawlEngineRefusedError` that carries crawlberg's reason. No other call is guarded.
+    """
     import crawlberg
 
     try:
         return crawlberg.create_engine(config)
-    except RuntimeError as exc:
-        # crawlberg's error has no type or attribute for the field; its text names it.
-        if _CHROME_ARGS_FIELD not in str(exc):
-            raise
-        message = BROWSER_FLAGS_REFUSED_MESSAGE.format(reason=exc)
-        raise BrowserFlagsRefusedError(message) from exc
+    except Exception as exc:
+        raise CrawlEngineRefusedError(_refusal_message(str(exc))) from exc
 
 
 def _parse_event(raw: object) -> _Event | None:

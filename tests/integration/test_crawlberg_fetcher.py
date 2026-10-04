@@ -15,13 +15,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
+from click.testing import Result
+from typer.testing import CliRunner
 
 crawlberg = pytest.importorskip("crawlberg")
 
+from lilbee.cli.app import app  # noqa: E402
 from lilbee.core.config import Config, cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.crawler import bootstrap, crawl_and_save, url_filter  # noqa: E402
-from lilbee.crawler.bootstrap import BrowserFlagsRefusedError  # noqa: E402
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
@@ -29,6 +32,7 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     admitted_networks,
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
+from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
 from tests.integration._crawl_site import (  # noqa: E402
     REAL_BROWSERS_PATH,
@@ -75,6 +79,19 @@ REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
     (["--disable-gpu", "--disable-gpu"], "--disable-gpu more than once"),
 )
 DEFAULT_FLAGS = ["--disable-dev-shm-usage", "--disable-gpu"]
+# Patterns Python's ``re`` compiles, so lilbee stores them, and crawlberg refuses. The last
+# one holds the name crawlberg gives the launch flags.
+REFUSED_PATTERNS = (
+    "(?P<n>a)(?(n)b|c)",
+    "(?#comment)a",
+    "(?P<n>browser.chrome_args)(?(n)b|c)",
+)
+FLAG_SETTING = "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: "
+PATTERN_SETTING = "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
+NO_SETTING = "crawlberg refuses to start this crawl: "
+# A timeout in seconds whose milliseconds pass crawlberg's integer width, and what it raises.
+OVERSIZED_TIMEOUT = 10**17
+OVERSIZED_REASON = "int too big to convert"
 
 
 QUERY_LINKS = (
@@ -445,7 +462,7 @@ class TestRefusedLaunchFlags:
         self, site, flags: list[str], reason: str, depth: int
     ):
         cfg.crawl_browser_extra_args = flags
-        with pytest.raises(BrowserFlagsRefusedError) as refused:
+        with pytest.raises(CrawlEngineRefusedError) as refused:
             await crawl_and_save(site.url("/wiki/Home"), depth=depth, render_mode=BROWSER)
         message = str(refused.value)
         assert message.startswith("The crawl_browser_extra_args setting")
@@ -462,6 +479,149 @@ class TestRefusedLaunchFlags:
         cfg.crawl_browser_extra_args = ["--headless=new"]
         paths = await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
         assert len(paths) == 1
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestRefusedExcludePatterns:
+    """crawlberg parses the exclude patterns when it builds the engine, before it fetches a page."""
+
+    @pytest.mark.parametrize("pattern", REFUSED_PATTERNS)
+    @pytest.mark.parametrize("render_mode", [HTTP, BROWSER])
+    async def test_a_recursive_crawl_names_the_setting_and_gives_crawlbergs_reason(
+        self, site, monkeypatch, tmp_path, pattern: str, render_mode: CrawlRenderMode
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(bootstrap, "chromium_installed", lambda: True)
+        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: shell)
+        assert Config(crawl_exclude_patterns=[pattern]).crawl_exclude_patterns == [pattern]
+        cfg.crawl_exclude_patterns = [r"/scope/skip/", pattern]
+        with pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(site.url("/scope/"), depth=1, max_pages=0, render_mode=render_mode)
+        message = str(refused.value)
+        assert message.startswith(PATTERN_SETTING + "invalid_config: invalid exclude_path regex")
+        assert pattern in message
+        assert site.paths_since(0, "/scope/") == []
+
+    async def test_a_single_page_crawl_sends_no_pattern_and_fetches_the_page(self, site):
+        cfg.crawl_exclude_patterns = [REFUSED_PATTERNS[0]]
+        paths = await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
+        assert len(paths) == 1
+
+    async def test_the_same_crawl_without_the_pattern_reaches_the_site(self, site):
+        cfg.crawl_exclude_patterns = [r"/scope/skip/"]
+        await crawl_and_save(site.url("/scope/"), depth=1, max_pages=0, render_mode=HTTP)
+        assert "/scope/" in site.paths_since(0, "/scope/")
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestRefusedEngineOnTheCli:
+    """``lilbee add`` ends a crawl crawlberg refuses with an error and a non-zero exit."""
+
+    @pytest.fixture(autouse=True)
+    def _a_shell_that_is_never_started(self, monkeypatch, tmp_path):
+        shell = tmp_path / "chrome-headless-shell"
+        shell.write_text("", encoding="utf-8")
+        monkeypatch.setattr(bootstrap, "chromium_installed", lambda: True)
+        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: shell)
+
+    def _add(self, *args: str) -> Result:
+        return CliRunner().invoke(app, [*args, "--crawl", "--depth", "1"])
+
+    def test_a_refused_exclude_pattern_exits_nonzero_and_names_the_setting(self, site):
+        cfg.crawl_exclude_patterns = [REFUSED_PATTERNS[0]]
+        cfg.crawl_render_mode = HTTP
+        result = self._add("add", site.url("/scope/"))
+        assert result.exit_code == 1
+        assert "Error: " + PATTERN_SETTING + "invalid_config: invalid exclude_path" in result.output
+        assert "Traceback" not in result.output
+        assert "Crawled" not in result.output
+        assert site.paths_since(0, "/scope/") == []
+
+    def test_a_refused_flag_exits_nonzero_and_names_the_setting(self, site):
+        cfg.crawl_browser_extra_args = ["--headless=new"]
+        cfg.crawl_render_mode = BROWSER
+        result = self._add("add", site.url("/scope/"))
+        assert result.exit_code == 1
+        assert "Error: " + FLAG_SETTING + "invalid_config: browser.chrome_args" in result.output
+        assert "Traceback" not in result.output
+        assert site.paths_since(0, "/scope/") == []
+
+    def test_json_output_is_one_error_object(self, site):
+        cfg.crawl_exclude_patterns = [REFUSED_PATTERNS[0]]
+        cfg.crawl_render_mode = HTTP
+        result = self._add("--json", "add", site.url("/scope/"))
+        assert result.exit_code == 1
+        objects = [json.loads(line) for line in result.output.splitlines() if line.startswith("{")]
+        assert [list(found) for found in objects] == [["error"]]
+        assert objects[0]["error"].startswith(PATTERN_SETTING)
+
+    def test_a_depth_crawlberg_refuses_exits_nonzero_with_crawlbergs_reason(self, site):
+        cfg.crawl_render_mode = HTTP
+        result = CliRunner().invoke(app, ["add", site.url("/scope/"), "--crawl", "--depth", "101"])
+        assert result.exit_code == 1
+        assert f"Error: {NO_SETTING}invalid_config: max_depth must be <= 100 (got 101)" in (
+            result.output
+        )
+        assert "Traceback" not in result.output
+        assert "Crawled" not in result.output
+        assert site.paths_since(0, "/scope/") == []
+
+    def test_a_number_too_large_for_crawlberg_exits_nonzero_with_crawlbergs_reason(self, site):
+        cfg.crawl_timeout = OVERSIZED_TIMEOUT
+        cfg.crawl_render_mode = HTTP
+        result = self._add("add", site.url("/scope/"))
+        assert result.exit_code == 1
+        assert f"Error: {NO_SETTING}{OVERSIZED_REASON}" in result.output
+        assert "Traceback" not in result.output
+        assert "Crawled" not in result.output
+        assert site.paths_since(0, "/scope/") == []
+
+    @pytest.mark.parametrize(
+        ("timeout", "depth"),
+        [(30, 0), (OVERSIZED_TIMEOUT, 0), (OVERSIZED_TIMEOUT, 1), (30, 101)],
+        ids=["single-page", "timeout-single-page", "timeout", "depth"],
+    )
+    async def test_a_task_cancelled_before_the_fetch_ends_cancelled_not_failed(
+        self, site, timeout: int, depth: int
+    ):
+        cfg.crawl_timeout = timeout
+        task = CrawlTask(
+            task_id="t1", url=site.url("/scope/"), depth=depth, max_pages=5, render_mode=HTTP
+        )
+        task.cancel.set()
+        await run_crawl(task)
+        assert task.status is TaskStatus.CANCELLED
+        assert task.error is None
+        assert task.pages_crawled == 0
+        assert site.paths_since(0, "/scope/") == []
+
+    @pytest.mark.parametrize(
+        ("timeout", "depth"),
+        [(OVERSIZED_TIMEOUT, 0), (OVERSIZED_TIMEOUT, 1), (30, 101)],
+        ids=["timeout-single-page", "timeout", "depth"],
+    )
+    async def test_the_same_task_without_the_cancel_fails_with_crawlbergs_reason(
+        self, site, timeout: int, depth: int
+    ):
+        cfg.crawl_timeout = timeout
+        task = CrawlTask(
+            task_id="t1", url=site.url("/scope/"), depth=depth, max_pages=5, render_mode=HTTP
+        )
+        await run_crawl(task)
+        assert task.status is TaskStatus.FAILED
+        assert task.error is not None
+        assert task.error.startswith(NO_SETTING)
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
+    async def test_crawlberg_raises_no_runtime_error_for_the_number_and_the_crawl_still_fails(
+        self, site, depth: int
+    ):
+        cfg.crawl_timeout = OVERSIZED_TIMEOUT
+        with pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(site.url("/wiki/Home"), depth=depth, render_mode=HTTP)
+        assert str(refused.value) == NO_SETTING + OVERSIZED_REASON
+        assert type(refused.value.__cause__) is OverflowError
+        assert site.paths_since(0, "/wiki/Home") == []
 
 
 def _logging_shell(directory: Path, log: Path) -> Path:

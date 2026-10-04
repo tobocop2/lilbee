@@ -58,6 +58,8 @@ SEED_ONLY_DEPTH = 0
 CONFIG_MAX_DEPTH = 1
 FAILED_PAGE_COUNT = 2
 TIMEOUT_S = 2
+# A pattern Python's ``re`` compiles and crawlberg refuses.
+REFUSED_PATTERN = "(?P<n>a)(?(n)b|c)"
 
 
 class _CrawlApp(_IntegrationChatApp):
@@ -302,6 +304,28 @@ async def test_config_render_mode_applies_without_a_flag(
         browser_root, url, _slash(f"/crawl {url} --depth {SEED_ONLY_DEPTH}")
     )
     assert site_mod.SCRIPT_TEXT in pages["js/index.md"]
+
+
+async def test_a_crawl_crawlberg_refuses_ends_as_a_failed_task_with_the_reason(
+    root: Path, crawl_site: CrawlSite
+) -> None:
+    cfg.crawl_exclude_patterns = [REFUSED_PATTERN]
+    url = crawl_site.url("/rel/child.html")
+    app = _CrawlApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        await _dialog(url, recursive=True)(pilot, app)
+        assert await _wait_for(pilot, lambda: _crawl_finished(app), _CRAWL_WAIT_S)
+        task = _crawl_task(app)
+        assert task is not None
+        assert task.status is TaskStatus.FAILED
+        assert task.detail.startswith(
+            "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
+        )
+        assert REFUSED_PATTERN in task.detail
+        assert await _wait_for(pilot, _workers_idle, _CRAWL_WAIT_S)
+    assert msg.CMD_CRAWL_SUCCESS.format(count=0, url=url) not in app.messages
+    assert saved_pages(root) == {}
 
 
 async def test_failed_pages_are_reported_and_the_crawl_completes(
