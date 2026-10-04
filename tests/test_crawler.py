@@ -2,6 +2,7 @@
 
 import asyncio
 import sys
+import threading
 import types
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -26,7 +27,7 @@ from lilbee.crawler import (
     validate_crawl_url,
 )
 from lilbee.crawler import bootstrap as bootstrap_mod
-from lilbee.crawler.bootstrap import BrowserFlagsRefusedError, CrawlerBrowserError
+from lilbee.crawler.bootstrap import CrawlEngineRefusedError, CrawlerBrowserError
 from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
@@ -36,6 +37,7 @@ from lilbee.crawler.save import (
     _update_single_metadata,
     normalize_crawled_markdown,
 )
+from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
 from tests._mock_effects import repeat_last
@@ -416,11 +418,14 @@ class TestRequireValidCrawlUrl:
 SEED = "https://example.com"
 
 
-def _failing_engine(message: str):
-    def create_engine(config):
-        raise RuntimeError(message)
+def _failing_stream(message: str):
+    """A crawl script whose stream raises before its first event, as a dropped fetch does."""
 
-    return create_engine
+    async def script():
+        raise RuntimeError(message)
+        yield  # makes this an async generator
+
+    return script
 
 
 class TestCrawlSingle:
@@ -437,9 +442,7 @@ class TestCrawlSingle:
         assert result.error == "Connection refused"
 
     async def test_exception(self):
-        stub = cb.StubCrawlberg()
-        stub.module.create_engine = _failing_engine("timeout")
-        with stub.installed():
+        with cb.StubCrawlberg(_failing_stream("timeout")).installed():
             result = await crawl_single(SEED)
         assert not result.success
         assert "timeout" in result.error
@@ -475,9 +478,7 @@ class TestCrawlSingle:
             pass
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
-        stub = cb.StubCrawlberg()
-        stub.module.create_engine = _failing_engine("still broken after bootstrap")
-        with stub.installed():
+        with cb.StubCrawlberg(_failing_stream("still broken after bootstrap")).installed():
             result = await crawl_single(SEED)
         assert not result.success
         assert "still broken after bootstrap" in result.error
@@ -1209,9 +1210,7 @@ class TestCrawlRecursive:
         assert not results[1].success
 
     async def test_exception_returns_error_result(self):
-        stub = cb.StubCrawlberg()
-        stub.module.create_engine = _failing_engine("network error")
-        with stub.installed():
+        with cb.StubCrawlberg(_failing_stream("network error")).installed():
             results = await crawl_recursive(SEED, max_depth=1, max_pages=5)
         assert len(results) == 1
         assert not results[0].success
@@ -1655,17 +1654,14 @@ class TestCrawlAndSave:
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_cancel_keeps_fetched_page(self, mock_crawl_single, isolated_env):
-        """A single-URL crawl that gets cancelled still keeps the page it fetched.
-
-        The new streaming-flush contract: anything already on disk stays on
-        disk. For depth=0, crawl_single has already run by the time cancel is
-        observed, so the page is flushed and returned.
-        """
-        import threading
-
-        mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")
+        """A single-URL crawl cancelled while its page is fetched keeps that page."""
         cancel = threading.Event()
-        cancel.set()
+
+        async def fetch_then_cancel(url: str, *, render_mode: CrawlRenderMode) -> CrawlResult:
+            cancel.set()
+            return CrawlResult(url=url, markdown="# Hello")
+
+        mock_crawl_single.side_effect = fetch_then_cancel
         paths = await crawl_and_save("https://example.com", depth=0, cancel=cancel)
         assert len(paths) == 1
         assert paths[0].exists()
@@ -1723,41 +1719,369 @@ class TestBrowserLaunchFlags:
 REFUSED_FLAG_REASON = (
     "invalid_config: browser.chrome_args must not set --headless; crawlberg sets it to run Chrome"
 )
+REFUSED_PATTERN = "(?P<n>a)(?(n)b|c)"
+REFUSED_PATTERN_REASON = (
+    f"invalid_config: invalid exclude_path regex '{REFUSED_PATTERN}': regex parse error:\n"
+    f"    {REFUSED_PATTERN}\nerror: unrecognized flag"
+)
+# A refusal whose text names no field lilbee knows, as after crawlberg rewords an error.
+REWORDED_FLAG = "--user-data-dir=/elsewhere"
+REWORDED_REASON = "invalid_config: the Chrome launch flags must not set --user-data-dir"
+FLAG_REFUSAL = (
+    "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: "
+    + REFUSED_FLAG_REASON
+)
+PATTERN_REFUSAL = (
+    "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
+    + REFUSED_PATTERN_REASON
+)
+REWORDED_REFUSAL = "crawlberg refuses to start this crawl: " + REWORDED_REASON
 
 
-def _refuse_headless(config: cb.Recorded) -> str | None:
-    """Refuse a config whose browser carries ``--headless=new``, as crawlberg 1.9.0 does."""
-    flags = config.kwargs["browser"].kwargs["chrome_args"]
-    return REFUSED_FLAG_REASON if "--headless=new" in flags else None
+def _refuse_like_crawlberg(config: cb.Recorded) -> str | None:
+    """Refuse a headless flag and a conditional pattern as crawlberg 1.9.0 does, and one more."""
+    kwargs = config.kwargs
+    flags = kwargs["browser"].kwargs["chrome_args"]
+    if "--headless=new" in flags:
+        return REFUSED_FLAG_REASON
+    if REWORDED_FLAG in flags:
+        return REWORDED_REASON
+    if REFUSED_PATTERN in kwargs["exclude_paths"]:
+        return REFUSED_PATTERN_REASON
+    return None
 
 
-class TestRefusedBrowserLaunchFlags:
-    """A flag crawlberg refuses stops the crawl with an error that names the setting."""
+OVERSIZED_REASON = "int too big to convert"
+OVERSIZED_TIMEOUT = 10**17
+
+
+def _oversized_number(config: cb.Recorded) -> str | None:
+    """Raise what crawlberg 1.9.0 raises for a number over its integer width."""
+    raise OverflowError(OVERSIZED_REASON)
+
+
+def _oversized_setting() -> None:
+    cfg.crawl_timeout = OVERSIZED_TIMEOUT
+
+
+def _refuse_or_overflow(config: cb.Recorded) -> str | None:
+    """Refuse as crawlberg does, with its overflow error for the oversized timeout."""
+    if config.kwargs["request_timeout"] == OVERSIZED_TIMEOUT * 1000:
+        raise OverflowError(OVERSIZED_REASON)
+    return _refuse_like_crawlberg(config)
+
+
+def _refused_flag() -> None:
+    cfg.crawl_browser_extra_args = ["--lang=fr", "--headless=new"]
+
+
+def _refused_pattern() -> None:
+    cfg.crawl_exclude_patterns = [r"/ok/", REFUSED_PATTERN]
+
+
+def _reworded_refusal() -> None:
+    cfg.crawl_browser_extra_args = [REWORDED_FLAG]
+
+
+def _default_settings() -> None:
+    """Leave every crawl setting at its default, so crawlberg refuses nothing."""
+
+
+BROWSER = CrawlRenderMode.BROWSER
+# Each refused setting, the render mode and depth that send it to crawlberg, and the error.
+# A single-page crawl follows no link, so it sends no exclude pattern.
+REFUSALS = [
+    pytest.param(_refused_flag, BROWSER, 0, FLAG_REFUSAL, id="flag-single-page"),
+    pytest.param(_refused_flag, BROWSER, 1, FLAG_REFUSAL, id="flag-recursive"),
+    pytest.param(_refused_pattern, CrawlRenderMode.HTTP, 1, PATTERN_REFUSAL, id="pattern"),
+    pytest.param(_refused_pattern, BROWSER, 1, PATTERN_REFUSAL, id="pattern-browser"),
+    pytest.param(_reworded_refusal, BROWSER, 0, REWORDED_REFUSAL, id="reworded-single-page"),
+    pytest.param(_reworded_refusal, BROWSER, 1, REWORDED_REFUSAL, id="reworded-recursive"),
+]
+DEPTHS = pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
+# What ``lilbee add URL`` takes to crawl at each depth.
+CLI_FLAGS: dict[int, tuple[str, ...]] = {0: (), 1: ("--crawl", "--depth", "1")}
+REFUSED = pytest.mark.parametrize(("configure", "render_mode", "depth", "message"), REFUSALS)
+# The settings a cancelled HTTP crawl never sends, at each depth; a single-page
+# crawl sends no exclude pattern, so the pattern refusal exists at depth 1 only.
+CANCELLED_AT_START = pytest.mark.parametrize(
+    ("configure", "depth"),
+    [
+        pytest.param(_default_settings, 0, id="single-page"),
+        pytest.param(_default_settings, 1, id="recursive"),
+        pytest.param(_oversized_setting, 0, id="oversized-single-page"),
+        pytest.param(_oversized_setting, 1, id="oversized-recursive"),
+        pytest.param(_refused_pattern, 1, id="pattern-recursive"),
+    ],
+)
+REFUSED_BY_HTTP = pytest.mark.parametrize(
+    ("configure", "depth"),
+    [
+        pytest.param(_oversized_setting, 0, id="oversized-single-page"),
+        pytest.param(_oversized_setting, 1, id="oversized-recursive"),
+        pytest.param(_refused_pattern, 1, id="pattern-recursive"),
+    ],
+)
+
+
+def _refusing_stub() -> cb.StubCrawlberg:
+    return cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_like_crawlberg)
+
+
+def _saved_pages(root: Path) -> list[Path]:
+    return list((root / "documents").rglob("*.md"))
+
+
+class TestRefusedEngine:
+    """Any refusal by crawlberg to build the engine is the crawl's error, not a failed page."""
 
     @pytest.fixture(autouse=True)
     def _admit_every_url(self, monkeypatch):
         monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
 
-    @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
-    async def test_a_browser_crawl_raises_the_refusal_with_the_setting_name(
+    @REFUSED
+    async def test_the_crawl_raises_crawlbergs_reason(
+        self, isolated_env, configure, render_mode: CrawlRenderMode, depth: int, message: str
+    ):
+        configure()
+        events: list[EventType] = []
+        stub = _refusing_stub()
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(
+                SEED,
+                depth=depth,
+                render_mode=render_mode,
+                on_progress=lambda kind, data: events.append(kind),
+            )
+        assert str(refused.value) == message
+        assert events == [EventType.CRAWL_START]
+        assert stub.seeds == []
+        assert _saved_pages(isolated_env) == []
+
+    @DEPTHS
+    async def test_a_page_that_fails_after_the_engine_is_built_stays_a_failed_page(
         self, isolated_env, depth: int
     ):
-        cfg.crawl_browser_extra_args = ["--lang=fr", "--headless=new"]
-        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_headless)
-        with stub.installed(), pytest.raises(BrowserFlagsRefusedError) as refused:
-            await crawl_and_save(SEED, depth=depth, render_mode=CrawlRenderMode.BROWSER)
-        assert str(refused.value) == (
-            "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: "
-            + REFUSED_FLAG_REASON
+        events: list[EventType] = []
+        with cb.StubCrawlberg(_failing_stream("invalid_config: stream dropped")).installed():
+            paths = await crawl_and_save(
+                SEED,
+                depth=depth,
+                render_mode=CrawlRenderMode.HTTP,
+                on_progress=lambda kind, data: events.append(kind),
+            )
+        assert paths == []
+        assert events[-1] is EventType.CRAWL_DONE
+
+    @DEPTHS
+    async def test_an_engine_creation_error_that_is_no_runtime_error_fails_the_crawl(
+        self, isolated_env, depth: int
+    ):
+        events: list[EventType] = []
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_oversized_number)
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(
+                SEED,
+                depth=depth,
+                render_mode=CrawlRenderMode.HTTP,
+                on_progress=lambda kind, data: events.append(kind),
+            )
+        assert str(refused.value) == f"crawlberg refuses to start this crawl: {OVERSIZED_REASON}"
+        assert type(refused.value.__cause__) is OverflowError
+        assert events == [EventType.CRAWL_START]
+        assert stub.seeds == []
+        assert _saved_pages(isolated_env) == []
+
+    @CANCELLED_AT_START
+    async def test_a_task_cancelled_before_the_fetch_ends_cancelled_and_builds_no_engine(
+        self, isolated_env, configure, depth: int
+    ):
+        configure()
+        task = CrawlTask(
+            task_id="t1", url=SEED, depth=depth, max_pages=10, render_mode=CrawlRenderMode.HTTP
         )
-        assert list((isolated_env / "documents").rglob("*.md")) == []
+        task.cancel.set()
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_or_overflow)
+        with stub.installed():
+            await run_crawl(task)
+        assert task.status is TaskStatus.CANCELLED
+        assert task.error is None
+        assert task.pages_crawled == 0
+        assert stub.configs == []
+        assert _saved_pages(isolated_env) == []
+
+    @REFUSED_BY_HTTP
+    async def test_the_same_task_without_the_cancel_fails_with_crawlbergs_reason(
+        self, isolated_env, configure, depth: int
+    ):
+        configure()
+        task = CrawlTask(
+            task_id="t1", url=SEED, depth=depth, max_pages=10, render_mode=CrawlRenderMode.HTTP
+        )
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_or_overflow)
+        with stub.installed():
+            await run_crawl(task)
+        assert task.status is TaskStatus.FAILED
+        assert task.error is not None and "crawlberg refuses" in task.error
+        assert len(stub.configs) == 1
+
+    @DEPTHS
+    async def test_a_crawl_cancelled_before_it_starts_fetches_nothing(
+        self, isolated_env, depth: int
+    ):
+        cancel = threading.Event()
+        cancel.set()
+        events: list[EventType] = []
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0), cb.complete(1)])
+        with stub.installed():
+            paths = await crawl_and_save(
+                SEED,
+                depth=depth,
+                render_mode=CrawlRenderMode.HTTP,
+                cancel=cancel,
+                on_progress=lambda kind, data: events.append(kind),
+            )
+        assert paths == []
+        assert events == [EventType.CRAWL_START, EventType.CRAWL_DONE]
+        assert stub.configs == []
+        assert stub.seeds == []
+
+    @DEPTHS
+    async def test_the_same_crawl_without_the_cancel_fetches_the_page(
+        self, isolated_env, depth: int
+    ):
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0), cb.complete(1)])
+        with stub.installed():
+            paths = await crawl_and_save(SEED, depth=depth, render_mode=CrawlRenderMode.HTTP)
+        assert len(paths) == 1
+        assert len(stub.configs) == 1
+        assert stub.seeds == [SEED]
+
+    async def test_an_error_while_lilbee_builds_the_config_stays_a_failed_crawl(self, isolated_env):
+        cfg.crawl_mean_delay = float("inf")
+        events: list[EventType] = []
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
+        with stub.installed():
+            paths = await crawl_and_save(
+                SEED,
+                depth=1,
+                render_mode=CrawlRenderMode.HTTP,
+                on_progress=lambda kind, data: events.append(kind),
+            )
+        assert paths == []
+        assert events[-1] is EventType.CRAWL_DONE
+        assert stub.configs == []
+
+    async def test_a_single_page_crawl_sends_no_exclude_pattern(self, isolated_env):
+        _refused_pattern()
+        with _refusing_stub().installed():
+            paths = await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.HTTP)
+        assert len(paths) == 1
 
     async def test_an_http_crawl_ignores_the_refused_flag(self, isolated_env):
         cfg.crawl_browser_extra_args = ["--headless=new"]
-        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_headless)
-        with stub.installed():
+        with _refusing_stub().installed():
             paths = await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.HTTP)
         assert len(paths) == 1
+
+
+class TestRefusedEngineOnEachEntryPoint:
+    """The CLI, the HTTP stream and the MCP task each end a refused crawl as an error."""
+
+    @pytest.fixture(autouse=True)
+    def _admit_every_url(self, monkeypatch):
+        monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
+        monkeypatch.setattr("lilbee.crawler.url_filter.require_valid_crawl_url", lambda url: None)
+
+    @REFUSED
+    def test_cli_add_exits_nonzero_with_the_reason_and_no_traceback(
+        self, isolated_env, configure, render_mode: CrawlRenderMode, depth: int, message: str
+    ):
+        from typer.testing import CliRunner
+
+        from lilbee.cli.app import app
+
+        configure()
+        cfg.crawl_render_mode = render_mode
+        with _refusing_stub().installed():
+            result = CliRunner().invoke(app, ["add", SEED, *CLI_FLAGS[depth]])
+        assert result.exit_code == 1
+        assert f"Error: {message}" in result.output
+        assert "Traceback" not in result.output
+        assert "Crawled" not in result.output
+        assert _saved_pages(isolated_env) == []
+
+    @REFUSED
+    def test_cli_json_add_prints_one_error_object(
+        self, isolated_env, configure, render_mode: CrawlRenderMode, depth: int, message: str
+    ):
+        import json
+
+        from typer.testing import CliRunner
+
+        from lilbee.cli.app import app
+
+        configure()
+        cfg.crawl_render_mode = render_mode
+        with _refusing_stub().installed():
+            result = CliRunner().invoke(app, ["--json", "add", SEED, *CLI_FLAGS[depth]])
+        assert result.exit_code == 1
+        objects = [json.loads(line) for line in result.output.splitlines() if line.startswith("{")]
+        assert objects == [{"error": message}]
+
+    @REFUSED
+    async def test_http_stream_ends_with_an_error_frame(
+        self, isolated_env, configure, render_mode: CrawlRenderMode, depth: int, message: str
+    ):
+        import json
+
+        from lilbee.server import handlers
+
+        configure()
+        with _refusing_stub().installed():
+            frames = [
+                frame
+                async for frame in handlers.crawl_stream(SEED, depth=depth, render_mode=render_mode)
+            ]
+        names = [frame.split("\n", 1)[0] for frame in frames]
+        assert names == ["event: crawl_start", "event: error"]
+        payload = frames[-1].split("data: ", 1)[1]
+        assert json.loads(payload)["message"] == message
+
+    @REFUSED
+    async def test_mcp_crawl_task_fails_with_the_reason(
+        self, isolated_env, configure, render_mode: CrawlRenderMode, depth: int, message: str
+    ):
+        from lilbee.crawler.task import clear_tasks, get_task
+        from lilbee.mcp_server import crawl, crawl_status
+
+        configure()
+        clear_tasks()
+        with _refusing_stub().installed():
+            started = await crawl(url=SEED, depth=depth, render_mode=render_mode)
+            task = get_task(started["task_id"])
+            assert task is not None and task._async_task is not None
+            await asyncio.wait_for(task._async_task, timeout=10)
+        status = crawl_status(started["task_id"])
+        assert status["status"] == "failed"
+        assert status["error"] == message
+        assert status["pages_crawled"] == 0
+
+    @pytest.mark.parametrize(
+        ("configure", "message"),
+        [(_refused_flag, FLAG_REFUSAL), (_reworded_refusal, REWORDED_REFUSAL)],
+        ids=["flag", "reworded"],
+    )
+    async def test_mcp_add_raises_the_reason_for_the_one_page_it_fetches(
+        self, isolated_env, configure, message: str
+    ):
+        from lilbee.mcp_server import add
+
+        configure()
+        with _refusing_stub().installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await add(paths=[SEED], render_mode=BROWSER)
+        assert str(refused.value) == message
+        assert _saved_pages(isolated_env) == []
 
 
 class TestPeriodicSync:
