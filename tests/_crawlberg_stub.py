@@ -16,6 +16,8 @@ from tests._sys_modules import inject_modules
 
 Payload = dict[str, Any]
 Script = Callable[[], AsyncIterator[Payload]]
+# crawlberg's reason for refusing a config, or None when it builds an engine.
+Refusal = Callable[["Recorded"], str | None]
 
 
 def page(url: str, markdown: str | None = "# Page", *, depth: int = 1) -> Payload:
@@ -63,8 +65,11 @@ def _listed(payloads: Iterable[Payload]) -> Script:
 class StubCrawlberg:
     """Builds the stand-in module and records every engine config, seed and close."""
 
-    def __init__(self, script: Iterable[Payload] | Script = ()) -> None:
+    def __init__(
+        self, script: Iterable[Payload] | Script = (), *, refuse: Refusal | None = None
+    ) -> None:
         self._script: Script = script if callable(script) else _listed(list(script))
+        self._refuse = refuse
         self.configs: list[Recorded] = []
         self.seeds: list[str] = []
         self.closed = 0
@@ -83,6 +88,9 @@ class StubCrawlberg:
 
     def _create_engine(self, config: Recorded) -> object:
         self.configs.append(config)
+        reason = self._refuse(config) if self._refuse is not None else None
+        if reason is not None:
+            raise RuntimeError(reason)
         return object()
 
     async def _crawl_stream(self, engine: object, url: str) -> AsyncIterator[StubEvent]:

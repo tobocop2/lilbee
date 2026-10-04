@@ -206,6 +206,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
+| `crawl_browser_extra_args` | `LILBEE_CRAWL_BROWSER_EXTRA_ARGS` | `list` | `--disable-dev-shm-usage, --disable-gpu` | yes | yes | yes | no | Browser mode: extra Chromium launch flags, one per line. Defaults trim shared-memory and GPU use. |
 | `crawl_concurrent_requests` | `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `int` | `3` | yes | yes | yes | no | Concurrent in-flight URLs within one crawl. |
 | `crawl_exclude_patterns` | `LILBEE_CRAWL_EXCLUDE_PATTERNS` | `list` | *(built-in list)* | yes | yes | yes | no | Regex patterns that skip URLs at link-discovery time during recursive crawls. One per line. |
 | `crawl_max_delay_range` | `LILBEE_CRAWL_MAX_DELAY_RANGE` | `float` | `0.5` | yes | yes | yes | no | Random jitter (seconds) added on top of mean delay. |
@@ -217,7 +218,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `crawl_retry_base_delay_min` | `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` | `float` | `1.0` | yes | yes | yes | no | Base delay range, low end (seconds). The first retry waits halfway between the low and high end, and each later retry waits twice as long. |
 | `crawl_retry_max_attempts` | `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `int` | `3` | yes | yes | yes | no | Retries per page, at most 20. |
 | `crawl_retry_max_backoff` | `LILBEE_CRAWL_RETRY_MAX_BACKOFF` | `float` | `30.0` | yes | yes | yes | no | Upper bound on any single backoff wait (seconds). |
-| `crawl_retry_on_rate_limit` | `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `bool` | `true` | yes | yes | yes | no | Retry a page that answers HTTP 429 or 503, another server error, or a timeout. Off: no retries. |
+| `crawl_retry_on_rate_limit` | `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `bool` | `true` | yes | yes | yes | no | Retry a page that answers HTTP 429 or 503. Off: no retries. |
 | `crawl_safety_max_pages` | `LILBEE_CRAWL_SAFETY_MAX_PAGES` | `int` | `5000` | yes | yes | yes | no | Default page bound for an unbounded crawl, so a hostile site cannot exhaust the disk. An explicit max-pages overrides it; raise this to crawl larger sites unbounded. |
 | `crawl_sync_interval` | `LILBEE_CRAWL_SYNC_INTERVAL` | `int` | `30` | yes | yes | yes | no | Seconds between periodic re-syncs during a crawl (0 = sync only at end). |
 | `crawl_timeout` | `LILBEE_CRAWL_TIMEOUT` | `int` | `30` | yes | yes | yes | no | Per-page fetch timeout in seconds. |

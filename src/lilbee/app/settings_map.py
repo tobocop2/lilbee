@@ -68,8 +68,8 @@ class SettingDef:
     help_text: str = ""
     choices: tuple[str, ...] | None = None
     hidden: bool = False
-    # List editors validate each line as a regex only when this is set; a list of
-    # plain values would be wrongly rejected otherwise.
+    # List editors validate each line as a regex only when this is set; flag-style
+    # lists (e.g. crawl_browser_extra_args) would be wrongly rejected otherwise.
     validate_regex: bool = False
     # Credentials: the TUI masks the editor so the value is never on screen in
     # plain text, including while it is being pasted.
@@ -779,6 +779,15 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "JavaScript enabled for client-rendered sites, at much higher memory cost."
         ),
     ),
+    "crawl_browser_extra_args": SettingDef(
+        list,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "Browser mode: extra Chromium launch flags, one per line. "
+            "Defaults trim shared-memory and GPU use."
+        ),
+    ),
     "crawl_max_pages": SettingDef(
         int,
         nullable=True,
@@ -827,10 +836,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         bool,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text=(
-            "Retry a page that answers HTTP 429 or 503, another server error, or a timeout."
-            " Off: no retries"
-        ),
+        help_text="Retry a page that answers HTTP 429 or 503. Off: no retries",
     ),
     "crawl_retry_base_delay_min": SettingDef(
         float,

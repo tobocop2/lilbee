@@ -1402,7 +1402,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_CRAWL_MEAN_DELAY` | `0.5` | Seconds between requests to the same domain within a single crawl | Tune up for rate-sensitive sites. |
 | `LILBEE_CRAWL_MAX_DELAY_RANGE` | `0.5` | Random additional delay on top of mean_delay | Each wait falls between mean_delay and mean_delay + max_delay_range. |
 | `LILBEE_CRAWL_CONCURRENT_REQUESTS` | `3` | Concurrent in-flight URLs within one crawl |  |
-| `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `true` | Retry pages that answer HTTP 429 or 503 | crawlberg also retries other server errors and timeouts (xberg-io/crawlberg#76). Set to `false` to disable. |
+| `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `true` | Retry pages that answer HTTP 429 or 503 | Other server errors and timeouts are not retried. Set to `false` to disable. |
 | `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` / `MAX` | `1.0` / `3.0` | Base delay range for retries (seconds) | The first retry waits the middle of the range, and each later retry doubles the wait. |
 | `LILBEE_CRAWL_RETRY_MAX_BACKOFF` | `30.0` | Upper bound on any single backoff wait (seconds) |  |
 | `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `3` | Retries per page | At most 20. |

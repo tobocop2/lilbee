@@ -91,10 +91,15 @@ def _resolve_page_limit(max_pages: int | None) -> int | None:
     return cfg.crawl_safety_max_pages
 
 
+def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
+    """The fetcher for one crawl, with the browser launch flags from ``cfg``."""
+    return CrawlbergFetcher(render_mode=render_mode, chrome_args=cfg.crawl_browser_extra_args)
+
+
 async def _fetch_single_page(url: str, render_mode: CrawlRenderMode) -> CrawlResult:
     """One single-URL fetch; any failure but a missing browser becomes a failed result."""
     try:
-        async with CrawlbergFetcher(render_mode=render_mode) as fetcher:
+        async with _fetcher(render_mode) as fetcher:
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
         return _fetched_to_result(page)
     except CrawlerBrowserError:
@@ -196,7 +201,7 @@ async def crawl_recursive(
 
     results: list[CrawlResult] = []
     try:
-        async with CrawlbergFetcher(render_mode=render_mode) as fetcher:
+        async with _fetcher(render_mode) as fetcher:
             # The explicit reference lets the stream close, and the crawl stop,
             # the moment the drain breaks on max_pages or cancel.
             page_stream = fetcher.fetch_recursive(

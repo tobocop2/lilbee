@@ -642,6 +642,13 @@ class Config(BaseSettings):
     # that render content client-side, at a much higher memory cost.
     crawl_render_mode: CrawlRenderMode = ConfigField(default=CrawlRenderMode.HTTP, writable=True)
 
+    # Extra Chromium launch flags for browser-mode crawls. Defaults trim shared
+    # memory and GPU use; override to pass site- or environment-specific flags.
+    crawl_browser_extra_args: list[str] = ConfigField(
+        default_factory=lambda: ["--disable-dev-shm-usage", "--disable-gpu"],
+        writable=True,
+    )
+
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
     crawl_max_pages: int | None = ConfigField(default=None, ge=1, writable=True)
@@ -1304,6 +1311,20 @@ class Config(BaseSettings):
     def _split_cors_origins(cls, v: Any) -> Any:
         if isinstance(v, str):
             return [o.strip() for o in v.split(",") if o.strip()]
+        return v
+
+    @field_validator("crawl_browser_extra_args", mode="before")
+    @classmethod
+    def _split_crawl_browser_extra_args(cls, v: Any) -> Any:
+        """Accept a newline-separated string, matching how the field is persisted.
+
+        ``app.settings`` joins list values with newlines before writing them to
+        ``config.toml`` as a scalar string. Without this inverse, reload cannot
+        coerce that string to ``list[str]`` and the whole config.toml is dropped.
+        TOML lists and JSON arrays pass through unchanged.
+        """
+        if isinstance(v, str):
+            return [a.strip() for a in v.splitlines() if a.strip()]
         return v
 
     @field_validator("crawl_exclude_patterns", mode="before")

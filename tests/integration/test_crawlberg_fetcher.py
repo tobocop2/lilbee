@@ -1,23 +1,27 @@
-"""Real crawlberg against a local site: SSRF agreement, cancel, threads, page limits, excludes."""
+"""Real crawlberg against a local site: SSRF, cancel, threads, limits, excludes, retries, Chrome."""
 
 from __future__ import annotations
 
 import asyncio
 import ipaddress
 import json
+import os
+import stat
 import threading
 import time
 from collections.abc import Iterator
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 
 crawlberg = pytest.importorskip("crawlberg")
 
-from lilbee.core.config import cfg  # noqa: E402
+from lilbee.core.config import Config, cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
-from lilbee.crawler import crawl_and_save, url_filter  # noqa: E402
+from lilbee.crawler import bootstrap, crawl_and_save, url_filter  # noqa: E402
+from lilbee.crawler.bootstrap import BrowserFlagsRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
@@ -25,14 +29,52 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     admitted_networks,
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
+from tests._private_mode import posix_only  # noqa: E402
+from tests.integration._crawl_site import (  # noqa: E402
+    REAL_BROWSERS_PATH,
+    full_crawl_only,
+    require_chromium,
+    windows_proactor_loop,
+)
 
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
-# lilbee blocks the whole NAT64 prefix; crawlberg only refuses NAT64 forms of a
-# private IPv4 address (a pending upstream security fix).
+BROWSER = CrawlRenderMode.BROWSER
+HTTP = CrawlRenderMode.HTTP
+# lilbee blocks the whole NAT64 prefix; crawlberg refuses a NAT64 address only when the
+# IPv4 address it carries is refused.
 NAT64 = ipaddress.ip_network("64:ff9b::/96")
+# IPv6 literals that carry the private IPv4 address 10.0.0.1 or loopback.
+IPV6_FORMS_OF_PRIVATE_IPV4 = {
+    "6to4": "[2002:7f00:1::]",
+    "ipv4-translated": "[::ffff:0:10.0.0.1]",
+    "ipv4-compatible": "[::10.0.0.1]",
+    "nat64": "[64:ff9b::a00:1]",
+    "local-use-nat64": "[64:ff9b:1::a00:1]",
+}
+# 6to4 of the public address 8.8.8.8.
+IPV6_FORM_OF_PUBLIC_IPV4 = "[2002:808:808::]"
 SLOW_PAGES = 40
 SLOW_DELAY_S = 0.3
 CANCEL_BOUND_S = 2.0
+# A request sent just before the crawl stops can reach the site just after it.
+LATE_START_MARGIN_S = 0.1
+SETTLE_S = 1.0
+RETRY_ATTEMPTS = 2
+RETRY_DELAY_S = 0.05
+RETRY_STATUSES = {
+    "/retry/broken": HTTPStatus.INTERNAL_SERVER_ERROR,
+    "/retry/busy": HTTPStatus.SERVICE_UNAVAILABLE,
+}
+SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
+# Flag lists crawlberg refuses, each with a part of the reason it gives.
+REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
+    (["--headless=new"], "--headless"),
+    (["--user-data-dir=/x"], "--user-data-dir"),
+    (["disable-gpu"], '"disable-gpu"'),
+    (["--Lang=fr"], '"--Lang=fr"'),
+    (["--disable-gpu", "--disable-gpu"], "--disable-gpu more than once"),
+)
+DEFAULT_FLAGS = ["--disable-dev-shm-usage", "--disable-gpu"]
 
 
 QUERY_LINKS = (
@@ -49,8 +91,20 @@ def _query_page(path: str, filler: str) -> str:
     """The query listing, or a page whose text names the path and query it was served for."""
     if path == "/query/":
         links = "".join(f'<a href="{link}">{link}</a> ' for link in QUERY_LINKS)
+        links += '<a href="/query/pair?a=1&amp;b=2">pair</a> <A HREF="/query/upper">UPPER</A> '
         return f"<html><head><title>Listing</title></head><body>{links}{filler}</body></html>"
     return f"<html><head><title>T</title></head><body><p>Served {path}.</p>{filler}</body></html>"
+
+
+def _scope_or_retry_page(path: str, filler: str) -> tuple[int, str]:
+    """The ``/scope/`` and ``/retry/`` listings, the two failing retry pages, or a scope page."""
+    listings = {"/scope/": SCOPE_LINKS, "/retry/": tuple(RETRY_STATUSES)}
+    if path in listings:
+        links = "".join(f'<a href="{link}">{link}</a> ' for link in listings[path])
+        return 200, f"<html><body><h1>Index</h1>{links}{filler}</body></html>"
+    if path in RETRY_STATUSES:
+        return RETRY_STATUSES[path], "<h1>failed</h1>"
+    return 200, _query_page(path, filler)
 
 
 class _Site:
@@ -81,6 +135,8 @@ class _Site:
             return 301, "/query/target"
         if path.startswith("/query/"):
             return 200, _query_page(path, filler)
+        if path.startswith(("/scope/", "/retry/")):
+            return _scope_or_retry_page(path, filler)
         if path in ("/wide/", "/slow/"):
             links = "".join(f'<a href="{path}p{n}">p{n}</a> ' for n in range(SLOW_PAGES))
             special = '<a href="/wiki/Special:Random">random</a><a href="/wiki/Home">home</a>'
@@ -197,6 +253,22 @@ class TestSsrfBlocklistsAgree:
         error = await _first_error(_ssrf_policy(), _representative(network))
         assert error.startswith(_SSRF_ERROR_CODE), error
 
+    @pytest.mark.parametrize(
+        "host", IPV6_FORMS_OF_PRIVATE_IPV4.values(), ids=list(IPV6_FORMS_OF_PRIVATE_IPV4)
+    )
+    async def test_fetch_refuses_an_ipv6_address_that_carries_a_private_ipv4(self, host: str):
+        fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
+        fetched = await fetcher.fetch_single(f"http://{host}:9/", timeout=1)
+        assert fetched.success is False
+        assert fetched.error.startswith(_SSRF_ERROR_CODE), fetched.error
+
+    async def test_fetch_tries_an_ipv6_address_that_carries_a_public_ipv4(self):
+        fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
+        fetched = await fetcher.fetch_single(f"http://{IPV6_FORM_OF_PUBLIC_IPV4}:9/", timeout=1)
+        assert fetched.success is False
+        assert fetched.error
+        assert not fetched.error.startswith(_SSRF_ERROR_CODE), fetched.error
+
     async def test_built_policy_admits_what_lilbee_admits(self):
         from lilbee.crawler.crawlberg_fetcher import _ssrf_policy
 
@@ -221,7 +293,7 @@ def _stream(fetcher: CrawlbergFetcher, url: str, **kwargs):
 
 @pytest.mark.usefixtures("allow_loopback")
 class TestCancel:
-    async def test_cancel_stops_requests_within_the_bound(self, site):
+    async def test_cancel_stops_the_stream_and_no_request_starts_after_it(self, site):
         cancel = threading.Event()
         received: list[FetchedPage] = []
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP)
@@ -233,9 +305,9 @@ class TestCancel:
                 cancelled_at = time.monotonic()
         stopped_at = time.monotonic()
         assert stopped_at - cancelled_at < CANCEL_BOUND_S
-        # crawlberg keeps fetching briefly after a crawl stops (xberg-io/crawlberg#77).
-        await asyncio.sleep(CANCEL_BOUND_S + 1.0)
-        assert site.paths_since(stopped_at + CANCEL_BOUND_S, "/slow/p") == []
+        await asyncio.sleep(SETTLE_S)
+        assert site.paths_since(stopped_at + LATE_START_MARGIN_S, "/slow/p") == []
+        assert site.paths_since(0, "/slow/p")
         assert len(received) <= 4
 
 
@@ -307,8 +379,147 @@ class TestQueryUrlsAndRedirects:
         saved = await self._saved_text(site)
         assert "Served /query/target." in saved
 
+    async def test_a_link_with_an_encoded_ampersand_is_crawled_at_the_decoded_url(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/pair?a=1&b=2." in saved
+        assert site.paths_since(0, "/query/pair") == ["/query/pair?a=1&b=2"]
+
+    async def test_a_link_in_uppercase_markup_is_followed(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/upper." in saved
+
     async def test_saved_markdown_has_no_frontmatter(self, site):
         paths = await crawl_and_save(site.url("/query/"), depth=0)
         text = paths[0].read_text(encoding="utf-8")
         assert not text.startswith("---")
         assert "title: Listing" not in text
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestWholeUrlExcludePatterns:
+    async def _crawled(self, site: _Site, patterns: list[str]) -> set[str]:
+        cfg.crawl_exclude_patterns = patterns
+        await crawl_and_save(site.url("/scope/"), depth=1, max_pages=0)
+        return set(site.paths_since(0, "/scope/"))
+
+    async def test_a_pattern_anchored_on_the_scheme_and_host_drops_its_pages(self, site):
+        crawled = await self._crawled(site, [r"^http://127\.0\.0\.1:\d+/scope/skip/"])
+        assert crawled == {"/scope/", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme"}
+
+    async def test_a_look_ahead_pattern_keeps_the_page_it_names(self, site):
+        crawled = await self._crawled(site, [r"^https?://[^/]+/scope/la/(?!keep)"])
+        assert crawled == {"/scope/", "/scope/skip/a", "/scope/keep/b", "/scope/la/keepme"}
+
+    async def test_a_pattern_for_another_host_drops_nothing(self, site):
+        crawled = await self._crawled(site, [r"^https?://example\.com/scope/"])
+        assert crawled == {"/scope/", *SCOPE_LINKS}
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestRetriedStatuses:
+    async def test_only_a_rate_limit_status_is_retried(self, site):
+        cfg.crawl_retry_on_rate_limit = True
+        cfg.crawl_retry_max_attempts = RETRY_ATTEMPTS
+        cfg.crawl_retry_base_delay_min = RETRY_DELAY_S
+        cfg.crawl_retry_base_delay_max = RETRY_DELAY_S
+        cfg.crawl_retry_max_backoff = RETRY_DELAY_S
+        await crawl_and_save(site.url("/retry/"), depth=1, max_pages=0)
+        assert len(site.paths_since(0, "/retry/busy")) == 1 + RETRY_ATTEMPTS
+        assert site.paths_since(0, "/retry/broken") == ["/retry/broken"]
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestRefusedLaunchFlags:
+    """crawlberg checks the flags when it builds the engine, before any Chrome starts."""
+
+    @pytest.fixture(autouse=True)
+    def _a_shell_that_is_never_started(self, monkeypatch, tmp_path):
+        shell = tmp_path / "chrome-headless-shell"
+        shell.write_text("", encoding="utf-8")
+        monkeypatch.setattr(bootstrap, "chromium_installed", lambda: True)
+        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: shell)
+
+    @pytest.mark.parametrize(("flags", "reason"), REFUSED_FLAGS, ids=repr)
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
+    async def test_a_browser_crawl_names_the_setting_and_gives_crawlbergs_reason(
+        self, site, flags: list[str], reason: str, depth: int
+    ):
+        cfg.crawl_browser_extra_args = flags
+        with pytest.raises(BrowserFlagsRefusedError) as refused:
+            await crawl_and_save(site.url("/wiki/Home"), depth=depth, render_mode=BROWSER)
+        message = str(refused.value)
+        assert message.startswith("The crawl_browser_extra_args setting")
+        assert "invalid_config: browser.chrome_args" in message
+        assert reason in message
+        assert site.paths_since(0, "/wiki/Home") == []
+
+    def test_the_default_flags_build_an_engine(self):
+        assert Config().crawl_browser_extra_args == DEFAULT_FLAGS
+        browser = crawlberg.BrowserConfig(mode="always", chrome_args=DEFAULT_FLAGS)
+        assert crawlberg.create_engine(crawlberg.CrawlConfig(browser=browser)) is not None
+
+    async def test_an_http_crawl_with_a_refused_flag_fetches_the_page(self, site):
+        cfg.crawl_browser_extra_args = ["--headless=new"]
+        paths = await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
+        assert len(paths) == 1
+
+
+def _logging_shell(directory: Path, log: Path) -> Path:
+    """A script that records its arguments in *log*, then runs the real headless shell."""
+    real = bootstrap.headless_shell_executable()
+    assert real is not None
+    script = directory / "chrome-headless-shell"
+    script.write_text(f'#!/bin/sh\necho "$@" >> "{log}"\nexec "{real}" "$@"\n', encoding="utf-8")
+    script.chmod(script.stat().st_mode | stat.S_IXUSR)
+    return script
+
+
+@full_crawl_only
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestBrowserLaunch:
+    @pytest.fixture(autouse=True)
+    def _real_browsers(self, monkeypatch):
+        require_chromium()
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
+
+    def _crawl(self, url: str) -> list[Path]:
+        with windows_proactor_loop():
+            return asyncio.run(crawl_and_save(url, depth=0, render_mode=CrawlRenderMode.BROWSER))
+
+    def test_a_chrome_variable_that_names_no_binary_does_not_fail_the_crawl(
+        self, site, monkeypatch, tmp_path
+    ):
+        missing = tmp_path / "no-such-chrome"
+        monkeypatch.setenv("CHROME", str(missing))
+        paths = self._crawl(site.url("/wiki/Home"))
+        assert len(paths) == 1
+        assert "/wiki/Home" in paths[0].read_text(encoding="utf-8")
+        assert os.environ["CHROME"] == str(missing)
+
+    @posix_only
+    def test_chromium_starts_from_the_shell_lilbee_names_with_the_extra_flags(
+        self, site, monkeypatch, tmp_path
+    ):
+        log = tmp_path / "launch.log"
+        script = _logging_shell(tmp_path, log)
+        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: script)
+        monkeypatch.setenv("CHROME", str(tmp_path / "no-such-chrome"))
+        cfg.crawl_browser_extra_args = ["--lang=fr"]
+        paths = self._crawl(site.url("/wiki/Home"))
+        assert len(paths) == 1
+        launch = log.read_text(encoding="utf-8")
+        assert "--headless" in launch
+        assert "--lang=fr" in launch
+        assert "--lang=en_US" not in launch
+
+    @posix_only
+    def test_chromium_starts_with_the_default_flags(self, site, monkeypatch, tmp_path):
+        log = tmp_path / "launch.log"
+        script = _logging_shell(tmp_path, log)
+        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: script)
+        cfg.crawl_browser_extra_args = Config().crawl_browser_extra_args
+        paths = self._crawl(site.url("/wiki/Home"))
+        assert len(paths) == 1
+        launch = log.read_text(encoding="utf-8")
+        for flag in DEFAULT_FLAGS:
+            assert flag in launch

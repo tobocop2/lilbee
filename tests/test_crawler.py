@@ -26,7 +26,7 @@ from lilbee.crawler import (
     validate_crawl_url,
 )
 from lilbee.crawler import bootstrap as bootstrap_mod
-from lilbee.crawler.bootstrap import CrawlerBrowserError
+from lilbee.crawler.bootstrap import BrowserFlagsRefusedError, CrawlerBrowserError
 from lilbee.crawler.runner import (
     _get_crawl_semaphore,
     _maybe_periodic_sync,
@@ -1669,6 +1669,95 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com", depth=0, cancel=cancel)
         assert len(paths) == 1
         assert paths[0].exists()
+
+
+BROWSER_FLAGS = ["--lang=fr", "--disable-gpu"]
+
+
+class TestBrowserLaunchFlags:
+    """``crawl_browser_extra_args`` reaches the Chrome launch of every crawl path."""
+
+    @pytest.fixture(autouse=True)
+    def _admit_every_url(self, monkeypatch):
+        monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
+
+    async def test_single_page_browser_crawl_launches_with_the_setting(self, isolated_env):
+        cfg.crawl_browser_extra_args = list(BROWSER_FLAGS)
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
+        with stub.installed():
+            paths = await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.BROWSER)
+        assert len(paths) == 1
+        browser = stub.config["browser"].kwargs
+        assert browser["chrome_args"] == BROWSER_FLAGS
+        assert browser["chrome_path"] == str(isolated_env / "chrome-headless-shell")
+
+    async def test_recursive_browser_crawl_launches_with_the_setting(self, isolated_env):
+        cfg.crawl_browser_extra_args = list(BROWSER_FLAGS)
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0), cb.complete(1)])
+        with stub.installed():
+            paths = await crawl_and_save(SEED, depth=1, render_mode=CrawlRenderMode.BROWSER)
+        assert len(paths) == 1
+        browser = stub.config["browser"].kwargs
+        assert browser["chrome_args"] == BROWSER_FLAGS
+        assert browser["chrome_path"] == str(isolated_env / "chrome-headless-shell")
+
+    async def test_default_setting_launches_with_the_default_flags(self, isolated_env):
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
+        with stub.installed():
+            await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.BROWSER)
+        assert stub.config["browser"].kwargs["chrome_args"] == [
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+        ]
+
+    async def test_http_crawl_carries_no_launch_flags(self, isolated_env):
+        cfg.crawl_browser_extra_args = list(BROWSER_FLAGS)
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)])
+        with stub.installed():
+            paths = await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.HTTP)
+        assert len(paths) == 1
+        assert stub.config["browser"].kwargs["chrome_args"] == []
+        assert stub.config["browser"].kwargs["chrome_path"] is None
+
+
+REFUSED_FLAG_REASON = (
+    "invalid_config: browser.chrome_args must not set --headless; crawlberg sets it to run Chrome"
+)
+
+
+def _refuse_headless(config: cb.Recorded) -> str | None:
+    """Refuse a config whose browser carries ``--headless=new``, as crawlberg 1.9.0 does."""
+    flags = config.kwargs["browser"].kwargs["chrome_args"]
+    return REFUSED_FLAG_REASON if "--headless=new" in flags else None
+
+
+class TestRefusedBrowserLaunchFlags:
+    """A flag crawlberg refuses stops the crawl with an error that names the setting."""
+
+    @pytest.fixture(autouse=True)
+    def _admit_every_url(self, monkeypatch):
+        monkeypatch.setattr("lilbee.crawler.url_filter.validate_crawl_url", lambda url: None)
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
+    async def test_a_browser_crawl_raises_the_refusal_with_the_setting_name(
+        self, isolated_env, depth: int
+    ):
+        cfg.crawl_browser_extra_args = ["--lang=fr", "--headless=new"]
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_headless)
+        with stub.installed(), pytest.raises(BrowserFlagsRefusedError) as refused:
+            await crawl_and_save(SEED, depth=depth, render_mode=CrawlRenderMode.BROWSER)
+        assert str(refused.value) == (
+            "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: "
+            + REFUSED_FLAG_REASON
+        )
+        assert list((isolated_env / "documents").rglob("*.md")) == []
+
+    async def test_an_http_crawl_ignores_the_refused_flag(self, isolated_env):
+        cfg.crawl_browser_extra_args = ["--headless=new"]
+        stub = cb.StubCrawlberg([cb.page(SEED, "# Page", depth=0)], refuse=_refuse_headless)
+        with stub.installed():
+            paths = await crawl_and_save(SEED, depth=0, render_mode=CrawlRenderMode.HTTP)
+        assert len(paths) == 1
 
 
 class TestPeriodicSync:

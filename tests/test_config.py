@@ -562,6 +562,7 @@ class TestTomlConfigFile:
         toml_path.write_text(
             'cors_origins = ["https://a.example", "https://b.example"]\n'
             'crawl_exclude_patterns = [".*/private/.*"]\n'
+            'crawl_browser_extra_args = ["--disable-gpu", "--no-sandbox"]\n'
         )
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
@@ -569,6 +570,7 @@ class TestTomlConfigFile:
             c = Config()
             assert c.cors_origins == ["https://a.example", "https://b.example"]
             assert c.crawl_exclude_patterns == [".*/private/.*"]
+            assert c.crawl_browser_extra_args == ["--disable-gpu", "--no-sandbox"]
 
     def test_empty_string_scalar_in_toml_falls_back_to_default(self, tmp_path):
         """Legacy '' sentinel (set_setting wrote it for None) is dropped, not coerced."""
@@ -1667,17 +1669,89 @@ class TestRemovedCrawlSettings:
         """A config.toml written before the crawler settings were removed still loads."""
         toml_path = tmp_path / "config.toml"
         toml_path.write_text(
-            'crawl_browser_extra_args = "--flag-a\\n--flag-b"\n'
             "crawl_browser_recycle_pages = 7\n"
             "crawl_convert_workers = 3\n"
-            'chat_model = "ollama/keep:latest"\n'
+            'chat_model = "ollama/keep:latest"\n',
+            encoding="utf-8",
         )
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
             assert c.chat_model == "ollama/keep:latest"
-            assert not hasattr(c, "crawl_browser_extra_args")
+            assert not hasattr(c, "crawl_browser_recycle_pages")
+            assert not hasattr(c, "crawl_convert_workers")
+
+
+# Flag lists crawlberg 1.9.0 refuses at engine creation; lilbee stores each one as given.
+REFUSED_BY_CRAWLBERG: tuple[list[str], ...] = (
+    ["--headless=new"],
+    ["--user-data-dir=/x"],
+    ["disable-gpu"],
+    ["--Lang=fr"],
+    ["--disable-gpu", "--disable-gpu"],
+)
+
+
+class TestCrawlBrowserExtraArgs:
+    def test_default_trims_shared_memory_and_gpu_use(self):
+        assert Config().crawl_browser_extra_args == ["--disable-dev-shm-usage", "--disable-gpu"]
+
+    def test_newline_string_from_config_toml_loads_as_a_list(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'crawl_browser_extra_args = "--lang=fr\\n--mute-audio"\n', encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_env_var_splits_on_newlines_and_drops_blank_lines(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_BROWSER_EXTRA_ARGS"] = "--lang=fr\n\n  --mute-audio  \n"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_toml_list_passes_through(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'crawl_browser_extra_args = ["--user-agent=Lilbee Test/1.0"]\n', encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_args == ["--user-agent=Lilbee Test/1.0"]
+
+    def test_empty_list_is_valid(self):
+        assert Config(crawl_browser_extra_args=[]).crawl_browser_extra_args == []
+
+    @pytest.mark.parametrize("flags", REFUSED_BY_CRAWLBERG, ids=repr)
+    def test_a_flag_crawlberg_refuses_is_stored_unchecked(self, flags: list[str]):
+        assert Config(crawl_browser_extra_args=flags).crawl_browser_extra_args == flags
+
+    def test_a_flag_crawlberg_refuses_loads_from_the_env_var_beside_other_settings(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'chat_model = "ollama/keep:latest"\n', encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_CRAWL_BROWSER_EXTRA_ARGS"] = "--headless=new\ndisable-gpu"
+        with mock.patch.dict(os.environ, env, clear=True):
+            loaded = Config()
+            assert loaded.crawl_browser_extra_args == ["--headless=new", "disable-gpu"]
+            assert loaded.chat_model == "ollama/keep:latest"
+
+    def test_a_flag_crawlberg_refuses_loads_from_config_toml_beside_other_settings(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'crawl_browser_extra_args = "--Lang=fr\\n--user-data-dir=/x"\n'
+            'chat_model = "ollama/keep:latest"\n',
+            encoding="utf-8",
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            loaded = Config()
+            assert loaded.crawl_browser_extra_args == ["--Lang=fr", "--user-data-dir=/x"]
+            assert loaded.chat_model == "ollama/keep:latest"
 
 
 class TestPlainEnvSourceSkipsEmpty:
