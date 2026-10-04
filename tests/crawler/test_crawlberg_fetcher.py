@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import os
 import threading
@@ -11,7 +12,7 @@ import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import crawlberg_fetcher as fetcher_mod
-from lilbee.crawler.bootstrap import BrowserFlagsRefusedError, ChromiumMissingError
+from lilbee.crawler.bootstrap import ChromiumMissingError, CrawlEngineRefusedError
 from lilbee.crawler.crawlberg_fetcher import (
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
@@ -21,7 +22,15 @@ from lilbee.crawler.crawlberg_fetcher import (
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec
 from lilbee.crawler.url_filter import _BLOCKED_NETWORKS
-from tests._crawlberg_stub import Payload, Recorded, StubCrawlberg, complete, error, page
+from tests._crawlberg_stub import (
+    Payload,
+    Recorded,
+    Refusal,
+    StubCrawlberg,
+    complete,
+    error,
+    page,
+)
 
 SEED = "https://example.com/"
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
@@ -282,11 +291,19 @@ class TestBrowserMode:
         assert stub.configs == []
 
 
-# The text crawlberg 1.9.0 raises for ``--headless=new`` and for 21 retries.
+# The text crawlberg 1.9.0 raises for ``--headless=new``, for 21 retries and for a pattern
+# its regex engine cannot parse.
 HEADLESS_REASON = (
     "invalid_config: browser.chrome_args must not set --headless; crawlberg sets it to run Chrome"
 )
 RETRY_REASON = "invalid_config: retry_count must be <= 20 (got 21)"
+CONDITIONAL_PATTERN = "(?P<n>a)(?(n)b|c)"
+# A pattern crawlberg refuses whose text holds the name crawlberg gives the launch flags.
+FLAG_NAMING_PATTERN = "(?P<n>browser.chrome_args)(?(n)b|c)"
+PATTERN_REASON = (
+    "invalid_config: invalid exclude_path regex '{pattern}': regex parse error:\n"
+    "    {pattern}\nerror: unrecognized flag"
+)
 
 
 def _refuses_headless(config: Recorded) -> str | None:
@@ -300,7 +317,27 @@ def _refuses_many_retries(config: Recorded) -> str | None:
     return RETRY_REASON if config.kwargs.get("retry_count", 0) > 20 else None
 
 
-class TestRefusedLaunchFlags:
+def _refuses_conditional_patterns(config: Recorded) -> str | None:
+    """Refuse the first exclude pattern that holds a conditional group, as crawlberg does."""
+    refused = [pattern for pattern in config.kwargs["exclude_paths"] if "(?(" in pattern]
+    return PATTERN_REASON.format(pattern=refused[0]) if refused else None
+
+
+# What crawlberg 1.9.0 raises for a number over its integer width: not a ``RuntimeError``.
+OVERSIZED_REASON = "int too big to convert"
+ENGINE_ERRORS = [OverflowError(OVERSIZED_REASON), TypeError("argument 'config'"), KeyError("k")]
+
+
+def _raises(exc: BaseException) -> Refusal:
+    """An engine creation that raises *exc* itself, whatever its type."""
+
+    def create(config: Recorded) -> str | None:
+        raise exc
+
+    return create
+
+
+class TestRefusedEngine:
     @pytest.fixture(autouse=True)
     def _shell(self, monkeypatch, tmp_path):
         shell = tmp_path / "chrome-headless-shell"
@@ -308,7 +345,7 @@ class TestRefusedLaunchFlags:
 
     async def test_a_single_fetch_names_the_setting_and_gives_crawlbergs_reason(self):
         stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_headless)
-        with stub.installed(), pytest.raises(BrowserFlagsRefusedError) as refused:
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
             await _browser(["--lang=fr", "--headless=new"]).fetch_single(SEED, timeout=5)
         message = str(refused.value)
         assert message.startswith("The crawl_browser_extra_args setting")
@@ -317,18 +354,119 @@ class TestRefusedLaunchFlags:
 
     async def test_a_recursive_fetch_names_the_setting_and_gives_crawlbergs_reason(self):
         stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=_refuses_headless)
-        with stub.installed(), pytest.raises(BrowserFlagsRefusedError) as refused:
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
             await _recursive(_browser(["--headless=new"]))
         assert "crawl_browser_extra_args" in str(refused.value)
         assert str(refused.value).endswith(HEADLESS_REASON)
 
-    async def test_a_refusal_of_another_field_keeps_crawlbergs_error(self):
+    async def test_a_refusal_of_another_field_gives_crawlbergs_reason_and_names_no_setting(self):
         stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=_refuses_many_retries)
         concurrency = ConcurrencySpec(retry_on_rate_limit=True, retry_max_attempts=21)
-        with stub.installed(), pytest.raises(RuntimeError) as refused:
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
             await _recursive(_browser(["--lang=fr"]), concurrency=concurrency)
-        assert type(refused.value) is RuntimeError
-        assert str(refused.value) == RETRY_REASON
+        assert str(refused.value) == f"crawlberg refuses to start this crawl: {RETRY_REASON}"
+        assert stub.seeds == []
+
+    @pytest.mark.parametrize("pattern", [CONDITIONAL_PATTERN, FLAG_NAMING_PATTERN])
+    async def test_a_refused_exclude_pattern_names_the_pattern_setting(self, pattern: str):
+        stub = StubCrawlberg(
+            [page(SEED, depth=0), complete(1)], refuse=_refuses_conditional_patterns
+        )
+        filters = FilterSpec(exclude_patterns=[r"/ok/", pattern])
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await _recursive(_http(), filters=filters)
+        message = str(refused.value)
+        assert message.startswith(
+            "The crawl_exclude_patterns setting holds a pattern that crawlberg refuses: "
+        )
+        assert message.endswith(PATTERN_REASON.format(pattern=pattern))
+        assert "crawl_browser_extra_args" not in message
+        assert stub.seeds == []
+
+    async def test_a_refusal_keeps_crawlbergs_error_as_its_cause(self):
+        stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_headless)
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await _browser(["--headless=new"]).fetch_single(SEED, timeout=5)
+        cause = refused.value.__cause__
+        assert type(cause) is RuntimeError
+        assert str(cause) == HEADLESS_REASON
+
+    @pytest.mark.parametrize("raised", ENGINE_ERRORS, ids=lambda exc: type(exc).__name__)
+    async def test_an_engine_creation_error_of_any_type_is_the_refusal(self, raised: Exception):
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=_raises(raised))
+        with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
+            await _recursive(_http())
+        assert str(refused.value) == f"crawlberg refuses to start this crawl: {raised}"
+        assert refused.value.__cause__ is raised
+        assert stub.seeds == []
+
+    @pytest.mark.parametrize(
+        ("delay", "raised", "text"),
+        [
+            (float("inf"), OverflowError, "cannot convert float infinity to integer"),
+            (float("nan"), ValueError, "cannot convert float NaN to integer"),
+        ],
+        ids=["inf", "nan"],
+    )
+    async def test_an_error_while_lilbee_builds_the_config_is_not_a_refusal(
+        self, delay: float, raised: type[Exception], text: str
+    ):
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)])
+        with stub.installed(), pytest.raises(raised, match=text) as failed:
+            await _recursive(_http(), concurrency=ConcurrencySpec(mean_delay=delay))
+        assert type(failed.value) is raised
+        assert stub.configs == []
+
+    @pytest.mark.parametrize(
+        "raised",
+        [KeyboardInterrupt(), asyncio.CancelledError()],
+        ids=lambda exc: type(exc).__name__,
+    )
+    async def test_an_interrupt_or_a_task_cancel_from_engine_creation_passes_through(
+        self, raised: BaseException
+    ):
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=_raises(raised))
+        with stub.installed(), pytest.raises(type(raised)) as passed:
+            await _recursive(_http())
+        assert passed.value is raised
+        assert stub.seeds == []
+
+    async def test_a_refusal_wins_over_a_task_cancel_requested_while_the_engine_is_built(self):
+        def cancel_then_refuse(config: Recorded) -> str | None:
+            task = asyncio.current_task()
+            assert task is not None
+            task.cancel()
+            raise OverflowError(OVERSIZED_REASON)
+
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=cancel_then_refuse)
+        with stub.installed():
+            crawl = asyncio.ensure_future(_recursive(_http()))
+            with pytest.raises(CrawlEngineRefusedError) as refused:
+                await crawl
+        assert str(refused.value) == f"crawlberg refuses to start this crawl: {OVERSIZED_REASON}"
+        assert not crawl.cancelled()
+
+    async def test_an_error_from_the_call_that_opens_the_stream_is_not_a_refusal(self, monkeypatch):
+        def refuse_to_open(engine: object, url: str) -> AsyncIterator[Payload]:
+            raise OverflowError(OVERSIZED_REASON)
+
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)])
+        monkeypatch.setattr(stub.module, "crawl_stream", refuse_to_open)
+        with stub.installed(), pytest.raises(OverflowError, match=OVERSIZED_REASON) as failed:
+            await _recursive(_http())
+        assert type(failed.value) is OverflowError
+        assert len(stub.configs) == 1
+
+    async def test_an_error_from_the_stream_is_not_a_refusal(self):
+        async def dropped() -> AsyncIterator[Payload]:
+            raise OverflowError(OVERSIZED_REASON)
+            yield  # makes this an async generator
+
+        stub = StubCrawlberg(dropped)
+        with stub.installed(), pytest.raises(OverflowError, match=OVERSIZED_REASON) as failed:
+            await _recursive(_http())
+        assert type(failed.value) is OverflowError
+        assert stub.seeds == [SEED]
 
     async def test_http_mode_does_not_send_a_refused_flag(self):
         fetcher = CrawlbergFetcher(render_mode=CrawlRenderMode.HTTP, chrome_args=["--headless=new"])
