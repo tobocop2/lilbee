@@ -37,6 +37,8 @@ JITTER_RANGE_S = 2.0
 # Four uniform(0, 2 s) waits sum below this with a probability of about 1e-4.
 JITTER_MIN_TOTAL_S = 0.5
 CONCURRENT_PREFIXES = ("/pool/", "/paced/")
+# Paces both crawls so each lasts far longer than the gap between their first requests.
+CONCURRENT_DELAY_S = 0.3
 USER_EXCLUDES = [r"drop-me\.html$", r"\?lang=\d+"]
 
 
@@ -181,6 +183,8 @@ class TestConcurrentCrawls:
     ) -> None:
         with crawl_sandbox(tmp_path):
             cfg.crawl_max_concurrent = limit
+            cfg.crawl_mean_delay = CONCURRENT_DELAY_S
+            cfg.crawl_max_delay_range = 0.0
             reset_services()
             started = time.monotonic()
             await asyncio.gather(
