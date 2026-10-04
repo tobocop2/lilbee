@@ -1342,6 +1342,18 @@ class TestConfigUpdateRoute:
         resp = client.patch("/api/config", json={"top_k": "many"})
         assert (resp.status_code, cfg.top_k) == (400, before)
 
+    def test_crawl_browser_extra_args_stores_a_flag_crawlberg_refuses(self, client):
+        resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--headless=new"]})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--headless=new"]
+
+    def test_crawl_browser_extra_args_accepts_launch_flags(self, client):
+        resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--lang=fr"]})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--lang=fr"]
+
     def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
         resp = client.patch(
             "/api/config", json={"crawl_exclude_patterns": [r"/page/\d+/?$", r"/tag/"]}
