@@ -2154,6 +2154,18 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    def test_settings_set_stores_browser_launch_flags(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_browser_extra_args": ["--lang=fr", "--mute-audio"]})
+        assert result["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_settings_set_stores_a_flag_crawlberg_refuses(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_browser_extra_args": ["--user-data-dir=/tmp/profile"]})
+        assert result["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--user-data-dir=/tmp/profile"]
+
     def test_settings_set_blank_optional_number_clears_it(self, isolated_env):
         """A blank over MCP reaches Config as unset, and the file drops the entry."""
         cfg.data_root = isolated_env
