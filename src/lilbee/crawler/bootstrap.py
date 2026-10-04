@@ -23,11 +23,15 @@ from lilbee.runtime.progress import (
 
 
 class CrawlerBrowserError(RuntimeError):
-    """Playwright is installed but its Chromium browser binary is not."""
+    """A browser-mode crawl cannot start its browser."""
 
 
 class ChromiumMissingError(CrawlerBrowserError):
     """The headless Chromium shell a browser-mode crawl launches is not on disk."""
+
+
+class BrowserFlagsRefusedError(CrawlerBrowserError):
+    """crawlberg refuses a launch flag in ``crawl_browser_extra_args``."""
 
 
 class CrawlerBackendError(RuntimeError):
@@ -37,6 +41,10 @@ class CrawlerBackendError(RuntimeError):
 CHROMIUM_MISSING_MESSAGE = (
     "The headless Chromium browser is not installed. "
     "Run 'lilbee setup crawler' to enable browser-mode crawling."
+)
+# ``{reason}`` is crawlberg's own error text.
+BROWSER_FLAGS_REFUSED_MESSAGE = (
+    "The crawl_browser_extra_args setting holds a launch flag that crawlberg refuses: {reason}"
 )
 _CHROMIUM_COMPONENT = "chromium"
 # Playwright's name for the headless shell in browsers.json, and its cache directory prefix.

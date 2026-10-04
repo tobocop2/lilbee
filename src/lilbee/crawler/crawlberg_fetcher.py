@@ -8,8 +8,7 @@ import importlib.util
 import ipaddress
 import json
 import logging
-import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -17,7 +16,12 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, url_filter
-from lilbee.crawler.bootstrap import CHROMIUM_MISSING_MESSAGE, ChromiumMissingError
+from lilbee.crawler.bootstrap import (
+    BROWSER_FLAGS_REFUSED_MESSAGE,
+    CHROMIUM_MISSING_MESSAGE,
+    BrowserFlagsRefusedError,
+    ChromiumMissingError,
+)
 from lilbee.crawler.models import CancelToken, ConcurrencySpec, FetchedPage, FilterSpec
 
 # crawlberg is the optional ``crawler`` extra and loads a native library, so each
@@ -61,8 +65,9 @@ _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
 _RATE_LIMIT_STATUSES = (429, 503)
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
-_CHROME_ENV = "CHROME"
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
+# The name crawlberg's errors give the launch flags of its browser config.
+_CHROME_ARGS_FIELD = "browser.chrome_args"
 _NO_CONTENT = "No content extracted"
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 
@@ -188,19 +193,37 @@ class _Pacing:
         return cls(_ms(middle), half_range / middle if middle > 0 else 0.0)
 
 
-def _browser_config(render_mode: CrawlRenderMode, timeout_ms: int) -> crawlberg.BrowserConfig:
-    """The browser settings, with a deadline on each whole browser fetch."""
+def _headless_shell() -> str:
+    """The path of Playwright's headless shell, the only Chrome a crawl launches."""
+    executable = bootstrap.headless_shell_executable()
+    if executable is None:
+        raise ChromiumMissingError(CHROMIUM_MISSING_MESSAGE)
+    return str(executable)
+
+
+def _browser_config(
+    render_mode: CrawlRenderMode, timeout_ms: int, chrome_args: Sequence[str]
+) -> crawlberg.BrowserConfig:
+    """The browser settings, with a deadline on each whole browser fetch.
+
+    Only browser mode names a Chrome binary and launch flags.
+    """
     import crawlberg
 
+    browser = render_mode is CrawlRenderMode.BROWSER
     return crawlberg.BrowserConfig(
         mode=_BROWSER_MODES[render_mode],
         timeout=timeout_ms,
         overall_timeout=timeout_ms * _BROWSER_OVERALL_TIMEOUTS,
         shutdown_timeout=_BROWSER_SHUTDOWN_TIMEOUT_MS,
+        chrome_path=_headless_shell() if browser else None,
+        chrome_args=list(chrome_args) if browser else [],
     )
 
 
-def _crawl_config(render_mode: CrawlRenderMode, spec: _CrawlSpec) -> crawlberg.CrawlConfig:
+def _crawl_config(
+    render_mode: CrawlRenderMode, spec: _CrawlSpec, chrome_args: Sequence[str]
+) -> crawlberg.CrawlConfig:
     """The crawlberg config for one crawl, with every default lilbee depends on set."""
     import crawlberg
 
@@ -215,7 +238,7 @@ def _crawl_config(render_mode: CrawlRenderMode, spec: _CrawlSpec) -> crawlberg.C
         stay_on_domain=True,
         allow_subdomains=spec.filters.include_subdomains,
         exclude_paths=list(spec.filters.exclude_patterns),
-        path_patterns_match_query=True,
+        path_patterns_match_url=True,
         dedup_include_query=True,
         strip_tracking_params=True,
         tracking_params=list(_TRACKING_PARAMS),
@@ -233,21 +256,23 @@ def _crawl_config(render_mode: CrawlRenderMode, spec: _CrawlSpec) -> crawlberg.C
         soft_http_errors=False,
         download_documents=False,
         content=_content_config(),
-        browser=_browser_config(render_mode, timeout_ms),
+        browser=_browser_config(render_mode, timeout_ms, chrome_args),
         ssrf=_ssrf_policy(),
     )
 
 
-def _point_at_headless_shell() -> None:
-    """Make every crawlberg browser launch in this process use Playwright's headless shell."""
-    executable = bootstrap.headless_shell_executable()
-    if executable is None:
-        raise ChromiumMissingError(CHROMIUM_MISSING_MESSAGE)
-    # Never removed: crawlberg launches Chrome after a crawl ends (xberg-io/crawlberg#77)
-    # and takes no binary path until xberg-io/crawlberg#79. Written only when it differs,
-    # since crawlberg may read it from another thread at any time.
-    if os.environ.get(_CHROME_ENV) != str(executable):
-        os.environ[_CHROME_ENV] = str(executable)
+def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle:
+    """The engine for *config*; a refusal of the launch flags names lilbee's setting."""
+    import crawlberg
+
+    try:
+        return crawlberg.create_engine(config)
+    except RuntimeError as exc:
+        # crawlberg's error has no type or attribute for the field; its text names it.
+        if _CHROME_ARGS_FIELD not in str(exc):
+            raise
+        message = BROWSER_FLAGS_REFUSED_MESSAGE.format(reason=exc)
+        raise BrowserFlagsRefusedError(message) from exc
 
 
 def _parse_event(raw: object) -> _Event | None:
@@ -280,7 +305,7 @@ async def _events(
     """
     import crawlberg
 
-    engine = crawlberg.create_engine(config)
+    engine = _create_engine(config)
     # crawl_stream is an async generator; its stub types it as an AsyncIterator.
     stream = cast(AsyncGenerator[object, None], crawlberg.crawl_stream(engine, seed_url))
     async with aclosing(stream):
@@ -325,8 +350,9 @@ def _single_result(page: FetchedPage | None, url: str) -> FetchedPage:
 class CrawlbergFetcher:
     """:class:`WebFetcher` implementation backed by crawlberg."""
 
-    def __init__(self, *, render_mode: CrawlRenderMode) -> None:
+    def __init__(self, *, render_mode: CrawlRenderMode, chrome_args: Sequence[str] = ()) -> None:
         self._render_mode = render_mode
+        self._chrome_args = tuple(chrome_args)
 
     async def __aenter__(self) -> CrawlbergFetcher:
         return self
@@ -343,9 +369,8 @@ class CrawlbergFetcher:
         self, spec: _CrawlSpec, seed_url: str, cancel: CancelToken | None
     ) -> AsyncGenerator[_Event, None]:
         """This crawl's events; browser mode finds the headless shell before any engine starts."""
-        if self._render_mode is CrawlRenderMode.BROWSER:
-            _point_at_headless_shell()
-        return _events(_crawl_config(self._render_mode, spec), seed_url, cancel)
+        config = _crawl_config(self._render_mode, spec, self._chrome_args)
+        return _events(config, seed_url, cancel)
 
     async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
         """Fetch *url* alone; a redirected page keeps the requested URL."""
