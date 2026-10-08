@@ -1859,6 +1859,44 @@ async def test_stop_all_spends_one_budget_on_the_drain_and_the_joins() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("site", ["spawn", "worker_exit", "stop_all"])
+async def test_the_worker_map_is_read_and_written_under_its_lock(site: str) -> None:
+    """Each site that touches the worker map waits for the lock another thread holds."""
+    import asyncio
+    import threading
+
+    from tests._async_wait import wait_until
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        release = threading.Event()
+        if site == "worker_exit":
+            task_id = controller.start_task(
+                "held", TaskType.SYNC, lambda _reporter: release.wait(10.0)
+            )
+            touch = controller._workers[task_id]
+        elif site == "spawn":
+            touch = threading.Thread(
+                target=controller.start_task,
+                args=("held", TaskType.SYNC, lambda _reporter: release.wait(10.0)),
+            )
+        else:
+            touch = threading.Thread(target=controller.stop_all, kwargs={"budget_s": 0.1})
+        with controller._workers_lock:
+            if site == "worker_exit":
+                release.set()
+            else:
+                touch.start()
+            await asyncio.sleep(0.5)  # time for the site to pass the lock, if it would
+            blocked = touch.is_alive()
+        ended = await wait_until(pilot, lambda: not touch.is_alive(), timeout=5.0)
+        release.set()
+        assert blocked
+        assert ended
+
+
+@pytest.mark.asyncio
 async def test_a_sync_stopped_at_exit_starts_no_pending_detection() -> None:
     """The re-detect a sync starts on its way out does not run into the exit teardown."""
     import threading

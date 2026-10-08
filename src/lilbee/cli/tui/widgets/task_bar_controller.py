@@ -133,6 +133,8 @@ class TaskBarController:
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
         # task_id -> its running worker thread, joined by stop_all at exit.
         self._workers: dict[str, threading.Thread] = {}
+        # Held for every read and write of _workers; workers remove themselves on their own threads.
+        self._workers_lock = threading.Lock()
         # Number of files in documents/ that are out of date with the store.
         # Set by start_detect_pending; read by TaskBar to render the
         # "N docs to sync · S to sync" hint when no live tasks are running.
@@ -376,7 +378,8 @@ class TaskBarController:
             daemon=True,
             name=f"task-{task_id}",
         )
-        self._workers[task_id] = thread
+        with self._workers_lock:
+            self._workers[task_id] = thread
         thread.start()
 
     def stop_all(self, budget_s: float = _EXIT_STOP_BUDGET_S) -> None:
@@ -391,7 +394,8 @@ class TaskBarController:
         for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
             self.queue.cancel(task.task_id, CancelOrigin.EXIT)
         asyncio_loop.shutdown(budget_s)
-        threads = [*self._workers.values(), self._detect_thread]
+        with self._workers_lock:
+            threads = [*self._workers.values(), self._detect_thread]
         for thread in threads:
             if thread is not None:
                 thread.join(max(0.0, deadline - time.monotonic()))
@@ -422,7 +426,8 @@ class TaskBarController:
                     log.warning("on_success for %s raised", task_id, exc_info=True)
         finally:
             self._task_targets.pop(task_id, None)
-            self._workers.pop(task_id, None)
+            with self._workers_lock:
+                self._workers.pop(task_id, None)
 
     def _post_finalize(
         self, task_id: str, outcome: TaskOutcome, detail: str, task_type: str | None
