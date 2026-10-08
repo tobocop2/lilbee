@@ -384,6 +384,12 @@ def _ignore_user_global_config(monkeypatch):
     monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
 
 
+@pytest.fixture(autouse=True)
+def _forget_shown_load_warnings(monkeypatch):
+    """Start each test with no load warning marked as already logged by this process tree."""
+    monkeypatch.delenv("LILBEE_LOAD_WARNINGS_SHOWN", raising=False)
+
+
 @pytest.fixture(scope="session")
 def _playwright_browsers_root(tmp_path_factory):
     """One throwaway browser cache for the whole session.

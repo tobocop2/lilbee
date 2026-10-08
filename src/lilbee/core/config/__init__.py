@@ -37,7 +37,7 @@ from .enums import (
 from .model import (
     Config as Config,
     cfg as cfg,
-    config_load_error as config_load_error,
+    load_warnings as load_warnings,
 )
 from .validators import (
     ConfigField as ConfigField,
@@ -65,7 +65,7 @@ __all__ = [
     "WikiEntityMode",
     "active_config",
     "cfg",
-    "config_load_error",
     "config_scope",
+    "load_warnings",
     "validate_ocr_timeout",
 ]

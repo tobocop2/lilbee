@@ -41,7 +41,7 @@ from lilbee.cli.tui.screens.command_palette import LilbeeCommandPalette
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.config_meta import MODEL_ROLE_FIELDS
-from lilbee.core.config import cfg
+from lilbee.core.config import cfg, load_warnings
 from lilbee.providers.roles import WorkerRole
 
 if TYPE_CHECKING:
@@ -53,7 +53,7 @@ log = logging.getLogger(__name__)
 
 _DEFAULT_THEME = "rose-pine"  # muted, low-glare; easier on the eyes than the warmer themes
 _CHAT_SCREEN_NAME = "chat"
-# Long enough that a model-fallback notice is readable before it fades.
+# Long enough that a model-fallback notice or a load warning is readable before it fades.
 _FALLBACK_TOAST_TIMEOUT_S = 10.0
 
 
@@ -323,6 +323,8 @@ class LilbeeApp(App[None]):
         # Awaited: the gate's boot worker treats an unmounted gate as "torn down",
         # so it must be mounted before start_boot can hand over.
         await self.push_screen(gate)
+        for warning in load_warnings:
+            self.notify(warning, severity="warning", timeout=_FALLBACK_TOAST_TIMEOUT_S)
         self.title = msg.app_title(cfg.chat_model)
         # Restore the persisted theme so the TUI opens in whatever the user
         # picked last session, not always the default.

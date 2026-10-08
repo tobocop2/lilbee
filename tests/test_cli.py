@@ -1925,21 +1925,17 @@ class TestVersionFlag:
         assert get_version() in result.output
 
 
-class TestConfigLoadWarning:
-    """When persisted config is incompatible, the CLI surfaces a stderr warning."""
+class TestDefaultCallback:
+    """What the root callback does before any command runs."""
 
     def _invoke_default(self, *, json_output: bool, monkeypatch) -> str:
         """Call the _default callback directly, returning what it wrote to stderr."""
         import io
-        import sys
 
         from typer import Context
         from typer.core import TyperCommand
 
         from lilbee.cli.app import _default
-
-        app_module = sys.modules["lilbee.cli.app"]
-        monkeypatch.setattr(app_module, "config_load_error", ValueError("stale-ref-xyz"))
 
         captured = io.StringIO()
         monkeypatch.setattr("sys.stderr", captured)
@@ -1958,21 +1954,12 @@ class TestConfigLoadWarning:
         )
         return captured.getvalue()
 
-    def test_warning_printed_to_stderr_when_config_load_failed(self, monkeypatch):
-        stderr = self._invoke_default(json_output=False, monkeypatch=monkeypatch)
-        assert "Warning: persisted config" in stderr
-        assert "stale-ref-xyz" in stderr
-
     def test_callback_sweeps_stale_onefile_caches(self, monkeypatch):
         """Every CLI, server and MCP launch passes the callback."""
         sweep = mock.Mock()
         monkeypatch.setattr(sys.modules["lilbee.cli.app"], "cleanup_stale_onefile_caches", sweep)
         self._invoke_default(json_output=False, monkeypatch=monkeypatch)
         sweep.assert_called_once_with()
-
-    def test_warning_suppressed_in_json_mode(self, monkeypatch):
-        stderr = self._invoke_default(json_output=True, monkeypatch=monkeypatch)
-        assert "Warning: persisted config" not in stderr
 
 
 class TestRemove:

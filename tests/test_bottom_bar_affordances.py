@@ -258,6 +258,26 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
         assert app.theme == _DEFAULT_THEME
 
 
+async def test_load_warnings_are_toasted_at_startup(_patch_chat_setup, monkeypatch) -> None:
+    """Each warning from the config load is a warning toast when the app opens."""
+    warning = "LILBEE_OCR = 'bogus' is not one of auto, all, off; ocr uses its default"
+    monkeypatch.setattr("lilbee.cli.tui.app.load_warnings", (warning,))
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        shown = [(n.message, n.severity) for n in app._notifications]
+        assert (warning, "warning") in shown
+
+
+async def test_a_clean_load_toasts_nothing_at_startup(_patch_chat_setup, monkeypatch) -> None:
+    monkeypatch.setattr("lilbee.cli.tui.app.load_warnings", ())
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        assert app.screen is not None
+        assert [n for n in app._notifications if n.severity == "warning"] == []
+
+
 async def test_sync_theme_index_handles_non_dark_theme(_patch_chat_setup) -> None:
     """A theme set outside DARK_THEMES must not raise; the cycle index falls
     back to 0 instead of propagating the ValueError from list.index."""

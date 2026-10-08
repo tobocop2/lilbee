@@ -670,7 +670,7 @@ class TestCrawlRenderModeConfig:
         from lilbee.core.config.model import Config
 
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "bogus")
-        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
             assert Config().crawl_render_mode is CrawlRenderMode.HTTP
         assert (
             "LILBEE_CRAWL_RENDER_MODE = 'bogus' is not one of http, browser; "

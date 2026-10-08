@@ -1,7 +1,6 @@
 """The :class:`Config` dataclass and the ``cfg`` singleton.
 
-The settings sources, TOML parser, and the resilient builder that falls
-back to defaults on stale-config validation failures live here too. Every
+The settings sources and the TOML parser live here too. Every
 ``from lilbee.core.config import cfg`` resolves through ``lilbee.core.config.__init__``
 to the same instance defined at module bottom.
 """
@@ -9,12 +8,13 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
+from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
@@ -42,6 +42,7 @@ from .enums import (
     TableModel,
     WikiEntityMode,
 )
+from .load_warnings import collecting, warn_on_load
 from .parsing import (
     migrate_ocr_keys,
     parse_bool,
@@ -65,12 +66,35 @@ _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 # clears one of these; on every other field an empty value counts as unset.
 CLEARABLE_MODEL_FIELDS = frozenset({"vision_model", "reranker_model"})
 
+# What a refused value is not, by pydantic error type. An error outside this
+# map carries its own text.
+_EXPECTED_BY_ERROR: dict[str, str] = {
+    "int_parsing": "a whole number",
+    "int_from_float": "a whole number",
+    "int_type": "a whole number",
+    "float_parsing": "a number",
+    "float_type": "a number",
+    "bool_parsing": "true or false",
+    "bool_type": "true or false",
+    "string_type": "text",
+    "path_type": "a path",
+    "list_type": "a list",
+    "dict_type": "a table of names and values",
+    "greater_than_equal": "{ge} or more",
+    "greater_than": "more than {gt}",
+    "less_than_equal": "{le} or less",
+    "less_than": "less than {lt}",
+}
+_VALUE_ERROR_PREFIX = "Value error, "
+
 
 def value_is_set(field_name: str, raw: object) -> bool:
-    """Whether an env or config.toml value is set: non-empty, or empty on a clearable model role."""
+    """Whether an env or config.toml value is set: not blank, or blank on a clearable model role."""
     if raw is None:
         return False
-    return raw != "" or field_name in CLEARABLE_MODEL_FIELDS
+    # A source hands over a string or any TOML type; only a string can be blank.
+    blank = isinstance(raw, str) and not raw.strip()
+    return not blank or field_name in CLEARABLE_MODEL_FIELDS
 
 
 def _as_int(item: Any) -> int:
@@ -1450,7 +1474,7 @@ class Config(BaseSettings):
         # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
         toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
 
-        plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_")
+        plain_env = _PlainEnvSource(settings_cls)
         sources: list[Any] = [init_settings, plain_env]
         if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
             sources.append(_TomlSource(settings_cls, toml_path))
@@ -1506,51 +1530,78 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     }
 
 
-def _enum_fields(settings_cls: type[BaseSettings]) -> dict[str, type[Enum]]:
-    """The fields of *settings_cls* typed as an enum, by name."""
-    return {
-        name: field.annotation
-        for name, field in settings_cls.model_fields.items()
-        if isinstance(field.annotation, type) and issubclass(field.annotation, Enum)
-    }
+def _enum_fields(settings_cls: type[BaseSettings]) -> list[str]:
+    """The names of the fields of *settings_cls* typed as an enum."""
+    return [name for name in settings_cls.model_fields if _enum_of(settings_cls, name) is not None]
 
 
-def _accepts(probe: BaseSettings, key: str, value: Any) -> bool:
-    """Whether the field's own validators accept *value*, assigned on the throwaway *probe*."""
+def _enum_of(settings_cls: type[BaseSettings], key: str) -> type[Enum] | None:
+    """The enum the field *key* is typed as, or None for any other type."""
+    annotation = settings_cls.model_fields[key].annotation
+    # An annotation is a class, a union or a generic alias; only a class can be an enum.
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return annotation
+    return None
+
+
+def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
+    """The environment variable that sets *field_name*."""
+    return f"{settings_cls.model_config.get('env_prefix', '')}{field_name.upper()}"
+
+
+def _expected(error: ErrorDetails) -> str:
+    """What one validation error says about the value, in the words of a settings file."""
+    words = _EXPECTED_BY_ERROR.get(error["type"])
+    if words is None:
+        return f"is refused ({error['msg'].removeprefix(_VALUE_ERROR_PREFIX)})"
+    return "is not " + words.format(**error.get("ctx", {}))
+
+
+def _refusal(probe: BaseSettings, key: str, value: Any) -> str | None:
+    """Why the field's own validators refuse *value* on the throwaway *probe*, or None."""
+    settings_cls = type(probe)
     try:
-        type(probe).__pydantic_validator__.validate_assignment(probe, key, value)
-    except ValidationError:
-        return False
-    return True
+        settings_cls.__pydantic_validator__.validate_assignment(probe, key, value)
+    except ValidationError as exc:
+        enum = _enum_of(settings_cls, key)
+        if enum is not None:
+            return "is not one of " + ", ".join(str(member.value) for member in enum)
+        return _expected(next(iter(exc.errors())))
+    except TypeError:
+        # A validator handed a TOML type it has no branch for.
+        return f"is not a value {key} accepts"
+    return None
 
 
-def _refused_enums(
-    settings_cls: type[BaseSettings], values: dict[str, Any], shown: Callable[[str], str]
+def _refused(
+    settings_cls: type[BaseSettings],
+    values: dict[str, Any],
+    keys: Iterable[str],
+    shown: Callable[[str], str],
+    fallback: Callable[[str], str],
 ) -> list[str]:
-    """The enum keys of *values* the field refuses, each warned about under its *shown* name."""
-    enums = _enum_fields(settings_cls)
+    """Those of *keys* whose value in *values* the field refuses, each warned about once."""
     probe = settings_cls.model_construct()
-    refused = [key for key in enums if key in values and not _accepts(probe, key, values[key])]
-    for key in refused:
-        log.warning(
-            "%s = %r is not one of %s; %s",
-            shown(key),
-            values[key],
-            ", ".join(str(member.value) for member in enums[key]),
-            refused_value_fallback(key, values),
-        )
+    refused: list[str] = []
+    for key in keys:
+        if key not in values:
+            continue
+        reason = _refusal(probe, key, values[key])
+        if reason is None:
+            continue
+        refused.append(key)
+        warn_on_load(f"{shown(key)} = {values[key]!r} {reason}; {fallback(key)}")
     return refused
 
 
 class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
+    """Reads LILBEE_* env vars as plain strings; a refused choice takes the field default."""
 
-    def __init__(self, settings_cls: type[BaseSettings], env_prefix: str) -> None:
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
         self._settings_cls = settings_cls
-        self._prefix = env_prefix
 
     def _variable(self, field_name: str) -> str:
-        return f"{self._prefix}{field_name.upper()}"
+        return _variable(self._settings_cls, field_name)
 
     def __call__(self) -> dict[str, Any]:
         fields = self._settings_cls.model_fields
@@ -1559,8 +1610,15 @@ class _PlainEnvSource:
             raw = os.environ.get(self._variable(field_name))
             if value_is_set(field_name, raw):
                 result[field_name] = raw
+        refused = _refused(
+            self._settings_cls,
+            result,
+            _enum_fields(self._settings_cls),
+            self._variable,
+            lambda key: refused_value_fallback(key, result),
+        )
         # The default is set, not left out, so a refused variable still outranks config.toml.
-        for key in _refused_enums(self._settings_cls, result, self._variable):
+        for key in refused:
             result[key] = fields[key].get_default(call_default_factory=True)
         return result
 
@@ -1572,6 +1630,13 @@ class _TomlSource:
         self._settings_cls = settings_cls
         self._path = path
 
+    def _fallback(self, key: str, values: dict[str, Any]) -> str:
+        """What a refused *key* gets instead: its variable when one is set, else the usual."""
+        variable = _variable(self._settings_cls, key)
+        if value_is_set(key, os.environ.get(variable)):
+            return f"{variable} sets {key}"
+        return refused_value_fallback(key, values)
+
     def __call__(self) -> dict[str, Any]:
         import tomllib
 
@@ -1579,36 +1644,31 @@ class _TomlSource:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
         except (ValueError, OSError):
-            log.warning("Failed to read %s, ignoring", self._path)
+            warn_on_load(f"Failed to read {self._path}, ignoring")
             return {}
-        # An empty string is unset (the field default applies, since pydantic
+        # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
         values = {k: v for k, v in data.items() if value_is_set(k, v)}
-        refused = _refused_enums(self._settings_cls, values, "config.toml: {}".format)
+        known = [key for key in values if key in self._settings_cls.model_fields]
+        refused = _refused(
+            self._settings_cls,
+            values,
+            known,
+            "config.toml: {}".format,
+            lambda key: self._fallback(key, values),
+        )
         return {key: value for key, value in values.items() if key not in refused}
 
 
-def _build_cfg() -> tuple[Config, Exception | None]:
-    """Build cfg; on stale-config validation failure, fall back to defaults.
-
-    A persisted ``config.toml`` from before a breaking schema change can
-    contain values the new validators reject. Crashing at module import
-    means every command (``lilbee --help`` included) emits a Python
-    traceback. Falling back to env+defaults lets the package load; the
-    CLI / TUI surfaces the original error before doing real work.
-    """
-    try:
-        return Config(), None
-    except Exception as exc:
-        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
-        try:
-            return Config(), exc
-        finally:
-            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+def _build_cfg() -> tuple[Config, tuple[str, ...]]:
+    """Build cfg, with the warnings its sources reported about refused values."""
+    with collecting() as found:
+        built = Config()
+    return built, tuple(found)
 
 
-cfg, config_load_error = _build_cfg()
+cfg, load_warnings = _build_cfg()
 
 # Canonicalize LILBEE_DATA at the cfg.data_root resolution boundary so
 # spawn-context worker subprocesses inherit the same data root.

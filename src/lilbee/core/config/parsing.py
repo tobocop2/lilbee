@@ -1,12 +1,10 @@
 """Parsing helpers used by :mod:`lilbee.config` validators."""
 
-import logging
 from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .enums import OcrMode
-
-log = logging.getLogger(__name__)
+from .load_warnings import warn_on_load
 
 # Matches what pydantic itself accepts for a bool field. Every other bool on
 # Config is coerced by pydantic, so a narrower vocabulary here would make the
@@ -89,8 +87,8 @@ def _ocr_modes() -> str:
 def warn_retired_ocr_keys(data: dict[str, Any]) -> None:
     """Warn that config.toml still carries ``enable_ocr``."""
     if _RETIRED_OCR_KEY in data:
-        log.warning(
-            "config.toml: %s; the next settings write saves it", _replaced_by([_RETIRED_OCR_KEY])
+        warn_on_load(
+            f"config.toml: {_replaced_by([_RETIRED_OCR_KEY])}; the next settings write saves it"
         )
 
 

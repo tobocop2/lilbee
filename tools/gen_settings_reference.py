@@ -133,6 +133,10 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
     # Internal: not settings, and documenting them would invite misuse.
     "LILBEE_PARENT_PID": ("Process plumbing: the parent to watch and exit with", True),
     "LILBEE_LAUNCHER_SERVE_QUIET": ("Internal launcher flag", True),
+    "LILBEE_LOAD_WARNINGS_SHOWN": (
+        "Process plumbing: the load warnings this process tree already printed",
+        True,
+    ),
     "LILBEE_SKIP_TOML_CONFIG": ("Test hook: ignore config.toml for hermetic runs", True),
     "LILBEE_SKIP_MODEL_TASK_VALIDATION": ("Test hook: skip catalog task validation", True),
 }

@@ -13,7 +13,7 @@ from typer.core import TyperCommand
 from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.core.config import cfg, config_load_error
+from lilbee.core.config import cfg
 from lilbee.core.config.parsing import refuse_retired_ocr_env
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
@@ -203,14 +203,6 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
-
-    if config_load_error is not None and not json_output:
-        # Print to stderr so JSON-mode output stays parseable.
-        sys.stderr.write(
-            "Warning: persisted config has values this version doesn't accept; "
-            "running with defaults until you fix it.\n"
-            f"  Detail: {config_load_error}\n"
-        )
 
     env_level = os.environ.get("LILBEE_LOG_LEVEL", "")
     level_str = (log_level or env_level or "WARNING").upper()

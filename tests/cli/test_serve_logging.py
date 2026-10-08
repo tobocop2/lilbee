@@ -70,6 +70,26 @@ def test_idempotent(data_root: Path) -> None:
     assert len(_server_log_handlers(first)) == 1
 
 
+_LOAD_WARNING = "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
+
+
+def test_the_load_warnings_are_written_to_the_file_once(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(serve_logging, "load_warnings", (_LOAD_WARNING,))
+    log_path = setup_server_log_file()
+    setup_server_log_file()
+    logging.getLogger("lilbee.test").warning("control line")
+    for handler in _server_log_handlers(log_path):
+        handler.flush()
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert [line.split(" WARNING ", 1)[1] for line in lines] == [
+        f"lilbee.cli.commands.serve_logging: {_LOAD_WARNING}",
+        "lilbee.test: control line",
+    ]
+    assert _LOAD_WARNING not in capsys.readouterr().err
+
+
 def test_info_reaches_file_when_root_was_warning(data_root: Path) -> None:
     logging.getLogger().setLevel(logging.WARNING)
     log_path = setup_server_log_file()
