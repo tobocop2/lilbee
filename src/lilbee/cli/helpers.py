@@ -232,13 +232,15 @@ def add_paths(
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
     run_sync: Callable[[RegisterResult], object] | None = None,
+    sync_anyway: bool = False,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after registering. *run_sync*
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
-    ``asyncio.run(sync())``.
+    ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
+    when *sync_anyway* says the caller has other new content to index.
     """
     registration = register_paths(paths, con, force=force)
     summary = describe_registration(registration)
@@ -246,7 +248,7 @@ def add_paths(
         print(summary)
     else:
         con.print(Text(summary, style=theme.MUTED), soft_wrap=True)
-    if not registration.reached_corpus:
+    if not (registration.reached_corpus or sync_anyway):
         return
 
     if background:

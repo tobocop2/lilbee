@@ -3455,6 +3455,27 @@ class TestAddWithUrls:
         assert result.exit_code == 0
         mock_crawl.assert_called_once()
 
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    @pytest.mark.parametrize("pages", [0, 1])
+    @mock.patch("lilbee.crawler.crawler_available", return_value=True)
+    @mock.patch("lilbee.cli.commands.ingest_sync._crawl_urls_blocking")
+    @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
+    def test_a_mixed_add_syncs_its_crawled_pages_when_no_file_reaches_the_corpus(
+        self, mock_sync, mock_crawl, mock_avail, isolated_env, tmp_path, mock_svc, flags, pages
+    ):
+        from lilbee.app.ingest import register_sources
+
+        holder = tmp_path / "a" / "corpus"
+        holder.mkdir(parents=True)
+        register_sources([holder])
+        taken = tmp_path / "b" / "corpus"
+        taken.mkdir(parents=True)
+        mock_crawl.return_value = [Path("page.md")] * pages
+        result = runner.invoke(app, [*flags, "add", str(taken), "https://example.com"])
+        assert result.exit_code == 0, result.output
+        assert mock_sync.await_count == pages  # no page and no file: nothing new to index
+        assert cfg.linked_roots == {"corpus": str(holder.resolve())}
+
     def test_add_url_without_crawler_installed(self):
         """Adding a URL when crawl4ai is not installed shows install message."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
@@ -7022,6 +7043,7 @@ class TestSyncCancelledExit:
     _STOPS = (
         ("crawl", [], _NOT_ADDED, False),
         ("nothing_registered", [], _NOT_ADDED, False),
+        ("name_taken_with_url", [], _NOT_ADDED, False),
         ("name_taken_with_url", ["--json"], _NOT_ADDED, False),
         ("registration", [], _NOT_ADDED, False),
         ("planning", [], _NOT_ADDED, False),

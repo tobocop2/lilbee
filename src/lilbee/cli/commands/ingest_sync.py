@@ -589,7 +589,8 @@ def _register_and_sync(
     if cfg.json_mode:
         return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
     if file_paths:
-        add_paths(file_paths, console, force=force, run_sync=_sync)
+        # Crawled pages are new content even when no file reached the corpus.
+        add_paths(file_paths, console, force=force, run_sync=_sync, sync_anyway=bool(crawled_paths))
     elif sync_urls:
         # URLs already saved; just trigger sync
         console.print(_sync(RegisterResult()))
