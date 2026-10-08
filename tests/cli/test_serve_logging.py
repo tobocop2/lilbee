@@ -73,17 +73,54 @@ def test_idempotent(data_root: Path) -> None:
 _LOAD_WARNING = "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
 
 
-def test_the_load_warnings_are_written_to_the_file_once(
-    data_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    monkeypatch.setattr(serve_logging, "load_warnings", (_LOAD_WARNING,))
-    log_path = setup_server_log_file()
-    setup_server_log_file()
-    logging.getLogger("lilbee.test").warning("control line")
+def _warning_lines(log_path: Path) -> list[str]:
     for handler in _server_log_handlers(log_path):
         handler.flush()
     lines = log_path.read_text(encoding="utf-8").splitlines()
-    assert [line.split(" WARNING ", 1)[1] for line in lines] == [
+    return [line.split(" WARNING ", 1)[1] for line in lines if " WARNING " in line]
+
+
+def test_a_serve_start_writes_each_load_warning_to_the_file_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The real serve command: its first setup, the app build that drops the handler, its second."""
+    from typer.testing import CliRunner
+
+    from lilbee.cli import app
+    from lilbee.cli.commands import servers
+
+    monkeypatch.setattr(serve_logging, "load_warnings", (_LOAD_WARNING,))
+    log_path = tmp_path / "logs" / "server.log"
+    handlers_at_run: list[int] = []
+
+    def no_server(coro: object, *_args: object, **_kwargs: object) -> None:
+        coro.close()  # type: ignore[attr-defined]
+        handlers_at_run.append(len(_server_log_handlers(log_path)))
+        logging.getLogger("lilbee.test").warning("control line")
+
+    monkeypatch.setattr(servers.asyncio, "run", no_server)
+    result = CliRunner().invoke(app, ["serve", "-d", str(tmp_path)])
+    assert result.exit_code == 0, result.output
+    assert handlers_at_run == [1]
+    assert _warning_lines(log_path) == [
+        f"lilbee.cli.commands.serve_logging: {_LOAD_WARNING}",
+        "lilbee.test: control line",
+    ]
+
+
+def test_a_handler_installed_again_does_not_repeat_the_load_warnings(
+    data_root: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(serve_logging, "load_warnings", (_LOAD_WARNING,))
+    setup_server_logging()
+    log_path = data_root / "logs" / "server.log"
+    for handler in _server_log_handlers(log_path):
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+    assert setup_server_log_file() == log_path
+    assert len(_server_log_handlers(log_path)) == 1
+    logging.getLogger("lilbee.test").warning("control line")
+    assert _warning_lines(log_path) == [
         f"lilbee.cli.commands.serve_logging: {_LOAD_WARNING}",
         "lilbee.test: control line",
     ]
