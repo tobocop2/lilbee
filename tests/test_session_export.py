@@ -540,22 +540,28 @@ _SIZE_STEP = 16
 # The step is 16x in input size. Linear code reads about 16x and quadratic code reads
 # 256x in theory; the limit of 64x catches quadratic growth. Measured quadratic
 # regressions read 72x to 434x, so the weakest case (the HTML block) clears it narrowly.
-# The limit does not detect n log n or n^1.5 growth.
+# The limit does not detect n log n or n^1.5 growth. The parse-included test reads 16x to 23x
+# for linear code and 124x for a quadratic HTML rule: the limit is 2.8x above the first and
+# 1.9x below the second.
 _LINEAR_GROWTH_LIMIT = 64.0
 
 
-def _demotion_growth(monkeypatch, make, n: int, number: int) -> float:
-    """How many times longer demoting ``make(4 * n)`` takes than ``make(n // 4)``, sans parse."""
-    real_parse = MarkdownIt.parse
-    parsed: dict[tuple[int, str], list[Token]] = {}
+def _demotion_growth(monkeypatch, make, n: int, number: int, *, with_parse: bool = False) -> float:
+    """How many times longer demoting ``make(4 * n)`` takes than ``make(n // 4)``.
 
-    def parse_once(self, src, env=None):
-        key = (id(self), src)
-        if key not in parsed:
-            parsed[key] = real_parse(self, src, env)
-        return parsed[key]
+    The parse runs once, outside the timed calls, unless *with_parse* times it too.
+    """
+    if not with_parse:
+        real_parse = MarkdownIt.parse
+        parsed: dict[tuple[int, str], list[Token]] = {}
 
-    monkeypatch.setattr(MarkdownIt, "parse", parse_once)
+        def parse_once(self, src, env=None):
+            key = (id(self), src)
+            if key not in parsed:
+                parsed[key] = real_parse(self, src, env)
+            return parsed[key]
+
+        monkeypatch.setattr(MarkdownIt, "parse", parse_once)
 
     def best(text: str, calls: int) -> float:
         _nest_headings(text)
@@ -569,6 +575,12 @@ def test_a_large_adversarial_html_block_demotes_in_linear_time(monkeypatch):
     """A block of many unclosed ``<h1 `` starts takes time linear in its length."""
     assert "<h3 " in _nest_headings("<h1 " * 3)
     growth = _demotion_growth(monkeypatch, lambda n: "<h1 " * n, 2_500, 20)
+    assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
+
+
+def test_many_html_tags_parse_in_linear_time(monkeypatch):
+    """The parser's HTML rule, timed with the parse included, takes linear time in the tag count."""
+    growth = _demotion_growth(monkeypatch, lambda n: "<em>" * n, 8_000, 1, with_parse=True)
     assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
 
 
