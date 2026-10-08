@@ -861,6 +861,11 @@ lilbee ask "Explain this" --model qwen3
 
 `search` only needs the embedding model; `ask` also needs a chat model.
 
+Press Ctrl+C to stop `lilbee add`, `lilbee sync`, `lilbee rebuild`, or the sync
+that runs before `lilbee ask`. The command exits with status 130. A stopped
+`add` names the files it did not add, and `lilbee --json add` lists them in
+`not_added`.
+
 ### Manage documents
 
 | Command | Description |
