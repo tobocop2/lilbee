@@ -536,11 +536,16 @@ def test_two_identical_tags_in_one_span_are_each_demoted():
     assert markdown.endswith("## Assistant\n\na <h4>x</h4> <h4>x</h4> <h4>y</h4>\n")
 
 
-_LINEAR_GROWTH_LIMIT = 8.0
+_SIZE_STEP = 16
+# The step is 16x in input size. Linear code reads about 16x and quadratic code reads
+# 256x in theory; the limit of 64x catches quadratic growth. Measured quadratic
+# regressions read 72x to 434x, so the weakest case (the HTML block) clears it narrowly.
+# The limit does not detect n log n or n^1.5 growth.
+_LINEAR_GROWTH_LIMIT = 64.0
 
 
 def _demotion_growth(monkeypatch, make, n: int, number: int) -> float:
-    """How many times longer demoting ``make(4 * n)`` takes than ``make(n)``, parse excluded."""
+    """How many times longer demoting ``make(4 * n)`` takes than ``make(n // 4)``, sans parse."""
     real_parse = MarkdownIt.parse
     parsed: dict[tuple[int, str], list[Token]] = {}
 
@@ -552,24 +557,25 @@ def _demotion_growth(monkeypatch, make, n: int, number: int) -> float:
 
     monkeypatch.setattr(MarkdownIt, "parse", parse_once)
 
-    def best(text: str) -> float:
+    def best(text: str, calls: int) -> float:
         _nest_headings(text)
-        return min(timeit.repeat(lambda: _nest_headings(text), number=number, repeat=5))
+        return min(timeit.repeat(lambda: _nest_headings(text), number=calls, repeat=5)) / calls
 
-    return best(make(4 * n)) / best(make(n))
+    small = best(make(max(n // 4, 1)), number * _SIZE_STEP)
+    return best(make(4 * n), number) / small
 
 
 def test_a_large_adversarial_html_block_demotes_in_linear_time(monkeypatch):
     """A block of many unclosed ``<h1 `` starts takes time linear in its length."""
     assert "<h3 " in _nest_headings("<h1 " * 3)
     growth = _demotion_growth(monkeypatch, lambda n: "<h1 " * n, 2_500, 20)
-    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+    assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
 
 
 def test_many_short_lived_tag_candidates_before_a_code_span_demote_in_linear_time(monkeypatch):
     """Many ``<h2 `` candidates that never close, each after a code span, take linear time."""
     growth = _demotion_growth(monkeypatch, lambda n: "<em>" + "`x` <h2 " * n, 2_000, 20)
-    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+    assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
 
 
 _FUZZ_ATOMS = [
@@ -672,20 +678,20 @@ def test_a_paragraph_with_no_heading_tag_is_not_rewritten_after_a_tab_continuati
 def test_many_non_heading_tags_across_many_lines_demote_in_linear_time(monkeypatch):
     """Many ``<em>`` lines in one paragraph take time linear in the paragraph's length."""
     growth = _demotion_growth(monkeypatch, lambda n: "a\n" + "<em>x</em>\n" * n, 2_000, 5)
-    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+    assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
 
 
 def test_many_heading_tags_on_one_line_demote_in_linear_time(monkeypatch):
     """Many long real heading tags on one line are demoted in one pass, not one copy per tag."""
     tag = '<h2 title="' + "x" * 200 + '">y</h2> '
     growth = _demotion_growth(monkeypatch, lambda n: "a " + tag * n, 1_000, 3)
-    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+    assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
 
 
 def test_many_heading_tags_across_many_lines_demote_in_linear_time(monkeypatch):
     """Many real heading tags on many lines of one paragraph find their lines in linear time."""
     growth = _demotion_growth(monkeypatch, lambda n: "a\n" + "b <h2>y</h2>\n" * n, 2_000, 1)
-    assert growth < _LINEAR_GROWTH_LIMIT, f"4x the input took {growth:.1f}x the time"
+    assert growth < _LINEAR_GROWTH_LIMIT, f"{_SIZE_STEP}x the input took {growth:.1f}x the time"
 
 
 def test_the_sources_list_follows_the_closed_fence():
