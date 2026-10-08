@@ -3554,37 +3554,30 @@ class TestCrawlUrlsBlocking:
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["quiet"] is True
 
-    @mock.patch("lilbee.cli.commands.ingest_sync._run_crawl_with_signal_cancel")
-    def test_cancel_event_breaks_multi_url_loop(self, mock_run, isolated_env):
-        """If the SIGINT handler sets cancel mid-run, the next URL is skipped."""
+    def test_ctrl_c_during_the_first_url_exits_130_and_skips_the_next(self, isolated_env):
+        import signal
+
         from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
-        call_log = []
+        crawled: list[str] = []
 
-        def fake_run(
-            url,
-            *,
-            depth,
-            max_pages,
-            on_progress,
-            cancel_event,
-            crawl_and_save,
-            include_subdomains=False,
-        ):
-            call_log.append(url)
-            # Simulate SIGINT landing during the first URL's crawl:
-            cancel_event.set()
+        async def fake_crawl(url, **_kwargs):
+            crawled.append(url)
+            signal.raise_signal(signal.SIGINT)
             return []
 
-        mock_run.side_effect = fake_run
-        _crawl_urls_blocking(
-            ["https://example.com/a", "https://example.com/b"],
-            crawl=False,
-            depth=None,
-            max_pages=None,
-        )
-        # Second URL must be skipped because cancel was set during the first.
-        assert call_log == ["https://example.com/a"]
+        with (
+            mock.patch("lilbee.crawler.crawl_and_save", fake_crawl),
+            pytest.raises(SystemExit) as stopped,
+        ):
+            _crawl_urls_blocking(
+                ["https://example.com/a", "https://example.com/b"],
+                crawl=False,
+                depth=None,
+                max_pages=None,
+            )
+        assert stopped.value.code == 130
+        assert crawled == ["https://example.com/a"]
 
     def test_sigint_handler_sets_cancel_event(self, isolated_env):
         """The signal handler installed by _run_crawl_with_signal_cancel sets the event."""
@@ -3602,14 +3595,16 @@ class TestCrawlUrlsBlocking:
             handler(signal.SIGINT, None)
             return []
 
-        _run_crawl_with_signal_cancel(
-            "https://example.com",
-            depth=0,
-            max_pages=None,
-            on_progress=None,
-            cancel_event=cancel_event,
-            crawl_and_save=fake_crawl,
-        )
+        with pytest.raises(SystemExit) as stopped:
+            _run_crawl_with_signal_cancel(
+                "https://example.com",
+                depth=0,
+                max_pages=None,
+                on_progress=None,
+                cancel_event=cancel_event,
+                crawl_and_save=fake_crawl,
+            )
+        assert stopped.value.code == 130
         assert cancel_event.is_set()
 
 
@@ -6833,6 +6828,20 @@ class TestSyncCancelledExit:
             stage_patch = contextlib.ExitStack()
             for target in ("lilbee.cli.helpers", "lilbee.cli.commands.ingest_sync"):
                 stage_patch.enter_context(mock.patch(f"{target}.register_sources", _register))
+        elif stage == "crawl":
+
+            async def _crawl(_url, **_kwargs):
+                page = cfg.documents_dir / "_web" / "page.md"
+                page.parent.mkdir(parents=True, exist_ok=True)
+                page.write_text("hello world " * 50, encoding="utf-8")
+                signal.raise_signal(signal.SIGINT)
+                return [page]
+
+            stage_patch = contextlib.ExitStack()
+            stage_patch.enter_context(
+                mock.patch("lilbee.crawler.crawler_available", return_value=True)
+            )
+            stage_patch.enter_context(mock.patch("lilbee.crawler.crawl_and_save", _crawl))
         elif stage == "planning":
             real_discover = pipeline.discover_corpus
 
@@ -6854,6 +6863,7 @@ class TestSyncCancelledExit:
     @pytest.mark.parametrize(
         ("stage", "expected", "kept"),
         [
+            pytest.param("crawl", "Sync cancelled.", False, id="crawl"),
             pytest.param(
                 "registration", "Add cancelled. corpus was not added.", False, id="registration"
             ),
@@ -6874,9 +6884,17 @@ class TestSyncCancelledExit:
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
         events: list[threading.Event] = []
         stage_patch, sync_patch = self._ctrl_c_at(stage, events)
+        args = ["add", "--data-dir", str(tmp_path), str(corpus)]
+        if stage == "crawl":
+            args.append("https://example.com")
         with stage_patch, sync_patch:
-            result = runner.invoke(app, ["add", "--data-dir", str(tmp_path), str(corpus)])
-        assert events and events[0].is_set()
+            result = runner.invoke(app, args)
+        if stage == "crawl":
+            # The crawl runs before registration: no sync starts and the saved page stays.
+            assert events == []
+            assert (cfg.documents_dir / "_web" / "page.md").is_file()
+        else:
+            assert events and events[0].is_set()
         assert result.exit_code == 130, result.output
         assert expected in result.output
         assert isinstance(result.exception, SystemExit)
@@ -6904,6 +6922,26 @@ class TestSyncCancelledExit:
         }
         assert sources == {}
         assert cfg.linked_roots == {}
+
+    def test_ctrl_c_while_a_json_add_crawls_reports_json_and_starts_no_sync(
+        self, isolated_env, tmp_path, monkeypatch
+    ):
+        from tests._ingesting_services import ingesting_services
+
+        services, sources = ingesting_services()
+        svc_mod.set_services(services)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        events: list[threading.Event] = []
+        stage_patch, sync_patch = self._ctrl_c_at("crawl", events)
+        with stage_patch, sync_patch:
+            result = runner.invoke(
+                app, ["--json", "add", "--data-dir", str(tmp_path), "https://example.com"]
+            )
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {"error": "Sync cancelled."}
+        assert events == []
+        assert sources == {}
+        assert (cfg.documents_dir / "_web" / "page.md").is_file()
 
     def test_ctrl_c_while_a_sync_plans_exits_130(self, isolated_env, tmp_path, monkeypatch):
         (tmp_path / "documents" / "notes.txt").write_text("hello world", encoding="utf-8")

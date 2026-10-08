@@ -199,8 +199,6 @@ def _crawl_urls_blocking(
         disable=cfg.json_mode,
     ) as progress:
         for url in urls:
-            if cancel_event.is_set():
-                break
             ptask = progress.add_task(f"Crawling {url}...", total=None)
             crawled: dict[str, int] = {}
 
@@ -279,8 +277,11 @@ def _run_crawl_with_signal_cancel(
             quiet=cfg.json_mode,
             include_subdomains=include_subdomains,
         )
-        with _ctrl_c_sets(cancel_event):
+        with _ctrl_c_stops(cancel_event, []):
             result: list[Path] = loop.run_until_complete(coro)
+            # A cancelled crawl returns the pages it saved; the command still stops here.
+            if cancel_event.is_set():
+                raise asyncio.CancelledError
         return result
     finally:
         loop.close()
@@ -339,6 +340,20 @@ def _ctrl_c_sets(cancel_event: threading.Event) -> Iterator[None]:
         signal.signal(signal.SIGINT, previous_handler)
 
 
+@contextmanager
+def _ctrl_c_stops(cancel_event: threading.Event, added_roots: list[str]) -> Iterator[None]:
+    """Run a stage under Ctrl+C; a stage it stops exits 130 after the rollback of *added_roots*."""
+    try:
+        # Only the user's Ctrl+C sets this cancel.
+        with (
+            _ctrl_c_sets(cancel_event),
+            forget_unfinished_on_cancel(added_roots, cancel_event, lambda: True) as rollback,
+        ):
+            yield
+    except asyncio.CancelledError:
+        _exit_sync_cancelled(rollback)
+
+
 def run_sync_with_signal_cancel(
     *,
     force_rebuild: bool = False,
@@ -373,11 +388,7 @@ def run_sync_with_signal_cancel(
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        # Only the user's Ctrl+C sets this cancel.
-        with (
-            _ctrl_c_sets(cancel_event),
-            forget_unfinished_on_cancel(added_roots or [], cancel_event, lambda: True) as rollback,
-        ):
+        with _ctrl_c_stops(cancel_event, added_roots or []):
             return loop.run_until_complete(
                 sync(
                     force_rebuild=force_rebuild,
@@ -388,8 +399,6 @@ def run_sync_with_signal_cancel(
                     prune_ignored=prune_ignored,
                 )
             )
-    except asyncio.CancelledError:
-        _exit_sync_cancelled(rollback)
     finally:
         loop.close()
         asyncio.set_event_loop(None)
