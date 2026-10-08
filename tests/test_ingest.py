@@ -7079,6 +7079,18 @@ class TestRegisterSources:
         assert result.outside_corpus == [cfg.documents_dir.parent.name]
         assert cfg.linked_roots == {}
 
+    def test_a_root_that_vanished_overlaps_nothing(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+        from lilbee.core.config import cfg
+
+        child = tmp_path / "data" / "corpus"
+        child.mkdir(parents=True)
+        register_sources([child])
+        child.rmdir()
+        result = register_sources([tmp_path / "data"])
+        assert (result.registered, result.overlapping) == (["data"], [])
+        assert cfg.linked_roots["data"] == str((tmp_path / "data").resolve())
+
     def test_a_path_given_twice_is_outside_the_corpus_once(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources
 
