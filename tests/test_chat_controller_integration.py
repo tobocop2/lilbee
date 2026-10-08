@@ -1823,6 +1823,42 @@ async def test_stop_all_cancels_queued_and_running_tasks_within_its_budget() -> 
 
 
 @pytest.mark.asyncio
+async def test_stop_all_spends_one_budget_on_the_drain_and_the_joins() -> None:
+    """A coroutine that outlasts the budget costs the exit the budget once, not once per wait."""
+    import asyncio
+    import threading
+    import time
+
+    from lilbee.runtime import asyncio_loop
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        waiting = threading.Event()
+        release = threading.Event()
+
+        async def _slow_to_unwind() -> None:
+            try:
+                waiting.set()
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(15.0)  # a write that outlasts the exit budget
+                raise
+
+        def _target(_reporter: ProgressReporter) -> None:
+            asyncio.run_coroutine_threadsafe(_slow_to_unwind(), asyncio_loop.get_loop())
+            release.wait(30.0)
+
+        controller.start_task("Sync", TaskType.SYNC, _target)
+        assert waiting.wait(5.0)
+        started = time.monotonic()
+        controller.stop_all(budget_s=2.0)
+        elapsed = time.monotonic() - started
+        release.set()
+        assert 1.5 < elapsed < 3.5  # two waits of the budget take 4 seconds
+
+
+@pytest.mark.asyncio
 async def test_a_sync_stopped_at_exit_starts_no_pending_detection() -> None:
     """The re-detect a sync starts on its way out does not run into the exit teardown."""
     import threading

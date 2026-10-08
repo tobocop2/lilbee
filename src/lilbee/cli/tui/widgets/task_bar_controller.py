@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # transfers neither share a xet session nor die with a cancelled sibling.
 _DOWNLOAD_CONCURRENCY = 4
 _BYTES_PER_MB = 1024 * 1024
-# Seconds the running task workers get, together, to stop at app exit.
+# Seconds the running tasks get, together, to unwind and end their workers at app exit.
 _EXIT_STOP_BUDGET_S = 5.0
 
 
@@ -384,12 +384,13 @@ class TaskBarController:
 
         Draining the loop cancels each task's pending await, so a sync waiting on
         a model page runs its cleanup now, while the executors still accept work.
+        The drain and the joins spend from the one *budget_s*.
         """
         self._stopped = True
+        deadline = time.monotonic() + budget_s
         for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
             self.queue.cancel(task.task_id, CancelOrigin.EXIT)
-        asyncio_loop.shutdown()
-        deadline = time.monotonic() + budget_s
+        asyncio_loop.shutdown(budget_s)
         threads = [*self._workers.values(), self._detect_thread]
         for thread in threads:
             if thread is not None:
