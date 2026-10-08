@@ -674,7 +674,7 @@ class TestCrawlRenderModeConfig:
             assert Config().crawl_render_mode is CrawlRenderMode.HTTP
         assert (
             "LILBEE_CRAWL_RENDER_MODE = 'bogus' is not one of http, browser; "
-            "crawl_render_mode uses its default"
+            "the variable is ignored"
         ) in caplog.text
 
     def test_browser_memory_lever_defaults(self):

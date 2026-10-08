@@ -86,6 +86,7 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
     "less_than": "less than {lt}",
 }
 _VALUE_ERROR_PREFIX = "Value error, "
+_VARIABLE_IGNORED = "the variable is ignored"
 
 
 def value_is_set(field_name: str, raw: object) -> bool:
@@ -1530,11 +1531,6 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     }
 
 
-def _enum_fields(settings_cls: type[BaseSettings]) -> list[str]:
-    """The names of the fields of *settings_cls* typed as an enum."""
-    return [name for name in settings_cls.model_fields if _enum_of(settings_cls, name) is not None]
-
-
 def _enum_of(settings_cls: type[BaseSettings], key: str) -> type[Enum] | None:
     """The enum the field *key* is typed as, or None for any other type."""
     annotation = settings_cls.model_fields[key].annotation
@@ -1573,54 +1569,46 @@ def _refusal(probe: BaseSettings, key: str, value: Any) -> str | None:
     return None
 
 
-def _refused(
+def _accepted(
     settings_cls: type[BaseSettings],
     values: dict[str, Any],
-    keys: Iterable[str],
     shown: Callable[[str], str],
     fallback: Callable[[str], str],
-) -> list[str]:
-    """Those of *keys* whose value in *values* the field refuses, each warned about once."""
+) -> dict[str, Any]:
+    """*values* less each one its own field refuses, with one load warning per refusal."""
+    known = [key for key in values if key in settings_cls.model_fields]
+    if not known:
+        return values
     probe = settings_cls.model_construct()
-    refused: list[str] = []
-    for key in keys:
-        if key not in values:
-            continue
+    refused: set[str] = set()
+    for key in known:
         reason = _refusal(probe, key, values[key])
         if reason is None:
             continue
-        refused.append(key)
+        refused.add(key)
         warn_on_load(f"{shown(key)} = {values[key]!r} {reason}; {fallback(key)}")
-    return refused
+    return {key: value for key, value in values.items() if key not in refused}
 
 
 class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings; a refused choice takes the field default."""
+    """Reads LILBEE_* env vars as plain strings; a blank or refused variable is unset."""
 
-    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+    def __init__(
+        self, settings_cls: type[BaseSettings], names: Iterable[str] | None = None
+    ) -> None:
         self._settings_cls = settings_cls
+        self._names = list(settings_cls.model_fields if names is None else names)
 
     def _variable(self, field_name: str) -> str:
         return _variable(self._settings_cls, field_name)
 
     def __call__(self) -> dict[str, Any]:
-        fields = self._settings_cls.model_fields
         result: dict[str, Any] = {}
-        for field_name in fields:
+        for field_name in self._names:
             raw = os.environ.get(self._variable(field_name))
             if value_is_set(field_name, raw):
                 result[field_name] = raw
-        refused = _refused(
-            self._settings_cls,
-            result,
-            _enum_fields(self._settings_cls),
-            self._variable,
-            lambda key: refused_value_fallback(key, result),
-        )
-        # The default is set, not left out, so a refused variable still outranks config.toml.
-        for key in refused:
-            result[key] = fields[key].get_default(call_default_factory=True)
-        return result
+        return _accepted(self._settings_cls, result, self._variable, lambda key: _VARIABLE_IGNORED)
 
 
 class _TomlSource:
@@ -1632,9 +1620,8 @@ class _TomlSource:
 
     def _fallback(self, key: str, values: dict[str, Any]) -> str:
         """What a refused *key* gets instead: its variable when one is set, else the usual."""
-        variable = _variable(self._settings_cls, key)
-        if value_is_set(key, os.environ.get(variable)):
-            return f"{variable} sets {key}"
+        if key in _PlainEnvSource(self._settings_cls, [key])():
+            return f"{_variable(self._settings_cls, key)} sets {key}"
         return refused_value_fallback(key, values)
 
     def __call__(self) -> dict[str, Any]:
@@ -1650,15 +1637,12 @@ class _TomlSource:
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
         values = {k: v for k, v in data.items() if value_is_set(k, v)}
-        known = [key for key in values if key in self._settings_cls.model_fields]
-        refused = _refused(
+        return _accepted(
             self._settings_cls,
             values,
-            known,
             "config.toml: {}".format,
             lambda key: self._fallback(key, values),
         )
-        return {key: value for key, value in values.items() if key not in refused}
 
 
 def _build_cfg() -> tuple[Config, tuple[str, ...]]:
