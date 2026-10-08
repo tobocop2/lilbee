@@ -328,13 +328,13 @@ class TestSync:
         monkeypatch.setattr(cfg, "batch_extraction", True)
         (isolated_env / "d.txt").write_text("Hello world. Batch extraction test document.")
 
-        async def fake_batch(inputs, _config):
+        async def fake_batch(inputs, _config, _on_progress):
             res = mock.MagicMock()
             res.results = [_make_xberg_result() for _ in inputs]
             res.errors = []
             return res
 
-        with mock.patch("xberg.extract_batch", side_effect=fake_batch) as mock_batch:
+        with mock.patch("xberg.progress.extract_batch", side_effect=fake_batch) as mock_batch:
             result = await sync()
 
         assert "d.txt" in result.added
@@ -6405,77 +6405,94 @@ class TestIngestDocumentOcrPath:
         assert result == []
         assert "no usable text" in caplog.text
 
-    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
-    async def test_streams_per_page_progress_ticks(self, mock_kf, isolated_env, mock_svc):
-        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        result_obj = _make_xberg_result(num_chunks=1, has_pages=True)
+    @staticmethod
+    async def _ingest_reporting(mock_kf, isolated_env, reports) -> list[tuple[int, int, str]]:
+        """Ingest scan.pdf while the extraction reports *reports* as xberg OCR page events.
 
-        async def fake_extract(data, *, filename=None, config):
-            # Simulate xberg calling the registered backend once per scanned page.
-            from lilbee.data.extract.backends.vision_ocr import ocr_requests
+        Each report is (page, total, completed, backend). Returns the EXTRACT
+        events seen while the extraction ran, which excludes the per-file summary.
+        """
+        from xberg import ProgressEvent
 
-            token = json.loads(config.ocr.backend_options)["req"]
-            ctx = ocr_requests.get(token)
-            ctx.on_page()
-            ctx.on_page()
-            return result_obj
+        from lilbee.data.ingest import ingest_document
+        from lilbee.runtime.progress import EventType
+
+        seen: list[tuple[int, int, str]] = []
+        during_extraction: list[tuple[int, int, str]] = []
+
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
+            if on_progress is None:
+                return mock.MagicMock(counts=mock.MagicMock(pages=0), metadata=Metadata())
+            for page, total, completed, backend in reports:
+                on_progress(ProgressEvent("ocr_page", page, total, completed, backend))
+            during_extraction.extend(seen)
+            return _make_xberg_result(num_chunks=1, has_pages=True)
+
+        def on_prog(event_type, ev):
+            if event_type is EventType.EXTRACT:
+                seen.append((ev.page, ev.total_pages, ev.ocr_backend))
 
         mock_kf.side_effect = fake_extract
-        from lilbee.data.ingest import ingest_document
-
-        seen: list[int] = []
-
-        def on_prog(_et, ev):
-            seen.append(ev.page)
-
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
         await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
-        assert 1 in seen and 2 in seen  # two per-page running-count ticks
+        return during_extraction
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
-    async def test_per_page_ticks_carry_the_page_count_read_before_extraction(
-        self, mock_kf, isolated_env, mock_svc
+    async def test_a_page_reported_twice_counts_once(self, mock_kf, isolated_env, mock_svc):
+        """xberg reports page 5 twice without advancing ``completed``; so does lilbee."""
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        vision = OcrBackendName.LILBEE_VISION
+        ticks = await self._ingest_reporting(
+            mock_kf,
+            isolated_env,
+            [(5, 9, 1, vision), (5, 9, 1, vision), (2, 9, 2, vision)],
+        )
+        assert [(page, total) for page, total, _ in ticks] == [(1, 9), (1, 9), (2, 9)]
+
+    @pytest.mark.parametrize(
+        ("vision_model", "expected"),
+        [
+            pytest.param(
+                "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", OcrBackendUsed.VISION, id="vision"
+            ),
+            pytest.param("", OcrBackendUsed.TESSERACT, id="tesseract"),
+        ],
+    )
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_page_ticks_carry_xbergs_total_and_the_configured_backend(
+        self, mock_kf, vision_model, expected, isolated_env, mock_svc
     ):
-        """Each running-count tick carries the real total, not the placeholder 0."""
+        """The backend comes from lilbee's configuration, whatever name xberg's event carries."""
+        cfg.vision_model = vision_model
+        cfg.ocr = OcrMode.AUTO
+        ticks = await self._ingest_reporting(mock_kf, isolated_env, [(4, 9, 1, "paddle-ocr")])
+        assert ticks == [(1, 9, expected)]
+
+    @pytest.mark.parametrize("content_type", ["pdf", "image"])
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_a_pdf_or_image_extraction_hands_xberg_a_progress_callback(
+        self, mock_kf, content_type, isolated_env, mock_svc
+    ):
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-        result_obj = _make_xberg_result(num_chunks=1, has_pages=True)
-        probe_result = mock.MagicMock(counts=mock.MagicMock(pages=5))
-
-        async def fake_extract(data, *, filename=None, config):
-            if config.disable_ocr:
-                return probe_result
-            from lilbee.data.extract.backends.vision_ocr import ocr_requests
-
-            token = json.loads(config.ocr.backend_options)["req"]
-            ctx = ocr_requests.get(token)
-            ctx.on_page()
-            ctx.on_page()
-            return result_obj
-
-        mock_kf.side_effect = fake_extract
+        mock_kf.return_value = _make_xberg_result(num_chunks=1, has_pages=True)
         from lilbee.data.ingest import ingest_document
 
-        seen: list[tuple[int, int, OcrBackendUsed]] = []
-
-        def on_prog(_et, ev):
-            seen.append((ev.page, ev.total_pages, ev.ocr_backend))
-
-        f = isolated_env / "scan.pdf"
+        f = isolated_env / "scan.bin"
         f.write_bytes(b"x")
-        await ingest_document(f, "scan.pdf", "pdf", on_progress=on_prog)
-        assert (1, 5, OcrBackendUsed.VISION) in seen
-        assert (2, 5, OcrBackendUsed.VISION) in seen
+        await ingest_document(f, "scan.bin", content_type)
+        mock_kf.assert_awaited_once()
+        assert callable(mock_kf.await_args.kwargs["on_progress"])
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_page_count_probe_sends_no_ocr_block(self, mock_kf, isolated_env, mock_svc):
-        """The probe carries no OCR block: xberg 1.2.7 OCRs page images under any OCR block."""
+        """The probe is metadata-only: it carries no OCR block and sets disable_ocr."""
         cfg.vision_model = ""
         cfg.ocr = OcrMode.AUTO
         probe_result = mock.MagicMock(counts=mock.MagicMock(pages=5))
         configs = []
 
-        async def fake_extract(data, *, filename=None, config):
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
             configs.append(config)
             if config.disable_ocr:
                 return probe_result
@@ -6496,7 +6513,7 @@ class TestIngestDocumentOcrPath:
 
 
 class TestTesseractOcrStartEvent:
-    """Tesseract reports no pages while it runs, so its file gets one OCR_START event."""
+    """A scanned file under Tesseract gets one OCR_START event before its extraction."""
 
     @staticmethod
     def _probe(pages: int, scanned: list[int]) -> mock.MagicMock:
@@ -6508,7 +6525,7 @@ class TestTesseractOcrStartEvent:
     async def _ingest(self, mock_kf, isolated_env, probe) -> list[tuple[object, object]]:
         order: list[tuple[object, object]] = []
 
-        async def fake_extract(data, *, filename=None, config):
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
             if config.disable_ocr:
                 return probe
             order.append(("extract", None))
@@ -6555,7 +6572,7 @@ class TestTesseractOcrStartEvent:
         for page in text_pdf.pages:
             page.ocr_confidence = None
 
-        async def fake_extract(data, *, filename=None, config):
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
             return probe if config.disable_ocr else text_pdf
 
         mock_kf.side_effect = fake_extract
@@ -6596,6 +6613,40 @@ class TestTesseractOcrStartEvent:
         assert "extract" in [et for et, _ in order]
         assert EventType.OCR_START not in [et for et, _ in order]
 
+    @pytest.mark.parametrize(
+        ("vision_model", "ocr", "content_type", "probes"),
+        [
+            pytest.param("", OcrMode.AUTO, "pdf", 1, id="tesseract-pdf-is-probed"),
+            pytest.param("", OcrMode.AUTO, "image", 1, id="tesseract-image-is-probed"),
+            pytest.param("", OcrMode.AUTO, "text", 0, id="tesseract-unpaginated"),
+            pytest.param(
+                "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", OcrMode.AUTO, "pdf", 0, id="vision"
+            ),
+            pytest.param("", OcrMode.OFF, "pdf", 0, id="ocr-off"),
+        ],
+    )
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_only_a_tesseract_pdf_or_image_pays_for_the_page_probe(
+        self, mock_kf, vision_model, ocr, content_type, probes, isolated_env, mock_svc
+    ):
+        """The metadata-only pass runs only where its result decides the OCR_START event."""
+        cfg.vision_model = vision_model
+        cfg.ocr = ocr
+        configs = []
+
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
+            configs.append(config)
+            return _make_xberg_result(num_chunks=1, has_pages=True)
+
+        mock_kf.side_effect = fake_extract
+        from lilbee.data.ingest import ingest_document
+
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        await ingest_document(f, "scan.pdf", content_type)
+        assert len(configs) == probes + 1
+        assert [c.pages.extract_pages for c in configs[:probes]] == [False] * probes
+
 
 def _ocr_sent(config) -> tuple[str | None, bool]:
     """The OCR backend an xberg config carries (None: no OCR block) and its disable_ocr."""
@@ -6605,8 +6656,7 @@ def _ocr_sent(config) -> tuple[str | None, bool]:
 class TestOcrOffSendsNoOcrBlock:
     """With OCR off, the extraction xberg receives has no OCR block and disable_ocr set.
 
-    xberg 1.2.7 OCRs every page image under any OCR block, even a disabled one
-    (fixed in 1.2.9), and auto-OCRs a PDF with no text layer unless disable_ocr is set.
+    xberg auto-OCRs a PDF with no text layer unless disable_ocr is set.
     """
 
     @pytest.mark.parametrize(
@@ -6620,14 +6670,14 @@ class TestOcrOffSendsNoOcrBlock:
         cfg.ocr = ocr
         extractions = []
 
-        async def fake_extract(_input, config):
+        async def fake_extract(_input, config, _on_progress):
             if config.pages.extract_pages:
                 extractions.append(config)
             return mock.MagicMock(results=[_make_xberg_result(has_pages=True)])
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        with mock.patch("xberg.extract", side_effect=fake_extract):
+        with mock.patch("xberg.progress.extract", side_effect=fake_extract):
             await ingest_document(f, "scan.pdf", "pdf")
         assert [_ocr_sent(c) for c in extractions] == [expected]
 
@@ -6645,14 +6695,14 @@ class TestOcrOffSendsNoOcrBlock:
         cfg.batch_extraction = True
         sent = []
 
-        async def fake_batch(inputs, config):
+        async def fake_batch(inputs, config, _on_progress):
             sent.append((config, [i.config for i in inputs]))
             return mock.MagicMock(results=[_make_xberg_result() for _ in inputs], errors=[])
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
         batcher = make_extract_batcher()
-        with mock.patch("xberg.extract_batch", side_effect=fake_batch):
+        with mock.patch("xberg.progress.extract_batch", side_effect=fake_batch):
             token = set_active_batcher(batcher)
             try:
                 await ingest_document(f, "scan.pdf", "pdf")
@@ -7896,6 +7946,25 @@ class TestIngestArchive:
 
         with pytest.raises(ChunkLimitError, match=r"^docs.zip/big.txt: 3 chunks exceed"):
             await ingest_archive(f, "docs.zip", "zip")
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_an_archive_extraction_hands_xberg_no_progress_callback(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        """xberg counts an archive's OCR'd pages across members, so no member reports them."""
+        from lilbee.data.extract.document import ingest_archive
+
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        mock_kf.return_value = _make_archive_result(
+            [_member("a.pdf", "application/pdf", _make_xberg_result(num_chunks=1, has_pages=True))]
+        )
+        f = isolated_env / "docs.zip"
+        f.write_bytes(b"PK\x03\x04")
+
+        await ingest_archive(f, "docs.zip", "zip")
+
+        mock_kf.assert_awaited_once()
+        assert mock_kf.await_args.kwargs["on_progress"] is None
 
     @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
     async def test_members_pass_the_same_extension_gate_as_files_on_disk(

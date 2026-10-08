@@ -123,13 +123,11 @@ class TestProcessImage:
         be.process_image(b"PNG", _cfg(vlm_prompt="custom prompt"))
         assert calls[0][2] == "custom prompt"
 
-    def test_request_context_supplies_timeout_and_fires_progress(self):
-        ticks: list[int] = []
+    def test_request_context_supplies_timeout(self):
         be, calls = _backend()
-        with ocr_request(on_page=lambda: ticks.append(1), timeout=12.5) as token:
+        with ocr_request(timeout=12.5) as token:
             be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
         assert calls[0][3] == 12.5
-        assert ticks == [1]
 
     def test_a_set_cancel_stops_the_next_page_before_the_model_call(self):
         cancel = threading.Event()
@@ -143,14 +141,12 @@ class TestProcessImage:
         assert [(call[0], call[4]) for call in calls] == [(b"PAGE1", cancel)]
 
     def test_non_string_token_is_ignored(self):
-        ticks: list[int] = []
         be, calls = _backend()
-        with ocr_request(on_page=lambda: ticks.append(1), timeout=7.5):
+        with ocr_request(timeout=7.5):
             be.process_image(b"PNG", _cfg(backend_options='{"req": 5}'))
         assert calls[0][3] == 0.0
-        assert ticks == []
 
-    def test_no_context_uses_zero_timeout_and_no_tick(self):
+    def test_no_context_uses_zero_timeout(self):
         be, calls = _backend()
         be.process_image(b"PNG", _cfg(backend_options=backend_options_for("unknown-token")))
         assert calls[0][3] == 0.0

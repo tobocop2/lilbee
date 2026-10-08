@@ -1,7 +1,7 @@
 """Bridge to xberg's async-only ``extract`` for lilbee's call sites.
 
-xberg exposes one ``extract(input, config)`` coroutine; lilbee extracts a single
-in-memory document at a time, from both async and sync callers.
+xberg exposes one ``extract(input, config, on_progress)`` coroutine; lilbee extracts
+a single in-memory document at a time, from both async and sync callers.
 """
 
 from __future__ import annotations
@@ -26,16 +26,18 @@ if TYPE_CHECKING:
         ExtractionResult,
         OcrConfig,
     )
+    from xberg.progress import ProgressCallback, ProgressEvent
 
 
 @dataclass(frozen=True)
 class BatchItem:
-    """One input for :func:`aextract_batch`, with its per-file OCR override."""
+    """One input for :func:`aextract_batch`, with its per-file OCR override and progress."""
 
     data: bytes
     mime: str | None
     filename: str | None
     ocr: OcrConfig | None
+    on_progress: ProgressCallback | None = None
 
 
 def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractInput:
@@ -78,11 +80,34 @@ async def aextract_document(
     *,
     filename: str | None = None,
     config: ExtractionConfig,
+    on_progress: ProgressCallback | None = None,
 ) -> ExtractedDocument:
-    """Extract one in-memory document. For callers already on the event loop."""
-    from xberg import extract
+    """Extract one in-memory document. For callers already on the event loop.
 
-    return _first(await extract(_input(data, mime_type, filename), _with_concurrency(config)))
+    xberg calls *on_progress* once per OCR'd page, from a worker thread, and
+    swallows whatever it raises.
+    """
+    from xberg.progress import extract
+
+    return _first(
+        await extract(_input(data, mime_type, filename), _with_concurrency(config), on_progress)
+    )
+
+
+def _route_by_input(items: list[BatchItem]) -> ProgressCallback | None:
+    """One callback handing each batch progress event to its own input's callback."""
+    callbacks: dict[int | None, ProgressCallback] = {
+        index: item.on_progress for index, item in enumerate(items) if item.on_progress is not None
+    }
+    if not callbacks:
+        return None
+
+    def _route(event: ProgressEvent) -> None:
+        callback = callbacks.get(event.input_index)
+        if callback is not None:
+            callback(event)
+
+    return _route
 
 
 async def aextract_batch(
@@ -90,11 +115,13 @@ async def aextract_batch(
 ) -> list[ExtractedDocument | Exception]:
     """Extract many inputs in one call, returning one document-or-error per input.
 
-    Each item's OCR config overrides the batch default for that file. xberg compacts
+    Each item's OCR config overrides the batch default for that file, and each item's
+    ``on_progress`` receives only that file's OCR page events. xberg compacts
     ``results`` to successes in input order and reports failures in ``errors`` by
     input index; this remaps them back to one slot per input.
     """
-    from xberg import ExtractInput, ExtractInputKind, FileExtractionConfig, extract_batch
+    from xberg import ExtractInput, ExtractInputKind, FileExtractionConfig
+    from xberg.progress import extract_batch
 
     inputs = [
         ExtractInput(
@@ -106,7 +133,7 @@ async def aextract_batch(
         )
         for item in items
     ]
-    result = await extract_batch(inputs, _with_concurrency(config))
+    result = await extract_batch(inputs, _with_concurrency(config), _route_by_input(items))
     failed: dict[int, Exception] = {e.index: RuntimeError(e.message) for e in result.errors}
     success_indices = [i for i in range(len(items)) if i not in failed]
     by_index: dict[int, ExtractedDocument | Exception] = dict(
