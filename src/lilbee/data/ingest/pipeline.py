@@ -1745,6 +1745,7 @@ async def ingest_stream(
                     ptask=ptask,
                     flush_failed=flush_failed,
                     reasons=reasons,
+                    cancel=cancel,
                 )
     finally:
         # Stop the adaptive controller (if any) before returning: its background
@@ -1887,6 +1888,7 @@ async def _collect_results(
     ptask: Any = None,
     flush_failed: set[str] | None = None,
     reasons: dict[str, str] | None = None,
+    cancel: CancelSignal | None = None,
 ) -> None:
     """Run *feed* through a bounded task window, batching writes and progress.
 
@@ -1937,6 +1939,7 @@ async def _collect_results(
                         failed,
                         skipped,
                         flush_failed,
+                        cancel,
                     )
                 elif status is BatchStatus.SKIPPED and result.needs_cleanup:
                     # Zero-text result is never buffered; collect it for the
@@ -1960,7 +1963,7 @@ async def _collect_results(
         # The inner finally guarantees the sibling cancel even if the flush
         # itself raises (e.g. a cancellation landing on the to_thread await).
         try:
-            await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed)
+            await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed, cancel)
             await to_ingest_thread(_purge_emptied_sources, to_purge)
         finally:
             try:
@@ -1993,13 +1996,14 @@ async def _buffer_and_maybe_flush(
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
     flush_failed: set[str] | None,
+    cancel: CancelSignal | None = None,
 ) -> int:
     """Buffer one ingested file, flushing at the chunk threshold; returns the new count."""
     buffer.append(result)
     # Zero-chunk files count one unit so the buffer stays bounded.
     buffered_chunks += max(result.chunk_count, 1)
     if buffered_chunks >= _WRITE_FLUSH_CHUNKS:
-        await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed)
+        await _flush_to_end(buffer, added, updated, failed, skipped, flush_failed, cancel)
         buffered_chunks = 0
     return buffered_chunks
 
@@ -2011,13 +2015,15 @@ async def _flush_to_end(
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
     flush_failed: set[str] | None,
+    cancel: CancelSignal | None = None,
 ) -> None:
     """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
 
     The write thread owns *buffer* until it returns, so a flush the cancel abandoned
     would run beside the next flush of the same buffer. The flush is a plain future:
     a cancel of every task on the loop reaches this caller and never the write.
-    A write that fails under a cancel is logged and leaves as the cause of the cancel.
+    A write that fails under a cancel, of this caller or a set *cancel*, leaves as
+    the cause of the cancel; one that escaped :func:`_flush_writes` is logged here.
     """
     flush = ingest_thread_future(
         _flush_writes, buffer, added, updated, failed, skipped, flush_failed
@@ -2028,13 +2034,14 @@ async def _flush_to_end(
             await asyncio.wait([flush])
         except asyncio.CancelledError:
             cancelled = True
-    error = flush.exception()
-    if cancelled:
-        if error is not None:
-            log.warning("The write of a cancelled sync failed", exc_info=error)
+    escaped = flush.exception()
+    error = flush.result() if escaped is None else escaped
+    if cancelled or (error is not None and cancel is not None and cancel.is_set()):
+        if escaped is not None:
+            log.warning("The write of a cancelled sync failed", exc_info=escaped)
         raise asyncio.CancelledError from error
-    if error is not None:
-        raise error
+    if escaped is not None:
+        raise escaped
 
 
 def _report_file_progress(
@@ -2240,8 +2247,8 @@ def _flush_writes(
     failed: dict[str, None],
     skipped: dict[str, OcrReport | None],
     flush_failed: set[str] | None = None,
-) -> None:
-    """Flush the buffered documents to the store; track a write failure.
+) -> Exception | None:
+    """Flush the buffered documents to the store; track and return a write failure.
 
     Each buffered file's page texts, chunks, cleanup delete, and source upsert
     are written by :func:`_flush_batch`. If that fails, every file in the batch
@@ -2251,7 +2258,7 @@ def _flush_writes(
     skip-marker path always runs. The buffer is cleared either way.
     """
     if not buffer:
-        return
+        return None
     try:
         _flush_batch(buffer)
     except Exception as exc:
@@ -2265,5 +2272,7 @@ def _flush_writes(
             failed[r.name] = None
             if flush_failed is not None:
                 flush_failed.add(r.name)
+        return exc
     finally:
         buffer.clear()
+    return None

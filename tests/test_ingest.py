@@ -3747,6 +3747,48 @@ class TestCancelDuringThresholdFlush:
         logged = [r.exc_info[1] for r in caplog.records if r.exc_info]
         assert [str(exc) for exc in logged] == ["disk full"]
 
+    @pytest.mark.parametrize("flush_at", [1, 10_000], ids=["threshold_flush", "final_flush"])
+    @pytest.mark.parametrize("stopping", [True, False], ids=["cancel_set", "no_cancel"])
+    async def test_a_store_write_that_fails_under_a_set_cancel_leaves_as_its_cause(
+        self, monkeypatch, caplog, flush_at, stopping
+    ):
+        """The sync's cancel signal, with no cancelled task, still takes the failed write."""
+        import asyncio
+        import logging
+        import threading
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+
+        cancel = threading.Event()
+
+        def _disk_full(_buffer: list[_IngestResult]) -> None:
+            if stopping:
+                cancel.set()  # the Ctrl+C lands in the write
+            raise OSError("disk full")
+
+        async def _done() -> _IngestResult:
+            return _IngestResult("a.txt", Path("a.txt"), chunk_count=1, error=None)
+
+        monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", flush_at)
+        monkeypatch.setattr(pipeline, "_flush_batch", _disk_full)
+        failed: dict[str, None] = {}
+        flush_failed: set[str] = set()
+        collect = pipeline._collect_results(
+            _feed([_done()]), {}, {}, failed, {}, window=1, flush_failed=flush_failed, cancel=cancel
+        )
+        with caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"):
+            if stopping:
+                with pytest.raises(asyncio.CancelledError) as stopped:
+                    await collect
+                assert str(stopped.value.__cause__) == "disk full"
+            else:
+                await collect  # a failed write with no cancel is tracked, and the sync goes on
+        assert failed == {"a.txt": None}
+        assert flush_failed == {"a.txt"}
+        # The tracked failure is logged once, where it was tracked.
+        assert [r.getMessage() for r in caplog.records] == ["Failed to write a.txt: disk full"]
+
     async def test_a_second_cancel_waits_for_the_final_flush(self, monkeypatch):
         """The sync does not end while the flush on its way out is still writing."""
         import asyncio
