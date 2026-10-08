@@ -360,7 +360,8 @@ async def _start_add(app, pilot, scan, parked: _ParkedSync):
     prompt.focus()
     prompt.value = f"/add {scan}"
     await pilot.press("enter")
-    assert await wait_until(pilot, parked.syncing.is_set)
+    # The worker thread starts the sync after file-locked writes no pause drives.
+    assert await wait_until(pilot, parked.syncing.is_set, timeout=_SETTLE_SECONDS)
     (task,) = [t for t in app.task_bar.queue.active_tasks if t.task_type == TaskType.ADD.value]
     return task
 
