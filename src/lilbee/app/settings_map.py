@@ -866,7 +866,7 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         int,
         nullable=False,
         group=SettingGroup.CRAWLING,
-        help_text="Retries per page, at most 20",
+        help_text="Retries per page. A crawl makes at most 20, whatever the value",
     ),
     "crawl_exclude_patterns": SettingDef(
         list,

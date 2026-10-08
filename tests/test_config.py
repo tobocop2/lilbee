@@ -328,17 +328,19 @@ class TestOcrLanguage:
             with pytest.raises(ValidationError):
                 setattr(cfg, field, bad)
 
-    def test_crawl_retry_attempts_stop_at_the_crawler_limit(self):
-        from pydantic import ValidationError
-
+    def test_a_retry_count_above_the_crawler_limit_is_accepted(self):
         original = cfg.crawl_retry_max_attempts
         try:
-            cfg.crawl_retry_max_attempts = 20
-            assert cfg.crawl_retry_max_attempts == 20
-            with pytest.raises(ValidationError):
-                cfg.crawl_retry_max_attempts = 21
+            cfg.crawl_retry_max_attempts = 50
+            assert cfg.crawl_retry_max_attempts == 50
         finally:
             cfg.crawl_retry_max_attempts = original
+
+    def test_a_retry_count_above_the_crawler_limit_loads_from_the_environment(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_RETRY_MAX_ATTEMPTS"] = "25"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_retry_max_attempts == 25
 
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
@@ -1662,6 +1664,23 @@ class TestCrawlExcludePatternsValidator:
 
         assert Config._split_crawl_exclude_patterns("") == []
         assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
+
+
+class TestConfigFileWrittenBeforeCrawlberg:
+    def test_a_retry_count_above_the_crawler_limit_keeps_every_value_of_the_file(self, tmp_path):
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            "crawl_retry_max_attempts = 25\ncrawl_max_depth = 2\ncrawl_timeout = 12\ntop_k = 7\n",
+            encoding="utf-8",
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            loaded = Config()
+        assert loaded.crawl_retry_max_attempts == 25
+        assert loaded.crawl_max_depth == 2
+        assert loaded.crawl_timeout == 12
+        assert loaded.top_k == 7
 
 
 class TestRemovedCrawlSettings:

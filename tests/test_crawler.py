@@ -1,6 +1,7 @@
 """Tests for the web crawling module."""
 
 import asyncio
+import os
 import sys
 import threading
 import types
@@ -36,6 +37,7 @@ from lilbee.crawler.save import (
     _save_single_result,
     _update_single_metadata,
     normalize_crawled_markdown,
+    stored_spellings,
 )
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
 from lilbee.runtime.progress import EventType
@@ -224,6 +226,58 @@ class TestCrawlMetadata:
             save_crawl_metadata(meta)
         tmp_path = cfg.data_dir / "crawl_meta.tmp"
         assert not tmp_path.exists()
+
+
+def _stored(*urls: str) -> dict[str, CrawlMeta]:
+    """Crawl metadata that holds *urls*, each with a hash no page has."""
+    return {
+        url: CrawlMeta(
+            file=url_to_filename(url), content_hash="old", crawled_at="2026-01-01T00:00:00+00:00"
+        )
+        for url in urls
+    }
+
+
+class TestStoredSpellings:
+    @pytest.mark.parametrize(
+        ("stored", "reported"),
+        [
+            ("https://example.com/t/naïve", "https://example.com/t/na%C3%AFve"),
+            ("https://example.com/t/raw space", "https://example.com/t/raw%20space"),
+            ("https://example.com/t/日本語", "https://example.com/t/%E6%97%A5%E6%9C%AC%E8%AA%9E"),
+            (
+                'https://example.com/t/a"b<c>d`e{f}',
+                "https://example.com/t/a%22b%3Cc%3Ed%60e%7Bf%7D",
+            ),
+            (
+                "https://example.com/t/ïñ/deep page",
+                "https://example.com/t/%C3%AF%C3%B1/deep%20page",
+            ),
+        ],
+        ids=["letter", "space", "script", "punctuation", "two-segments"],
+    )
+    def test_an_address_stored_as_written_is_found_by_its_encoded_form(
+        self, stored: str, reported: str
+    ):
+        assert stored_spellings(_stored(stored)) == {reported: stored}
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/t/caf%C3%A9",
+            "https://example.com/t/enc%2Fslash",
+            "https://example.com/t/percent%25literal",
+            "https://example.com/t/pipe|bar^up[one]~x+y,z;a:b@c!d$e*f(g)'h",
+            "https://example.com/t/query?name=jos%C3%A9+maria&x=1",
+            "https://example.com/",
+        ],
+        ids=["encoded", "encoded-slash", "percent", "kept-punctuation", "query", "plain"],
+    )
+    def test_an_address_already_in_its_encoded_form_has_no_other_spelling(self, url: str):
+        assert stored_spellings(_stored(url)) == {}
+
+    def test_empty_metadata_has_no_spellings(self):
+        assert stored_spellings({}) == {}
 
 
 class TestContentHash:
@@ -611,14 +665,16 @@ class TestChromiumInstalledMatching:
         assert bootstrap.headless_shell_executable() == shell
 
     @posix_only
-    def test_a_shell_file_that_cannot_run_does_not_count(self, tmp_path, monkeypatch):
+    def test_a_shell_file_that_cannot_run_counts_as_installed(self, tmp_path, monkeypatch):
         from lilbee.crawler import bootstrap
 
-        _install_shell(tmp_path, "1208", executable=False)
+        shell = _install_shell(tmp_path, "1208", executable=False)
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
 
-        assert bootstrap.headless_shell_executable() is None
+        assert not os.access(shell, os.X_OK)
+        assert bootstrap.headless_shell_executable() == shell
+        assert bootstrap.chromium_installed() is True
 
     def test_an_install_that_never_finished_does_not_count(self, tmp_path, monkeypatch):
         """Playwright marks a finished install; a shell without the marker may be half unpacked."""
@@ -1402,6 +1458,54 @@ class TestSitemapCounting:
 
 
 class TestCrawlAndSave:
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    async def test_a_page_stored_as_written_is_saved_under_its_stored_address(
+        self, mock_crawl_recursive, isolated_env
+    ):
+        stored = "https://example.com/t/naïve page"
+        encoded = "https://example.com/t/caf%C3%A9"
+        new = "https://example.com/t/new%20page"
+        save_crawl_metadata(_stored(stored, encoded))
+        reported = [
+            CrawlResult(url="https://example.com/t/na%C3%AFve%20page", markdown="# Naive"),
+            CrawlResult(url=encoded, markdown="# Cafe"),
+            CrawlResult(url=new, markdown="# New"),
+        ]
+
+        async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+            for result in reported:
+                await kwargs["on_result"](result)  # type: ignore[operator]
+            return reported
+
+        mock_crawl_recursive.side_effect = crawl
+        paths = await crawl_and_save("https://example.com/", depth=1)
+        web = cfg.documents_dir / "_web"
+        assert paths == [web / url_to_filename(url) for url in (stored, encoded, new)]
+        assert paths[0].read_text(encoding="utf-8") == "# Naive"
+        meta = load_crawl_metadata()
+        assert set(meta) == {stored, encoded, new}
+        assert meta[stored].content_hash == content_hash("# Naive")
+        assert meta[stored].file == url_to_filename(stored)
+
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    async def test_an_address_stored_in_both_spellings_keeps_the_reported_one(
+        self, mock_crawl_recursive, isolated_env
+    ):
+        stored = "https://example.com/t/naïve"
+        reported = "https://example.com/t/na%C3%AFve"
+        save_crawl_metadata(_stored(stored, reported))
+
+        async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+            result = CrawlResult(url=reported, markdown="# Naive")
+            await kwargs["on_result"](result)  # type: ignore[operator]
+            return [result]
+
+        mock_crawl_recursive.side_effect = crawl
+        await crawl_and_save("https://example.com/", depth=1)
+        meta = load_crawl_metadata()
+        assert meta[reported].content_hash == content_hash("# Naive")
+        assert meta[stored].content_hash == "old"
+
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")

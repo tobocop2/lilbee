@@ -33,6 +33,10 @@ from tests._crawlberg_stub import (
 )
 
 SEED = "https://example.com/"
+HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
+)
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
 
 
@@ -52,10 +56,11 @@ async def _recursive(
     cancel: threading.Event | None = None,
     concurrency: ConcurrencySpec | None = None,
     filters: FilterSpec | None = None,
+    depth: int = 2,
 ) -> list[FetchedPage]:
     stream = fetcher.fetch_recursive(
         SEED,
-        depth=2,
+        depth=depth,
         max_pages=7,
         timeout=12.5,
         concurrency=concurrency or ConcurrencySpec(semaphore_count=4),
@@ -120,6 +125,22 @@ class TestCrawlConfig:
             "chrome_args": [],
         }
 
+    async def test_http_mode_names_the_http_user_agent(self):
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(_http())
+            await _http().fetch_single(SEED, timeout=5)
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [HTTP_USER_AGENT] * 2
+
+    async def test_browser_mode_names_the_browser_user_agent(self, monkeypatch, tmp_path):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(_browser())
+            await _browser().fetch_single(SEED, timeout=5)
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [BROWSER_USER_AGENT] * 2
+
     async def test_whole_urls_are_matched_and_query_urls_kept_apart_and_stripped_of_tracking(self):
         stub = StubCrawlberg()
         with stub.installed():
@@ -182,6 +203,24 @@ class TestCrawlConfig:
             await _recursive(_http(), concurrency=pacing)
         assert stub.config["retry_count"] == 0
         assert stub.config["retry_codes"] == []
+
+    @pytest.mark.parametrize(
+        ("configured", "sent", "warnings"),
+        [(20, 20, 0), (21, 20, 1), (1000, 20, 1)],
+        ids=["at-the-limit", "one-over", "far-over"],
+    )
+    async def test_a_retry_count_over_crawlbergs_limit_is_sent_as_the_limit(
+        self, caplog, configured: int, sent: int, warnings: int
+    ):
+        pacing = ConcurrencySpec(retry_on_rate_limit=True, retry_max_attempts=configured)
+        stub = StubCrawlberg([page(SEED, depth=0)], refuse=_refuses_many_retries)
+        with stub.installed(), caplog.at_level("WARNING", logger=fetcher_mod.__name__):
+            fetched = await _recursive(_http(), concurrency=pacing)
+        assert [one.url for one in fetched] == [SEED]
+        assert stub.config["retry_count"] == sent
+        capped = [r.getMessage() for r in caplog.records if "crawl_retry_max_attempts" in r.message]
+        assert len(capped) == warnings
+        assert all(str(configured) in message and "20" in message for message in capped)
 
     async def test_ssrf_policy_reads_the_blocklist_at_crawl_time(self, monkeypatch):
         blocked = tuple(n for n in _BLOCKED_NETWORKS if n not in LOOPBACK)
@@ -291,12 +330,13 @@ class TestBrowserMode:
         assert stub.configs == []
 
 
-# The text crawlberg 1.9.0 raises for ``--headless=new``, for 21 retries and for a pattern
-# its regex engine cannot parse.
+# The text crawlberg 1.10.2 raises for ``--headless=new``, for 21 retries, for a depth of 101
+# and for a pattern its regex engine cannot parse.
 HEADLESS_REASON = (
     "invalid_config: browser.chrome_args must not set --headless; crawlberg sets it to run Chrome"
 )
 RETRY_REASON = "invalid_config: retry_count must be <= 20 (got 21)"
+DEPTH_REASON = "invalid_config: max_depth must be <= 100 (got 101)"
 CONDITIONAL_PATTERN = "(?P<n>a)(?(n)b|c)"
 # A pattern crawlberg refuses whose text holds the name crawlberg gives the launch flags.
 FLAG_NAMING_PATTERN = "(?P<n>browser.chrome_args)(?(n)b|c)"
@@ -315,6 +355,11 @@ def _refuses_headless(config: Recorded) -> str | None:
 def _refuses_many_retries(config: Recorded) -> str | None:
     """Refuse a crawl config with more than 20 retries, whatever its launch flags."""
     return RETRY_REASON if config.kwargs.get("retry_count", 0) > 20 else None
+
+
+def _refuses_deep_crawls(config: Recorded) -> str | None:
+    """Refuse a crawl config with a depth over 100, whatever its launch flags."""
+    return DEPTH_REASON if config.kwargs["max_depth"] > 100 else None
 
 
 def _refuses_conditional_patterns(config: Recorded) -> str | None:
@@ -360,11 +405,10 @@ class TestRefusedEngine:
         assert str(refused.value).endswith(HEADLESS_REASON)
 
     async def test_a_refusal_of_another_field_gives_crawlbergs_reason_and_names_no_setting(self):
-        stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=_refuses_many_retries)
-        concurrency = ConcurrencySpec(retry_on_rate_limit=True, retry_max_attempts=21)
+        stub = StubCrawlberg([page(SEED, depth=0), complete(1)], refuse=_refuses_deep_crawls)
         with stub.installed(), pytest.raises(CrawlEngineRefusedError) as refused:
-            await _recursive(_browser(["--lang=fr"]), concurrency=concurrency)
-        assert str(refused.value) == f"crawlberg refuses to start this crawl: {RETRY_REASON}"
+            await _recursive(_browser(["--lang=fr"]), depth=101)
+        assert str(refused.value) == f"crawlberg refuses to start this crawl: {DEPTH_REASON}"
         assert stub.seeds == []
 
     @pytest.mark.parametrize("pattern", [CONDITIONAL_PATTERN, FLAG_NAMING_PATTERN])

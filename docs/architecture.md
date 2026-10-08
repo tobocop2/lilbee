@@ -1405,7 +1405,7 @@ All settings are configurable via `LILBEE_*` environment variables, `config.toml
 | `LILBEE_CRAWL_RETRY_ON_RATE_LIMIT` | `true` | Retry pages that answer HTTP 429 or 503 | Other server errors and timeouts are not retried. Set to `false` to disable. |
 | `LILBEE_CRAWL_RETRY_BASE_DELAY_MIN` / `MAX` | `1.0` / `3.0` | Base delay range for retries (seconds) | The first retry waits the middle of the range, and each later retry doubles the wait. |
 | `LILBEE_CRAWL_RETRY_MAX_BACKOFF` | `30.0` | Upper bound on any single backoff wait (seconds) |  |
-| `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `3` | Retries per page | At most 20. |
+| `LILBEE_CRAWL_RETRY_MAX_ATTEMPTS` | `3` | Retries per page | A crawl makes at most 20, whatever the value. |
 
 ### Provider Settings
 

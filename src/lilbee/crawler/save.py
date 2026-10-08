@@ -9,7 +9,7 @@ import re
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
@@ -31,6 +31,20 @@ _QUERY_HASH_LEN = 8
 # Markdown files are durable per-page; metadata batches to keep write volume
 # bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
 METADATA_FLUSH_INTERVAL = 10
+
+# ASCII punctuation the URL standard leaves as written in a path. It percent-encodes a
+# space, a double quote, <, >, a backtick, { and }, and every non-ASCII character.
+_URL_STANDARD_SAFE = "!#$%&'()*+,-./:;=?@[\\]^_|~"
+
+
+def _escaped(url: str) -> str:
+    """*url* percent-encoded as the URL standard serializes it, the form a fetcher reports."""
+    return quote(url, safe=_URL_STANDARD_SAFE)
+
+
+def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, str]:
+    """Each URL *meta* holds in another spelling than its percent-encoded form, by that form."""
+    return {escaped: url for url in meta if (escaped := _escaped(url)) != url}
 
 
 def url_to_filename(url: str) -> str:

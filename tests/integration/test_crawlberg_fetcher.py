@@ -23,7 +23,7 @@ crawlberg = pytest.importorskip("crawlberg")
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.core.config import Config, cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
-from lilbee.crawler import bootstrap, crawl_and_save, url_filter  # noqa: E402
+from lilbee.crawler import CrawlMeta, bootstrap, crawl_and_save, save, url_filter  # noqa: E402
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
@@ -64,12 +64,18 @@ CANCEL_BOUND_S = 2.0
 LATE_START_MARGIN_S = 0.1
 SETTLE_S = 1.0
 RETRY_ATTEMPTS = 2
+# The most retries crawlberg 1.10.2 accepts.
+CRAWLBERG_RETRY_LIMIT = 20
 RETRY_DELAY_S = 0.05
 RETRY_STATUSES = {
     "/retry/broken": HTTPStatus.INTERNAL_SERVER_ERROR,
     "/retry/busy": HTTPStatus.SERVICE_UNAVAILABLE,
 }
 SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
+# Links as a page writes them: a raw letter, a raw space, and one already percent-encoded.
+SPELL_LINKS = ("/spell/naïve", "/spell/raw space", "/spell/caf%C3%A9")
+# The same three addresses as crawlberg reports and requests them.
+SPELL_REQUESTS = ("/spell/na%C3%AFve", "/spell/raw%20space", "/spell/caf%C3%A9")
 # Flag lists crawlberg refuses, each with a part of the reason it gives.
 REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
     (["--headless=new"], "--headless"),
@@ -92,6 +98,11 @@ NO_SETTING = "crawlberg refuses to start this crawl: "
 # A timeout in seconds whose milliseconds pass crawlberg's integer width, and what it raises.
 OVERSIZED_TIMEOUT = 10**17
 OVERSIZED_REASON = "int too big to convert"
+# The user agents lilbee sent in each render mode before crawlberg, on every platform.
+HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
+)
 # Pages in the recursive browser crawl that must start Chromium once.
 BROWSER_CRAWL_PAGES = 3
 # A page whose image carries its own bytes in a ``data:`` address, here a one-pixel PNG.
@@ -119,6 +130,10 @@ def _query_page(path: str, filler: str) -> str:
         links = "".join(f'<a href="{link}">{link}</a> ' for link in QUERY_LINKS)
         links += '<a href="/query/pair?a=1&amp;b=2">pair</a> <A HREF="/query/upper">UPPER</A> '
         return f"<html><head><title>Listing</title></head><body>{links}{filler}</body></html>"
+    if path == "/spell/":
+        links = "".join(f'<a href="{link}">{link}</a> ' for link in SPELL_LINKS)
+        head = '<head><meta charset="utf-8"><title>Spell</title></head>'
+        return f"<html>{head}<body><h1>Index</h1>{links}{filler}</body></html>"
     return f"<html><head><title>T</title></head><body><p>Served {path}.</p>{filler}</body></html>"
 
 
@@ -151,6 +166,7 @@ class _Site:
 
     def __init__(self) -> None:
         self.requests: list[tuple[float, str]] = []
+        self.agents: list[tuple[str, str]] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._server.daemon_threads = True
@@ -164,6 +180,11 @@ class _Site:
         with self._lock:
             return [path for at, path in self.requests if at >= since and path.startswith(prefix)]
 
+    def agents_for(self, prefix: str) -> list[str]:
+        """The user agent of each request for a path under *prefix*."""
+        with self._lock:
+            return [agent for path, agent in self.agents if path.startswith(prefix)]
+
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
@@ -173,7 +194,7 @@ class _Site:
         fixed = _fixed_pages(filler)
         if path in fixed:
             return fixed[path]
-        if path.startswith("/query/"):
+        if path.startswith(("/query/", "/spell/")):
             return 200, _query_page(path, filler)
         if path.startswith(("/scope/", "/retry/")):
             return _scope_or_retry_page(path, filler)
@@ -197,6 +218,7 @@ class _Site:
             def do_GET(self) -> None:
                 with site._lock:
                     site.requests.append((time.monotonic(), self.path))
+                    site.agents.append((self.path, self.headers.get("User-Agent", "")))
                 status, body = site._body(self.path)
                 if status == HTTPStatus.MOVED_PERMANENTLY:
                     self.send_response(status)
@@ -466,6 +488,36 @@ class TestWholeUrlExcludePatterns:
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestStoredSpellingOfAnAddress:
+    def _library_with(self, url: str) -> Path:
+        """A library that holds *url* under the spelling given, with text no page serves."""
+        name = save.url_to_filename(url)
+        path = cfg.documents_dir / "_web" / name
+        path.parent.mkdir(parents=True)
+        path.write_text("stale text", encoding="utf-8")
+        entry = CrawlMeta(file=name, content_hash="stale", crawled_at="2026-01-01T00:00:00+00:00")
+        save.save_crawl_metadata({url: entry})
+        return path
+
+    async def test_a_page_stored_as_the_link_is_written_is_updated_in_place(self, site):
+        as_written = [site.url(link) for link in SPELL_LINKS]
+        reported = [site.url(path) for path in SPELL_REQUESTS]
+        stored_page = self._library_with(as_written[0])
+        await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
+        assert sorted(site.paths_since(0, "/spell/")) == sorted(["/spell/", *SPELL_REQUESTS])
+        assert f"Served {SPELL_REQUESTS[0]}." in stored_page.read_text(encoding="utf-8")
+        meta = save.load_crawl_metadata()
+        assert set(meta) == {site.url("/spell/"), as_written[0], reported[1], reported[2]}
+        saved = [path for path in (cfg.documents_dir / "_web").rglob("*.md")]
+        assert len(saved) == len(meta)
+
+    async def test_a_new_page_is_stored_as_crawlberg_reports_it(self, site):
+        await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
+        reported = {site.url(path) for path in SPELL_REQUESTS}
+        assert set(save.load_crawl_metadata()) == {site.url("/spell/"), *reported}
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestRetriedStatuses:
     async def test_only_a_rate_limit_status_is_retried(self, site):
         cfg.crawl_retry_on_rate_limit = True
@@ -476,6 +528,15 @@ class TestRetriedStatuses:
         await crawl_and_save(site.url("/retry/"), depth=1, max_pages=0)
         assert len(site.paths_since(0, "/retry/busy")) == 1 + RETRY_ATTEMPTS
         assert site.paths_since(0, "/retry/broken") == ["/retry/broken"]
+
+    async def test_a_retry_count_over_crawlbergs_limit_crawls_with_the_limit(self, site):
+        cfg.crawl_retry_on_rate_limit = True
+        cfg.crawl_retry_max_attempts = CRAWLBERG_RETRY_LIMIT + 5
+        cfg.crawl_retry_base_delay_min = RETRY_DELAY_S
+        cfg.crawl_retry_base_delay_max = RETRY_DELAY_S
+        cfg.crawl_retry_max_backoff = RETRY_DELAY_S
+        await crawl_and_save(site.url("/retry/"), depth=1, max_pages=0)
+        assert len(site.paths_since(0, "/retry/busy")) == 1 + CRAWLBERG_RETRY_LIMIT
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -512,6 +573,38 @@ class TestRefusedLaunchFlags:
         cfg.crawl_browser_extra_args = ["--headless=new"]
         paths = await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
         assert len(paths) == 1
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestShellThatCannotRun:
+    """A headless shell without the execute permission is installed, and crawlberg refuses it."""
+
+    @posix_only
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
+    async def test_a_browser_crawl_names_the_shell_and_starts_no_install(
+        self, site, monkeypatch, tmp_path, depth: int
+    ):
+        directory = tmp_path / f"{bootstrap._HEADLESS_SHELL_DIR_PREFIX}1"
+        directory.mkdir()
+        shell = directory / "chrome-headless-shell"
+        shell.write_text("#!/bin/sh\n", encoding="utf-8")
+        shell.chmod(stat.S_IRUSR | stat.S_IWUSR)
+        (directory / bootstrap._INSTALL_COMPLETE_MARKER).write_bytes(b"")
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1")
+        installs: list[object] = []
+
+        async def install(on_progress: object) -> None:
+            installs.append(on_progress)
+
+        monkeypatch.setattr(bootstrap, "_install_chromium", install)
+        with pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(site.url("/wiki/Home"), depth=depth, render_mode=BROWSER)
+        assert installs == []
+        assert str(refused.value) == (
+            f"{NO_SETTING}invalid_config: browser.chrome_path '{shell}' is not executable"
+        )
+        assert site.paths_since(0, "/wiki/Home") == []
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -729,3 +822,22 @@ class TestBrowserLaunch:
         paths = self._crawl(site.url("/wide/"), depth=1, max_pages=BROWSER_CRAWL_PAGES)
         assert len(paths) == BROWSER_CRAWL_PAGES
         assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_browser_requests_carry_the_browser_user_agent(self, site):
+        paths = self._crawl(site.url("/wiki/Home"))
+        assert len(paths) == 1
+        assert set(site.agents_for("/wiki/Home")) == {BROWSER_USER_AGENT}
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestUserAgent:
+    async def test_http_requests_carry_the_http_user_agent(self, site):
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert len(paths) == 3
+        agents = site.agents_for("/wide/")
+        assert len(agents) >= 3
+        assert set(agents) == {HTTP_USER_AGENT}
+
+    async def test_a_single_page_request_carries_the_http_user_agent(self, site):
+        await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
+        assert site.agents_for("/wiki/Home") == [HTTP_USER_AGENT]

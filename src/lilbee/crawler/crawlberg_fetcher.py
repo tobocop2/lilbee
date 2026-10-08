@@ -65,6 +65,8 @@ _TRACKING_PARAMS = ("utm_*", "fbclid", "gclid", "ref")
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
 _RATE_LIMIT_STATUSES = (429, 503)
+# The most retries crawlberg 1.10.2 accepts; it refuses a config with more.
+_MAX_RETRIES = 20
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
@@ -75,6 +77,13 @@ _REFUSED_SETTING_MESSAGES = {
 }
 _NO_CONTENT = "No content extracted"
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
+# The user agent of every request in each render mode, the same on every platform.
+_USER_AGENTS = {
+    CrawlRenderMode.HTTP: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    CrawlRenderMode.BROWSER: (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
+    ),
+}
 
 
 class _EventKind(StrEnum):
@@ -198,6 +207,19 @@ class _Pacing:
         return cls(_ms(middle), half_range / middle if middle > 0 else 0.0)
 
 
+def _retry_count(spec: ConcurrencySpec) -> int:
+    """The retries crawlberg makes for one page: the configured count, up to crawlberg's limit."""
+    if not spec.retry_on_rate_limit:
+        return 0
+    if spec.retry_max_attempts > _MAX_RETRIES:
+        log.warning(
+            "crawl_retry_max_attempts is %d; a crawl retries a page at most %d times",
+            spec.retry_max_attempts,
+            _MAX_RETRIES,
+        )
+    return min(spec.retry_max_attempts, _MAX_RETRIES)
+
+
 def _headless_shell() -> str:
     """The path of Playwright's headless shell, the only Chrome a crawl launches."""
     executable = bootstrap.headless_shell_executable()
@@ -248,10 +270,11 @@ def _crawl_config(
         strip_tracking_params=True,
         tracking_params=list(_TRACKING_PARAMS),
         request_timeout=timeout_ms,
+        user_agent=_USER_AGENTS[render_mode],
         rate_limit_ms=pacing.rate_limit_ms,
         rate_limit_jitter_ratio=pacing.jitter_ratio,
         max_redirects=_MAX_REDIRECTS,
-        retry_count=concurrency.retry_max_attempts if retries else 0,
+        retry_count=_retry_count(concurrency),
         retry_codes=list(_RATE_LIMIT_STATUSES) if retries else [],
         retry_initial_delay_ms=_ms(
             (concurrency.retry_base_delay_min + concurrency.retry_base_delay_max) / 2
