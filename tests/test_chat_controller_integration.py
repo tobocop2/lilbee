@@ -1955,6 +1955,68 @@ async def test_a_task_worker_is_started_in_the_lock_before_it_enters_the_map(
     assert workers.started_at_spawn == [True]
 
 
+class _StartsATaskOnRelease:
+    """A lock whose release, once armed, starts a task before any other thread can run."""
+
+    def __init__(self, start_task) -> None:
+        self._lock = threading.Lock()
+        self._start_task = start_task
+        self.armed = False
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        if self.armed:
+            self.armed = False
+            self._start_task()
+
+
+class _ArmsOnCopy(dict):
+    """A worker map that arms its lock when the stop path copies it."""
+
+    def __init__(self, lock: _StartsATaskOnRelease) -> None:
+        super().__init__()
+        self._lock = lock
+
+    def values(self):
+        self._lock.armed = True
+        return super().values()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moment", ["after_the_copy", "after_the_stop"])
+async def test_a_task_started_once_the_stop_has_begun_gets_no_worker(moment: str) -> None:
+    """The stop joins the workers it copied; a later start is refused and cancelled as an exit."""
+    from lilbee.cli.tui.task_queue import CancelOrigin
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        started: list[str] = []
+
+        def _start_late() -> None:
+            target = lambda _reporter: release.wait(5.0)  # noqa: E731
+            started.append(controller.start_task("late", TaskType.SYNC, target))
+
+        if moment == "after_the_copy":
+            controller._workers_lock = lock = _StartsATaskOnRelease(_start_late)
+            controller._workers = _ArmsOnCopy(lock)
+        try:
+            controller.stop_all(budget_s=0.2)
+            if moment == "after_the_stop":
+                _start_late()
+            (late,) = started
+            task = controller.queue.get_task(late)
+            assert dict(controller._workers) == {}
+            assert (task.status, task.cancel_origin) == (TaskStatus.CANCELLED, CancelOrigin.EXIT)
+            assert late not in controller._task_targets
+        finally:
+            release.set()
+
+
 @pytest.mark.asyncio
 async def test_a_sync_stopped_at_exit_starts_no_pending_detection() -> None:
     """The re-detect a sync starts on its way out does not run into the exit teardown."""

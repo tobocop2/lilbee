@@ -141,7 +141,7 @@ class TaskBarController:
         # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
         self.pending_sync_count: int = 0
         self._detect_thread: threading.Thread | None = None
-        # Set by stop_all at app exit; no new detection starts after it.
+        # Set by stop_all before it copies _workers; no worker or detection starts after it.
         self._stopped = False
         # Roles whose worker is currently in the spawn window (1-3 s cold
         # start). Surfaced as a single TaskBar hint instead of one toast
@@ -369,7 +369,7 @@ class TaskBarController:
             self._spawn_task_worker(task.task_id)
 
     def _spawn_task_worker(self, task_id: str) -> None:
-        """Start a daemon thread for the task. Safe to call from any thread."""
+        """Start a daemon thread for the task, or cancel the task as an exit once stop_all began."""
         if task_id not in self._task_targets:
             return
         thread = threading.Thread(
@@ -379,10 +379,16 @@ class TaskBarController:
             name=f"task-{task_id}",
         )
         # Started inside the lock: the map holds started threads only, and a worker
-        # that ends at once waits here to remove itself.
+        # that ends at once waits here to remove itself. The stop is read in the same
+        # hold, so a worker is in the map stop_all copies or it never starts.
         with self._workers_lock:
-            thread.start()
-            self._workers[task_id] = thread
+            accepted = not self._stopped
+            if accepted:
+                thread.start()
+                self._workers[task_id] = thread
+        if not accepted:
+            self._task_targets.pop(task_id, None)
+            self.queue.cancel(task_id, CancelOrigin.EXIT)
 
     def stop_all(self, budget_s: float = _EXIT_STOP_BUDGET_S) -> None:
         """Cancel every task as an exit, unwind their coroutines on the loop, then join the workers.
