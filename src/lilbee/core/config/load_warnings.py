@@ -1,4 +1,4 @@
-"""Warnings about a value a settings source refused: logged once per process tree, kept per load."""
+"""What a settings source reports about a value it refuses: a warning, or a variable that stops."""
 
 from __future__ import annotations
 
@@ -19,6 +19,10 @@ _MARK_LENGTH = 12
 _collected: ContextVar[list[str] | None] = ContextVar("lilbee_load_warnings", default=None)
 
 
+class RefusedVariableError(ValueError):
+    """The environment sets a LILBEE_* variable lilbee does not run with."""
+
+
 def _mark(message: str) -> str:
     """A short stable name for *message* that fits an environment variable."""
     return hashlib.sha256(message.encode("utf-8")).hexdigest()[:_MARK_LENGTH]
@@ -37,9 +41,15 @@ def warn_on_load(message: str) -> None:
     os.environ[SHOWN_ENV_VAR] = _MARK_SEPARATOR.join([*shown, mark])
 
 
+def refuse_variable(message: str) -> None:
+    """Raise RefusedVariableError, except in a collecting load, whose entry point raises it."""
+    if _collected.get() is None:
+        raise RefusedVariableError(message)
+
+
 @contextmanager
 def collecting() -> Iterator[list[str]]:
-    """Yield the list that receives every load warning reported inside the block."""
+    """Yield the list that receives each load warning; a refused variable does not raise inside."""
     found: list[str] = []
     token = _collected.set(found)
     try:

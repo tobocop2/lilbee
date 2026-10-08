@@ -5,10 +5,8 @@ The settings sources and the TOML parser live here too. Every
 to the same instance defined at module bottom.
 """
 
-import logging
 import os
 import re
-from collections.abc import Callable, Iterable
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -42,16 +40,15 @@ from .enums import (
     TableModel,
     WikiEntityMode,
 )
-from .load_warnings import collecting, warn_on_load
+from .load_warnings import collecting, refuse_variable, warn_on_load
 from .parsing import (
     migrate_ocr_keys,
     parse_bool,
+    refuse_retired_ocr_env,
     refused_value_fallback,
     warn_retired_ocr_keys,
 )
 from .validators import ConfigField
-
-log = logging.getLogger(__name__)
 
 # Sentinel for unset Path-typed fields. ``Field(default=Path())`` produces an
 # instance equal to this, so the model_validator can distinguish "user passed
@@ -86,7 +83,6 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
     "less_than": "less than {lt}",
 }
 _VALUE_ERROR_PREFIX = "Value error, "
-_VARIABLE_IGNORED = "the variable is ignored"
 
 
 def value_is_set(field_name: str, raw: object) -> bool:
@@ -1209,8 +1205,7 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                log.warning("Invalid flash_attention=%r, using auto", v)
-                return None
+                raise ValueError("use true, false or auto") from None
         return bool(v)
 
     @field_validator("n_gpu_layers", mode="before")
@@ -1228,8 +1223,7 @@ class Config(BaseSettings):
             try:
                 return int(label)
             except ValueError:
-                log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
-                return None
+                raise ValueError("use a whole number, cpu or auto") from None
         return int(v)
 
     @field_validator("main_gpu", mode="before")
@@ -1245,8 +1239,7 @@ class Config(BaseSettings):
             try:
                 return int(label)
             except ValueError:
-                log.warning("Invalid LILBEE_MAIN_GPU=%r, using auto", v)
-                return None
+                raise ValueError("use a whole number or auto") from None
         return int(v)
 
     @field_validator("gpu_devices", mode="before")
@@ -1264,8 +1257,7 @@ class Config(BaseSettings):
                 return None
             for part in parts:
                 if not part.lstrip("-").isdigit():
-                    log.warning("Invalid LILBEE_GPU_DEVICES=%r, ignoring", v)
-                    return None
+                    raise ValueError("use GPU indexes separated by commas, or auto")
             return ",".join(parts)
         return str(v)
 
@@ -1291,15 +1283,14 @@ class Config(BaseSettings):
     @field_validator("semantic_chunking", mode="before")
     @classmethod
     def _parse_semantic_chunking(cls, v: Any) -> bool:
-        """Parse from env string; invalid values warn and fall back to False."""
+        """A bool as it stands, a string through parse_bool."""
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
             try:
                 return parse_bool(v)
             except ValueError:
-                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
-                return False
+                raise ValueError("use true or false") from None
         return bool(v)
 
     @field_validator(
@@ -1569,58 +1560,49 @@ def _refusal(probe: BaseSettings, key: str, value: Any) -> str | None:
     return None
 
 
-def _accepted(
-    settings_cls: type[BaseSettings],
-    values: dict[str, Any],
-    shown: Callable[[str], str],
-    fallback: Callable[[str], str],
-) -> dict[str, Any]:
-    """*values* less each one its own field refuses, with one load warning per refusal."""
+def _refusals(settings_cls: type[BaseSettings], values: dict[str, Any]) -> dict[str, str]:
+    """Why its own field refuses each of *values* that one refuses, by key."""
     known = [key for key in values if key in settings_cls.model_fields]
     if not known:
-        return values
+        return {}
     probe = settings_cls.model_construct()
-    refused: set[str] = set()
-    for key in known:
-        reason = _refusal(probe, key, values[key])
-        if reason is None:
-            continue
-        refused.add(key)
-        warn_on_load(f"{shown(key)} = {values[key]!r} {reason}; {fallback(key)}")
-    return {key: value for key, value in values.items() if key not in refused}
+    reasons = {key: _refusal(probe, key, values[key]) for key in known}
+    return {key: reason for key, reason in reasons.items() if reason is not None}
 
 
 class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings; a blank or refused variable is unset."""
+    """Reads LILBEE_* env vars as plain strings; a blank one is unset, a refused one stops."""
 
-    def __init__(
-        self, settings_cls: type[BaseSettings], names: Iterable[str] | None = None
-    ) -> None:
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
         self._settings_cls = settings_cls
-        self._names = list(settings_cls.model_fields if names is None else names)
-
-    def _variable(self, field_name: str) -> str:
-        return _variable(self._settings_cls, field_name)
 
     def __call__(self) -> dict[str, Any]:
         result: dict[str, Any] = {}
-        for field_name in self._names:
-            raw = os.environ.get(self._variable(field_name))
+        for field_name in self._settings_cls.model_fields:
+            raw = os.environ.get(_variable(self._settings_cls, field_name))
             if value_is_set(field_name, raw):
                 result[field_name] = raw
-        return _accepted(self._settings_cls, result, self._variable, lambda key: _VARIABLE_IGNORED)
+        refused = _refusals(self._settings_cls, result)
+        if refused:
+            refuse_variable(
+                "; ".join(
+                    f"{_variable(self._settings_cls, key)} = {result[key]!r} {reason}"
+                    for key, reason in refused.items()
+                )
+            )
+        return {key: value for key, value in result.items() if key not in refused}
 
 
 class _TomlSource:
-    """Custom pydantic-settings source that reads config.toml."""
+    """Reads config.toml as a settings source."""
 
     def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
         self._settings_cls = settings_cls
         self._path = path
 
     def _fallback(self, key: str, values: dict[str, Any]) -> str:
-        """What a refused *key* gets instead: its variable when that sets it, else the usual."""
-        if key in _PlainEnvSource(self._settings_cls, [key])():
+        """What a refused *key* gets instead: its variable when one is set, else the usual."""
+        if env_value(key) is not None:
             return f"{_variable(self._settings_cls, key)} sets {key}"
         return refused_value_fallback(key, values)
 
@@ -1637,22 +1619,29 @@ class _TomlSource:
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
         values = {k: v for k, v in data.items() if value_is_set(k, v)}
-        return _accepted(
-            self._settings_cls,
-            values,
-            "config.toml: {}".format,
-            lambda key: self._fallback(key, values),
-        )
+        refused = _refusals(self._settings_cls, values)
+        for key, reason in refused.items():
+            warn_on_load(
+                f"config.toml: {key} = {values[key]!r} {reason}; {self._fallback(key, values)}"
+            )
+        return {key: value for key, value in values.items() if key not in refused}
 
 
 def env_value(field_name: str) -> str | None:
-    """What LILBEE_<FIELD_NAME> sets on Config: None when it is unset, blank or refused."""
-    return _PlainEnvSource(Config, [field_name])().get(field_name)
+    """What LILBEE_<FIELD_NAME> holds, or None when it is unset or blank."""
+    raw = os.environ.get(_variable(Config, field_name))
+    return raw if value_is_set(field_name, raw) else None
 
 
 def toml_values(path: Path) -> dict[str, Any]:
     """The values in the config.toml at *path*, less each one Config refuses."""
     return _TomlSource(Config, path)()
+
+
+def refuse_environment() -> None:
+    """Raise RefusedVariableError for a retired OCR variable or a value its setting refuses."""
+    refuse_retired_ocr_env(os.environ)
+    _PlainEnvSource(Config)()
 
 
 def _build_cfg() -> tuple[Config, tuple[str, ...]]:

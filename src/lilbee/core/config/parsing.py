@@ -4,7 +4,7 @@ from collections.abc import Iterable, Mapping
 from typing import Any
 
 from .enums import OcrMode
-from .load_warnings import warn_on_load
+from .load_warnings import RefusedVariableError, warn_on_load
 
 # Matches what pydantic itself accepts for a bool field. Every other bool on
 # Config is coerced by pydantic, so a narrower vocabulary here would make the
@@ -99,9 +99,9 @@ def refuse_retired_ocr_keys(keys: Iterable[str]) -> None:
 
 
 def refuse_retired_ocr_env(environ: Mapping[str, str]) -> None:
-    """Raise ValueError when *environ* sets a retired OCR variable instead of LILBEE_OCR."""
+    """Raise RefusedVariableError when *environ* sets a retired OCR variable."""
     retired = [name for name in _RETIRED_OCR_ENV_VARS if environ.get(name, "").strip()]
     if retired:
-        raise ValueError(
+        raise RefusedVariableError(
             f"{_replaced_by(retired, _OCR_ENV_VAR)}; set {_OCR_ENV_VAR} to one of {_ocr_modes()}"
         )

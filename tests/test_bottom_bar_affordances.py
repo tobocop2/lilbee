@@ -259,7 +259,7 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
         assert app.theme == _DEFAULT_THEME
 
 
-_OCR_LOAD_WARNING = "LILBEE_OCR = 'bogus' is not one of auto, all, off; the variable is ignored"
+_OCR_LOAD_WARNING = "config.toml: ocr = 'bogus' is not one of auto, all, off; ocr uses its default"
 _TOP_K_LOAD_WARNING = "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
 
 

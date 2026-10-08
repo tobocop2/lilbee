@@ -13,8 +13,7 @@ from typer.core import TyperCommand
 from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.core.config import cfg
-from lilbee.core.config.parsing import refuse_retired_ocr_env
+from lilbee.core.config import RefusedVariableError, cfg, refuse_environment
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
@@ -153,11 +152,11 @@ def apply_overrides(
             setattr(cfg, attr, value)
 
 
-def _refuse_retired_ocr_env(json_output: bool) -> None:
-    """Exit with one error line when the environment sets a retired OCR variable."""
+def _refuse_environment(json_output: bool) -> None:
+    """Exit with one error line when the environment sets a variable lilbee does not run with."""
     try:
-        refuse_retired_ocr_env(os.environ)
-    except ValueError as exc:
+        refuse_environment()
+    except RefusedVariableError as exc:
         if json_output:
             json_out({"error": str(exc)})
         else:
@@ -165,21 +164,21 @@ def _refuse_retired_ocr_env(json_output: bool) -> None:
         raise SystemExit(1) from None
 
 
-class RetiredOcrEnvCommand(TyperCommand):
-    """A command that refuses a retired OCR env var when it runs, after its --help is parsed."""
+class RefusingCommand(TyperCommand):
+    """A command that refuses the environment when it runs, after its --help is parsed."""
 
     def invoke(self, ctx: Context) -> Any:
-        _refuse_retired_ocr_env(cfg.json_mode)
+        _refuse_environment(cfg.json_mode)
         return super().invoke(ctx)
 
 
-def refuse_retired_ocr_env_in(typer_app: typer.Typer) -> None:
+def refuse_environment_in(typer_app: typer.Typer) -> None:
     """Make every command registered on *typer_app*, nested groups included, a refusing one."""
     for command in typer_app.registered_commands:
-        command.cls = RetiredOcrEnvCommand
+        command.cls = RefusingCommand
     for group in typer_app.registered_groups:
         if group.typer_instance is not None:
-            refuse_retired_ocr_env_in(group.typer_instance)
+            refuse_environment_in(group.typer_instance)
 
 
 @app.callback()
@@ -243,7 +242,7 @@ def _default(
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:
-        _refuse_retired_ocr_env(json_output)
+        _refuse_environment(json_output)
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)

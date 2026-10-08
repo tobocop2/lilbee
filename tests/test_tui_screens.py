@@ -14883,12 +14883,11 @@ def test_settings_help_content_blank_when_no_help_text():
         ("chat_model", "", False),
         ("top_k", "", False),
         ("top_k", "7", True),
-        ("top_k", "many", False),
-        ("ocr", "bogus", False),
+        ("top_k", " ", False),
     ],
 )
 def test_settings_env_pill_follows_whether_the_env_value_overrides(monkeypatch, key, value, shown):
-    """The pill shows where the variable sets the setting: not when blank or refused."""
+    """The pill shows where the variable sets the setting: not when it is blank."""
     from lilbee.cli.tui.screens.settings_widgets import env_pill
 
     monkeypatch.setenv(f"LILBEE_{key.upper()}", value)

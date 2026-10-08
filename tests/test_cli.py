@@ -1414,13 +1414,11 @@ class TestRetiredOcrEnvVarsAreRefused:
     def test_every_command_is_built_as_the_refusing_class(self):
         from typer.core import TyperGroup
 
-        from lilbee.cli.app import RetiredOcrEnvCommand
+        from lilbee.cli.app import RefusingCommand
 
         leaves = [(path, c) for path, c in self._command_paths() if not isinstance(c, TyperGroup)]
         assert len(leaves) > 50
-        not_refusing = [
-            " ".join(path) for path, c in leaves if not isinstance(c, RetiredOcrEnvCommand)
-        ]
+        not_refusing = [" ".join(path) for path, c in leaves if not isinstance(c, RefusingCommand)]
         assert not_refusing == []
 
     def test_a_nested_command_is_refused(self, tmp_path):
@@ -1496,6 +1494,131 @@ class TestRetiredOcrEnvVarsAreRefused:
         assert exited.value.code == 1
         assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in capsys.readouterr().err
         run_tui.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("variable", "value", "stored", "line"),
+    [
+        (
+            "LILBEE_LLM_PROVIDER",
+            "local",
+            'llm_provider = "remote"',
+            "LILBEE_LLM_PROVIDER = 'local' is not one of auto, remote",
+        ),
+        (
+            "LILBEE_SESSIONS_ENABLED",
+            "flase",
+            "sessions_enabled = true",
+            "LILBEE_SESSIONS_ENABLED = 'flase' is not true or false",
+        ),
+        ("LILBEE_TOP_K", "many", "top_k = 7", "LILBEE_TOP_K = 'many' is not a whole number"),
+        (
+            "LILBEE_SEMANTIC_CHUNKING",
+            "flase",
+            "semantic_chunking = true",
+            "LILBEE_SEMANTIC_CHUNKING = 'flase' is refused (use true or false)",
+        ),
+    ],
+)
+class TestARefusedVariableStopsEveryEntry:
+    """A LILBEE_* value its setting refuses stops every entry where a retired OCR variable does."""
+
+    def test_a_command_stops_over_a_valid_stored_value(
+        self, tmp_path, overlay_reads_config_toml, variable, value, stored, line
+    ):
+        (tmp_path / "config.toml").write_text(f"{stored}\n", encoding="utf-8")
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(app, ["status", "-d", str(tmp_path)], env={variable: value})
+        assert result.exit_code == 1
+        assert result.output.splitlines() == [f"Error: {line}"]
+        status.assert_not_called()
+
+    def test_a_nested_command_stops(self, tmp_path, variable, value, stored, line):
+        with mock.patch("lilbee.cli.model.list_models_data") as listed:
+            result = runner.invoke(
+                app, ["model", "list", "-d", str(tmp_path)], env={variable: value}
+            )
+        assert result.exit_code == 1
+        assert result.output.splitlines() == [f"Error: {line}"]
+        listed.assert_not_called()
+
+    def test_json_mode_stops_with_a_json_error(self, tmp_path, variable, value, stored, line):
+        result = runner.invoke(
+            app, ["--json", "status", "-d", str(tmp_path)], env={variable: value}
+        )
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {"error": line}
+
+    def test_help_and_version_still_print(self, tmp_path, variable, value, stored, line):
+        env = {variable: value, "LILBEE_DATA": str(tmp_path)}
+        for argv in (["--help"], ["status", "--help"], ["model", "list", "--help"]):
+            result = runner.invoke(app, argv, env=env)
+            assert result.exit_code == 0, result.output
+            assert "Usage" in result.output
+            assert line not in result.output
+        assert runner.invoke(app, ["--version"], env=env).exit_code == 0
+
+    def test_serve_stops_before_the_server_starts(self, tmp_path, variable, value, stored, line):
+        with (
+            mock.patch("lilbee.cli.commands.servers.setup_server_logging") as server_logging,
+            mock.patch(
+                "lilbee.cli.commands.servers.acquire_server_lock", return_value=None
+            ) as server_lock,
+        ):
+            result = runner.invoke(app, ["serve", "-d", str(tmp_path)], env={variable: value})
+        assert result.output.splitlines() == [f"Error: {line}"]
+        assert result.exit_code == 1
+        server_logging.assert_not_called()
+        server_lock.assert_not_called()
+
+    def test_mcp_stops_before_the_server_starts(self, tmp_path, variable, value, stored, line):
+        with mock.patch("lilbee.mcp_server.main") as mcp_main:
+            result = runner.invoke(app, ["mcp", "-d", str(tmp_path)], env={variable: value})
+        assert result.output.splitlines() == [f"Error: {line}"]
+        assert result.exit_code == 1
+        mcp_main.assert_not_called()
+
+    def test_the_tui_stops_before_it_starts(
+        self, monkeypatch, capsys, variable, value, stored, line
+    ):
+        from lilbee.cli.app import _default
+
+        monkeypatch.setenv(variable, value)
+        ctx = mock.MagicMock()
+        ctx.invoked_subcommand = None
+        with (
+            mock.patch("lilbee.cli.tui.run_tui") as run_tui,
+            mock.patch("sys.stdin") as stdin,
+            mock.patch("sys.stdout") as stdout,
+            pytest.raises(SystemExit) as exited,
+        ):
+            stdin.isatty.return_value = True
+            stdout.isatty.return_value = True
+            _default(
+                ctx,
+                data_dir=None,
+                model=None,
+                json_output=False,
+                use_global=False,
+                log_level=None,
+                show_version=False,
+            )
+        assert exited.value.code == 1
+        assert capsys.readouterr().err.splitlines() == [f"Error: {line}"]
+        run_tui.assert_not_called()
+
+
+class TestAValidVariableRunsTheCommand:
+    """The twin of the stop: a value the setting takes, or a blank one, runs the command."""
+
+    @pytest.mark.parametrize("value", ["7", "", "  "])
+    def test_status_runs(self, tmp_path, value):
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(
+                app, ["status", "-d", str(tmp_path)], env={"LILBEE_TOP_K": value}
+            )
+        assert result.exit_code == 0, result.output
+        status.assert_called_once()
 
 
 class TestChatLaunchesTui:

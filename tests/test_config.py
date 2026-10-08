@@ -17,8 +17,10 @@ from lilbee.core.config import (
     DEFAULT_IGNORE_DIRS,
     SOURCES_TABLE,
     Config,
+    RefusedVariableError,
     cfg,
     config_scope,
+    refuse_environment,
     validate_ocr_timeout,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
@@ -839,12 +841,14 @@ class TestFlashAttentionConfig:
             c = Config()
             assert c.flash_attention is True
 
-    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
-        """Garbage values fall back to auto rather than crashing the load."""
+    def test_an_invalid_string_is_refused(self, tmp_path) -> None:
         env = {**clean_env(tmp_path), "LILBEE_FLASH_ATTENTION": "maybe?"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.flash_attention is None
+        line = "LILBEE_FLASH_ATTENTION = 'maybe?' is refused (use true, false or auto)"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
     def test_assignment_with_bool(self, tmp_path) -> None:
         """Validator on assignment accepts bool inputs verbatim."""
@@ -879,11 +883,14 @@ class TestNGpuLayersConfig:
             c = Config()
             assert c.n_gpu_layers == 12
 
-    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
+    def test_an_invalid_string_is_refused(self, tmp_path) -> None:
         env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.n_gpu_layers is None
+        line = "LILBEE_N_GPU_LAYERS = 'not-a-number' is refused (use a whole number, cpu or auto)"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
     def test_assignment_with_int(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
@@ -917,11 +924,14 @@ class TestMainGpuConfig:
             c = Config()
             assert c.main_gpu is None
 
-    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
+    def test_an_invalid_string_is_refused(self, tmp_path) -> None:
         env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "garbage"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.main_gpu is None
+        line = "LILBEE_MAIN_GPU = 'garbage' is refused (use a whole number or auto)"
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
     def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
         """Direct assignment with a non-string value falls through to int(v)."""
@@ -955,11 +965,17 @@ class TestGpuDevicesConfig:
             c = Config()
             assert c.gpu_devices is None
 
-    def test_non_numeric_falls_back_to_none(self, tmp_path) -> None:
+    def test_a_non_numeric_index_is_refused(self, tmp_path) -> None:
         env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": "rtx-4060"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.gpu_devices is None
+        line = (
+            "LILBEE_GPU_DEVICES = 'rtx-4060' is refused "
+            "(use GPU indexes separated by commas, or auto)"
+        )
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
     def test_only_separators_falls_back_to_none(self, tmp_path) -> None:
         """A string that splits into zero parts ('  ,  ,') normalizes to None."""
@@ -1009,16 +1025,53 @@ class TestSemanticChunkingConfig:
         with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "FALSE"}):
             assert Config().semantic_chunking is False
 
-    def test_invalid_falls_back_to_default(self, caplog) -> None:
-        import logging
-
+    def test_an_invalid_string_is_refused(self) -> None:
+        line = "LILBEE_SEMANTIC_CHUNKING = 'banana' is refused (use true or false)"
         with (
             mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "banana"}),
-            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
         ):
-            c = Config()
-            assert c.semantic_chunking is False
-        assert any("banana" in rec.message for rec in caplog.records)
+            Config()
+
+    @pytest.mark.parametrize(
+        ("key", "bad", "stored", "reason"),
+        [
+            ("flash_attention", '"maybe"', None, "is refused (use true, false or auto)"),
+            ("n_gpu_layers", '"lots"', None, "is refused (use a whole number, cpu or auto)"),
+            ("main_gpu", '"first"', None, "is refused (use a whole number or auto)"),
+            (
+                "gpu_devices",
+                '"a,b"',
+                None,
+                "is refused (use GPU indexes separated by commas, or auto)",
+            ),
+            ("semantic_chunking", '"flase"', False, "is refused (use true or false)"),
+        ],
+    )
+    def test_config_toml_drops_the_bad_value_alone_and_names_no_variable(
+        self, tmp_path, key, bad, stored, reason
+    ) -> None:
+        built, warnings = _build_with(tmp_path, f"{key} = {bad}\ntop_k = 7\n")
+        assert (getattr(built, key), built.top_k) == (stored, 7)
+        assert warnings == (f"config.toml: {key} = {bad[1:-1]!r} {reason}; {key} uses its default",)
+
+    @pytest.mark.parametrize(
+        ("key", "bad"),
+        [
+            ("flash_attention", "maybe"),
+            ("n_gpu_layers", "lots"),
+            ("main_gpu", "first"),
+            ("gpu_devices", "a,b"),
+            ("semantic_chunking", "flase"),
+        ],
+    )
+    def test_an_assignment_of_the_bad_value_is_refused(self, tmp_path, key, bad) -> None:
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            built = Config()
+        before = getattr(built, key)
+        with pytest.raises(ValidationError, match="use "):
+            setattr(built, key, bad)
+        assert getattr(built, key) == before
 
     def test_non_string_non_bool_coerced(self) -> None:
         """Validator coerces non-str, non-bool inputs via ``bool()``.
@@ -1092,14 +1145,13 @@ class TestTopicThresholdConfig:
         with mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "1.0"}):
             assert Config().topic_threshold == 1.0
 
-    def test_an_out_of_range_variable_is_ignored(self, tmp_path) -> None:
-        built, warnings = _build_with(
-            tmp_path, "topic_threshold = 0.25\n", LILBEE_TOPIC_THRESHOLD="1.5"
-        )
-        assert built.topic_threshold == 0.25
-        assert warnings == (
-            "LILBEE_TOPIC_THRESHOLD = '1.5' is not 1.0 or less; the variable is ignored",
-        )
+    def test_an_out_of_range_variable_is_refused(self) -> None:
+        line = "LILBEE_TOPIC_THRESHOLD = '1.5' is not 1.0 or less"
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "1.5"}),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
     def test_from_toml(self, tmp_path) -> None:
         toml_path = tmp_path / "config.toml"
@@ -1146,10 +1198,13 @@ class TestOcrTimeoutConfig:
             c = Config()
             assert c.ocr_timeout == 0
 
-    def test_an_invalid_variable_is_ignored(self, tmp_path) -> None:
-        built, warnings = _build_with(tmp_path, "ocr_timeout = 45.0\n", LILBEE_OCR_TIMEOUT="abc")
-        assert built.ocr_timeout == 45.0
-        assert warnings == ("LILBEE_OCR_TIMEOUT = 'abc' is not a number; the variable is ignored",)
+    def test_an_invalid_variable_is_refused(self) -> None:
+        line = "LILBEE_OCR_TIMEOUT = 'abc' is not a number"
+        with (
+            mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "abc"}),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
 
 class TestCorsOriginsConfig:
@@ -2178,17 +2233,14 @@ class TestABadValueInConfigTomlKeepsTheRest:
             "config.toml: ocr = 'OFF' is not one of auto, all, off; LILBEE_OCR sets ocr",
         )
 
-    def test_a_refused_variable_is_not_named_as_what_sets_the_key(self, tmp_path):
-        """A bad LILBEE_OCR, a bad ocr and a stored enable_ocr: enable_ocr decides."""
-        built, warnings = _build_with(
-            tmp_path, 'ocr = "nope"\nenable_ocr = false\ntop_k = 7\n', LILBEE_OCR="bogus"
-        )
-        assert (built.ocr, built.top_k) == (OcrMode.OFF, 7)
-        assert warnings == (
-            "LILBEE_OCR = 'bogus' is not one of auto, all, off; the variable is ignored",
-            "config.toml: ocr = 'nope' is not one of auto, all, off; ocr comes from enable_ocr",
-            "config.toml: enable_ocr is replaced by ocr; the next settings write saves it",
-        )
+    def test_a_bad_value_in_both_sources_stops_on_the_variable(self, tmp_path):
+        (tmp_path / "config.toml").write_text('ocr = "nope"\ntop_k = 7\n', encoding="utf-8")
+        line = "LILBEE_OCR = 'bogus' is not one of auto, all, off"
+        with (
+            mock.patch.dict(os.environ, {**clean_env(tmp_path), "LILBEE_OCR": "bogus"}, clear=True),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
 
     def test_a_bad_ocr_beside_enable_ocr_names_enable_ocr(self, tmp_path):
         built, warnings = _build_with(tmp_path, 'ocr = "nope"\nenable_ocr = false\n')
@@ -2227,9 +2279,40 @@ _STORED_TOML = (
     '[linked_roots]\nnotes = "/kept/notes"\n'
 )
 
+# One refused variable per kind of setting: the value, a valid stored value, and the reason.
+_REFUSED_VARIABLES = [
+    ("top_k", "many", "7", "is not a whole number"),
+    ("top_k", "0", "7", "is not 1 or more"),
+    ("ocr", "OFF", '"off"', "is not one of auto, all, off"),
+    ("llm_provider", "local", '"remote"', "is not one of auto, remote"),
+    ("auto_sync", "maybe", "false", "is not true or false"),
+    ("sessions_enabled", "flase", "false", "is not true or false"),
+    ("max_distance", "far", "0.25", "is not a number"),
+    ("num_ctx", "many", "2048", "is not a whole number"),
+    (
+        "force_ocr_pages",
+        "abc",
+        "[2, 4]",
+        "is refused (force_ocr_pages: 'abc' is not a page number)",
+    ),
+    ("linked_roots", "notadict", '{ notes = "/kept/notes" }', "is not a table of names and values"),
+    ("semantic_chunking", "flase", "true", "is refused (use true or false)"),
+]
 
-class TestARefusedVariableIsUnset:
-    """A LILBEE_* value its setting refuses is ignored with a warning; config.toml still applies."""
+
+def _refusal_of(tmp_path, toml: str, **env: str) -> str | None:
+    """The line Config() stops with for *toml* and *env*, or None when it builds."""
+    (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+    with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+        try:
+            Config()
+        except RefusedVariableError as refused:
+            return str(refused)
+    return None
+
+
+class TestARefusedVariableStops:
+    """A LILBEE_* value its setting refuses stops the load with one line, whatever is stored."""
 
     @staticmethod
     def _run(tmp_path, variable: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -2249,108 +2332,84 @@ class TestARefusedVariableIsUnset:
         )
 
     @pytest.mark.parametrize(
-        ("variable", "key", "stored", "loaded", "expected"),
+        ("variable", "key", "stored", "expected"),
         [
-            ("LILBEE_OCR", "ocr", '"off"', "off", "one of auto, all, off"),
-            (
-                "LILBEE_RERANKER_TYPE",
-                "reranker_type",
-                '"llm"',
-                "llm",
-                "one of auto, cross_encoder, llm",
-            ),
-            ("LILBEE_TOP_K", "top_k", "7", 7, "a whole number"),
-            ("LILBEE_AUTO_SYNC", "auto_sync", "false", False, "true or false"),
+            ("LILBEE_OCR", "ocr", '"off"', "one of auto, all, off"),
+            ("LILBEE_LLM_PROVIDER", "llm_provider", '"remote"', "one of auto, remote"),
+            ("LILBEE_TOP_K", "top_k", "7", "a whole number"),
+            ("LILBEE_SESSIONS_ENABLED", "sessions_enabled", "true", "true or false"),
         ],
     )
-    def test_help_exits_0_with_one_warning_and_config_toml_sets_the_key(
-        self, tmp_path, variable, key, stored, loaded, expected
+    def test_a_real_command_exits_1_with_one_line_and_help_still_prints(
+        self, tmp_path, variable, key, stored, expected
     ):
-        """The losing fields: config.toml sets the same key, and one more that still loads."""
-        (tmp_path / "config.toml").write_text(
-            f"{key} = {stored}\nchunk_size = 321\n", encoding="utf-8"
-        )
-        warning = f"{variable} = 'bogus' is not {expected}; the variable is ignored"
-        probe = (
-            "import json\n"
-            "from lilbee.core.config import cfg, load_warnings\n"
-            f"print(json.dumps([list(load_warnings), cfg.{key}, cfg.chunk_size]))\n"
-        )
+        """config.toml holds a valid value for the same key, and the command still stops."""
+        (tmp_path / "config.toml").write_text(f"{key} = {stored}\n", encoding="utf-8")
+        line = f"{variable} = 'bogus' is not {expected}"
 
-        ran = self._run(tmp_path, variable, "-c", probe)
-        assert ran.returncode == 0, ran.stderr
-        assert json.loads(ran.stdout) == [[warning], loaded, 321]
-        assert ran.stderr.splitlines() == [warning]
+        ran = self._run(tmp_path, variable, "-m", "lilbee", "status")
+        assert ran.returncode == 1
+        assert ran.stderr.splitlines() == [f"Error: {line}"]
+        assert ran.stdout == ""
+
+        as_json = self._run(tmp_path, variable, "-m", "lilbee", "--json", "status")
+        assert as_json.returncode == 1
+        assert json.loads(as_json.stdout) == {"error": line}
+        assert as_json.stderr == ""
 
         shown = self._run(tmp_path, variable, "-m", "lilbee", "--help")
         assert shown.returncode == 0, shown.stderr
         assert "Usage:" in shown.stdout
-        assert shown.stderr.splitlines() == [warning]
+        assert shown.stderr == ""
 
-    @pytest.mark.parametrize(
-        ("key", "bad", "stored", "loaded", "reason"),
-        [
-            ("top_k", "many", "7", 7, "is not a whole number"),
-            ("top_k", "0", "7", 7, "is not 1 or more"),
-            ("ocr", "OFF", '"off"', OcrMode.OFF, "is not one of auto, all, off"),
-            ("auto_sync", "maybe", "false", False, "is not true or false"),
-            ("sessions_enabled", "flase", "false", False, "is not true or false"),
-            ("max_distance", "far", "0.25", 0.25, "is not a number"),
-            ("num_ctx", "many", "2048", 2048, "is not a whole number"),
-            (
-                "force_ocr_pages",
-                "abc",
-                "[2, 4]",
-                [2, 4],
-                "is refused (force_ocr_pages: 'abc' is not a page number)",
-            ),
-            (
-                "linked_roots",
-                "notadict",
-                '{ notes = "/kept/notes" }',
-                {"notes": "/kept/notes"},
-                "is not a table of names and values",
-            ),
-        ],
-    )
-    def test_config_toml_sets_the_key_a_refused_variable_names(
-        self, tmp_path, key, bad, stored, loaded, reason
-    ):
-        """The losing fields: the file's value for the key, and one a valid variable beats."""
+    def test_the_library_object_raises_the_one_error_type(self, tmp_path):
+        probe = (
+            "import sys\n"
+            "from lilbee.api import Lilbee\n"
+            "from lilbee.core.config import RefusedVariableError\n"
+            "try:\n"
+            "    Lilbee(sys.argv[1])\n"
+            "except RefusedVariableError as refused:\n"
+            "    print('REFUSED', refused)\n"
+        )
+        ran = self._run(tmp_path, "LILBEE_TOP_K", "-c", probe, str(tmp_path / "docs"))
+        assert ran.returncode == 0, ran.stderr
+        assert ran.stdout.splitlines() == ["REFUSED LILBEE_TOP_K = 'bogus' is not a whole number"]
+        assert "Traceback" not in ran.stderr
+        assert not (tmp_path / "docs").exists()
+
+    @pytest.mark.parametrize(("key", "bad", "stored", "reason"), _REFUSED_VARIABLES)
+    def test_a_valid_stored_value_does_not_stand_in(self, tmp_path, key, bad, stored, reason):
+        """The twin: the same file builds once the variable is gone, with the stored value."""
         variable = f"LILBEE_{key.upper()}"
-        built, warnings = _build_with(
-            tmp_path,
-            f"chunk_size = 321\nchunk_overlap = 44\n{key} = {stored}\n",
-            **{variable: bad},
-            LILBEE_CHUNK_OVERLAP="33",
+        toml = f"chunk_size = 321\n{key} = {stored}\n"
+        assert _refusal_of(tmp_path, toml, **{variable: bad}) == f"{variable} = {bad!r} {reason}"
+        built, warnings = _build_with(tmp_path, toml)
+        assert getattr(built, key) != Config.model_fields[key].get_default(
+            call_default_factory=True
         )
-        assert getattr(built, key) == loaded
-        assert loaded != Config.model_fields[key].get_default(call_default_factory=True)
-        assert (built.chunk_size, built.chunk_overlap) == (321, 33)
-        assert warnings == (f"{variable} = {bad!r} {reason}; the variable is ignored",)
+        assert (built.chunk_size, warnings) == (321, ())
 
-    def test_a_refused_variable_of_any_setting_loads_as_if_it_were_unset(self, tmp_path):
-        """Every setting, each hostile string: a warned variable changes nothing in the load."""
-        unset, clean = _build_with(tmp_path, _STORED_TOML)
-        assert clean == ()
-        assert (unset.top_k, unset.ocr, unset.linked_roots) == (
-            7,
-            OcrMode.OFF,
-            {"notes": "/kept/notes"},
+    def test_every_refused_variable_is_named_in_the_one_line(self, tmp_path):
+        assert _refusal_of(tmp_path, "", LILBEE_TOP_K="many", LILBEE_OCR="OFF") == (
+            "LILBEE_TOP_K = 'many' is not a whole number; "
+            "LILBEE_OCR = 'OFF' is not one of auto, all, off"
         )
+
+    def test_a_refused_variable_of_any_setting_stops_with_the_one_line(self, tmp_path):
+        """Every setting, each hostile string: the load takes the value or stops on that line."""
+        assert _refusal_of(tmp_path, _STORED_TOML) is None
         fields = list(Config.model_fields)
         assert len(fields) > 150
         refused: set[str] = set()
         for key in fields:
             variable = f"LILBEE_{key.upper()}"
             for bad in _HOSTILE_ENV_VALUES:
-                built, warnings = _build_with(tmp_path, _STORED_TOML, **{variable: bad})
-                if not warnings:
+                line = _refusal_of(tmp_path, _STORED_TOML, **{variable: bad})
+                if line is None:
                     continue
-                assert len(warnings) == 1, warnings
-                assert warnings[0].startswith(f"{variable} = {bad!r} "), warnings
-                assert warnings[0].endswith("; the variable is ignored"), warnings
-                assert built == unset, (key, bad)
+                assert line.startswith(f"{variable} = {bad!r} is "), line
+                assert "\n" not in line and "; " not in line.removeprefix(variable), line
                 refused.add(key)
         numbers = {
             name for name, field in Config.model_fields.items() if field.annotation in (int, float)
@@ -2358,48 +2417,35 @@ class TestARefusedVariableIsUnset:
         assert len(numbers) > 50
         assert numbers <= refused
         stored = {"ocr", "sessions_enabled", "num_ctx", "force_ocr_pages", "reranker_type"}
-        assert stored | {"vision_model", "linked_roots"} <= refused
+        own_words = {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices"}
+        assert stored | own_words | {"semantic_chunking", "vision_model", "linked_roots"} <= refused
 
-    @pytest.mark.parametrize(
-        ("key", "bad", "default"),
-        [
-            ("ocr", "OFF", OcrMode.AUTO),
-            ("kv_cache_type", "q9", KvCacheType.Q8_0),
-            ("fts_language", "Klingon", FtsLanguage.ENGLISH),
-            ("chat_mode", "banter", ChatMode.SEARCH),
-            ("top_k", "many", Config.model_fields["top_k"].default),
-        ],
-    )
-    def test_a_refused_variable_with_no_stored_value_leaves_the_default(
-        self, tmp_path, key, bad, default
-    ):
-        built, warnings = _build_with(
-            tmp_path,
-            "chunk_overlap = 44\n",
-            **{f"LILBEE_{key.upper()}": bad},
-            LILBEE_CHUNK_SIZE="321",
-        )
-        assert getattr(built, key) == default
-        assert (built.chunk_size, built.chunk_overlap) == (321, 44)
-        assert len(warnings) == 1
-        assert warnings[0].startswith(f"LILBEE_{key.upper()} = {bad!r} is not ")
+    def test_the_entry_point_check_raises_what_the_load_raises(self, tmp_path):
+        env = {**clean_env(tmp_path), "LILBEE_TOP_K": "many"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(
+                RefusedVariableError, match=r"^LILBEE_TOP_K = 'many' is not a whole number$"
+            ),
+        ):
+            refuse_environment()
 
-    def test_a_refused_variable_leaves_a_retired_key_in_config_toml_in_force(self, tmp_path):
-        built, warnings = _build_with(tmp_path, "enable_ocr = false\n", LILBEE_OCR="bogus")
-        assert built.ocr is OcrMode.OFF
-        assert warnings == (
-            "LILBEE_OCR = 'bogus' is not one of auto, all, off; the variable is ignored",
-            "config.toml: enable_ocr is replaced by ocr; the next settings write saves it",
-        )
+    def test_the_entry_point_check_passes_a_valid_environment(self, tmp_path):
+        env = {**clean_env(tmp_path), "LILBEE_TOP_K": "7", "LILBEE_OCR": " "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            refuse_environment()
 
-    def test_a_stale_model_ref_in_a_variable_keeps_the_stored_model(self, tmp_path):
-        built, warnings = _build_with(
+    def test_the_import_time_load_leaves_the_stop_to_the_entry_point(self, tmp_path):
+        """The load behind --help: it builds, with nothing from the refused variable."""
+        built, warnings = _build_with(tmp_path, "top_k = 7\n", LILBEE_TOP_K="many")
+        assert (built.top_k, warnings) == (7, ())
+
+    def test_a_stale_model_ref_in_a_variable_stops(self, tmp_path):
+        line = _refusal_of(
             tmp_path, f'chat_model = "{_SAMPLE_CHAT_REF}"\n', LILBEE_CHAT_MODEL="qwen3:0.6b"
         )
-        assert built.chat_model == _SAMPLE_CHAT_REF
-        assert len(warnings) == 1
-        assert warnings[0].startswith("LILBEE_CHAT_MODEL = 'qwen3:0.6b' is refused (")
-        assert warnings[0].endswith("; the variable is ignored")
+        assert line is not None
+        assert line.startswith("LILBEE_CHAT_MODEL = 'qwen3:0.6b' is refused (")
 
     @pytest.mark.parametrize(
         ("key", "raw", "loaded"),
@@ -2410,6 +2456,7 @@ class TestARefusedVariableIsUnset:
         assert getattr(built, key) is loaded
         assert built.top_k == 7
         assert warnings == ()
+        assert _refusal_of(tmp_path, "top_k = 7\n", **{f"LILBEE_{key.upper()}": raw}) is None
 
     @pytest.mark.parametrize(
         ("variable", "key", "stored", "loaded"),
@@ -2422,7 +2469,9 @@ class TestARefusedVariableIsUnset:
     @pytest.mark.parametrize("blank", ["", "  ", "\t"])
     def test_a_blank_variable_is_unset(self, tmp_path, variable, key, stored, loaded, blank):
         """The losing field: config.toml sets the key, so an unset variable shows it."""
-        built, warnings = _build_with(tmp_path, f"{key} = {stored}\n", **{variable: blank})
+        toml = f"{key} = {stored}\n"
+        assert _refusal_of(tmp_path, toml, **{variable: blank}) is None
+        built, warnings = _build_with(tmp_path, toml, **{variable: blank})
         assert getattr(built, key) == loaded
         assert warnings == ()
 
@@ -2435,15 +2484,14 @@ class TestARefusedVariableIsUnset:
 
 
 class TestEnvValue:
-    """What one variable sets, asked outside a load."""
+    """What one variable holds, asked outside a load."""
 
     @pytest.mark.parametrize(
         ("key", "raw", "value"),
         [
             ("top_k", "7", "7"),
-            ("top_k", "many", None),
+            ("top_k", "many", "many"),
             ("top_k", " ", None),
-            ("ocr", "bogus", None),
             ("vision_model", "", ""),
         ],
     )
@@ -2454,28 +2502,6 @@ class TestEnvValue:
     def test_an_unset_variable_is_none(self, monkeypatch):
         monkeypatch.delenv("LILBEE_TOP_K", raising=False)
         assert env_value("top_k") is None
-
-    def test_it_warns_about_the_asked_variable_alone(self, monkeypatch, caplog):
-        monkeypatch.setenv("LILBEE_TOP_K", "many")
-        monkeypatch.setenv("LILBEE_OCR", "bogus")
-        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
-            assert env_value("top_k") is None
-        assert [record.getMessage() for record in caplog.records] == [
-            "LILBEE_TOP_K = 'many' is not a whole number; the variable is ignored"
-        ]
-
-    def test_an_unset_variable_costs_no_validation(self, monkeypatch):
-        """The twin: a set variable does reach the validation the patch forbids."""
-
-        def forbidden(*_args: object, **_kwargs: object) -> Config:
-            raise AssertionError("a probe was built")
-
-        monkeypatch.setattr(Config, "model_construct", forbidden)
-        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
-        assert env_value("top_k") is None
-        monkeypatch.setenv("LILBEE_TOP_K", "7")
-        with pytest.raises(AssertionError, match="a probe was built"):
-            env_value("top_k")
 
 
 class TestLoadWarningsAreLoggedOncePerProcessTree:
