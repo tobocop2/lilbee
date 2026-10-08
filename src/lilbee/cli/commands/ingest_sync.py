@@ -578,11 +578,7 @@ def _register_and_sync(
 
     def _sync(registration: RegisterResult) -> object:
         def _sync_starts() -> None:
-            rollback.registered(
-                registration.registered,
-                cancel_event,
-                covered=[*registration.tracked, *registration.overlapping],
-            )
+            rollback.registered(registration.registered, cancel_event, registration.outside_corpus)
 
         return _run_sync(cancel_event, before_sync=_sync_starts)
 

@@ -6768,6 +6768,54 @@ class TestSyncCancelledExit:
             assert " ".join(result.output.split()).endswith(stopped)
         assert cfg.linked_roots == {"held": str(held.resolve())}
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="symlinks require admin on Windows")
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    @pytest.mark.parametrize("held_by", ["documents_dir", "registered_root"])
+    def test_a_cancelled_add_does_not_name_a_source_given_as_a_symlink(
+        self, isolated_env, tmp_path, mock_svc, flags, held_by
+    ):
+        from lilbee.app.ingest import register_sources
+
+        if held_by == "documents_dir":
+            target = cfg.documents_dir / "real.txt"
+        else:
+            target = self._source(tmp_path, "real.txt")
+            register_sources([target.parent])
+        target.write_text("content", encoding="utf-8")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target)
+        assert link.is_symlink()
+        roots = dict(cfg.linked_roots)
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync) as fake_sync:
+            result = runner.invoke(app, [*flags, "add", str(link)])
+        assert result.exit_code == 130, result.output
+        assert fake_sync.call_count == 1
+        # The corpus holds the file under its own name, so nothing was left out.
+        if flags:
+            assert json.loads(result.output) == {"error": "Sync cancelled."}
+        else:
+            assert " ".join(result.output.split()).endswith("link.txt Sync cancelled.")
+        assert cfg.linked_roots == roots
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    def test_a_cancelled_add_names_a_refused_file_beside_the_root_it_drops(
+        self, isolated_env, tmp_path, mock_svc, flags
+    ):
+        refused, fresh = self._source(tmp_path, "logo.svg"), self._source(tmp_path, "fresh.txt")
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync) as fake_sync:
+            result = runner.invoke(app, [*flags, "add", str(refused), str(fresh)])
+        assert result.exit_code == 130, result.output
+        assert fake_sync.call_count == 1
+        stopped = "Add cancelled. logo.svg, fresh.txt were not added."
+        if flags:
+            assert json.loads(result.output) == {
+                "error": stopped,
+                "not_added": ["logo.svg", "fresh.txt"],
+            }
+        else:
+            assert " ".join(result.output.split()).endswith(stopped)
+        assert cfg.linked_roots == {}
+
     def test_a_failed_add_keeps_its_source_for_the_next_sync(
         self, isolated_env, tmp_path, mock_svc
     ):

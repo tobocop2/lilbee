@@ -6915,6 +6915,19 @@ class TestRegisterSources:
         """Every add surface asks this before running a whole-vault sync."""
         assert result.reached_corpus is expected
 
+    def test_outside_corpus_names_a_taken_label_and_a_refused_file(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+
+        held, taken = tmp_path / "a" / "held", tmp_path / "b" / "held"
+        logo = tmp_path / "logo.svg"
+        for folder in (held, taken):
+            folder.mkdir(parents=True)
+        logo.write_text("<svg/>", encoding="utf-8")
+        result = register_sources([held, taken, logo, held])
+        assert result.registered == ["held"]
+        assert result.tracked == ["held"]
+        assert result.outside_corpus == ["held", "logo.svg"]
+
     def test_reregistering_same_path_is_idempotent(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources
         from lilbee.core.config import cfg

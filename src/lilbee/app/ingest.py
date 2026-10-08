@@ -46,6 +46,8 @@ class RegisterResult:
     """Paths nesting under or over ``documents_dir`` or a live root; that source covers them."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
+    refused_names: list[str] = field(default_factory=list)
+    """The name of each refused file."""
     tracked: list[str] = field(default_factory=list)
     """Named sources the knowledge base already tracks, so nothing was registered.
 
@@ -63,6 +65,11 @@ class RegisterResult:
         read as the outcome of the add.
         """
         return bool(self.registered or self.tracked or self.overlapping)
+
+    @property
+    def outside_corpus(self) -> list[str]:
+        """The named paths that are not in the corpus: a taken label or a refused format."""
+        return [*self.name_taken, *self.refused_names]
 
 
 def _resolve_label(
@@ -157,6 +164,7 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
             reason = refused.get(src.suffix.lower()) if src.is_file() else None
             if reason is not None:
                 result.refused.append(f"{p.name}: {reason}")
+                result.refused_names.append(p.name)
                 continue
             if src == docs_resolved or docs_resolved in src.parents:
                 result.tracked.append(p.name)  # already owned by the knowledge base
@@ -395,17 +403,13 @@ class AddRollback:
         self.error = str(exc) or type(exc).__name__
 
     def registered(
-        self, labels: list[str], cancel: CancelSignal, covered: Iterable[str] = ()
+        self, labels: list[str], cancel: CancelSignal, outside_corpus: Iterable[str] = ()
     ) -> None:
         """Take *labels* as the roots the add registered; its sync starts here.
 
-        A pending name stays pending unless it is one of *labels* or of *covered*,
-        the names another source already holds in the corpus.
+        *outside_corpus* is what registration left out, and it is all that stays pending.
         """
-        for name in (*labels, *covered):
-            if name in self.pending:
-                self.pending.remove(name)
-        self._roots, self.at_sync = labels, True
+        self.pending, self._roots, self.at_sync = list(outside_corpus), labels, True
         try:
             self._before = indexed_stamps(labels)
         except Exception as exc:
