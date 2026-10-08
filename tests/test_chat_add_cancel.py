@@ -426,7 +426,10 @@ async def test_a_cancelled_add_row_names_the_file_it_did_not_add(
             with patch("lilbee.data.ingest.sync", side_effect=parked.run):
                 task = await _start_add(app, pilot, scan, parked)
                 app.task_bar.cancel_task(task.task_id)
-                assert await wait_until(pilot, lambda: task.detail == expected)
+                # The worker thread un-registers the root with file-locked writes no pause drives.
+                assert await wait_until(
+                    pilot, lambda: task.detail == expected, timeout=_SETTLE_SECONDS
+                )
             assert task.status is TaskStatus.CANCELLED
             assert task.cancel_origin is CancelOrigin.USER
             app.push_screen(TaskCenter())
