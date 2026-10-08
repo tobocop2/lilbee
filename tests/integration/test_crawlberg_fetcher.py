@@ -74,9 +74,9 @@ SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/ke
 REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
     (["--headless=new"], "--headless"),
     (["--user-data-dir=/x"], "--user-data-dir"),
-    (["disable-gpu"], '"disable-gpu"'),
-    (["--Lang=fr"], '"--Lang=fr"'),
-    (["--disable-gpu", "--disable-gpu"], "--disable-gpu more than once"),
+    (["disable-gpu"], "must start with --"),
+    (["--Lang=fr"], "must name the flag in lowercase"),
+    (["--disable-gpu", "--disable-gpu"], "duplicates an earlier flag"),
 )
 DEFAULT_FLAGS = ["--disable-dev-shm-usage", "--disable-gpu"]
 # Patterns Python's ``re`` compiles, so lilbee stores them, and crawlberg refuses. The last
@@ -92,6 +92,15 @@ NO_SETTING = "crawlberg refuses to start this crawl: "
 # A timeout in seconds whose milliseconds pass crawlberg's integer width, and what it raises.
 OVERSIZED_TIMEOUT = 10**17
 OVERSIZED_REASON = "int too big to convert"
+# Pages in the recursive browser crawl that must start Chromium once.
+BROWSER_CRAWL_PAGES = 3
+# A page whose image carries its own bytes in a ``data:`` address, here a one-pixel PNG.
+INLINE_IMAGE_PAGE = "/inline/image"
+INLINE_IMAGE_ALT = "Harbor lighthouse logo"
+INLINE_IMAGE_PAYLOAD = (
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhf"
+    "DwAChwGA60e6kgAAAABJRU5ErkJggg=="
+)
 
 
 QUERY_LINKS = (
@@ -124,6 +133,19 @@ def _scope_or_retry_page(path: str, filler: str) -> tuple[int, str]:
     return 200, _query_page(path, filler)
 
 
+def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
+    """The status and body, or redirect target, of each page served at one exact path."""
+    image = f"data:image/png;base64,{INLINE_IMAGE_PAYLOAD}"
+    logo = f'<img alt="{INLINE_IMAGE_ALT}" src="{image}">'
+    return {
+        "/moved": (HTTPStatus.MOVED_PERMANENTLY, "/query/target"),
+        INLINE_IMAGE_PAGE: (
+            HTTPStatus.OK,
+            f"<html><body><h1>Logo</h1>{logo}{filler}</body></html>",
+        ),
+    }
+
+
 class _Site:
     """A threaded local site: a wide listing, a slow listing, and a special page."""
 
@@ -148,8 +170,9 @@ class _Site:
 
     def _body(self, path: str) -> tuple[int, str]:
         filler = "<p>" + "Ordinary prose for a real page. " * 6 + "</p>"
-        if path == "/moved":
-            return 301, "/query/target"
+        fixed = _fixed_pages(filler)
+        if path in fixed:
+            return fixed[path]
         if path.startswith("/query/"):
             return 200, _query_page(path, filler)
         if path.startswith(("/scope/", "/retry/")):
@@ -364,6 +387,16 @@ class TestCrawlAndSave:
         saved = {p.relative_to(cfg.documents_dir).as_posix() for p in paths}
         assert any(name.endswith("wiki/Home/index.md") for name in saved), saved
         assert not any("Special" in name for name in saved), saved
+
+    async def test_an_inline_image_is_saved_as_its_alt_text_without_its_encoded_data(self, site):
+        assert INLINE_IMAGE_PAYLOAD in site._body(INLINE_IMAGE_PAGE)[1]
+        paths = await crawl_and_save(site.url(INLINE_IMAGE_PAGE), depth=0)
+        assert len(paths) == 1
+        text = paths[0].read_text(encoding="utf-8")
+        assert "Ordinary prose for a real page." in text
+        assert INLINE_IMAGE_ALT in text
+        assert INLINE_IMAGE_PAYLOAD not in text
+        assert "base64" not in text
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -642,9 +675,11 @@ class TestBrowserLaunch:
         require_chromium()
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
 
-    def _crawl(self, url: str) -> list[Path]:
+    def _crawl(self, url: str, depth: int = 0, max_pages: int | None = None) -> list[Path]:
         with windows_proactor_loop():
-            return asyncio.run(crawl_and_save(url, depth=0, render_mode=CrawlRenderMode.BROWSER))
+            return asyncio.run(
+                crawl_and_save(url, depth=depth, max_pages=max_pages, render_mode=BROWSER)
+            )
 
     def test_a_chrome_variable_that_names_no_binary_does_not_fail_the_crawl(
         self, site, monkeypatch, tmp_path
@@ -683,3 +718,14 @@ class TestBrowserLaunch:
         launch = log.read_text(encoding="utf-8")
         for flag in DEFAULT_FLAGS:
             assert flag in launch
+
+    @posix_only
+    def test_a_recursive_crawl_of_several_pages_starts_chromium_once(
+        self, site, monkeypatch, tmp_path
+    ):
+        log = tmp_path / "launch.log"
+        script = _logging_shell(tmp_path, log)
+        monkeypatch.setattr(bootstrap, "headless_shell_executable", lambda: script)
+        paths = self._crawl(site.url("/wide/"), depth=1, max_pages=BROWSER_CRAWL_PAGES)
+        assert len(paths) == BROWSER_CRAWL_PAGES
+        assert len(log.read_text(encoding="utf-8").splitlines()) == 1

@@ -102,7 +102,7 @@ engine = ["lilbee-engine>=0.6.90b1"]
 litellm = ["litellm>=1.84.0,<1.104"]
 graph = ["spacy>=3.8", "graspologic-native>=1.2"]
 # playwright installs the headless Chromium shell that browser-mode crawls launch.
-crawler = ["crawlberg>=1.9.0", "playwright>=1.61.0"]
+crawler = ["crawlberg>=1.10.2", "playwright>=1.61.0"]
 # A fallback source of the CUDA 12 runtime, from NVIDIA's official PyPI wheels;
 # fleet.cuda_runtime adds their lib dirs to the engine's LD_LIBRARY_PATH. The engine
 # wheel now ships cudart/cublas/cublasLt beside llama-server on both Linux and Windows
