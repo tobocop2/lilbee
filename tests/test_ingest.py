@@ -4021,6 +4021,31 @@ class TestStreamedPlan:
         assert yielded == []  # the break stopped planning the remaining shards
         assert state.planned == 0
 
+    async def test_every_plan_batch_runs_on_the_plan_driver_thread(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        import threading
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.ingest.pipeline import _plan_batches, _StreamedPlan
+
+        disk = {f"doc{i}.txt": isolated_env / f"doc{i}.txt" for i in range(3)}
+        for path in disk.values():
+            path.write_text("content", encoding="utf-8")
+        monkeypatch.setattr(pipeline, "_PLAN_SHARD_MIN_FILES", 1)
+        monkeypatch.setattr(pipeline, "_PLAN_SHARD_MAX_FILES", 1)
+        real_plan_items = pipeline._plan_items
+        planned_on: list[str] = []
+
+        def _plan_items(*args, **kwargs):
+            planned_on.append(threading.current_thread().name)
+            return real_plan_items(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "_plan_items", _plan_items)
+        shards = [shard async for shard in _plan_batches(disk, {}, {}, [], _StreamedPlan(), None)]
+        assert [entry.name for shard in shards for entry in shard] == sorted(disk)
+        assert planned_on == ["lilbee-plan-driver_0"] * 3
+
     async def test_cancel_with_nothing_left_to_admit_still_raises(self, isolated_env, mock_svc):
         # The last admitted file finishes and the planner has stopped, so ingest
         # returns without any file raising; sync still reports the run cancelled.
