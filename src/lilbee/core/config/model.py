@@ -1452,23 +1452,10 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
-
-        # .strip() to match _resolve_defaults; a padded value would otherwise
-        # send the root and its config.toml to different directories.
-        data_env = os.environ.get("LILBEE_DATA", "").strip()
-        if data_env:
-            toml_dir = Path(data_env)
-        else:
-            local = find_local_root()
-            toml_dir = local if local else default_data_dir()
-        # Same call as the root itself, so this looks where the root resolves to;
-        # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
-        toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
-
         plain_env = _PlainEnvSource(settings_cls)
         sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
+        toml_path = _config_file()
+        if toml_path is not None:
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
@@ -1520,6 +1507,26 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
         for f in dc_fields(defaults)
         if getattr(defaults, f.name) is not None
     }
+
+
+def _config_file() -> Path | None:
+    """The config.toml a load reads, or None when there is none or the load skips it."""
+    from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
+
+    # .strip() to match _resolve_defaults; a padded value would otherwise
+    # send the root and its config.toml to different directories.
+    data_env = os.environ.get("LILBEE_DATA", "").strip()
+    if data_env:
+        toml_dir = Path(data_env)
+    else:
+        local = find_local_root()
+        toml_dir = local if local else default_data_dir()
+    # Same call as the root itself, so this looks where the root resolves to;
+    # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
+    toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
+    if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
+        return toml_path
+    return None
 
 
 def _enum_of(settings_cls: type[BaseSettings], key: str) -> type[Enum] | None:
@@ -1602,11 +1609,18 @@ class _TomlSource:
         path: Path,
         label: str = CONFIG_FILE_NAME,
         otherwise: str = "uses its default",
+        quiet: bool = False,
     ) -> None:
         self._settings_cls = settings_cls
         self._path = path
         self._label = label
         self._otherwise = otherwise
+        self._quiet = quiet
+
+    def _warn(self, message: str) -> None:
+        """Report *message*, unless an earlier read of this file already reported it."""
+        if not self._quiet:
+            warn_on_load(message)
 
     def _fallback(self, key: str, values: dict[str, Any]) -> str:
         """What a refused *key* gets instead: its variable when one is set, else the usual."""
@@ -1621,7 +1635,7 @@ class _TomlSource:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
         except (ValueError, OSError):
-            warn_on_load(f"Failed to read {self._path}, ignoring")
+            self._warn(f"Failed to read {self._path}, ignoring")
             return {}
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
@@ -1629,7 +1643,7 @@ class _TomlSource:
         values = {k: v for k, v in data.items() if value_is_set(k, v)}
         refused = _refusals(self._settings_cls, values)
         for key, reason in refused.items():
-            warn_on_load(
+            self._warn(
                 f"{self._label}: {key} = {values[key]!r} {reason}; {self._fallback(key, values)}"
             )
         return {key: value for key, value in values.items() if key not in refused}
@@ -1643,7 +1657,13 @@ def env_value(field_name: str) -> str | None:
 
 def toml_values(path: Path) -> dict[str, Any]:
     """What the config.toml at *path* sets over a loaded cfg, less each value Config refuses."""
-    return _TomlSource(Config, path, label=str(path), otherwise="keeps its value")()
+    return _TomlSource(
+        Config,
+        path,
+        label=str(path),
+        otherwise="keeps its value",
+        quiet=path == loaded_config_file,
+    )()
 
 
 def refuse_environment() -> None:
@@ -1659,6 +1679,8 @@ def _build_cfg() -> tuple[Config, tuple[str, ...]]:
     return built, tuple(found)
 
 
+# The config.toml that cfg is built from; a later read of it reports nothing again.
+loaded_config_file = _config_file()
 cfg, load_warnings = _build_cfg()
 
 # Canonicalize LILBEE_DATA at the cfg.data_root resolution boundary so

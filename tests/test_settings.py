@@ -834,6 +834,24 @@ class TestOverlayPersistedSettings:
             f"{other / 'config.toml'}: top_k = 'many' is not a whole number; top_k keeps its value"
         ]
 
+    @pytest.mark.parametrize("stored", ['top_k = "many"\nvision_replicas = 3\n', "top_k = = 9\n"])
+    def test_the_file_cfg_was_built_from_is_not_reported_again(
+        self, tmp_path, monkeypatch, caplog, stored
+    ):
+        """The twin of the two tests beside it, which overlay a file the load did not read."""
+        from lilbee.core.config import cfg, model
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        path = tmp_path / "config.toml"
+        path.write_text(stored, encoding="utf-8")
+        monkeypatch.setattr(model, "loaded_config_file", path)
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+        assert caplog.records == []
+        assert cfg.vision_replicas == (3 if "vision_replicas" in stored else 1)
+
     def test_a_file_that_is_not_toml_changes_nothing_and_warns(self, tmp_path, monkeypatch, caplog):
         from lilbee.core.config import cfg
 

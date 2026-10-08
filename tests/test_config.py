@@ -2568,6 +2568,23 @@ class TestLoadWarningsAreLoggedOncePerProcessTree:
         assert done.stdout.split() == ["1", "321", "1", "321", "''"]
         assert done.stderr.splitlines() == [self._WARNING]
 
+    @pytest.mark.parametrize("args", [("status",), ("--json", "status")])
+    def test_a_real_command_prints_the_warning_once(self, tmp_path, args):
+        """The command reads its own config.toml twice, at import and when it sets the root."""
+        (tmp_path / "config.toml").write_text(
+            'top_k = "many"\nchunk_size = 321\n', encoding="utf-8"
+        )
+        env = {**clean_env(tmp_path), "LILBEE_NO_SPLASH": "1", "PYTHONIOENCODING": "utf-8"}
+        done = subprocess.run(
+            [sys.executable, "-m", "lilbee", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert [line for line in done.stderr.splitlines() if "top_k" in line] == [self._WARNING]
+
 
 class TestChatCtxTargetDefault:
     def test_explicit_env_var_wins_over_scaling(self, tmp_path):
