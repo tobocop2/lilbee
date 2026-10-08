@@ -16,7 +16,6 @@ from lilbee.app.ingest import register_sources
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import OcrMode
-from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.ingest_lock import IngestLockRegistry
@@ -179,10 +178,9 @@ def parse_ocr_mode(value: Any) -> OcrMode | None:
 def _parse_ocr_params(data: dict[str, Any]) -> tuple[OcrMode | None, float | None]:
     """Extract, decode, and validate OCR parameters from a request dict.
 
-    Raises ValueError on a retired OCR key, an unknown ocr mode, or a
-    non-numeric or out-of-bound ocr_timeout.
+    Raises ValueError on an unknown ocr mode, or a non-numeric or
+    out-of-bound ocr_timeout.
     """
-    refuse_retired_ocr_keys(data)
     ocr_timeout = data.get("ocr_timeout")
     if ocr_timeout is not None:
         ocr_timeout = float(ocr_timeout)

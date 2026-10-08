@@ -5408,13 +5408,6 @@ class TestParseOcrParams:
         with pytest.raises(ValueError, match="ocr must be one of auto, all, off; got 'some'"):
             _ingest_h._parse_ocr_params({"ocr": "some"})
 
-    @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
-    def test_a_retired_key_is_refused_by_name(self, key):
-        with pytest.raises(
-            ValueError, match=f"{key} is replaced by ocr; set ocr to one of auto, all, off"
-        ):
-            _ingest_h._parse_ocr_params({key: False})
-
 
 class TestAddHandlerCancel:
     async def test_cancel_returns_early(self):
