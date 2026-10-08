@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import fnmatch
 import logging
+from collections import Counter
 from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -43,11 +44,13 @@ class RegisterResult:
     name_taken: list[str] = field(default_factory=list)
     """Labels held by a different live source or an owned entry; ``--force`` overwrites."""
     overlapping: list[str] = field(default_factory=list)
-    """Paths nesting under or over ``documents_dir`` or a live root; that source covers them."""
+    """Paths nesting under or over ``documents_dir`` or a live root; none is registered."""
+    containing: list[str] = field(default_factory=list)
+    """The overlapping paths that contain a source; their other files are in no source."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
-    refused_names: list[str] = field(default_factory=list)
-    """The name of each refused file."""
+    outside_corpus: list[str] = field(default_factory=list)
+    """One name per distinct path that is refused, name-taken or contains a source."""
     tracked: list[str] = field(default_factory=list)
     """Named sources the knowledge base already tracks, so nothing was registered.
 
@@ -67,9 +70,9 @@ class RegisterResult:
         return bool(self.registered or self.tracked or self.overlapping)
 
     @property
-    def outside_corpus(self) -> list[str]:
-        """The named paths that are not in the corpus: a taken label or a refused format."""
-        return [*self.name_taken, *self.refused_names]
+    def overlapping_inside(self) -> list[str]:
+        """The overlapping paths a registered root already walks."""
+        return list((Counter(self.overlapping) - Counter(self.containing)).elements())
 
 
 def _resolve_label(
@@ -96,25 +99,70 @@ def _resolve_label(
     return base
 
 
-def _overlaps_existing(src: Path, docs_resolved: Path, roots: dict[str, str]) -> bool:
-    """Whether *src* overlaps ``documents_dir`` or a live registered root.
+def _live_roots(roots: dict[str, str]) -> list[Path]:
+    """The resolved path of each registered root that exists; a vanished one overlaps nothing."""
+    return [Path(target).resolve() for target in roots.values() if Path(target).exists()]
 
-    Two roots covering the same tree would walk the same file twice and index it
-    under two keys (double-index). The caller already rejects *src* inside
-    ``documents_dir``; this rejects *src* being an ANCESTOR of it, and *src*
-    nesting under or over any live registered root. A vanished root cannot
-    double-index, so it is ignored.
-    """
-    if docs_resolved.is_relative_to(src):
-        return True
-    for target in roots.values():
-        root = Path(target)
-        if not root.exists():
+
+def _inside_a_root(src: Path, live_roots: list[Path]) -> bool:
+    """Whether a live root already walks *src*; a second root there would index it twice."""
+    return any(src.is_relative_to(root) for root in live_roots)
+
+
+def _contains_a_source(src: Path, docs_resolved: Path, live_roots: list[Path]) -> bool:
+    """Whether *src* is an ancestor of ``documents_dir`` or of a live root."""
+    return docs_resolved.is_relative_to(src) or any(root.is_relative_to(src) for root in live_roots)
+
+
+def _classify(
+    paths: list[Path], roots: dict[str, str], docs_resolved: Path, *, force: bool
+) -> RegisterResult:
+    """Sort *paths* by what registering each one does, adding every new root to *roots*."""
+    result = RegisterResult()
+    by_target = {target: label for label, target in roots.items()}
+    refused = excluded_extension_reasons()
+    outside: dict[Path, str] = {}
+    for p in paths:
+        src = p.resolve()
+        reason = refused.get(src.suffix.lower()) if src.is_file() else None
+        if reason is not None:
+            result.refused.append(f"{p.name}: {reason}")
+            outside.setdefault(src, p.name)
             continue
-        root = root.resolve()
-        if src.is_relative_to(root) or root.is_relative_to(src):
-            return True
-    return False
+        if src == docs_resolved or docs_resolved in src.parents:
+            result.tracked.append(p.name)  # already owned by the knowledge base
+            continue
+        already = by_target.get(str(src))
+        if already is not None:
+            result.tracked.append(already)  # this exact source is already registered
+            continue
+        live_roots = _live_roots(roots)
+        if _inside_a_root(src, live_roots):
+            result.overlapping.append(p.name)  # would walk the same files twice
+            continue
+        if _contains_a_source(src, docs_resolved, live_roots):
+            result.overlapping.append(p.name)
+            result.containing.append(p.name)
+            outside.setdefault(src, p.name)
+            continue
+        label = _resolve_label(src.name, roots, docs_resolved, force=force)
+        if label is None:
+            result.name_taken.append(src.name)
+            outside.setdefault(src, src.name)
+            continue
+        roots[label] = str(src)
+        by_target[str(src)] = label
+        result.registered.append(label)
+    result.outside_corpus = list(outside.values())
+    return result
+
+
+def names_outside_corpus(paths: list[Path]) -> list[str]:
+    """The name of each of *paths* the corpus does not hold, by the rule registration applies."""
+    config = active_config()
+    roots = dict(settings.load(config.data_root).get("linked_roots") or {})
+    plan = _classify(paths, roots, config.documents_dir.resolve(), force=False)
+    return [*plan.outside_corpus, *plan.registered]
 
 
 def source_label_taken(name: str, target: Path | None = None) -> bool:
@@ -148,41 +196,15 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
     docs_resolved = documents_dir.resolve()
-    result = RegisterResult()
     if not paths:
-        return result
+        return RegisterResult()
 
     def _mutate(persisted: dict[str, str] | None) -> tuple[dict[str, str], RegisterResult]:
         # Read the registry from config.toml INSIDE the lock (not the possibly
         # stale in-memory copy) so two processes registering roots concurrently
         # cannot lose each other's entry.
         roots = dict(persisted or {})
-        by_target = {target: label for label, target in roots.items()}
-        refused = excluded_extension_reasons()
-        for p in paths:
-            src = p.resolve()
-            reason = refused.get(src.suffix.lower()) if src.is_file() else None
-            if reason is not None:
-                result.refused.append(f"{p.name}: {reason}")
-                result.refused_names.append(p.name)
-                continue
-            if src == docs_resolved or docs_resolved in src.parents:
-                result.tracked.append(p.name)  # already owned by the knowledge base
-                continue
-            already = by_target.get(str(src))
-            if already is not None:
-                result.tracked.append(already)  # this exact source is already registered
-                continue
-            if _overlaps_existing(src, docs_resolved, roots):
-                result.overlapping.append(p.name)  # would walk the same files twice
-                continue
-            label = _resolve_label(src.name, roots, docs_resolved, force=force)
-            if label is None:
-                result.name_taken.append(src.name)
-                continue
-            roots[label] = str(src)
-            by_target[str(src)] = label
-            result.registered.append(label)
+        result = _classify(paths, roots, docs_resolved, force=force)
         config.linked_roots = roots  # refresh the in-process view (picks up merges)
         return roots, result
 
@@ -379,8 +401,8 @@ class AddRollback:
 
     not_added: list[str] = field(default_factory=list)
     error: str | None = None
-    pending: list[str] = field(default_factory=list)
-    """Names the add was given that have not reached the corpus."""
+    paths: list[Path] = field(default_factory=list)
+    """The paths the add was given."""
     at_sync: bool = True
     """Whether the add reached its sync."""
     _roots: list[str] = field(default_factory=list)
@@ -402,14 +424,9 @@ class AddRollback:
         log.warning("A stopped sync also hit an error", exc_info=exc)
         self.error = str(exc) or type(exc).__name__
 
-    def registered(
-        self, labels: list[str], cancel: CancelSignal, outside_corpus: Iterable[str] = ()
-    ) -> None:
-        """Take *labels* as the roots the add registered; its sync starts here.
-
-        *outside_corpus* is what registration left out, and it is all that stays pending.
-        """
-        self.pending, self._roots, self.at_sync = list(outside_corpus), labels, True
+    def registered(self, labels: list[str], cancel: CancelSignal) -> None:
+        """Take *labels* as the roots the add registered; its sync starts here."""
+        self._roots, self.at_sync = labels, True
         try:
             self._before = indexed_stamps(labels)
         except Exception as exc:
@@ -420,8 +437,9 @@ class AddRollback:
             self._before = {}
 
     def forget_unfinished(self) -> None:
-        """Un-register each root the sync indexed nothing under; name it after the pending names."""
-        self.not_added = [*self.pending, *forget_unfinished_roots(self._roots, self._before)]
+        """Un-register each root the sync indexed nothing under, then name what the corpus lacks."""
+        forget_unfinished_roots(self._roots, self._before)
+        self.not_added = names_outside_corpus(self.paths)
 
     def _stopped(self, nothing_dropped: str) -> str:
         match self.not_added:
@@ -480,10 +498,10 @@ def leave_as_cancel(
 
 @contextmanager
 def forget_unfinished_on_cancel(
-    labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
+    paths: list[Path], labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
 ) -> Generator[AddRollback, None, None]:
-    """Wrap an add after registration; anything raised while *cancel* is set leaves as a cancel."""
-    rollback = AddRollback()
+    """Wrap an add of *paths* after registration; a raise under a set *cancel* is a cancel."""
+    rollback = AddRollback(paths=paths)
     rollback.registered(labels, cancel)
     with leave_as_cancel(rollback, cancel, user_cancelled):
         yield rollback

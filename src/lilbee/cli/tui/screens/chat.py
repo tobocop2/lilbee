@@ -873,7 +873,7 @@ class ChatScreen(Screen[None]):
             return
         try:
             with forget_unfinished_on_cancel(
-                registered, reporter, reporter.cancelled_by_user
+                paths, registered, reporter, reporter.cancelled_by_user
             ) as rollback:
                 self._sync_added(registered, reporter)
         except asyncio.CancelledError as exc:
@@ -890,9 +890,12 @@ class ChatScreen(Screen[None]):
             call_from_thread(
                 self, self.notify, msg.CMD_ADD_TRACKED.format(names=", ".join(reg_result.tracked))
             )
-        if reg_result.overlapping:
-            names = ", ".join(reg_result.overlapping)
+        if reg_result.overlapping_inside:
+            names = ", ".join(reg_result.overlapping_inside)
             call_from_thread(self, self.notify, msg.CMD_ADD_OVERLAPPING.format(names=names))
+        if reg_result.containing:
+            names = ", ".join(reg_result.containing)
+            call_from_thread(self, self.notify, msg.CMD_ADD_CONTAINING.format(names=names))
         if not reg_result.reached_corpus:
             call_from_thread(self, self.notify, msg.CMD_ADD_NOTHING, severity="warning")
 

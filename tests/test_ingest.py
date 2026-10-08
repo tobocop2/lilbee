@@ -7031,6 +7031,8 @@ class TestRegisterSources:
         result = register_sources([corpus / "papers"])
         assert result.registered == []
         assert result.overlapping == ["papers"]
+        assert result.overlapping_inside == ["papers"]
+        assert (result.containing, result.outside_corpus) == ([], [])
         assert result.name_taken == []
         assert result.reached_corpus is True
         assert cfg.linked_roots == {"corpus": str(corpus.resolve())}
@@ -7059,6 +7061,10 @@ class TestRegisterSources:
         register_sources([child])
         result = register_sources([tmp_path / "data"])  # a parent of the existing root
         assert result.registered == []
+        assert result.overlapping == ["data"]
+        # The parent's other files are in no source, so it is not in the corpus.
+        assert (result.containing, result.outside_corpus) == (["data"], ["data"])
+        assert result.overlapping_inside == []
         assert cfg.linked_roots == {"corpus": str(child.resolve())}
 
     def test_rejects_root_that_is_ancestor_of_documents_dir(self, isolated_env, tmp_path):
@@ -7069,7 +7075,46 @@ class TestRegisterSources:
 
         result = register_sources([cfg.documents_dir.parent])
         assert result.registered == []
+        assert result.containing == [cfg.documents_dir.parent.name]
+        assert result.outside_corpus == [cfg.documents_dir.parent.name]
         assert cfg.linked_roots == {}
+
+    def test_a_path_given_twice_is_outside_the_corpus_once(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
+
+        logo = tmp_path / "logo.svg"
+        logo.write_text("<svg/>", encoding="utf-8")
+        result = register_sources([logo, logo])
+        assert len(result.refused) == 2
+        assert result.outside_corpus == ["logo.svg"]
+
+    def test_names_outside_corpus_asks_registration_and_registers_nothing(
+        self, isolated_env, tmp_path
+    ):
+        """Before registration the answer is what registering would add or leave out."""
+        from lilbee.app.ingest import names_outside_corpus, register_sources
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        owned = cfg.documents_dir / "owned.txt"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        owned.write_text("owned", encoding="utf-8")
+        holder = tmp_path / "holder" / "held.txt"
+        taken = tmp_path / "other" / "held.txt"
+        fresh = tmp_path / "other" / "fresh.txt"
+        logo = tmp_path / "other" / "logo.svg"
+        for path in (holder, taken, fresh, logo):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("text", encoding="utf-8")
+        register_sources([holder])
+        before = settings.load(cfg.data_root)["linked_roots"]
+
+        names = names_outside_corpus([owned, holder, fresh, taken, logo, fresh, logo])
+
+        assert names == ["held.txt", "logo.svg", "fresh.txt"]
+        assert settings.load(cfg.data_root)["linked_roots"] == before
+        assert cfg.linked_roots == before
+        assert names_outside_corpus([]) == []
 
     def test_force_never_shadows_owned_documents_entry(self, isolated_env, tmp_path):
         # An owned top-level entry must never be shadowed by a same-named root,
@@ -7243,6 +7288,17 @@ class TestCliSurface:
 
         line = describe_registration(RegisterResult(overlapping=["papers"]))
         assert "overlaps a registered source: papers" in line
+
+    def test_registration_line_says_a_parent_of_a_source_was_not_added(self):
+        from lilbee.app.ingest import RegisterResult
+        from lilbee.cli.helpers import describe_registration
+
+        result = RegisterResult(overlapping=["papers", "data"], containing=["data"])
+        line = describe_registration(result)
+        assert line == (
+            "overlaps a registered source: papers, "
+            "contains a source lilbee already indexes, not added: data"
+        )
 
     def test_add_paths_skips_the_sync_when_the_name_is_taken(
         self, isolated_env, mock_svc, tmp_path
@@ -7621,6 +7677,27 @@ class TestTuiSurface:
         run.assert_called_once()
         toasts = [call.args[2] for call in notify.call_args_list]
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
+
+    def test_do_add_says_a_parent_of_a_source_was_not_added(self, isolated_env, tmp_path):
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.data.ingest import SyncResult
+
+        screen = ChatScreen.__new__(ChatScreen)
+        notify = MagicMock()
+        registration = RegisterResult(overlapping=["papers", "data"], containing=["data"])
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
+            mock.patch("lilbee.app.ingest.register_sources", return_value=registration),
+            mock.patch("lilbee.runtime.asyncio_loop.run", return_value=SyncResult()),
+        ):
+            screen._do_add([tmp_path / "data"], MagicMock(spec=ProgressReporter))
+
+        toasts = [call.args[2] for call in notify.call_args_list]
+        assert msg.CMD_ADD_CONTAINING.format(names="data") in toasts
+        assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
+        assert msg.CMD_ADD_OVERLAPPING.format(names="papers, data") not in toasts
 
 
 def test_every_add_surface_names_each_registration_outcome():

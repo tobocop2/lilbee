@@ -6743,6 +6743,68 @@ class TestSyncCancelledExit:
         assert cfg.linked_roots == {}
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    def test_a_ctrl_c_in_the_crawl_names_each_file_the_corpus_lacks_once(
+        self, isolated_env, tmp_path, mock_svc, flags
+    ):
+        from lilbee.app.ingest import register_sources
+
+        owned = cfg.documents_dir / "owned.txt"
+        owned.parent.mkdir(parents=True, exist_ok=True)
+        owned.write_text("owned", encoding="utf-8")
+        holder = tmp_path / "holder" / "held.txt"
+        holder.parent.mkdir()
+        holder.write_text("holder", encoding="utf-8")
+        register_sources([holder])
+        taken, fresh = self._source(tmp_path, "held.txt"), self._source(tmp_path, "fresh.txt")
+        logo = self._source(tmp_path, "logo.svg")
+        given = [owned, holder, fresh, fresh, taken, logo, logo]
+
+        async def _crawl_stopped_by_ctrl_c(_url, *, cancel, **_kwargs):
+            cancel.set()  # the Ctrl+C handler
+            return []
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", _crawl_stopped_by_ctrl_c),
+        ):
+            result = runner.invoke(app, [*flags, "add", *map(str, given), "https://u0.example"])
+        assert result.exit_code == 130, result.output
+        # The owned file and the registered root are in the corpus; nothing is named twice.
+        stopped = "Add cancelled. held.txt, logo.svg, fresh.txt were not added."
+        if flags:
+            assert json.loads(result.output) == {
+                "error": stopped,
+                "not_added": ["held.txt", "logo.svg", "fresh.txt"],
+            }
+        else:
+            assert " ".join(result.output.split()).endswith(stopped)
+        assert cfg.linked_roots == {"held.txt": str(holder.resolve())}
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    def test_an_add_of_the_parent_of_a_registered_folder_says_it_was_not_added(
+        self, isolated_env, tmp_path, mock_svc, flags
+    ):
+        from lilbee.app.ingest import register_sources
+
+        sub = tmp_path / "parent" / "sub"
+        sub.mkdir(parents=True)
+        (sub.parent / "loose.txt").write_text("loose", encoding="utf-8")
+        register_sources([sub])
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
+            stopped = runner.invoke(app, [*flags, "add", str(sub.parent)])
+        assert stopped.exit_code == 130, stopped.output
+        message = "Add cancelled. parent was not added."
+        if flags:
+            assert json.loads(stopped.output) == {"error": message, "not_added": ["parent"]}
+        else:
+            assert " ".join(stopped.output.split()).endswith(message)
+            assert "contains a source lilbee already indexes, not added: parent" in " ".join(
+                stopped.output.split()
+            )
+            assert "overlaps a registered source" not in stopped.output
+        assert cfg.linked_roots == {"sub": str(sub.resolve())}
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
     def test_a_cancelled_add_names_a_taken_name_and_not_a_source_the_corpus_holds(
         self, isolated_env, tmp_path, mock_svc, flags
     ):

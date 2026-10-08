@@ -188,6 +188,8 @@ The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``)
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the
 fleet and wiki import chains that a plain CLI command has no reason to pay for.
 """
+CONTAINS_SOURCE = "contains a source lilbee already indexes, not added: {names}"
+"""Said of a directory that is the parent of a registered source; its other files stay out."""
 SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
@@ -218,8 +220,10 @@ def describe_registration(result: RegisterResult) -> str:
         parts.append(f"Registered {len(result.registered)} source(s)")
     if result.tracked:
         parts.append(f"already tracked: {', '.join(result.tracked)}")
-    if result.overlapping:
-        parts.append(f"overlaps a registered source: {', '.join(result.overlapping)}")
+    if result.overlapping_inside:
+        parts.append(f"overlaps a registered source: {', '.join(result.overlapping_inside)}")
+    if result.containing:
+        parts.append(CONTAINS_SOURCE.format(names=", ".join(result.containing)))
     return ", ".join(parts) if parts else "Registered 0 source(s)"
 
 

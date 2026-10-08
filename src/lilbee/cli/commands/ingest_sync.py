@@ -578,7 +578,7 @@ def _register_and_sync(
 
     def _sync(registration: RegisterResult) -> object:
         def _sync_starts() -> None:
-            rollback.registered(registration.registered, cancel_event, registration.outside_corpus)
+            rollback.registered(registration.registered, cancel_event)
 
         return _run_sync(cancel_event, before_sync=_sync_starts)
 
@@ -619,7 +619,7 @@ def add(
     _validate_file_paths(file_paths)
 
     cancel_event = threading.Event()
-    rollback = AddRollback(pending=[path.resolve().name for path in file_paths], at_sync=False)
+    rollback = AddRollback(paths=file_paths, at_sync=False)
     try:
         with _ctrl_c_stops(cancel_event, rollback):
             crawled_paths = _crawl_urls_step(
