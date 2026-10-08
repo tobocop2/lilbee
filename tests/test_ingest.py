@@ -3715,6 +3715,38 @@ class TestCancelDuringThresholdFlush:
         assert ended == [asyncio.CancelledError]
         assert flushed == [["a.txt"]]  # a sync that resumed early flushes the buffer again
 
+    async def test_a_write_that_fails_under_a_cancel_leaves_as_the_cancel(
+        self, monkeypatch, caplog
+    ):
+        import asyncio
+        import logging
+        import threading
+
+        from lilbee.data.ingest import pipeline
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _failing_write(*_args: object) -> None:
+            entered.set()
+            release.wait(5)
+            raise OSError("disk full")
+
+        monkeypatch.setattr(pipeline, "_flush_writes", _failing_write)
+        task = asyncio.create_task(pipeline._flush_to_end([], {}, {}, {}, {}, None))
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        await asyncio.sleep(0.05)  # the cancel reaches the waiting flush before the write fails
+        release.set()
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.data.ingest.pipeline"),
+            pytest.raises(asyncio.CancelledError) as stopped,
+        ):
+            await task
+        assert str(stopped.value.__cause__) == "disk full"
+        logged = [r.exc_info[1] for r in caplog.records if r.exc_info]
+        assert [str(exc) for exc in logged] == ["disk full"]
+
     async def test_a_second_cancel_waits_for_the_final_flush(self, monkeypatch):
         """The sync does not end while the flush on its way out is still writing."""
         import asyncio

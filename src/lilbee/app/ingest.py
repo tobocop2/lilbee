@@ -384,8 +384,12 @@ class AddRollback:
         return stopped if self.error is None else stopped + _ALSO_HIT_ERROR.format(error=self.error)
 
     def note_error(self, exc: BaseException) -> None:
-        """Log *exc*, raised once the add was stopped, and name it unless it is a cancel."""
+        """Log and name *exc*, raised once the add was stopped; a cancel names its cause."""
         if isinstance(exc, _CANCEL_ERRORS):
+            # A cancel that took a failed write carries that error as its cause.
+            carried = exc.__cause__
+            if carried is not None and not isinstance(carried, _CANCEL_ERRORS):
+                self.error = str(carried) or type(carried).__name__
             return
         log.warning("A stopped sync also hit an error", exc_info=exc)
         self.error = str(exc) or type(exc).__name__

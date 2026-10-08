@@ -2017,6 +2017,7 @@ async def _flush_to_end(
     The write thread owns *buffer* until it returns, so a flush the cancel abandoned
     would run beside the next flush of the same buffer. The flush is a plain future:
     a cancel of every task on the loop reaches this caller and never the write.
+    A write that fails under a cancel is logged and leaves as the cause of the cancel.
     """
     flush = ingest_thread_future(
         _flush_writes, buffer, added, updated, failed, skipped, flush_failed
@@ -2024,12 +2025,16 @@ async def _flush_to_end(
     cancelled = False
     while not flush.done():
         try:
-            await asyncio.shield(flush)
+            await asyncio.wait([flush])
         except asyncio.CancelledError:
             cancelled = True
+    error = flush.exception()
     if cancelled:
-        raise asyncio.CancelledError
-    flush.result()
+        if error is not None:
+            log.warning("The write of a cancelled sync failed", exc_info=error)
+        raise asyncio.CancelledError from error
+    if error is not None:
+        raise error
 
 
 def _report_file_progress(

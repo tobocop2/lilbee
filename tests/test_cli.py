@@ -6808,6 +6808,20 @@ class TestSyncCancelledExit:
         assert " ".join(result.output.split()).endswith(f"{expected} {_DISK_FULL_NOTE}")
         assert [type(r.exc_info[1]) for r in _cancel_error_records(caplog)] == [OSError]
 
+    def test_a_cancel_that_carries_an_error_names_it(self, mock_svc):
+        import asyncio
+
+        async def cancelled_with_a_failed_write(*, cancel, **_kwargs):
+            cancel.set()
+            raise asyncio.CancelledError from OSError("disk full")
+
+        with mock.patch("lilbee.data.ingest.sync", side_effect=cancelled_with_a_failed_write):
+            result = runner.invoke(app, ["--json", "sync"])
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {
+            "error": "Sync cancelled. It also hit an error: disk full."
+        }
+
     def test_a_plain_ctrl_c_logs_no_error(self, isolated_env, tmp_path, mock_svc, caplog):
         with (
             caplog.at_level(logging.WARNING, logger="lilbee.app.ingest"),
