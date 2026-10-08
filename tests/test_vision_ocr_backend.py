@@ -159,12 +159,28 @@ class TestProcessImage:
         assert calls[0][3] == 0.0
         assert calls[1][3] == 0.0
 
+    def test_set_cancel_signal_raises_without_calling_the_ocr_function(self):
+        be, calls = _backend()
+        cancel = threading.Event()
+        cancel.set()
+        with ocr_request(cancel=cancel) as token, pytest.raises(TaskCancelledError):
+            be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
+        assert calls == []
+
+    def test_unset_cancel_signal_calls_the_ocr_function(self):
+        be, calls = _backend()
+        with ocr_request(timeout=4.0, cancel=threading.Event()) as token:
+            doc = be.process_image(b"PNG", _cfg(backend_options=backend_options_for(token)))
+        assert doc.content == "# extracted"
+        assert calls[0][3] == 4.0
+
 
 class TestRegistry:
     def test_token_registered_within_scope_and_cleaned_after(self):
         with ocr_request(timeout=3.0) as token:
             ctx = ocr_requests.get(token)
             assert ctx is not None and ctx.timeout == 3.0
+            assert ctx.cancel is None
         assert ocr_requests.get(token) is None
 
     def test_get_none_token_returns_none(self):

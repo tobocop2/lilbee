@@ -6512,6 +6512,205 @@ class TestIngestDocumentOcrPath:
         assert extractions[0].ocr.backend == OcrBackendName.TESSERACT
 
 
+_VISION_MODEL = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+
+class _CancelAtFirstPage:
+    """A progress callback that sets its cancel at the first OCR page event.
+
+    It raises on every event from then on, as the callback of a cancelled sync does.
+    """
+
+    def __init__(self) -> None:
+        self.cancel = threading.Event()
+        self.events = 0
+
+    def __call__(self, event_type, _data) -> None:
+        from lilbee.runtime.cancellation import TaskCancelledError
+        from lilbee.runtime.progress import EventType
+
+        self.events += 1
+        if event_type is EventType.EXTRACT:
+            self.cancel.set()
+        if self.cancel.is_set():
+            raise TaskCancelledError
+
+
+class TestOcrCancel:
+    """A cancel that lands at an OCR page event stops the vision OCR of that extraction."""
+
+    @staticmethod
+    def _vision_backend():
+        from lilbee.data.extract.backends.vision_ocr import VisionOcrBackend
+
+        calls: list[bytes] = []
+
+        def ocr_fn(image_bytes, _model, _prompt, *, timeout, cancel):
+            calls.append(image_bytes)
+            return "OCR-TEXT"
+
+        return VisionOcrBackend(ocr_fn=ocr_fn, model_ref_fn=lambda: _VISION_MODEL), calls
+
+    @staticmethod
+    def _ocr_pages_like_xberg(backend, ocr_config, on_page, pages: int) -> None:
+        """OCR *pages* pages the way xberg does: a raise fails one page or one report only."""
+        from xberg import ProgressEvent
+
+        for page in range(1, pages + 1):
+            try:
+                backend.process_image(b"PNG", ocr_config)
+                on_page(ProgressEvent("ocr_page", page, pages, page, ocr_config.backend))
+            except Exception:  # noqa: S112  # xberg isolates a failed page and a raising callback
+                continue
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_cancel_on_the_first_page_event_skips_the_ocr_of_later_pages(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        from lilbee.data.ingest import ingest_document
+
+        cfg.vision_model = _VISION_MODEL
+        backend, calls = self._vision_backend()
+
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
+            self._ocr_pages_like_xberg(backend, config.ocr, on_progress, pages=5)
+            return _make_xberg_result(num_chunks=1, has_pages=True)
+
+        mock_kf.side_effect = fake_extract
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        on_progress = _CancelAtFirstPage()
+        with pytest.raises(asyncio.CancelledError):
+            await ingest_document(
+                f, "scan.pdf", "pdf", on_progress=on_progress, cancel=on_progress.cancel
+            )
+        assert len(calls) == 1
+        # The extraction ends as cancelled before the per-file summary event.
+        assert on_progress.events == 1
+
+    async def test_cancel_on_the_first_page_event_skips_later_pages_in_a_batch(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.data.extract.batch import (
+            ExtractBatcher,
+            reset_active_batcher,
+            set_active_batcher,
+        )
+        from lilbee.data.extract.document import _ocr_config, extraction_config
+        from lilbee.data.ingest import ingest_document
+
+        cfg.vision_model = _VISION_MODEL
+        backend, calls = self._vision_backend()
+
+        async def batch_fn(items, config):
+            for item in items:
+                self._ocr_pages_like_xberg(backend, item.ocr, item.on_progress, pages=5)
+            return [_make_xberg_result(num_chunks=1, has_pages=True) for _ in items]
+
+        batcher = ExtractBatcher(
+            size=1, config_fn=extraction_config, ocr_fn=_ocr_config, batch_fn=batch_fn
+        )
+        token = set_active_batcher(batcher)
+        try:
+            f = isolated_env / "scan.pdf"
+            f.write_bytes(b"x")
+            on_progress = _CancelAtFirstPage()
+            with pytest.raises(asyncio.CancelledError):
+                await ingest_document(
+                    f, "scan.pdf", "pdf", on_progress=on_progress, cancel=on_progress.cancel
+                )
+        finally:
+            await batcher.close()
+            reset_active_batcher(token)
+        assert len(calls) == 1
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_without_a_cancel_every_page_reaches_the_ocr_function(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        from lilbee.data.ingest import ingest_document
+
+        cfg.vision_model = _VISION_MODEL
+        backend, calls = self._vision_backend()
+
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
+            self._ocr_pages_like_xberg(backend, config.ocr, on_progress, pages=5)
+            return _make_xberg_result(num_chunks=1, has_pages=True)
+
+        mock_kf.side_effect = fake_extract
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        records, _, _ = await ingest_document(f, "scan.pdf", "pdf", cancel=threading.Event())
+        assert len(calls) == 5
+        assert len(records) == 1
+
+    @pytest.mark.parametrize("cancelled", [True, False])
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_a_sync_records_a_failed_extraction_only_without_a_cancel(
+        self, mock_kf, cancelled, isolated_env, mock_svc
+    ):
+        """xberg fails an extraction whose every page was refused; a cancel is not a failure."""
+        from lilbee.data.ingest import sync
+
+        mock_svc.provider.vision_slot_capacity.return_value = 1
+        cfg.vision_model = _VISION_MODEL
+        backend, _ = self._vision_backend()
+
+        async def fake_extract(data, *, filename=None, config, on_progress=None):
+            self._ocr_pages_like_xberg(backend, config.ocr, on_progress, pages=2)
+            raise RuntimeError("OCR failed on all 2 page(s)")
+
+        mock_kf.side_effect = fake_extract
+        (isolated_env / "scan.pdf").write_bytes(b"x")
+        if cancelled:
+            on_progress = _CancelAtFirstPage()
+            with pytest.raises(asyncio.CancelledError):
+                await sync(quiet=True, on_progress=on_progress, cancel=on_progress.cancel)
+        else:
+            result = await sync(quiet=True, cancel=threading.Event())
+            assert result.failed == ["scan.pdf"]
+
+    @mock.patch("lilbee.data.extract.xberg.aextract_document", new_callable=mock.AsyncMock)
+    async def test_an_extraction_that_fails_without_a_cancel_keeps_its_error(
+        self, mock_kf, isolated_env, mock_svc
+    ):
+        from lilbee.data.ingest import ingest_document
+
+        cfg.vision_model = _VISION_MODEL
+        mock_kf.side_effect = RuntimeError("corrupt file")
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(b"x")
+        with pytest.raises(RuntimeError, match="corrupt file"):
+            await ingest_document(f, "scan.pdf", "pdf")
+
+    async def test_real_xberg_stops_calling_the_vision_model_after_a_cancel(
+        self, isolated_env, mock_svc
+    ):
+        """Real xberg: a cancel on the first page event leaves most pages un-OCR'd."""
+        from xberg import register_ocr_backend, unregister_ocr_backend
+
+        from lilbee.data.ingest import ingest_document
+        from lilbee.runtime.cpu import cpu_quota
+
+        # xberg OCRs one page per thread at once, so that many pages can start before the cancel.
+        pages = 4 * max(cpu_quota(), 8)
+        cfg.ocr = OcrMode.ALL
+        cfg.vision_model = _VISION_MODEL
+        backend, calls = self._vision_backend()
+        f = isolated_env / "scan.pdf"
+        f.write_bytes(make_pdf(pages=pages))
+        on_progress = _CancelAtFirstPage()
+        register_ocr_backend(backend)
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await ingest_document(
+                    f, "scan.pdf", "pdf", on_progress=on_progress, cancel=on_progress.cancel
+                )
+        finally:
+            unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+        assert 1 <= len(calls) < pages // 2
+
+
 class TestTesseractOcrStartEvent:
     """A scanned file under Tesseract gets one OCR_START event before its extraction."""
 
