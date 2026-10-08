@@ -667,15 +667,17 @@ class TestCrawlRenderModeConfig:
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "browser")
         assert Config().crawl_render_mode is CrawlRenderMode.BROWSER
 
-    def test_invalid_value_is_rejected(self, monkeypatch):
-        import pytest
-        from pydantic import ValidationError
-
+    def test_invalid_env_value_warns_and_uses_the_default(self, monkeypatch, caplog):
+        from lilbee.core.config.enums import CrawlRenderMode
         from lilbee.core.config.model import Config
 
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "bogus")
-        with pytest.raises(ValidationError):
-            Config()
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            assert Config().crawl_render_mode is CrawlRenderMode.HTTP
+        assert (
+            "LILBEE_CRAWL_RENDER_MODE = 'bogus' is not one of http, browser; "
+            "crawl_render_mode uses its default"
+        ) in caplog.text
 
     def test_browser_memory_lever_defaults(self):
         from lilbee.core.config.model import Config

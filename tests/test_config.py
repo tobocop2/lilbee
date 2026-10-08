@@ -1,7 +1,10 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
+import json
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -2134,6 +2137,115 @@ class TestABadEnumInConfigTomlKeepsTheRest:
         built, error = self._build(tmp_path, 'top_k = "many"\nocr = "off"\n')
         assert error is not None
         assert built.ocr is OcrMode.AUTO
+
+
+class TestABadEnumInTheEnvironmentKeepsTheRest:
+    """One invalid enum value in a LILBEE_* variable takes its default alone, with a warning."""
+
+    @staticmethod
+    def _build(tmp_path, toml: str, **env: str):
+        from lilbee.core.config.model import _build_cfg
+
+        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+            return _build_cfg()
+
+    @staticmethod
+    def _run(tmp_path, variable: str, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run a fresh interpreter with *variable* set to a value its setting refuses."""
+        env = {
+            **clean_env(tmp_path),
+            variable: "bogus",
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        return subprocess.run(
+            [sys.executable, *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+
+    @pytest.mark.parametrize(
+        ("variable", "key", "stored", "default", "allowed"),
+        [
+            ("LILBEE_OCR", "ocr", "off", "auto", "auto, all, off"),
+            ("LILBEE_RERANKER_TYPE", "reranker_type", "llm", "auto", "auto, cross_encoder, llm"),
+        ],
+    )
+    def test_help_exits_0_and_the_setting_takes_its_default(
+        self, tmp_path, variable, key, stored, default, allowed
+    ):
+        """The losing fields: config.toml sets the same key, and one more that still loads."""
+        (tmp_path / "config.toml").write_text(f'{key} = "{stored}"\ntop_k = 7\n', encoding="utf-8")
+        warning = f"{variable} = 'bogus' is not one of {allowed}; {key} uses its default"
+        probe = (
+            "import json\n"
+            "from lilbee.core.config import cfg, config_load_error\n"
+            f"print(json.dumps([str(config_load_error), cfg.{key}.value, cfg.top_k]))\n"
+        )
+
+        loaded = self._run(tmp_path, variable, "-c", probe)
+        assert loaded.returncode == 0, loaded.stderr
+        assert json.loads(loaded.stdout) == ["None", default, 7]
+        assert warning in loaded.stderr
+
+        shown = self._run(tmp_path, variable, "-m", "lilbee", "--help")
+        assert shown.returncode == 0, shown.stderr
+        assert "Usage:" in shown.stdout
+        assert warning in shown.stderr
+        assert "Traceback" not in shown.stderr
+
+    @pytest.mark.parametrize(
+        ("key", "bad", "default"),
+        [
+            ("ocr", "OFF", OcrMode.AUTO),
+            ("kv_cache_type", "q9", KvCacheType.Q8_0),
+            ("fts_language", "Klingon", FtsLanguage.ENGLISH),
+            ("chat_mode", "banter", ChatMode.SEARCH),
+        ],
+    )
+    def test_the_bad_variable_takes_its_default_and_every_other_value_loads(
+        self, tmp_path, caplog, key, bad, default
+    ):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            built, error = self._build(
+                tmp_path, "top_k = 7\n", **{f"LILBEE_{key.upper()}": bad}, LILBEE_CHUNK_SIZE="321"
+            )
+        assert error is None
+        assert getattr(built, key) == default
+        assert (built.top_k, built.chunk_size) == (7, 321)
+        assert f"LILBEE_{key.upper()} = {bad!r} is not one of " in caplog.text
+        assert f"; {key} uses its default" in caplog.text
+
+    def test_the_default_wins_over_a_retired_key_in_config_toml(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            built, error = self._build(tmp_path, "enable_ocr = false\n", LILBEE_OCR="bogus")
+        assert error is None
+        assert built.ocr is OcrMode.AUTO
+        assert "LILBEE_OCR = 'bogus' is not one of auto, all, off; ocr uses its default" in (
+            caplog.text
+        )
+
+    @pytest.mark.parametrize(
+        ("key", "raw", "loaded"),
+        [("fts_language", "german", FtsLanguage.GERMAN), ("chat_mode", "CHAT", ChatMode.CHAT)],
+    )
+    def test_a_value_the_field_normalizes_is_kept(self, tmp_path, caplog, key, raw, loaded):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.model"):
+            built, error = self._build(tmp_path, "top_k = 7\n", **{f"LILBEE_{key.upper()}": raw})
+        assert error is None
+        assert getattr(built, key) is loaded
+        assert built.top_k == 7
+        assert "is not one of" not in caplog.text
+
+    def test_a_bad_value_on_a_variable_that_is_not_an_enum_still_raises(self, tmp_path):
+        from lilbee.core.config.model import _build_cfg
+
+        env = {**clean_env(tmp_path), "LILBEE_TOP_K": "many"}
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError):
+            _build_cfg()
 
 
 class TestChatCtxTargetDefault:

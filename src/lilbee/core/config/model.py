@@ -9,6 +9,7 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -1505,22 +1506,6 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     }
 
 
-class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
-
-    def __init__(self, settings_cls: type[BaseSettings], env_prefix: str) -> None:
-        self._prefix = env_prefix
-        self._fields = set(settings_cls.model_fields)
-
-    def __call__(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for field_name in self._fields:
-            raw = os.environ.get(f"{self._prefix}{field_name.upper()}")
-            if value_is_set(field_name, raw):
-                result[field_name] = raw
-        return result
-
-
 def _enum_fields(settings_cls: type[BaseSettings]) -> dict[str, type[Enum]]:
     """The fields of *settings_cls* typed as an enum, by name."""
     return {
@@ -1537,6 +1522,47 @@ def _accepts(probe: BaseSettings, key: str, value: Any) -> bool:
     except ValidationError:
         return False
     return True
+
+
+def _refused_enums(
+    settings_cls: type[BaseSettings], values: dict[str, Any], shown: Callable[[str], str]
+) -> list[str]:
+    """The enum keys of *values* the field refuses, each warned about under its *shown* name."""
+    enums = _enum_fields(settings_cls)
+    probe = settings_cls.model_construct()
+    refused = [key for key in enums if key in values and not _accepts(probe, key, values[key])]
+    for key in refused:
+        log.warning(
+            "%s = %r is not one of %s; %s",
+            shown(key),
+            values[key],
+            ", ".join(str(member.value) for member in enums[key]),
+            refused_value_fallback(key, values),
+        )
+    return refused
+
+
+class _PlainEnvSource:
+    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
+
+    def __init__(self, settings_cls: type[BaseSettings], env_prefix: str) -> None:
+        self._settings_cls = settings_cls
+        self._prefix = env_prefix
+
+    def _variable(self, field_name: str) -> str:
+        return f"{self._prefix}{field_name.upper()}"
+
+    def __call__(self) -> dict[str, Any]:
+        fields = self._settings_cls.model_fields
+        result: dict[str, Any] = {}
+        for field_name in fields:
+            raw = os.environ.get(self._variable(field_name))
+            if value_is_set(field_name, raw):
+                result[field_name] = raw
+        # The default is set, not left out, so a refused variable still outranks config.toml.
+        for key in _refused_enums(self._settings_cls, result, self._variable):
+            result[key] = fields[key].get_default(call_default_factory=True)
+        return result
 
 
 class _TomlSource:
@@ -1558,22 +1584,9 @@ class _TomlSource:
         # An empty string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
-        return self._without_invalid_enums({k: v for k, v in data.items() if value_is_set(k, v)})
-
-    def _without_invalid_enums(self, values: dict[str, Any]) -> dict[str, Any]:
-        """*values* less each enum value the field refuses, so one typo keeps the rest."""
-        enums = _enum_fields(self._settings_cls)
-        probe = self._settings_cls.model_construct()
-        invalid = [key for key in enums if key in values and not _accepts(probe, key, values[key])]
-        for key in invalid:
-            log.warning(
-                "config.toml: %s = %r is not one of %s; %s",
-                key,
-                values[key],
-                ", ".join(str(member.value) for member in enums[key]),
-                refused_value_fallback(key, values),
-            )
-        return {key: value for key, value in values.items() if key not in invalid}
+        values = {k: v for k, v in data.items() if value_is_set(k, v)}
+        refused = _refused_enums(self._settings_cls, values, "config.toml: {}".format)
+        return {key: value for key, value in values.items() if key not in refused}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
