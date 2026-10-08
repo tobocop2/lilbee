@@ -11,7 +11,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -278,9 +278,15 @@ def _make_flush_page(
     written_paths: list[Path],
     counter: _FlushCounter,
 ) -> Callable[[CrawlResult], Any]:
-    """Build a per-result flush closure that batches metadata writes via ``to_thread``."""
+    """Build a per-result flush closure that batches metadata writes via ``to_thread``.
+
+    A page whose URL *meta* holds only in another spelling is saved under that spelling.
+    """
+    spellings = save.stored_spellings(meta)
 
     def _sync_flush(result: CrawlResult) -> Path | None:
+        if result.url not in meta:
+            result = replace(result, url=spellings.get(result.url, result.url))
         outcome = save._save_single_result(result, meta)
         if outcome is None:
             return None
