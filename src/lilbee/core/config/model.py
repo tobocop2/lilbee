@@ -1619,7 +1619,7 @@ class _TomlSource:
         self._path = path
 
     def _fallback(self, key: str, values: dict[str, Any]) -> str:
-        """What a refused *key* gets instead: its variable when one is set, else the usual."""
+        """What a refused *key* gets instead: its variable when that sets it, else the usual."""
         if key in _PlainEnvSource(self._settings_cls, [key])():
             return f"{_variable(self._settings_cls, key)} sets {key}"
         return refused_value_fallback(key, values)

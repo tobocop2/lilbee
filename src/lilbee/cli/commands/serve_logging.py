@@ -27,7 +27,7 @@ _HEALTH_ACCESS_PATH = "/api/health"
 def setup_server_log_file() -> Path:
     """Install a RotatingFileHandler at ``cfg.data_root/logs/server.log``. Idempotent.
 
-    A new handler starts with the load warnings, which stderr alone held until now.
+    A new handler starts with the load warnings, which were logged before it existed.
     """
     log_dir = cfg.data_root / _LOG_DIR_NAME
     log_dir.mkdir(parents=True, exist_ok=True)
