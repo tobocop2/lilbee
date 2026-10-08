@@ -136,12 +136,25 @@ async def to_executor(
     and progress context), which ``run_in_executor`` alone would drop; copy the
     context exactly like ``asyncio.to_thread`` does.
     """
+    return await _submit(executor, fn, *args, **kwargs)
+
+
+def _submit(
+    executor: Executor, fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs
+) -> asyncio.Future[_R]:
     loop = asyncio.get_running_loop()
     ctx = contextvars.copy_context()
     call = functools.partial(ctx.run, fn, *args, **kwargs)
-    return await loop.run_in_executor(executor, call)
+    return loop.run_in_executor(executor, call)
 
 
 async def to_ingest_thread(fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
     """Run *fn* on the current ingest run's pool, or on the shared pool outside a run."""
-    return await to_executor(_run_pool.get() or _ingest_executor(), fn, *args, **kwargs)
+    return await ingest_thread_future(fn, *args, **kwargs)
+
+
+def ingest_thread_future(
+    fn: Callable[_P, _R], /, *args: _P.args, **kwargs: _P.kwargs
+) -> asyncio.Future[_R]:
+    """Start *fn* on the ingest pool; the future is not a task, so no sweep of tasks cancels it."""
+    return _submit(_run_pool.get() or _ingest_executor(), fn, *args, **kwargs)

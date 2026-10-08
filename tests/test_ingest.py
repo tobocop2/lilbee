@@ -3668,6 +3668,53 @@ class TestCancelDuringThresholdFlush:
         assert flushed == [["a.txt"]]
         assert overlaps == [1]
 
+    def test_the_exit_drain_waits_for_a_flush_in_progress(self, monkeypatch):
+        """The drain at TUI exit cancels every task on the loop; the write still ends first."""
+        import asyncio
+        import threading
+
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+        from lilbee.runtime import asyncio_loop
+
+        monkeypatch.setattr(pipeline, "_WRITE_FLUSH_CHUNKS", 1)
+        entered = threading.Event()
+        release = threading.Event()
+        flushed: list[list[str]] = []
+        ended: list[type[BaseException]] = []
+
+        def _slow_flush(buffer: list[_IngestResult]) -> None:
+            flushed.append([r.name for r in buffer])
+            entered.set()
+            release.wait(5)
+
+        async def _done() -> _IngestResult:
+            return _IngestResult("a.txt", Path("a.txt"), chunk_count=1, error=None)
+
+        async def _never() -> _IngestResult:
+            await asyncio.sleep(3600)
+            raise AssertionError("the sibling should have been cancelled")
+
+        def _worker() -> None:
+            feed = _feed([_done(), _never()])
+            try:
+                asyncio_loop.run(pipeline._collect_results(feed, {}, {}, {}, {}, window=2))
+            except BaseException as exc:
+                ended.append(type(exc))
+
+        monkeypatch.setattr(pipeline, "_flush_batch", _slow_flush)
+        worker = threading.Thread(target=_worker)
+        worker.start()
+        assert entered.wait(5)
+        drain = threading.Thread(target=asyncio_loop.shutdown)
+        drain.start()
+        worker.join(0.5)  # time for the sync to resume beside the write, if it would
+        release.set()
+        worker.join(10)
+        drain.join(15)
+        assert ended == [asyncio.CancelledError]
+        assert flushed == [["a.txt"]]  # a sync that resumed early flushes the buffer again
+
     async def test_a_second_cancel_waits_for_the_final_flush(self, monkeypatch):
         """The sync does not end while the flush on its way out is still writing."""
         import asyncio

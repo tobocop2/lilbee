@@ -87,6 +87,7 @@ from lilbee.data.ingest.skip_marker import (
 )
 from lilbee.data.offload import (
     embed_inflight_target,
+    ingest_thread_future,
     max_workers,
     owns_ingest_pool,
     to_executor,
@@ -2014,10 +2015,11 @@ async def _flush_to_end(
     """Run :func:`_flush_writes` on the ingest pool; a cancel waits for it, then propagates.
 
     The write thread owns *buffer* until it returns, so a flush the cancel abandoned
-    would run beside the next flush of the same buffer.
+    would run beside the next flush of the same buffer. The flush is a plain future:
+    a cancel of every task on the loop reaches this caller and never the write.
     """
-    flush = asyncio.ensure_future(
-        to_ingest_thread(_flush_writes, buffer, added, updated, failed, skipped, flush_failed)
+    flush = ingest_thread_future(
+        _flush_writes, buffer, added, updated, failed, skipped, flush_failed
     )
     cancelled = False
     while not flush.done():
