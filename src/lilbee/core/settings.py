@@ -156,8 +156,8 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
 def overlay_persisted_settings(root: Path) -> None:
     """Set on cfg each writable setting ``<root>/config.toml`` holds and no variable sets.
 
-    The file is read as the import-time load reads it, so a value Config refuses
-    is dropped with the same warning. ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
+    A value Config refuses is left out with a warning that names the file, and
+    the setting keeps the value it had. ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
     path = _config_path(root)
     if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():

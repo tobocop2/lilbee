@@ -1253,7 +1253,8 @@ class TestApplyOverrides:
 
         assert cfg.top_k == 7
         assert [rec.getMessage() for rec in caplog.records] == [
-            "config.toml: top_k = 'not-an-int' is not a whole number; top_k uses its default"
+            f"{cfg.data_root / 'config.toml'}: top_k = 'not-an-int' is not a whole number; "
+            "top_k keeps its value"
         ]
 
     def test_data_dir_overlay_handles_unreadable_config_toml(

@@ -804,7 +804,7 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_replicas = original
 
-    def test_a_refused_value_in_another_root_warns_once_and_keeps_the_first_value(
+    def test_a_refused_value_in_another_root_names_the_root_and_keeps_the_first_value(
         self, tmp_path, monkeypatch, caplog
     ):
         """The losing field: the other root's valid vision_replicas is set."""
@@ -831,7 +831,7 @@ class TestOverlayPersistedSettings:
         assert at_load == ()
         assert (cfg.vision_replicas, cfg.top_k) == (3, 7)
         assert [record.getMessage() for record in caplog.records] == [
-            "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
+            f"{other / 'config.toml'}: top_k = 'many' is not a whole number; top_k keeps its value"
         ]
 
     def test_a_file_that_is_not_toml_changes_nothing_and_warns(self, tmp_path, monkeypatch, caplog):

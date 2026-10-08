@@ -1594,17 +1594,25 @@ class _PlainEnvSource:
 
 
 class _TomlSource:
-    """Reads config.toml as a settings source."""
+    """Reads config.toml as a settings source; *label* names the file in a warning."""
 
-    def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
+    def __init__(
+        self,
+        settings_cls: type[BaseSettings],
+        path: Path,
+        label: str = CONFIG_FILE_NAME,
+        otherwise: str = "uses its default",
+    ) -> None:
         self._settings_cls = settings_cls
         self._path = path
+        self._label = label
+        self._otherwise = otherwise
 
     def _fallback(self, key: str, values: dict[str, Any]) -> str:
         """What a refused *key* gets instead: its variable when one is set, else the usual."""
         if env_value(key) is not None:
             return f"{_variable(self._settings_cls, key)} sets {key}"
-        return refused_value_fallback(key, values)
+        return refused_value_fallback(key, values, self._otherwise)
 
     def __call__(self) -> dict[str, Any]:
         import tomllib
@@ -1622,7 +1630,7 @@ class _TomlSource:
         refused = _refusals(self._settings_cls, values)
         for key, reason in refused.items():
             warn_on_load(
-                f"config.toml: {key} = {values[key]!r} {reason}; {self._fallback(key, values)}"
+                f"{self._label}: {key} = {values[key]!r} {reason}; {self._fallback(key, values)}"
             )
         return {key: value for key, value in values.items() if key not in refused}
 
@@ -1634,8 +1642,8 @@ def env_value(field_name: str) -> str | None:
 
 
 def toml_values(path: Path) -> dict[str, Any]:
-    """The values in the config.toml at *path*, less each one Config refuses."""
-    return _TomlSource(Config, path)()
+    """What the config.toml at *path* sets over a loaded cfg, less each value Config refuses."""
+    return _TomlSource(Config, path, label=str(path), otherwise="keeps its value")()
 
 
 def refuse_environment() -> None:

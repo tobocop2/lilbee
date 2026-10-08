@@ -66,11 +66,11 @@ def without_refused_ocr(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
-def refused_value_fallback(key: str, values: dict[str, Any]) -> str:
-    """What stands in for a refused value: a stored ``enable_ocr``, else the default."""
+def refused_value_fallback(key: str, values: dict[str, Any], otherwise: str) -> str:
+    """What stands in for a refused value: a stored ``enable_ocr``, else *otherwise*."""
     if key == "ocr" and _RETIRED_OCR_KEY in values:
         return f"ocr comes from {_RETIRED_OCR_KEY}"
-    return f"{key} uses its default"
+    return f"{key} {otherwise}"
 
 
 def _replaced_by(retired: list[str], replacement: str = "ocr") -> str:
