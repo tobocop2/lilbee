@@ -2206,6 +2206,11 @@ class TestABadValueInConfigTomlKeepsTheRest:
         assert len(warnings) == 1
         assert "must be a HuggingFace ref" in "".join(warnings)
 
+    def test_a_file_that_is_not_toml_is_ignored_with_a_warning(self, tmp_path):
+        built, warnings = _build_with(tmp_path, "top_k = = 7\n")
+        assert built.top_k == Config.model_fields["top_k"].default
+        assert warnings == (f"Failed to read {built.data_root / 'config.toml'}, ignoring",)
+
     @pytest.mark.parametrize("blank", ['""', '"  "', '"\\t"'])
     def test_a_blank_string_is_unset(self, tmp_path, blank):
         built, warnings = _build_with(tmp_path, f"ocr = {blank}\ntop_k = 7\n")
