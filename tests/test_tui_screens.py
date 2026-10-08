@@ -3444,14 +3444,13 @@ async def test_chat_slash_set_valid():
         assert cfg.top_k == 10
 
 
-@pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
-async def test_chat_slash_set_names_ocr_for_a_retired_key(key):
+async def test_chat_slash_set_names_ocr_for_the_retired_key():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._cmd_set(f"{key} false")
+            app.screen._cmd_set("enable_ocr false")
         assert mock_notify.call_args.args == (
-            f"{key} is replaced by ocr; set ocr to one of auto, all, off",
+            "enable_ocr is replaced by ocr; set ocr to one of auto, all, off",
         )
 
 

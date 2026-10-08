@@ -14,8 +14,9 @@ log = logging.getLogger(__name__)
 _BOOL_TRUE = frozenset({"true", "t", "yes", "y", "on", "1"})
 _BOOL_FALSE = frozenset({"false", "f", "no", "n", "off", "0"})
 
-# Retired config.toml keys that ``ocr`` replaces, each with the retired env var the CLI refuses.
-RETIRED_OCR_KEYS = {"enable_ocr": "LILBEE_ENABLE_OCR", "force_ocr": "LILBEE_OCR_FORCE"}
+# The retired config.toml key that ``ocr`` replaces, and the retired env vars the CLI refuses.
+_RETIRED_OCR_KEY = "enable_ocr"
+_RETIRED_OCR_ENV_VARS = ("LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE")
 _OCR_ENV_VAR = "LILBEE_OCR"
 
 
@@ -39,29 +40,26 @@ def _stored_bool(value: Any) -> bool | None:
         return None
 
 
-def _ocr_from_retired(retired: dict[str, Any], vision_model: str) -> OcrMode:
-    """The ocr mode that stored enable_ocr and force_ocr values stand for."""
-    if _stored_bool(retired.get("enable_ocr")) is False and not vision_model:
+def _ocr_from_enable_ocr(stored: Any, vision_model: str) -> OcrMode:
+    """The ocr mode a stored enable_ocr value stands for."""
+    if _stored_bool(stored) is False and not vision_model:
         return OcrMode.OFF
-    if _stored_bool(retired.get("force_ocr")):
-        return OcrMode.ALL
     return OcrMode.AUTO
 
 
 def migrate_ocr_keys(data: dict[str, Any], vision_model: str) -> dict[str, Any]:
-    """*data* with the retired OCR keys replaced by ``ocr``; an explicit ``ocr`` wins."""
-    retired = {key: data[key] for key in RETIRED_OCR_KEYS if key in data}
-    if not retired:
+    """*data* with a stored ``enable_ocr`` replaced by ``ocr``; an explicit ``ocr`` wins."""
+    if _RETIRED_OCR_KEY not in data:
         return data
-    migrated = {key: value for key, value in data.items() if key not in retired}
+    migrated = {key: value for key, value in data.items() if key != _RETIRED_OCR_KEY}
     if "ocr" not in migrated:
-        migrated["ocr"] = _ocr_from_retired(retired, vision_model).value
+        migrated["ocr"] = _ocr_from_enable_ocr(data[_RETIRED_OCR_KEY], vision_model).value
     return migrated
 
 
 def without_refused_ocr(data: dict[str, Any]) -> dict[str, Any]:
-    """*data* less an ``ocr`` value OcrMode refuses, when a retired OCR key can stand in for it."""
-    if "ocr" not in data or not any(key in data for key in RETIRED_OCR_KEYS):
+    """*data* less an ``ocr`` value OcrMode refuses, when ``enable_ocr`` can stand in for it."""
+    if "ocr" not in data or _RETIRED_OCR_KEY not in data:
         return data
     try:
         OcrMode(data["ocr"])
@@ -71,10 +69,9 @@ def without_refused_ocr(data: dict[str, Any]) -> dict[str, Any]:
 
 
 def refused_value_fallback(key: str, values: dict[str, Any]) -> str:
-    """What stands in for a refused config.toml value: a retired OCR key, else the default."""
-    retired = [name for name in RETIRED_OCR_KEYS if name in values]
-    if key == "ocr" and retired:
-        return f"ocr comes from {' and '.join(retired)}"
+    """What stands in for a refused value: a stored ``enable_ocr``, else the default."""
+    if key == "ocr" and _RETIRED_OCR_KEY in values:
+        return f"ocr comes from {_RETIRED_OCR_KEY}"
     return f"{key} uses its default"
 
 
@@ -90,22 +87,22 @@ def _ocr_modes() -> str:
 
 
 def warn_retired_ocr_keys(data: dict[str, Any]) -> None:
-    """Warn that config.toml still carries a retired OCR key."""
-    retired = [key for key in RETIRED_OCR_KEYS if key in data]
-    if retired:
-        log.warning("config.toml: %s; the next settings write saves it", _replaced_by(retired))
+    """Warn that config.toml still carries ``enable_ocr``."""
+    if _RETIRED_OCR_KEY in data:
+        log.warning(
+            "config.toml: %s; the next settings write saves it", _replaced_by([_RETIRED_OCR_KEY])
+        )
 
 
 def refuse_retired_ocr_keys(keys: Iterable[str]) -> None:
-    """Raise ValueError when a request or setting names a retired OCR key instead of ``ocr``."""
-    retired = sorted(set(keys) & set(RETIRED_OCR_KEYS))
-    if retired:
-        raise ValueError(f"{_replaced_by(retired)}; set ocr to one of {_ocr_modes()}")
+    """Raise ValueError when a request or setting names ``enable_ocr`` instead of ``ocr``."""
+    if _RETIRED_OCR_KEY in keys:
+        raise ValueError(f"{_replaced_by([_RETIRED_OCR_KEY])}; set ocr to one of {_ocr_modes()}")
 
 
 def refuse_retired_ocr_env(environ: Mapping[str, str]) -> None:
     """Raise ValueError when *environ* sets a retired OCR variable instead of LILBEE_OCR."""
-    retired = [name for name in RETIRED_OCR_KEYS.values() if environ.get(name, "").strip()]
+    retired = [name for name in _RETIRED_OCR_ENV_VARS if environ.get(name, "").strip()]
     if retired:
         raise ValueError(
             f"{_replaced_by(retired, _OCR_ENV_VAR)}; set {_OCR_ENV_VAR} to one of {_ocr_modes()}"

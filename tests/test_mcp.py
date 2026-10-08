@@ -922,7 +922,6 @@ class TestAdd:
         ("tool", "arguments", "detail"),
         [
             ("add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is replaced by ocr"),
-            ("add", {"paths": ["x"], "force_ocr": True}, "force_ocr is replaced by ocr"),
             ("sync", {"enable_ocr": False}, "enable_ocr is replaced by ocr"),
             ("add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
         ],
@@ -2005,12 +2004,17 @@ class TestSettingsMcp:
         }
         assert cfg.ocr is OcrMode.OFF
 
-    @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
-    def test_settings_set_and_reset_name_ocr_for_a_retired_key(self, isolated_env, key):
+    def test_settings_set_and_reset_name_ocr_for_the_retired_key(self, isolated_env):
         cfg.data_root = isolated_env
-        replaced = f"{key} is replaced by ocr; set ocr to one of auto, all, off"
-        assert settings_set({key: False}) == {"error": replaced}
-        assert settings_reset([key]) == {"error": replaced}
+        replaced = "enable_ocr is replaced by ocr; set ocr to one of auto, all, off"
+        assert settings_set({"enable_ocr": False}) == {"error": replaced}
+        assert settings_reset(["enable_ocr"]) == {"error": replaced}
+
+    def test_settings_set_treats_force_ocr_as_an_unknown_key(self, isolated_env):
+        cfg.data_root = isolated_env
+        assert settings_set({"force_ocr": False}) == {
+            "error": "Unknown or read-only setting: force_ocr"
+        }
 
     def test_settings_set_vision_model_with_ocr_off_returns_the_notice(self, isolated_env):
         cfg.data_root = isolated_env

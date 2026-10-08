@@ -713,14 +713,6 @@ class TestRetiredOcrKeysMigrate:
             ('enable_ocr = "none"\n', OcrMode.AUTO),
             ('enable_ocr = "off"\n', OcrMode.OFF),
             ('enable_ocr = "maybe"\n', OcrMode.AUTO),
-            ("force_ocr = true\n", OcrMode.ALL),
-            ("enable_ocr = true\nforce_ocr = true\n", OcrMode.ALL),
-            ("enable_ocr = false\nforce_ocr = true\n", OcrMode.OFF),
-            (
-                f'enable_ocr = false\nforce_ocr = true\nvision_model = "{_SAMPLE_VISION_REF}"\n',
-                OcrMode.ALL,
-            ),
-            ("force_ocr = false\n", OcrMode.AUTO),
         ],
     )
     def test_stored_values_become_the_mode_they_meant(self, tmp_path, toml, expected):
@@ -778,20 +770,20 @@ class TestRetiredOcrKeysMigrate:
             caplog.text
         )
 
-    @pytest.mark.parametrize(
-        ("toml", "warning"),
-        [
-            ("enable_ocr = false\n", "config.toml: enable_ocr is replaced by ocr;"),
-            (
-                "enable_ocr = false\nforce_ocr = true\n",
-                "config.toml: enable_ocr and force_ocr are replaced by ocr;",
-            ),
-        ],
-    )
-    def test_the_migration_warns_with_the_replacement(self, tmp_path, caplog, toml, warning):
+    def test_force_ocr_is_an_unknown_key_that_migrates_nothing(self, tmp_path, caplog):
         with caplog.at_level("WARNING", logger="lilbee.core.config.parsing"):
-            self._load(tmp_path, toml)
-        assert warning in caplog.text
+            loaded = self._load(tmp_path, "enable_ocr = true\nforce_ocr = true\n")
+        assert loaded.ocr is OcrMode.AUTO
+        assert "config.toml: enable_ocr is replaced by ocr;" in caplog.text
+        assert "force_ocr" not in caplog.text
+
+    def test_the_migration_warns_with_the_replacement(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.parsing"):
+            self._load(tmp_path, "enable_ocr = false\n")
+        assert (
+            "config.toml: enable_ocr is replaced by ocr; the next settings write saves it"
+            in caplog.text
+        )
 
 
 class TestMigrationMatchesTheOldEngineChoice:

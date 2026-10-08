@@ -4155,12 +4155,11 @@ class TestUpdateConfig:
         assert result.model_dump() == {"updated": ["ocr"], "reindex_required": False}
         assert cfg.ocr is OcrMode.OFF
 
-    @pytest.mark.parametrize("key", ["enable_ocr", "force_ocr"])
-    async def test_update_config_refuses_a_retired_ocr_key(self, tmp_path, key):
+    async def test_update_config_refuses_the_retired_ocr_key(self, tmp_path):
         with pytest.raises(
-            ValueError, match=f"^{key} is replaced by ocr; set ocr to one of auto, all, off$"
+            ValueError, match=r"^enable_ocr is replaced by ocr; set ocr to one of auto, all, off$"
         ):
-            await handlers.update_config({key: False})
+            await handlers.update_config({"enable_ocr": False})
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})

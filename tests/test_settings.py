@@ -53,7 +53,7 @@ class TestLoad:
 
 
 class TestRetiredOcrKeysOnDisk:
-    """config.toml keys from before the ocr setting read as ocr and are replaced on write."""
+    """A config.toml enable_ocr from before the ocr setting reads as ocr and a write replaces it."""
 
     _VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
 
@@ -63,7 +63,6 @@ class TestRetiredOcrKeysOnDisk:
             ("enable_ocr = false\n", "off"),
             (f'enable_ocr = false\nvision_model = "{_VISION}"\n', "auto"),
             ("enable_ocr = true\n", "auto"),
-            ("force_ocr = true\n", "all"),
         ],
     )
     def test_load_reads_them_as_ocr(self, tmp_path, monkeypatch, toml, expected):
@@ -72,7 +71,6 @@ class TestRetiredOcrKeysOnDisk:
         loaded = settings.load(tmp_path)
         assert loaded["ocr"] == expected
         assert "enable_ocr" not in loaded
-        assert "force_ocr" not in loaded
 
     def test_the_vision_model_env_var_decides_over_config_toml(self, tmp_path, monkeypatch):
         (tmp_path / "config.toml").write_text(

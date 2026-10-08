@@ -51,8 +51,8 @@ def load(data_root: Path) -> dict[str, Any]:
     Values keep the types TOML gave them. Stringifying here used to turn a
     ``true`` into ``"True"`` in memory, which the next save then wrote back
     quoted, so the file drifted away from valid types for its own fields.
-    Retired OCR keys come back as ``ocr``, so the next write saves the replacement;
-    an ``ocr`` value the setting refuses gives way to them.
+    A stored ``enable_ocr`` comes back as ``ocr``, so the next write saves the
+    replacement; an ``ocr`` value the setting refuses gives way to it.
     """
     path = _config_path(data_root)
     if not path.exists():

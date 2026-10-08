@@ -1381,7 +1381,7 @@ class Config(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _migrate_retired_ocr_keys(cls, data: Any) -> Any:
-        """Replace stored enable_ocr and force_ocr values with the ocr mode they stand for."""
+        """Replace a stored enable_ocr value with the ocr mode it stands for."""
         if not isinstance(data, dict):
             return data
         warn_retired_ocr_keys(data)
