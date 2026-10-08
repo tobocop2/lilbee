@@ -198,6 +198,20 @@ class TestPersistedSettingsPermissions:
         path = tmp_path / "config.toml"
         assert file_mode(path) == 0o600
 
+    def test_the_overlay_narrows_a_config_toml_that_arrived_wider(self, tmp_path, monkeypatch):
+        from lilbee.core import settings
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        path = tmp_path / "config.toml"
+        path.write_text("top_k = 9\n", encoding="utf-8")
+        path.chmod(0o644)
+        settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 9
+        assert file_mode(path) == 0o600
+
     def test_config_lock_file_is_owner_only(self, tmp_path, permissive_umask):
         """The lock coordinating a config read-modify-write is a secret sibling too."""
         from pathlib import Path

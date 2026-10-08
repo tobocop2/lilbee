@@ -108,6 +108,14 @@ class TestRetiredOcrKeysOnDisk:
         settings.overlay_persisted_settings(tmp_path)
         assert cfg.ocr is OcrMode.OFF
 
+    def test_a_refused_vision_variable_is_not_a_vision_model(self, tmp_path, monkeypatch):
+        """The twin: a variable with a valid ref is one, so the same file reads as auto."""
+        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+        monkeypatch.setenv("LILBEE_VISION_MODEL", "qwen3:0.6b")
+        assert settings.load(tmp_path)["ocr"] == "off"
+        monkeypatch.setenv("LILBEE_VISION_MODEL", "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf")
+        assert settings.load(tmp_path)["ocr"] == "auto"
+
 
 class TestSave:
     def test_save_creates_file(self, tmp_path):
@@ -856,15 +864,17 @@ class TestOverlayPersistedSettings:
             f"Failed to read {path}, ignoring"
         ]
 
-    def test_a_root_without_config_toml_changes_nothing(self, tmp_path, monkeypatch):
+    def test_a_root_without_config_toml_changes_nothing(self, tmp_path, monkeypatch, caplog):
         """The twin: the same call with a file in the root does set the value."""
         from lilbee.core.config import cfg
 
         monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
         monkeypatch.delenv("LILBEE_TOP_K", raising=False)
         monkeypatch.setattr(cfg, "top_k", 4)
-        settings.overlay_persisted_settings(tmp_path)
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
         assert cfg.top_k == 4
+        assert caplog.records == []
         (tmp_path / "config.toml").write_text("top_k = 9\n", encoding="utf-8")
         settings.overlay_persisted_settings(tmp_path)
         assert cfg.top_k == 9

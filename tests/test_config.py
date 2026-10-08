@@ -23,7 +23,7 @@ from lilbee.core.config import (
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
-from lilbee.core.config.model import _TomlSource, value_is_set
+from lilbee.core.config.model import _TomlSource, env_value, value_is_set
 from lilbee.runtime.progress import OcrBackendUsed
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
@@ -2432,6 +2432,50 @@ class TestARefusedVariableIsUnset:
         )
         assert built.vision_model == ""
         assert warnings == ()
+
+
+class TestEnvValue:
+    """What one variable sets, asked outside a load."""
+
+    @pytest.mark.parametrize(
+        ("key", "raw", "value"),
+        [
+            ("top_k", "7", "7"),
+            ("top_k", "many", None),
+            ("top_k", " ", None),
+            ("ocr", "bogus", None),
+            ("vision_model", "", ""),
+        ],
+    )
+    def test_it_is_the_raw_value_or_none(self, monkeypatch, key, raw, value):
+        monkeypatch.setenv(f"LILBEE_{key.upper()}", raw)
+        assert env_value(key) == value
+
+    def test_an_unset_variable_is_none(self, monkeypatch):
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        assert env_value("top_k") is None
+
+    def test_it_warns_about_the_asked_variable_alone(self, monkeypatch, caplog):
+        monkeypatch.setenv("LILBEE_TOP_K", "many")
+        monkeypatch.setenv("LILBEE_OCR", "bogus")
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            assert env_value("top_k") is None
+        assert [record.getMessage() for record in caplog.records] == [
+            "LILBEE_TOP_K = 'many' is not a whole number; the variable is ignored"
+        ]
+
+    def test_an_unset_variable_costs_no_validation(self, monkeypatch):
+        """The twin: a set variable does reach the validation the patch forbids."""
+
+        def forbidden(*_args: object, **_kwargs: object) -> Config:
+            raise AssertionError("a probe was built")
+
+        monkeypatch.setattr(Config, "model_construct", forbidden)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        assert env_value("top_k") is None
+        monkeypatch.setenv("LILBEE_TOP_K", "7")
+        with pytest.raises(AssertionError, match="a probe was built"):
+            env_value("top_k")
 
 
 class TestLoadWarningsAreLoggedOncePerProcessTree:
