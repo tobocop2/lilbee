@@ -545,14 +545,14 @@ def _add_json_mode(
     crawled_paths: list[Path],
     *,
     force: bool,
-    run_sync: Callable[[list[str]], object],
+    run_sync: Callable[[RegisterResult], object],
 ) -> dict:
     """Run the JSON-mode finish: register roots, sync, return the one structured result."""
     reg_result = RegisterResult()
     if file_paths:
         reg_result = register_sources(file_paths, force=force)
     # A sync is a whole-vault pass; run it only when something named reached the corpus.
-    result = run_sync(reg_result.registered) if reg_result.reached_corpus or crawled_paths else None
+    result = run_sync(reg_result) if reg_result.reached_corpus or crawled_paths else None
     return {
         "command": "add",
         "copied": reg_result.registered,
@@ -576,8 +576,15 @@ def _register_and_sync(
 ) -> dict | None:
     """Register the files and sync; returns the JSON result, or None after human output."""
 
-    def _sync(added: list[str]) -> object:
-        return _run_sync(cancel_event, before_sync=lambda: rollback.registered(added, cancel_event))
+    def _sync(registration: RegisterResult) -> object:
+        def _sync_starts() -> None:
+            rollback.registered(
+                registration.registered,
+                cancel_event,
+                covered=[*registration.tracked, *registration.overlapping],
+            )
+
+        return _run_sync(cancel_event, before_sync=_sync_starts)
 
     if cfg.json_mode:
         return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
@@ -585,7 +592,7 @@ def _register_and_sync(
         add_paths(file_paths, console, force=force, run_sync=_sync)
     elif sync_urls:
         # URLs already saved; just trigger sync
-        console.print(_sync([]))
+        console.print(_sync(RegisterResult()))
     return None
 
 
@@ -634,8 +641,9 @@ def add(
                 cancel_event=cancel_event,
                 rollback=rollback,
             )
-            # A stage that ran to its end under a Ctrl+C still stops the add.
-            if cancel_event.is_set():
+            # An add that ends before its sync under a Ctrl+C still stops; a sync
+            # that returned has finished, and its result stands.
+            if cancel_event.is_set() and not rollback.at_sync:
                 raise asyncio.CancelledError
     except RuntimeError as exc:
         if cfg.json_mode:

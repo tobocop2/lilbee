@@ -6721,6 +6721,32 @@ class TestSyncCancelledExit:
         assert "Add cancelled. a.txt, b.txt were not added." in result.output
         assert cfg.linked_roots == {}
 
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    def test_a_cancelled_add_names_a_taken_name_and_not_a_source_the_corpus_holds(
+        self, isolated_env, tmp_path, mock_svc, flags
+    ):
+        from lilbee.app.ingest import register_sources
+
+        held = tmp_path / "a" / "held"
+        held.mkdir(parents=True)
+        register_sources([held])
+        taken = tmp_path / "b" / "held"
+        taken.mkdir(parents=True)
+        fresh = self._source(tmp_path, "fresh.txt")
+        with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
+            result = runner.invoke(app, [*flags, "add", str(held), str(taken), str(fresh)])
+        assert result.exit_code == 130, result.output
+        # One "held" is the tracked source and stays; the other is the taken name.
+        stopped = "Add cancelled. held, fresh.txt were not added."
+        if flags:
+            assert json.loads(result.output) == {
+                "error": stopped,
+                "not_added": ["held", "fresh.txt"],
+            }
+        else:
+            assert " ".join(result.output.split()).endswith(stopped)
+        assert cfg.linked_roots == {"held": str(held.resolve())}
+
     def test_a_failed_add_keeps_its_source_for_the_next_sync(
         self, isolated_env, tmp_path, mock_svc
     ):
@@ -6873,6 +6899,35 @@ class TestSyncCancelledExit:
     _STAGES_BEFORE_THE_SYNC = ("crawl", "nothing_registered")
 
     @staticmethod
+    def _crawl_saves_a_page(*, ctrl_c: bool) -> contextlib.ExitStack:
+        """Patch the crawler to save one page; with *ctrl_c* the Ctrl+C lands in the crawl."""
+        import signal
+
+        async def _crawl(_url, **_kwargs):
+            page = cfg.documents_dir / "_web" / "page.md"
+            page.parent.mkdir(parents=True, exist_ok=True)
+            page.write_text("hello world " * 50, encoding="utf-8")
+            if ctrl_c:
+                signal.raise_signal(signal.SIGINT)
+            return [page]
+
+        stage_patch = contextlib.ExitStack()
+        stage_patch.enter_context(mock.patch("lilbee.crawler.crawler_available", return_value=True))
+        stage_patch.enter_context(mock.patch("lilbee.crawler.crawl_and_save", _crawl))
+        return stage_patch
+
+    @staticmethod
+    def _ctrl_c_then_the_write_fails(events: list[threading.Event]):
+        """A store write the Ctrl+C lands in, which then fails."""
+
+        def _write(_items):
+            # The write runs on a pool thread; the handler's effect is set here directly.
+            events[0].set()
+            raise OSError("disk full")
+
+        return _write
+
+    @staticmethod
     def _ctrl_c_as_registration_refuses() -> contextlib.ExitStack:
         """Patch registration so the Ctrl+C lands in it and no path reaches the corpus."""
         import signal
@@ -6889,27 +6944,43 @@ class TestSyncCancelledExit:
         return stage_patch
 
     @classmethod
-    def _ctrl_c_in(cls, stage: str, events: list[threading.Event]):
+    def _ctrl_c_in(cls, stage: str, events: list[threading.Event], services):
         """Patch an add so the user's Ctrl+C lands at *stage*, a sync stage or one before it."""
         stage_patch, sync_patch = cls._ctrl_c_at(stage, events)
-        if stage == "nothing_registered":
+        if stage in ("nothing_registered", "name_taken_with_url"):
             stage_patch = cls._ctrl_c_as_registration_refuses()
+        if stage == "name_taken_with_url":
+            stage_patch.enter_context(cls._crawl_saves_a_page(ctrl_c=False))
+        if stage == "write":
+            services.store.write_chunks_batch.side_effect = cls._ctrl_c_then_the_write_fails(events)
         return stage_patch, sync_patch
+
+    @staticmethod
+    def _sync_recording_its_cancel(events: list[threading.Event], *, ctrl_c_after: bool):
+        """Patch the real sync to record its cancel; with *ctrl_c_after* a Ctrl+C follows it."""
+        import signal
+
+        from lilbee.data import ingest as ingest_mod
+
+        real_sync = ingest_mod.sync
+
+        async def _sync(**kwargs):
+            events.append(kwargs["cancel"])
+            result = await real_sync(**kwargs)
+            if ctrl_c_after:
+                signal.raise_signal(signal.SIGINT)
+            return result
+
+        return mock.patch.object(ingest_mod, "sync", _sync)
 
     @staticmethod
     def _ctrl_c_at(stage: str, events: list[threading.Event]):
         """Patch the real sync so the user's Ctrl+C lands at *stage*."""
         import signal
 
-        from lilbee.data import ingest as ingest_mod
         from lilbee.data.ingest import pipeline
 
-        real_sync = ingest_mod.sync
-
-        async def _sync(**kwargs):
-            events.append(kwargs["cancel"])
-            return await real_sync(**kwargs)
-
+        stage_patch: contextlib.AbstractContextManager = contextlib.nullcontext()
         if stage == "registration":
             from lilbee.app.ingest import register_sources
 
@@ -6923,19 +6994,7 @@ class TestSyncCancelledExit:
             for target in ("lilbee.cli.helpers", "lilbee.cli.commands.ingest_sync"):
                 stage_patch.enter_context(mock.patch(f"{target}.register_sources", _register))
         elif stage == "crawl":
-
-            async def _crawl(_url, **_kwargs):
-                page = cfg.documents_dir / "_web" / "page.md"
-                page.parent.mkdir(parents=True, exist_ok=True)
-                page.write_text("hello world " * 50, encoding="utf-8")
-                signal.raise_signal(signal.SIGINT)
-                return [page]
-
-            stage_patch = contextlib.ExitStack()
-            stage_patch.enter_context(
-                mock.patch("lilbee.crawler.crawler_available", return_value=True)
-            )
-            stage_patch.enter_context(mock.patch("lilbee.crawler.crawl_and_save", _crawl))
+            stage_patch = TestSyncCancelledExit._crawl_saves_a_page(ctrl_c=True)
         elif stage == "planning":
             real_discover = pipeline.discover_corpus
 
@@ -6944,7 +7003,7 @@ class TestSyncCancelledExit:
                 return real_discover(*args, **kwargs)
 
             stage_patch = mock.patch.object(pipeline, "discover_corpus", _discover)
-        else:
+        elif stage == "post_ingest":
             real_passes = pipeline._run_post_ingest_passes
 
             async def _passes(*args, **kwargs):
@@ -6952,28 +7011,35 @@ class TestSyncCancelledExit:
                 return await real_passes(*args, **kwargs)
 
             stage_patch = mock.patch.object(pipeline, "_run_post_ingest_passes", _passes)
-        return stage_patch, mock.patch.object(ingest_mod, "sync", _sync)
+        sync_patch = TestSyncCancelledExit._sync_recording_its_cancel(
+            events, ctrl_c_after=stage == "after_sync"
+        )
+        return stage_patch, sync_patch
+
+    _NOT_ADDED = "Add cancelled. corpus was not added."
+    _STAGES_WITH_A_URL = ("crawl", "name_taken_with_url")
+    # stage, flags, what the add says as it stops (None: it ends with its result), kept
+    _STOPS = (
+        ("crawl", [], _NOT_ADDED, False),
+        ("nothing_registered", [], _NOT_ADDED, False),
+        ("name_taken_with_url", ["--json"], _NOT_ADDED, False),
+        ("registration", [], _NOT_ADDED, False),
+        ("planning", [], _NOT_ADDED, False),
+        ("write", [], f"{_NOT_ADDED} It also hit an error: disk full.", False),
+        ("write", ["--json"], f"{_NOT_ADDED} It also hit an error: disk full.", False),
+        ("post_ingest", [], "Sync cancelled.", True),
+        ("after_sync", [], None, True),
+        ("after_sync", ["--json"], None, True),
+    )
 
     @pytest.mark.parametrize(
-        ("stage", "expected", "kept"),
-        [
-            pytest.param("crawl", "Add cancelled. corpus was not added.", False, id="crawl"),
-            pytest.param(
-                "nothing_registered",
-                "Add cancelled. corpus was not added.",
-                False,
-                id="nothing_registered",
-            ),
-            pytest.param(
-                "registration", "Add cancelled. corpus was not added.", False, id="registration"
-            ),
-            pytest.param("planning", "Add cancelled. corpus was not added.", False, id="planning"),
-            pytest.param("post_ingest", "Sync cancelled.", True, id="post_ingest"),
-        ],
+        ("stage", "flags", "stopped", "kept"),
+        [pytest.param(*row, id="-".join([row[0], *row[1]]).replace("--", "")) for row in _STOPS],
     )
-    def test_ctrl_c_at_any_stage_of_an_add_exits_130_by_one_rule(
-        self, isolated_env, tmp_path, monkeypatch, stage, expected, kept
+    def test_ctrl_c_at_any_stage_of_an_add_follows_one_rule(
+        self, isolated_env, tmp_path, monkeypatch, stage, flags, stopped, kept
     ):
+        """A Ctrl+C before the add's work is done exits 130 and names what was not added."""
         from tests._ingesting_services import ingesting_services
 
         corpus = tmp_path / "source" / "corpus"
@@ -6983,24 +7049,40 @@ class TestSyncCancelledExit:
         svc_mod.set_services(services)
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
         events: list[threading.Event] = []
-        stage_patch, sync_patch = self._ctrl_c_in(stage, events)
-        args = ["add", "--data-dir", str(tmp_path), str(corpus)]
-        if stage == "crawl":
+        stage_patch, sync_patch = self._ctrl_c_in(stage, events, services)
+        args = [*flags, "add", "--data-dir", str(tmp_path), str(corpus)]
+        if stage in self._STAGES_WITH_A_URL:
             args.append("https://example.com")
         with stage_patch, sync_patch:
             result = runner.invoke(app, args)
+        # A page the crawl saved stays, and a sync that starts sees the Ctrl+C.
+        assert (cfg.documents_dir / "_web" / "page.md").is_file() is (
+            stage in self._STAGES_WITH_A_URL
+        )
         if stage in self._STAGES_BEFORE_THE_SYNC:
-            # No sync starts, and a page the crawl saved stays.
             assert events == []
-            assert (cfg.documents_dir / "_web" / "page.md").is_file() is (stage == "crawl")
         else:
             assert events and events[0].is_set()
-        assert result.exit_code == 130, result.output
-        assert result.output.strip().endswith(expected)
-        assert "Sync cancelled." not in result.output or stage == "post_ingest"
-        assert isinstance(result.exception, SystemExit)
-        assert ("corpus/notes.txt" in sources) is (stage == "post_ingest")
+        indexed = stage in ("post_ingest", "after_sync")
+        assert ("corpus/notes.txt" in sources) is indexed
         assert ("corpus" in cfg.linked_roots) is kept
+        if stopped is None:
+            # The work was done when the Ctrl+C arrived: the add reports it and exits 0.
+            assert result.exit_code == 0, result.output
+            assert "cancelled" not in result.output
+            if flags:
+                assert json.loads(result.output)["sync"]["added"] == ["corpus/notes.txt"]
+            else:
+                assert "Added: 1" in result.output
+            return
+        assert result.exit_code == 130, result.output
+        assert isinstance(result.exception, SystemExit)
+        assert ("Sync cancelled." in result.output) is (stopped == "Sync cancelled.")
+        if flags:
+            not_added = {} if kept else {"not_added": ["corpus"]}
+            assert json.loads(result.output) == {"error": stopped, **not_added}
+        else:
+            assert " ".join(result.output.split()).endswith(stopped)
 
     def test_ctrl_c_while_a_json_add_registers_reports_what_was_not_added(
         self, isolated_env, tmp_path, monkeypatch
@@ -7055,7 +7137,7 @@ class TestSyncCancelledExit:
         svc_mod.set_services(services)
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
         events: list[threading.Event] = []
-        stage_patch, sync_patch = self._ctrl_c_in(stage, events)
+        stage_patch, sync_patch = self._ctrl_c_in(stage, events, services)
         args = ["--json", "add", "--data-dir", str(tmp_path), str(first), str(second)]
         if stage == "crawl":
             args.append("https://example.com")

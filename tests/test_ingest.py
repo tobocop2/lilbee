@@ -7194,7 +7194,7 @@ class TestCliSurface:
         asyncio.run(sync(quiet=True))
         remove_documents_durably(["corpus/gone.txt"])
 
-        add_paths([corpus], Console(), run_sync=lambda _added: asyncio.run(sync(quiet=True)))
+        add_paths([corpus], Console(), run_sync=lambda _registration: asyncio.run(sync(quiet=True)))
 
         assert "corpus/gone.txt" in _indexed(mock_svc)
 
@@ -7211,7 +7211,7 @@ class TestCliSurface:
         runs: list[int] = []
         console = Console(record=True, width=120)
 
-        add_paths([drawing], console, run_sync=lambda _added: runs.append(1))
+        add_paths([drawing], console, run_sync=lambda _registration: runs.append(1))
 
         assert runs == []
         assert "Registered 0 source(s)" in console.export_text()
@@ -7248,7 +7248,7 @@ class TestCliSurface:
         runs: list[int] = []
         console = Console(record=True, width=120)
 
-        add_paths([two], console, run_sync=lambda _added: runs.append(1))
+        add_paths([two], console, run_sync=lambda _registration: runs.append(1))
 
         assert runs == []
         assert "is taken by another source" in console.export_text()

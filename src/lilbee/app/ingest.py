@@ -372,7 +372,7 @@ class AddRollback:
     not_added: list[str] = field(default_factory=list)
     error: str | None = None
     pending: list[str] = field(default_factory=list)
-    """Names the add was given and has not registered."""
+    """Names the add was given that have not reached the corpus."""
     at_sync: bool = True
     """Whether the add reached its sync."""
     _roots: list[str] = field(default_factory=list)
@@ -394,9 +394,18 @@ class AddRollback:
         log.warning("A stopped sync also hit an error", exc_info=exc)
         self.error = str(exc) or type(exc).__name__
 
-    def registered(self, labels: list[str], cancel: CancelSignal) -> None:
-        """Take *labels* as the roots the add registered; its sync starts here."""
-        self.pending, self._roots, self.at_sync = [], labels, True
+    def registered(
+        self, labels: list[str], cancel: CancelSignal, covered: Iterable[str] = ()
+    ) -> None:
+        """Take *labels* as the roots the add registered; its sync starts here.
+
+        A pending name stays pending unless it is one of *labels* or of *covered*,
+        the names another source already holds in the corpus.
+        """
+        for name in (*labels, *covered):
+            if name in self.pending:
+                self.pending.remove(name)
+        self._roots, self.at_sync = labels, True
         try:
             self._before = indexed_stamps(labels)
         except Exception as exc:

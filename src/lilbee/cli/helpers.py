@@ -231,13 +231,13 @@ def add_paths(
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
-    run_sync: Callable[[list[str]], object] | None = None,
+    run_sync: Callable[[RegisterResult], object] | None = None,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after registering. *run_sync*
-    overrides the foreground sync call and receives the newly registered root
-    labels (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
+    overrides the foreground sync call and receives the registration result
+    (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
     ``asyncio.run(sync())``.
     """
     registration = register_paths(paths, con, force=force)
@@ -255,7 +255,7 @@ def add_paths(
         run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = run_sync(registration.registered) if run_sync is not None else _run_foreground_sync()
+    result = run_sync(registration) if run_sync is not None else _run_foreground_sync()
     con.print(result)
 
 
