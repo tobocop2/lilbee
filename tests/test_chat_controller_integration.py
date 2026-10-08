@@ -8,6 +8,7 @@ These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
 from __future__ import annotations
 
 import contextlib
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1858,42 +1859,100 @@ async def test_stop_all_spends_one_budget_on_the_drain_and_the_joins() -> None:
         assert 1.5 < elapsed < 3.5  # two waits of the budget take 4 seconds
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("site", ["spawn", "worker_exit", "stop_all"])
-async def test_the_worker_map_is_read_and_written_under_its_lock(site: str) -> None:
-    """Each site that touches the worker map waits for the lock another thread holds."""
-    import asyncio
-    import threading
+class _OwnedLock:
+    """A lock that knows which thread holds it."""
 
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.owner: int | None = None
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self.owner = threading.get_ident()
+
+    def __exit__(self, *_exc: object) -> None:
+        self.owner = None
+        self._lock.release()
+
+
+class _WatchedWorkers(dict):
+    """A worker map that records, per operation, whether its thread held the lock."""
+
+    def __init__(self, lock: _OwnedLock) -> None:
+        super().__init__()
+        self._lock = lock
+        self.held: dict[str, list[bool]] = {
+            "start": [],
+            "spawn": [],
+            "worker_exit": [],
+            "stop_all": [],
+        }
+        self.started_at_spawn: list[bool] = []
+
+    def _note(self, site: str) -> None:
+        self.held[site].append(self._lock.owner == threading.get_ident())
+
+    def watch_starts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Record, for each task worker started, whether the starting thread held the lock."""
+        real_start = threading.Thread.start
+
+        def _start(thread: threading.Thread) -> None:
+            if thread.name.startswith("task-"):
+                self._note("start")
+            real_start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", _start)
+
+    def __setitem__(self, task_id, thread) -> None:
+        self._note("spawn")
+        self.started_at_spawn.append(thread.ident is not None)
+        super().__setitem__(task_id, thread)
+
+    def pop(self, *args):
+        self._note("worker_exit")
+        return super().pop(*args)
+
+    def values(self):
+        self._note("stop_all")
+        return super().values()
+
+
+async def _spawn_end_and_stop(pilot, monkeypatch: pytest.MonkeyPatch) -> _WatchedWorkers:
+    """Run one task through spawn, worker exit and the stop path on a watched worker map."""
     from tests._async_wait import wait_until
 
+    controller = TaskBarController(pilot.app)
+    controller._workers_lock = _OwnedLock()
+    controller._workers = workers = _WatchedWorkers(controller._workers_lock)
+    workers.watch_starts(monkeypatch)
+    controller.start_task("watched", TaskType.SYNC, lambda _reporter: None)
+    assert await wait_until(pilot, lambda: workers.held["worker_exit"] != [], timeout=5.0)
+    controller.stop_all(budget_s=0.1)
+    return workers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("site", ["spawn", "worker_exit", "stop_all"])
+async def test_the_worker_map_is_read_and_written_under_its_lock(
+    site: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each site touches the worker map on the thread that holds the lock at that moment."""
     app = LilbeeApp()
     async with app.run_test() as pilot:
-        controller = TaskBarController(app)
-        release = threading.Event()
-        if site == "worker_exit":
-            task_id = controller.start_task(
-                "held", TaskType.SYNC, lambda _reporter: release.wait(10.0)
-            )
-            touch = controller._workers[task_id]
-        elif site == "spawn":
-            touch = threading.Thread(
-                target=controller.start_task,
-                args=("held", TaskType.SYNC, lambda _reporter: release.wait(10.0)),
-            )
-        else:
-            touch = threading.Thread(target=controller.stop_all, kwargs={"budget_s": 0.1})
-        with controller._workers_lock:
-            if site == "worker_exit":
-                release.set()
-            else:
-                touch.start()
-            await asyncio.sleep(0.5)  # time for the site to pass the lock, if it would
-            blocked = touch.is_alive()
-        ended = await wait_until(pilot, lambda: not touch.is_alive(), timeout=5.0)
-        release.set()
-        assert blocked
-        assert ended
+        workers = await _spawn_end_and_stop(pilot, monkeypatch)
+    assert workers.held[site] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_task_worker_is_started_in_the_lock_before_it_enters_the_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stop path joins every thread in the map, and a join before the start raises."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        workers = await _spawn_end_and_stop(pilot, monkeypatch)
+    assert workers.held["start"] == [True]
+    assert workers.started_at_spawn == [True]
 
 
 @pytest.mark.asyncio

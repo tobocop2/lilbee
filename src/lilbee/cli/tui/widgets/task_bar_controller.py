@@ -378,9 +378,11 @@ class TaskBarController:
             daemon=True,
             name=f"task-{task_id}",
         )
+        # Started inside the lock: the map holds started threads only, and a worker
+        # that ends at once waits here to remove itself.
         with self._workers_lock:
+            thread.start()
             self._workers[task_id] = thread
-        thread.start()
 
     def stop_all(self, budget_s: float = _EXIT_STOP_BUDGET_S) -> None:
         """Cancel every task as an exit, unwind their coroutines on the loop, then join the workers.
