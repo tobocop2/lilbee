@@ -431,7 +431,7 @@ class TestAdd:
         src.parent.mkdir()
         src.write_text("content", encoding="utf-8")
         with mock.patch(
-            "lilbee.cli.commands.ingest_sync.run_sync_with_signal_cancel",
+            "lilbee.cli.commands.ingest_sync._run_sync",
             side_effect=RuntimeError("locked: notes[draft].txt"),
         ):
             result = runner.invoke(app, ["add", str(src)])
@@ -3331,6 +3331,25 @@ class TestBatchIngestNoEagerWarm:
         run_sync_with_signal_cancel()
         assert seen["eager"] is False
 
+    def test_add_reads_the_store_only_after_the_eager_warm_is_off(
+        self, isolated_env, tmp_path, mock_svc, monkeypatch
+    ):
+        monkeypatch.setattr(cfg, "worker_pool_eager_start", True)
+        src = tmp_path / "source" / "doc.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+        eager_at_read: list[bool] = []
+
+        def _get_sources():
+            eager_at_read.append(cfg.worker_pool_eager_start)
+            return []
+
+        mock_svc.store.get_sources.side_effect = _get_sources
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP):
+            result = runner.invoke(app, ["add", str(src)])
+        assert result.exit_code == 0, result.output
+        assert eager_at_read and not any(eager_at_read)
+
 
 class TestAddWithUrls:
     """Tests for URL crawling through the add CLI command."""
@@ -3519,7 +3538,11 @@ class TestCrawlUrlsBlocking:
 
         mock_crawl.side_effect = _fake_crawl
         result = _crawl_urls_blocking(
-            ["https://example.com"], crawl=False, depth=None, max_pages=None
+            ["https://example.com"],
+            crawl=False,
+            depth=None,
+            max_pages=None,
+            cancel_event=threading.Event(),
         )
         assert len(result) == 1
         mock_crawl.assert_called_once()
@@ -3529,7 +3552,13 @@ class TestCrawlUrlsBlocking:
         from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         mock_crawl.return_value = []
-        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        _crawl_urls_blocking(
+            ["https://example.com"],
+            crawl=True,
+            depth=None,
+            max_pages=None,
+            cancel_event=threading.Event(),
+        )
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == cfg.crawl_max_depth
 
@@ -3538,7 +3567,13 @@ class TestCrawlUrlsBlocking:
         from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         mock_crawl.return_value = []
-        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=5, max_pages=20)
+        _crawl_urls_blocking(
+            ["https://example.com"],
+            crawl=True,
+            depth=5,
+            max_pages=20,
+            cancel_event=threading.Event(),
+        )
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["depth"] == 5
         assert call_kwargs["max_pages"] == 20
@@ -3550,14 +3585,18 @@ class TestCrawlUrlsBlocking:
 
         mock_crawl.return_value = []
         cfg.json_mode = True
-        _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
+        _crawl_urls_blocking(
+            ["https://example.com"],
+            crawl=False,
+            depth=None,
+            max_pages=None,
+            cancel_event=threading.Event(),
+        )
         call_kwargs = mock_crawl.call_args[1]
         assert call_kwargs["quiet"] is True
 
     def test_ctrl_c_during_the_first_url_exits_130_and_skips_the_next(self, isolated_env):
         import signal
-
-        from lilbee.cli.commands.ingest_sync import _crawl_urls_blocking
 
         crawled: list[str] = []
 
@@ -3567,35 +3606,27 @@ class TestCrawlUrlsBlocking:
             return []
 
         with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
             mock.patch("lilbee.crawler.crawl_and_save", fake_crawl),
-            pytest.raises(SystemExit) as stopped,
         ):
-            _crawl_urls_blocking(
-                ["https://example.com/a", "https://example.com/b"],
-                crawl=False,
-                depth=None,
-                max_pages=None,
-            )
-        assert stopped.value.code == 130
+            result = runner.invoke(app, ["add", "https://example.com/a", "https://example.com/b"])
+        assert result.exit_code == 130, result.output
         assert crawled == ["https://example.com/a"]
 
-    def test_sigint_handler_sets_cancel_event(self, isolated_env):
-        """The signal handler installed by _run_crawl_with_signal_cancel sets the event."""
-        import signal
-        import threading
+    def test_a_crawl_that_ends_under_a_set_cancel_raises_the_cancel(self, isolated_env):
+        import asyncio
 
         from lilbee.cli.commands.ingest_sync import _run_crawl_with_signal_cancel
 
         cancel_event = threading.Event()
+        loops: list[asyncio.AbstractEventLoop] = []
 
-        async def fake_crawl(*args, **kwargs):
-            # Capture the handler that was installed by _run_crawl_with_signal_cancel
-            handler = signal.getsignal(signal.SIGINT)
-            # Call it directly to simulate a SIGINT firing
-            handler(signal.SIGINT, None)
+        async def fake_crawl(*_args, cancel, **_kwargs):
+            loops.append(asyncio.get_running_loop())
+            cancel.set()
             return []
 
-        with pytest.raises(SystemExit) as stopped:
+        with pytest.raises(asyncio.CancelledError):
             _run_crawl_with_signal_cancel(
                 "https://example.com",
                 depth=0,
@@ -3604,8 +3635,7 @@ class TestCrawlUrlsBlocking:
                 cancel_event=cancel_event,
                 crawl_and_save=fake_crawl,
             )
-        assert stopped.value.code == 130
-        assert cancel_event.is_set()
+        assert [loop.is_closed() for loop in loops] == [True]
 
 
 class TestTopicsCommand:
@@ -5228,7 +5258,13 @@ class TestCrawlProgressCallback:
 
         mock_crawl.side_effect = _fake_crawl
         with pytest.raises(TypeError, match="Expected CrawlPageEvent"):
-            _crawl_urls_blocking(["https://example.com"], crawl=False, depth=None, max_pages=None)
+            _crawl_urls_blocking(
+                ["https://example.com"],
+                crawl=False,
+                depth=None,
+                max_pages=None,
+                cancel_event=threading.Event(),
+            )
 
 
 class TestLoginCommand:
@@ -6474,7 +6510,13 @@ class TestCrawlDefaultCapNotice:
             return [Path("p0.md")]
 
         monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
-        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        _crawl_urls_blocking(
+            ["https://example.com"],
+            crawl=True,
+            depth=None,
+            max_pages=None,
+            cancel_event=threading.Event(),
+        )
         out = capsys.readouterr().err
         assert "--max-pages 0" in out and "5-page" in out
 
@@ -6493,7 +6535,13 @@ class TestCrawlDefaultCapNotice:
             return [Path("p0.md")]
 
         monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
-        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=None)
+        _crawl_urls_blocking(
+            ["https://example.com"],
+            crawl=True,
+            depth=None,
+            max_pages=None,
+            cancel_event=threading.Event(),
+        )
         assert "--max-pages 0" not in capsys.readouterr().err
 
     def test_no_notice_when_explicit_max_pages(self, monkeypatch, capsys) -> None:
@@ -6510,7 +6558,13 @@ class TestCrawlDefaultCapNotice:
             return [Path("p0.md")]
 
         monkeypatch.setattr("lilbee.crawler.crawl_and_save", fake_crawl_and_save)
-        _crawl_urls_blocking(["https://example.com"], crawl=True, depth=None, max_pages=9)
+        _crawl_urls_blocking(
+            ["https://example.com"],
+            crawl=True,
+            depth=None,
+            max_pages=9,
+            cancel_event=threading.Event(),
+        )
         assert "--max-pages 0" not in capsys.readouterr().err
 
 
@@ -6802,6 +6856,32 @@ class TestSyncCancelledExit:
         assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
         assert cfg.linked_roots == {}
 
+    _STAGES_BEFORE_THE_SYNC = ("crawl", "nothing_registered")
+
+    @staticmethod
+    def _ctrl_c_as_registration_refuses() -> contextlib.ExitStack:
+        """Patch registration so the Ctrl+C lands in it and no path reaches the corpus."""
+        import signal
+
+        from lilbee.app.ingest import RegisterResult
+
+        def _refuse(paths, **_kwargs):
+            signal.raise_signal(signal.SIGINT)
+            return RegisterResult(name_taken=[path.name for path in paths])
+
+        stage_patch = contextlib.ExitStack()
+        for target in ("lilbee.cli.helpers", "lilbee.cli.commands.ingest_sync"):
+            stage_patch.enter_context(mock.patch(f"{target}.register_sources", _refuse))
+        return stage_patch
+
+    @classmethod
+    def _ctrl_c_in(cls, stage: str, events: list[threading.Event]):
+        """Patch an add so the user's Ctrl+C lands at *stage*, a sync stage or one before it."""
+        stage_patch, sync_patch = cls._ctrl_c_at(stage, events)
+        if stage == "nothing_registered":
+            stage_patch = cls._ctrl_c_as_registration_refuses()
+        return stage_patch, sync_patch
+
     @staticmethod
     def _ctrl_c_at(stage: str, events: list[threading.Event]):
         """Patch the real sync so the user's Ctrl+C lands at *stage*."""
@@ -6863,7 +6943,13 @@ class TestSyncCancelledExit:
     @pytest.mark.parametrize(
         ("stage", "expected", "kept"),
         [
-            pytest.param("crawl", "Sync cancelled.", False, id="crawl"),
+            pytest.param("crawl", "Add cancelled. corpus was not added.", False, id="crawl"),
+            pytest.param(
+                "nothing_registered",
+                "Add cancelled. corpus was not added.",
+                False,
+                id="nothing_registered",
+            ),
             pytest.param(
                 "registration", "Add cancelled. corpus was not added.", False, id="registration"
             ),
@@ -6883,20 +6969,21 @@ class TestSyncCancelledExit:
         svc_mod.set_services(services)
         monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
         events: list[threading.Event] = []
-        stage_patch, sync_patch = self._ctrl_c_at(stage, events)
+        stage_patch, sync_patch = self._ctrl_c_in(stage, events)
         args = ["add", "--data-dir", str(tmp_path), str(corpus)]
         if stage == "crawl":
             args.append("https://example.com")
         with stage_patch, sync_patch:
             result = runner.invoke(app, args)
-        if stage == "crawl":
-            # The crawl runs before registration: no sync starts and the saved page stays.
+        if stage in self._STAGES_BEFORE_THE_SYNC:
+            # No sync starts, and a page the crawl saved stays.
             assert events == []
-            assert (cfg.documents_dir / "_web" / "page.md").is_file()
+            assert (cfg.documents_dir / "_web" / "page.md").is_file() is (stage == "crawl")
         else:
             assert events and events[0].is_set()
         assert result.exit_code == 130, result.output
-        assert expected in result.output
+        assert result.output.strip().endswith(expected)
+        assert "Sync cancelled." not in result.output or stage == "post_ingest"
         assert isinstance(result.exception, SystemExit)
         assert ("corpus/notes.txt" in sources) is (stage == "post_ingest")
         assert ("corpus" in cfg.linked_roots) is kept
@@ -6938,10 +7025,36 @@ class TestSyncCancelledExit:
                 app, ["--json", "add", "--data-dir", str(tmp_path), "https://example.com"]
             )
         assert result.exit_code == 130, result.output
-        assert json.loads(result.output) == {"error": "Sync cancelled."}
+        assert json.loads(result.output) == {"error": "Add cancelled."}
         assert events == []
         assert sources == {}
         assert (cfg.documents_dir / "_web" / "page.md").is_file()
+
+    @pytest.mark.parametrize("stage", _STAGES_BEFORE_THE_SYNC)
+    def test_ctrl_c_before_the_sync_of_a_json_add_names_every_file_given(
+        self, isolated_env, tmp_path, monkeypatch, stage
+    ):
+        from tests._ingesting_services import ingesting_services
+
+        first, second = self._source(tmp_path, "a.txt"), self._source(tmp_path, "b.txt")
+        services, sources = ingesting_services()
+        svc_mod.set_services(services)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        events: list[threading.Event] = []
+        stage_patch, sync_patch = self._ctrl_c_in(stage, events)
+        args = ["--json", "add", "--data-dir", str(tmp_path), str(first), str(second)]
+        if stage == "crawl":
+            args.append("https://example.com")
+        with stage_patch, sync_patch:
+            result = runner.invoke(app, args)
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {
+            "error": "Add cancelled. a.txt, b.txt were not added.",
+            "not_added": ["a.txt", "b.txt"],
+        }
+        assert events == []
+        assert sources == {}
+        assert cfg.linked_roots == {}
 
     def test_ctrl_c_while_a_sync_plans_exits_130(self, isolated_env, tmp_path, monkeypatch):
         (tmp_path / "documents" / "notes.txt").write_text("hello world", encoding="utf-8")

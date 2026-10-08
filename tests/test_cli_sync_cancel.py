@@ -130,8 +130,7 @@ def test_run_sync_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
     assert result == ["ok"]
 
 
-def test_run_crawl_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
-    """_run_crawl_with_signal_cancel also skips signal.signal off the main thread."""
+def test_run_crawl_with_signal_cancel_returns_its_pages_off_the_main_thread(monkeypatch) -> None:
     cancel_event = threading.Event()
 
     async def _fake_crawl(url, **kwargs) -> list:

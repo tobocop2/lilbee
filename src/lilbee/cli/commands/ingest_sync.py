@@ -20,7 +20,7 @@ from lilbee.app.ingest import (
     AddRollback,
     RegisterResult,
     expand_remove_targets,
-    forget_unfinished_on_cancel,
+    leave_as_cancel,
     register_sources,
     removable_names,
     remove_documents_durably,
@@ -153,20 +153,10 @@ def _crawl_urls_blocking(
     crawl: bool,
     depth: int | None,
     max_pages: int | None,
+    cancel_event: threading.Event,
     include_subdomains: bool = False,
 ) -> list[Path]:
-    """Crawl URLs synchronously (for CLI), returning paths written.
-
-    Without --crawl, each URL is fetched as a single page (depth=0).
-    With --crawl, the default is whole-site unbounded (depth=None, pages=None).
-    Explicit --depth / --max-pages override both.
-
-    Ctrl-C is handled by running the crawl through _run_crawl_with_signal_cancel,
-    which installs a signal.signal handler that sets a threading.Event passed
-    into crawl_and_save. crawl_recursive polls the event between pages so the
-    signal flows through as a clean cancel instead of asyncio.run's default
-    KeyboardInterrupt-raising (which left browser contexts mid-teardown).
-    """
+    """Crawl each URL in turn and return the pages saved; a set *cancel_event* raises a cancel."""
     from rich.progress import Progress, SpinnerColumn, TaskID
 
     from lilbee.crawler import crawl_and_save
@@ -184,8 +174,6 @@ def _crawl_urls_blocking(
     else:
         effective_depth = 0
         effective_pages = None
-
-    cancel_event = threading.Event()
 
     from lilbee.runtime.console import PlainConsole
 
@@ -251,15 +239,7 @@ def _run_crawl_with_signal_cancel(
     crawl_and_save: Callable[..., Awaitable[list[Path]]],
     include_subdomains: bool = False,
 ) -> list[Path]:
-    """Run crawl_and_save on a dedicated event loop with a SIGINT->cancel hook.
-
-    asyncio.run() installs its own SIGINT handler that raises
-    KeyboardInterrupt, which tears the crawl down ungracefully. Registering a
-    plain signal.signal handler on the main thread AND running the crawl on a
-    loop we own (instead of asyncio.run) lets Ctrl-C set our threading.Event,
-    which crawl_recursive polls between pages so it can close the stream and
-    stop dispatch cleanly.
-    """
+    """Crawl one URL on its own event loop; a crawl that ends under a set cancel raises it."""
     # Manage the event loop explicitly. In the CLI this runs once per process,
     # but under pytest-xdist the same worker thread runs many tests; leaving a
     # closed loop set as the "current" loop for the thread poisons every later
@@ -277,11 +257,10 @@ def _run_crawl_with_signal_cancel(
             quiet=cfg.json_mode,
             include_subdomains=include_subdomains,
         )
-        with _ctrl_c_stops(cancel_event, []):
-            result: list[Path] = loop.run_until_complete(coro)
-            # A cancelled crawl returns the pages it saved; the command still stops here.
-            if cancel_event.is_set():
-                raise asyncio.CancelledError
+        result: list[Path] = loop.run_until_complete(coro)
+        # A cancelled crawl returns the pages it saved; the command still stops here.
+        if cancel_event.is_set():
+            raise asyncio.CancelledError
         return result
     finally:
         loop.close()
@@ -308,8 +287,8 @@ def _cancellable_progress(
     return _callback
 
 
-def _exit_sync_cancelled(rollback: AddRollback) -> NoReturn:
-    """Report a cancelled sync and exit with the Ctrl+C status."""
+def _exit_cancelled(rollback: AddRollback) -> NoReturn:
+    """Report a cancelled command and exit with the Ctrl+C status."""
     message = rollback.message(_SYNC_CANCELLED_MESSAGE)
     not_added = rollback.not_added
     if cfg.json_mode:
@@ -341,17 +320,14 @@ def _ctrl_c_sets(cancel_event: threading.Event) -> Iterator[None]:
 
 
 @contextmanager
-def _ctrl_c_stops(cancel_event: threading.Event, added_roots: list[str]) -> Iterator[None]:
-    """Run a stage under Ctrl+C; a stage it stops exits 130 after the rollback of *added_roots*."""
+def _ctrl_c_stops(cancel_event: threading.Event, rollback: AddRollback) -> Iterator[None]:
+    """Run a command under Ctrl+C; one it stops exits 130 after *rollback*."""
     try:
         # Only the user's Ctrl+C sets this cancel.
-        with (
-            _ctrl_c_sets(cancel_event),
-            forget_unfinished_on_cancel(added_roots, cancel_event, lambda: True) as rollback,
-        ):
+        with _ctrl_c_sets(cancel_event), leave_as_cancel(rollback, cancel_event, lambda: True):
             yield
     except asyncio.CancelledError:
-        _exit_sync_cancelled(rollback)
+        _exit_cancelled(rollback)
 
 
 def run_sync_with_signal_cancel(
@@ -360,18 +336,31 @@ def run_sync_with_signal_cancel(
     retry_skipped: bool = False,
     prune_ignored: bool = False,
     on_progress: DetailedProgressCallback | None = None,
-    added_roots: list[str] | None = None,
-    cancel_event: threading.Event | None = None,
 ) -> object:
-    """Run ``sync`` on a dedicated loop with a SIGINT->cancel hook (no traceback on Ctrl+C).
+    """Run ``sync`` under Ctrl+C; a sync it stops ends the command with exit status 130."""
+    cancel_event = threading.Event()
+    with _ctrl_c_stops(cancel_event, AddRollback()):
+        return _run_sync(
+            cancel_event,
+            force_rebuild=force_rebuild,
+            retry_skipped=retry_skipped,
+            prune_ignored=prune_ignored,
+            on_progress=on_progress,
+        )
 
-    Mirrors the crawl path: a plain signal handler sets a ``threading.Event``
-    that ``sync`` polls between files and the OCR loop polls between pages, so
-    Ctrl+C aborts cleanly rather than raising KeyboardInterrupt mid-ingest. A
-    cancel at any stage of the sync ends the command with exit status 130.
-    A root in *added_roots* that the stopped sync indexed nothing under is
-    un-registered, and the message names it. An add passes the *cancel_event*
-    its Ctrl+C already sets, so a Ctrl+C during registration stops the sync too.
+
+def _run_sync(
+    cancel_event: threading.Event,
+    *,
+    force_rebuild: bool = False,
+    retry_skipped: bool = False,
+    prune_ignored: bool = False,
+    on_progress: DetailedProgressCallback | None = None,
+    before_sync: Callable[[], None] | None = None,
+) -> object:
+    """Run ``sync`` on its own event loop; it polls *cancel_event* between files and pages.
+
+    *before_sync* runs once the eager warm is off, so a store read in it starts no model.
     """
     from lilbee.data.ingest import sync
     from lilbee.runtime.progress import noop_callback
@@ -381,24 +370,23 @@ def run_sync_with_signal_cancel(
     # the embed server (plus vision/chat if those steps actually run), instead of
     # holding an idle chat server's VRAM for the whole build.
     cfg.worker_pool_eager_start = False
+    if before_sync is not None:
+        before_sync()
 
-    if cancel_event is None:
-        cancel_event = threading.Event()
     callback = _cancellable_progress(cancel_event, on_progress or noop_callback)
     loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        with _ctrl_c_stops(cancel_event, added_roots or []):
-            return loop.run_until_complete(
-                sync(
-                    force_rebuild=force_rebuild,
-                    quiet=cfg.json_mode,
-                    on_progress=callback,
-                    cancel=cancel_event,
-                    retry_skipped=retry_skipped,
-                    prune_ignored=prune_ignored,
-                )
+        return loop.run_until_complete(
+            sync(
+                force_rebuild=force_rebuild,
+                quiet=cfg.json_mode,
+                on_progress=callback,
+                cancel=cancel_event,
+                retry_skipped=retry_skipped,
+                prune_ignored=prune_ignored,
             )
+        )
     finally:
         loop.close()
         asyncio.set_event_loop(None)
@@ -522,6 +510,7 @@ def _crawl_urls_step(
     depth: int | None,
     max_pages: int | None,
     include_subdomains: bool,
+    cancel_event: threading.Event,
 ) -> list[Path]:
     """Crawl URLs (or fail fast when crawler extra is missing). Returns saved paths."""
     if not urls:
@@ -540,6 +529,7 @@ def _crawl_urls_step(
         crawl=crawl,
         depth=depth,
         max_pages=max_pages,
+        cancel_event=cancel_event,
         include_subdomains=include_subdomains,
     )
     if not cfg.json_mode:
@@ -555,30 +545,48 @@ def _add_json_mode(
     crawled_paths: list[Path],
     *,
     force: bool,
-    cancel_event: threading.Event,
-) -> None:
-    """Run the JSON-mode finish: register roots, sync, emit one structured result."""
+    run_sync: Callable[[list[str]], object],
+) -> dict:
+    """Run the JSON-mode finish: register roots, sync, return the one structured result."""
     reg_result = RegisterResult()
     if file_paths:
         reg_result = register_sources(file_paths, force=force)
     # A sync is a whole-vault pass; run it only when something named reached the corpus.
-    result = (
-        run_sync_with_signal_cancel(added_roots=reg_result.registered, cancel_event=cancel_event)
-        if reg_result.reached_corpus or crawled_paths
-        else None
-    )
-    json_output(
-        {
-            "command": "add",
-            "copied": reg_result.registered,
-            "name_taken": reg_result.name_taken,
-            "overlapping": reg_result.overlapping,
-            "tracked": reg_result.tracked,
-            "refused": reg_result.refused,
-            "crawled": len(crawled_paths),
-            "sync": None if result is None else sync_result_to_json(result),
-        }
-    )
+    result = run_sync(reg_result.registered) if reg_result.reached_corpus or crawled_paths else None
+    return {
+        "command": "add",
+        "copied": reg_result.registered,
+        "name_taken": reg_result.name_taken,
+        "overlapping": reg_result.overlapping,
+        "tracked": reg_result.tracked,
+        "refused": reg_result.refused,
+        "crawled": len(crawled_paths),
+        "sync": None if result is None else sync_result_to_json(result),
+    }
+
+
+def _register_and_sync(
+    file_paths: list[Path],
+    crawled_paths: list[Path],
+    *,
+    sync_urls: bool,
+    force: bool,
+    cancel_event: threading.Event,
+    rollback: AddRollback,
+) -> dict | None:
+    """Register the files and sync; returns the JSON result, or None after human output."""
+
+    def _sync(added: list[str]) -> object:
+        return _run_sync(cancel_event, before_sync=lambda: rollback.registered(added, cancel_event))
+
+    if cfg.json_mode:
+        return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
+    if file_paths:
+        add_paths(file_paths, console, force=force, run_sync=_sync)
+    elif sync_urls:
+        # URLs already saved; just trigger sync
+        console.print(_sync([]))
+    return None
 
 
 def add(
@@ -606,42 +614,37 @@ def add(
     file_paths, urls = _partition_inputs(paths)
     _validate_file_paths(file_paths)
 
-    # Set by Ctrl+C from registration on, so a Ctrl+C there stops the sync as a cancel.
     cancel_event = threading.Event()
+    rollback = AddRollback(pending=[path.resolve().name for path in file_paths], at_sync=False)
     try:
-        crawled_paths = _crawl_urls_step(
-            urls,
-            crawl=crawl,
-            depth=depth,
-            max_pages=max_pages,
-            include_subdomains=include_subdomains,
-        )
-
-        if cfg.json_mode:
-            with _ctrl_c_sets(cancel_event):
-                _add_json_mode(file_paths, crawled_paths, force=force, cancel_event=cancel_event)
-            return
-
-        if file_paths:
-            with _ctrl_c_sets(cancel_event):
-                add_paths(
-                    file_paths,
-                    console,
-                    force=force,
-                    run_sync=lambda added: run_sync_with_signal_cancel(
-                        added_roots=added, cancel_event=cancel_event
-                    ),
-                )
-        elif urls:
-            # URLs already saved; just trigger sync (Ctrl+C-cancellable)
-            result = run_sync_with_signal_cancel()
-            console.print(result)
+        with _ctrl_c_stops(cancel_event, rollback):
+            crawled_paths = _crawl_urls_step(
+                urls,
+                crawl=crawl,
+                depth=depth,
+                max_pages=max_pages,
+                include_subdomains=include_subdomains,
+                cancel_event=cancel_event,
+            )
+            payload = _register_and_sync(
+                file_paths,
+                crawled_paths,
+                sync_urls=bool(urls),
+                force=force,
+                cancel_event=cancel_event,
+                rollback=rollback,
+            )
+            # A stage that ran to its end under a Ctrl+C still stops the add.
+            if cancel_event.is_set():
+                raise asyncio.CancelledError
     except RuntimeError as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
+    if payload is not None:
+        json_output(payload)
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")

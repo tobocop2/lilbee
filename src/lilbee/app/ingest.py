@@ -28,6 +28,7 @@ from lilbee.data.ingest.skip_marker import (
 from lilbee.data.store.types import RemoveResult
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
+_ADD_CANCELLED = "Add cancelled."
 _ADD_CANCELLED_ONE = "Add cancelled. {name} was not added."
 _ADD_CANCELLED_MANY = "Add cancelled. {names} were not added."
 _ALSO_HIT_ERROR = " It also hit an error: {error}."
@@ -366,10 +367,16 @@ def forget_roots(names: list[str]) -> list[str]:
 
 @dataclass
 class AddRollback:
-    """The roots an interrupted add un-registered, and any error it hit once stopped."""
+    """What an interrupted add did not add, and any error it hit once stopped."""
 
     not_added: list[str] = field(default_factory=list)
     error: str | None = None
+    pending: list[str] = field(default_factory=list)
+    """Names the add was given and has not registered."""
+    at_sync: bool = True
+    """Whether the add reached its sync."""
+    _roots: list[str] = field(default_factory=list)
+    _before: dict[str, str] = field(default_factory=dict)
 
     def message(self, nothing_dropped: str) -> str:
         """Why the add stopped, naming what it did not add and any error it also hit."""
@@ -383,10 +390,28 @@ class AddRollback:
         log.warning("A stopped sync also hit an error", exc_info=exc)
         self.error = str(exc) or type(exc).__name__
 
+    def registered(self, labels: list[str], cancel: CancelSignal) -> None:
+        """Take *labels* as the roots the add registered; its sync starts here."""
+        self.pending, self._roots, self.at_sync = [], labels, True
+        try:
+            self._before = indexed_stamps(labels)
+        except Exception as exc:
+            if not cancel.is_set():
+                raise
+            self.note_error(exc)
+            # A read that fails once stopped keeps every root with an indexed file.
+            self._before = {}
+
+    def forget_unfinished(self) -> None:
+        """Un-register each root the sync indexed nothing under; name it after the pending names."""
+        self.not_added = [*self.pending, *forget_unfinished_roots(self._roots, self._before)]
+
     def _stopped(self, nothing_dropped: str) -> str:
         match self.not_added:
-            case []:
+            case [] if self.at_sync:
                 return nothing_dropped
+            case []:
+                return _ADD_CANCELLED
             case [name]:
                 return _ADD_CANCELLED_ONE.format(name=name)
             case _:
@@ -421,27 +446,30 @@ def forget_unfinished_roots(labels: list[str], before: dict[str, str]) -> list[s
 
 
 @contextmanager
-def forget_unfinished_on_cancel(
-    labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
-) -> Generator[AddRollback, None, None]:
-    """Wrap an add after registration; anything raised while *cancel* is set leaves as a cancel."""
-    rollback = AddRollback()
+def leave_as_cancel(
+    rollback: AddRollback, cancel: CancelSignal, user_cancelled: Callable[[], bool]
+) -> Generator[None, None, None]:
+    """Wrap an add; anything raised while *cancel* is set leaves as a cancel after *rollback*."""
     try:
-        before = indexed_stamps(labels)
-    except Exception as exc:
-        if not cancel.is_set():
-            raise
-        rollback.note_error(exc)
-        before = {}  # a read that fails once stopped keeps every root with an indexed file
-    try:
-        yield rollback
+        yield
     except BaseException as exc:
         if not cancel.is_set():
             raise
         rollback.note_error(exc)
         if user_cancelled():
-            rollback.not_added = forget_unfinished_roots(labels, before)
+            rollback.forget_unfinished()
         raise asyncio.CancelledError from exc
+
+
+@contextmanager
+def forget_unfinished_on_cancel(
+    labels: list[str], cancel: CancelSignal, user_cancelled: Callable[[], bool]
+) -> Generator[AddRollback, None, None]:
+    """Wrap an add after registration; anything raised while *cancel* is set leaves as a cancel."""
+    rollback = AddRollback()
+    rollback.registered(labels, cancel)
+    with leave_as_cancel(rollback, cancel, user_cancelled):
+        yield rollback
 
 
 def _hold_out_removed(names: list[str], roots: list[str]) -> None:
