@@ -159,6 +159,8 @@ def _classify(
 
 def names_outside_corpus(paths: list[Path]) -> list[str]:
     """The name of each of *paths* the corpus does not hold, by the rule registration applies."""
+    if not paths:
+        return []  # a stopped sync has no paths, and reads no registry to say so
     config = active_config()
     roots = dict(settings.load(config.data_root).get("linked_roots") or {})
     plan = _classify(paths, roots, config.documents_dir.resolve(), force=False)

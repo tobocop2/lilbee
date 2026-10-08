@@ -7126,7 +7126,15 @@ class TestRegisterSources:
         assert names == ["held.txt", "logo.svg", "fresh.txt"]
         assert settings.load(cfg.data_root)["linked_roots"] == before
         assert cfg.linked_roots == before
-        assert names_outside_corpus([]) == []
+
+    def test_names_outside_corpus_reads_no_registry_for_no_paths(self, isolated_env):
+        """A stopped sync asks with no paths; an unreadable config.toml must not fail it."""
+        from lilbee.app.ingest import names_outside_corpus
+
+        with mock.patch("lilbee.app.ingest.settings.load", side_effect=OSError("unreadable")):
+            assert names_outside_corpus([]) == []
+            with pytest.raises(OSError, match="unreadable"):
+                names_outside_corpus([Path("anything.txt")])
 
     def test_force_never_shadows_owned_documents_entry(self, isolated_env, tmp_path):
         # An owned top-level entry must never be shadowed by a same-named root,
