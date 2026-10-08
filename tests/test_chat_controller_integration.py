@@ -1755,7 +1755,9 @@ async def test_an_add_whose_sync_is_cancelled_ends_as_a_cancelled_task(tmp_path:
                 "Add doc.pdf", TaskType.ADD, lambda reporter: screen._do_add([src], reporter)
             )
             await wait_until(
-                pilot, lambda: controller.queue.get_task(task_id).status is not TaskStatus.ACTIVE
+                pilot,
+                lambda: controller.queue.get_task(task_id).status is not TaskStatus.ACTIVE,
+                timeout=10.0,
             )
         assert controller.queue.get_task(task_id).status is TaskStatus.CANCELLED
 
@@ -1789,7 +1791,7 @@ async def test_a_cancelled_sync_row_shows_the_resume_hint() -> None:
             task_id = controller.start_task("Sync", TaskType.SYNC, _target)
             started.wait(5.0)
             controller.cancel_task(task_id)
-            await wait_until(pilot, lambda: task_id not in controller._task_targets)
+            await wait_until(pilot, lambda: task_id not in controller._task_targets, timeout=10.0)
             await wait_until(pilot, lambda: controller.queue.get_task(task_id).detail != "")
         task = controller.queue.get_task(task_id)
         assert task.status is TaskStatus.CANCELLED
