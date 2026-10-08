@@ -1,6 +1,5 @@
 """Persistent settings stored in config.toml alongside the data directory."""
 
-import logging
 import os
 import threading
 import tomllib
@@ -13,7 +12,7 @@ import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
-from lilbee.core.config.model import value_is_set
+from lilbee.core.config.model import env_value, toml_values
 from lilbee.core.config.parsing import migrate_ocr_keys, without_refused_ocr
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
@@ -65,9 +64,9 @@ def load(data_root: Path) -> dict[str, Any]:
 
 def _vision_model_for(persisted: dict[str, Any]) -> str:
     """The vision model a root resolves to: LILBEE_VISION_MODEL, else config.toml, else none."""
-    env = os.environ.get("LILBEE_VISION_MODEL")
-    if value_is_set("vision_model", env):
-        return str(env)
+    env = env_value("vision_model")
+    if env is not None:
+        return env
     return str(persisted.get("vision_model") or "")
 
 
@@ -155,42 +154,18 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
 
 
 def overlay_persisted_settings(root: Path) -> None:
-    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values.
+    """Set on cfg each writable setting ``<root>/config.toml`` holds and no variable sets.
 
-    An explicit ``LILBEE_<FIELD>`` env var wins over config.toml (the documented
-    precedence): cfg already holds the env-loaded value, so a key whose env var is
-    set is left untouched rather than overwritten by the persisted file. An empty
-    persisted value is skipped, except on a clearable model role, where it clears it.
-
-    ``LILBEE_SKIP_TOML_CONFIG=1`` disables this overlay entirely, matching the
-    pydantic-settings source in ``config/model.py`` so the escape hatch is honored
-    on every config-read path (import-time load, CLI callback, MCP server).
+    The file is read as the import-time load reads it, so a value Config refuses
+    is dropped with the same warning. ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
-    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1":
+    path = _config_path(root)
+    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
         return
-    log = logging.getLogger(__name__)
-    try:
-        persisted = load(root)
-    except (OSError, ValueError):
-        log.warning("Failed to read %s/config.toml; using in-memory defaults", root)
-        return
-    if not persisted:
-        return
+    harden_private_file(path)
+    accepted = toml_values(path)
+    stored = migrate_ocr_keys(accepted, _vision_model_for(accepted))
     overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    env_prefix = cfg.model_config.get("env_prefix", "")
-    for key, raw in persisted.items():
-        if key not in overlayable:
-            continue
-        if value_is_set(key, os.environ.get(f"{env_prefix}{key.upper()}")):
-            continue
-        if not value_is_set(key, raw):
-            continue
-        try:
-            setattr(cfg, key, raw)
-        except (ValueError, TypeError) as exc:
-            log.warning(
-                "Ignoring invalid persisted value for %s in %s: %s",
-                key,
-                root,
-                exc,
-            )
+    for key, value in stored.items():
+        if key in overlayable and env_value(key) is None:
+            setattr(cfg, key, value)

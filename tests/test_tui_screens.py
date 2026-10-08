@@ -14833,7 +14833,7 @@ def test_settings_env_pill_when_env_set(monkeypatch):
     """env_pill returns a pill when the LILBEE_* env var is exported."""
     from lilbee.cli.tui.screens.settings_widgets import env_pill
 
-    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "ollama/probe:latest")
     pill_content = env_pill("chat_model")
     assert pill_content is not None
     assert "LILBEE_CHAT_MODEL" in pill_content.plain
@@ -14878,12 +14878,17 @@ def test_settings_help_content_blank_when_no_help_text():
 
 @pytest.mark.parametrize(
     ("key", "value", "shown"),
-    [("vision_model", "", True), ("chat_model", "", False), ("top_k", "", False)],
+    [
+        ("vision_model", "", True),
+        ("chat_model", "", False),
+        ("top_k", "", False),
+        ("top_k", "7", True),
+        ("top_k", "many", False),
+        ("ocr", "bogus", False),
+    ],
 )
-def test_settings_env_pill_follows_whether_an_empty_env_value_overrides(
-    monkeypatch, key, value, shown
-):
-    """An empty LILBEE_* value shows the pill only where it clears the setting."""
+def test_settings_env_pill_follows_whether_the_env_value_overrides(monkeypatch, key, value, shown):
+    """The pill shows where the variable sets the setting: not when blank or refused."""
     from lilbee.cli.tui.screens.settings_widgets import env_pill
 
     monkeypatch.setenv(f"LILBEE_{key.upper()}", value)
@@ -14895,7 +14900,7 @@ def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings_widgets import title_content
 
-    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "ollama/probe:latest")
     content = title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" in content.plain
 

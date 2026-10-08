@@ -1645,6 +1645,16 @@ class _TomlSource:
         )
 
 
+def env_value(field_name: str) -> str | None:
+    """What LILBEE_<FIELD_NAME> sets on Config: None when it is unset, blank or refused."""
+    return _PlainEnvSource(Config, [field_name])().get(field_name)
+
+
+def toml_values(path: Path) -> dict[str, Any]:
+    """The values in the config.toml at *path*, less each one Config refuses."""
+    return _TomlSource(Config, path)()
+
+
 def _build_cfg() -> tuple[Config, tuple[str, ...]]:
     """Build cfg, with the warnings its sources reported about refused values."""
     with collecting() as found:

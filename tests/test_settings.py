@@ -805,6 +805,70 @@ class TestOverlayPersistedSettings:
         finally:
             cfg.vision_replicas = original
 
+    def test_a_refused_variable_does_not_keep_the_stored_value_out(self, tmp_path, monkeypatch):
+        """The losing field: top_k has a valid variable, so the file does not set it."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setenv("LILBEE_VISION_REPLICAS", "many")
+        monkeypatch.setenv("LILBEE_TOP_K", "4")
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        (tmp_path / "config.toml").write_text("vision_replicas = 3\ntop_k = 9\n", encoding="utf-8")
+        settings.overlay_persisted_settings(tmp_path)
+        assert (cfg.vision_replicas, cfg.top_k) == (3, 4)
+
+    def test_a_refused_stored_value_warns_once_in_the_words_of_the_load(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        from lilbee.core.config import cfg
+        from lilbee.core.config.model import _build_cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        (tmp_path / "config.toml").write_text(
+            'top_k = "many"\nvision_replicas = 3\n', encoding="utf-8"
+        )
+        with caplog.at_level("WARNING"):
+            _, at_load = _build_cfg()
+            settings.overlay_persisted_settings(tmp_path)
+            settings.overlay_persisted_settings(tmp_path)
+        assert (cfg.vision_replicas, cfg.top_k) == (3, 4)
+        warning = "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
+        assert at_load == (warning,)
+        assert [record.getMessage() for record in caplog.records] == [warning]
+
+    def test_a_file_that_is_not_toml_changes_nothing_and_warns(self, tmp_path, monkeypatch, caplog):
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        path = tmp_path / "config.toml"
+        path.write_text("top_k = = 9\n", encoding="utf-8")
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 4
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Failed to read {path}, ignoring"
+        ]
+
+    def test_a_root_without_config_toml_changes_nothing(self, tmp_path, monkeypatch):
+        """The twin: the same call with a file in the root does set the value."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 4
+        (tmp_path / "config.toml").write_text("top_k = 9\n", encoding="utf-8")
+        settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 9
+
 
 def test_the_model_roles_that_can_be_off_are_the_clearable_ones():
     from lilbee.config_meta import MODEL_ROLE_FIELDS

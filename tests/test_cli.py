@@ -1252,27 +1252,25 @@ class TestApplyOverrides:
             apply_overrides(data_dir=tmp_path)
 
         assert cfg.top_k == 7
-        assert any("top_k" in rec.message for rec in caplog.records)
+        assert [rec.getMessage() for rec in caplog.records] == [
+            "config.toml: top_k = 'not-an-int' is not a whole number; top_k uses its default"
+        ]
 
     def test_data_dir_overlay_handles_unreadable_config_toml(
         self, tmp_path, monkeypatch, caplog, overlay_reads_config_toml
     ):
-        """A read failure on config.toml is logged and treated as 'no overlay'."""
+        """A config.toml that does not parse is logged and treated as 'no overlay'."""
         from lilbee.cli import apply_overrides
-        from lilbee.core import settings as settings_mod
 
         cfg.chat_model = "ollama/kept:latest"
-
-        def _boom(_root):
-            raise OSError("simulated read failure")
-
-        monkeypatch.setattr(settings_mod, "load", _boom)
+        path = tmp_path / "config.toml"
+        path.write_text('chat_model = = "ollama/from-vault:latest"\n', encoding="utf-8")
 
         with caplog.at_level(logging.WARNING):
             apply_overrides(data_dir=tmp_path)
 
         assert cfg.chat_model == "ollama/kept:latest"
-        assert any("config.toml" in rec.message for rec in caplog.records)
+        assert [rec.getMessage() for rec in caplog.records] == [f"Failed to read {path}, ignoring"]
 
 
 class TestGlobalFlag:
