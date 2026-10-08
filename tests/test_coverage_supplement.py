@@ -2644,6 +2644,7 @@ def test_ocr_help_names_every_mode_and_the_engine_rule() -> None:
         " text in all"
     ) in info.help_text
     assert "all reads every page of every file on every future ingest" in info.help_text
+    assert "; off skips them." in info.help_text
     assert "vision_model picks the engine" in info.help_text
 
 

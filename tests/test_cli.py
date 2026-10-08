@@ -1454,13 +1454,20 @@ class TestRetiredOcrEnvVarsAreRefused:
         status.assert_called_once()
 
     def test_serve_is_refused_before_the_server_starts(self, tmp_path):
-        with mock.patch("lilbee.cli.commands.servers.setup_server_logging") as server_logging:
+        """The lock stand-in stops a serve that got past the refusal, so it fails here at once."""
+        with (
+            mock.patch("lilbee.cli.commands.servers.setup_server_logging") as server_logging,
+            mock.patch(
+                "lilbee.cli.commands.servers.acquire_server_lock", return_value=None
+            ) as server_lock,
+        ):
             result = runner.invoke(
                 app, ["serve", "-d", str(tmp_path)], env={"LILBEE_ENABLE_OCR": "false"}
             )
-        assert result.exit_code == 1
         assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in result.output
+        assert result.exit_code == 1
         server_logging.assert_not_called()
+        server_lock.assert_not_called()
 
     def test_the_tui_is_refused_before_it_starts(self, monkeypatch, capsys):
         from lilbee.cli.app import _default
@@ -3358,12 +3365,17 @@ class TestOcrFlags:
         assert "linked_roots" in persisted
         assert "ocr" not in persisted
 
-    @pytest.mark.parametrize("flag", ["--no-ocr", "--ocr=some"])
-    def test_the_retired_and_unknown_flags_are_refused(self, flag):
+    @pytest.mark.parametrize(
+        ("flag", "refusal"),
+        [
+            ("--no-ocr", "No such option: --no-ocr"),
+            ("--ocr=some", "Invalid value for '--ocr': 'some' is not one of 'auto', 'all', 'off'."),
+        ],
+    )
+    def test_the_retired_and_unknown_flags_are_refused(self, flag, refusal):
         result = runner.invoke(app, ["sync", flag])
         assert result.exit_code == 2
-        output = _plain_help_text(result.output)
-        assert "No such option: --no-ocr" in output or "'some' is not one of" in output
+        assert refusal in _plain_help_text(result.output)
 
     def test_ocr_help_names_every_mode(self):
         result = runner.invoke(app, ["sync", "--help"])
