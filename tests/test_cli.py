@@ -1263,14 +1263,17 @@ class TestApplyOverrides:
         from lilbee.cli import apply_overrides
 
         cfg.chat_model = "ollama/kept:latest"
-        path = tmp_path / "config.toml"
-        path.write_text('chat_model = = "ollama/from-vault:latest"\n', encoding="utf-8")
+        (tmp_path / "config.toml").write_text(
+            'chat_model = = "ollama/from-vault:latest"\n', encoding="utf-8"
+        )
 
         with caplog.at_level(logging.WARNING):
             apply_overrides(data_dir=tmp_path)
 
         assert cfg.chat_model == "ollama/kept:latest"
-        assert [rec.getMessage() for rec in caplog.records] == [f"Failed to read {path}, ignoring"]
+        assert [rec.getMessage() for rec in caplog.records] == [
+            f"Failed to read {cfg.data_root / 'config.toml'}, ignoring"
+        ]
 
 
 class TestGlobalFlag:
