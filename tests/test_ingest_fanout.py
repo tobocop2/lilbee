@@ -564,6 +564,81 @@ class TestRunWorkers:
         )
         assert fake_context.processes[0].killed.is_set()
 
+    async def test_workers_that_ignore_the_stop_share_one_grace(self, fake_context, monkeypatch):
+        """Every worker is terminated before any is waited for, and the waits spend one bound."""
+        grace = 0.2
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", grace)
+        calls = []
+
+        class Recorded(FakeProcess):
+            def terminate(self):
+                calls.append(("terminate", self.name, None))
+                super().terminate()
+
+            def join(self, timeout=None):
+                calls.append(("join", self.name, timeout))
+                super().join(timeout)
+
+        monkeypatch.setattr(
+            fake_context,
+            "Process",
+            lambda target, args, name: (
+                fake_context.processes.append(Recorded(target, args, name))
+                or fake_context.processes[-1]
+            ),
+        )
+
+        def deaf_shard(spec, options, messages, stop):
+            messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            )
+            fake_context.processes[spec.shard.index].killed.wait(5)
+
+        monkeypatch.setattr(fanout, "run_shard", deaf_shard)
+        await fanout.run_workers(
+            [_spec(0), _spec(1)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=True,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        kinds = [kind for kind, _name, _timeout in calls]
+        assert kinds[:2] == ["terminate", "terminate"]
+        graces = [
+            timeout for kind, _name, timeout in calls if kind == "join" and timeout is not None
+        ]
+        assert len(graces) == 2
+        assert sum(graces) <= grace + 0.05
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
+
+    async def test_the_wait_for_the_workers_runs_off_the_event_loop(
+        self, fake_context, monkeypatch
+    ):
+        stopped_on = []
+        real_stop = fanout._stop_workers
+
+        def recording_stop(workers, stop):
+            stopped_on.append(threading.current_thread())
+            real_stop(workers, stop)
+
+        monkeypatch.setattr(fanout, "_stop_workers", recording_stop)
+        monkeypatch.setattr(
+            fanout,
+            "run_shard",
+            lambda spec, options, messages, stop: messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            ),
+        )
+        await fanout.run_workers(
+            [_spec(0)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=True,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        assert len(stopped_on) == 1
+        assert stopped_on[0] is not threading.current_thread()
+
     async def test_a_live_worker_is_terminated_when_the_run_ends(self, fake_context, monkeypatch):
         def fake_shard(spec, options, messages, stop):
             messages.put(

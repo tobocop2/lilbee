@@ -70,7 +70,7 @@ _DRAIN_INTERVAL_S = 0.1
 # Grace for the queue's feeder thread to flush a dead worker's last messages.
 _FINAL_DRAIN_S = 1.0
 
-# How long a worker gets to exit on its own before it is killed.
+# How long the workers get, together, to exit on a terminate before they are killed.
 _WORKER_EXIT_GRACE_S = 30.0
 
 # Where a worker's console output lands, under its own data root.
@@ -359,7 +359,7 @@ def _final_verdicts(
 
 
 def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
-    """Ask every live worker to stop, then wait for it, then insist.
+    """Terminate every live worker, give them one grace period together, then kill the rest.
 
     A worker owns a GPU fleet, and its teardown can outlast a TERM; a plain join
     would hang the sync behind it instead of returning a result it already has.
@@ -368,7 +368,10 @@ def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
     for worker in workers:
         if worker.is_alive():
             worker.terminate()
-        worker.join(_WORKER_EXIT_GRACE_S)
+    deadline = time.monotonic() + _WORKER_EXIT_GRACE_S
+    for worker in workers:
+        worker.join(max(0.0, deadline - time.monotonic()))
+    for worker in workers:
         if worker.is_alive():
             log.warning("Ingest worker %s did not exit; killing it", worker.name)
             worker.kill()
@@ -403,7 +406,7 @@ async def run_workers(
             workers, messages, quiet=quiet, on_progress=on_progress, cancel=cancel
         )
     finally:
-        _stop_workers(workers, stop)
+        await asyncio.to_thread(_stop_workers, workers, stop)
     return [verdicts[index] for index in sorted(verdicts)]
 
 
