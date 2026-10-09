@@ -269,7 +269,9 @@ class TestRemovePrivateStores:
     def test_a_store_that_cannot_be_deleted_is_named_and_the_rest_still_go(
         self, tmp_path, caplog, monkeypatch
     ):
-        stuck, free = self._store(tmp_path, "w0", 10), self._store(tmp_path, "w1", 10)
+        megabyte = 1024 * 1024
+        stuck = self._store(tmp_path, "w0", megabyte)
+        free = self._store(tmp_path, "w1", megabyte // 2)
         real_rmtree = fanout.shutil.rmtree
 
         def _rmtree(path):
@@ -280,8 +282,18 @@ class TestRemovePrivateStores:
         monkeypatch.setattr(fanout.shutil, "rmtree", _rmtree)
         with caplog.at_level("WARNING", logger=fanout.log.name):
             fanout.remove_private_stores(tmp_path)
-        assert (stuck.exists(), free.exists()) == (True, False)
-        assert f"Could not delete the unused worker store {stuck}: in use" in caplog.text
+            assert (stuck.exists(), free.exists()) == (True, False)
+            could_not = f"Could not delete the unused worker store {stuck}: in use"
+            # The line counts the store that went and the space that left the disk.
+            assert [record.getMessage() for record in caplog.records] == [
+                could_not,
+                f"Deleted 1 unused worker store(s) of an earlier lilbee under "
+                f"{tmp_path / 'shards'}, freeing 0.5 MB",
+            ]
+            caplog.clear()
+            # A sync that deletes nothing says so, and claims no deletion.
+            fanout.remove_private_stores(tmp_path)
+            assert [record.getMessage() for record in caplog.records] == [could_not]
 
     def test_a_data_root_with_a_sync_on_it_keeps_its_stores_and_says_nothing(
         self, tmp_path, caplog
