@@ -81,8 +81,7 @@ from lilbee.data.ingest.skip_marker import (
     SkipRecordsLockError,
     clear_failed_markers,
     clear_skip_markers,
-    describe_skips,
-    held_out_names,
+    describe_failures,
     load_skip_markers,
     update_skip_records,
 )
@@ -951,12 +950,6 @@ def _persist_skip_records(
     return None
 
 
-def _failures_among(records_root: Path, held: Iterable[str]) -> list[str]:
-    """The files in *held* that an ingestion failure holds out, in order; removals are left out."""
-    failed = set(held_out_names(records_root))
-    return [name for name in held if name in failed]
-
-
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
     """Name an index built with another embedder than cfg; the sync leaves it as it is.
 
@@ -1429,7 +1422,7 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=describe_skips(records_root, _failures_among(records_root, state.held_out)),
+        held_out=describe_failures(records_root, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
         skip_records_error=skip_records_error,

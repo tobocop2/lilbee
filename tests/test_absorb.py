@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
 from typing import ClassVar
@@ -47,6 +48,7 @@ from lilbee.runtime.absorb_journal import (
 )
 from lilbee.runtime.lock import SyncRunningError, sync_running
 from tests.conftest import make_mock_services
+from tests.test_skip_marker import record_file_reads
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 from tests.test_wiki_shared import leave_temp_of_a_dead_writer
 
@@ -751,6 +753,37 @@ class TestTheCommonAddPaysNothing:
         rules.assert_not_called()
         assert not (cfg.data_root / "sync.lock").exists()
         assert library.store.get_sources() == []
+
+    async def test_an_add_without_records_reads_no_record_file(self, library, notes, tmp_path):
+        with record_file_reads() as reads:
+            await _add(notes)
+
+        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
+        assert reads == []
+
+    async def test_an_add_reads_each_record_file_once_per_step(self, library, notes, tmp_path):
+        """The control for the test above: with records on disk the same add reads them."""
+        await _add(notes)
+        remove_documents_durably(["notes/loose.md"])
+        other = _write(tmp_path / "src" / "other.md", "# Other\n\nA page about tide tables.\n")
+
+        with record_file_reads() as register_reads:
+            register_sources([other])
+        with record_file_reads() as sync_reads:
+            await sync(quiet=True)
+
+        assert Counter(register_reads) == {
+            SKIP_MARKER_FILENAME: 1,
+            SKIP_REASON_FILENAME: 1,
+            SKIP_KIND_FILENAME: 1,
+        }
+        # The plan reads the markers; the merge of the verdicts and the result read all three.
+        assert Counter(sync_reads) == {
+            SKIP_MARKER_FILENAME: 3,
+            SKIP_REASON_FILENAME: 2,
+            SKIP_KIND_FILENAME: 2,
+        }
+        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
 
     async def test_an_absorb_does_take_the_lock_and_write_the_journal(self, library, notes):
         """The control for the test above: the same probes fire when a child is there."""

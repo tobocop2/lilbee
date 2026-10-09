@@ -100,12 +100,13 @@ def _json_map(text: str, name: str) -> dict[str, object]:
 
 
 def _read_text(path: Path) -> str | None:
-    """The text of *path*, or None when it is absent or cannot be read."""
+    """The text of *path*, or None when it cannot be read; an absent file is not opened."""
+    if not path.exists():
+        return None
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        if path.exists():
-            log.debug("Sidecar %s unreadable, treating as empty: %s", path.name, exc)
+        log.debug("Sidecar %s unreadable, treating as empty: %s", path.name, exc)
         return None
 
 
@@ -129,8 +130,22 @@ def _pending_write(data_root: Path) -> _PendingWrite | None:
     return _PendingWrite(after, {name: before.get(name) for name in _RECORD_FILENAMES})
 
 
-def _record_texts(data_root: Path) -> dict[str, str | None]:
-    """The text of each sidecar, by file name: from a pending write while it stands.
+def _record_texts(
+    data_root: Path, names: tuple[str, ...] = _RECORD_FILENAMES
+) -> dict[str, str | None]:
+    """The text of each sidecar in *names*, by file name: from a pending write while it stands.
+
+    Without a pending file only the sidecars in *names* are read.
+    """
+    on_disk = {name: _read_text(data_root / name) for name in names}
+    # Checked after the read, so a write that started during it is seen.
+    if not (data_root / SKIP_PENDING_FILENAME).exists():
+        return on_disk
+    return _texts_through_pending_write(data_root)
+
+
+def _texts_through_pending_write(data_root: Path) -> dict[str, str | None]:
+    """The text of every sidecar while a pending file is there.
 
     A pending write stands while each sidecar holds what the write replaces or
     what it writes. Another text means a lilbee without this file wrote since,
@@ -148,7 +163,7 @@ def _record_texts(data_root: Path) -> dict[str, str | None]:
 
 def _load_json_map(data_root: Path, filename: str) -> dict[str, object]:
     """The JSON object the sidecar *filename* holds, or an empty dict on any read error."""
-    text = _record_texts(data_root)[filename]
+    text = _record_texts(data_root, (filename,))[filename]
     return {} if text is None else _json_map(text, filename)
 
 
@@ -358,6 +373,16 @@ def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]
     return [
         SkippedSource(filename=name, reason=reasons.get(name, DEFAULT_SKIP_REASON))
         for name in names
+    ]
+
+
+def describe_failures(data_root: Path, names: Iterable[str]) -> list[SkippedSource]:
+    """Each of *names* an ingestion failure holds out, with its reason, in order."""
+    records = _load_records(data_root)
+    return [
+        SkippedSource(filename=name, reason=records.reasons.get(name, DEFAULT_SKIP_REASON))
+        for name in names
+        if records.kinds.get(name) is SkipKind.FAILED
     ]
 
 
