@@ -9,7 +9,6 @@ import ipaddress
 import json
 import logging
 import re
-from collections import Counter
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
@@ -502,15 +501,12 @@ class _ExcludedLinks:
     """
 
     def __init__(self, spec: _CrawlSpec, seed_url: str) -> None:
-        self._seed_url = seed_url
         self._seed_host = urlsplit(seed_url).hostname or ""
         self._depth = spec.depth
         self._include_subdomains = spec.filters.include_subdomains
         self._patterns = tuple(re.compile(pattern) for pattern in spec.filters.exclude_patterns)
         self._seen_links: set[str] = set()
         self._checked: set[str] = set()
-        self._counts: Counter[str] = Counter()
-        self._examples: dict[str, str] = {}
 
     def record(self, event: _Event) -> None:
         """Log each link of *event* that the crawl leaves out, the first time a page holds it."""
@@ -531,28 +527,12 @@ class _ExcludedLinks:
 
     def _check(self, url: str) -> None:
         matched = next((p.pattern for p in self._patterns if p.search(url)), None)
-        if matched is None:
-            return
-        self._counts[matched] += 1
-        self._examples.setdefault(matched, url)
-        log.info("Excluded %s: it matches the exclude pattern %s", url, matched)
-
-    def log_summary(self) -> None:
-        """Warn once with the number of excluded links and an example for each pattern."""
-        if not self._counts:
-            return
-        per_pattern = "; ".join(
-            f"{pattern} matches {count}, for example {self._examples[pattern]}"
-            for pattern, count in self._counts.items()
-        )
-        log.warning(
-            "Links of the crawl of %s that an exclude pattern matched and the crawl did not "
-            "follow: %d. %s. The crawl_exclude_patterns setting holds the patterns. "
-            "Run the crawl at the INFO log level to list every address.",
-            self._seed_url,
-            self._counts.total(),
-            per_pattern,
-        )
+        if matched is not None:
+            log.warning(
+                "Left out %s: it matches %s, a pattern of the crawl_exclude_patterns setting",
+                url,
+                matched,
+            )
 
 
 class CrawlbergFetcher:
@@ -606,18 +586,15 @@ class CrawlbergFetcher:
         """
         spec = _CrawlSpec(depth, max_pages, timeout, concurrency, filters)
         excluded = _ExcludedLinks(spec, seed_url)
-        try:
-            async with aclosing(self._stream(spec, seed_url, cancel)) as events:
-                async for event in events:
-                    excluded.record(event)
-                    if event.refused_by_ssrf and event.url != seed_url:
-                        log.debug("crawlberg refused %s: %s", event.url, event.error)
-                        continue
-                    page = await _to_page(event, seed_url)
-                    if page is not None:
-                        yield page
-        finally:
-            excluded.log_summary()
+        async with aclosing(self._stream(spec, seed_url, cancel)) as events:
+            async for event in events:
+                excluded.record(event)
+                if event.refused_by_ssrf and event.url != seed_url:
+                    log.debug("crawlberg refused %s: %s", event.url, event.error)
+                    continue
+                page = await _to_page(event, seed_url)
+                if page is not None:
+                    yield page
 
 
 # Protocol conformance check: CrawlbergFetcher is structurally a WebFetcher.
