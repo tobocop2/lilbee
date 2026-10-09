@@ -34,6 +34,8 @@ typecheck:
 	# changes: multi_gpu_smoke crashed on its first check from #540 until this
 	# was added. The rest of tools/qa/ is not clean yet and is not listed.
 	uv run mypy tools/qa/placement_matrix/ tools/qa/multi_gpu_smoke.py
+	# The crawl parity harness judges a crawler release before it is cut.
+	uv run mypy tools/qa/crawl_parity/
 	# hatch_build.py builds the PyPI long description, so a break here breaks
 	# the release rather than a test.
 	uv run mypy tools/readme_media.py tools/gen_formats_table.py hatch_build.py

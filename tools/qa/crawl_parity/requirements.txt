@@ -1,0 +1,19 @@
+# The harness's own environment. No crawler and no lilbee is installed here:
+# each side runs in its own interpreter, named in sides.toml.
+
+# Ground truth: the text a reader sees. 1.61.0 uses Chromium build 1228.
+playwright==1.61.0
+# Markdown to text tokens and to a structure signature.
+markdown-it-py>=4.2.0,<5
+# Processes, sockets, threads and load on macOS, Linux and Windows.
+psutil>=7.0
+# Generated pages: seeded strategies and shrinking.
+hypothesis>=6.150
+# Delta debugging for the minimiser.
+picire>=21.8
+# Recorded corpus: WARC write and read, polite fetch, brotli bodies.
+warcio>=1.7.5
+httpx>=0.27
+brotli>=1.1
+# The harness's own tests.
+pytest>=9.0.3

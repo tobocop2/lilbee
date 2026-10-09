@@ -1,0 +1,811 @@
+# The synthetic corpus: one small page for each page feature.
+# Imported once from the crawl audit of 2026-10-08; edit by hand from here on.
+# A body file holds the bytes exactly as they go on the wire.
+
+[[seed]]
+name = "f"
+path = "/f/"
+modes = ["http", "browser"]
+
+[[record]]
+path = "/f/"
+file = "f/index.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/headings"
+file = "f/headings.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/nestedlists"
+file = "f/nestedlists.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/tablesimple"
+file = "f/tablesimple.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/tablespans"
+file = "f/tablespans.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/tablenested"
+file = "f/tablenested.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/codelang"
+file = "f/codelang.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/inlinecode"
+file = "f/inlinecode.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/blockquote"
+file = "f/blockquote.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/deflist"
+file = "f/deflist.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/footnotes"
+file = "f/footnotes.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/imgalt"
+file = "f/imgalt.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/imgnoalt"
+file = "f/imgnoalt.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/imgdata"
+file = "f/imgdata.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/imgsrcset"
+file = "f/imgsrcset.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/imginlink"
+file = "f/imginlink.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/svgtitle"
+file = "f/svgtitle.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/svgnotitle"
+file = "f/svgnotitle.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/picture"
+file = "f/picture.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/iframe"
+file = "f/iframe.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/video"
+file = "f/video.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/audio"
+file = "f/audio.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/forms"
+file = "f/forms.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/navfooter"
+file = "f/navfooter.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/hidden"
+file = "f/hidden.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/noscript"
+file = "f/noscript.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/comments"
+file = "f/comments.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/entities"
+file = "f/entities.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/rtl"
+file = "f/rtl.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/cjk"
+file = "f/cjk.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/emptybody"
+file = "f/emptybody.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/whitespace"
+file = "f/whitespace.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/titlemeta"
+file = "f/titlemeta.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/math"
+file = "f/math.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/target"
+file = "f/target.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/img/a.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/rel/b.png"
+file = "f/rel_b.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[seed]]
+name = "b"
+path = "/b/"
+modes = ["http", "browser"]
+
+[[record]]
+path = "/b/"
+file = "b/index.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/jsafterload"
+file = "b/jsafterload.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/jsinline"
+file = "b/jsinline.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/timer500"
+file = "b/timer500.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/timer3000"
+file = "b/timer3000.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/fetchload"
+file = "b/fetchload.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/fetchslow"
+file = "b/fetchslow.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/lazyimg"
+file = "b/lazyimg.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/shadow"
+file = "b/shadow.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/spa"
+file = "b/spa.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/popup"
+file = "b/popup.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/alert"
+file = "b/alert.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/confirm"
+file = "b/confirm.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/beforeunload"
+file = "b/beforeunload.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/infinite"
+file = "b/infinite.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/throws"
+file = "b/throws.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/docwrite"
+file = "b/docwrite.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/removes"
+file = "b/removes.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/jsredirect"
+file = "b/jsredirect.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/console"
+file = "b/console.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/popupchild"
+file = "b/popupchild.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/jsredirecttarget"
+file = "b/jsredirecttarget.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/spa/two"
+file = "b/spa_two.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/spa/pushed"
+file = "b/spa_pushed.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/api/data.json"
+file = "b/api_data.json.json"
+headers = [["Content-Type", "application/json"]]
+
+[[record]]
+path = "/b/api/slow.json"
+file = "b/api_slow.json.json"
+headers = [["Content-Type", "application/json"]]
+delay_ms = 2500
+
+[[record]]
+path = "/b/img/lazy.png"
+file = "b/img_lazy.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[seed]]
+name = "n"
+path = "/n/"
+modes = ["http", "browser"]
+
+[[record]]
+path = "/n/"
+file = "n/index.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/latin1-header"
+file = "n/latin1-header.html"
+headers = [["Content-Type", "text/html; charset=iso-8859-1"]]
+
+[[record]]
+path = "/n/latin1-meta"
+file = "n/latin1-meta.html"
+headers = [["Content-Type", "text/html"]]
+
+[[record]]
+path = "/n/latin1-none"
+file = "n/latin1-none.html"
+headers = [["Content-Type", "text/html"]]
+
+[[record]]
+path = "/n/sjis-header"
+file = "n/sjis-header.html"
+headers = [["Content-Type", "text/html; charset=Shift_JIS"]]
+
+[[record]]
+path = "/n/sjis-meta"
+file = "n/sjis-meta.html"
+headers = [["Content-Type", "text/html"]]
+
+[[record]]
+path = "/n/sjis-none"
+file = "n/sjis-none.html"
+headers = [["Content-Type", "text/html"]]
+
+[[record]]
+path = "/n/utf8-bom"
+file = "n/utf8-bom.html"
+headers = [["Content-Type", "text/html"]]
+
+[[record]]
+path = "/n/utf8-nocharset"
+file = "n/utf8-nocharset.html"
+headers = [["Content-Type", "text/html"]]
+
+[[record]]
+path = "/n/charset-conflict"
+file = "n/charset-conflict.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/gzip"
+file = "n/gzip.html.gz"
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Content-Encoding", "gzip"]]
+
+[[record]]
+path = "/n/br"
+file = "n/br.html.br"
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Content-Encoding", "br"]]
+
+[[record]]
+path = "/n/deflate"
+file = "n/deflate.html.zz"
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Content-Encoding", "deflate"]]
+
+[[record]]
+path = "/n/slow3"
+file = "n/slow3.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+delay_ms = 3000
+
+[[record]]
+path = "/n/s404"
+status = 404
+file = "n/s404.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s410"
+status = 410
+file = "n/s410.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s500"
+status = 500
+file = "n/s500.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s503"
+status = 503
+file = "n/s503.html"
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Retry-After", "1"]]
+
+[[record]]
+path = "/n/s403"
+status = 403
+file = "n/s403.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s401"
+status = 401
+file = "n/s401.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s204"
+status = 204
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s202"
+status = 202
+file = "n/s202.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/r301"
+status = 301
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/target-r301"]]
+
+[[record]]
+path = "/n/r302"
+status = 302
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/target-r302"]]
+
+[[record]]
+path = "/n/r303"
+status = 303
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/target-r303"]]
+
+[[record]]
+path = "/n/r307"
+status = 307
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/target-r307"]]
+
+[[record]]
+path = "/n/r308"
+status = 308
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/target-r308"]]
+
+[[record]]
+path = "/n/rmeta"
+file = "n/rmeta.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/rmeta5"
+file = "n/rmeta5.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/rscript"
+file = "n/rscript.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/rchain"
+status = 302
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/rchain2"]]
+
+[[record]]
+path = "/n/rloop"
+status = 302
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/rloop"]]
+
+[[record]]
+path = "/n/roffsite"
+status = 302
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "{{OTHER_ORIGIN}}/n/target-roffsite"]]
+
+[[record]]
+path = "/n/zero-length"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/text-plain"
+file = "n/text-plain.txt"
+headers = [["Content-Type", "text/plain; charset=utf-8"]]
+
+[[record]]
+path = "/n/json"
+file = "n/json.json"
+headers = [["Content-Type", "application/json"]]
+
+[[record]]
+path = "/n/xhtml"
+file = "n/xhtml.xhtml"
+headers = [["Content-Type", "application/xhtml+xml; charset=utf-8"]]
+
+[[record]]
+path = "/n/no-ctype"
+file = "n/no-ctype.bin"
+
+[[record]]
+path = "/n/xml"
+file = "n/xml.xml"
+headers = [["Content-Type", "application/xml"]]
+
+[[record]]
+path = "/n/markdown"
+file = "n/markdown.md"
+headers = [["Content-Type", "text/markdown; charset=utf-8"]]
+
+[[record]]
+path = "/n/truncated"
+file = "n/truncated.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s404-rich"
+status = 404
+file = "n/s404-rich.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s200-soft404"
+file = "n/s200-soft404.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-r301"
+file = "n/target-r301.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-r302"
+file = "n/target-r302.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-r303"
+file = "n/target-r303.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-r307"
+file = "n/target-r307.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-r308"
+file = "n/target-r308.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/rchain2"
+status = 301
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/rchain3"]]
+
+[[record]]
+path = "/n/rchain3"
+status = 307
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Location", "/n/target-rchain"]]
+
+[[record]]
+path = "/n/target-rmeta"
+file = "n/target-rmeta.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-rscript"
+file = "n/target-rscript.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-rchain"
+file = "n/target-rchain.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/target-rmeta5"
+file = "n/target-rmeta5.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/n/s429"
+file = "n/s429.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+[record.alternate]
+when = "first-requests"
+count = 2
+status = 429
+file = "n/s429.alternate.html"
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Retry-After", "1"]]
+
+[[seed]]
+name = "c"
+path = "/c/"
+modes = ["http", "browser"]
+
+[[record]]
+path = "/c/"
+file = "c/index.html"
+headers = [["Content-Type", "text/html; charset=utf-8"], ["Set-Cookie", "zqsession=ok; Path=/"]]
+
+[[record]]
+path = "/c/need"
+file = "c/need.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+[record.alternate]
+when = "no-cookie"
+cookie = "zqsession=ok"
+status = 403
+file = "c/need.alternate.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/c/need2"
+file = "c/need2.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+[record.alternate]
+when = "no-cookie"
+cookie = "zqsession=ok"
+status = 403
+file = "c/need2.alternate.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[seed]]
+name = "w"
+path = "/w/"
+modes = ["http"]
+
+[[record]]
+path = "/w/"
+file = "w/index.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/w/control"
+file = "w/control.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/w/heading-space"
+file = "w/heading-space.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/w/heading-link-space"
+file = "w/heading-link-space.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/w/images-space"
+file = "w/images-space.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/w/heading-empty"
+file = "w/heading-empty.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+# What a site answers for the files a crawler asks for on its own.
+[[record]]
+path = "/sitemap.xml"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/robots.txt"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/favicon.ico"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+# Two addresses the browser pages ask for and that are meant to be missing.
+[[record]]
+path = "/b/api/missing.json"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/b/img/native-lazy.png"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+# The page a redirect to another host ends on.
+[[record]]
+path = "/n/target-roffsite"
+file = "n/target-roffsite.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+# Every image a feature page names is the same one-pixel picture.
+[[record]]
+path = "/f/img/emptyalt.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/noalt.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/c.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/l.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/s1.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/s2.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/l2.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/only2.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/l3.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/p.webp"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/poster.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/o.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+[[record]]
+path = "/f/img/e.png"
+file = "f/img_a.png.png"
+headers = [["Content-Type", "image/png"]]
+
+# The media files the feature pages name are meant to be missing.
+[[record]]
+path = "/f/media/a.ogg"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]
+
+[[record]]
+path = "/f/media/v.mp4"
+status = 404
+file = "not-found.html"
+headers = [["Content-Type", "text/html; charset=utf-8"]]

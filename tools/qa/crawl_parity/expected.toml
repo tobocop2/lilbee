@@ -1,0 +1,148 @@
+# Differences that are already filed. A run reports each as KNOWN and still fails until it is gone.
+# `signature` is a glob over <kind>/<mode>/<layer>/<feature>; `page` is an optional glob over pages.
+# For each difference the first entry that matches wins.
+# `accepted = true` is the owner's decision that a difference stays; an accepted difference does not fail.
+# An entry that no difference matches is reported as FIXED: remove it.
+# Every entry was filed from the crawl audit of 2026-10-08 (crawlberg 1.10.2, html-to-markdown 3.17.2).
+
+# The converter: xberg-io/html-to-markdown.
+
+[[known]]
+signature = "page-lost/*/converter/panicerror-*"
+issue = "xberg-io/html-to-markdown#749"
+note = "Text that is only white space makes the conversion fail; the page is saved empty."
+
+[[known]]
+signature = "text-lost/*/converter/svg>text"
+issue = "xberg-io/html-to-markdown#750"
+note = "Text inside an inline vector graphic is dropped."
+
+[[known]]
+signature = "text-added/*/converter/not-in-page:image+imagesvg+svg"
+issue = "xberg-io/html-to-markdown#750"
+note = "A graphic with no title adds the words SVG Image."
+
+[[known]]
+signature = "text-*/*/converter/*"
+page = "/f/forms"
+issue = "xberg-io/html-to-markdown#752"
+note = "The options of a select list and the texts of form controls are joined or repeated. The x of a checked box is issue 757."
+
+[[known]]
+signature = "text-lost/*/converter/p"
+page = "/f/hidden"
+issue = "xberg-io/html-to-markdown#753"
+note = "Text in an element that a style hides by size is dropped. The browser counts it as rendered."
+
+[[known]]
+signature = "text-added/*/converter/*"
+page = "/f/math"
+issue = "xberg-io/html-to-markdown#754"
+note = "A formula adds an HTML comment with its whole source, and its annotation."
+
+[[known]]
+signature = "text-added/*/converter/not-in-page:cdata*"
+issue = "xberg-io/html-to-markdown#755"
+note = "A CDATA section is copied into the markdown with its markers."
+
+[[known]]
+signature = "structure/*/converter/*"
+page = "/f/tablenested"
+issue = "xberg-io/html-to-markdown#760"
+note = "A table inside a table cell is flattened into the cell."
+
+[[known]]
+signature = "text-added/*/converter/*"
+page = "/f/blockquote"
+issue = "xberg-io/html-to-markdown#761"
+note = "The cite attribute of a quote adds a line with its address."
+
+# The crawler: xberg-io/crawlberg.
+
+[[known]]
+signature = "page-lost/browser/crawler/browser-timeout-*"
+issue = "xberg-io/crawlberg#602"
+note = "A page that opens a JavaScript dialog is lost after the browser timeout."
+
+[[known]]
+signature = "page-lost/browser/crawler/forbidden-*"
+page = "/c/*"
+issue = "xberg-io/crawlberg#603"
+note = "A browser crawl does not send the cookie an earlier page set."
+
+[[known]]
+signature = "*/http/crawler/*"
+page = "/n/*-none"
+issue = "xberg-io/crawlberg#604"
+note = "A page with no declared charset is decoded as UTF-8."
+
+[[known]]
+signature = "*/*/crawler/*"
+page = "/n/rmeta5"
+issue = "xberg-io/crawlberg#605"
+note = "A delayed meta refresh replaces the page with its target."
+
+[[known]]
+signature = "*/browser/crawler/*"
+page = "/n/latin1-meta"
+issue = "xberg-io/crawlberg#606"
+note = "Browser mode decodes a page twice when a meta tag names its charset."
+
+[[known]]
+signature = "*/browser/crawler/*"
+page = "/n/charset-conflict"
+issue = "xberg-io/crawlberg#606"
+note = "Browser mode decodes a page twice when a meta tag names its charset."
+
+[[known]]
+signature = "*/http/crawler/*"
+page = "/n/deflate"
+issue = "xberg-io/crawlberg#614"
+note = "A deflate body that the request did not ask for is saved as raw bytes."
+
+[[known]]
+signature = "left-behind/browser/*/process:chrome-headless-shell"
+issue = "xberg-io/crawlberg#594"
+note = "Every browser crawl leaves its Chrome running."
+
+[[known]]
+signature = "left-behind/browser/*/temp:crawlberg-chrome-*"
+issue = "xberg-io/crawlberg#594"
+note = "Every browser crawl leaves the profile directory of its Chrome."
+
+[[known]]
+signature = "left-behind/browser/*/listening-socket"
+issue = "xberg-io/crawlberg#624"
+note = "The Chrome that is left listens on a local debugging port."
+
+[[known]]
+signature = "slower/browser/*/*"
+issue = "xberg-io/crawlberg#595"
+note = "Browser mode starts one Chrome late and saves pages at a fifth of the oracle's rate."
+
+# lilbee. These items are in lilbee's own tracker, which has no public number.
+
+[[known]]
+signature = "structure/*/converter/*"
+issue = "lilbee: markdown form changes rewrite every saved page"
+note = "Link, table and list forms differ between the two converters; no text is lost."
+
+[[known]]
+signature = "text-*/*/converter/symbols"
+issue = "lilbee: markdown form changes rewrite every saved page"
+note = "Punctuation that one converter writes and the other does not. Task brackets and empty link targets are html-to-markdown issues 757 and 756."
+
+[[known]]
+signature = "text-added/*/converter/attribute"
+issue = "lilbee: markdown form changes rewrite every saved page"
+note = "The candidate writes the title of an image; the oracle does not."
+
+[[known]]
+signature = "text-added/*/converter/not-in-page:http+replay+test"
+issue = "lilbee: markdown form changes rewrite every saved page"
+note = "An embedded media element becomes a link whose text is its address."
+
+[[known]]
+signature = "text-added/*/converter/repeat:p"
+issue = "lilbee: markdown form changes rewrite every saved page"
+note = "An image that the oracle drops (a lazy source, a poster) is written, so its alternative text stands twice."
