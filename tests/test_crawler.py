@@ -36,6 +36,7 @@ from lilbee.crawler.runner import (
 from lilbee.crawler.save import (
     _save_single_result,
     _update_single_metadata,
+    equivalent_form,
     normalize_crawled_markdown,
     stored_spellings,
 )
@@ -238,68 +239,164 @@ def _stored(*urls: str) -> dict[str, CrawlMeta]:
     }
 
 
-class TestStoredSpellings:
-    @pytest.mark.parametrize(
-        ("stored", "reported"),
-        [
-            ("https://example.com/t/naïve", "https://example.com/t/na%C3%AFve"),
-            ("https://example.com/t/raw space", "https://example.com/t/raw%20space"),
-            ("https://example.com/t/日本語", "https://example.com/t/%E6%97%A5%E6%9C%AC%E8%AA%9E"),
-            (
-                'https://example.com/t/a"b<c>d`e{f}',
-                "https://example.com/t/a%22b%3Cc%3Ed%60e%7Bf%7D",
-            ),
-            (
-                "https://example.com/t/ïñ/deep page",
-                "https://example.com/t/%C3%AF%C3%B1/deep%20page",
-            ),
-            ("https://example.com/t/back\\slash", "https://example.com/t/back/slash"),
-            ("https://example.com/t/a\\b?x=c\\d", "https://example.com/t/a/b?x=c\\d"),
-            ("https://example.com/t/a b?x={c}`d", "https://example.com/t/a%20b?x={c}`d"),
-        ],
-        ids=[
-            "letter",
-            "space",
-            "script",
-            "punctuation",
-            "two-segments",
-            "backslash",
-            "backslash-in-query",
-            "punctuation-in-query",
-        ],
-    )
-    def test_an_address_stored_as_written_is_found_by_its_reported_form(
-        self, stored: str, reported: str
-    ):
-        assert stored_spellings(_stored(stored)) == {reported: [stored]}
+def _already_saved_under(web: Path, url: str) -> bool:
+    """Whether this disk already holds a file at the path *url* is saved to."""
+    return (web / url_to_filename(url)).exists()
 
-    def test_every_stored_spelling_of_one_address_is_listed(self):
-        reported = "https://example.com/t/tri%20%C3%B6"
-        spellings = [
-            "https://example.com/t/tri ö",
-            "https://example.com/t/tri%20ö",
-            reported,
-        ]
+
+# Two spellings RFC 3986 section 6.2.2 calls equivalent: (one spelling, its equivalent form).
+EQUIVALENT_SPELLINGS = [
+    pytest.param("https://example.com/t/a%2Db", "https://example.com/t/a-b", id="hyphen"),
+    pytest.param("https://example.com/t/a%2db", "https://example.com/t/a-b", id="lower-hex"),
+    pytest.param("https://example.com/t/%41%7a%30", "https://example.com/t/Az0", id="alnum"),
+    pytest.param(
+        "https://example.com/t/a%2Eb%5Fc%7Ed", "https://example.com/t/a.b_c~d", id="marks"
+    ),
+    pytest.param(
+        "https://example.com/t/caf%c3%a9", "https://example.com/t/caf%C3%A9", id="hex-case"
+    ),
+    pytest.param(
+        "https://example.com/t/q?n=%61%2fb", "https://example.com/t/q?n=a%2Fb", id="query"
+    ),
+    pytest.param("https://example.com/t/%2e%2e/up", "https://example.com/t/../up", id="dots"),
+]
+# Two addresses a server can answer with two pages; no rule makes them one.
+DIFFERENT_PAGES = [
+    pytest.param("https://example.com/t/b\\s", "https://example.com/t/b/s", id="backslash"),
+    pytest.param(
+        "https://example.com/t/b\\s", "https://example.com/t/b%5Cs", id="backslash-escape"
+    ),
+    pytest.param("https://example.com/t/ca^ret", "https://example.com/t/ca%5Eret", id="caret"),
+    pytest.param("https://example.com/t/pi|pe", "https://example.com/t/pi%7Cpe", id="pipe"),
+    pytest.param("https://example.com/t/a+b", "https://example.com/t/a%20b", id="plus-space"),
+    pytest.param("https://example.com/t/a+b", "https://example.com/t/a%2Bb", id="plus-escape"),
+    pytest.param(
+        "https://example.com/t/q?n=a+b", "https://example.com/t/q?n=a%20b", id="plus-query"
+    ),
+    pytest.param("https://example.com/t/e%2Fs", "https://example.com/t/e/s", id="encoded-slash"),
+    pytest.param("https://example.com/t/d/../up", "https://example.com/t/up", id="dot-segment"),
+    pytest.param(
+        "https://example.com/t/d/%2e%2e/up", "https://example.com/t/up", id="encoded-dots"
+    ),
+    pytest.param("https://example.com/t/./up", "https://example.com/t/up", id="single-dot"),
+    pytest.param("https://example.com/t/ts", "https://example.com/t/ts/", id="trailing-slash"),
+    pytest.param("https://example.com/t/Case", "https://example.com/t/case", id="letter-case"),
+    pytest.param("https://example.com:443/t/port", "https://example.com/t/port", id="default-port"),
+    pytest.param("https://example.com/t/frag#one", "https://example.com/t/frag", id="fragment"),
+    pytest.param(
+        "https://example.com/t/naïve", "https://example.com/t/na%C3%AFve", id="raw-letter"
+    ),
+    pytest.param(
+        "https://example.com/t/raw space", "https://example.com/t/raw%20space", id="space"
+    ),
+    pytest.param("https://example.com/t/a{b}", "https://example.com/t/a%7Bb%7D", id="braces"),
+    pytest.param(
+        "https://example.com/t/p%2541", "https://example.com/t/p%41", id="escaped-percent"
+    ),
+    pytest.param("https://Example.com/t/host", "https://example.com/t/host", id="host-case"),
+]
+
+# Each character that is not unreserved: its escape and the character itself are two addresses.
+_ESCAPED_CHARACTERS = {
+    "slash": "/",
+    "question-mark": "?",
+    "hash": "#",
+    "left-bracket": "[",
+    "right-bracket": "]",
+    "at-sign": "@",
+    "colon": ":",
+    "exclamation-mark": "!",
+    "dollar": "$",
+    "ampersand": "&",
+    "apostrophe": "'",
+    "left-parenthesis": "(",
+    "right-parenthesis": ")",
+    "asterisk": "*",
+    "plus": "+",
+    "comma": ",",
+    "semicolon": ";",
+    "equals": "=",
+    "percent": "%",
+    "space": " ",
+    "double-quote": '"',
+    "less-than": "<",
+    "greater-than": ">",
+    "backslash": "\\",
+    "caret": "^",
+    "backtick": "`",
+    "left-brace": "{",
+    "pipe": "|",
+    "right-brace": "}",
+    "nul": "\x00",
+    "del": "\x7f",
+    "non-ascii": "Ã",
+}
+# Addresses no rule makes one page: the escapes the standard keeps, and what no rule may do.
+KEPT_ESCAPES = [
+    *(
+        pytest.param(
+            f"https://example.com/t/a%{ord(char):02X}b",
+            f"https://example.com/t/a{char}b",
+            id=f"escape-of-{name}",
+        )
+        for name, char in _ESCAPED_CHARACTERS.items()
+    ),
+    pytest.param("https://example.com/t/q?", "https://example.com/t/q", id="empty-query"),
+    pytest.param("https://user@example.com/t/user", "https://example.com/t/user", id="user-info"),
+    pytest.param(
+        "https://example.com/t/q?b=2&a=1", "https://example.com/t/q?a=1&b=2", id="query-key-order"
+    ),
+    pytest.param("https://example.com/t/%%341", "https://example.com/t/%41", id="escape-once"),
+    pytest.param("https://example.com/t/x%a", "https://example.com/t/x%A", id="one-hex-digit"),
+    pytest.param("https://example.com/t/x%zz", "https://example.com/t/x%ZZ", id="not-hex"),
+    pytest.param("http://example.com/t/scheme", "https://example.com/t/scheme", id="scheme"),
+]
+# A NUL byte is no file name, so the crawl cannot save a page at its address.
+SAVEABLE_KEPT_ESCAPES = [case for case in KEPT_ESCAPES if case.id != "escape-of-nul"]
+# An escape of each unreserved class and the character it names: one address.
+UNRESERVED_ESCAPES = [
+    pytest.param(
+        f"https://example.com/t/x%{ord(char):02X}y", f"https://example.com/t/x{char}y", id=name
+    )
+    for name, char in {
+        "lower-letter": "q",
+        "upper-letter": "Q",
+        "digit": "7",
+        "hyphen": "-",
+        "period": ".",
+        "underscore": "_",
+        "tilde": "~",
+    }.items()
+]
+
+
+class TestStoredSpellings:
+    @pytest.mark.parametrize(("spelling", "form"), EQUIVALENT_SPELLINGS)
+    def test_two_equivalent_spellings_are_one_group(self, spelling: str, form: str):
         other = "https://example.com/t/other"
-        assert stored_spellings(_stored(*spellings, other)) == {
-            reported: spellings,
+        assert stored_spellings(_stored(spelling, form, other)) == {
+            form: [spelling, form],
             other: [other],
         }
 
-    @pytest.mark.parametrize(
-        "url",
-        [
-            "https://example.com/t/caf%C3%A9",
-            "https://example.com/t/enc%2Fslash",
-            "https://example.com/t/percent%25literal",
-            "https://example.com/t/pipe|bar^up[one]~x+y,z;a:b@c!d$e*f(g)'h",
-            "https://example.com/t/query?name=jos%C3%A9+maria&x=1",
-            "https://example.com/",
-        ],
-        ids=["encoded", "encoded-slash", "percent", "kept-punctuation", "query", "plain"],
-    )
-    def test_an_address_already_in_its_reported_form_is_its_only_spelling(self, url: str):
-        assert stored_spellings(_stored(url)) == {url: [url]}
+    @pytest.mark.parametrize(("spelling", "form"), EQUIVALENT_SPELLINGS)
+    def test_the_equivalent_form_of_a_spelling_is_the_group_key(self, spelling: str, form: str):
+        assert equivalent_form(spelling) == form
+        assert equivalent_form(form) == form
+
+    @pytest.mark.parametrize(("one", "other"), DIFFERENT_PAGES)
+    def test_two_addresses_of_different_pages_are_two_groups(self, one: str, other: str):
+        groups = stored_spellings(_stored(one, other))
+        assert sorted(groups.values()) == sorted([[one], [other]])
+
+    @pytest.mark.parametrize(("one", "other"), KEPT_ESCAPES)
+    def test_an_escape_the_standard_keeps_makes_two_groups(self, one: str, other: str):
+        groups = stored_spellings(_stored(one, other))
+        assert sorted(groups.values()) == sorted([[one], [other]])
+
+    @pytest.mark.parametrize(("spelling", "form"), UNRESERVED_ESCAPES)
+    def test_an_escape_of_an_unreserved_character_is_one_group(self, spelling: str, form: str):
+        assert list(stored_spellings(_stored(spelling, form)).values()) == [[spelling, form]]
 
     def test_empty_metadata_has_no_spellings(self):
         assert stored_spellings({}) == {}
@@ -1502,16 +1599,16 @@ class TestSitemapCounting:
 
 class TestCrawlAndSave:
     @patch("lilbee.crawler.runner.crawl_recursive")
-    async def test_a_page_stored_as_written_is_saved_under_its_stored_address(
+    async def test_a_page_stored_under_an_equivalent_address_is_saved_under_the_stored_one(
         self, mock_crawl_recursive, isolated_env
     ):
-        stored = "https://example.com/t/naïve page"
-        encoded = "https://example.com/t/caf%C3%A9"
-        new = "https://example.com/t/new%20page"
-        save_crawl_metadata(_stored(stored, encoded))
+        stored = "https://example.com/t/a-b"
+        same = "https://example.com/t/caf%C3%A9"
+        new = "https://example.com/t/new%2Fpage"
+        save_crawl_metadata(_stored(stored, same))
         reported = [
-            CrawlResult(url="https://example.com/t/na%C3%AFve%20page", markdown="# Naive"),
-            CrawlResult(url=encoded, markdown="# Cafe"),
+            CrawlResult(url="https://example.com/t/a%2Db", markdown="# Hyphen"),
+            CrawlResult(url=same, markdown="# Cafe"),
             CrawlResult(url=new, markdown="# New"),
         ]
 
@@ -1523,19 +1620,19 @@ class TestCrawlAndSave:
         mock_crawl_recursive.side_effect = crawl
         paths = await crawl_and_save("https://example.com/", depth=1)
         web = cfg.documents_dir / "_web"
-        assert paths == [web / url_to_filename(url) for url in (stored, encoded, new)]
-        assert paths[0].read_text(encoding="utf-8") == "# Naive"
+        assert paths == [web / url_to_filename(url) for url in (stored, same, new)]
+        assert paths[0].read_text(encoding="utf-8") == "# Hyphen"
         meta = load_crawl_metadata()
-        assert set(meta) == {stored, encoded, new}
-        assert meta[stored].content_hash == content_hash("# Naive")
+        assert set(meta) == {stored, same, new}
+        assert meta[stored].content_hash == content_hash("# Hyphen")
         assert meta[stored].file == url_to_filename(stored)
 
     @patch("lilbee.crawler.runner.crawl_recursive")
-    async def test_a_page_stored_under_several_spellings_is_rewritten_under_each(
+    async def test_a_page_stored_under_several_equivalent_addresses_is_rewritten_under_each(
         self, mock_crawl_recursive, isolated_env
     ):
-        reported = "https://example.com/t/tri%20%C3%B6"
-        spellings = ["https://example.com/t/tri ö", "https://example.com/t/tri%20ö", reported]
+        reported = "https://example.com/t/tri%2db"
+        spellings = ["https://example.com/t/tri-b", "https://example.com/t/tri%2Db", reported]
         other = "https://example.com/t/other"
         save_crawl_metadata(_stored(*spellings, other))
 
@@ -1548,12 +1645,48 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com/", depth=1)
         web = cfg.documents_dir / "_web"
         assert paths == [web / url_to_filename(url) for url in spellings]
-        assert len(set(paths)) == len(spellings)
+        assert len({path.as_posix() for path in paths}) == len(spellings)
         assert [path.read_text(encoding="utf-8") for path in paths] == ["# Tri"] * len(spellings)
         meta = load_crawl_metadata()
         assert set(meta) == {*spellings, other}
         assert [meta[url].content_hash for url in spellings] == [content_hash("# Tri")] * 3
         assert meta[other].content_hash == "old"
+
+    @pytest.mark.parametrize("fetched", [0, 1], ids=["first-fetched", "second-fetched"])
+    @pytest.mark.parametrize(("one", "other"), [*DIFFERENT_PAGES, *SAVEABLE_KEPT_ESCAPES])
+    @patch("lilbee.crawler.runner.crawl_recursive")
+    async def test_a_fetched_page_never_replaces_the_stored_copy_of_a_different_page(
+        self, mock_crawl_recursive, isolated_env, request, one: str, other: str, fetched: int
+    ):
+        pair = (one, other)
+        reported, kept = pair[fetched], pair[1 - fetched]
+        before = _stored(one, other)
+        save_crawl_metadata(before)
+        web = cfg.documents_dir / "_web"
+        kept_file = web / url_to_filename(kept)
+        kept_file.parent.mkdir(parents=True, exist_ok=True)
+        kept_file.write_bytes(b"# Stored")
+        if _already_saved_under(web, reported):
+            request.applymarker(
+                pytest.mark.xfail(
+                    strict=True,
+                    raises=AssertionError,
+                    reason="Two different page addresses can share one saved file",
+                )
+            )
+
+        async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
+            result = CrawlResult(url=reported, markdown="# Fetched")
+            await kwargs["on_result"](result)  # type: ignore[operator]
+            return [result]
+
+        mock_crawl_recursive.side_effect = crawl
+        paths = await crawl_and_save("https://example.com/", depth=1)
+        assert paths == [web / url_to_filename(reported)]
+        meta = load_crawl_metadata()
+        assert meta[reported].content_hash == content_hash("# Fetched")
+        assert meta[kept] == before[kept]
+        assert kept_file.read_bytes() == b"# Stored"
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
