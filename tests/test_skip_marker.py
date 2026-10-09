@@ -7,9 +7,10 @@ until the file content changes (its hash differs) or the user runs
 
 from __future__ import annotations
 
+import contextlib
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,7 @@ from lilbee.data.ingest.skip_marker import (
     SkipRecords,
     clear_failed_markers,
     clear_skip_markers,
+    describe_failures,
     describe_skips,
     held_out_names,
     load_skip_kinds,
@@ -689,6 +691,16 @@ def test_a_pending_file_that_cannot_be_read_is_ignored_and_then_dropped(
     assert load_skip_kinds(tmp_path) == {"gone.md": SkipKind.REMOVED}
 
 
+def test_a_pending_file_that_is_not_text_is_ignored_and_then_dropped(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    (tmp_path / SKIP_PENDING_FILENAME).write_bytes(b"\xff\xfe\x00")
+
+    assert load_skip_kinds(tmp_path) == {"gone.md": SkipKind.REMOVED}
+    update_skip_records(tmp_path, lambda records: None)
+
+    assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
+
+
 def test_a_record_file_that_is_not_text_reads_as_empty(tmp_path: Path) -> None:
     write_skip_records(tmp_path, _REMOVAL)
     (tmp_path / SKIP_REASON_FILENAME).write_bytes(b"\xff\xfe\x00")
@@ -715,3 +727,133 @@ def test_a_file_that_cannot_be_written_keeps_the_pending_file(
     assert (tmp_path / SKIP_PENDING_FILENAME).exists()
     assert load_skip_reasons(tmp_path) == {"bad.pdf": "no text"}
     assert load_skip_kinds(tmp_path) == {"bad.pdf": SkipKind.FAILED}
+
+
+_EVERY_RECORD_FILE = (
+    SKIP_MARKER_FILENAME,
+    SKIP_REASON_FILENAME,
+    SKIP_KIND_FILENAME,
+    SKIP_PENDING_FILENAME,
+)
+
+
+@contextlib.contextmanager
+def record_file_reads() -> Iterator[list[str]]:
+    """The name of each skip record file the block reads, one entry per read."""
+    reads: list[str] = []
+    real = Path.read_text
+
+    def _read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path.name in _EVERY_RECORD_FILE:
+            reads.append(path.name)
+        return real(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(Path, "read_text", _read_text)
+        yield reads
+
+
+def _read_through_every_loader(data_root: Path) -> None:
+    load_skip_markers(data_root)
+    load_skip_reasons(data_root)
+    load_skip_kinds(data_root)
+    held_out_names(data_root)
+    describe_failures(data_root, ["bad.pdf"])
+    update_skip_records(data_root, lambda records: None)
+
+
+def test_a_data_root_without_records_is_read_without_opening_a_file(tmp_path: Path) -> None:
+    with record_file_reads() as reads:
+        _read_through_every_loader(tmp_path)
+
+    assert reads == []
+    # The control: the same calls read once the files are there.
+    write_skip_records(tmp_path, _FAILURE)
+    with record_file_reads() as reads:
+        _read_through_every_loader(tmp_path)
+    assert SKIP_MARKER_FILENAME in reads
+    assert SKIP_PENDING_FILENAME not in reads
+
+
+def test_a_loader_of_one_file_reads_that_file_alone(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _FAILURE)
+
+    with record_file_reads() as reads:
+        markers = load_skip_markers(tmp_path)
+        reasons = load_skip_reasons(tmp_path)
+
+    assert (markers, reasons) == ({"bad.pdf": "h2"}, {"bad.pdf": "no text"})
+    assert reads == [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME]
+
+
+def test_a_load_of_the_records_reads_each_file_once(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _FAILURE)
+
+    with record_file_reads() as reads:
+        kinds = load_skip_kinds(tmp_path)
+
+    assert kinds == {"bad.pdf": SkipKind.FAILED}
+    assert sorted(reads) == sorted([SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME])
+
+
+def test_a_stopped_write_is_read_from_its_pending_file(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    _write_stopped_before(tmp_path, _FAILURE, SKIP_MARKER_FILENAME)
+
+    with record_file_reads() as reads:
+        markers = load_skip_markers(tmp_path)
+
+    assert markers == {"bad.pdf": "h2"}
+    assert SKIP_PENDING_FILENAME in reads
+
+
+def test_a_record_file_deleted_before_its_read_reads_as_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    real = Path.read_text
+
+    def _read_text(path: Path, *args: object, **kwargs: object) -> str:
+        if path.name == SKIP_REASON_FILENAME:
+            raise FileNotFoundError(path)
+        return real(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", _read_text)
+
+    assert load_skip_reasons(tmp_path) == {}
+    assert load_skip_markers(tmp_path) == {"gone.md": "h1"}
+
+
+class TestDescribeFailures:
+    def test_pairs_each_failure_with_its_reason_in_the_given_order(self, tmp_path: Path) -> None:
+        records = SkipRecords(
+            {"a.pdf": "h1", "b.tiff": "h2", "gone.md": "h3"},
+            {"a.pdf": "OCR timed out", "b.tiff": "decode failure", "gone.md": REMOVED_SKIP_REASON},
+            {"a.pdf": SkipKind.FAILED, "b.tiff": SkipKind.FAILED, "gone.md": SkipKind.REMOVED},
+        )
+        write_skip_records(tmp_path, records)
+
+        described = describe_failures(tmp_path, ["b.tiff", "gone.md", "a.pdf", "new.md"])
+
+        assert [(d.filename, d.reason) for d in described] == [
+            ("b.tiff", "decode failure"),
+            ("a.pdf", "OCR timed out"),
+        ]
+
+    def test_a_failure_without_a_reason_gets_the_default_text(self, tmp_path: Path) -> None:
+        write_skip_markers(tmp_path, {"orphan.pdf": "h1"})
+
+        described = describe_failures(tmp_path, ["orphan.pdf"])
+
+        assert [(d.filename, d.reason) for d in described] == [("orphan.pdf", DEFAULT_SKIP_REASON)]
+
+    def test_it_reads_each_record_file_once(self, tmp_path: Path) -> None:
+        write_skip_records(tmp_path, _FAILURE)
+
+        with record_file_reads() as reads:
+            described = describe_failures(tmp_path, ["bad.pdf"])
+
+        assert [d.filename for d in described] == ["bad.pdf"]
+        assert sorted(reads) == sorted(
+            [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME]
+        )
