@@ -94,6 +94,18 @@ def mock_svc():
         return RemoveResult(removed=removed, not_found=not_found)
 
     store.remove_documents.side_effect = _remove_documents
+
+    def _relocate(moves):
+        # Mirror the real re-key: a move takes its first candidate that holds a row.
+        taken = {}
+        for move in moves:
+            old = next((name for name in move.candidates if name in _sources), None)
+            if old is not None:
+                _sources[move.new] = {**_sources.pop(old), "filename": move.new}
+                taken[move.new] = old
+        return taken
+
+    store.relocate_sources.side_effect = _relocate
     store.drop_all.side_effect = lambda: _sources.clear()
     store.ensure_fts_index.return_value = None
     store.get_meta.return_value = None
@@ -397,7 +409,7 @@ class TestSync:
         mock_extract_file.assert_not_called()  # no re-extraction/re-embedding
         store.relocate_sources.assert_called_once()
         moves = store.relocate_sources.call_args.args[0]
-        assert [(old, new) for old, new, _stat in moves] == [("a.txt", "sub/a.txt")]
+        assert [(move.candidates, move.new) for move in moves] == [(("a.txt",), "sub/a.txt")]
 
     async def test_adaptive_mode_ingests_and_stops_controller(
         self, mock_extract_file, isolated_env, monkeypatch
@@ -3955,10 +3967,8 @@ class TestStreamedPlan:
         assert result.relocated == ["zmoved.txt"]
         assert result.added == [] and result.updated == []
         mock_svc.concepts.rebuild_clusters.assert_not_called()
-        assert mock_svc.store.relocate_sources.call_args.args[0][0][:2] == (
-            "old/moved.txt",
-            "zmoved.txt",
-        )
+        (move,) = mock_svc.store.relocate_sources.call_args.args[0]
+        assert (move.candidates, move.new) == (("old/moved.txt",), "zmoved.txt")
 
     async def test_cancel_stops_planning_the_rest_of_the_corpus(
         self, isolated_env, monkeypatch, mock_svc
@@ -7131,9 +7141,7 @@ class TestDetectMoves:
         existing = {"old/a.txt": self._record("old/a.txt", "h1")}
 
         moves = pipeline._detect_moves(files, added, pipeline._MovePool(to_remove, existing))
-        assert len(moves) == 1
-        assert moves[0].old == "old/a.txt"
-        assert moves[0].new == "new/a.txt"
+        assert [(move.candidates, move.new) for move in moves] == [(("old/a.txt",), "new/a.txt")]
 
     def test_changed_content_is_not_a_move(self):
         from lilbee.data.ingest import pipeline
@@ -7154,7 +7162,7 @@ class TestDetectMoves:
         moves = pipeline._detect_moves(files, {}, pipeline._MovePool([], existing))
         assert moves == []
 
-    def test_duplicate_hash_pairs_one_to_one(self):
+    def test_files_of_one_hash_are_each_offered_every_candidate_in_name_order(self):
         from lilbee.data.ingest import pipeline
 
         files = [self._entry("new/a.txt", "h1"), self._entry("new/b.txt", "h1")]
@@ -7163,11 +7171,24 @@ class TestDetectMoves:
             "old/a.txt": self._record("old/a.txt", "h1"),
             "old/b.txt": self._record("old/b.txt", "h1"),
         }
-        moves = pipeline._detect_moves(
-            files, added, pipeline._MovePool(["old/a.txt", "old/b.txt"], existing)
-        )
-        assert {m.new for m in moves} == {"new/a.txt", "new/b.txt"}
-        assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
+        pool = pipeline._MovePool(["old/b.txt", "old/a.txt"], existing)
+        moves = pipeline._detect_moves(files, added, pool)
+        assert [move.new for move in moves] == ["new/a.txt", "new/b.txt"]
+        assert {move.candidates for move in moves} == {("old/a.txt", "old/b.txt")}
+
+    def test_a_taken_candidate_is_offered_to_no_later_file(self):
+        from lilbee.data.ingest import pipeline
+
+        existing = {
+            "old/a.txt": self._record("old/a.txt", "h1"),
+            "old/b.txt": self._record("old/b.txt", "h1"),
+        }
+        pool = pipeline._MovePool(["old/a.txt", "old/b.txt"], existing)
+        pool.forget("h1", "old/a.txt")
+        assert pool.candidates("h1") == ("old/b.txt",)
+        pool.forget("h1", "old/b.txt")
+        entry = self._entry("new/c.txt", "h1")
+        assert pipeline._detect_moves([entry], {"new/c.txt": None}, pool) == []
 
 
 class TestSyncResultRender:

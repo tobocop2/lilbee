@@ -17,6 +17,7 @@ from lilbee.data.store import (
     SearchChunk,
     SearchScope,
     SourceMeta,
+    SourceMove,
     SourceType,
     Store,
     cosine_sim,
@@ -4103,7 +4104,7 @@ class TestRelocateSources:
         before = store.get_chunks_by_source("old/a.md")
         assert len(before) == 2
 
-        store.relocate_sources([("old/a.md", "new/a.md", SourceStat(10, 20, 30))])
+        store.relocate_sources([SourceMove(("old/a.md",), "new/a.md", SourceStat(10, 20, 30))])
 
         assert store.get_chunks_by_source("old/a.md") == []
         after = store.get_chunks_by_source("new/a.md")
@@ -4153,7 +4154,7 @@ class TestRelocateSources:
         )
         store.upsert_source("old/a.md", "h", 1, SourceType.DOCUMENT)
 
-        store.relocate_sources([("old/a.md", "new/a.md", SourceStat(1, 2, 3))])
+        store.relocate_sources([SourceMove(("old/a.md",), "new/a.md", SourceStat(1, 2, 3))])
 
         chunks = store.open_table(CHUNKS_TABLE)
         pages = store.open_table(PAGE_TEXTS_TABLE)
@@ -4182,7 +4183,7 @@ class TestRelocateTitles:
         store.upsert_source(
             "old_report.md", "h1", 2, SourceType.DOCUMENT, meta=SourceMeta(title="old report")
         )
-        store.relocate_sources([("old_report.md", "annual_summary.md", None)])
+        store.relocate_sources([SourceMove(("old_report.md",), "annual_summary.md", None)])
         row = next(s for s in store.get_sources() if s["filename"] == "annual_summary.md")
         assert row["title"] == "annual summary"
         chunks = store.get_chunks_by_source("annual_summary.md")
@@ -4199,7 +4200,7 @@ class TestRelocateTitles:
             SourceType.DOCUMENT,
             meta=SourceMeta(title="Frankenstein Analysis"),
         )
-        store.relocate_sources([("notes-2024.md", "renamed.md", None)])
+        store.relocate_sources([SourceMove(("notes-2024.md",), "renamed.md", None)])
         row = next(s for s in store.get_sources() if s["filename"] == "renamed.md")
         assert row["title"] == "Frankenstein Analysis"
         chunks = store.get_chunks_by_source("renamed.md")
@@ -4212,7 +4213,7 @@ class TestRelocateTitles:
         store.upsert_source(
             "real_notes.md", "h1", 1, SourceType.DOCUMENT, meta=SourceMeta(title="real notes")
         )
-        store.relocate_sources([("real_notes.md", "IMG_1234.md", None)])
+        store.relocate_sources([SourceMove(("real_notes.md",), "IMG_1234.md", None)])
         row = next(s for s in store.get_sources() if s["filename"] == "IMG_1234.md")
         assert row["title"] is None
 
@@ -4444,7 +4445,7 @@ class TestRekeySourcesUnder:
         assert _dump(twin) == _dump(store)
         before = _dump(store)
 
-        twin.relocate_sources([(key, f"notes/{key}", None) for key in keys])
+        twin.relocate_sources([SourceMove((key,), f"notes/{key}", None) for key in keys])
         store.rekey_sources_under("work", "notes/work")
 
         assert _dump(store) == _dump(twin)
@@ -4689,25 +4690,66 @@ class TestSourcesOfOneSlice:
         assert sorted(latest["same"]) == ["a.md", "b.md", "later.md"]
 
 
-class TestRelocateReportsSkippedMoves:
-    def test_a_move_whose_old_row_is_gone_is_skipped_and_named(self, store):
+class TestRelocateGivesEachMoveOneCandidate:
+    def test_a_move_whose_old_row_is_gone_is_skipped(self, store):
         store.add_chunks(_one_source_records("kept.md", 1) + _one_source_records("ghost.md", 1))
         store.upsert_source("kept.md", "h1", 1)
 
-        skipped = store.relocate_sources(
-            [("ghost.md", "new.md", None), ("kept.md", "moved.md", None)]
+        taken = store.relocate_sources(
+            [SourceMove(("ghost.md",), "new.md", None), SourceMove(("kept.md",), "moved.md", None)]
         )
 
-        assert skipped == ["ghost.md"]
+        assert taken == {"moved.md": "kept.md"}
         # The skipped move re-keys nothing: its chunks keep the old name.
         assert len(store.get_chunks_by_source("ghost.md")) == 1
         assert store.get_chunks_by_source("new.md") == []
         assert len(store.get_chunks_by_source("moved.md")) == 1
         assert [row["filename"] for row in store.get_sources()] == ["moved.md"]
 
+    def test_moves_that_share_candidates_take_one_each_in_order(self, store):
+        for name in ("a.md", "b.md", "c.md"):
+            store.add_chunks(_one_source_records(name, 1))
+            store.upsert_source(name, "same", 1)
+        shared = ("a.md", "b.md", "c.md")
+
+        taken = store.relocate_sources(
+            [SourceMove(shared, "x.md", None), SourceMove(shared, "y.md", None)]
+        )
+
+        assert taken == {"x.md": "a.md", "y.md": "b.md"}
+        assert sorted(row["filename"] for row in store.get_sources()) == ["c.md", "x.md", "y.md"]
+        assert [len(store.get_chunks_by_source(name)) for name in ("x.md", "y.md")] == [1, 1]
+
+    def test_a_move_takes_the_next_candidate_when_another_writer_took_the_first(self, store):
+        for name in ("a.md", "b.md"):
+            store.add_chunks(_one_source_records(name, 1))
+            store.upsert_source(name, "same", 1)
+        shared = ("a.md", "b.md")
+        assert store.relocate_sources([SourceMove(shared, "first.md", None)]) == {
+            "first.md": "a.md"
+        }
+
+        assert store.relocate_sources(
+            [SourceMove(shared, "second.md", None), SourceMove(shared, "third.md", None)]
+        ) == {"second.md": "b.md"}
+        assert sorted(row["filename"] for row in store.get_sources()) == ["first.md", "second.md"]
+        assert store.get_chunks_by_source("third.md") == []
+
+    def test_more_candidates_than_one_filter_holds_are_all_asked(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 2)
+        names = [f"n{number}.md" for number in range(5)]
+        for name in names:
+            store.upsert_source(name, "same", 0)
+
+        taken = store.relocate_sources(
+            [SourceMove(tuple(names), f"moved{number}.md", None) for number in range(5)]
+        )
+
+        assert sorted(taken.values()) == names
+
     def test_with_no_source_table_every_move_is_skipped(self, store):
-        assert store.relocate_sources([("a.md", "b.md", None)]) == ["a.md"]
-        assert store.relocate_sources([]) == []
+        assert store.relocate_sources([SourceMove(("a.md",), "b.md", None)]) == {}
+        assert store.relocate_sources([]) == {}
 
 
 class TestRemoveRowsOf:

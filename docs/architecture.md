@@ -413,8 +413,11 @@ rows, against 0.30 s with no index and 0.16 s for a private store of an eighth o
 rows (a laptop, 16-dimension vectors, 2,000 one-chunk documents a flush).
 
 **A renamed file.** The old name can belong to another worker's slice. A worker looks up
-the content hash of each new file in the source table as the sync found it, and takes
-the old row under the write lock. If another writer took it first, the file is an add.
+the content hash of each new file in the source table as the sync found it. That gives
+the old names the file can take, in name order. Under the write lock the store gives the
+file the first of them that still holds a source row, and re-keys it in the same hold.
+So no two workers take one old name. A file is an add only when every old name of its
+content is taken, so no old name stays while a file of its content is added.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.

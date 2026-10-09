@@ -79,6 +79,7 @@ from .types import (
     RemoveResult,
     SearchChunk,
     SourceMeta,
+    SourceMove,
     SourceRecord,
     SourceStat,
     SourceStatBackfill,
@@ -327,6 +328,20 @@ def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[
                 members.setdefault(filename[:cut], []).append(filename)
             cut = filename.find("/", cut + 1)
     return members
+
+
+def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
+    """The *names* that hold a row in the source table."""
+    wanted = sorted(names)
+    held: set[str] = set()
+    for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
+        quoted = ", ".join(
+            f"'{escape_sql_string(name)}'"
+            for name in wanted[start : start + _SOURCE_STAT_BATCH_ROWS]
+        )
+        query = sources.search().where(f"filename IN ({quoted})").select(["filename"])
+        held.update(row["filename"] for row in query.limit(None).to_list())
+    return held
 
 
 def _refresh_key_index_unlocked(table: LanceTable, column: str, flush_rows: int) -> None:
@@ -2048,56 +2063,73 @@ class Store:
         if table is not None:
             _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
-    def relocate_sources(self, moves: list[tuple[str, str, SourceStat | None]]) -> list[str]:
-        """Re-key moved sources from old filename to new, preserving their chunks.
+    def relocate_sources(self, moves: list[SourceMove]) -> dict[str, str]:
+        """Re-key moved sources from an old filename to the new one, preserving their chunks.
 
-        Returns the old names that hold no source row under the lock. Their moves
-        are skipped: another writer moved or removed that source first.
+        Returns the old name each new name took. Under the one write lock a move
+        takes the first of its candidates that holds a source row and that no
+        earlier move took; a move with none left is skipped and is absent from
+        the result. The choice and the re-key share the lock, so no two writers
+        take one old name, and a move is skipped only once every candidate is taken.
 
         A source whose file moved (same content hash, new path) keeps its chunks
         and embeddings; only its filename key and disk stat change. Each per-source
         table's source column, the citation source_filename, and the sources row are
-        updated in place under one write lock, so a move costs no re-extraction or
-        re-embedding. ``moves`` is ``(old_name, new_name, new_stat)`` tuples.
+        updated in place, so a move costs no re-extraction or re-embedding.
 
         Each table is opened once; the re-key is then a targeted per-move update.
         A single-statement batch would need a ``CASE`` expression, which LanceDB's
         update SQL does not support, and a delete+re-add across the vector tables is
         not worth its risk for what is a rare mass relabel.
         """
+        taken: dict[str, str] = {}
         if not moves:
-            return []
+            return taken
+        with self._write_lock():
+            sources = self.open_table(SOURCES_TABLE)
+            if sources is None:
+                return taken
+            tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
+            unclaimed = _held_sources(sources, {name for move in moves for name in move.candidates})
+            for move in moves:
+                old = next((name for name in move.candidates if name in unclaimed), None)
+                if old is None:
+                    continue
+                unclaimed.discard(old)
+                taken[move.new] = old
+                self._rekey_source_unlocked(sources, tables, old, move)
+        self._invalidate_source_cache()
+        return taken
+
+    def _rekey_source_unlocked(
+        self,
+        sources: LanceTable,
+        tables: list[tuple[LanceTable | None, str]],
+        old: str,
+        move: SourceMove,
+    ) -> None:
+        """Put *move*'s new name on every row keyed *old*. Caller holds ``write_lock()``."""
         from lilbee.data.title import derive_title  # circular at module scope
 
-        missing: list[str] = []
-        with self._write_lock():
-            tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
-            sources = self.open_table(SOURCES_TABLE)
-            for old, new, stat in moves:
-                where_old = f"= '{escape_sql_string(old)}'"
-                if sources is None or not sources.count_rows(filter=f"filename {where_old}"):
-                    missing.append(old)
-                    continue
-                new_title = self._relocated_title(sources, old, new, derive_title)
-                for table, column in tables:
-                    if table is None:
-                        continue
-                    values: dict[str, object] = {column: new}
-                    # Stem titles track the filename; re-derive them on the same
-                    # handle and statement as the re-key.
-                    if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
-                        values[_TITLE_COLUMN] = new_title
-                    table.update(where=f"{column} {where_old}", values=values)
-                row_values: dict[str, object] = {"filename": new}
-                if new_title is not _KEEP_TITLE:
-                    row_values["title"] = new_title
-                if stat is not None:
-                    row_values["size_bytes"] = stat.size_bytes
-                    row_values["mtime_ns"] = stat.mtime_ns
-                    row_values["stat_captured_ns"] = stat.captured_ns
-                sources.update(where=f"filename {where_old}", values=row_values)
-        self._invalidate_source_cache()
-        return missing
+        where_old = f"= '{escape_sql_string(old)}'"
+        new_title = self._relocated_title(sources, old, move.new, derive_title)
+        for table, column in tables:
+            if table is None:
+                continue
+            values: dict[str, object] = {column: move.new}
+            # Stem titles track the filename; re-derive them on the same
+            # handle and statement as the re-key.
+            if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
+                values[_TITLE_COLUMN] = new_title
+            table.update(where=f"{column} {where_old}", values=values)
+        row_values: dict[str, object] = {"filename": move.new}
+        if new_title is not _KEEP_TITLE:
+            row_values["title"] = new_title
+        if move.stat is not None:
+            row_values["size_bytes"] = move.stat.size_bytes
+            row_values["mtime_ns"] = move.stat.mtime_ns
+            row_values["stat_captured_ns"] = move.stat.captured_ns
+        sources.update(where=f"filename {where_old}", values=row_values)
 
     def _relocated_title(
         self,
