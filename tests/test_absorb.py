@@ -2153,6 +2153,18 @@ class TestTheAddThatFinishesAnAbsorb:
         assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
         assert _record_of("notes/work/broken.md")[1] is SkipKind.FAILED
 
+    def test_a_journal_left_after_the_add_arrived_is_finished_and_kept(self, library, notes):
+        """The other process died while this add waited for the lock."""
+        import lilbee.app.ingest as ingest_mod
+
+        self._killed_absorb(library, notes)
+
+        with mock.patch.object(ingest_mod, "keys_of_pending_absorb", return_value=[]):
+            result = register_sources([notes])
+
+        assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
+        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
+
     def test_a_journal_that_ends_before_it_is_read_names_no_key(self, library, notes):
         self._killed_absorb(library, notes)
 
