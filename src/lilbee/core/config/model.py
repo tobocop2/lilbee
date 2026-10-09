@@ -86,6 +86,7 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
     "less_than": "less than {lt}",
 }
 _VALUE_ERROR_PREFIX = "Value error, "
+_USES_ITS_DEFAULT = "uses its default"
 
 # A variable its setting refuses stops the command and a write of one is refused,
 # except on these: each takes its default, automatic or off, with a warning.
@@ -1635,25 +1636,24 @@ class _TomlSource:
         settings_cls: type[BaseSettings],
         path: Path,
         label: str = CONFIG_FILE_NAME,
-        otherwise: str = "uses its default",
-        quiet: bool = False,
+        otherwise: str = _USES_ITS_DEFAULT,
+        reported: tuple[str, ...] = (),
     ) -> None:
         self._settings_cls = settings_cls
         self._path = path
         self._label = label
         self._otherwise = otherwise
-        self._quiet = quiet
+        self._reported = reported
 
-    def _warn(self, message: str) -> None:
-        """Report *message*, unless an earlier read of this file already reported it."""
-        if not self._quiet:
-            warn_on_load(message)
-
-    def _fallback(self, key: str, values: dict[str, Any]) -> str:
-        """What a refused *key* gets instead: its variable when one is set, else the usual."""
+    def _line(
+        self, label: str, otherwise: str, refused: tuple[str, str], values: dict[str, Any]
+    ) -> str:
+        """The warning for one *refused* key and reason, as a read under *label* words it."""
+        key, reason = refused
+        fallback = refused_value_fallback(key, values, otherwise)
         if env_value(key) is not None:
-            return f"{_variable(self._settings_cls, key)} sets {key}"
-        return refused_value_fallback(key, values, self._otherwise)
+            fallback = f"{_variable(self._settings_cls, key)} sets {key}"
+        return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
 
     def __call__(self) -> dict[str, Any]:
         import tomllib
@@ -1662,17 +1662,17 @@ class _TomlSource:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
         except (ValueError, OSError):
-            self._warn(f"Failed to read {self._path}, ignoring")
+            warn_on_load(f"Failed to read {self._path}, ignoring")
             return {}
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
         values = {k: v for k, v in data.items() if value_is_set(k, v)}
         refused = _refusals(self._settings_cls, values)
-        for key, reason in refused.items():
-            self._warn(
-                f"{self._label}: {key} = {values[key]!r} {reason}; {self._fallback(key, values)}"
-            )
+        for item in refused.items():
+            # The load that built cfg words its report of this file its own way.
+            if self._line(CONFIG_FILE_NAME, _USES_ITS_DEFAULT, item, values) not in self._reported:
+                warn_on_load(self._line(self._label, self._otherwise, item, values))
         return {key: value for key, value in values.items() if key not in refused}
 
 
@@ -1701,7 +1701,7 @@ def toml_values(path: Path) -> dict[str, Any]:
         path,
         label=str(path),
         otherwise="keeps its value",
-        quiet=path == loaded_config_file,
+        reported=load_warnings if path == loaded_config_file else (),
     )()
 
 
@@ -1718,7 +1718,7 @@ def _build_cfg() -> tuple[Config, tuple[str, ...]]:
     return built, tuple(found)
 
 
-# The config.toml that cfg is built from; a later read of it reports nothing again.
+# The config.toml that cfg is built from; a later read of it reports only what is new.
 loaded_config_file = _config_file()
 cfg, load_warnings = _build_cfg()
 

@@ -834,23 +834,81 @@ class TestOverlayPersistedSettings:
             f"{other / 'config.toml'}: top_k = 'many' is not a whole number; top_k keeps its value"
         ]
 
+    @staticmethod
+    def _load_from(tmp_path, monkeypatch, stored):
+        """Build cfg's twin from *stored* in tmp_path and record it as the load."""
+        from lilbee.core.config import model
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        path = tmp_path / "config.toml"
+        path.write_text(stored, encoding="utf-8")
+        loaded, at_load = model._build_cfg()
+        monkeypatch.setattr(model, "loaded_config_file", model._config_file())
+        monkeypatch.setattr(model, "load_warnings", at_load)
+        return path, loaded, at_load
+
     @pytest.mark.parametrize("stored", ['top_k = "many"\nvision_replicas = 3\n', "top_k = = 9\n"])
     def test_the_file_cfg_was_built_from_is_not_reported_again(
         self, tmp_path, monkeypatch, caplog, stored
     ):
         """The twin of the two tests beside it, which overlay a file the load did not read."""
-        from lilbee.core.config import cfg, model
+        from lilbee.core.config import cfg
 
-        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
-        monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
         monkeypatch.setattr(cfg, "vision_replicas", 1)
-        path = tmp_path / "config.toml"
-        path.write_text(stored, encoding="utf-8")
-        monkeypatch.setattr(model, "loaded_config_file", path)
+        with caplog.at_level("WARNING"):
+            _path, _loaded, at_load = self._load_from(tmp_path, monkeypatch, stored)
+            reported = len(caplog.records)
+            settings.overlay_persisted_settings(tmp_path)
+        assert (len(at_load), reported) == (1, 1)
+        assert len(caplog.records) == reported
+        assert cfg.vision_replicas == (3 if "vision_replicas" in stored else 1)
+
+    @pytest.mark.parametrize(
+        ("after_start", "line"),
+        [
+            ('top_k = "many"\nchunk_size = "big"\n', "top_k = 'many' is not a whole number"),
+            ('top_k = 7\nchunk_size = "huge"\n', "chunk_size = 'huge' is not a whole number"),
+        ],
+    )
+    def test_a_value_that_goes_bad_after_the_load_is_reported_once(
+        self, tmp_path, monkeypatch, caplog, after_start, line
+    ):
+        """The losing field: chunk_size = "big" was reported by the load and is not repeated."""
+        from lilbee.core.config import cfg
+
+        path, loaded, at_load = self._load_from(
+            tmp_path, monkeypatch, 'top_k = 7\nchunk_size = "big"\n'
+        )
+        monkeypatch.setattr(cfg, "top_k", loaded.top_k)
+        path.write_text(after_start, encoding="utf-8")
+        caplog.clear()
         with caplog.at_level("WARNING"):
             settings.overlay_persisted_settings(tmp_path)
-        assert caplog.records == []
-        assert cfg.vision_replicas == (3 if "vision_replicas" in stored else 1)
+            settings.overlay_persisted_settings(tmp_path)
+        assert at_load == (
+            "config.toml: chunk_size = 'big' is not a whole number; chunk_size uses its default",
+        )
+        key = line.split(" ")[0]
+        assert [record.getMessage() for record in caplog.records] == [
+            f"{path}: {line}; {key} keeps its value"
+        ]
+        assert cfg.top_k == 7
+
+    def test_a_file_that_stops_being_toml_after_the_load_is_reported(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        path, _loaded, at_load = self._load_from(tmp_path, monkeypatch, "top_k = 7\n")
+        path.write_text("top_k = = 9\n", encoding="utf-8")
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+        assert at_load == ()
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Failed to read {path}, ignoring"
+        ]
 
     def test_a_file_that_is_not_toml_changes_nothing_and_warns(self, tmp_path, monkeypatch, caplog):
         from lilbee.core.config import cfg
