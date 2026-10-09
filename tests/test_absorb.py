@@ -1772,6 +1772,140 @@ class TestRekeyWikiPages:
         assert rekey_wiki_pages(tmp_path / "no-wiki", "work", "notes/work") == []
 
 
+def _page_from(store: Store, keys: list[str]) -> str:
+    """The text of a generated page about the spring release, written from *keys*."""
+    from lilbee.wiki.page import assemble_content, build_frontmatter
+
+    chunks = [chunk for key in keys for chunk in store.get_chunks_by_source(key)]
+    frontmatter = build_frontmatter(cfg, keys, 0.9, chunks=chunks)
+    return assemble_content(frontmatter, "# Spring\n\nA release.[^src1]\n", f"[^src1]: {keys[0]}\n")
+
+
+class TestDraftMarkers:
+    @staticmethod
+    def _drafts() -> Path:
+        return cfg.data_root / cfg.wiki_dir / "drafts"
+
+    @staticmethod
+    def _collision(store: Store, drafts: Path, first: str, held: list[str]) -> Path:
+        from lilbee.wiki.persistence import divert_concept_collision
+
+        return divert_concept_collision(
+            slug="spring",
+            source=", ".join(sorted(held)),
+            first_source=first,
+            content=_page_from(store, held),
+            drafts_dir=drafts,
+            origin_subdir="concepts",
+        )
+
+    @pytest.mark.parametrize(
+        ("first", "held", "first_after"),
+        [
+            ("work/budget.md", ["work/plan.md"], "notes/work/budget.md"),
+            ("drafts/spring.md", ["work/budget.md", "work/plan.md"], "drafts/spring.md"),
+        ],
+    )
+    def test_a_collision_draft_is_the_one_its_writer_makes_for_the_new_keys(
+        self, library, notes, tmp_path, first, held, first_after
+    ):
+        """The same two sources that collide again land on this draft, not beside it."""
+        from lilbee.wiki.drafts import list_drafts
+        from lilbee.wiki.shared import PendingKind
+
+        store = library.store
+        _seeded_child(store, notes)
+        before = self._collision(store, self._drafts(), first, held)
+
+        register_sources([notes])
+
+        after_keys = [f"notes/{key}" for key in held]
+        expected = self._collision(store, tmp_path / "expected", first_after, after_keys)
+        assert expected.name != before.name
+        assert not before.exists()
+        moved = self._drafts() / expected.name
+        assert (
+            moved.read_text(encoding="utf-8").split("\n")[0]
+            == (expected.read_text(encoding="utf-8").split("\n")[0])
+        )
+        assert f"sources: {json.dumps(after_keys)}" in moved.read_text(encoding="utf-8")
+        assert sorted(page.name for page in self._drafts().iterdir()) == [expected.name]
+        listed = list_drafts(cfg.data_root / cfg.wiki_dir)
+        assert [(draft.slug, draft.pending_kind) for draft in listed] == [
+            (expected.stem, PendingKind.COLLISION)
+        ]
+
+    def test_a_collision_draft_under_another_name_keeps_that_name(self, library, notes):
+        from lilbee.wiki.rekey import rekey_wiki_pages
+
+        store = library.store
+        _seeded_child(store, notes)
+        written = self._collision(store, self._drafts(), "work/budget.md", ["work/plan.md"])
+        renamed = written.with_name("spring-collision-00000000.md")
+        written.rename(renamed)
+        plain = _write(self._drafts() / "autumn-collision-0a0b0c0d.md", _page_from(store, ["x.md"]))
+
+        pages = rekey_wiki_pages(cfg.data_root / cfg.wiki_dir, "work", "notes/work")
+
+        assert renamed in pages and plain not in pages
+        assert "content from notes/work/plan.md held" in renamed.read_text(encoding="utf-8")
+
+    def test_a_kill_between_the_new_draft_and_the_old_one_leaves_one_draft(self, library, notes):
+        from lilbee.wiki.rekey import rekey_wiki_pages
+
+        store = library.store
+        _seeded_child(store, notes)
+        before = self._collision(store, self._drafts(), "work/budget.md", ["work/plan.md"])
+        wiki_root = cfg.data_root / cfg.wiki_dir
+
+        with mock.patch.object(Path, "unlink", side_effect=_Killed), pytest.raises(_Killed):
+            rekey_wiki_pages(wiki_root, "work", "notes/work")
+        assert before.exists() and len(list(self._drafts().iterdir())) == 2
+        rekey_wiki_pages(wiki_root, "work", "notes/work")
+
+        drafts = list(self._drafts().iterdir())
+        assert len(drafts) == 1 and drafts[0] != before
+        assert "content from notes/work/plan.md held" in drafts[0].read_text(encoding="utf-8")
+
+    def _drift(self, store: Store, keys: list[str]) -> Path:
+        from lilbee.wiki.persistence import divert_to_drafts
+
+        return divert_to_drafts(
+            _page_from(store, keys), self._drafts(), "spring", 0.5, "diff", "concepts", keys
+        )
+
+    def test_the_next_build_takes_a_drift_draft_over_in_place(self, library, notes):
+        """The marker keeps the hash of the old keys; the draft is known by its sources list."""
+        from lilbee.wiki.persistence import delete_drift_draft_if_present
+
+        store = library.store
+        _seeded_child(store, notes)
+        draft = self._drift(store, ["work/plan.md"])
+        marker = draft.read_text(encoding="utf-8").split("\n")[0]
+
+        register_sources([notes])
+
+        assert draft.read_text(encoding="utf-8").split("\n")[0] == marker
+        assert self._drift(store, ["notes/work/plan.md"]) == draft
+        assert [page.name for page in self._drafts().iterdir()] == ["spring.md"]
+        assert draft.read_text(encoding="utf-8").split("\n")[0] != marker
+        assert delete_drift_draft_if_present(self._drafts(), "spring", ["notes/work/plan.md"])
+
+    def test_a_drift_draft_whose_sources_list_kept_the_old_keys_is_not_taken_over(
+        self, library, notes
+    ):
+        """The control for the test above: without the re-key of the page, a second draft."""
+        store = library.store
+        _seeded_child(store, notes)
+        draft = self._drift(store, ["work/plan.md"])
+
+        with mock.patch("lilbee.wiki.rekey.rekey_wiki_pages"):
+            register_sources([notes])
+
+        assert self._drift(store, ["notes/work/plan.md"]) != draft
+        assert len(list(self._drafts().iterdir())) == 2
+
+
 class TestSyncsHeldOff:
     async def test_it_raises_the_text_it_was_given_while_a_sync_runs(self, tmp_path):
         from lilbee.runtime.lock import syncs_held_off
