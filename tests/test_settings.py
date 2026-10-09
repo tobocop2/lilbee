@@ -974,6 +974,27 @@ class TestOverlayPersistedSettings:
         assert [record.getMessage() for record in caplog.records] == [reported, reported]
         assert cfg.top_k == 9
 
+    def test_a_rewrite_in_the_same_clock_tick_with_another_size_is_reported_again(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The size half of the state: the write time alone does not tell these two files apart."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        path = tmp_path / "config.toml"
+
+        with caplog.at_level("WARNING"):
+            for text in ('top_k = "many"\n', 'top_k = "many"\nchunk_size = 333\n'):
+                path.write_text(text, encoding="utf-8")
+                os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+                settings.overlay_persisted_settings(tmp_path)
+
+        refused = f"{path}: top_k = 'many' is not a whole number; top_k keeps its value"
+        assert [record.getMessage() for record in caplog.records] == [refused, refused]
+        assert cfg.chunk_size == 333
+
     def test_the_load_reports_once_though_the_file_is_written_between_two_loads(
         self, tmp_path, monkeypatch, caplog
     ):
