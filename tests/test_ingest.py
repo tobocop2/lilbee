@@ -5676,6 +5676,33 @@ class TestRemoveDropsFromWikiIndex:
         assert called == []
 
 
+class TestForgetMissingFromWikiIndex:
+    def test_a_failure_to_read_the_index_is_logged_and_does_not_raise(
+        self, isolated_env, monkeypatch, caplog
+    ):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.load_stub_index",
+            mock.MagicMock(side_effect=RuntimeError("index unreadable")),
+        )
+        with caplog.at_level("WARNING", logger=ingest_mod.log.name):
+            ingest_mod.forget_missing_from_wiki_index()
+        assert "Failed to drop missing documents from the wiki index" in caplog.text
+
+    def test_with_the_wiki_off_the_index_is_not_read(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        read = mock.MagicMock()
+        monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
+        ingest_mod.forget_missing_from_wiki_index()
+        read.assert_not_called()
+
+
 class TestRemoveDocumentsDurably:
     def test_writes_skip_marker_for_kept_file(self, isolated_env, mock_svc):
         """A durable delete keeps the file but skip-marks it so sync won't re-ingest."""

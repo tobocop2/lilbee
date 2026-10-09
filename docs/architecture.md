@@ -422,6 +422,11 @@ content is taken, so no old name stays while a file of its content is added.
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
 
+**The wiki's browse index.** No worker writes it. When the workers end, however they
+end, the parent drops each source the browse index lists that holds no source row. So
+a file a worker removed or renamed leaves the browse index even when the sync fails or
+is cancelled.
+
 **When something breaks.** A worker that fails names itself and its log, and the sync
 fails. A cancelled sync stops the workers. In both cases the files the workers finished
 are in the index and searchable, and the next sync continues from there. The search

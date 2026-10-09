@@ -1831,6 +1831,17 @@ class Store:
             kept.extend(cast("list[SourceRecord]", batch.filter(mask).to_pylist()))
         return kept
 
+    def missing_sources(self, names: Iterable[str]) -> set[str]:
+        """The *names* that hold no source row, from one pass over the name column."""
+        missing = set(names)
+        table = self.open_table(SOURCES_TABLE)
+        if table is None or not missing:
+            return missing
+        scan = table.search().select(["filename"]).limit(None)
+        for batch in scan.to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            missing.difference_update(batch.column("filename").to_pylist())
+        return missing
+
     def sources_version(self) -> int | None:
         """The version of the source table now, or None when there is no table."""
         table = self.open_table(SOURCES_TABLE)

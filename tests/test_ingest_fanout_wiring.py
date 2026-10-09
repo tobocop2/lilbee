@@ -277,16 +277,44 @@ class TestSyncAcrossWorkers:
         assert kwargs["indexed_anything"] is True
         assert EventType.SYNC_DONE in events
 
-    async def test_the_parent_tells_the_wiki_index_what_the_workers_removed(
-        self, specs, monkeypatch
+    @pytest.mark.parametrize("ending", ["clean", "a_worker_failed", "cancelled", "run_raised"])
+    async def test_the_parent_reconciles_the_wiki_index_however_the_workers_ended(
+        self, specs, monkeypatch, ending
     ):
-        """A worker has no wiki index of its own, so its refused files reach the parent's."""
-        forgotten = []
-        monkeypatch.setattr("lilbee.app.ingest.forget_removed_from_wiki_index", forgotten.append)
-        verdicts = self._one_verdict(SyncResult(removed=["old.gz"]))
-        result, _ = await self._run(specs, monkeypatch, verdicts)
-        assert forgotten == [["old.gz"]]
-        assert result.removed == ["old.gz"]
+        """A worker has no wiki index of its own, and one that stops reports no removal."""
+        reconciled = []
+        monkeypatch.setattr(
+            "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: reconciled.append(ending)
+        )
+        if ending == "clean":
+            result, _ = await self._run(
+                specs, monkeypatch, self._one_verdict(SyncResult(removed=["old.gz"]))
+            )
+            assert result.removed == ["old.gz"]
+        elif ending == "a_worker_failed":
+            with pytest.raises(RuntimeError, match="1 ingest worker"):
+                await self._run(specs, monkeypatch, self._verdicts(None, "OSError: disk"))
+        elif ending == "cancelled":
+            cancel = threading.Event()
+            cancel.set()
+            with pytest.raises(asyncio.CancelledError):
+                await self._run(specs, monkeypatch, self._verdicts(None, None), cancel=cancel)
+        else:
+
+            async def _raises(*args, **kwargs):
+                raise asyncio.CancelledError
+
+            monkeypatch.setattr(pipeline_mod, "run_workers", _raises)
+            with pytest.raises(asyncio.CancelledError):
+                await pipeline_mod._sync_across_workers(
+                    specs,
+                    store=_EmptyStore(),
+                    options=fanout.ShardOptions(parent_pid=1),
+                    quiet=True,
+                    on_progress=lambda kind, data: None,
+                    cancel=None,
+                )
+        assert reconciled == [ending]
 
     async def test_a_removal_only_run_rebuilds_the_clusters(self, specs, monkeypatch):
         """A removed source leaves stale concept nodes behind unless Leiden runs again."""

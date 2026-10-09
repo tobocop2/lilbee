@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import zipfile
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -21,6 +22,8 @@ from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.store import Store
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.lock import sync_running
+from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
+from lilbee.wiki.stubs import load_stub_index
 from tests._fanout_library import Library, services_for
 from tests.test_ingest_fanout import FakeContext
 
@@ -353,11 +356,15 @@ class TestEqualToOneProcess:
     async def test_a_refused_format_leaves_the_index(self, tmp_path, monkeypatch):
         from lilbee.data.ingest import discovery
 
-        removed, forgotten = [], []
+        removed, forgotten, reconciled = [], [], []
         refused = {".rst": discovery.ExclusionReason.VECTOR_GRAPHIC}
         monkeypatch.setattr(
             "lilbee.app.ingest.forget_removed_from_wiki_index",
             lambda names: forgotten.append((active_config().data_root.name, list(names))),
+        )
+        monkeypatch.setattr(
+            "lilbee.app.ingest.forget_missing_from_wiki_index",
+            lambda: reconciled.append(active_config().data_root.name),
         )
 
         async def history(library):
@@ -372,10 +379,9 @@ class TestEqualToOneProcess:
         assert removed == [["legacy.rst"], ["legacy.rst"]]
         assert len(fanned.sources()) == 12
         # The wiki index is the library's: no worker forgets the file under a root of its own.
-        assert [call for call in forgotten if call[1]] == [
-            ("fanned", ["legacy.rst"]),
-            ("single", ["legacy.rst"]),
-        ]
+        # The parent of each fan-out sync reconciles it; one process names the file.
+        assert [call for call in forgotten if call[1]] == [("single", ["legacy.rst"])]
+        assert reconciled == ["fanned", "fanned"]
         _assert_equal_to_one_process(fanned, single)
 
 
@@ -619,3 +625,108 @@ class TestWorkerMovePool:
         monkeypatch.setattr(Store, "sources_by_hash", lambda *args, **kw: asked.append(args))
         assert self._take_all(pool, "same") == candidates
         assert asked == []
+
+
+def _subjects_of(chunks):
+    """An extraction of one subject every chunk names and one subject for each file alone."""
+    refs = tuple(ChunkRef(chunk.source, chunk.chunk_index) for chunk in chunks)
+    if not refs:
+        return []
+    shared = ExtractedEntity("experiments", EntityKind.CONCEPT, "Experiments", "", refs)
+    own = [
+        ExtractedEntity(f"about-{ref.source}", EntityKind.CONCEPT, ref.source, "", (ref,))
+        for ref in refs
+    ]
+    return [shared, *own]
+
+
+class TestTheWikiIndex:
+    """The browse index of the wiki after a fan-out sync lists what a one-process sync lists."""
+
+    @pytest.fixture(autouse=True)
+    def wiki_on(self, monkeypatch):
+        extractor = MagicMock()
+        extractor.available.return_value = True
+        extractor.extract.side_effect = _subjects_of
+        monkeypatch.setattr("lilbee.wiki.stubs.get_entity_extractor", lambda *args: extractor)
+        cfg.wiki = True
+        cfg.wiki_entity_min_mentions = 1
+
+    def _listed(self, library) -> list[str]:
+        """Every source the browse index lists under a subject."""
+        library.use()
+        return sorted({name for stub in load_stub_index(cfg).values() for name in stub.sources})
+
+    def _refuse_rst(self, patch) -> None:
+        from lilbee.data.ingest import discovery
+
+        refused = {".rst": discovery.ExclusionReason.VECTOR_GRAPHIC}
+        patch.setattr(discovery, "excluded_extension_reasons", lambda: refused)
+
+    @pytest.mark.parametrize("ending", ["a_worker_fails", "cancelled"])
+    async def test_a_fan_out_that_does_not_finish_drops_what_its_workers_removed(
+        self, tmp_path, monkeypatch, ending
+    ):
+        other = 1 - slice_of("legacy.rst", 2)
+        listed_before, listed_after = [], []
+
+        def _the_other_worker_dies(patch) -> None:
+            real_shard = fanout.run_shard
+
+            def _run(spec, options, messages, stop):
+                if spec.shard.index == other:
+                    died = fanout.ShardDone(kind="done", index=other, result=None, error="died")
+                    messages.put(died)
+                else:
+                    real_shard(spec, options, messages, stop)
+
+            patch.setattr(fanout, "run_shard", _run)
+
+        async def history(library):
+            library.write_notes("note", 8)
+            library.write("legacy.rst", "A file whose format is refused later.")
+            await library.sync()
+            listed_before.append(self._listed(library))
+            with monkeypatch.context() as patch:
+                self._refuse_rst(patch)
+                if library.processes == 1:
+                    await library.sync()
+                elif ending == "a_worker_fails":
+                    _the_other_worker_dies(patch)
+                    with pytest.raises(RuntimeError, match=r"1 ingest worker\(s\) failed"):
+                        await library.sync()
+                else:
+                    cancel = threading.Event()
+                    TestAStoppedSync()._stop_at("every_report", cancel, patch)
+                    with pytest.raises(asyncio.CancelledError):
+                        await library.sync(cancel=cancel)
+                listed_after.append(self._listed(library))
+
+        fanned, _single = await _play(tmp_path, history)
+        assert "legacy.rst" in listed_before[0]
+        assert listed_before[0] == listed_before[1]
+        assert "legacy.rst" not in fanned.sources()
+        # The oracle: a one-process sync forgets the file in the step that removes it.
+        fan_out, one_process = listed_after
+        assert "legacy.rst" not in one_process
+        assert len(one_process) == 8
+        assert fan_out == one_process
+
+    async def test_a_renamed_file_leaves_the_index_under_its_new_name_only(self, tmp_path):
+        old = _name_owned_by(0, 2, "old")
+        new = _name_owned_by(1, 2, "renamed")
+        subjects = []
+
+        async def history(library):
+            library.write_notes("note", 8)
+            library.write(old, "The one file that is renamed.")
+            await library.sync()
+            (library.documents / old).rename(library.documents / new)
+            await library.sync()
+            subjects.append({slug: stub.sources for slug, stub in load_stub_index(cfg).items()})
+
+        await _play(tmp_path, history)
+        fan_out, one_process = subjects
+        assert one_process[f"about-{new}"] == (new,)
+        assert f"about-{old}" not in one_process
+        assert fan_out == one_process
