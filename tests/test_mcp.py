@@ -1992,6 +1992,18 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    def test_settings_set_blank_optional_number_clears_it(self, isolated_env):
+        """A blank over MCP reaches Config as unset, and the file drops the entry."""
+        cfg.data_root = isolated_env
+        settings_set({"temperature": 0.7, "seed": 5})
+        result = settings_set({"temperature": "", "seed": "   "})
+        assert set(result["updated"]) == {"temperature", "seed"}
+        assert cfg.temperature is None
+        assert cfg.seed is None
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert "temperature" not in persisted
+        assert "seed" not in persisted
+
     def test_settings_set_ocr_returns_no_warning(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"

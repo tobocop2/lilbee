@@ -1297,6 +1297,17 @@ class TestConfigUpdateRoute:
         body = resp.text
         assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
 
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_a_blank_optional_number_clears_the_setting(self, client, blank):
+        """PATCH hands the blank to Config, which reads it as unset and not as a number."""
+        cfg.temperature = 0.7
+        cfg.seed = 5
+        resp = client.patch("/api/config", json={"temperature": blank, "seed": blank})
+        assert resp.status_code == 200
+        assert set(resp.json()["updated"]) == {"temperature", "seed"}
+        assert cfg.temperature is None
+        assert cfg.seed is None
+
     def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
         resp = client.patch(
             "/api/config", json={"crawl_exclude_patterns": [r"/page/\d+/?$", r"/tag/"]}

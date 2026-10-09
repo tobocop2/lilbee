@@ -1551,15 +1551,15 @@ class TestEmptyStringValidation:
             )
 
 
-class TestEmptyStringToNone:
-    def test_empty_temperature_falls_back_to_default(self, tmp_path):
+class TestBlankOptionalNumberInTheEnvironment:
+    def test_blank_temperature_variable_uses_the_default(self, tmp_path):
         env = clean_env(tmp_path)
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
         assert c.temperature == 0.1
 
-    def test_whitespace_seed_becomes_none(self, tmp_path):
+    def test_whitespace_seed_variable_leaves_seed_unset(self, tmp_path):
         env = clean_env(tmp_path)
         env["LILBEE_SEED"] = "   "
         with mock.patch.dict(os.environ, env, clear=True):
