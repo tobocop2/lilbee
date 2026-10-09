@@ -899,6 +899,27 @@ class TestOverlayPersistedSettings:
         ]
         assert cfg.top_k == 7
 
+    def test_another_root_with_the_same_bad_line_is_reported_under_its_own_path(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The load's report covers its own file; another root's identical line is its own news."""
+        from lilbee.core.config import cfg
+
+        _path, loaded, at_load = self._load_from(tmp_path, monkeypatch, 'chunk_size = "big"\n')
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "config.toml").write_text('chunk_size = "big"\ntop_k = 3\n', encoding="utf-8")
+        monkeypatch.setattr(cfg, "top_k", loaded.top_k)
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(other)
+        assert len(at_load) == 1
+        assert [record.getMessage() for record in caplog.records] == [
+            f"{other / 'config.toml'}: chunk_size = 'big' is not a whole number;"
+            " chunk_size keeps its value"
+        ]
+        assert cfg.top_k == 3
+
     def test_a_file_that_stops_being_toml_after_the_load_is_reported(
         self, tmp_path, monkeypatch, caplog
     ):
