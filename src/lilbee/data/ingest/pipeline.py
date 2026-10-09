@@ -73,6 +73,7 @@ from lilbee.data.ingest.fanout import (
     ShardSpec,
     aggregate_results,
     plan_fanout,
+    remove_private_stores,
     run_workers,
 )
 from lilbee.data.ingest.ignore import IgnoreRules
@@ -1253,6 +1254,7 @@ async def _sync_across_workers(
     cancel: CancelSignal | None,
 ) -> SyncResult:
     """Ingest on one worker per GPU, each writing the one index, then run the corpus-wide passes."""
+    await to_ingest_thread(remove_private_stores, active_config().data_root)
     verdicts = await run_workers(
         specs, options=options, quiet=quiet, on_progress=on_progress, cancel=cancel
     )
