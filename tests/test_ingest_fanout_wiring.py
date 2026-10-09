@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
-import time
 
 import pytest
 
@@ -194,9 +193,7 @@ class TestSyncDispatch:
 
         def silent_shard(spec, options, messages, stop):
             cancel.set()
-            worker = context.processes[spec.shard.index]
-            while not worker.terminated:
-                time.sleep(0.01)
+            context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
         monkeypatch.setattr(
@@ -370,9 +367,7 @@ class TestSyncAcrossWorkers:
 
         def silent_shard(spec, options, messages, stop):
             cancel.set()
-            worker = context.processes[spec.shard.index]
-            while not worker.terminated:
-                time.sleep(0.01)
+            context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
         monkeypatch.setattr(
