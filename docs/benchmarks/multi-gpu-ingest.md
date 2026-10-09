@@ -3,6 +3,11 @@
 What `lilbee sync` does on a machine with more than one GPU, measured end to end
 with nothing configured.
 
+These runs measured the first design, in which each worker kept a store and the parent
+merged the stores. Workers now write the one index and there is no merge: see
+[One worker process per GPU](../architecture.md#one-worker-process-per-gpu-ingest_processes).
+The throughput figures are the baseline that design is held to.
+
 ## Test setup
 
 - **Date:** 2026-07-31

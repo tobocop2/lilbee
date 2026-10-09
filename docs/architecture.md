@@ -358,7 +358,8 @@ across four, so the eighth card made the run slower.
 
 **The shape.** A sync large enough to pay for them fans out into one worker process per
 visible card. Each worker is an ordinary `lilbee sync` over a deterministic slice of the
-corpus, with its own store; the parent supervises and folds the shards into one index.
+corpus, and it writes that slice to the one index itself. The parent supervises, then
+builds the indexes once over the whole corpus.
 
 ```mermaid
 flowchart LR
@@ -367,10 +368,9 @@ flowchart LR
     S -->|yes| W0["worker 0<br/>slice 0 · GPU 0"]
     S --> W1["worker 1<br/>slice 1 · GPU 1"]
     S --> W2["worker N<br/>slice N · GPU N"]
-    W0 --> M[merge]
-    W1 --> M
-    W2 --> M
-    M --> I[("one index<br/>indexes built once, corpus-wide")]
+    W0 --> I[("one index<br/>indexes built once, corpus-wide")]
+    W1 --> I
+    W2 --> I
 ```
 
 **What each worker owns.**
@@ -379,9 +379,9 @@ flowchart LR
 |---|---|
 | One card, masked at the process | Sizing and placement read the mask, so a worker plans against its own card, not the box. |
 | An engine slot, keyed by card | Without one, every worker scans the machine-wide slot, finds worker 0's fleet and adopts it: one card at 95% and seven at 0%, run completes, index correct, no error. Workers sharing a card share its slot deliberately. |
-| A data root and store | No shared write drain, which is what capped the previous mechanism. |
+| A data root for its log | The index is not here: every worker opens the one index. |
 | Its share of the CPU pools | Eight workers each sizing to a 160-core box put 4208 threads on it, load average 254, GPUs idle. |
-| A slice of the corpus | Hashed with blake2b, not `hash()`, so a resume deals the corpus the same way and re-embeds nothing. |
+| A slice of the corpus | Hashed with blake2b, not `hash()`, so every worker of one sync agrees on who takes a file. The hash only divides the work. It names no store, so a change of the worker count re-embeds nothing. |
 | Its own log | The parent shows one progress bar instead of N log files. |
 
 **The setting.** `ingest_processes` counts worker processes. `0` (the default) is one per
@@ -396,17 +396,36 @@ off by default and measured 1.00x. Per-card workers remove the drain instead of 
 it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
 fraction of 0.93.
 
-**Where the work is skipped.** Workers build no indexes and run no corpus-wide passes:
-the merge rebuilds ANN and BM25 over the whole corpus anyway, and per-shard builds
-measured a third of an 800k run's wall clock before being thrown away.
+**One record of what is indexed.** The index's source table and the skip records are
+the only durable statement of what is indexed. A worker reads the source rows of its own
+slice to decide what is unchanged, and it writes each batch under the store's write lock:
+the old rows of its documents go first and their source rows land last, as in a
+one-process sync. So `lilbee remove`, a rename, an archive, a stop and a change of the
+worker count leave the index a one-process sync leaves. Workers used to keep a store
+each and the parent merged them. No command reached those stores, and each defect of
+that design was the two records disagreeing.
 
-**Two costs.** The merge copies rows rather than committing metadata, so a first full
-ingest writes the corpus twice; and the shard stores are kept as the resume state, so
-vectors live on disk twice until the merge becomes a metadata-only Lance commit.
+**The write lock is the one serial stage.** Each flush deletes its documents' old rows
+by name. A BTREE index on the name column of the chunk, page text and source tables keeps
+that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
+sit past it. With 8 writers on one store a flush held the lock for 0.06 s at 500,000
+rows, against 0.30 s with no index and 0.16 s for a private store of an eighth of the
+rows (a laptop, 16-dimension vectors, 2,000 one-chunk documents a flush).
 
-**When something breaks.** A worker that fails leaves its shard in place, stops the merge
-and names itself and its log, rather than producing an index that is silently short of
-rows. A cancelled sync stops before the merge in the same way.
+**A renamed file.** The old name can belong to another worker's slice. A worker looks up
+the content hash of each new file in the source table as the sync found it, and takes
+the old row under the write lock. If another writer took it first, the file is an add.
+
+**Where the work is skipped.** Workers build no search indexes and run no corpus-wide
+passes. The parent builds ANN and BM25 once, after the last worker.
+
+**When something breaks.** A worker that fails names itself and its log, and the sync
+fails. A cancelled sync stops the workers. In both cases the files the workers finished
+are in the index and searchable, and the next sync continues from there. The search
+indexes cover them after the next sync that indexes something.
+
+**Stores from an earlier lilbee.** The first fan-out sync deletes each
+`shards/w*/data` directory and logs the space it frees.
 
 ---
 
