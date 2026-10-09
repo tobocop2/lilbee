@@ -38,6 +38,9 @@ BROWSER_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
 )
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
+# The client hints that belong to the browser user agent above.
+BRAND_HINT = {"sec-ch-ua": '"Chromium";v="116", "Not_A Brand";v="8", "Google Chrome";v="116"'}
+SECURE_ORIGIN_HINTS = {"sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"Linux"'}
 
 
 @pytest.fixture(autouse=True)
@@ -57,9 +60,10 @@ async def _recursive(
     concurrency: ConcurrencySpec | None = None,
     filters: FilterSpec | None = None,
     depth: int = 2,
+    seed: str = SEED,
 ) -> list[FetchedPage]:
     stream = fetcher.fetch_recursive(
-        SEED,
+        seed,
         depth=depth,
         max_pages=7,
         timeout=12.5,
@@ -140,6 +144,53 @@ class TestCrawlConfig:
             await _recursive(_browser())
             await _browser().fetch_single(SEED, timeout=5)
         assert [config.kwargs["user_agent"] for config in stub.configs] == [BROWSER_USER_AGENT] * 2
+
+    @pytest.mark.parametrize(
+        "seed",
+        [
+            SEED,
+            "http://127.0.0.1:8000/docs",
+            "http://localhost:8000/",
+            "http://docs.localhost/",
+            "http://[::1]:8000/",
+        ],
+        ids=["https", "loopback-v4", "localhost", "localhost-subdomain", "loopback-v6"],
+    )
+    async def test_a_browser_crawl_of_a_secure_origin_sends_three_client_hints(
+        self, monkeypatch, tmp_path, seed: str
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        stub = StubCrawlberg([page(seed, depth=0)])
+        with stub.installed():
+            await _recursive(_browser(), seed=seed)
+            await _browser().fetch_single(seed, timeout=5)
+        sent = [config.kwargs["custom_headers"] for config in stub.configs]
+        assert sent == [{**BRAND_HINT, **SECURE_ORIGIN_HINTS}] * 2
+
+    @pytest.mark.parametrize(
+        "seed",
+        ["http://example.com/", "http://192.168.1.5/", "http://notlocalhost/"],
+        ids=["http", "private-address", "name-that-ends-like-localhost"],
+    )
+    async def test_a_browser_crawl_of_any_other_origin_sends_the_brand_hint_alone(
+        self, monkeypatch, tmp_path, seed: str
+    ):
+        shell = tmp_path / "chrome-headless-shell"
+        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
+        stub = StubCrawlberg([page(seed, depth=0)])
+        with stub.installed():
+            await _recursive(_browser(), seed=seed)
+            await _browser().fetch_single(seed, timeout=5)
+        assert [config.kwargs["custom_headers"] for config in stub.configs] == [BRAND_HINT] * 2
+
+    async def test_http_mode_sends_no_client_hints(self):
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(_http())
+            await _http().fetch_single(SEED, timeout=5)
+        assert [config.kwargs["custom_headers"] for config in stub.configs] == [{}, {}]
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [HTTP_USER_AGENT] * 2
 
     async def test_whole_urls_are_matched_and_query_urls_kept_apart_and_stripped_of_tracking(self):
         stub = StubCrawlberg()
