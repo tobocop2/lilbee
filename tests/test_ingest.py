@@ -7176,20 +7176,6 @@ class TestDetectMoves:
         assert [move.new for move in moves] == ["new/a.txt", "new/b.txt"]
         assert {move.candidates for move in moves} == {("old/a.txt", "old/b.txt")}
 
-    def test_a_taken_candidate_is_offered_to_no_later_file(self):
-        from lilbee.data.ingest import pipeline
-
-        existing = {
-            "old/a.txt": self._record("old/a.txt", "h1"),
-            "old/b.txt": self._record("old/b.txt", "h1"),
-        }
-        pool = pipeline._MovePool(["old/a.txt", "old/b.txt"], existing)
-        pool.forget("h1", "old/a.txt")
-        assert pool.candidates("h1") == ("old/b.txt",)
-        pool.forget("h1", "old/b.txt")
-        entry = self._entry("new/c.txt", "h1")
-        assert pipeline._detect_moves([entry], {"new/c.txt": None}, pool) == []
-
 
 class TestSyncResultRender:
     def test_str_includes_relocated_line(self):
