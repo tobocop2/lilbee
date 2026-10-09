@@ -279,7 +279,7 @@ def _make_flush_page(
     written_paths: list[Path],
     counter: _FlushCounter,
 ) -> Callable[[CrawlResult], Any]:
-    """A flush closure that saves a page under every spelling of its URL that *meta* holds."""
+    """A flush closure that saves a page under every URL in *meta* equivalent to its own."""
     spellings = save.stored_spellings(meta)
 
     def _save_as(result: CrawlResult) -> Path | None:
@@ -294,7 +294,7 @@ def _make_flush_page(
         return outcome.path
 
     def _sync_flush(result: CrawlResult) -> list[Path]:
-        stored = spellings.get(result.url, [result.url])
+        stored = spellings.get(save.equivalent_form(result.url), [result.url])
         saved = (_save_as(replace(result, url=url)) for url in stored)
         return [path for path in saved if path is not None]
 
