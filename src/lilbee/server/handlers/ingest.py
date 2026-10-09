@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import hashlib
 import logging
 import os
@@ -32,6 +33,25 @@ log = logging.getLogger(__name__)
 # Payload carried alongside each source key through _ingest_stream: a server
 # path (str) for /api/add, or an (filename, content) pair for /api/add/upload.
 _Payload = TypeVar("_Payload")
+_Result = TypeVar("_Result")
+
+
+async def _to_thread_unbroken(work: Callable[[], _Result]) -> _Result:
+    """Run blocking *work* in a thread to its end; a cancel that arrives meanwhile lands after it.
+
+    The caller is cancelled again when *work* has returned, so its next await raises.
+    """
+    running = asyncio.ensure_future(asyncio.to_thread(work))
+    cancelled = False
+    while not running.done():
+        try:
+            await asyncio.shield(running)
+        except asyncio.CancelledError:
+            cancelled = True
+    task = asyncio.current_task()
+    if cancelled and task is not None:
+        task.cancel()
+    return running.result()
 
 
 async def _run_sync_with_sentinel(
@@ -109,10 +129,14 @@ async def _run_add(
             else:
                 valid.append(p)
 
-        reg_result = register_sources(valid, force=force)
+        # A stream that stops while the registration runs stops the sync, not the add.
+        stopped = sse.cancel.is_set()
+        reg_result = await _to_thread_unbroken(
+            functools.partial(register_sources, valid, force=force)
+        )
 
         errors.extend(reg_result.refused)
-        if sse.cancel.is_set():
+        if stopped:
             return AddSummary(
                 copied=reg_result.registered,
                 name_taken=reg_result.name_taken,
