@@ -15,6 +15,7 @@ from lilbee.data.ingest.skip_marker import (
     clear_skip_markers,
     skip_records_lock,
 )
+from lilbee.runtime.absorb_journal import absorb_pending, delete_journal, journal_path
 from lilbee.runtime.lock import ResetRefusedError, no_sync_running
 
 
@@ -56,17 +57,30 @@ def _clear_dir(base_dir: Path, skipped: list[str]) -> int:
     return deleted
 
 
+def _drop_pending_absorb(data_root: Path, skipped: list[str]) -> None:
+    """Delete the journal of an interrupted add; one left registers its sources again."""
+    if not absorb_pending(data_root):
+        return
+    try:
+        delete_journal(data_root)
+    except OSError as exc:
+        logging.getLogger(__name__).warning("Could not delete %s: %s", journal_path(data_root), exc)
+        skipped.append(str(journal_path(data_root)))
+
+
 def perform_reset() -> ResetResult:
     """Delete all documents and data and un-register every linked source.
 
-    Raises ``ResetRefusedError`` while a sync or import, in this process or another,
-    runs against the same data root, or when the lock that shows one cannot be taken:
-    a running sync or import would write back what the reset removed. Also raised,
-    before anything is deleted, when the held-out file list cannot be locked.
+    Raises ``ResetRefusedError`` while a sync, an import, a wiki build or an add that
+    moves source keys, in this process or another, runs against the same data root,
+    or when the lock that shows one cannot be taken: any of them would write back
+    what the reset removed. Also raised, before anything is deleted, when the
+    held-out file list cannot be locked.
     """
     skipped: list[str] = []
     try:
         with no_sync_running(cfg.data_root), skip_records_lock(cfg.data_root):
+            _drop_pending_absorb(cfg.data_root, skipped)
             deleted_docs = _clear_dir(cfg.documents_dir, skipped)
             deleted_data = _clear_dir(cfg.data_dir, skipped)
 

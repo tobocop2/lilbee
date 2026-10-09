@@ -21,6 +21,7 @@ from lilbee.app.ingest import (
     register_sources,
     remove_documents_durably,
 )
+from lilbee.app.reset import perform_reset
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
@@ -46,7 +47,12 @@ from lilbee.runtime.absorb_journal import (
     read_journal,
     write_journal,
 )
-from lilbee.runtime.lock import SyncRunningError, sync_running
+from lilbee.runtime.lock import (
+    ResetRefusedError,
+    SyncRunningError,
+    source_keys_in_use,
+    sync_running,
+)
 from tests.conftest import make_mock_services
 from tests.test_skip_marker import record_file_reads
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
@@ -2616,3 +2622,70 @@ class TestRepeatsAfterARekey:
         page = '[^src1]: a/x.md, excerpt: "one"\n[^src1]: a/x.md, excerpt: "one"'
 
         assert rekeyed_page(page, "b", "c") == page
+
+
+_RESET_REFUSED = (
+    "A sync, an import, an add or a wiki build is running on this library. "
+    "Reset again when it finishes."
+)
+
+
+class TestAResetAndAnAbsorb:
+    async def test_a_reset_during_an_absorb_is_refused_and_the_absorb_ends(self, library, notes):
+        await _add(notes / "work")
+        refused: list[str] = []
+        real_land = absorb_mod._land
+
+        def _reset_then_land(*args, **kwargs):
+            with pytest.raises(ResetRefusedError) as caught:
+                perform_reset()
+            refused.append(str(caught.value))
+            return real_land(*args, **kwargs)
+
+        with mock.patch.object(absorb_mod, "_land", side_effect=_reset_then_land):
+            register_sources([notes])
+
+        assert refused == [_RESET_REFUSED]
+        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
+        assert _registry() == {"notes": str(notes.resolve())}
+
+    def test_a_reset_while_a_wiki_writer_holds_source_keys_says_the_same(self, library):
+        with source_keys_in_use(cfg.data_root), pytest.raises(ResetRefusedError) as refused:
+            perform_reset()
+
+        assert str(refused.value) == _RESET_REFUSED
+
+    async def test_a_reset_after_a_killed_absorb_leaves_nothing_to_finish(self, library, notes):
+        await _add(notes / "work")
+        remove_documents_durably(["work/plan.md"])
+        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
+            register_sources([notes])
+        assert absorb_pending(cfg.data_root)
+
+        perform_reset()
+        svc_mod.set_services(make_mock_services(store=Store(cfg)))
+        result = await sync(quiet=True)
+
+        assert not absorb_pending(cfg.data_root)
+        assert result.added == []
+        assert _registry() == {}
+        assert _keys(svc_mod.get_services()) == []
+        assert load_skip_markers(cfg.data_root) == {}
+
+    async def test_a_journal_a_reset_cannot_delete_is_reported(self, library, notes):
+        await _add(notes / "work")
+        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
+            register_sources([notes])
+        real_unlink = Path.unlink
+
+        def _unlink(path, *args, **kwargs):
+            if path == journal_path(cfg.data_root):
+                raise PermissionError("Access is denied")
+            real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", _unlink):
+            result = perform_reset()
+
+        assert result.skipped == [str(journal_path(cfg.data_root))]
+        assert _registry() == {}
+        assert not cfg.lancedb_dir.exists()

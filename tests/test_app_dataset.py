@@ -251,7 +251,9 @@ class TestImportHoldsTheSyncMark:
             summary = await asyncio.wait_for(importing, 5)
 
         assert refused.returncode == 1, refused.stderr
-        assert "A sync or import is running on this library" in refused.stdout
+        assert (
+            "A sync, an import, an add or a wiki build is running on this library" in refused.stdout
+        )
         assert kept.exists()
         assert summary.pages == 2
         after = await asyncio.to_thread(_cli_reset, cfg.data_root)

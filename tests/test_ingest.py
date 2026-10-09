@@ -2074,7 +2074,8 @@ class TestSyncMergesItsSkipRecords:
 
         def _reset() -> None:
             whole = (
-                r"^A sync or import is running on this library\. Reset again when it finishes\.$"
+                r"^A sync, an import, an add or a wiki build is running on this library\. "
+                r"Reset again when it finishes\.$"
             )
             with pytest.raises(ResetRefusedError, match=whole) as caught:
                 perform_reset()

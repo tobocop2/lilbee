@@ -57,7 +57,8 @@ from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, pump_until
 
 _EMPTY_CATALOG = CatalogResult(total=0, limit=25, offset=0, models=[])
 _RESET_REFUSED_MID_SYNC = (
-    "A sync or import is running on this library. Reset again when it finishes."
+    "A sync, an import, an add or a wiki build is running on this library. "
+    "Reset again when it finishes."
 )
 
 # Save a reference to the real _embedding_ready before the autouse fixture
