@@ -2343,6 +2343,18 @@ class TestRemoveDocuments:
             assert result.not_found == []
             mock_del.assert_called_once_with(["docs.zip", "docs.zip/a.pdf"])
 
+    def test_removing_many_names_reads_the_source_table_once(self, store):
+        names = [f"n{index}.md" for index in range(500)]
+        rows = [{"filename": n} for n in (*names, "n7.md/inside.txt", "a/b.zip", "a/b.zip/c/d.txt")]
+        with (
+            mock.patch.object(store, "get_sources", return_value=rows) as reads,
+            mock.patch.object(store, "_remove_many_unlocked") as mock_del,
+        ):
+            result = store.remove_documents([*names, "a/b.zip"])
+        assert reads.call_count == 1
+        assert result.removed == [*names, "a/b.zip", "n7.md/inside.txt", "a/b.zip/c/d.txt"]
+        mock_del.assert_called_once_with(result.removed)
+
     def test_not_found(self, store):
         with mock.patch.object(store, "get_sources", return_value=[]):
             result = store.remove_documents(["missing.md"])

@@ -306,6 +306,19 @@ def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
     return where, value
 
 
+def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[str, list[str]]:
+    """The *filenames* under ``name/`` for each of *names*, in one pass over *filenames*."""
+    wanted = set(names)
+    members: dict[str, list[str]] = {}
+    for filename in filenames:
+        cut = filename.find("/")
+        while cut != -1:
+            if filename[:cut] in wanted:
+                members.setdefault(filename[:cut], []).append(filename)
+            cut = filename.find("/", cut + 1)
+    return members
+
+
 def _sql_equals(column: str, value: object) -> str:
     """A predicate for *column* holding *value*, a string, an integer or NULL."""
     if value is None:
@@ -2242,8 +2255,8 @@ class Store:
 
     def member_sources(self, name: str) -> list[str]:
         """Sources ingested out of the archive *name*: every filename under ``name/``."""
-        prefix = f"{name}/"
-        return [s["filename"] for s in self.get_sources() if s["filename"].startswith(prefix)]
+        filenames = [s["filename"] for s in self.get_sources()]
+        return _members_by_archive([name], filenames).get(name, [])
 
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
@@ -2255,8 +2268,10 @@ class Store:
 
         Returns a RemoveResult with removed and not_found lists.
         """
-        known = {s["filename"] for s in self.get_sources()}
-        targets = [*names, *(m for name in names for m in self.member_sources(name))]
+        filenames = [s["filename"] for s in self.get_sources()]
+        known = set(filenames)
+        members = _members_by_archive(names, filenames)
+        targets = [*names, *(m for name in names for m in members.get(name, []))]
         removed = [name for name in targets if name in known]
         not_found = [name for name in names if name not in known]
 
