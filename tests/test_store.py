@@ -4414,13 +4414,48 @@ class TestRekeySourcesUnder:
 
         assert [s["filename"] for s in store.get_sources()] == ["notes/work/a.md"]
 
-    def test_a_changed_file_name_is_refused_and_nothing_moves(self, store):
-        _seed_source(store, "plan.md")
+    @staticmethod
+    def _titles(store, key) -> set[str | None]:
+        """The title of *key* in the sources row and on each of its chunks."""
+        row = next(s for s in store.get_sources() if s["filename"] == key)
+        return {row["title"], *(chunk.title for chunk in store.get_chunks_by_source(key))}
 
-        with pytest.raises(ValueError, match=r"keeps the last path segment: 'plan.md' to 'x/b.md'"):
-            store.rekey_sources_under("plan.md", "x/b.md")
+    def test_a_changed_file_name_gives_a_title_that_came_from_the_old_name(self, store):
+        _seed_source(store, "renamed", title="renamed")
+        _seed_source(store, "renamed.bak", title="kept")
 
-        assert _holders(store, "plan.md") == _KEY_COLUMNS
+        store.rekey_sources_under("renamed", "notes/spring_plan.md")
+
+        assert _holders(store, "notes/spring_plan.md") == _KEY_COLUMNS
+        assert _holders(store, "renamed") == set()
+        assert self._titles(store, "notes/spring_plan.md") == {"spring plan"}
+        assert self._titles(store, "renamed.bak") == {"kept"}
+
+    def test_a_changed_file_name_keeps_a_title_the_document_gave(self, store):
+        _seed_source(store, "renamed", title="Spring Release Plan")
+
+        store.rekey_sources_under("renamed", "notes/plan.md")
+
+        assert self._titles(store, "notes/plan.md") == {"Spring Release Plan"}
+
+    def test_a_changed_folder_name_keeps_the_title_of_each_file_below_it(self, store):
+        _seed_source(store, "renamed/plan.md", title="plan")
+        _seed_source(store, "renamed/renamed", title="renamed")
+
+        store.rekey_sources_under("renamed", "notes/work")
+
+        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
+        assert self._titles(store, "notes/work/plan.md") == {"plan"}
+        assert self._titles(store, "notes/work/renamed") == {"renamed"}
+
+    def test_the_same_file_name_leaves_every_title_as_stored(self, store):
+        """A title that only looks derived stays when the name does not change."""
+        _seed_source(store, "plan.md", title="plan")
+        with mock.patch.object(type(store), "_relocated_title") as relocated:
+            store.rekey_sources_under("plan.md", "notes/plan.md")
+
+        relocated.assert_not_called()
+        assert self._titles(store, "notes/plan.md") == {"plan"}
 
     @pytest.mark.parametrize(
         ("old", "new", "refused"),
