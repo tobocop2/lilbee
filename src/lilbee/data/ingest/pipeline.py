@@ -102,6 +102,7 @@ from lilbee.data.store import (
     IndexMismatch,
     PageTextRecord,
     SourceMeta,
+    SourceMove,
     SourceRecord,
     SourceStat,
     SourceStatBackfill,
@@ -601,21 +602,13 @@ def _plan_items(
     return FileChangePlan(files_to_process, added, updated, unchanged, stat_backfills, held_out)
 
 
-@dataclass(frozen=True)
-class _Move:
-    """One relocated source: its old key, its new key, and the new file's stat."""
-
-    old: str
-    new: str
-    stat: SourceStat | None
-
-
 class _MovePool:
-    """Absent sources indexed by content hash, consumed as moves are paired.
+    """Absent sources indexed by content hash, consumed as moves take them.
 
-    Built once per sync and drained across the streamed plan's batches, so a file
-    that moved matches exactly the one old key it would have matched in a
-    single-pass plan however the corpus is sharded.
+    Built once per sync and drained across the streamed plan's batches. The store
+    gives each moved file one candidate under its write lock, in name order, so
+    a file takes the old key a single-pass plan pairs it with however the corpus
+    is sharded and whichever writer asks first.
     """
 
     def __init__(self, absent: list[str], existing_sources: dict[str, SourceRecord]) -> None:
@@ -631,10 +624,13 @@ class _MovePool:
     def load(self, hashes: Iterable[str]) -> None:
         """Make the absent sources with these content hashes known; all are from the start."""
 
-    def take(self, file_hash: str) -> str | None:
-        """The next absent source with this content hash, or None."""
-        matches = self._by_hash.get(file_hash)
-        return matches.pop(0) if matches else None
+    def candidates(self, file_hash: str) -> tuple[str, ...]:
+        """The absent sources with this content hash that no move took, in name order."""
+        return tuple(self._by_hash.get(file_hash, ()))
+
+    def forget(self, file_hash: str, old: str) -> None:
+        """Drop *old*, which a move took, from the candidates of its content hash."""
+        self._by_hash[file_hash].remove(old)
 
 
 class _IndexMovePool(_MovePool):
@@ -669,36 +665,34 @@ def _detect_moves(
     files_to_process: list[FileToProcess],
     added: dict[str, None],
     pool: _MovePool,
-) -> list[_Move]:
-    """Pair brand-new files with absent sources of the same content hash.
+) -> list[SourceMove]:
+    """Offer each brand-new file the absent sources of the same content hash.
 
     Only additions (files with a new name) can be moves; an update keeps its name.
-    When several absent sources share a hash, pairing is deterministic (sorted)
-    and one-to-one, so a duplicated file that moved matches exactly one old key
-    and any leftovers stay indexed under their old key.
+    When several absent sources share a hash, the store pairs them with the new
+    files one-to-one in name order, so a duplicated file that moved takes exactly
+    one old key and any leftovers stay indexed under their old key.
     """
-    moves: list[_Move] = []
+    moves: list[SourceMove] = []
     for entry in files_to_process:
         if entry.name not in added:
             continue
-        old = pool.take(entry.file_hash)
-        if old is not None:
-            moves.append(_Move(old, entry.name, entry.stat))
+        if candidates := pool.candidates(entry.file_hash):
+            moves.append(SourceMove(candidates, entry.name, entry.stat))
     return moves
 
 
 def _apply_moves(
-    moves: list[_Move],
+    moved_new: Collection[str],
     files_to_process: list[FileToProcess],
     added: dict[str, None],
 ) -> tuple[list[FileToProcess], list[str]]:
-    """Fold detected moves out of the add set after they were relocated.
+    """Fold the files a relocation re-keyed out of the add set.
 
     Drops each moved file from the ingest list and the added set: its chunks were
     re-keyed onto the new source name, not rebuilt. Returns the trimmed
     ``(files_to_process, relocated)``.
     """
-    moved_new = {m.new for m in moves}
     for name in moved_new:
         added.pop(name, None)
     remaining = [e for e in files_to_process if e.name not in moved_new]
@@ -841,15 +835,16 @@ async def _absorb_plan_batch(
         await to_ingest_thread(moves.load, new_hashes)
     detected = _detect_moves(entries, plan.added, moves)
     if detected:
-        relocations = [(m.old, m.new, m.stat) for m in detected]
-        skipped: set[str] = set()
+        taken: dict[str, str] = {}
         await to_ingest_thread(
-            _retry_after_lock_timeout, lambda: skipped.update(store.relocate_sources(relocations))
+            _retry_after_lock_timeout, lambda: taken.update(store.relocate_sources(detected))
         )
-        # A move another writer made first is an add: its old row is gone.
-        detected = [m for m in detected if m.old not in skipped]
-        entries, relocated = _apply_moves(detected, entries, plan.added)
-        state.relocated_from.extend(m.old for m in detected)
+        hashes = {entry.name: entry.file_hash for entry in entries}
+        for new, old in taken.items():
+            moves.forget(hashes[new], old)
+        # A file whose candidates other writers all took is an add.
+        entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
+        state.relocated_from.extend(taken.values())
         for name in relocated:
             state.added.pop(name, None)
         state.relocated.extend(relocated)

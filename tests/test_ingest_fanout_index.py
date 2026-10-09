@@ -48,11 +48,24 @@ def workers_as_threads(monkeypatch):
     monkeypatch.setattr("lilbee.app.services.build_services", services_for)
 
 
+_SHARED_TEXT = "Text that every copy of this file shares."
+
+
+def slice_of(name: str, count: int) -> int:
+    """The slice of *count* that owns *name*."""
+    return next(
+        index
+        for index in range(count)
+        if ShardId(index=index, count=count, records_root=cfg.data_root).owns(name)
+    )
+
+
 def _name_owned_by(index: int, count: int, stem: str) -> str:
     """A file name in slice *index* of *count*."""
-    shard = ShardId(index=index, count=count, records_root=cfg.data_root)
     return next(
-        name for name in (f"{stem}{number}.txt" for number in range(1000)) if shard.owns(name)
+        name
+        for name in (f"{stem}{number}.txt" for number in range(1000))
+        if slice_of(name, count) == index
     )
 
 
@@ -210,6 +223,57 @@ class TestEqualToOneProcess:
         assert new in fanned.sources()
         assert results[0].relocated == results[1].relocated == [new]
         assert results[0].added == []
+        _assert_equal_to_one_process(fanned, single)
+
+    @pytest.mark.parametrize(
+        ("processes", "old_count", "new_count"),
+        [
+            (2, 2, 2),
+            (2, 3, 3),
+            (2, 4, 4),
+            (3, 3, 3),
+            (3, 4, 4),
+            (8, 2, 2),
+            (8, 3, 3),
+            (8, 4, 4),
+            (2, 2, 3),
+            (8, 2, 4),
+            (2, 3, 2),
+            (8, 4, 2),
+        ],
+    )
+    async def test_files_with_one_content_renamed_at_once_each_take_one_old_name(
+        self, tmp_path, processes, old_count, new_count
+    ):
+        """New names in different slices claim the old names a one-process sync pairs them with."""
+        olds = [f"dup{number}.txt" for number in range(old_count)]
+        news = [
+            _name_owned_by(number % processes, processes, f"moved{number}_")
+            for number in range(new_count)
+        ]
+        results = []
+
+        async def history(library):
+            library.write_notes("note", 10)
+            for name in olds:
+                library.write(name, _SHARED_TEXT)
+            await library.sync()
+            for name in olds:
+                (library.documents / name).unlink()
+            for name in news:
+                library.write(name, _SHARED_TEXT)
+            results.append(await library.sync())
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history, processes)
+        paired = min(old_count, new_count)
+        fan_out, one_process = results
+        assert len(fan_out.relocated) == len(one_process.relocated) == paired
+        assert len(fan_out.added) == len(one_process.added) == new_count - paired
+        assert sorted([*fan_out.relocated, *fan_out.added]) == sorted(news)
+        # The old names no new file took stay, the first ones in name order go.
+        assert [name for name in fanned.sources() if name in olds] == olds[paired:]
+        assert len({slice_of(name, processes) for name in news}) > 1
         _assert_equal_to_one_process(fanned, single)
 
     async def test_a_copy_of_an_indexed_file_in_the_other_slice_is_indexed_beside_it(
@@ -473,12 +537,12 @@ class TestWorkerMovePool:
 
     def _take_all(self, pool, digest):
         pool.load([digest])
-        return [name for name in iter(lambda: pool.take(digest), None)]
+        return list(pool.candidates(digest))
 
     def test_no_source_table_means_no_candidate(self, library):
         assert self._take_all(self._pool(library), "h") == []
 
-    def test_each_kind_of_source_is_judged_by_its_own_rule(self, library, tmp_path):
+    def test_each_kind_of_source_is_judged_by_its_own_rule(self, library, tmp_path, monkeypatch):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME
 
         mine_on_disk, mine_gone, mine_removed = (
@@ -515,5 +579,8 @@ class TestWorkerMovePool:
         # Of this slice: only the file that left the disk and was not just removed.
         # Of the other slice: no file at the path, or a pattern excludes it.
         assert candidates == sorted([mine_gone, theirs_gone, theirs_ignored, lonely])
-        # A second load of one hash asks the index nothing and offers nothing twice.
-        assert self._take_all(pool, "same") == []
+        # A second load of one hash asks the index nothing.
+        asked = []
+        monkeypatch.setattr(Store, "sources_by_hash", lambda *args, **kw: asked.append(args))
+        assert self._take_all(pool, "same") == candidates
+        assert asked == []
