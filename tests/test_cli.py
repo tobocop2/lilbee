@@ -2565,7 +2565,9 @@ class TestReset:
             result = runner.invoke(app, [*json_flag, "reset", "--yes"])
 
         assert result.exit_code == 1
-        assert "A sync or import is running on this library" in result.output
+        assert (
+            "A sync, an import, an add or a wiki build is running on this library" in result.output
+        )
         assert (cfg.documents_dir / "doc.txt").exists()
 
     def test_reset_refused_while_the_lock_file_is_unreadable(self, isolated_env):

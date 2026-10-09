@@ -902,7 +902,7 @@ start still finishes the add with removed files left out.
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
-| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync or import runs on the same library |
+| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync, an import, a wiki build or an add that takes a source in runs on the same library |
 
 A file that fails to ingest is held out of later syncs, and `lilbee status`
 lists it. `lilbee remove` also takes held-out files, by name, folder or glob.

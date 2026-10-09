@@ -121,5 +121,5 @@ def _held_out(raw: dict[str, object]) -> HeldOut:
 
 
 def delete_journal(data_root: Path) -> None:
-    """Remove the journal; the absorb it recorded is complete."""
+    """Remove the journal: the absorb it recorded is complete, or a reset deletes its library."""
     journal_path(data_root).unlink(missing_ok=True)

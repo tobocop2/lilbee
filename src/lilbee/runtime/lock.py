@@ -53,7 +53,7 @@ _PROBE_WAIT_S = 0.3
 # Timeout instead, which is itself an OSError, so it is caught first.
 _SYNC_LOCK_ERRORS = (OSError, sqlite3.Error)
 _SYNC_LOCK_REFUSED = "Cannot lock %s (%s); a reset refuses until it can."
-_SYNC_RUNNING = "A sync or import is running on this library."
+_SYNC_RUNNING = "A sync, an import, an add or a wiki build is running on this library."
 _RESET_WHEN_DONE = "Reset again when it finishes."
 _SYNC_LOCK_UNKNOWN = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
