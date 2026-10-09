@@ -149,7 +149,9 @@ class Lilbee:
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
-        Registers each path as a source root (indexed in place), then syncs.
+        Registers each path as a source root (indexed in place), then syncs. A
+        folder that contains registered sources takes them in, which raises
+        ``SyncRunningError`` while a sync runs on the same data.
         """
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import SyncResult

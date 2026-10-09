@@ -57,7 +57,8 @@ _SYNC_TAKE_SLICE_S = 0.1
 # Timeout instead, which is itself an OSError, so it is caught first.
 _SYNC_LOCK_ERRORS = (OSError, sqlite3.Error)
 _SYNC_LOCK_REFUSED = "Cannot lock %s (%s); a reset refuses until it can."
-_SYNC_RUNNING = "A sync or import is running on this library. Reset again when it finishes."
+_SYNC_RUNNING = "A sync or import is running on this library."
+_RESET_WHEN_DONE = "Reset again when it finishes."
 _SYNC_LOCK_UNKNOWN = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
     "Stop every lilbee process, delete {path}, and reset again."
@@ -88,6 +89,10 @@ class LockingUnsupportedError(RuntimeError):
 
 class ResetRefusedError(RuntimeError):
     """Raised when a reset cannot safely run on the data root; nothing was deleted."""
+
+
+class SyncRunningError(RuntimeError):
+    """Raised when syncs must stay off the data root and one is running; nothing was changed."""
 
 
 # In-process write mutex: serializes writers within the same process
@@ -290,7 +295,25 @@ def no_sync_running(data_root: Path) -> Generator[None, None, None]:
         try:
             lock.acquire_write(blocking=False)
         except FileLockTimeout:
-            raise ResetRefusedError(_SYNC_RUNNING) from None
+            raise ResetRefusedError(f"{_SYNC_RUNNING} {_RESET_WHEN_DONE}") from None
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, write=True)
+        yield
+
+
+@contextmanager
+def syncs_held_off(data_root: Path, running: str, wait: float = 0.0) -> Generator[None, None, None]:
+    """Keep syncs off *data_root* for the block; a sync that outlasts *wait* raises *running*.
+
+    Raises ``SyncRunningError`` with the text *running*. A data root that cannot
+    be locked raises ``ResetRefusedError`` or ``LockingUnsupportedError``.
+    """
+    lock = _open_sync_lock(data_root, write=True)
+    with closing(lock):
+        try:
+            lock.acquire_write(timeout=wait, blocking=wait > 0)
+        except FileLockTimeout:
+            raise SyncRunningError(running) from None
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, write=True)
         yield

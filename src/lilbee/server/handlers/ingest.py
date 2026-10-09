@@ -117,6 +117,7 @@ async def _run_add(
                 copied=reg_result.registered,
                 name_taken=reg_result.name_taken,
                 overlapping=reg_result.overlapping,
+                absorbed=reg_result.absorbed,
                 tracked=reg_result.tracked,
                 errors=errors,
             )
@@ -131,6 +132,7 @@ async def _run_add(
             copied=reg_result.registered,
             name_taken=reg_result.name_taken,
             overlapping=reg_result.overlapping,
+            absorbed=reg_result.absorbed,
             tracked=reg_result.tracked,
             errors=errors,
             sync=SyncSummary(**sync_result.model_dump()),

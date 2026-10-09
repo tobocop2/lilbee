@@ -560,6 +560,7 @@ def _add_json_mode(
         "copied": reg_result.registered,
         "name_taken": reg_result.name_taken,
         "overlapping": reg_result.overlapping,
+        "absorbed": reg_result.absorbed,
         "tracked": reg_result.tracked,
         "refused": reg_result.refused,
         "crawled": len(crawled_paths),
@@ -580,7 +581,7 @@ def _register_and_sync(
 
     def _sync(registration: RegisterResult) -> object:
         def _sync_starts() -> None:
-            rollback.registered(registration.registered, cancel_event)
+            rollback.registered(registration.revocable, cancel_event)
 
         return _run_sync(cancel_event, before_sync=_sync_starts)
 

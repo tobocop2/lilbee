@@ -237,6 +237,22 @@ class TestAdd:
         found = bee.search("external")
         assert len(found) > 0
 
+    def test_a_parent_folder_takes_in_the_source_below_it(self, tmp_path):
+        from lilbee import Lilbee
+
+        notes = tmp_path / "src" / "notes"
+        _write_doc(notes, "loose.md", "# Loose\n\nA loose page about the harbour schedule.")
+        _write_doc(notes / "work", "plan.md", "# Plan\n\nThe plan for the spring release.")
+        bee = Lilbee(tmp_path / "proj")
+        assert bee.add([notes / "work"]).added == ["work/plan.md"]
+
+        result = bee.add([notes])
+
+        assert result.added == ["notes/loose.md"]
+        assert result.unchanged == 1
+        assert bee.config.linked_roots == {"notes": str(notes.resolve())}
+        assert sorted(bee.status()["sources"]) == ["notes/loose.md", "notes/work/plan.md"]
+
 
 class TestRemove:
     def test_remove_holds_a_failed_file_out_as_a_removal(self, tmp_path):

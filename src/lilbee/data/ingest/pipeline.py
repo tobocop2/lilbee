@@ -120,6 +120,7 @@ from lilbee.data.types import (
     SyncResult,
     _IngestResult,
 )
+from lilbee.runtime.absorb_journal import absorb_pending
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1224,6 +1225,14 @@ def _config_with_persisted_roots(shard: ShardId | None) -> Config:
     return config
 
 
+def _finish_pending_absorb() -> None:
+    """Finish an interrupted absorb, which needs every sync stopped."""
+    # circular: lilbee.app.absorb imports lilbee.data.ingest for the skip records
+    from lilbee.app.absorb import finish_pending_absorb
+
+    finish_pending_absorb()
+
+
 _SyncParams = ParamSpec("_SyncParams")
 
 
@@ -1234,8 +1243,13 @@ def _marks_sync_running(
 
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
-        async with sync_running(active_config().data_root):
-            return await run(*args, **kwargs)
+        data_root = active_config().data_root
+        while True:
+            async with sync_running(data_root):
+                # An absorb writes its journal with every sync stopped, so none appears in here.
+                if not absorb_pending(data_root):
+                    return await run(*args, **kwargs)
+            await to_ingest_thread(_finish_pending_absorb)
 
     return _marked
 

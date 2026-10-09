@@ -22,13 +22,15 @@ from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TypedDict
+from typing import TypedDict, TypeVar
 
 from filelock import FileLock
 
-from lilbee.data.types import SkippedSource
+from lilbee.data.types import SkippedSource, is_under, rekeyed_source
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 SKIP_MARKER_FILENAME = "skipped_sources.json"
 SKIP_REASON_FILENAME = "skip_reasons.json"
@@ -200,6 +202,28 @@ def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) 
         records.kinds = {k: v for k, v in records.kinds.items() if k in records.markers}
         if records != before:
             write_skip_records(data_root, records)
+
+
+def _rekeyed_map(records: Mapping[str, T], old: str, new: str) -> dict[str, T]:
+    """*records* with each key at or below *old* moved to *new*; a moved key replaces its target."""
+    kept = {name: value for name, value in records.items() if not is_under(name, old)}
+    moved = {
+        target: value
+        for name, value in records.items()
+        if (target := rekeyed_source(name, old, new)) is not None
+    }
+    return {**kept, **moved}
+
+
+def rekey_skip_records(data_root: Path, old: str, new: str) -> None:
+    """Move the record of *old* and of every file below it to *new*, in all three sidecars."""
+
+    def _move(records: SkipRecords) -> None:
+        records.markers = _rekeyed_map(records.markers, old, new)
+        records.reasons = _rekeyed_map(records.reasons, old, new)
+        records.kinds = _rekeyed_map(records.kinds, old, new)
+
+    update_skip_records(data_root, _move)
 
 
 def held_out_names(data_root: Path) -> list[str]:
