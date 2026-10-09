@@ -878,22 +878,25 @@ it returns the result of the sync only and names no source. A script that
 names a document by its old name, such as
 `lilbee remove work/plan.md`, must use `notes/work/plan.md` from then on.
 
-The folder cannot take a source in while a sync runs or while the wiki writes
-pages: a wiki build, a synthesis run, or a page opened from the browse tree.
-The add then stops with
-`A sync or a wiki build is running. Add notes again when it ends.` and changes
-nothing. A
+The folder cannot take a source in while a sync runs, while the wiki writes
+pages (a wiki build, a synthesis run, or a page opened from the browse tree),
+or while a removal runs. The add then stops and changes nothing. During a sync
+or a wiki write it prints
+`A sync or a wiki build is running. Add notes again when it ends.` Run the add
+again when the other work ends. A
 source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
 a source of its own. An older lilbee that was started before the add still
 holds the old list of sources, and its next sync moves the documents back to
 their old names and indexes files you removed from `work`. Update every
-installation that shares a library, and restart each one after the add. If the
-add is interrupted and an older lilbee syncs before the next start, the next
-start still finishes the add with removed files left out. A file that an older
-lilbee removes with `lilbee remove` after the add is interrupted and before the
-next start can be indexed again: the older lilbee keeps no record of that
-removal under a name the add was moving. Remove the file again after the
-update.
+installation that shares a library, and restart each one after the add.
+
+If the add is interrupted, finish it before an older lilbee touches the
+library. To finish it, start lilbee with the same or a newer version, or run
+`lilbee status` or `lilbee sync`. If an older lilbee already synced, removed a
+file or ran `lilbee reset` before the add finished, update it and finish the
+add. Then remove again any file you had removed, because the older lilbee can
+index it again and record it as a failure, or can miss a removal that a crash
+cut short. If you reset the library, run `lilbee reset` again.
 
 ### Manage documents
 
