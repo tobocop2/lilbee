@@ -1514,10 +1514,11 @@ class TestRetiredOcrEnvVarsAreRefused:
         ),
         ("LILBEE_TOP_K", "many", "top_k = 7", "LILBEE_TOP_K = 'many' is not a whole number"),
         (
-            "LILBEE_SEMANTIC_CHUNKING",
-            "flase",
-            "semantic_chunking = true",
-            "LILBEE_SEMANTIC_CHUNKING = 'flase' is refused (use true or false)",
+            "LILBEE_FORCE_OCR_PAGES",
+            "abc",
+            "force_ocr_pages = [2, 4]",
+            "LILBEE_FORCE_OCR_PAGES = 'abc' is refused "
+            "(force_ocr_pages: 'abc' is not a page number)",
         ),
     ],
 )
@@ -1618,6 +1619,24 @@ class TestAValidVariableRunsTheCommand:
             result = runner.invoke(
                 app, ["status", "-d", str(tmp_path)], env={"LILBEE_TOP_K": value}
             )
+        assert result.exit_code == 0, result.output
+        status.assert_called_once()
+
+    @pytest.mark.parametrize(
+        ("variable", "value"),
+        [
+            ("LILBEE_FLASH_ATTENTION", "enabled"),
+            ("LILBEE_N_GPU_LAYERS", "all"),
+            ("LILBEE_MAIN_GPU", "cuda:0"),
+            ("LILBEE_GPU_DEVICES", "cpu"),
+            ("LILBEE_SEMANTIC_CHUNKING", "auto"),
+        ],
+    )
+    def test_a_refused_value_of_a_hardware_setting_runs_the_command(
+        self, tmp_path, variable, value
+    ):
+        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
+            result = runner.invoke(app, ["status", "-d", str(tmp_path)], env={variable: value})
         assert result.exit_code == 0, result.output
         status.assert_called_once()
 

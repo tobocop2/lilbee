@@ -17,6 +17,7 @@ import pytest
 
 from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import Config, cfg
+from lilbee.core.config.model import _VARIABLE_FALLS_BACK
 from lilbee.mcp_server import TOOL_GATE_SETTINGS, build_mcp_server
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
@@ -52,6 +53,16 @@ class TestReferenceIsCurrent:
         # failure names the setting rather than only failing `make lint`.
         missing = [name for name in Config.model_fields if not generator._help_text(name)]
         assert not missing, f"settings with no help text: {missing}"
+
+    def test_the_prose_names_each_setting_whose_refused_variable_falls_back(self):
+        prose = REFERENCE.read_text(encoding="utf-8").split("## Reading the surface columns")[0]
+        sentence = next(
+            line for line in prose.splitlines() if "The exception is the hardware" in line
+        )
+        clause = sentence.split("The exception is the hardware")[1].split(":")[0]
+        named = {name for name in Config.model_fields if f"`{name}`" in clause}
+        assert len(named) == 5
+        assert named == _VARIABLE_FALLS_BACK
 
 
 class TestGeneratedFileIsMachineIndependent:

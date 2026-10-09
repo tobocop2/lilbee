@@ -84,6 +84,12 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
 }
 _VALUE_ERROR_PREFIX = "Value error, "
 
+# A variable its setting refuses stops the command, except on these: each tunes
+# hardware use, so it takes its default, the choice lilbee makes itself, with a warning.
+_VARIABLE_FALLS_BACK = frozenset(
+    {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices", "semantic_chunking"}
+)
+
 
 def value_is_set(field_name: str, raw: object) -> bool:
     """Whether an env or config.toml value is set: not blank, or blank on a clearable model role."""
@@ -1583,21 +1589,38 @@ class _PlainEnvSource:
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
         self._settings_cls = settings_cls
 
-    def __call__(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
+    def _read(self) -> tuple[dict[str, Any], dict[str, str]]:
+        """Each set variable's string by field, and why its setting refuses the ones it does."""
+        values: dict[str, Any] = {}
         for field_name in self._settings_cls.model_fields:
             raw = os.environ.get(_variable(self._settings_cls, field_name))
             if value_is_set(field_name, raw):
-                result[field_name] = raw
-        refused = _refusals(self._settings_cls, result)
-        if refused:
-            refuse_variable(
-                "; ".join(
-                    f"{_variable(self._settings_cls, key)} = {result[key]!r} {reason}"
-                    for key, reason in refused.items()
-                )
-            )
-        return {key: value for key, value in result.items() if key not in refused}
+                values[field_name] = raw
+        return values, _refusals(self._settings_cls, values)
+
+    def _stop(self, values: dict[str, Any], refused: dict[str, str]) -> None:
+        """Refuse the variables in *refused*, less the ones that fall back."""
+        lines = [
+            f"{_variable(self._settings_cls, key)} = {values[key]!r} {reason}"
+            for key, reason in refused.items()
+            if key not in _VARIABLE_FALLS_BACK
+        ]
+        if lines:
+            refuse_variable("; ".join(lines))
+
+    def refuse(self) -> None:
+        """Raise RefusedVariableError for the variables that stop a command."""
+        self._stop(*self._read())
+
+    def __call__(self) -> dict[str, Any]:
+        values, refused = self._read()
+        self._stop(values, refused)
+        for key in [key for key in refused if key in _VARIABLE_FALLS_BACK]:
+            variable = _variable(self._settings_cls, key)
+            warn_on_load(f"{variable} = {values[key]!r} {refused[key]}; {key} uses its default")
+            values[key] = self._settings_cls.model_fields[key].default
+            del refused[key]
+        return {key: value for key, value in values.items() if key not in refused}
 
 
 class _TomlSource:
@@ -1669,7 +1692,7 @@ def toml_values(path: Path) -> dict[str, Any]:
 def refuse_environment() -> None:
     """Raise RefusedVariableError for a retired OCR variable or a value its setting refuses."""
     refuse_retired_ocr_env(os.environ)
-    _PlainEnvSource(Config)()
+    _PlainEnvSource(Config).refuse()
 
 
 def _build_cfg() -> tuple[Config, tuple[str, ...]]:

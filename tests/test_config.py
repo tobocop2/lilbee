@@ -25,7 +25,12 @@ from lilbee.core.config import (
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
-from lilbee.core.config.model import _TomlSource, env_value, value_is_set
+from lilbee.core.config.model import (
+    _VARIABLE_FALLS_BACK,
+    _TomlSource,
+    env_value,
+    value_is_set,
+)
 from lilbee.runtime.progress import OcrBackendUsed
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
@@ -841,14 +846,13 @@ class TestFlashAttentionConfig:
             c = Config()
             assert c.flash_attention is True
 
-    def test_an_invalid_string_is_refused(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_FLASH_ATTENTION": "maybe?"}
-        line = "LILBEE_FLASH_ATTENTION = 'maybe?' is refused (use true, false or auto)"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
-        ):
-            Config()
+    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_FLASH_ATTENTION="maybe?")
+        assert built.flash_attention is None
+        assert warnings == (
+            "LILBEE_FLASH_ATTENTION = 'maybe?' is refused (use true, false or auto); "
+            "flash_attention uses its default",
+        )
 
     def test_assignment_with_bool(self, tmp_path) -> None:
         """Validator on assignment accepts bool inputs verbatim."""
@@ -883,14 +887,13 @@ class TestNGpuLayersConfig:
             c = Config()
             assert c.n_gpu_layers == 12
 
-    def test_an_invalid_string_is_refused(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
-        line = "LILBEE_N_GPU_LAYERS = 'not-a-number' is refused (use a whole number, cpu or auto)"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
-        ):
-            Config()
+    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_N_GPU_LAYERS="all")
+        assert built.n_gpu_layers is None
+        assert warnings == (
+            "LILBEE_N_GPU_LAYERS = 'all' is refused (use a whole number, cpu or auto); "
+            "n_gpu_layers uses its default",
+        )
 
     def test_assignment_with_int(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
@@ -924,14 +927,13 @@ class TestMainGpuConfig:
             c = Config()
             assert c.main_gpu is None
 
-    def test_an_invalid_string_is_refused(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "garbage"}
-        line = "LILBEE_MAIN_GPU = 'garbage' is refused (use a whole number or auto)"
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
-        ):
-            Config()
+    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_MAIN_GPU="garbage")
+        assert built.main_gpu is None
+        assert warnings == (
+            "LILBEE_MAIN_GPU = 'garbage' is refused (use a whole number or auto); "
+            "main_gpu uses its default",
+        )
 
     def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
         """Direct assignment with a non-string value falls through to int(v)."""
@@ -965,17 +967,13 @@ class TestGpuDevicesConfig:
             c = Config()
             assert c.gpu_devices is None
 
-    def test_a_non_numeric_index_is_refused(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": "rtx-4060"}
-        line = (
+    def test_a_non_numeric_index_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_GPU_DEVICES="rtx-4060")
+        assert built.gpu_devices is None
+        assert warnings == (
             "LILBEE_GPU_DEVICES = 'rtx-4060' is refused "
-            "(use GPU indexes separated by commas, or auto)"
+            "(use GPU indexes separated by commas, or auto); gpu_devices uses its default",
         )
-        with (
-            mock.patch.dict(os.environ, env, clear=True),
-            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
-        ):
-            Config()
 
     def test_only_separators_falls_back_to_none(self, tmp_path) -> None:
         """A string that splits into zero parts ('  ,  ,') normalizes to None."""
@@ -1025,13 +1023,13 @@ class TestSemanticChunkingConfig:
         with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "FALSE"}):
             assert Config().semantic_chunking is False
 
-    def test_an_invalid_string_is_refused(self) -> None:
-        line = "LILBEE_SEMANTIC_CHUNKING = 'banana' is refused (use true or false)"
-        with (
-            mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "banana"}),
-            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
-        ):
-            Config()
+    def test_an_invalid_string_warns_and_means_off(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_SEMANTIC_CHUNKING="banana")
+        assert built.semantic_chunking is False
+        assert warnings == (
+            "LILBEE_SEMANTIC_CHUNKING = 'banana' is refused (use true or false); "
+            "semantic_chunking uses its default",
+        )
 
     @pytest.mark.parametrize(
         ("key", "bad", "stored", "reason"),
@@ -2296,7 +2294,16 @@ _REFUSED_VARIABLES = [
         "is refused (force_ocr_pages: 'abc' is not a page number)",
     ),
     ("linked_roots", "notadict", '{ notes = "/kept/notes" }', "is not a table of names and values"),
-    ("semantic_chunking", "flase", "true", "is refused (use true or false)"),
+]
+
+# The settings whose refused variable falls back: a value origin/main took as auto or off,
+# a valid stored value that is not the default, and the default the load ends on.
+_FALLBACK_VARIABLES = [
+    ("flash_attention", "enabled", "true", None),
+    ("n_gpu_layers", "all", "12", None),
+    ("main_gpu", "cuda:0", "1", None),
+    ("gpu_devices", "cpu", '"0,1"', None),
+    ("semantic_chunking", "auto", "true", False),
 ]
 
 
@@ -2417,8 +2424,8 @@ class TestARefusedVariableStops:
         assert len(numbers) > 50
         assert numbers <= refused
         stored = {"ocr", "sessions_enabled", "num_ctx", "force_ocr_pages", "reranker_type"}
-        own_words = {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices"}
-        assert stored | own_words | {"semantic_chunking", "vision_model", "linked_roots"} <= refused
+        assert stored | {"vision_model", "linked_roots"} <= refused
+        assert refused.isdisjoint(_VARIABLE_FALLS_BACK)
 
     def test_the_entry_point_check_raises_what_the_load_raises(self, tmp_path):
         env = {**clean_env(tmp_path), "LILBEE_TOP_K": "many"}
@@ -2429,6 +2436,62 @@ class TestARefusedVariableStops:
             ),
         ):
             refuse_environment()
+
+    def test_the_named_exceptions_are_the_five_hardware_settings(self):
+        assert sorted(_VARIABLE_FALLS_BACK) == sorted(key for key, *_ in _FALLBACK_VARIABLES)
+
+    @pytest.mark.parametrize(("key", "bad", "stored", "default"), _FALLBACK_VARIABLES)
+    def test_a_refused_variable_of_a_hardware_setting_falls_back(
+        self, tmp_path, key, bad, stored, default
+    ):
+        """The losing field: the stored value is valid and the variable still decides."""
+        variable = f"LILBEE_{key.upper()}"
+        toml = f"chunk_size = 321\n{key} = {stored}\n"
+        assert _refusal_of(tmp_path, toml, **{variable: bad}) is None
+        built, warnings = _build_with(tmp_path, toml, **{variable: bad})
+        assert (getattr(built, key), built.chunk_size) == (default, 321)
+        assert len(warnings) == 1
+        assert warnings[0].startswith(f"{variable} = {bad!r} is refused (use ")
+        assert warnings[0].endswith(f"; {key} uses its default")
+        kept, quiet = _build_with(tmp_path, toml)
+        assert getattr(kept, key) != default
+        assert quiet == ()
+
+    @pytest.mark.parametrize(("key", "bad", "stored", "default"), _FALLBACK_VARIABLES)
+    def test_the_entry_point_check_passes_a_fallback_and_reports_nothing(
+        self, tmp_path, caplog, key, bad, stored, default
+    ):
+        """The stop beside it still fires, so the check did read the environment."""
+        env = {**clean_env(tmp_path), f"LILBEE_{key.upper()}": bad}
+        with mock.patch.dict(os.environ, env, clear=True), caplog.at_level("WARNING"):
+            refuse_environment()
+            os.environ["LILBEE_TOP_K"] = "many"
+            with pytest.raises(
+                RefusedVariableError, match=r"^LILBEE_TOP_K = 'many' is not a whole number$"
+            ):
+                refuse_environment()
+        assert caplog.records == []
+
+    def test_a_real_command_runs_on_a_fallback_and_prints_one_line(self, tmp_path):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_N_GPU_LAYERS": "all",
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        ran = subprocess.run(
+            [sys.executable, "-m", "lilbee", "--json", "status"],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert ran.returncode == 0, ran.stderr
+        assert "error" not in json.loads(ran.stdout)
+        assert [line for line in ran.stderr.splitlines() if "N_GPU_LAYERS" in line] == [
+            "LILBEE_N_GPU_LAYERS = 'all' is refused (use a whole number, cpu or auto); "
+            "n_gpu_layers uses its default"
+        ]
 
     def test_the_entry_point_check_passes_a_valid_environment(self, tmp_path):
         env = {**clean_env(tmp_path), "LILBEE_TOP_K": "7", "LILBEE_OCR": " "}
