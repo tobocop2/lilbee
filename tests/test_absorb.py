@@ -742,7 +742,8 @@ class TestTheCommonAddPaysNothing:
             result = register_sources([notes])
 
         assert result.registered == ["notes"] and result.absorbed == []
-        assert opened == ["pending_absorb.json"]
+        # Once when the add arrives and once under the records lock.
+        assert opened == ["pending_absorb.json"] * 2
         held_off.assert_not_called()
         journal.assert_not_called()
         rekey.assert_not_called()
@@ -2128,6 +2129,35 @@ class TestTheAddThatFinishesAnAbsorb:
         assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
         assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
         assert _record_of("notes/work/broken.md")[1] is SkipKind.FAILED
+
+    def test_an_add_that_waits_while_another_process_finishes_keeps_them(self, library, notes):
+        from contextlib import contextmanager
+
+        import lilbee.app.ingest as ingest_mod
+
+        self._killed_absorb(library, notes)
+        real_lock = ingest_mod.skip_records_lock
+
+        @contextmanager
+        def _the_other_process_finishes_first(data_root):
+            with real_lock(data_root):
+                journal = read_journal(data_root)
+                if journal is not None:
+                    absorb_mod._roll_forward(cfg, library.store, journal)
+                yield
+
+        with mock.patch.object(ingest_mod, "skip_records_lock", _the_other_process_finishes_first):
+            result = register_sources([notes])
+
+        assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
+        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
+        assert _record_of("notes/work/broken.md")[1] is SkipKind.FAILED
+
+    def test_a_journal_that_ends_before_it_is_read_names_no_key(self, library, notes):
+        self._killed_absorb(library, notes)
+
+        with mock.patch.object(absorb_mod, "read_journal", return_value=None):
+            assert absorb_mod.keys_of_pending_absorb() == []
 
     def test_an_add_of_the_tracked_parent_after_the_absorb_drops_them(self, library, notes):
         """The rule every add of a tracked folder follows, with no absorb to finish."""

@@ -11,7 +11,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lilbee.app.absorb import absorb, finish_pending_absorb, new_journal
+from lilbee.app.absorb import (
+    absorb,
+    finish_pending_absorb,
+    keys_of_pending_absorb,
+    new_journal,
+)
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
@@ -265,9 +270,10 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         return persisted, (result, new_journal(moves, add, drop))
 
     names = [p.name for p in paths]
+    in_progress = keys_of_pending_absorb()
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root):
-        taken = finish_pending_absorb(names)
+        taken = [*in_progress, *finish_pending_absorb(names)]
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
             absorb(journal, list(result.absorbed_into))

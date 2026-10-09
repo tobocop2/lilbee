@@ -250,6 +250,19 @@ def _finish(config: Config, store: Store, running: str, wait: float) -> list[str
         return list(journal.moves.values())
 
 
+def keys_of_pending_absorb() -> list[str]:
+    """The keys the sources of an absorb in progress on the active data root take; else empty.
+
+    Read without a lock: an add that arrives during an absorb, and then waits
+    for it, keeps what the absorb takes in.
+    """
+    config = active_config()
+    if not absorb_pending(config.data_root):
+        return []
+    journal = read_journal(config.data_root)
+    return [] if journal is None else list(journal.moves.values())
+
+
 def finish_pending_absorb(names: list[str] | None = None) -> list[str]:
     """Finish an absorb that started on the active data root and did not end.
 
