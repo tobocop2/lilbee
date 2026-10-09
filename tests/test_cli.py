@@ -7070,7 +7070,11 @@ class TestSyncCancelledExit:
             stopped = runner.invoke(app, [*flags, "add", str(sub.parent)])
         assert stopped.exit_code == 130, stopped.output
         if flags:
-            assert json.loads(stopped.output) == {"error": _SYNC_CANCELLED_MESSAGE}
+            assert json.loads(stopped.output) == {
+                "error": _SYNC_CANCELLED_MESSAGE,
+                "copied": ["parent"],
+                "absorbed": ["sub"],
+            }
         else:
             printed = " ".join(stopped.output.split())
             assert printed.endswith(_SYNC_CANCELLED_MESSAGE)

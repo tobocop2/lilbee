@@ -261,6 +261,19 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
 
 
 @contextmanager
+def source_keys_in_use(data_root: Path) -> Generator[None, None, None]:
+    """Hold the sync mark of *data_root* for a block that reads and writes source keys.
+
+    Waits while a reset or an add that moves keys holds syncs off.
+    """
+    lock = _acquire_sync_lock(data_root, write=False)
+    try:
+        yield
+    finally:
+        _release_sync_lock(lock)
+
+
+@contextmanager
 def no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
     try:

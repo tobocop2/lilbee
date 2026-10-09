@@ -9,16 +9,18 @@ from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.data.ingest.skip_marker import (
+    SkipKind,
     SkipRecords,
-    rekey_skip_records,
+    load_skip_records,
     skip_records_lock,
     update_skip_records,
 )
 from lilbee.data.store import Store
-from lilbee.data.types import is_under
+from lilbee.data.types import is_under, rekeyed_source
 from lilbee.runtime.absorb_journal import (
     AbsorbJournal,
     AbsorbPhase,
+    HeldOut,
     absorb_pending,
     delete_journal,
     read_journal,
@@ -28,7 +30,7 @@ from lilbee.runtime.lock import LOCK_TIMEOUT, syncs_held_off
 
 log = logging.getLogger(__name__)
 
-SYNC_RUNNING_ADD_AGAIN = "A sync is running. Add {names} again when it ends."
+SYNC_RUNNING_ADD_AGAIN = "A sync or a wiki build is running. Add {names} again when it ends."
 _UNFINISHED_ADD_HELD = (
     "An interrupted add is not finished and another lilbee process holds this library. "
     "Try again when it ends."
@@ -37,16 +39,50 @@ _JOURNAL_ID_BYTES = 4
 
 
 def new_journal(moves: dict[str, str], add: dict[str, str], drop: list[str]) -> AbsorbJournal:
-    """A journal for *moves* and the registry change, under an id no source key starts with."""
-    return AbsorbJournal(id=secrets.token_hex(_JOURNAL_ID_BYTES), moves=moves, add=add, drop=drop)
+    """A journal for *moves* and the registry change, under an id no source key starts with.
+
+    The caller holds the skip-records lock: the journal takes the records of the
+    sources that move as they are now.
+    """
+    records = _records_after(load_skip_records(active_config().data_root), moves)
+    return AbsorbJournal(
+        id=secrets.token_hex(_JOURNAL_ID_BYTES), moves=moves, add=add, drop=drop, records=records
+    )
+
+
+def _inner_olds(moves: dict[str, str], outer_old: str) -> list[str]:
+    """The key, below the absorbed source *outer_old*, of each absorbed source inside it."""
+    outer_new = moves[outer_old]
+    return [
+        outer_old + inner_new[len(outer_new) :]
+        for inner_new in moves.values()
+        if inner_new != outer_new and is_under(inner_new, outer_new)
+    ]
+
+
+def _records_after(records: SkipRecords, moves: dict[str, str]) -> dict[str, HeldOut]:
+    """The record of each file the sources in *moves* hold out, under the key it takes.
+
+    A source inside another absorbed source decides for its own files, so the
+    outer source's records of them are left out.
+    """
+    after: dict[str, HeldOut] = {}
+    for old, new in moves.items():
+        shadows = _inner_olds(moves, old)
+        for name, marker in records.markers.items():
+            key = rekeyed_source(name, old, new)
+            if key is None or any(is_under(name, shadow) for shadow in shadows):
+                continue
+            removed = records.kinds[name] is SkipKind.REMOVED
+            after[key] = HeldOut(marker, records.reasons.get(name), removed)
+    return after
 
 
 def _rekey(config: Config, store: Store, old: str, new: str) -> None:
-    """Move *old* and every key below it to *new* in the store, the skip records and the wiki."""
+    """Move *old* and every key below it to *new* in the store and the wiki."""
     from lilbee.wiki.rekey import rekey_wiki_pages  # heavy: the wiki package loads spaCy
 
     store.rekey_sources_under(old, new)
-    rekey_skip_records(config.data_root, old, new)
     rekey_wiki_pages(config.data_root / config.wiki_dir, old, new)
 
 
@@ -61,33 +97,35 @@ def _clear_targets(store: Store, targets: list[str]) -> None:
         store.remove_documents(occupied)
 
 
-def _shadows(journal: AbsorbJournal) -> list[str]:
-    """Each temporary key of an absorbed source at which a source inside it lands.
+def _shadows(journal: AbsorbJournal) -> dict[str, str]:
+    """Each temporary key of an absorbed source at which a source inside it lands, with its own.
 
     Two registered sources that lie inside each other indexed the files of the
     inner one twice. The inner source's entries are the ones that land.
     """
-    return [
-        journal.lifted(outer_old) + inner_new[len(outer_new) :]
+    inner_old = {new: old for old, new in journal.moves.items()}
+    return {
+        journal.lifted(outer_old) + inner_new[len(outer_new) :]: journal.lifted(
+            inner_old[inner_new]
+        )
         for outer_old, outer_new in journal.moves.items()
         for inner_new in journal.moves.values()
         if inner_new != outer_new and is_under(inner_new, outer_new)
-    ]
+    }
 
 
-def _drop_shadows(config: Config, store: Store, journal: AbsorbJournal) -> None:
-    """Remove what an outer source indexed and recorded for the files of a source inside it."""
+def _drop_shadows(store: Store, journal: AbsorbJournal) -> None:
+    """Remove what an outer source indexed for the files of a source inside it.
+
+    A citation of the outer copy cites the same file and lands with it, unless
+    the inner source holds the same citation.
+    """
     shadows = _shadows(journal)
     if not shadows:
         return
-    _clear_targets(store, shadows)
-
-    def _drop(records: SkipRecords) -> None:
-        for name in list(records.markers):
-            if any(is_under(name, shadow) for shadow in shadows):
-                records.markers.pop(name)
-
-    update_skip_records(config.data_root, _drop)
+    _clear_targets(store, list(shadows))
+    for shadow, inner in shadows.items():
+        store.drop_citations_repeated_under(shadow, inner)
 
 
 def _lift(config: Config, store: Store, journal: AbsorbJournal) -> None:
@@ -95,7 +133,7 @@ def _lift(config: Config, store: Store, journal: AbsorbJournal) -> None:
     for old in journal.moves:
         _rekey(config, store, old, journal.lifted(old))
     _clear_targets(store, list(journal.moves.values()))
-    _drop_shadows(config, store, journal)
+    _drop_shadows(store, journal)
 
 
 def _land(config: Config, store: Store, journal: AbsorbJournal) -> None:
@@ -106,11 +144,47 @@ def _land(config: Config, store: Store, journal: AbsorbJournal) -> None:
     """
     for old, new in journal.moves.items():
         if not is_under(new, old):
-            # An older build that synced since the lift moved these keys back.
+            # A lilbee without the absorb that synced since the lift wrote below the old key.
             _rekey(config, store, old, journal.lifted(old))
-    _drop_shadows(config, store, journal)
+    _drop_shadows(store, journal)
     for old, new in journal.moves.items():
         _rekey(config, store, journal.lifted(old), new)
+
+
+def _drop_removed_again(store: Store, journal: AbsorbJournal) -> None:
+    """Remove each file the journal holds a removal for that is indexed at the removed hash.
+
+    A lilbee without the absorb that synced before the journal ended can index
+    it again. Another hash is an edit since the removal, which every sync indexes.
+    """
+    removed = {key: held.hash for key, held in journal.records.items() if held.removed}
+    if not removed:
+        return
+    again = [
+        source["filename"]
+        for source in store.get_sources()
+        if removed.get(source["filename"]) == source["file_hash"]
+    ]
+    if again:
+        store.remove_documents(again)
+
+
+def _write_records(config: Config, journal: AbsorbJournal) -> None:
+    """Give the skip record files the journal's records, in place of any at an old or new key."""
+    prefixes = [*journal.moves, *journal.moves.values()]
+
+    def _replace(records: SkipRecords) -> None:
+        for name in list(records.markers):
+            if any(is_under(name, prefix) for prefix in prefixes):
+                records.markers.pop(name)
+                records.reasons.pop(name, None)
+        for key, held in journal.records.items():
+            records.markers[key] = held.hash
+            if held.reason is not None:
+                records.reasons[key] = held.reason
+            records.kinds[key] = SkipKind.REMOVED if held.removed else SkipKind.FAILED
+
+    update_skip_records(config.data_root, _replace)
 
 
 def _refresh_wiki_index(config: Config, journal: AbsorbJournal) -> None:
@@ -143,6 +217,8 @@ def _roll_forward(config: Config, store: Store, journal: AbsorbJournal) -> None:
         journal = journal.at(AbsorbPhase.LAND)
         write_journal(config.data_root, journal)
     _land(config, store, journal)
+    _drop_removed_again(store, journal)
+    _write_records(config, journal)
     _refresh_wiki_index(config, journal)
     _write_registry(config, journal)
     delete_journal(config.data_root)
@@ -160,29 +236,34 @@ def absorb(journal: AbsorbJournal, names: list[str]) -> None:
         _roll_forward(config, get_services().store, journal)
 
 
-def _finish(config: Config, store: Store, running: str, wait: float) -> None:
-    """Roll the journal of *config*'s data root forward under the locks an absorb holds."""
+def _finish(config: Config, store: Store, running: str, wait: float) -> list[str]:
+    """Roll the journal of *config*'s data root forward under the locks an absorb holds.
+
+    Returns the keys the absorbed sources took, empty when no journal was left.
+    """
     with syncs_held_off(config.data_root, running, wait), skip_records_lock(config.data_root):
         journal = read_journal(config.data_root)
-        if journal is not None:  # another process finished it while this one waited
-            log.warning("Finishing an interrupted add: %s", ", ".join(journal.add))
-            _roll_forward(config, store, journal)
+        if journal is None:  # another process finished it while this one waited
+            return []
+        log.warning("Finishing an interrupted add: %s", ", ".join(journal.add))
+        _roll_forward(config, store, journal)
+        return list(journal.moves.values())
 
 
-def finish_pending_absorb(names: list[str] | None = None) -> None:
+def finish_pending_absorb(names: list[str] | None = None) -> list[str]:
     """Finish an absorb that started on the active data root and did not end.
 
     Costs one existence check without one. With *names*, a running sync raises
     ``SyncRunningError`` at once and asks for them again; without, it waits.
+    Returns the keys the absorbed sources took, empty when it finished none.
     """
     config = active_config()
     if not absorb_pending(config.data_root):
-        return
+        return []
     if names is None:
-        _finish(config, get_services().store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT)
-    else:
-        running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-        _finish(config, get_services().store, running, 0.0)
+        return _finish(config, get_services().store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT)
+    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
+    return _finish(config, get_services().store, running, 0.0)
 
 
 def finish_pending_absorb_at_start(config: Config, store: Store) -> None:

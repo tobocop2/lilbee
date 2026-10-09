@@ -24,10 +24,12 @@ from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
 from lilbee.data.ingest.skip_marker import (
+    REMOVED_SKIP_REASON,
     SKIP_KIND_FILENAME,
     SKIP_MARKER_FILENAME,
     SKIP_REASON_FILENAME,
     SkipKind,
+    clear_failed_markers,
     load_skip_kinds,
     load_skip_markers,
     load_skip_reasons,
@@ -37,6 +39,7 @@ from lilbee.runtime.absorb_journal import (
     AbsorbJournal,
     AbsorbJournalError,
     AbsorbPhase,
+    HeldOut,
     absorb_pending,
     journal_path,
     read_journal,
@@ -263,6 +266,9 @@ def _seeded_nested_children(store: Store, parent: Path) -> Path:
     _register_as({"work": parent / "work", "deep": parent / "work" / "deep"})
     for key in ("work/plan.md", "work/deep/a.md", "work/deep/b.md", "deep/a.md", "deep/b.md"):
         _seed(store, key)
+    _seed(store, "work/deep/gone.md")  # removed from the inner source only
+    outer_copy = dict(store.get_citations_for_source("deep/a.md")[0])
+    store.add_citations([{**outer_copy, "source_filename": "work/deep/a.md", "created_at": "t"}])
     _seed(store, "workshop/x.md")
     _hold_out("deep/gone.md", SkipKind.REMOVED)
     _hold_out("work/deep/kept.md", SkipKind.REMOVED)
@@ -572,14 +578,29 @@ class TestTheParentTakesTheChild:
             "notes/work/plan.md",
         ]
 
-    def test_landing_without_the_drop_writes_one_key_twice(self, library, notes):
-        """The control for the test above: both entries for one file land on one key."""
+    def test_landing_without_the_drop_indexes_what_the_inner_source_removed(self, library, notes):
+        """The control for the test above: the outer source's entry for a removed file lands."""
         _seeded_nested_children(library.store, notes)
 
         with mock.patch.object(absorb_mod, "_drop_shadows"):
             register_sources([notes])
 
-        assert _keys(library).count("notes/work/deep/a.md") == 2
+        assert "notes/work/deep/gone.md" in _keys(library)
+
+    def test_a_citation_both_nested_sources_hold_lands_once(self, library, notes):
+        store = library.store
+        _seeded_nested_children(store, notes)
+        assert len(store.get_citations_for_source("work/deep/a.md")) == 2
+
+        register_sources([notes])
+
+        cited = store.get_citations_for_source("notes/work/deep/a.md")
+        keys = {f"src{abs(hash(key)) % 97}" for key in ("deep/a.md", "work/deep/a.md")}
+        assert sorted(row["citation_key"] for row in cited) == sorted(keys)
+        page = (cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md").read_text(encoding="utf-8")
+        footnotes = [line for line in page.split("\n") if line.startswith("[^src")]
+        assert footnotes and len(footnotes) == len(set(footnotes))
+        assert page.count("- source: notes/work/deep/a.md") == 1
 
     def test_a_drop_after_the_land_finds_nothing_to_drop(self, library, notes):
         """The wrong order: the outer source's entries have left the temporary keys."""
@@ -588,11 +609,11 @@ class TestTheParentTakesTheChild:
         real_drop = absorb_mod._drop_shadows
         journals: list[AbsorbJournal] = []
 
-        with mock.patch.object(absorb_mod, "_drop_shadows", lambda _c, _s, j: journals.append(j)):
+        with mock.patch.object(absorb_mod, "_drop_shadows", lambda _s, j: journals.append(j)):
             register_sources([notes])
-        real_drop(cfg, store, journals[0])
+        real_drop(store, journals[0])
 
-        assert _keys(library).count("notes/work/deep/a.md") == 2
+        assert "notes/work/deep/gone.md" in _keys(library)
 
 
 class TestWhatIsNotAbsorbed:
@@ -759,7 +780,9 @@ class TestASyncIsRunning:
             with pytest.raises(SyncRunningError) as refused:
                 register_sources([notes])
 
-        assert str(refused.value) == "A sync is running. Add notes again when it ends."
+        assert (
+            str(refused.value) == "A sync or a wiki build is running. Add notes again when it ends."
+        )
         assert _everything(library.store) == before
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
 
@@ -810,14 +833,14 @@ class TestInterruptedAbsorb:
     _KILL_POINTS = (
         "journal-written",
         "lift-third-table",
-        "lift-skip-records",
         "lift-wiki-pages",
         "clear-targets",
         "phase-write",
         "land-start",
         "land-third-table",
-        "land-skip-records",
         "land-wiki-pages",
+        "removed-again",
+        "skip-records",
         "wiki-index",
         "registry",
         "journal-delete",
@@ -838,20 +861,21 @@ class TestInterruptedAbsorb:
         return mock.patch.object(target, attribute, _dies)
 
     def _kill_at(self, point: str):
-        import lilbee.data.store.core as core_mod
+        from lancedb.table import LanceTable
+
         import lilbee.wiki.rekey as wiki_rekey_mod
 
         tables = len(_KEY_COLUMNS)
         return {
             "journal-written": lambda: self._nth_call(Store, "rekey_sources_under", 1),
-            "lift-third-table": lambda: self._nth_call(core_mod, "_rekey_sql", 4),
-            "lift-skip-records": lambda: self._nth_call(absorb_mod, "rekey_skip_records", 1),
+            "lift-third-table": lambda: self._nth_call(LanceTable, "update", 4),
             "lift-wiki-pages": lambda: self._nth_call(wiki_rekey_mod, "rekey_wiki_pages", 1),
             "clear-targets": lambda: self._nth_call(absorb_mod, "_clear_targets", 1),
             "phase-write": lambda: self._nth_call(absorb_mod, "write_journal", 2),
             "land-start": lambda: self._nth_call(absorb_mod, "_land", 1),
-            "land-third-table": lambda: self._nth_call(core_mod, "_rekey_sql", tables + 4),
-            "land-skip-records": lambda: self._nth_call(absorb_mod, "rekey_skip_records", 2),
+            "land-third-table": lambda: self._nth_call(LanceTable, "update", tables + 4),
+            "removed-again": lambda: self._nth_call(absorb_mod, "_drop_removed_again", 1),
+            "skip-records": lambda: self._nth_call(absorb_mod, "_write_records", 1),
             "land-wiki-pages": lambda: self._nth_call(wiki_rekey_mod, "rekey_wiki_pages", 2),
             "wiki-index": lambda: self._nth_call(absorb_mod, "_refresh_wiki_index", 1),
             "registry": lambda: self._nth_call(absorb_mod, "_write_registry", 1),
@@ -909,29 +933,29 @@ class TestInterruptedAbsorb:
     # One source moves three times (lift, the lift again, land) and two sources six.
     _SHAPE_POINTS = (
         *(("renamed", "rekey", nth) for nth in (1, 2, 3)),
-        *(("renamed", "records", nth) for nth in (1, 2, 3)),
+        ("renamed", "records", 1),
         ("renamed", "table", 4),
-        ("renamed", "table", 2 * _TABLES + 4),
+        ("renamed", "table", _TABLES + 6),
         *(("nested", "rekey", nth) for nth in range(1, 7)),
-        *(("nested", "records", nth) for nth in range(1, 7)),
+        ("nested", "records", 1),
         ("nested", "table", 4),
-        ("nested", "table", 4 * _TABLES + 4),
-        ("nested", "table", 5 * _TABLES + 4),
+        ("nested", "table", _TABLES + 4),
+        ("nested", "table", 2 * _TABLES + 4),
         *(("nested", "clear", nth) for nth in (1, 2, 3)),
-        *(("nested", "shadow-records", nth) for nth in (1, 2)),
+        *(("nested", "citations", nth) for nth in (1, 2)),
         *((shape, step, 1) for shape in _SHAPES for step in ("wiki-index", "registry", "delete")),
         *((shape, "phase", 2) for shape in _SHAPES),
     )
 
     def _kill_nth(self, step: str, nth: int):
-        import lilbee.data.store.core as core_mod
+        from lancedb.table import LanceTable
 
         target, attribute = {
             "rekey": (Store, "rekey_sources_under"),
-            "table": (core_mod, "_rekey_sql"),
-            "records": (absorb_mod, "rekey_skip_records"),
+            "table": (LanceTable, "update"),
+            "records": (absorb_mod, "_write_records"),
             "clear": (absorb_mod, "_clear_targets"),
-            "shadow-records": (absorb_mod, "update_skip_records"),
+            "citations": (Store, "drop_citations_repeated_under"),
             "phase": (absorb_mod, "write_journal"),
             "wiki-index": (absorb_mod, "_refresh_wiki_index"),
             "registry": (absorb_mod, "_write_registry"),
@@ -1060,7 +1084,7 @@ class TestInterruptedAbsorb:
         self, library, notes, tmp_path
     ):
         await _add(notes / "work")
-        with self._kill_at("lift-skip-records"), pytest.raises(_Killed):
+        with self._kill_at("clear-targets"), pytest.raises(_Killed):
             register_sources([notes])
         other = _write(tmp_path / "other" / "o.md", "# O\n\nAnother page.\n").parent
 
@@ -1216,6 +1240,10 @@ class TestTheJournal:
             moves={"work": "notes/work"},
             add={"notes": "/x/notes"},
             drop=["work"],
+            records={
+                "notes/work/gone.md": HeldOut("h1", "removed", removed=True),
+                "notes/work/bad.pdf": HeldOut("h2", None, removed=False),
+            },
             phase=AbsorbPhase.LAND,
         )
 
@@ -1231,18 +1259,38 @@ class TestTheJournal:
 
     @pytest.mark.parametrize(
         "text",
-        ["", "{not json", "[]", '{"id": "a"}', '{"id": "a", "moves": [], "add": {}, "drop": []}'],
-        ids=["empty", "not-json", "a-list", "keys-missing", "moves-not-a-table"],
+        [
+            "",
+            "{not json",
+            "[]",
+            '{"id": "a"}',
+            '{"id": "a", "moves": [], "add": {}, "drop": []}',
+            '{"id": "a", "moves": {}, "add": {}, "drop": [], "phase": "lift"}',
+            '{"id": "a", "moves": {}, "add": {}, "drop": [], "phase": "lift", "records": {"k": 1}}',
+        ],
+        ids=[
+            "empty",
+            "not-json",
+            "a-list",
+            "keys-missing",
+            "moves-not-a-table",
+            "no-records",
+            "a-record-without-its-hash",
+        ],
     )
     def test_an_unreadable_journal_raises_and_names_the_file(self, tmp_path, text):
         journal_path(tmp_path).write_text(text, encoding="utf-8")
 
-        with pytest.raises(AbsorbJournalError, match=r"pending_absorb\.json"):
+        with pytest.raises(AbsorbJournalError, match=r"pending_absorb\.json") as raised:
             read_journal(tmp_path)
+
+        assert "delete that file and run `lilbee rebuild`" in str(raised.value)
 
     def test_an_unknown_phase_raises(self, tmp_path):
         journal_path(tmp_path).write_text(
-            json.dumps({"id": "a", "moves": {}, "add": {}, "drop": [], "phase": "undo"}),
+            json.dumps(
+                {"id": "a", "moves": {}, "add": {}, "drop": [], "records": {}, "phase": "undo"}
+            ),
             encoding="utf-8",
         )
 
@@ -1380,10 +1428,12 @@ class TestEveryEntryPoint:
             outcome = CliRunner().invoke(app, ["add", "--data-dir", str(cfg.data_root), str(notes)])
 
         assert outcome.exit_code == 1
-        assert "A sync is running. Add notes again when it ends." in outcome.output
+        assert "A sync or a wiki build is running. Add notes again when it ends." in outcome.output
         assert sorted(_registry()) == ["work"]
 
-    async def test_the_tui_toast_names_the_absorbed_source(self, library, notes):
+    async def test_the_tui_names_the_source_and_its_rollback_spares_the_parent(
+        self, library, notes
+    ):
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
@@ -1476,7 +1526,7 @@ class TestEveryEntryPoint:
             frames = [frame async for frame in add_files_stream([str(notes)])]
 
         text = "".join(frames)
-        assert "A sync is running. Add notes again when it ends." in text
+        assert "A sync or a wiki build is running. Add notes again when it ends." in text
         assert "event: done" not in text
         assert sorted(_registry()) == ["work"]
 
@@ -1498,7 +1548,9 @@ class TestEveryEntryPoint:
         async with sync_running(cfg.data_root):
             result = await add([str(notes)])
 
-        assert result == {"error": "A sync is running. Add notes again when it ends."}
+        assert result == {
+            "error": "A sync or a wiki build is running. Add notes again when it ends."
+        }
 
 
 async def _one_child(parent: Path) -> None:
@@ -1971,3 +2023,311 @@ class TestSyncsHeldOff:
         with syncs_held_off(tmp_path, "busy", wait=10):
             assert release.is_set()
         thread.join(10)
+
+
+def _record_of(key: str) -> tuple[str | None, SkipKind | None, str | None]:
+    """The hash, kind and reason the skip record files hold for *key*."""
+    return (
+        load_skip_markers(cfg.data_root).get(key),
+        load_skip_kinds(cfg.data_root).get(key),
+        load_skip_reasons(cfg.data_root).get(key),
+    )
+
+
+class TestRecordsChangeTogether:
+    """A kill between the skip record files never splits the record of a file."""
+
+    _REMOVED = ("hash of work/gone.md", SkipKind.REMOVED, REMOVED_SKIP_REASON)
+
+    @staticmethod
+    def _dies_replacing(filename: str):
+        """Die before the first replace of *filename*, as a killed process does."""
+        import os
+
+        real = os.replace
+
+        def _replace(src, dst, *args, **kwargs):
+            if Path(dst).name == filename:
+                raise _Killed
+            return real(src, dst, *args, **kwargs)
+
+        return mock.patch.object(os, "replace", _replace)
+
+    @pytest.mark.parametrize(
+        "filename", [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME]
+    )
+    def test_a_kill_before_each_record_file_leaves_the_removal_a_removal(
+        self, library, notes, filename
+    ):
+        _seeded_child(library.store, notes)
+        assert _record_of("work/gone.md") == self._REMOVED
+
+        with self._dies_replacing(filename), pytest.raises(_Killed):
+            register_sources([notes])
+        cfg.linked_roots = {"work": str((notes / "work").resolve())}  # what a new process loads
+        finish_pending_absorb()
+
+        assert _record_of("notes/work/gone.md") == self._REMOVED
+        assert _record_of("notes/work/broken.md") == (
+            "hash of work/broken.md",
+            SkipKind.FAILED,
+            "no text",
+        )
+        assert sorted(load_skip_markers(cfg.data_root)) == [
+            "notes/work/broken.md",
+            "notes/work/gone.md",
+        ]
+        for name in (SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME):
+            stored = json.loads((cfg.data_root / name).read_text(encoding="utf-8"))
+            assert sorted(stored) == ["notes/work/broken.md", "notes/work/gone.md"], name
+        assert clear_failed_markers(cfg.data_root) == ["notes/work/broken.md"]
+        assert _record_of("notes/work/gone.md") == self._REMOVED
+
+    def test_a_marker_with_no_reason_moves_as_a_failure_without_one(self, library, notes):
+        from lilbee.data.ingest.skip_marker import write_skip_markers
+
+        _seeded_child(library.store, notes)
+        write_skip_markers(cfg.data_root, {**load_skip_markers(cfg.data_root), "work/bare.md": "h"})
+
+        register_sources([notes])
+
+        assert _record_of("notes/work/bare.md") == ("h", SkipKind.FAILED, None)
+
+    def test_the_records_stay_at_the_old_keys_until_the_keys_have_moved(self, library, notes):
+        """A lilbee without the absorb that syncs in between still finds the removal."""
+        _seeded_child(library.store, notes)
+
+        with (
+            mock.patch.object(absorb_mod, "_write_records", side_effect=_Killed),
+            pytest.raises(_Killed),
+        ):
+            register_sources([notes])
+
+        assert _record_of("work/gone.md") == self._REMOVED
+        assert "notes/work/plan.md" in _keys(library)
+        journal = read_journal(cfg.data_root)
+        assert journal is not None
+        assert journal.records["notes/work/gone.md"] == HeldOut(
+            "hash of work/gone.md", REMOVED_SKIP_REASON, removed=True
+        )
+
+
+class TestTheAddThatFinishesAnAbsorb:
+    def _killed_absorb(self, library, notes) -> None:
+        _seeded_child(library.store, notes)
+        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
+            register_sources([notes])
+        assert absorb_pending(cfg.data_root)
+        cfg.linked_roots = {"work": str((notes / "work").resolve())}
+
+    def test_adding_the_parent_again_keeps_what_the_absorb_took_in(self, library, notes):
+        self._killed_absorb(library, notes)
+
+        result = register_sources([notes])
+
+        assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
+        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
+        assert _record_of("notes/work/broken.md")[1] is SkipKind.FAILED
+
+    def test_an_add_of_the_tracked_parent_after_the_absorb_drops_them(self, library, notes):
+        """The rule every add of a tracked folder follows, with no absorb to finish."""
+        _seeded_child(library.store, notes)
+        register_sources([notes])
+        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
+        _write(notes / "work" / "gone.md", "# Gone\n")
+
+        result = register_sources([notes])
+
+        assert result.tracked == ["notes"]
+        assert load_skip_markers(cfg.data_root) == {}
+
+
+class TestAnOlderBuildSyncedInBetween:
+    """Recovery after a lilbee without the absorb wrote below the old keys."""
+
+    def _killed_at(self, library, notes, step: str) -> AbsorbJournal:
+        _seeded_child(library.store, notes)
+        with mock.patch.object(absorb_mod, step, side_effect=_Killed), pytest.raises(_Killed):
+            register_sources([notes])
+        journal = read_journal(cfg.data_root)
+        assert journal is not None
+        cfg.linked_roots = {"work": str((notes / "work").resolve())}
+        return journal
+
+    @pytest.mark.parametrize("step", ["_land", "_drop_removed_again", "_write_registry"])
+    def test_a_file_it_indexed_again_and_one_it_added_as_new_end_single(
+        self, library, notes, tmp_path, step
+    ):
+        from lilbee.data.store import SourceType
+
+        store = library.store
+        journal = self._killed_at(library, notes, step)
+        held = "notes/work" if step != "_land" else journal.lifted("work")
+        store.rekey_sources_under(f"{held}/plan.md", "work/plan.md")  # moved back by its hash
+        _seed(store, "work/budget.md")  # the edited file, added as new
+        store.upsert_source("work/budget.md", "hash after the edit", 1, SourceType.DOCUMENT)
+        _seed(store, "work/gone.md")  # the removed file, indexed at the hash it was removed at
+
+        finish_pending_absorb()
+
+        clean = TestInterruptedAbsorb()._clean_absorb(tmp_path)
+        finished = _everything(store)
+        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md", "workshop/x.md"]
+        hashes = {row["filename"]: row["file_hash"] for row in store.get_sources()}
+        assert hashes["notes/work/budget.md"] == "hash after the edit"
+        assert len(store.get_chunks_by_source("notes/work/budget.md")) == 1
+        assert len(store.get_page_texts("notes/work/budget.md")) == 1
+        for part in ("markers", "reasons", "kinds", "registry", "journal", "wiki"):
+            assert finished[part] == clean[part], part
+        assert _holders(store, "notes/work/gone.md") == {("_citations", "source_filename")}
+
+    def test_an_edit_since_the_removal_stays_indexed(self, library, notes):
+        from lilbee.data.store import SourceType
+
+        store = library.store
+        self._killed_at(library, notes, "_land")
+        store.upsert_source("work/gone.md", "hash after an edit", 1, SourceType.DOCUMENT)
+
+        finish_pending_absorb()
+
+        assert "notes/work/gone.md" in _keys(library)
+
+    def test_an_update_during_a_half_done_lift_leaves_one_set_of_rows(self, library, notes):
+        from lancedb.table import LanceTable
+
+        store = library.store
+        _seeded_child(store, notes)
+        with TestInterruptedAbsorb._nth_call(LanceTable, "update", 4), pytest.raises(_Killed):
+            register_sources([notes])
+        cfg.linked_roots = {"work": str((notes / "work").resolve())}
+        from tests.test_store import _titled_records
+
+        store.add_chunks(_titled_records("work/budget.md", 2, title=None, dim=cfg.embedding_dim))
+
+        finish_pending_absorb()
+
+        assert len(store.get_chunks_by_source("notes/work/budget.md")) == 2
+        assert store.get_page_texts("notes/work/budget.md") == []
+
+
+class TestAWikiBuildAndAnAbsorb:
+    def test_an_absorb_is_refused_while_a_wiki_build_writes(self, library, notes):
+        from lilbee.wiki import generation
+
+        _seeded_child(library.store, notes)
+        refused: list[str] = []
+
+        def _pages(*_args, **_kwargs):
+            with pytest.raises(SyncRunningError) as raised:
+                register_sources([notes])
+            refused.append(str(raised.value))
+            return []
+
+        with mock.patch.object(generation, "_build_pages", _pages):
+            assert generation.build_wiki([], library.provider, library.store, cfg) == []
+
+        assert refused == ["A sync or a wiki build is running. Add notes again when it ends."]
+        assert sorted(_registry()) == ["work"] and not absorb_pending(cfg.data_root)
+        assert register_sources([notes]).absorbed == ["work"]
+
+    def test_a_build_without_a_config_holds_the_mark_of_the_active_root(self, library, notes):
+        from lilbee.wiki import generation
+
+        _seeded_child(library.store, notes)
+
+        def _pages(*_args, **_kwargs):
+            with pytest.raises(SyncRunningError):
+                register_sources([notes])
+            return []
+
+        with mock.patch.object(generation, "_build_pages", _pages):
+            assert generation.build_wiki([], library.provider, library.store) == []
+
+
+class TestACancelledJsonAdd:
+    async def test_it_names_the_folder_that_stays_and_what_it_took_in(self, library, notes, capsys):
+        import threading
+
+        from lilbee.app.ingest import AddRollback
+        from lilbee.cli.commands import ingest_sync
+
+        await _add(notes / "work")
+        rollback = AddRollback(paths=[notes], at_sync=False)
+        cfg.json_mode = True
+
+        def _cancelled(_cancel, before_sync):
+            raise KeyboardInterrupt
+
+        with (
+            mock.patch.object(ingest_sync, "_run_sync", _cancelled),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            ingest_sync._register_and_sync(
+                [notes],
+                [],
+                sync_urls=False,
+                force=False,
+                cancel_event=threading.Event(),
+                rollback=rollback,
+            )
+        with pytest.raises(SystemExit):
+            ingest_sync._exit_cancelled(rollback)
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["copied"] == ["notes"] and payload["absorbed"] == ["work"]
+        assert payload["error"] and "not_added" not in payload
+
+    def test_a_cancel_that_dropped_a_folder_names_no_absorb(self, capsys):
+        from lilbee.app.ingest import AddRollback
+        from lilbee.cli.commands import ingest_sync
+
+        cfg.json_mode = True
+        try:
+            with pytest.raises(SystemExit):
+                ingest_sync._exit_cancelled(AddRollback(not_added=["notes"]))
+        finally:
+            cfg.json_mode = False
+
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["not_added"] == ["notes"]
+        assert "copied" not in payload and "absorbed" not in payload
+
+
+class TestRepeatsAfterARekey:
+    def test_a_footnote_and_a_chunk_two_keys_shared_are_named_once(self):
+        from lilbee.wiki.rekey import rekeyed_page
+
+        page = "\n".join(
+            [
+                "---",
+                'sources: ["a/x.md", "b/x.md"]',
+                "provenance:",
+                "  chunks:",
+                "  - source: a/x.md",
+                "    chunk_index: 0",
+                "  - source: b/x.md",
+                "    chunk_index: 0",
+                "  - source: b/x.md",
+                "    chunk_index: 1",
+                "---",
+                "",
+                "Body.[^src1]",
+                "",
+                '[^src1]: a/x.md, excerpt: "one"',
+                '[^src1]: b/x.md, excerpt: "one"',
+                '[^src2]: b/x.md, excerpt: "two"',
+            ]
+        )
+
+        moved = rekeyed_page(page, "b", "a")
+
+        assert moved.count("- source: a/x.md") == 2
+        assert moved.count('[^src1]: a/x.md, excerpt: "one"') == 1
+        assert '[^src2]: a/x.md, excerpt: "two"' in moved
+
+    def test_a_page_the_rekey_does_not_touch_keeps_its_repeats(self):
+        from lilbee.wiki.rekey import rekeyed_page
+
+        page = '[^src1]: a/x.md, excerpt: "one"\n[^src1]: a/x.md, excerpt: "one"'
+
+        assert rekeyed_page(page, "b", "c") == page

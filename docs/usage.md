@@ -878,12 +878,16 @@ it returns the result of the sync only and names no source. A script that
 names a document by its old name, such as
 `lilbee remove work/plan.md`, must use `notes/work/plan.md` from then on.
 
-The folder cannot take a source in while a sync runs. The add then stops with
-`A sync is running. Add notes again when it ends.` and changes nothing. A
+The folder cannot take a source in while a sync or a wiki build runs. The add
+then stops with `A sync or a wiki build is running. Add notes again when it ends.`
+and changes nothing. A
 source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
-a source of its own. An older lilbee that syncs the same library afterwards
-moves the documents back to their old names, so update every installation that
-shares a library.
+a source of its own. An older lilbee that was started before the add still
+holds the old list of sources, and its next sync moves the documents back to
+their old names and indexes files you removed from `work`. Update every
+installation that shares a library, and restart each one after the add. If the
+add is interrupted and an older lilbee syncs before the next start, the next
+start still finishes the add with removed files left out.
 
 ### Manage documents
 

@@ -71,6 +71,10 @@ def _rekeyed_provenance(block: list[str], old: str, new: str) -> list[str]:
         return block  # a hand-edited block is left as it is
     if before == [chunk["source"] for chunk in chunks]:
         return block
+    # Two sources that indexed one file name it once under its new key.
+    parsed["provenance"]["chunks"] = [
+        chunk for index, chunk in enumerate(chunks) if chunk not in chunks[:index]
+    ]
     return yaml.safe_dump(parsed, sort_keys=False).rstrip("\n").split("\n")
 
 
@@ -131,7 +135,12 @@ def rekeyed_page(text: str, old: str, new: str) -> str:
         line if in_fence else _rekeyed_footnote(line, old, new)
         for line, in_fence in zip(lines, fenced, strict=True)
     ]
-    return "\n".join(moved)
+    rekeyed = {after for before, after in zip(lines, moved, strict=True) if after != before}
+    # Two sources that indexed one file cited it with one footnote.
+    single = [
+        line for index, line in enumerate(moved) if line not in rekeyed or line not in moved[:index]
+    ]
+    return "\n".join(single)
 
 
 def _place_after(page: Path, text: str, moved: str) -> Path:

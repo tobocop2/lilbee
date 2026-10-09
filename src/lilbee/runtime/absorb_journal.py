@@ -12,6 +12,12 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 PENDING_ABSORB_FILENAME = "pending_absorb.json"
+_UNREADABLE = (
+    "Cannot read {path} ({error}). An add was interrupted while it moved a source into "
+    "its parent folder, and lilbee cannot finish it without that file. To index the "
+    "library again, delete that file and run `lilbee rebuild`, which also indexes the "
+    "files you removed. Then add the folder again."
+)
 
 
 class AbsorbPhase(StrEnum):
@@ -26,6 +32,16 @@ class AbsorbJournalError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class HeldOut:
+    """What a skip record says of one file: the hash it is held out at, and why."""
+
+    hash: str
+    reason: str | None
+    removed: bool
+    """Whether the user removed the file; an ingestion failure otherwise."""
+
+
+@dataclass(frozen=True)
 class AbsorbJournal:
     """One absorb: the keys that move and the registry change that follows them."""
 
@@ -36,6 +52,12 @@ class AbsorbJournal:
     """Registry entries the absorb writes, label to path."""
     drop: list[str] = field(default_factory=list)
     """Registry labels the absorb removes."""
+    records: dict[str, HeldOut] = field(default_factory=dict)
+    """The skip record of each file the absorbed sources hold out, by the key it takes.
+
+    From the first write of the journal to its removal, this is what those
+    sources hold out; the skip record files take it when the keys have moved.
+    """
     phase: AbsorbPhase = AbsorbPhase.LIFT
 
     def lifted(self, key: str) -> str:
@@ -79,15 +101,23 @@ def read_journal(data_root: Path) -> AbsorbJournal | None:
             moves={str(old): str(new) for old, new in raw["moves"].items()},
             add={str(label): str(target) for label, target in raw["add"].items()},
             drop=[str(label) for label in raw["drop"]],
+            records={str(key): _held_out(record) for key, record in raw["records"].items()},
             phase=AbsorbPhase(raw["phase"]),
         )
     except FileNotFoundError:
         return None
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise AbsorbJournalError(
-            f"Cannot read {path} ({exc}). An add was interrupted while it moved a source "
-            "into its parent folder, and lilbee cannot finish it without that file."
-        ) from exc
+        raise AbsorbJournalError(_UNREADABLE.format(path=path, error=exc)) from exc
+
+
+def _held_out(raw: dict[str, object]) -> HeldOut:
+    """One journal record; a malformed one raises as an unreadable journal does."""
+    reason = raw["reason"]
+    return HeldOut(
+        hash=str(raw["hash"]),
+        reason=None if reason is None else str(reason),
+        removed=raw["removed"] is True,
+    )
 
 
 def delete_journal(data_root: Path) -> None:

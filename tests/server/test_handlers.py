@@ -1316,7 +1316,9 @@ class TestAddRegistersOffTheLoop:
         with (
             mock.patch(
                 "lilbee.server.handlers.ingest.register_sources",
-                side_effect=SyncRunningError("A sync is running. Add notes again when it ends."),
+                side_effect=SyncRunningError(
+                    "A sync or a wiki build is running. Add notes again when it ends."
+                ),
             ),
             pytest.raises(SyncRunningError, match="Add notes again when it ends"),
         ):

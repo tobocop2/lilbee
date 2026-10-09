@@ -9,7 +9,7 @@ from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import pyarrow as pa
 
@@ -225,6 +225,20 @@ _RELOCATABLE_TABLES = (
 # the sources table last.
 _REKEY_TABLES = (*_RELOCATABLE_TABLES, (SOURCES_TABLE, INGEST_SOURCE_COLUMNS[SOURCES_TABLE]))
 
+# The columns two citation rows share when they are one citation under two source keys.
+_CITATION_SAME_COLUMNS = (
+    "wiki_source",
+    "wiki_chunk_index",
+    "citation_key",
+    "claim_type",
+    "source_hash",
+    "page_start",
+    "page_end",
+    "line_start",
+    "line_end",
+    "excerpt",
+)
+
 # What stands between two slashes of a source key that is not a file or folder name.
 _NOT_A_KEY_SEGMENT = frozenset({"", ".", ".."})
 # No file name holds it, so no key discovery writes does.
@@ -290,6 +304,15 @@ def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
     where = f"{column} = '{old_literal}' OR starts_with({column}, '{old_literal}/')"
     value = f"concat('{escape_sql_string(new)}', substr({column}, {len(old) + 1}))"
     return where, value
+
+
+def _sql_equals(column: str, value: object) -> str:
+    """A predicate for *column* holding *value*, a string, an integer or NULL."""
+    if value is None:
+        return f"{column} IS NULL"
+    if isinstance(value, str):  # a citation column is text or an integer
+        return f"{column} = '{escape_sql_string(value)}'"
+    return f"{column} = {value}"
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -2129,8 +2152,13 @@ class Store:
         """Re-key the source *old* and every source below it to *new*, keeping chunks and vectors.
 
         A key matches when it is *old* or starts with ``old/``, so ``work`` never
-        matches ``workshop/x``. Each table takes one update. A second run re-keys
-        again when *new* starts with *old*. When *new* ends in another name than
+        matches ``workshop/x``. Each table with a row to move takes one update. A
+        row that moves replaces what its table holds at the key it takes, in
+        every per-file table when one of them holds such a row: a row can only
+        be at the old key of a table that moved before if something wrote it
+        since. A second run re-keys again when *new* starts with *old*, and
+        nothing is replaced when one key lies below the other.
+        When *new* ends in another name than
         *old*, the source at exactly *old* takes the title of the new name if its
         title came from the old one; every other title stays as stored. An empty
         key, one with an empty, ``.`` or ``..`` segment, or one with a NUL raises
@@ -2140,16 +2168,69 @@ class Store:
         _refuse_malformed_key(new)
         with self._write_lock():
             title = self._title_after_rekey(old, new)
+            self._clear_rekey_targets(old, new)
             for name, column in _REKEY_TABLES:
                 table = self.open_table(name)
-                if table is None:
+                where, value = _rekey_sql(column, old, new)
+                if table is None or table.count_rows(where) == 0:
                     continue
                 if title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
                     at_old = f"{column} = '{escape_sql_string(old)}'"
                     table.update(where=at_old, values={_TITLE_COLUMN: title})
-                where, value = _rekey_sql(column, old, new)
                 table.update(where=where, values_sql={column: value})
         self._invalidate_source_cache()
+
+    def _taken_by_rekey(self, name: str, column: str, old: str, new: str) -> set[str]:
+        """The keys below *new* that table *name* holds and its rows below *old* take."""
+        table = self.open_table(name)
+        at_new, _ = _rekey_sql(column, new, new)
+        if table is None or table.count_rows(at_new) == 0:
+            return set()
+        at_old, _ = _rekey_sql(column, old, new)
+
+        def _keys(where: str) -> set[str]:
+            rows = table.search().where(where).select([column]).limit(None).to_list()
+            return {row[column] for row in rows}
+
+        return {new + key[len(old) :] for key in _keys(at_old)} & _keys(at_new)
+
+    def _clear_rekey_targets(self, old: str, new: str) -> None:
+        """Delete the rows a re-key from *old* to *new* replaces. Caller holds ``write_lock()``."""
+        if f"{new}/".startswith(f"{old}/") or f"{old}/".startswith(f"{new}/"):
+            return
+        per_file: set[str] = set()
+        for name, column in _PER_SOURCE_TABLES:
+            per_file |= self._taken_by_rekey(name, column, old, new)
+        if per_file:
+            self._delete_by_sources_unlocked(sorted(per_file))
+        sources_column = INGEST_SOURCE_COLUMNS[SOURCES_TABLE]
+        for filename in sorted(self._taken_by_rekey(SOURCES_TABLE, sources_column, old, new)):
+            self._delete_source_unlocked(filename)
+
+    def drop_citations_repeated_under(self, repeat: str, kept: str) -> None:
+        """Delete each citation at or below *repeat* that one at the same place below *kept* holds.
+
+        Two rows are one citation when only their source key and creation time differ.
+        """
+        column = INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]
+        with self._write_lock():
+            table = self.open_table(CITATIONS_TABLE)
+            if table is None:
+                return
+
+            def _rows(prefix: str) -> list[dict[str, Any]]:
+                where, _ = _rekey_sql(column, prefix, prefix)
+                rows = table.search().where(where).limit(None).to_list()
+                return cast("list[dict[str, Any]]", rows)
+
+            def _same(row: dict[str, Any], prefix: str) -> tuple[object, ...]:
+                return (row[column][len(prefix) :], *(row[name] for name in _CITATION_SAME_COLUMNS))
+
+            held = {_same(row, kept) for row in _rows(kept)}
+            for row in _rows(repeat):
+                if _same(row, repeat) in held:
+                    names = (column, *_CITATION_SAME_COLUMNS)
+                    table.delete(" AND ".join(_sql_equals(name, row[name]) for name in names))
 
     def _title_after_rekey(self, old: str, new: str) -> str | None:
         """The title the source at exactly *old* takes at *new*, or ``_KEEP_TITLE``."""

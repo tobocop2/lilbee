@@ -21,6 +21,7 @@ from lilbee.data.ingest.skip_marker import (
     REMOVED_SKIP_REASON,
     SKIP_KIND_FILENAME,
     SKIP_MARKER_FILENAME,
+    SKIP_PENDING_FILENAME,
     SKIP_REASON_FILENAME,
     SkipKind,
     SkipRecords,
@@ -550,22 +551,167 @@ def test_every_sidecar_changes_while_the_records_lock_is_held(
         prober.join()
         return refused == [True]
 
-    real_write, real_unlink = skip_marker._write_json_map, skip_marker._unlink
+    real_write, real_unlink = skip_marker._replace_text, skip_marker._unlink
 
-    def _write(path: Path, data: object) -> None:
+    def _write(path: Path, text: str) -> bool:
         held_during[path.name] = _lock_is_held()
-        real_write(path, data)
+        return real_write(path, text)
 
     def _unlink(path: Path) -> None:
         held_during[path.name] = _lock_is_held()
         real_unlink(path)
 
-    monkeypatch.setattr(skip_marker, "_write_json_map", _write)
+    monkeypatch.setattr(skip_marker, "_replace_text", _write)
     monkeypatch.setattr(skip_marker, "_unlink", _unlink)
     assert not _lock_is_held()
 
     operation(tmp_path)
 
-    assert held_during == dict.fromkeys(
-        [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME], True
-    )
+    sidecars = {SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME}
+    assert sidecars <= set(held_during) <= sidecars | {SKIP_PENDING_FILENAME}
+    assert all(held_during.values())
+
+
+_REMOVAL = SkipRecords(
+    {"gone.md": "h1"}, {"gone.md": REMOVED_SKIP_REASON}, {"gone.md": SkipKind.REMOVED}
+)
+_FAILURE = SkipRecords({"bad.pdf": "h2"}, {"bad.pdf": "no text"}, {"bad.pdf": SkipKind.FAILED})
+
+
+def _record_files(data_root: Path) -> dict[str, str]:
+    names = (SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME)
+    return {name: (data_root / name).read_text(encoding="utf-8") for name in names}
+
+
+def _write_stopped_before(data_root: Path, records: SkipRecords, filename: str) -> None:
+    """Start a write of *records* and stop it before it replaces *filename*."""
+    real = skip_marker._replace_text
+
+    class _Stopped(BaseException):
+        pass
+
+    def _replace(path: Path, text: str) -> bool:
+        if path.name == filename:
+            raise _Stopped
+        return real(path, text)
+
+    with pytest.MonkeyPatch.context() as patch, pytest.raises(_Stopped):
+        patch.setattr(skip_marker, "_replace_text", _replace)
+        write_skip_records(data_root, records)
+
+
+@pytest.mark.parametrize(
+    "filename", [SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME]
+)
+def test_a_write_stopped_before_any_of_the_three_files_reads_as_written(
+    tmp_path: Path, filename: str
+) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+
+    _write_stopped_before(tmp_path, _FAILURE, filename)
+
+    assert load_skip_markers(tmp_path) == {"bad.pdf": "h2"}
+    assert load_skip_reasons(tmp_path) == {"bad.pdf": "no text"}
+    assert load_skip_kinds(tmp_path) == {"bad.pdf": SkipKind.FAILED}
+    assert held_out_names(tmp_path) == ["bad.pdf"]
+
+
+def test_a_write_stopped_before_its_pending_file_reads_as_not_written(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+
+    _write_stopped_before(tmp_path, _FAILURE, SKIP_PENDING_FILENAME)
+
+    assert load_skip_kinds(tmp_path) == {"gone.md": SkipKind.REMOVED}
+    assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
+
+
+def test_a_finished_write_leaves_no_pending_file(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+
+    assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
+    assert json.loads(_record_files(tmp_path)[SKIP_KIND_FILENAME])["gone.md"]["hash"] == "h1"
+
+
+def test_the_next_change_finishes_a_stopped_write(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    _write_stopped_before(tmp_path, _FAILURE, SKIP_REASON_FILENAME)
+
+    update_skip_records(tmp_path, lambda records: None)
+
+    assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
+    assert json.loads(_record_files(tmp_path)[SKIP_REASON_FILENAME]) == {"bad.pdf": "no text"}
+    assert json.loads(_record_files(tmp_path)[SKIP_KIND_FILENAME])["bad.pdf"]["kind"] == "failed"
+
+
+def test_a_stopped_write_an_older_lilbee_wrote_past_is_dropped(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    _write_stopped_before(tmp_path, _FAILURE, SKIP_REASON_FILENAME)
+    _older_write(tmp_path, {"later.md": "h3"}, {"later.md": REMOVED_SKIP_REASON})
+
+    newer = {"bad.pdf": SkipKind.FAILED, "later.md": SkipKind.REMOVED}
+    assert load_skip_kinds(tmp_path) == newer
+    update_skip_records(tmp_path, lambda records: None)
+
+    assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
+    assert load_skip_kinds(tmp_path) == newer
+
+
+def test_clearing_ends_a_stopped_write(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    _write_stopped_before(tmp_path, _FAILURE, SKIP_KIND_FILENAME)
+
+    clear_skip_markers(tmp_path)
+
+    assert load_skip_markers(tmp_path) == {}
+    assert sorted(path.name for path in tmp_path.iterdir() if path.suffix == ".json") == []
+
+
+@pytest.mark.parametrize(
+    "pending",
+    [
+        "{not json",
+        "[]",
+        json.dumps({"after": [], "before": {}}),
+        json.dumps({"after": {SKIP_MARKER_FILENAME: "{}"}, "before": {}}),
+    ],
+    ids=["not-json", "a-list", "after-not-a-table", "a-file-missing"],
+)
+def test_a_pending_file_that_cannot_be_read_is_ignored_and_then_dropped(
+    tmp_path: Path, pending: str
+) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    (tmp_path / SKIP_PENDING_FILENAME).write_text(pending, encoding="utf-8")
+
+    assert load_skip_kinds(tmp_path) == {"gone.md": SkipKind.REMOVED}
+    update_skip_records(tmp_path, lambda records: None)
+
+    assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
+    assert load_skip_kinds(tmp_path) == {"gone.md": SkipKind.REMOVED}
+
+
+def test_a_record_file_that_is_not_text_reads_as_empty(tmp_path: Path) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    (tmp_path / SKIP_REASON_FILENAME).write_bytes(b"\xff\xfe\x00")
+
+    assert load_skip_reasons(tmp_path) == {}
+    assert load_skip_markers(tmp_path) == {"gone.md": "h1"}
+
+
+def test_a_file_that_cannot_be_written_keeps_the_pending_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_skip_records(tmp_path, _REMOVAL)
+    real = skip_marker.os.replace
+
+    def _replace(src: object, dst: object) -> None:
+        if Path(str(dst)).name == SKIP_REASON_FILENAME:
+            raise OSError("disk full")
+        real(src, dst)
+
+    monkeypatch.setattr(skip_marker.os, "replace", _replace)
+
+    write_skip_records(tmp_path, _FAILURE)
+
+    assert (tmp_path / SKIP_PENDING_FILENAME).exists()
+    assert load_skip_reasons(tmp_path) == {"bad.pdf": "no text"}
+    assert load_skip_kinds(tmp_path) == {"bad.pdf": SkipKind.FAILED}

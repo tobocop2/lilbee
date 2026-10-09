@@ -267,11 +267,12 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     names = [p.name for p in paths]
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root):
-        finish_pending_absorb(names)
+        taken = finish_pending_absorb(names)
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
             absorb(journal, list(result.absorbed_into))
-        unmark_sources_under(paths, spared=[] if journal is None else list(journal.moves.values()))
+            taken = [*taken, *journal.moves.values()]
+        unmark_sources_under(paths, spared=taken)
     return result
 
 
@@ -471,6 +472,8 @@ class AddRollback:
     """The paths the add was given."""
     at_sync: bool = True
     """Whether the add reached its sync."""
+    absorbed_into: dict[str, list[str]] = field(default_factory=dict)
+    """Each label the add registered that took in sources, with their labels; it stays."""
     _roots: list[str] = field(default_factory=list)
     _before: dict[str, str] = field(default_factory=dict)
 

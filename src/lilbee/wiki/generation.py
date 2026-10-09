@@ -24,6 +24,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.clustering import SourceClusterer
+from lilbee.runtime.lock import source_keys_in_use
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -261,9 +262,28 @@ def build_wiki(
     ``{data_dir}/.phase-d-migrated``), moving legacy concept pages
     under ``wiki/archive/concepts/`` and unwrapping stale
     ``[[archived-slug]]`` links across the remaining pages.
+
+    Holds the data root's sync mark, so no source key moves under a build.
     """
     if config is None:
         config = cfg
+    with source_keys_in_use(config.data_root):
+        return _build_pages(
+            entities, provider, store, config, extract_concepts, on_progress, stats, cancel
+        )
+
+
+def _build_pages(
+    entities: list[ExtractedEntity],
+    provider: LLMProvider,
+    store: Store,
+    config: Config,
+    extract_concepts: bool,
+    on_progress: DetailedProgressCallback,
+    stats: BuildStats | None,
+    cancel: threading.Event | None,
+) -> list[Path]:
+    """Write the pages of one build; the caller holds the sync mark."""
     stats = BuildStats.ensure(stats)
     wiki_root = config.data_root / config.wiki_dir
     archive_legacy_concept_pages(wiki_root, config.data_dir, store, config)
