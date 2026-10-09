@@ -1,5 +1,6 @@
 """Tests for persistent settings (config.toml)."""
 
+import os
 from unittest import mock
 
 import pytest
@@ -932,6 +933,60 @@ class TestOverlayPersistedSettings:
         assert [record.getMessage() for record in caplog.records] == [
             f"Failed to read {path}, ignoring"
         ]
+
+    @pytest.mark.parametrize(
+        ("bad", "line"),
+        [
+            (
+                'top_k = "many"\n',
+                "{path}: top_k = 'many' is not a whole number; top_k keeps its value",
+            ),
+            ("top_k = = 9\n", "Failed to read {path}, ignoring"),
+        ],
+        ids=["refused-value", "unreadable"],
+    )
+    def test_a_bad_file_that_returns_after_a_repair_is_reported_again(
+        self, tmp_path, monkeypatch, caplog, bad, line
+    ):
+        """The losing half: two overlays of one state of the file report it once."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        path = tmp_path / "config.toml"
+
+        def _write(text: str, mtime_ns: int) -> None:
+            path.write_text(text, encoding="utf-8")
+            os.utime(path, ns=(mtime_ns, mtime_ns))
+
+        with caplog.at_level("WARNING"):
+            _write(bad, 1_000_000_000)
+            settings.overlay_persisted_settings(tmp_path)
+            settings.overlay_persisted_settings(tmp_path)
+            _write("top_k = 9\n", 2_000_000_000)
+            settings.overlay_persisted_settings(tmp_path)
+            _write(bad, 3_000_000_000)
+            settings.overlay_persisted_settings(tmp_path)
+            settings.overlay_persisted_settings(tmp_path)
+
+        reported = line.format(path=path)
+        assert [record.getMessage() for record in caplog.records] == [reported, reported]
+        assert cfg.top_k == 9
+
+    def test_the_load_reports_once_though_the_file_is_written_between_two_loads(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A child process loads after its parent wrote the file, and repeats nothing."""
+        from lilbee.core.config import model
+
+        with caplog.at_level("WARNING"):
+            path, _loaded, at_load = self._load_from(tmp_path, monkeypatch, 'top_k = "many"\n')
+            os.utime(path, ns=(3_000_000_000, 3_000_000_000))
+            _again, at_second_load = model._build_cfg()
+        assert at_second_load == at_load
+        assert [record.getMessage() for record in caplog.records] == list(at_load)
+        assert len(at_load) == 1
 
     def test_a_file_that_is_not_toml_changes_nothing_and_warns(self, tmp_path, monkeypatch, caplog):
         from lilbee.core.config import cfg
