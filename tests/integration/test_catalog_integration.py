@@ -13,6 +13,7 @@ from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers
 from lilbee.catalog.picks import get_picks, reset_picks
 from lilbee.catalog.query import reclassify_by_name, size_bucket
 from lilbee.catalog.types import CatalogSize, ModelTask
+from tests._http_retry import get_with_retry
 
 pytestmark = [pytest.mark.slow, pytest.mark.live_picks]
 
@@ -28,20 +29,26 @@ def live_picks():
     reset_picks()
 
 
+def repo_gguf_files(hf_repo: str, transport: httpx.BaseTransport | None = None) -> list[str]:
+    """The .gguf files HuggingFace lists for *hf_repo*; a missing repo raises."""
+    resp = get_with_retry(
+        f"{HF_API_URL}/{hf_repo}",
+        timeout=DEFAULT_TIMEOUT,
+        headers=hf_headers(),
+        transport=transport,
+    )
+    resp.raise_for_status()
+    siblings = resp.json().get("siblings", [])
+    return [s["rfilename"] for s in siblings if s.get("rfilename", "").endswith(".gguf")]
+
+
 def test_every_pick_has_a_gguf(live_picks) -> None:
     """A pick the user cannot actually pull is worse than no pick."""
     # Authenticated request (HF_TOKEN) lifts the unauthenticated rate limit that
-    # otherwise 429s a full sweep from a shared CI IP.
+    # otherwise 429s a full sweep from a shared CI IP. A dropped connection is
+    # retried; a repo the host no longer serves still fails the test.
     for entry in live_picks:
-        resp = httpx.get(
-            f"{HF_API_URL}/{entry.hf_repo}",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        resp.raise_for_status()
-        siblings = resp.json().get("siblings", [])
-        gguf = [s["rfilename"] for s in siblings if s.get("rfilename", "").endswith(".gguf")]
-        assert gguf, f"{entry.hf_repo} has no .gguf files in siblings"
+        assert repo_gguf_files(entry.hf_repo), f"{entry.hf_repo} has no .gguf files in siblings"
 
 
 def test_chat_picks_span_the_parameter_tiers(live_picks) -> None:
