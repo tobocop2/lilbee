@@ -2162,6 +2162,11 @@ class _RunsBesideTheQueue(TaskQueue):
         return task_id
 
     @property
+    def queued_tasks(self):
+        self._run_beside("before_rows_read")
+        return super().queued_tasks
+
+    @property
     def active_tasks(self):
         tasks = super().active_tasks
         self._run_beside("rows_read")
@@ -2238,6 +2243,46 @@ async def test_a_task_started_while_the_stop_cancels_is_cancelled_too() -> None:
             assert [_outcome(controller, task_id) for task_id in late] == [_REFUSED_AT_EXIT]
         finally:
             release.set()
+
+
+def _live_workers(*task_ids: str) -> list[str]:
+    """The names of the worker threads of *task_ids* that are alive."""
+    names = {f"task-{task_id}" for task_id in task_ids}
+    return [thread.name for thread in threading.enumerate() if thread.name in names]
+
+
+@pytest.mark.asyncio
+async def test_a_slot_freed_once_the_stop_has_begun_starts_no_worker() -> None:
+    """A promotion reads the stop in its hold, so a row due after the flag is set stays queued."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller, hooks = _watched_controller(app)
+        release = threading.Event()
+        first_runs = threading.Event()
+        ran: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            ran.append("first")
+            first_runs.set()
+            release.wait(5.0)
+
+        first = controller.start_task("first", TaskType.SYNC, _wait)
+        queued = controller.start_task(
+            "queued", TaskType.SYNC, lambda _reporter: ran.append("queued")
+        )
+        assert first_runs.wait(_SETTLE_SECONDS)
+        # The stop has set its flag and has not read the rows yet.
+        hooks["before_rows_read"] = lambda: controller.fail_task(first)
+        try:
+            controller.stop_all(budget_s=0.2)
+        finally:
+            release.set()
+        # A worker ends through the app thread, so the wait pumps it.
+        await wait_until(pilot, lambda: not _live_workers(first, queued), timeout=_SETTLE_SECONDS)
+        assert _live_workers(first, queued) == []
+        assert controller.queue.get_task(first).status is TaskStatus.FAILED
+        assert _outcome(controller, queued) == _REFUSED_AT_EXIT
+        assert ran == ["first"]
 
 
 @pytest.mark.asyncio

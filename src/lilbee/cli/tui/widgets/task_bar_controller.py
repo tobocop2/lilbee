@@ -371,7 +371,7 @@ class TaskBarController:
 
     @contextmanager
     def _admission(self) -> Iterator[bool]:
-        """Hold the lock for one start; yields False once the exit stop began."""
+        """Hold the lock to admit a task, a promotion or a detection; False once the stop began."""
         with self._lock:
             yield not self._stopped
 
@@ -381,8 +381,11 @@ class TaskBarController:
             pass
 
     def _promote_one(self, task_type: str | None) -> bool:
-        """Promote one queued task and start its worker in one lock hold; False when none is due."""
-        with self._lock:
+        """Promote one due task and start its worker in one admitted hold; False if none starts."""
+        with self._admission() as admitted:
+            # Once the exit stop began a row stays queued, and the stop cancels it.
+            if not admitted:
+                return False
             task = self.queue.advance(task_type)
             if task is None:
                 return False
