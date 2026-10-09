@@ -51,7 +51,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 ## File and environment only
 
-These settings have no runtime write path. Set them with a `LILBEE_*` environment variable, or in `config.toml`, before lilbee starts.
+These settings have no runtime write path. Set them in `config.toml`, or with the variable the Environment column names, before lilbee starts.
 
 <!-- ENV ONLY TABLE -->
 

@@ -1093,8 +1093,8 @@ touching the file.
 
 ## Environment variables
 
-Every setting is also an environment variable, named `LILBEE_` plus the setting
-in upper case: `top_k` is `LILBEE_TOP_K`, `wiki` is `LILBEE_WIKI`. An
+Every setting except `linked_roots` is also an environment variable, named
+`LILBEE_` plus the setting in upper case: `top_k` is `LILBEE_TOP_K`, `wiki` is `LILBEE_WIKI`. An
 environment variable applies to the process you launch and does not persist;
 `/settings` and `config.toml` persist.
 

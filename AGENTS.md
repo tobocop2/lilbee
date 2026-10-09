@@ -60,11 +60,11 @@ uv run lilbee rebuild
   - macOS: `~/Library/Application Support/lilbee/`
   - Linux: `~/.local/share/lilbee/`
   - Windows: `%LOCALAPPDATA%/lilbee/`
-- All settings configurable via `LILBEE_*` env vars or CLI flags
+- All settings except `linked_roots` configurable via `LILBEE_*` env vars or CLI flags
 - Auto-sync: documents/ is source of truth, data/ is rebuilt from it
 
 ## Configuration
-All settings override via environment variables:
+All settings except `linked_roots` override via environment variables:
 - `LILBEE_DATA` — data directory path
 - `LILBEE_CHAT_MODEL` — LLM model (default: `qwen3:8b`)
 - `LILBEE_EMBEDDING_MODEL` — embedding model (default: `nomic-embed-text`)
@@ -611,7 +611,7 @@ See the [`lilbee-mcp` skill](src/lilbee/skills/lilbee_mcp/SKILL.md) for the full
 
 ## Key Files
 - `app/` — Shared use-case orchestration (status, models, reset, ingest, version) consumed by cli/, server/, mcp.py and the TUI
-- `core/config/` — All settings (env-var configurable)
+- `core/config/` — All settings (env-var configurable, except `linked_roots`)
 - `data/ingest/` — Document sync engine (hash-based change detection)
 - `retrieval/query/` — RAG pipeline (embed → search → generate)
 - `data/store/` — LanceDB operations

@@ -43,7 +43,7 @@ All source lives under `src/lilbee/`:
 |------|---------|
 | `app/` | Shared use-case orchestration consumed by the CLI, server, MCP, and TUI |
 | `cli/` | Typer CLI and the Textual TUI |
-| `core/config/` | All settings (env-var and `config.toml` configurable) |
+| `core/config/` | All settings (`config.toml` configurable, and env-var configurable except `linked_roots`) |
 | `data/ingest/` | Document sync engine (hash-based change detection) |
 | `data/store/` | LanceDB vector-store operations |
 | `data/chunk.py`, `data/code_chunker.py` | Text and tree-sitter code chunking |
