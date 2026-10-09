@@ -11,8 +11,8 @@ from typing import Any, TypeVar
 import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core.config import CONFIG_FILE_NAME, cfg
-from lilbee.core.config.model import env_value, toml_values
+from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config.model import env_value, toml_value, toml_values
 from lilbee.core.config.parsing import migrate_ocr_keys, without_refused_ocr
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
@@ -169,3 +169,18 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, value in stored.items():
         if key in overlayable and env_value(key) is None:
             setattr(cfg, key, value)
+
+
+def overlay_persisted_roots(config: Config) -> None:
+    """Set on *config* the source registry its config.toml holds, under the lock a writer takes.
+
+    A file without a registry sets nothing. A file that does not parse, or a
+    registry Config refuses, is reported and sets nothing.
+    """
+    path = _config_path(config.data_root)
+    if not path.exists():
+        return
+    with _config_write_lock(config.data_root):
+        roots = toml_value(path, "linked_roots")
+        if roots is not None:
+            config.linked_roots = roots
