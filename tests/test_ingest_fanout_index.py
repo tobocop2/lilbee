@@ -20,6 +20,7 @@ from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.store import Store
 from lilbee.data.types import ShardId, SyncResult
+from lilbee.runtime.lock import sync_running
 from tests._fanout_library import Library, services_for
 from tests.test_ingest_fanout import FakeContext
 
@@ -112,6 +113,40 @@ class TestWhereTheWorkIs:
         assert library.private_stores() == []
         assert library.sources() == sorted(names)
         assert caplog.text.count("Deleted 1 unused worker store(s)") == 1
+
+    async def test_old_worker_stores_stay_while_another_sync_is_on_the_data_root(
+        self, tmp_path, caplog
+    ):
+        library = Library(tmp_path / "lib", 2)
+        names = library.write_notes("note", 12)
+        old_store = library.root / "shards" / "w0" / "data"
+        (old_store / "lancedb").mkdir(parents=True)
+
+        def said_about_stores():
+            return [
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno >= logging.WARNING and "worker store" in record.getMessage()
+            ]
+
+        with caplog.at_level(logging.WARNING, logger=fanout.log.name):
+            # The mark the fan-out sync of an earlier lilbee holds while it uses its stores.
+            async with sync_running(library.root):
+                await library.sync()
+            assert old_store.exists()
+            assert said_about_stores() == []
+            assert library.sources() == sorted(names)
+            await library.sync()
+        assert not old_store.exists()
+        assert len(said_about_stores()) == 1
+
+    async def test_a_one_process_sync_deletes_the_old_worker_stores_too(self, tmp_path):
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 3)
+        (library.root / "shards" / "w0" / "data" / "lancedb").mkdir(parents=True)
+        await library.sync()
+        assert library.private_stores() == []
+        assert len(library.sources()) == 3
 
     async def test_a_repeat_sync_reports_every_file_unchanged(self, tmp_path):
         library = Library(tmp_path / "lib", 2)
