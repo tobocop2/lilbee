@@ -250,6 +250,8 @@ class TestAdd:
 
         assert result.added == ["notes/loose.md"]
         assert result.unchanged == 1
+        # The library returns the sync's result, which names no registered or absorbed source.
+        assert "added" in result.model_dump() and "absorbed" not in result.model_dump()
         assert bee.config.linked_roots == {"notes": str(notes.resolve())}
         assert sorted(bee.status()["sources"]) == ["notes/loose.md", "notes/work/plan.md"]
 

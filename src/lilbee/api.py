@@ -151,7 +151,8 @@ class Lilbee:
         """Add files to the knowledge base and sync.
         Registers each path as a source root (indexed in place), then syncs. A
         folder that contains registered sources takes them in, which raises
-        ``SyncRunningError`` while a sync runs on the same data.
+        ``SyncRunningError`` while a sync runs on the same data. The result is
+        the sync's: it names no source that was registered or taken in.
         """
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import SyncResult
