@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.text import clean_label_for_display
+from lilbee.runtime.lock import source_keys_in_use
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -117,13 +118,14 @@ def generate_stub_page(
 
     Runs the same citation verification, faithfulness gate, and drafts
     quarantine a build does; nothing here bypasses them. Holds the wiki mutex,
-    so a page generated from the browse tree cannot interleave with a build.
+    so a page generated from the browse tree cannot interleave with a build,
+    and the sync mark, so no source key moves while the page is written.
     Emits the same wiki_phase/wiki_page events a build does; a *cancel* set
     before the model call skips it.
     """
     if config is None:
         config = cfg
-    with WIKI_BUILD_LOCK:
+    with source_keys_in_use(config.data_root), WIKI_BUILD_LOCK:
         stubs = load_stub_index(config)
         stub = _resolve(slug, stubs)
         if stub is None:

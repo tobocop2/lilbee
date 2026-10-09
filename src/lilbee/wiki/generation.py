@@ -263,27 +263,11 @@ def build_wiki(
     under ``wiki/archive/concepts/`` and unwrapping stale
     ``[[archived-slug]]`` links across the remaining pages.
 
-    Holds the data root's sync mark, so no source key moves under a build.
+    The caller holds the data root's sync mark from before it read the source
+    keys in *entities*, so no key moves between that read and the last page.
     """
     if config is None:
         config = cfg
-    with source_keys_in_use(config.data_root):
-        return _build_pages(
-            entities, provider, store, config, extract_concepts, on_progress, stats, cancel
-        )
-
-
-def _build_pages(
-    entities: list[ExtractedEntity],
-    provider: LLMProvider,
-    store: Store,
-    config: Config,
-    extract_concepts: bool,
-    on_progress: DetailedProgressCallback,
-    stats: BuildStats | None,
-    cancel: threading.Event | None,
-) -> list[Path]:
-    """Write the pages of one build; the caller holds the sync mark."""
     stats = BuildStats.ensure(stats)
     wiki_root = config.data_root / config.wiki_dir
     archive_legacy_concept_pages(wiki_root, config.data_dir, store, config)
@@ -406,6 +390,8 @@ def run_full_build(
 
     Holds the wiki build mutex for the whole run, so a build started from any
     surface waits for one already in flight instead of interleaving writes.
+    Holds the data root's sync mark from before the first read, and takes it
+    before the mutex, so an add that moves source keys is refused or waited for.
     Setting *cancel* stops the run at the next source boundary and releases the
     mutex; without it a client that disconnects mid-stream leaves a build
     holding the mutex until it finishes the whole corpus.
@@ -413,7 +399,7 @@ def run_full_build(
     if config is None:
         config = cfg
     stats = BuildStats()
-    with WIKI_BUILD_LOCK:
+    with source_keys_in_use(config.data_root), WIKI_BUILD_LOCK:
         svc = get_services()
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
         extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
@@ -459,13 +445,13 @@ def run_full_synthesize(
     """Generate synthesis pages for cross-source clusters.
 
     Shares the wiki build mutex with :func:`run_full_build` so synthesis and a
-    build never write the same tree at once.
+    build never write the same tree at once, and holds the sync mark as it does.
     """
     if config is None:
         config = cfg
     stats = BuildStats()
     svc = get_services()
-    with WIKI_BUILD_LOCK:
+    with source_keys_in_use(config.data_root), WIKI_BUILD_LOCK:
         paths = generate_synthesis_pages(
             svc.provider, svc.store, svc.clusterer, config, on_progress, stats, cancel
         )
