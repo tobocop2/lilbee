@@ -4152,3 +4152,239 @@ class TestRelocateTitles:
         store.upsert_source("real.md", "h1", 1, SourceType.DOCUMENT)
         table = store.open_table("_sources")
         assert store._relocated_title(table, "absent.md", "b.md", derive_title) is _KEEP_TITLE
+
+
+_KEY_COLUMNS = {
+    ("chunks", "source"),
+    ("_page_texts", "source"),
+    ("chunk_concepts", "chunk_source"),
+    ("entities", "source"),
+    ("_wiki_mentions", "source"),
+    ("_citations", "source_filename"),
+    ("_sources", "filename"),
+}
+
+
+def _seed_source(store, key, *, title=None):
+    """Write one row for *key* into every table that holds a source key."""
+    from lilbee.core.config import CHUNK_CONCEPTS_TABLE
+    from lilbee.data.store import SourceMeta, SourceType, ensure_table
+    from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
+
+    store.add_chunks(_titled_records(key, 1, title=title, dim=store._config.embedding_dim))
+    store.add_page_texts([{"source": key, "page": 1, "text": "t", "content_type": "text"}])
+    concepts = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
+    concepts.add([{"chunk_source": key, "chunk_index": 0, "concept": "roadmap"}])
+    store.add_entities(
+        [
+            {
+                "entity": "Boeing",
+                "type": "ORG",
+                "normalized_value": "boeing",
+                "source": key,
+                "page": 1,
+                "chunk_index": 0,
+                "confidence": 1.0,
+            }
+        ]
+    )
+    store.replace_wiki_mentions_for_source(key, [_mention("boeing", key, 1, [0])])
+    store.add_citations(
+        [
+            {
+                "wiki_source": "wiki/page.md",
+                "wiki_chunk_index": 0,
+                "citation_key": "k",
+                "claim_type": "support",
+                "source_filename": key,
+                "source_hash": "h",
+                "page_start": 0,
+                "page_end": 0,
+                "line_start": 0,
+                "line_end": 0,
+                "excerpt": "e",
+                "created_at": "",
+            }
+        ]
+    )
+    store.upsert_source(key, f"hash of {key}", 1, SourceType.DOCUMENT, meta=SourceMeta(title=title))
+
+
+def _holders(store, key):
+    """Every (table, column) in the database with a text value equal to *key*, read row by row."""
+    import pyarrow as pa
+
+    from lilbee.data.store.lance_helpers import table_names
+
+    found = set()
+    for name in table_names(store.get_db()):
+        rows = store.get_db().open_table(name).to_arrow()
+        for field in rows.schema:
+            if pa.types.is_string(field.type) and key in rows.column(field.name).to_pylist():
+                found.add((name, field.name))
+    return found
+
+
+def _dump(store):
+    """Every row of every table, in an order that does not depend on how it was written."""
+    from lilbee.data.store.lance_helpers import table_names
+
+    db = store.get_db()
+    return {
+        name: sorted(map(repr, db.open_table(name).to_arrow().to_pylist()))
+        for name in table_names(db)
+    }
+
+
+class TestRekeySourcesUnder:
+    """A re-key moves a source and every source below it, in every table that holds a key."""
+
+    def test_the_table_list_is_every_key_column(self):
+        from lilbee.data.store.core import _REKEY_TABLES
+
+        assert set(_REKEY_TABLES) == _KEY_COLUMNS
+
+    def test_every_table_that_holds_a_key_follows(self, store):
+        _seed_source(store, "work/a.md")
+        _seed_source(store, "workshop/x.md")
+        assert _holders(store, "work/a.md") == _KEY_COLUMNS
+
+        store.rekey_sources_under("work", "notes/work")
+
+        assert _holders(store, "notes/work/a.md") == _KEY_COLUMNS
+        assert _holders(store, "work/a.md") == set()
+        assert _holders(store, "workshop/x.md") == _KEY_COLUMNS
+
+    @pytest.mark.parametrize("indexed", [False, True], ids=["flat", "btree"])
+    @pytest.mark.parametrize(
+        ("old", "decoy"),
+        [
+            ("it's", "its"),
+            ("100%", "100abc"),
+            ("a_b", "axb"),
+            ("back\\slash", "backslash"),
+            ("früh/日本語", "fruh/日本語"),
+            ("😀 dir", "😀"),
+            ("u\u0308ber", "über"),
+            ("%_", "ab"),
+        ],
+        ids=[
+            "quote",
+            "percent",
+            "underscore",
+            "backslash",
+            "non-ascii",
+            "astral",
+            "combining",
+            "wildcards",
+        ],
+    )
+    def test_a_key_with_filter_characters_matches_itself_only(self, store, old, decoy, indexed):
+        new = f"pa'r%e_n\\t ü/{old}"
+        moving = [f"{old}/f.md", f"{old}/sub/g's 50%_.md"]
+        staying = [f"{decoy}/f.md", f"{old}x/f.md", f"x{old}/f.md", f"up/{old}/f.md"]
+        for key in (*moving, *staying):
+            _seed_source(store, key)
+        if indexed:
+            store.ensure_scalar_indexes()
+            indexed_columns = [i.columns for i in store.open_table(CHUNKS_TABLE).list_indices()]
+            assert ["source"] in indexed_columns
+
+        store.rekey_sources_under(old, new)
+
+        for key in moving:
+            assert _holders(store, key) == set()
+            assert _holders(store, new + key[len(old) :]) == _KEY_COLUMNS
+        for key in staying:
+            assert _holders(store, key) == _KEY_COLUMNS
+        assert len(store.get_chunks_by_source(f"{new}/f.md")) == 1
+
+    def test_a_single_file_source_moves_by_its_whole_key(self, store):
+        for key in ("plan.md", "plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
+            _seed_source(store, key)
+
+        store.rekey_sources_under("plan.md", "notes/work/plan.md")
+
+        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
+        assert _holders(store, "plan.md") == set()
+        for key in ("plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
+            assert _holders(store, key) == _KEY_COLUMNS
+
+    def test_the_members_of_a_single_file_archive_move_with_it(self, store):
+        _seed_source(store, "docs.zip")
+        _seed_source(store, "docs.zip/in/a.txt")
+
+        store.rekey_sources_under("docs.zip", "notes/docs.zip")
+
+        assert store.member_sources("notes/docs.zip") == ["notes/docs.zip/in/a.txt"]
+        assert _holders(store, "notes/docs.zip") == _KEY_COLUMNS
+        assert _holders(store, "docs.zip") == set()
+        assert _holders(store, "docs.zip/in/a.txt") == set()
+
+    def test_it_leaves_the_tables_the_per_source_relocate_leaves(self, store, tmp_path):
+        import shutil
+
+        keys = ["work/old_report.md", "work/deep/notes-2024.md", "work/IMG_1234.md"]
+        _seed_source(store, keys[0], title="old report")
+        _seed_source(store, keys[1], title="Frankenstein Analysis")
+        _seed_source(store, keys[2])
+        _seed_source(store, "workshop/x.md", title="x")
+        twin_dir = tmp_path / "twin"
+        shutil.copytree(store._config.lancedb_dir, twin_dir)
+        twin = Store(store._config.model_copy(update={"lancedb_dir": twin_dir}))
+        assert _dump(twin) == _dump(store)
+        before = _dump(store)
+
+        twin.relocate_sources([(key, f"notes/{key}", None) for key in keys])
+        store.rekey_sources_under("work", "notes/work")
+
+        assert _dump(store) == _dump(twin)
+        assert _dump(store) != before
+
+    def test_moved_rows_stay_searchable_through_every_index(self, store):
+        for key in ("work/a.md", "other/b.md"):
+            _seed_source(store, key)
+        store.ensure_fts_index()
+        store.ensure_scalar_indexes()
+        table = store.open_table(CHUNKS_TABLE)
+        indexes = sorted(index.name for index in table.list_indices())
+        vector = table.search().where("source = 'work/a.md'").limit(1).to_list()[0]["vector"]
+
+        store.rekey_sources_under("work", "notes/work")
+
+        table = store.open_table(CHUNKS_TABLE)
+        assert sorted(index.name for index in table.list_indices()) == indexes
+        assert len(indexes) >= 2
+        assert [c.source for c in store.get_chunks_by_source("notes/work/a.md")] == [
+            "notes/work/a.md"
+        ]
+        by_text = table.search("work/a.md", query_type="fts").limit(5).to_list()
+        assert "notes/work/a.md" in [row["source"] for row in by_text]
+        assert "work/a.md" not in [row["source"] for row in by_text]
+        nearest = table.search(vector).where("source != 'other/b.md'").limit(1).to_list()
+        assert [row["source"] for row in nearest] == ["notes/work/a.md"]
+
+    def test_the_ingested_at_cache_follows(self, store):
+        _seed_source(store, "work/a.md")
+        assert list(store.source_ingested_at_map()) == ["work/a.md"]
+
+        store.rekey_sources_under("work", "notes/work")
+
+        assert list(store.source_ingested_at_map()) == ["notes/work/a.md"]
+
+    def test_a_store_without_the_optional_tables_is_rekeyed(self, store):
+        from lilbee.data.store import SourceType
+
+        store.upsert_source("work/a.md", "h", 0, SourceType.DOCUMENT)
+
+        store.rekey_sources_under("work", "notes/work")
+
+        assert [s["filename"] for s in store.get_sources()] == ["notes/work/a.md"]
+
+    def test_a_changed_file_name_is_refused_and_nothing_moves(self, store):
+        _seed_source(store, "plan.md")
+
+        with pytest.raises(ValueError, match=r"keeps the last path segment: 'plan.md' to 'x/b.md'"):
+            store.rekey_sources_under("plan.md", "x/b.md")
+
+        assert _holders(store, "plan.md") == _KEY_COLUMNS
