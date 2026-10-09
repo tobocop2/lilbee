@@ -182,6 +182,35 @@ class TestSyncDispatch:
         await pipeline_mod.sync(quiet=True)
         assert ran == [True]
 
+    async def test_a_cancel_given_to_sync_ends_workers_that_are_silent(
+        self, corpus, monkeypatch, services
+    ):
+        """The cancel a caller hands to sync reaches the workers' supervisor."""
+        context = FakeContext()
+        monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: context)
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: fanout.shard_specs(cfg, 2, 1))
+        cancel = threading.Event()
+        merged = []
+
+        def silent_shard(spec, options, messages, stop):
+            cancel.set()
+            worker = context.processes[spec.shard.index]
+            while not worker.terminated:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(fanout, "run_shard", silent_shard)
+        monkeypatch.setattr(
+            pipeline_mod,
+            "_merge_worker_shards",
+            lambda store, specs, touched: merged.append(touched),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(
+                pipeline_mod.sync(quiet=True, cancel=cancel), timeout=_CANCEL_BOUND_S
+            )
+        assert [worker.terminated for worker in context.processes] == [True, True]
+        assert merged == []
+
 
 class TestSyncAcrossWorkers:
     @pytest.fixture()
