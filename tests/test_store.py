@@ -10,7 +10,7 @@ from unittest import mock
 import numpy as np
 import pytest
 
-from lilbee.core.config import CHUNKS_TABLE, META_TABLE, SOURCES_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, META_TABLE, PAGE_TEXTS_TABLE, SOURCES_TABLE, cfg
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
@@ -1699,6 +1699,71 @@ class TestWriteChunksBatch:
     def test_empty_batch_is_noop(self, store):
         assert store.write_chunks_batch([]) == 0
         assert store.get_sources() == []
+
+    @staticmethod
+    def _flush(store, name, chunks=2, page_texts=None):
+        from lilbee.data.store import ChunkWrite
+
+        item = ChunkWrite(
+            name, f"hash of {name}", _records_for(name, chunks), True, page_texts=page_texts
+        )
+        store.write_chunks_batch([item])
+
+    def test_a_flush_indexes_a_key_column_once_enough_rows_sit_past_the_index(
+        self, store, monkeypatch
+    ):
+        monkeypatch.setattr("lilbee.data.store.core._KEY_INDEX_STALE_FLUSHES", 2)
+        self._flush(store, "a.md")
+        self._flush(store, "b.md", page_texts=_page_rows("b.md"))
+        sources, chunks = store.open_table(SOURCES_TABLE), store.open_table(CHUNKS_TABLE)
+        assert sources.index_stats("filename_idx") is None
+        assert chunks.index_stats("source_idx") is None
+
+        self._flush(store, "c.md")
+
+        assert store.open_table(SOURCES_TABLE).index_stats("filename_idx").num_indexed_rows == 2
+        assert store.open_table(CHUNKS_TABLE).index_stats("source_idx").num_indexed_rows == 4
+        # One flush of page texts is under the bound of two.
+        assert store.open_table(PAGE_TEXTS_TABLE).index_stats("source_idx") is None
+
+    def test_an_index_is_rebuilt_only_after_enough_new_rows(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._KEY_INDEX_STALE_FLUSHES", 2)
+        for name in ("a.md", "b.md", "c.md", "d.md"):
+            self._flush(store, name)
+        # Built by the third flush over two rows; the fourth finds one row past it.
+        assert store.open_table(SOURCES_TABLE).index_stats("filename_idx").num_indexed_rows == 2
+
+        self._flush(store, "e.md")
+
+        assert store.open_table(SOURCES_TABLE).index_stats("filename_idx").num_indexed_rows == 4
+
+    def test_a_flush_replaces_rows_the_index_covers_and_rows_past_it(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._KEY_INDEX_STALE_FLUSHES", 2)
+        for name in ("a.md", "b.md", "c.md", "d.md"):
+            self._flush(store, name, chunks=3)
+        stats = store.open_table(CHUNKS_TABLE).index_stats("source_idx")
+        assert (stats.num_indexed_rows, stats.num_unindexed_rows) == (6, 6)
+
+        self._flush(store, "a.md", chunks=1)
+        self._flush(store, "d.md", chunks=1)
+
+        names = ("a.md", "b.md", "c.md", "d.md")
+        assert [len(store.get_chunks_by_source(name)) for name in names] == [1, 3, 3, 1]
+        rows = sorted((s["filename"], s["chunk_count"]) for s in store.get_sources())
+        assert rows == [("a.md", 1), ("b.md", 3), ("c.md", 3), ("d.md", 1)]
+
+    def test_a_failed_index_refresh_leaves_the_flush_correct(self, store, monkeypatch):
+        import lancedb.table
+
+        def _refuse(self, name):
+            raise OSError("index files are gone")
+
+        monkeypatch.setattr(lancedb.table.LanceTable, "index_stats", _refuse)
+        self._flush(store, "a.md", chunks=3)
+        self._flush(store, "a.md", chunks=1)
+
+        assert len(store.get_chunks_by_source("a.md")) == 1
+        assert [s["chunk_count"] for s in store.get_sources()] == [1]
 
     def test_batch_uses_the_patient_lock_timeout(self, store):
         """The flush lock waits BATCH_LOCK_TIMEOUT, not the interactive 30s.
