@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+from typing import ClassVar
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -235,6 +237,49 @@ def _seeded_child(store: Store, parent: Path, child: str = "work") -> Path:
     return child_path
 
 
+def _register_as(roots: dict[str, Path]) -> None:
+    """Write *roots* as the registry, label to path, as a hand edit or an older build left it."""
+    stored = {label: str(path.resolve()) for label, path in roots.items()}
+    settings.set_value(cfg.data_root, "linked_roots", stored)
+    cfg.linked_roots = dict(stored)
+
+
+def _seeded_renamed_child(store: Store, parent: Path) -> Path:
+    """``parent/work`` registered under the label ``renamed``, seeded into every key holder."""
+    _register_as({"renamed": parent / "work"})
+    for name in ("plan.md", "budget.md"):
+        _seed(store, f"renamed/{name}")
+    _seed(store, "workshop/x.md")
+    _hold_out("renamed/gone.md", SkipKind.REMOVED)
+    _hold_out("renamed/broken.md", SkipKind.FAILED)
+    _write_wiki_page(store, ["renamed/budget.md", "renamed/plan.md"])
+    _save_stub_index(store)
+    return parent
+
+
+def _seeded_nested_children(store: Store, parent: Path) -> Path:
+    """``parent/work`` and ``parent/work/deep`` both registered, so ``deep`` is indexed twice."""
+    _write(parent / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
+    _register_as({"work": parent / "work", "deep": parent / "work" / "deep"})
+    for key in ("work/plan.md", "work/deep/a.md", "work/deep/b.md", "deep/a.md", "deep/b.md"):
+        _seed(store, key)
+    _seed(store, "workshop/x.md")
+    _hold_out("deep/gone.md", SkipKind.REMOVED)
+    _hold_out("work/deep/kept.md", SkipKind.REMOVED)
+    _hold_out("work/broken.md", SkipKind.FAILED)
+    _write_wiki_page(store, ["deep/a.md", "work/deep/a.md", "work/plan.md"])
+    _save_stub_index(store)
+    return parent
+
+
+_NESTED_KEYS = [
+    "notes/work/deep/a.md",
+    "notes/work/deep/b.md",
+    "notes/work/plan.md",
+    "workshop/x.md",
+]
+
+
 class TestTheParentTakesTheChild:
     async def test_adding_the_parent_registers_it_and_unregisters_the_child(self, library, notes):
         await _add(notes / "work")
@@ -454,6 +499,101 @@ class TestTheParentTakesTheChild:
         assert "outside/far.md" in _keys(library)
         assert not [key for key in _keys(library) if key.startswith("notes/far")]
 
+    async def test_a_child_with_a_label_that_is_not_its_folder_name_is_absorbed(
+        self, library, notes
+    ):
+        _register_as({"renamed": notes / "work"})
+        await sync(quiet=True)
+        assert _keys(library) == ["renamed/budget.md", "renamed/plan.md"]
+        library.embedder.embed_batch.reset_mock()
+
+        result, synced = await _add(notes)
+
+        assert result.registered == ["notes"] and result.absorbed_into == {"notes": ["renamed"]}
+        assert result.containing == []
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
+        assert synced.added == ["notes/loose.md"] and synced.relocated == []
+        assert all("harbour" in text for text in _embedded(library)) and _embedded(library)
+
+    async def test_a_single_file_child_under_another_label_takes_its_file_name(
+        self, library, notes
+    ):
+        _register_as({"renamed": notes / "work" / "plan.md"})
+        await sync(quiet=True)
+        assert _keys(library) == ["renamed"]
+
+        result, synced = await _add(notes)
+
+        assert result.absorbed_into == {"notes": ["renamed"]}
+        assert "notes/work/plan.md" in _keys(library) and "renamed" not in _keys(library)
+        assert "notes/work/plan.md" not in synced.added
+
+    async def test_children_that_lie_inside_each_other_are_both_absorbed(self, library, notes):
+        _write(notes / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
+        _register_as({"work": notes / "work", "deep": notes / "work" / "deep"})
+        await sync(quiet=True)
+        assert _keys(library).count("deep/a.md") + _keys(library).count("work/deep/a.md") == 2
+        library.embedder.embed_batch.reset_mock()
+
+        result, synced = await _add(notes)
+
+        assert result.absorbed_into == {"notes": ["deep", "work"]} and result.containing == []
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert _keys(library) == [
+            "notes/loose.md",
+            "notes/work/budget.md",
+            "notes/work/deep/a.md",
+            "notes/work/plan.md",
+        ]
+        assert synced.added == ["notes/loose.md"] and synced.relocated == []
+        assert all("harbour" in text for text in _embedded(library)) and _embedded(library)
+
+    def test_the_inner_source_decides_what_its_files_keep(self, library, notes):
+        """Of two entries for one file, the one the inner source wrote lands."""
+        store = library.store
+        _seeded_nested_children(store, notes)
+
+        register_sources([notes])
+
+        assert _keys(library) == _NESTED_KEYS
+        rows = {source["filename"]: source["file_hash"] for source in store.get_sources()}
+        assert rows["notes/work/deep/a.md"] == "hash of deep/a.md"
+        assert _holders(store, "notes/work/deep/a.md") == _KEY_COLUMNS
+        assert len(store.get_chunks_by_source("notes/work/deep/a.md")) == 1
+        markers = load_skip_markers(cfg.data_root)
+        assert sorted(markers) == ["notes/work/broken.md", "notes/work/deep/gone.md"]
+        assert load_skip_kinds(cfg.data_root)["notes/work/broken.md"] is SkipKind.FAILED
+        page = cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md"
+        from lilbee.wiki.shared import parse_frontmatter
+
+        assert parse_frontmatter(page.read_text(encoding="utf-8"))["sources"] == [
+            "notes/work/deep/a.md",
+            "notes/work/plan.md",
+        ]
+
+    def test_landing_without_the_drop_writes_one_key_twice(self, library, notes):
+        """The control for the test above: both entries for one file land on one key."""
+        _seeded_nested_children(library.store, notes)
+
+        with mock.patch.object(absorb_mod, "_drop_shadows"):
+            register_sources([notes])
+
+        assert _keys(library).count("notes/work/deep/a.md") == 2
+
+    def test_a_drop_after_the_land_finds_nothing_to_drop(self, library, notes):
+        """The wrong order: the outer source's entries have left the temporary keys."""
+        store = library.store
+        _seeded_nested_children(store, notes)
+        real_drop = absorb_mod._drop_shadows
+        journals: list[AbsorbJournal] = []
+
+        with mock.patch.object(absorb_mod, "_drop_shadows", lambda _c, _s, j: journals.append(j)):
+            register_sources([notes])
+        real_drop(cfg, store, journals[0])
+
+        assert _keys(library).count("notes/work/deep/a.md") == 2
+
 
 class TestWhatIsNotAbsorbed:
     @pytest.mark.parametrize(
@@ -552,28 +692,6 @@ class TestWhatIsNotAbsorbed:
 
         assert result.absorbed_into == {"notes": ["work"]}
         assert _registry() == {"notes": str(notes.resolve())}
-
-    async def test_a_child_with_a_label_that_is_not_its_folder_name_is_refused(
-        self, library, notes
-    ):
-        settings.set_value(cfg.data_root, "linked_roots", {"renamed": str(notes / "work")})
-
-        result = register_sources([notes])
-
-        assert result.containing == ["notes"] and result.registered == []
-        assert sorted(_registry()) == ["renamed"]
-
-    async def test_children_that_lie_inside_each_other_are_refused(self, library, notes):
-        _write(notes / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
-        settings.set_value(
-            cfg.data_root,
-            "linked_roots",
-            {"work": str(notes / "work"), "deep": str(notes / "work" / "deep")},
-        )
-
-        result = register_sources([notes])
-
-        assert result.containing == ["notes"] and result.registered == []
 
     async def test_a_child_added_in_the_same_call_is_folded_and_not_listed(self, library, notes):
         result = register_sources([notes / "work", notes])
@@ -740,7 +858,7 @@ class TestInterruptedAbsorb:
             "journal-delete": lambda: self._nth_call(absorb_mod, "delete_journal", 1),
         }[point]()
 
-    def _clean_absorb(self, tmp_path, label="notes", child="work") -> dict[str, object]:
+    def _clean_absorb(self, tmp_path, label="notes", child="work", seed=None) -> dict[str, object]:
         """The state a whole absorb leaves, built in a second library."""
         saved = (cfg.data_root, cfg.documents_dir, cfg.data_dir, cfg.lancedb_dir, cfg.linked_roots)
         services = svc_mod.get_services()
@@ -751,7 +869,10 @@ class TestInterruptedAbsorb:
         store = Store(cfg)
         svc_mod.set_services(make_mock_services(store=store))
         parent = tmp_path / "src" / label
-        _seeded_child(store, parent, child)
+        if seed is None:
+            _seeded_child(store, parent, child)
+        else:
+            seed(store, parent)
         register_sources([parent])
         state = _everything(store)
         svc_mod.set_services(services)
@@ -779,6 +900,93 @@ class TestInterruptedAbsorb:
         assert clean != before and clean["registry"] == ["notes"]
         assert killed != clean
         assert cfg.linked_roots == {"notes": str(notes.resolve())}
+
+    _TABLES = len(_KEY_COLUMNS)
+    _SHAPES: ClassVar[dict[str, tuple[Callable[[Store, Path], Path], dict[str, str]]]] = {
+        "renamed": (_seeded_renamed_child, {"renamed": "work"}),
+        "nested": (_seeded_nested_children, {"work": "work", "deep": "work/deep"}),
+    }
+    # One source moves three times (lift, the lift again, land) and two sources six.
+    _SHAPE_POINTS = (
+        *(("renamed", "rekey", nth) for nth in (1, 2, 3)),
+        *(("renamed", "records", nth) for nth in (1, 2, 3)),
+        ("renamed", "table", 4),
+        ("renamed", "table", 2 * _TABLES + 4),
+        *(("nested", "rekey", nth) for nth in range(1, 7)),
+        *(("nested", "records", nth) for nth in range(1, 7)),
+        ("nested", "table", 4),
+        ("nested", "table", 4 * _TABLES + 4),
+        ("nested", "table", 5 * _TABLES + 4),
+        *(("nested", "clear", nth) for nth in (1, 2, 3)),
+        *(("nested", "shadow-records", nth) for nth in (1, 2)),
+        *((shape, step, 1) for shape in _SHAPES for step in ("wiki-index", "registry", "delete")),
+        *((shape, "phase", 2) for shape in _SHAPES),
+    )
+
+    def _kill_nth(self, step: str, nth: int):
+        import lilbee.data.store.core as core_mod
+
+        target, attribute = {
+            "rekey": (Store, "rekey_sources_under"),
+            "table": (core_mod, "_rekey_sql"),
+            "records": (absorb_mod, "rekey_skip_records"),
+            "clear": (absorb_mod, "_clear_targets"),
+            "shadow-records": (absorb_mod, "update_skip_records"),
+            "phase": (absorb_mod, "write_journal"),
+            "wiki-index": (absorb_mod, "_refresh_wiki_index"),
+            "registry": (absorb_mod, "_write_registry"),
+            "delete": (absorb_mod, "delete_journal"),
+        }[step]
+        return self._nth_call(target, attribute, nth)
+
+    @pytest.mark.parametrize(("shape", "step", "nth"), _SHAPE_POINTS)
+    def test_a_kill_in_a_renamed_or_nested_absorb_ends_in_the_new_state(
+        self, library, notes, tmp_path, shape, step, nth
+    ):
+        store = library.store
+        seed, roots = self._SHAPES[shape]
+        seed(store, notes)
+        before = _everything(store)
+
+        with self._kill_nth(step, nth), pytest.raises(_Killed):
+            register_sources([notes])
+
+        assert absorb_pending(cfg.data_root)
+        killed = _everything(store)
+        cfg.linked_roots = {label: str((notes / below).resolve()) for label, below in roots.items()}
+        finish_pending_absorb()
+        finish_pending_absorb()
+
+        clean = self._clean_absorb(tmp_path, seed=seed)
+        finished = _everything(store)
+        assert finished["tables"] == clean["tables"]
+        assert finished == clean
+        assert clean != before and clean["registry"] == ["notes"]
+        assert killed != clean
+        keys = _keys(library)
+        assert len(keys) == len(set(keys)) and "notes/work/plan.md" in keys
+        assert cfg.linked_roots == {"notes": str(notes.resolve())}
+
+    async def test_an_older_build_that_syncs_nested_sources_between_the_phases_is_rolled_forward(
+        self, library, notes
+    ):
+        """The older build moves both sources back and indexes the inner one's files twice again."""
+        store = library.store
+        _seeded_nested_children(store, notes)
+        with self._kill_at("land-start"), pytest.raises(_Killed):
+            register_sources([notes])
+        journal = read_journal(cfg.data_root)
+        assert journal is not None and journal.phase is AbsorbPhase.LAND
+        store.rekey_sources_under(journal.lifted("work"), "work")
+        store.rekey_sources_under(journal.lifted("deep"), "deep")
+        _seed(store, "work/deep/a.md")
+        assert _keys(library).count("work/deep/a.md") == 1
+
+        finish_pending_absorb()
+
+        assert _keys(library) == _NESTED_KEYS
+        rows = {source["filename"]: source["file_hash"] for source in store.get_sources()}
+        assert rows["notes/work/deep/a.md"] == "hash of deep/a.md"
 
     @pytest.mark.parametrize("point", _KILL_POINTS)
     def test_parent_and_child_with_one_label_are_rekeyed_once(self, library, tmp_path, point):
@@ -912,6 +1120,28 @@ class TestInterruptedAbsorb:
 
         async with sync_running(cfg.data_root):
             finish_pending_absorb_at_start(cfg, library.store)
+
+        assert absorb_pending(cfg.data_root)
+        assert "An interrupted add is not finished yet" in caplog.text
+
+    async def test_a_process_that_starts_while_a_sync_runs_still_gets_its_services(
+        self, library, notes, monkeypatch, caplog
+    ):
+        await _add(notes / "work")
+        with self._kill_at("phase-write"), pytest.raises(_Killed):
+            register_sources([notes])
+        svc_mod.set_services(None)
+        monkeypatch.setattr(svc_mod._state, "singleton", None)
+        built = make_mock_services(store=library.store)
+
+        with (
+            mock.patch.object(svc_mod, "build_services", return_value=built),
+            mock.patch("lilbee.app.settings.reconcile_embedding_dim"),
+            mock.patch("lilbee.modelhub.registry.ModelRegistry"),
+        ):
+            cfg.worker_pool_eager_start = False
+            async with sync_running(cfg.data_root):
+                assert svc_mod.get_services() is built
 
         assert absorb_pending(cfg.data_root)
         assert "An interrupted add is not finished yet" in caplog.text
@@ -1271,11 +1501,51 @@ class TestEveryEntryPoint:
         assert result == {"error": "A sync is running. Add notes again when it ends."}
 
 
+async def _one_child(parent: Path) -> None:
+    await _add(parent / "work")
+
+
+async def _renamed_folder(parent: Path) -> None:
+    _register_as({"renamed": parent / "work"})
+    await sync(quiet=True)
+
+
+async def _renamed_file(parent: Path) -> None:
+    """A file with no heading, so its title is the name it is indexed under."""
+    _write(parent / "work" / "ferry_memo.md", "A memo about the ferry, with no heading.\n")
+    _register_as({"renamed": parent / "work" / "ferry_memo.md"})
+    await sync(quiet=True)
+
+
+async def _nested(parent: Path) -> None:
+    _write(parent / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
+    _register_as({"work": parent / "work", "deep": parent / "work" / "deep"})
+    await sync(quiet=True)
+
+
+async def _nested_and_renamed(parent: Path) -> None:
+    _write(parent / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
+    _register_as({"outer": parent / "work", "notes": parent / "work" / "deep"})
+    await sync(quiet=True)
+
+
 class TestTheOracle:
+    @pytest.mark.parametrize(
+        ("registered_before", "doubled"),
+        [
+            (_one_child, 0),
+            (_renamed_folder, 0),
+            (_renamed_file, 0),
+            (_nested, 1),
+            (_nested_and_renamed, 1),
+        ],
+    )
     async def test_an_absorb_and_a_sync_equal_an_index_built_from_the_parent_alone(
-        self, library, notes, tmp_path
+        self, library, notes, tmp_path, registered_before, doubled
     ):
-        await _add(notes / "work")
+        await registered_before(notes)
+        keys = _keys(library)
+        assert len(keys) - len({key.rsplit("/", 1)[-1] for key in keys}) == doubled
         await _add(notes)
         absorbed = _everything(library.store)
 

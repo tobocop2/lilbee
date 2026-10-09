@@ -41,7 +41,7 @@ def _rekeyed_sources_line(line: str, old: str, new: str) -> str:
     if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
         return line
     moved = [_moved(name, old, new) for name in names]
-    return line if moved == names else _SOURCES_PREFIX + json.dumps(sorted(moved))
+    return line if moved == names else _SOURCES_PREFIX + json.dumps(sorted(set(moved)))
 
 
 def _rekeyed_provenance(block: list[str], old: str, new: str) -> list[str]:

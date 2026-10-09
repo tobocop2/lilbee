@@ -52,13 +52,13 @@ class RegisterResult:
     overlapping: list[str] = field(default_factory=list)
     """Paths nesting under or over ``documents_dir`` or a live root; none is registered."""
     containing: list[str] = field(default_factory=list)
-    """The overlapping paths that contain a source they cannot take in; none is registered."""
+    """The overlapping paths that contain the documents directory; none is registered."""
     absorbed_into: dict[str, list[str]] = field(default_factory=dict)
     """Each newly registered label that took in registered sources, with their labels."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
     outside_corpus: list[str] = field(default_factory=list)
-    """One name per distinct path that is refused, name-taken or contains a source."""
+    """One name per distinct path that is refused, name-taken or around the documents directory."""
     tracked: list[str] = field(default_factory=list)
     """Named sources the knowledge base already tracks, so nothing was registered.
 
@@ -142,20 +142,6 @@ def _reached_below(src: Path, roots: dict[str, str]) -> dict[str, Path]:
     return {label: path for label, path in below.items() if walk_reaches(src, path, rules)}
 
 
-def _can_absorb(reached: dict[str, Path]) -> bool:
-    """Whether each root in *reached* can move below a parent with its keys intact.
-
-    A root labelled by another name than its folder's cannot, and neither can a
-    root that lies inside another one in *reached*.
-    """
-    paths = list(reached.values())
-    return all(
-        label == path.name
-        and not any(path != other and path.is_relative_to(other) for other in paths)
-        for label, path in reached.items()
-    )
-
-
 def _classify(
     paths: list[Path], roots: dict[str, str], docs_resolved: Path, *, force: bool
 ) -> tuple[RegisterResult, dict[str, str]]:
@@ -187,7 +173,7 @@ def _classify(
             result.overlapping.append(p.name)  # would walk the same files twice
             continue
         reached = _reached_below(src, roots)
-        if docs_resolved.is_relative_to(src) or not _can_absorb(reached):
+        if docs_resolved.is_relative_to(src):
             result.overlapping.append(p.name)
             result.containing.append(p.name)
             outside.setdefault(src, p.name)
