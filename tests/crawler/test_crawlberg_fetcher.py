@@ -832,43 +832,24 @@ FEED = "https://example.com/feed/"
 FEED_PATTERN = r"/feed/?$"
 TAG_PATTERN = r"/tag/"
 EXCLUDES = FilterSpec([FEED_PATTERN, TAG_PATTERN])
-EXCLUDED_START = "Excluded "
-SUMMARY_START = "Links of the crawl of "
+LEFT_OUT_START = "Left out "
 
 
-def _summary(total: int, per_pattern: str) -> str:
-    """The warning for a crawl of the seed that excluded *total* links."""
-    return (
-        f"Links of the crawl of {SEED} that an exclude pattern matched and the crawl did not "
-        f"follow: {total}. {per_pattern}. "
-        "The crawl_exclude_patterns setting holds the patterns. "
-        "Run the crawl at the INFO log level to list every address."
-    )
+def _left_out(url: str, pattern: str) -> str:
+    """The warning that names *url* as left out by *pattern*."""
+    return f"Left out {url}: it matches {pattern}, a pattern of the crawl_exclude_patterns setting"
 
 
 def _named(caplog: pytest.LogCaptureFixture) -> list[str]:
-    """The message of each log line that names one excluded address."""
+    """The message of each warning that names one excluded address."""
     return [
         record.getMessage()
         for record in caplog.records
-        if record.levelname == "INFO" and record.getMessage().startswith(EXCLUDED_START)
-    ]
-
-
-def _summaries(caplog: pytest.LogCaptureFixture) -> list[str]:
-    """The message of each warning that sums up the excluded addresses."""
-    return [
-        record.getMessage()
-        for record in caplog.records
-        if record.levelname == "WARNING" and record.getMessage().startswith(SUMMARY_START)
+        if record.levelname == "WARNING" and record.getMessage().startswith(LEFT_OUT_START)
     ]
 
 
 class TestExcludedLinks:
-    @pytest.fixture(autouse=True)
-    def _info_log(self, caplog):
-        caplog.set_level("INFO", logger=fetcher_mod.__name__)
-
     async def test_an_address_two_pages_link_to_is_named_once_with_its_pattern(self, caplog):
         script = [
             page(SEED, depth=0, links=[FEED, "https://example.com/a"]),
@@ -876,27 +857,26 @@ class TestExcludedLinks:
         ]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES)
-        assert _named(caplog) == [f"Excluded {FEED}: it matches the exclude pattern {FEED_PATTERN}"]
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
     async def test_the_first_pattern_that_matches_is_the_one_named(self, caplog):
         link = "https://example.com/tag/feed/"
         script = [page(SEED, depth=0, links=[link])]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=FilterSpec([TAG_PATTERN, FEED_PATTERN]))
-        assert _named(caplog) == [f"Excluded {link}: it matches the exclude pattern {TAG_PATTERN}"]
+        assert _named(caplog) == [_left_out(link, TAG_PATTERN)]
 
     async def test_an_address_is_matched_without_its_tracking_parameters(self, caplog):
         script = [page(SEED, depth=0, links=[f"{FEED}?utm_source=x#top"])]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES)
-        assert _named(caplog) == [f"Excluded {FEED}: it matches the exclude pattern {FEED_PATTERN}"]
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
     async def test_a_pattern_for_a_tracking_parameter_excludes_nothing(self, caplog):
         script = [page(SEED, depth=0, links=["https://example.com/news/?msclkid=9"])]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=FilterSpec([r"[?&]msclkid="]))
         assert _named(caplog) == []
-        assert _summaries(caplog) == []
 
     async def test_two_links_that_strip_to_one_address_name_it_once(self, caplog):
         script = [
@@ -905,8 +885,7 @@ class TestExcludedLinks:
         ]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES)
-        assert _named(caplog) == [f"Excluded {FEED}: it matches the exclude pattern {FEED_PATTERN}"]
-        assert _summaries(caplog) == [_summary(1, f"{FEED_PATTERN} matches 1, for example {FEED}")]
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
     @pytest.mark.parametrize("include_subdomains", [False, True])
     async def test_an_address_on_another_site_is_not_named(self, caplog, include_subdomains: bool):
@@ -929,7 +908,7 @@ class TestExcludedLinks:
         filters = FilterSpec([FEED_PATTERN], include_subdomains=True)
         with StubCrawlberg([page(SEED, depth=0, links=[link])]).installed():
             await _recursive(_http(), filters=filters)
-        assert _named(caplog) == [f"Excluded {link}: it matches the exclude pattern {FEED_PATTERN}"]
+        assert _named(caplog) == [_left_out(link, FEED_PATTERN)]
 
     async def test_the_links_of_a_page_at_the_depth_limit_are_not_named(self, caplog):
         script = [
@@ -939,7 +918,6 @@ class TestExcludedLinks:
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES, depth=1)
         assert _named(caplog) == []
-        assert _summaries(caplog) == []
 
     async def test_a_crawl_with_no_depth_limit_names_links_at_any_depth(self, caplog):
         script = [page("https://example.com/deep", depth=50, links=[FEED])]
@@ -953,9 +931,9 @@ class TestExcludedLinks:
                 filters=EXCLUDES,
             )
             assert [fetched.url async for fetched in stream] == ["https://example.com/deep"]
-        assert _named(caplog) == [f"Excluded {FEED}: it matches the exclude pattern {FEED_PATTERN}"]
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
-    async def test_one_warning_gives_the_total_and_each_patterns_count_and_example(self, caplog):
+    async def test_each_address_is_named_in_page_order_with_its_own_pattern(self, caplog):
         tags = [f"https://example.com/tag/{name}" for name in ("a", "b")]
         script = [
             page(SEED, depth=0, links=[tags[0], "https://example.com/kept", FEED]),
@@ -964,22 +942,19 @@ class TestExcludedLinks:
         ]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES)
-        assert _summaries(caplog) == [
-            _summary(
-                3,
-                f"{TAG_PATTERN} matches 2, for example {tags[0]}; "
-                f"{FEED_PATTERN} matches 1, for example {FEED}",
-            )
+        assert _named(caplog) == [
+            _left_out(tags[0], TAG_PATTERN),
+            _left_out(FEED, FEED_PATTERN),
+            _left_out(tags[1], TAG_PATTERN),
         ]
 
     async def test_a_crawl_that_excludes_nothing_logs_no_warning(self, caplog):
         script = [page(SEED, depth=0, links=["https://example.com/a"]), complete(1)]
         with StubCrawlberg(script).installed():
             await _recursive(_http(), filters=EXCLUDES)
-        assert _named(caplog) == []
-        assert _summaries(caplog) == []
+        assert [record for record in caplog.records if record.levelname == "WARNING"] == []
 
-    async def test_a_cancelled_crawl_still_gets_its_warning(self, caplog):
+    async def test_a_link_of_a_page_that_arrives_after_the_cancel_is_not_named(self, caplog):
         cancel = threading.Event()
 
         async def cancelled_after_the_seed() -> AsyncIterator[Payload]:
@@ -990,35 +965,7 @@ class TestExcludedLinks:
         with StubCrawlberg(cancelled_after_the_seed).installed():
             fetched = await _recursive(_http(), filters=EXCLUDES, cancel=cancel)
         assert [one.url for one in fetched] == [SEED]
-        assert _summaries(caplog) == [_summary(1, f"{FEED_PATTERN} matches 1, for example {FEED}")]
-
-    async def test_a_crawl_its_reader_closes_early_gets_one_warning(self, caplog):
-        script = [page(SEED, depth=0, links=[FEED]), page("https://example.com/a")]
-        with StubCrawlberg(script).installed():
-            stream = _http().fetch_recursive(
-                SEED,
-                depth=2,
-                max_pages=None,
-                timeout=1,
-                concurrency=ConcurrencySpec(),
-                filters=EXCLUDES,
-            )
-            async for _fetched in stream:
-                break
-            await stream.aclose()
-        assert _summaries(caplog) == [_summary(1, f"{FEED_PATTERN} matches 1, for example {FEED}")]
-
-    async def test_a_crawl_whose_stream_fails_gets_one_warning(self, caplog):
-        async def fails_after_the_seed() -> AsyncIterator[Payload]:
-            yield page(SEED, depth=0, links=[FEED])
-            raise OverflowError(OVERSIZED_REASON)
-
-        with (
-            StubCrawlberg(fails_after_the_seed).installed(),
-            pytest.raises(OverflowError, match=OVERSIZED_REASON),
-        ):
-            await _recursive(_http(), filters=EXCLUDES)
-        assert _summaries(caplog) == [_summary(1, f"{FEED_PATTERN} matches 1, for example {FEED}")]
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
     async def test_a_page_event_without_links_names_no_address(self, caplog):
         without_links = {"type": "page", "result": {"url": SEED, "depth": 0, "markdown": None}}
@@ -1031,7 +978,6 @@ class TestExcludedLinks:
         with StubCrawlberg([page(SEED, depth=0, links=[FEED])]).installed():
             await _http().fetch_single(SEED, timeout=3)
         assert _named(caplog) == []
-        assert _summaries(caplog) == []
 
 
 class TestLifecycle:
