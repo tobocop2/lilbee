@@ -264,7 +264,7 @@ def _roll_forward(config: Config, store: Store, journal: AbsorbJournal) -> None:
 
 
 def absorb(journal: AbsorbJournal, names: list[str]) -> None:
-    """Run the absorb *journal* records; a running sync raises ``SyncRunningError`` first.
+    """Run the absorb *journal* records; a running sync or wiki write raises ``SyncRunningError``.
 
     The caller holds the skip-records lock. *names* are the paths the user is adding.
     """

@@ -105,7 +105,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 
 | Tool | Use |
 |---|---|
-| `lilbee_add(paths, force, ocr, ocr_timeout, render_mode)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. A folder that contains a source you added before takes it in: the result lists that source under `absorbed`, and its documents get names below the folder's name. While a sync runs, such an add returns an error and changes nothing; call it again later. |
+| `lilbee_add(paths, force, ocr, ocr_timeout, render_mode)` | Copy files / dirs / URLs into the library and index them. Seconds to minutes. A folder that contains a source you added before takes it in: the result lists that source under `absorbed`, and its documents get names below the folder's name. While a sync, a wiki build or a removal runs, such an add returns an error and changes nothing; call it again later. |
 | `lilbee_sync(force_rebuild, retry_skipped, prune_ignored, ocr, ocr_timeout)` | Re-index the documents directory after edits. Minutes on large libraries. `prune_ignored` also drops indexed documents a `.lilbeeignore` now excludes. |
 | `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Default `depth=0` fetches one page; pass a depth (or `null` for the whole site) to follow links. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |

@@ -241,7 +241,8 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     A directory that contains registered sources takes each one its walk reaches:
     the source leaves the registry and its indexed files, skip records and wiki
     citations move below the new label, with nothing extracted or embedded again.
-    That needs every sync stopped; a running one raises ``SyncRunningError``
+    That needs every sync and wiki write stopped; a running one raises
+    ``SyncRunningError`` and a removal in progress raises ``SkipRecordsLockError``,
     with nothing changed.
     """
     config = active_config()
