@@ -6,7 +6,8 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -128,20 +129,21 @@ class TaskBarController:
     def __init__(self, app: App[Any]) -> None:
         self.app = app
         self.queue = TaskQueue(capacity={TaskType.DOWNLOAD.value: _DOWNLOAD_CONCURRENCY})
-        # task_id -> (target, on_success). Worker looks up its target here
-        # so we don't capture in a closure that outlives the task.
+        # task_id -> (target, on_success), from the hold that enqueues the row until its
+        # worker ends; a row cancelled with no worker loses its entry at the cancel.
         self._task_targets: dict[str, tuple[TaskTarget, Callable[[], None] | None]] = {}
-        # task_id -> its running worker thread, joined by stop_all at exit.
+        # task_id -> its started worker thread, joined by stop_all at exit.
         self._workers: dict[str, threading.Thread] = {}
-        # Held for every read and write of _workers; workers remove themselves on their own threads.
-        self._workers_lock = threading.Lock()
+        # Held to enqueue a task with its target, to promote a row with the start of its
+        # worker, to start a detection, to begin the stop, and for every use of _workers.
+        self._lock = threading.Lock()
         # Number of files in documents/ that are out of date with the store.
         # Set by start_detect_pending; read by TaskBar to render the
         # "N docs to sync · S to sync" hint when no live tasks are running.
         # Atomic int writes are safe under the GIL; the bar polls at 10 Hz.
         self.pending_sync_count: int = 0
         self._detect_thread: threading.Thread | None = None
-        # Set by stop_all before it copies _workers; no worker or detection starts after it.
+        # Set once, by stop_all, in a lock hold; read only by _admission.
         self._stopped = False
         # Roles whose worker is currently in the spawn window (1-3 s cold
         # start). Surfaced as a single TaskBar hint instead of one toast
@@ -194,7 +196,7 @@ class TaskBarController:
         """
         started = task_id in self._task_targets
         task_type = self._task_type_of(task_id)
-        self.queue.cancel(task_id)
+        self._cancel(task_id, CancelOrigin.USER)
         if not started:
             # Rows put straight on the queue have no worker whose exit advances
             # it, so the cancel must. A started row either has a worker that
@@ -229,8 +231,7 @@ class TaskBarController:
         """
         if task_type:
             self._try_start_next(task_type)
-        while (task := self.queue.advance()) is not None:
-            self._spawn_task_worker(task.task_id)
+        self._try_start_next(None)
 
     def downloading_label_for(self, ref: str) -> str | None:
         """Return the task name if *ref*'s download is queued or active, else None.
@@ -269,19 +270,18 @@ class TaskBarController:
         """Run the cheap sync-detection (filesystem walk + hash compare) on a daemon thread.
 
         Writes the result via ``set_pending_sync``. No-op if a detect job
-        is already running. Errors are logged and silently swallowed: a
-        failed detect just leaves the previous count in place rather
-        than blocking the UI.
+        is already running or the exit stop began. Errors are logged and
+        silently swallowed: a failed detect just leaves the previous count
+        in place rather than blocking the UI.
         """
-        if self._stopped:
-            return
-        if self._detect_thread is not None and self._detect_thread.is_alive():
-            return
         thread = threading.Thread(
             target=self._run_detect_pending, daemon=True, name="detect-pending"
         )
-        self._detect_thread = thread
-        thread.start()
+        with self._admission() as admitted:
+            running = self._detect_thread is not None and self._detect_thread.is_alive()
+            if admitted and not running:
+                self._detect_thread = thread
+                thread.start()
 
     def _run_detect_pending(self) -> None:
         # Local import: lilbee.data.ingest pulls in lancedb + the embedder
@@ -348,47 +348,63 @@ class TaskBarController:
 
         Per-type capacity in ``TaskQueue`` (1 for every type) controls
         concurrency: a second task of the same type queues behind the first.
+        A task started once the exit stop began is cancelled as an exit.
         """
-        task_id = self.queue.enqueue(
-            lambda: None,
-            name,
-            task_type.value,
-            indeterminate=indeterminate,
-            dedupe_key=dedupe_key,
-        )
-        if task_id in self._task_targets:
-            # Deduplicated: the live task keeps its original target.
-            return task_id
-        self._task_targets[task_id] = (target, on_success)
+        # The row and its target enter in one hold, so no promotion sees one without the other.
+        with self._admission() as admitted:
+            task_id = self.queue.enqueue(
+                lambda: None,
+                name,
+                task_type.value,
+                indeterminate=indeterminate,
+                dedupe_key=dedupe_key,
+            )
+            if task_id in self._task_targets:
+                # Deduplicated: the live task keeps its original target.
+                return task_id
+            if admitted:
+                self._task_targets[task_id] = (target, on_success)
+            else:
+                self.queue.cancel(task_id, CancelOrigin.EXIT)
         self._try_start_next(task_type.value)
         return task_id
 
-    def _try_start_next(self, task_type: str) -> None:
-        """Promote queued tasks of this type into any free capacity slots."""
-        while (task := self.queue.advance(task_type)) is not None:
-            self._spawn_task_worker(task.task_id)
+    @contextmanager
+    def _admission(self) -> Iterator[bool]:
+        """Hold the lock for one start; yields False once the exit stop began."""
+        with self._lock:
+            yield not self._stopped
 
-    def _spawn_task_worker(self, task_id: str) -> None:
-        """Start a daemon thread for the task, or cancel the task as an exit once stop_all began."""
-        if task_id not in self._task_targets:
-            return
-        thread = threading.Thread(
-            target=self._run_task_worker,
-            args=(task_id,),
-            daemon=True,
-            name=f"task-{task_id}",
-        )
-        # Started inside the lock: the map holds started threads only, and a worker
-        # that ends at once waits here to remove itself. The stop is read in the same
-        # hold, so a worker is in the map stop_all copies or it never starts.
-        with self._workers_lock:
-            accepted = not self._stopped
-            if accepted:
+    def _try_start_next(self, task_type: str | None) -> None:
+        """Promote queued tasks into free slots: of *task_type*, or of every type for None."""
+        while self._promote_one(task_type):
+            pass
+
+    def _promote_one(self, task_type: str | None) -> bool:
+        """Promote one queued task and start its worker in one lock hold; False when none is due."""
+        with self._lock:
+            task = self.queue.advance(task_type)
+            if task is None:
+                return False
+            # A row put straight on the queue has no target and gets no worker.
+            if task.task_id in self._task_targets:
+                thread = threading.Thread(
+                    target=self._run_task_worker,
+                    args=(task.task_id,),
+                    daemon=True,
+                    name=f"task-{task.task_id}",
+                )
+                # The map holds started threads only; a worker that ends at once waits here.
                 thread.start()
-                self._workers[task_id] = thread
-        if not accepted:
-            self._task_targets.pop(task_id, None)
-            self.queue.cancel(task_id, CancelOrigin.EXIT)
+                self._workers[task.task_id] = thread
+            return True
+
+    def _cancel(self, task_id: str, origin: CancelOrigin) -> None:
+        """Cancel the row; with no worker to drop its target, the target goes here."""
+        self.queue.cancel(task_id, origin)
+        with self._lock:
+            if task_id not in self._workers:
+                self._task_targets.pop(task_id, None)
 
     def stop_all(self, budget_s: float = _EXIT_STOP_BUDGET_S) -> None:
         """Cancel every task as an exit, unwind their coroutines on the loop, then join the workers.
@@ -397,12 +413,14 @@ class TaskBarController:
         a model page runs its cleanup now, while the executors still accept work.
         The drain and the joins spend from the one *budget_s*.
         """
-        self._stopped = True
+        # Every start is whole before this hold or sees the stop after it.
+        with self._lock:
+            self._stopped = True
         deadline = time.monotonic() + budget_s
         for task in [*self.queue.queued_tasks, *self.queue.active_tasks]:
-            self.queue.cancel(task.task_id, CancelOrigin.EXIT)
+            self._cancel(task.task_id, CancelOrigin.EXIT)
         asyncio_loop.shutdown(budget_s)
-        with self._workers_lock:
+        with self._lock:
             threads = [*self._workers.values(), self._detect_thread]
         for thread in threads:
             if thread is not None:
@@ -434,7 +452,7 @@ class TaskBarController:
                     log.warning("on_success for %s raised", task_id, exc_info=True)
         finally:
             self._task_targets.pop(task_id, None)
-            with self._workers_lock:
+            with self._lock:
                 self._workers.pop(task_id, None)
 
     def _post_finalize(

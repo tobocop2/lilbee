@@ -1,8 +1,8 @@
 """Promoting a task has to start it.
 
-``queue.advance`` only marks the next task ACTIVE. A promotion that skips
-``_spawn_task_worker`` leaves a row rendering as a live download with no thread
-behind it, and the queue never drains.
+``queue.advance`` only marks the next task ACTIVE. A promotion that starts no
+worker leaves a row rendering as a live download with no thread behind it, and
+the queue never drains.
 """
 
 from __future__ import annotations

@@ -463,9 +463,12 @@ async def test_downloads_run_four_at_a_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_worker_without_target_is_noop() -> None:
-    """Defensive: _spawn_task_worker with unknown task_id does nothing."""
+async def test_a_row_put_straight_on_the_queue_is_promoted_with_no_worker() -> None:
+    """A row with no target becomes active when a slot frees, and no thread starts for it."""
     app = _Host()
     async with app.run_test():
         controller = TaskBarController(app)
-        controller._spawn_task_worker("unknown-task-id")  # must not raise
+        task_id = controller.add_task("bare", TaskType.SYNC.value)
+        controller.complete_task(controller.add_task("other", TaskType.CRAWL.value))
+        assert controller.queue.get_task(task_id).status == TaskStatus.ACTIVE
+        assert controller._workers == {}

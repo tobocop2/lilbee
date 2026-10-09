@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -16,9 +17,10 @@ import pytest
 
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
-from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import CancelOrigin, TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 from lilbee.core.config import cfg
+from tests._async_wait import poll_until, wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
 
 # The longest a test waits for work a task worker thread does.
@@ -1928,8 +1930,8 @@ async def _spawn_end_and_stop(pilot, monkeypatch: pytest.MonkeyPatch) -> _Watche
     from tests._async_wait import wait_until
 
     controller = TaskBarController(pilot.app)
-    controller._workers_lock = _OwnedLock()
-    controller._workers = workers = _WatchedWorkers(controller._workers_lock)
+    controller._lock = _OwnedLock()
+    controller._workers = workers = _WatchedWorkers(controller._lock)
     workers.watch_starts(monkeypatch)
     controller.start_task("watched", TaskType.SYNC, lambda _reporter: None)
     assert await wait_until(pilot, lambda: workers.held["worker_exit"] != [], timeout=5.0)
@@ -2010,7 +2012,7 @@ async def test_a_task_started_once_the_stop_has_begun_gets_no_worker(moment: str
             started.append(controller.start_task("late", TaskType.SYNC, _wait))
 
         if moment == "after_the_copy":
-            controller._workers_lock = lock = _StartsATaskOnRelease(_start_late)
+            controller._lock = lock = _StartsATaskOnRelease(_start_late)
             controller._workers = _ArmsOnCopy(lock)
         try:
             controller.stop_all(budget_s=0.2)
@@ -2069,3 +2071,206 @@ async def test_stop_all_waits_for_a_detection_already_running() -> None:
             threading.Timer(0.2, release.set).start()
             controller.stop_all(budget_s=3.0)
         assert finished.is_set()
+
+
+class _StopsAtItsFirstAcquire:
+    """A lock whose first acquire runs the whole exit stop before it lets the caller in."""
+
+    def __init__(self, controller: TaskBarController) -> None:
+        self._lock = threading.Lock()
+        self._controller = controller
+        self.armed = True
+
+    def __enter__(self) -> None:
+        if self.armed:
+            self.armed = False
+            self._controller.stop_all(budget_s=0.2)
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["task", "detection"])
+async def test_a_start_that_meets_the_stop_at_its_lock_starts_no_thread(kind: str) -> None:
+    """The stop is read in the hold that starts a thread, so a stop run at the acquire is seen."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        before = set(threading.enumerate())
+
+        def _wait(*_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        controller._lock = lock = _StopsAtItsFirstAcquire(controller)
+        try:
+            with patch.object(controller, "_run_detect_pending", _wait):
+                if kind == "task":
+                    controller.start_task("late", TaskType.SYNC, _wait)
+                else:
+                    controller.start_detect_pending()
+            started = [
+                thread.name
+                for thread in set(threading.enumerate()) - before
+                if thread.name.startswith(("task-", "detect-pending"))
+            ]
+        finally:
+            release.set()
+    assert not lock.armed
+    assert started == []
+
+
+class _TellsWhoWaits:
+    """A lock that says when a thread had to wait for it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.waited = threading.Event()
+
+    def __enter__(self) -> None:
+        if not self._lock.acquire(blocking=False):
+            self.waited.set()
+            self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+class _RunsBesideTheQueue(TaskQueue):
+    """A queue that runs a hook on another thread at a step, until it ends or waits for the lock."""
+
+    def __init__(self, gate: _TellsWhoWaits, slots: int = 1) -> None:
+        super().__init__(capacity={TaskType.DOWNLOAD.value: slots})
+        self._gate = gate
+        self.hooks: dict[str, Callable[[], object]] = {}
+
+    def _run_beside(self, step: str) -> None:
+        hook = self.hooks.pop(step, None)
+        if hook is None:
+            return
+        self._gate.waited.clear()
+        thread = threading.Thread(target=hook, daemon=True)
+        thread.start()
+        assert poll_until(lambda: not thread.is_alive() or self._gate.waited.is_set())
+
+    def enqueue(self, *args, **kwargs) -> str:
+        self._run_beside("before_enqueue")
+        task_id = super().enqueue(*args, **kwargs)
+        self._run_beside("after_enqueue")
+        return task_id
+
+    @property
+    def active_tasks(self):
+        tasks = super().active_tasks
+        self._run_beside("rows_read")
+        return tasks
+
+
+def _watched_controller(app: LilbeeApp, slots: int = 1) -> tuple[TaskBarController, dict]:
+    """A controller whose queue runs hooks beside it; returns it with the hook table."""
+    controller = TaskBarController(app)
+    controller._lock = gate = _TellsWhoWaits()
+    controller.queue = queue = _RunsBesideTheQueue(gate, slots)
+    return controller, queue.hooks
+
+
+@pytest.mark.asyncio
+async def test_a_second_starter_cannot_promote_a_task_before_its_target_is_stored() -> None:
+    """A task is enqueued with its target in one hold, so each of two starters gets a worker."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller, hooks = _watched_controller(app, slots=2)
+        ran: list[str] = []
+        hooks["after_enqueue"] = lambda: controller.start_task(
+            "second", TaskType.DOWNLOAD, lambda _reporter: ran.append("second")
+        )
+        controller.start_task("first", TaskType.DOWNLOAD, lambda _reporter: ran.append("first"))
+        await wait_until(pilot, lambda: len(ran) == 2, timeout=_SETTLE_SECONDS)
+    assert sorted(ran) == ["first", "second"]
+
+
+def _outcome(controller: TaskBarController, task_id: str) -> tuple:
+    """The status and cancel origin of a row, and whether its target is still held."""
+    task = controller.queue.get_task(task_id)
+    return (task.status, task.cancel_origin, task_id in controller._task_targets)
+
+
+_REFUSED_AT_EXIT = (TaskStatus.CANCELLED, CancelOrigin.EXIT, False)
+
+
+@pytest.mark.asyncio
+async def test_a_task_started_while_the_stop_cancels_is_cancelled_too() -> None:
+    """A task started behind an active one, after the stop read its rows, is not left queued."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller, hooks = _watched_controller(app)
+        release = threading.Event()
+        late: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        first = controller.start_task("first", TaskType.SYNC, _wait)
+
+        def _start_late() -> None:
+            late.append(controller.start_task("late", TaskType.SYNC, _wait))
+
+        hooks["rows_read"] = _start_late
+        try:
+            controller.stop_all(budget_s=0.2)
+            # The wedged first worker still holds its target, so the map is not just empty.
+            assert _outcome(controller, first) == (TaskStatus.CANCELLED, CancelOrigin.EXIT, True)
+            assert [_outcome(controller, task_id) for task_id in late] == [_REFUSED_AT_EXIT]
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_the_stop_begins_before_or_after_a_start_and_never_inside_one() -> None:
+    """A stop that arrives while a start holds the lock waits, then cancels the task it started."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller, hooks = _watched_controller(app)
+        release = threading.Event()
+        stopped = threading.Event()
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        def _stop() -> None:
+            controller.stop_all(budget_s=0.2)
+            stopped.set()
+
+        controller.start_task("first", TaskType.SYNC, _wait)
+        hooks["before_enqueue"] = _stop
+        try:
+            late = controller.start_task("late", TaskType.SYNC, _wait)
+            assert stopped.wait(_SETTLE_SECONDS)
+            assert _outcome(controller, late) == _REFUSED_AT_EXIT
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canceller", ["user", "exit"])
+async def test_a_queued_task_that_is_cancelled_keeps_no_target(canceller: str) -> None:
+    """No worker will drop a queued row's target, so the cancel drops it."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        running = controller.start_task(
+            "wedged", TaskType.SYNC, lambda _reporter: release.wait(5.0)
+        )
+        queued = controller.start_task("next", TaskType.SYNC, lambda _reporter: None)
+        try:
+            if canceller == "user":
+                controller.cancel_task(queued)
+            else:
+                controller.stop_all(budget_s=0.1)
+            assert controller.queue.get_task(queued).status is TaskStatus.CANCELLED
+            assert set(controller._task_targets) == {running}
+        finally:
+            release.set()
