@@ -523,6 +523,49 @@ class TestLibraryTab:
                     break
             assert ml.option_count > 0
 
+    async def test_second_populate_updates_mounted_library_grid_in_place(self, monkeypatch) -> None:
+        """A second populate with the same section count reuses the mounted grid."""
+        from textual.app import ComposeResult
+        from textual.widgets import Static
+
+        from lilbee.cli.tui.screens.catalog import CatalogScreen
+        from lilbee.cli.tui.widgets.model_grid import ModelGrid
+        from tests._lilbee_app_test_host import pump_until
+
+        monkeypatch.setattr(CatalogScreen, "_fetch_frontier_models", lambda self: None)
+        for source in ("_all_family_rows", "_all_hf_rows", "_all_remote_rows"):
+            monkeypatch.setattr(CatalogScreen, source, lambda self: [])
+
+        class _App(LilbeeAppHost):
+            def compose(self) -> ComposeResult:
+                yield CatalogScreen()
+
+        async with _App().run_test(size=(120, 40)) as pilot:
+            await pilot.pause()
+            screen = pilot.app.query_one(CatalogScreen)
+            container = screen._grid_for_tab("library")
+            screen._frontier_rows = [_frontier("first-model")]
+            screen._populate_library_list()
+            mounted = await pump_until(
+                pilot,
+                lambda: (
+                    len(container.query(ModelGrid)) == 1
+                    and all(g.is_running for g in container.query(ModelGrid))
+                ),
+            )
+            assert mounted, "the first populate never mounted its grid"
+            grid_before = container.query_one(ModelGrid)
+            heading_before = container.query_one(".section-heading", Static)
+            assert [r.name for r in grid_before.rows] == ["first-model"]
+
+            screen._frontier_rows = [_frontier("second-model")]
+            screen._populate_library_list()
+
+            assert container.query_one(ModelGrid) is grid_before
+            assert container.query_one(".section-heading", Static) is heading_before
+            assert [r.name for r in grid_before.rows] == ["second-model"]
+            assert str(heading_before.render()) == "Cloud"
+
     async def test_populate_library_with_empty_rows_clears_frontier_section(self) -> None:
         """Frontier section disappears when frontier_rows clears.
 
