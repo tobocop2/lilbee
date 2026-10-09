@@ -223,27 +223,29 @@ def remove_private_stores(data_root: Path) -> None:
 
 
 def _delete_stores(stores: list[Path], data_root: Path) -> None:
-    """Delete *stores* and log the space that frees.
-
-    The index holds every document those stores hold, and nothing reads them. A
-    file the index shares by hard link frees no space, so it is not counted.
-    """
-    freed = sum(
-        entry.stat().st_size
-        for store in stores
-        for entry in store.rglob("*")
-        if entry.is_file() and entry.stat().st_nlink == 1
-    )
+    """Delete *stores*, which nothing reads, and log the stores that went and the space freed."""
+    before = sum(_reclaimable_bytes(store) for store in stores)
     for store in stores:
         try:
             shutil.rmtree(store)
         except OSError as exc:
             log.warning("Could not delete the unused worker store %s: %s", store, exc)
-    log.warning(
-        "Deleted %d unused worker store(s) of an earlier lilbee under %s, freeing %.1f MB",
-        len(stores),
-        data_root / SHARDS_DIRNAME,
-        freed / _BYTES_PER_MB,
+    deleted = [store for store in stores if not store.exists()]
+    if deleted:
+        log.warning(
+            "Deleted %d unused worker store(s) of an earlier lilbee under %s, freeing %.1f MB",
+            len(deleted),
+            data_root / SHARDS_DIRNAME,
+            (before - sum(_reclaimable_bytes(store) for store in stores)) / _BYTES_PER_MB,
+        )
+
+
+def _reclaimable_bytes(store: Path) -> int:
+    """The bytes deleting *store* frees: a file with a second hard link frees none."""
+    return sum(
+        entry.stat().st_size
+        for entry in store.rglob("*")
+        if entry.is_file() and entry.stat().st_nlink == 1
     )
 
 
