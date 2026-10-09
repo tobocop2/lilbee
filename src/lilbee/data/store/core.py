@@ -2130,22 +2130,34 @@ class Store:
 
         A key matches when it is *old* or starts with ``old/``, so ``work`` never
         matches ``workshop/x``. Each table takes one update. A second run re-keys
-        again when *new* starts with *old*. Titles stay as stored, so *new* must
-        end in the file name *old* ends in. An empty key, one with an empty,
-        ``.`` or ``..`` segment, or one with a NUL raises ValueError before any
-        table changes.
+        again when *new* starts with *old*. When *new* ends in another name than
+        *old*, the source at exactly *old* takes the title of the new name if its
+        title came from the old one; every other title stays as stored. An empty
+        key, one with an empty, ``.`` or ``..`` segment, or one with a NUL raises
+        ValueError before any table changes.
         """
         _refuse_malformed_key(old)
         _refuse_malformed_key(new)
-        if PurePosixPath(old).name != PurePosixPath(new).name:
-            raise ValueError(f"A re-key keeps the last path segment: {old!r} to {new!r}")
         with self._write_lock():
+            title = self._title_after_rekey(old, new)
             for name, column in _REKEY_TABLES:
                 table = self.open_table(name)
-                if table is not None:
-                    where, value = _rekey_sql(column, old, new)
-                    table.update(where=where, values_sql={column: value})
+                if table is None:
+                    continue
+                if title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
+                    at_old = f"{column} = '{escape_sql_string(old)}'"
+                    table.update(where=at_old, values={_TITLE_COLUMN: title})
+                where, value = _rekey_sql(column, old, new)
+                table.update(where=where, values_sql={column: value})
         self._invalidate_source_cache()
+
+    def _title_after_rekey(self, old: str, new: str) -> str | None:
+        """The title the source at exactly *old* takes at *new*, or ``_KEEP_TITLE``."""
+        if PurePosixPath(old).name == PurePosixPath(new).name:
+            return _KEEP_TITLE
+        from lilbee.data.title import derive_title  # circular at module scope
+
+        return self._relocated_title(self.open_table(SOURCES_TABLE), old, new, derive_title)
 
     def member_sources(self, name: str) -> list[str]:
         """Sources ingested out of the archive *name*: every filename under ``name/``."""
