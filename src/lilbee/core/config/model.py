@@ -1585,7 +1585,7 @@ def _refusals(settings_cls: type[BaseSettings], values: dict[str, Any]) -> dict[
 
 
 class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings; a blank one is unset, a refused one stops."""
+    """Reads LILBEE_* env vars as plain strings; a refused one stops the load or falls back."""
 
     def __init__(self, settings_cls: type[BaseSettings]) -> None:
         self._settings_cls = settings_cls
