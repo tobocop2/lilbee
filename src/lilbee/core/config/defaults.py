@@ -128,18 +128,20 @@ _ATTACHMENT_EXCLUDE: tuple[str, ...] = (
     r"\?attachment_id=",
 )
 
-# Regexes against the whole URL, not globs, so a bare prefix also matches
-# longer words: /cart excluded /cartography. Require a segment boundary.
+# Regexes against the whole URL, not globs. A generic name matches only as the
+# whole first path segment of a site: /cart and /cart/items, but neither
+# /cartography nor /docs/payments/cart.
+_SITE_ROOT = r"^https?://[^/?#]+"
 _PATH_BOUNDARY = r"(?:/|\?|#|$)"
 
 
-def _whole_segments(*paths: str) -> tuple[str, ...]:
-    """Anchor each path prefix so it matches a whole segment, not a word."""
-    return tuple(path + _PATH_BOUNDARY for path in paths)
+def _first_segments(*paths: str) -> tuple[str, ...]:
+    """Anchor each path so it matches only the whole first path segment of a site."""
+    return tuple(_SITE_ROOT + path + _PATH_BOUNDARY for path in paths)
 
 
 # Auth and account flows (generic across CMSes and e-commerce platforms).
-_AUTH_EXCLUDE: tuple[str, ...] = _whole_segments(
+_AUTH_EXCLUDE: tuple[str, ...] = _first_segments(
     r"/login",
     r"/logout",
     r"/register",
@@ -153,7 +155,7 @@ _AUTH_EXCLUDE: tuple[str, ...] = _whole_segments(
 _AUTH_EXCLUDE = (*_AUTH_EXCLUDE, r"/my-account/")
 
 # E-commerce transactional flows (cart / checkout / compare / etc.).
-_ECOMMERCE_EXCLUDE: tuple[str, ...] = _whole_segments(
+_ECOMMERCE_EXCLUDE: tuple[str, ...] = _first_segments(
     r"/cart",
     r"/checkout",
     r"/wishlist",
@@ -164,32 +166,6 @@ _ECOMMERCE_EXCLUDE = (
     *_ECOMMERCE_EXCLUDE,
     r"/products\.json",
     r"/collections/.+/products/.+\?page=",
-)
-
-# Marketing / tracking query parameters (utm_*, fbclid, gclid, etc.).
-# Vendor campaign tokens only. Dropping ?utm_source= is free (the canonical
-# URL is in the frontier too), but ?ref= and ?share= are ordinary content
-# links on docs and forum platforms.
-_TRACKING_EXCLUDE: tuple[str, ...] = (
-    (
-        r"[?&]("
-        r"utm_[a-z_]+"
-        r"|fbclid|gclid|msclkid|yclid"
-        r"|mc_cid|mc_eid"
-        r"|_hsenc|_hsmi|hsCtaTracking"
-        r"|mkt_tok|mkt_[a-z_]+"
-        r"|trk|trkInfo"
-        r"|dm_i"
-        r"|vero_id|vero_conv"
-        r"|oly_anon_id|oly_enc_id"
-        r"|igshid"
-        r"|pk_campaign|pk_source|pk_medium|pk_[a-z_]+"
-        r"|_ga"
-        r"|affiliate|aff_id|aff_ref|aff|partner"
-        r"|srsltid"
-        r"|replytocom"
-        r")="
-    ),
 )
 
 # Site-meta URLs and non-HTML resources; skipped before fetch.
@@ -203,11 +179,11 @@ _META_EXCLUDE: tuple[str, ...] = (
 )
 
 # Mediawiki/Wikipedia navlinks that dominate BFS before the article body.
+# Help: is a content namespace and is crawled.
 _MEDIAWIKI_EXCLUDE: tuple[str, ...] = (
     r"/wiki/Main_Page$",
     r"/wiki/Wikipedia:",
     r"/wiki/Portal:",
-    r"/wiki/Help:",
     r"/wiki/Special:",
     r"/wiki/Category:",
     r"/wiki/Template:",
@@ -228,7 +204,6 @@ DEFAULT_CRAWL_EXCLUDE_PATTERNS: tuple[str, ...] = (
     *_ATTACHMENT_EXCLUDE,
     *_AUTH_EXCLUDE,
     *_ECOMMERCE_EXCLUDE,
-    *_TRACKING_EXCLUDE,
     *_META_EXCLUDE,
     *_MEDIAWIKI_EXCLUDE,
 )

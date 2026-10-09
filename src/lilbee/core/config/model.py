@@ -686,7 +686,7 @@ class Config(BaseSettings):
     crawl_retry_max_attempts: int = ConfigField(default=3, ge=0, writable=True)
 
     # Regex patterns dropped at link-discovery time. Defaults block CMS
-    # scaffolding (WordPress admin, archives, tracking params, etc.).
+    # scaffolding (WordPress admin, archives, feeds, etc.).
     crawl_exclude_patterns: list[str] = ConfigField(
         default_factory=lambda: list(DEFAULT_CRAWL_EXCLUDE_PATTERNS),
         writable=True,

@@ -20,10 +20,18 @@ Script = Callable[[], AsyncIterator[Payload]]
 Refusal = Callable[["Recorded"], str | None]
 
 
-def page(url: str, markdown: str | None = "# Page", *, depth: int = 1) -> Payload:
+def _link(url: str) -> Payload:
+    """One entry of a page's ``links``, as crawlberg reports a link to *url*."""
+    return {"url": url, "link_type": "internal", "nofollow": False, "rel": None, "text": ""}
+
+
+def page(
+    url: str, markdown: str | None = "# Page", *, depth: int = 1, links: Iterable[str] = ()
+) -> Payload:
     """A ``page`` event payload; ``markdown=None`` is a page with no markdown output."""
     content = None if markdown is None else {"content": markdown}
-    return {"type": "page", "result": {"url": url, "depth": depth, "markdown": content}}
+    result = {"url": url, "depth": depth, "markdown": content, "links": [_link(u) for u in links]}
+    return {"type": "page", "result": result}
 
 
 def error(url: str, message: str) -> Payload:

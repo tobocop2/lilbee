@@ -1477,6 +1477,121 @@ class TestParseEnableOcrFallback:
         assert Config._parse_enable_ocr(0) is False
 
 
+# The first path segment of a site, as a whole segment: how each generic auth or shop name is
+# anchored in the default exclude list.
+_FIRST = r"^https?://[^/?#]+"
+_END = r"(?:/|\?|#|$)"
+# Each default exclude pattern, with one address the pattern is in the list to exclude.
+ADDRESS_FOR_EACH_DEFAULT_PATTERN = {
+    r"/wp-admin/": "https://blog.example/wp-admin/options.php",
+    r"/wp-login(\.php)?": "https://blog.example/wp-login.php",
+    r"/wp-json/": "https://blog.example/wp-json/wp/v2/posts",
+    r"/xmlrpc\.php": "https://blog.example/xmlrpc.php",
+    r"/wp-cron\.php": "https://blog.example/wp-cron.php",
+    r"/wp-includes/": "https://blog.example/wp-includes/js/jquery/jquery.js",
+    r"/wp-content/uploads/": "https://blog.example/wp-content/uploads/2024/06/banner.png",
+    r"\?p=\d+": "https://blog.example/?p=123",
+    r"\?page_id=\d+": "https://blog.example/?page_id=45",
+    r"\?cat=\d+": "https://blog.example/?cat=7",
+    r"/elementor-\d+": "https://blog.example/elementor-1234/",
+    r"\?elementor_library": "https://blog.example/?elementor_library=header",
+    r"/page/\d+/?$": "https://blog.example/news/page/5/",
+    r"\?paged?=\d+": "https://blog.example/?paged=3",
+    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$": "https://blog.example/2024/06/15/",
+    r"/tag/": "https://blog.example/tag/gardening/",
+    r"/category/": "https://blog.example/category/growing/",
+    r"/author/": "https://blog.example/author/tobias/",
+    r"/archives?/?$": "https://blog.example/archive/",
+    r"/comment-page-\d+": "https://blog.example/post/comment-page-2",
+    r"/feed/?$": "https://blog.example/feed/",
+    r"/feed/atom/?$": "https://blog.example/feed/atom/",
+    r"/feed/rdf/?$": "https://blog.example/feed/rdf/",
+    r"/comments/feed/?$": "https://blog.example/comments/feed/",
+    r"/rss/?$": "https://blog.example/rss/",
+    r"/amp/?$": "https://blog.example/article/amp/",
+    r"\?amp=": "https://blog.example/article/?amp=1",
+    r"\?print=": "https://blog.example/article/?print=1",
+    r"/print/?$": "https://blog.example/article/print/",
+    r"\?preview=": "https://blog.example/article/?preview=true",
+    r"/attachment/": "https://blog.example/post/attachment/photo/",
+    r"\?attachment_id=": "https://blog.example/?attachment_id=9",
+    _FIRST + r"/login" + _END: "https://shop.example/login?next=/",
+    _FIRST + r"/logout" + _END: "https://shop.example/logout",
+    _FIRST + r"/register" + _END: "https://shop.example/register/",
+    _FIRST + r"/signup" + _END: "https://shop.example/signup",
+    _FIRST + r"/signin" + _END: "https://shop.example/signin",
+    _FIRST + r"/account" + _END: "https://shop.example/account/addresses",
+    _FIRST + r"/profile" + _END: "https://shop.example/profile/settings",
+    _FIRST + r"/password-reset" + _END: "https://shop.example/password-reset",
+    _FIRST + r"/forgot-password" + _END: "https://shop.example/forgot-password",
+    r"/my-account/": "https://shop.example/my-account/orders/",
+    _FIRST + r"/cart" + _END: "https://shop.example/cart/items",
+    _FIRST + r"/checkout" + _END: "https://shop.example/checkout/step1",
+    _FIRST + r"/wishlist" + _END: "https://shop.example/wishlist",
+    _FIRST + r"/orders?" + _END: "http://shop.example:8080/order/1042",
+    _FIRST + r"/compare" + _END: "https://shop.example/compare?ids=1,2",
+    r"/products\.json": "https://shop.example/products.json",
+    r"/collections/.+/products/.+\?page=": (
+        "https://shop.example/collections/boots/products/alpine?page=2"
+    ),
+    r"/sitemap[^/]*\.xml": "https://blog.example/sitemap_index.xml",
+    r"/robots\.txt": "https://blog.example/robots.txt",
+    r"/humans\.txt": "https://blog.example/humans.txt",
+    r"/favicon\.ico": "https://blog.example/favicon.ico",
+    r"/\.well-known/": "https://blog.example/.well-known/security.txt",
+    (
+        r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg"
+        r"|ttf|woff2?|css|js|map|json|xml)(\?.*)?$"
+    ): "https://blog.example/img/logo.png?v=3",
+    r"/wiki/Main_Page$": "https://wiki.example/wiki/Main_Page",
+    r"/wiki/Wikipedia:": "https://wiki.example/wiki/Wikipedia:About",
+    r"/wiki/Portal:": "https://wiki.example/wiki/Portal:Science",
+    r"/wiki/Special:": "https://wiki.example/wiki/Special:RecentChanges",
+    r"/wiki/Category:": "https://wiki.example/wiki/Category:Physics",
+    r"/wiki/Template:": "https://wiki.example/wiki/Template:Infobox",
+    r"/wiki/Template_talk:": "https://wiki.example/wiki/Template_talk:Infobox",
+    r"/wiki/Talk:": "https://wiki.example/wiki/Talk:Physics",
+    r"/wiki/File:": "https://wiki.example/wiki/File:Diagram.svg",
+    r"/wiki/File_talk:": "https://wiki.example/wiki/File_talk:Diagram.svg",
+    r"/wiki/User:": "https://wiki.example/wiki/User:Example",
+    r"/wiki/User_talk:": "https://wiki.example/wiki/User_talk:Example",
+    r"/w/index\.php": "https://wiki.example/w/index.php?title=Physics&action=history",
+}
+# Paths of ordinary pages on documentation sites and wikis.
+CONTENT_PATHS = [
+    "/wiki/MediaWiki",
+    "/wiki/Help:Formatting",
+    "/wiki/Help:Links",
+    "/wiki/Help:Tables",
+    "/wiki/Help:Magic_words",
+    "/wiki/Help:Editing_pages",
+    "/wiki/Manual:Installation_guide",
+    "/docs",
+    "/docs/installation",
+    "/docs/markdown-features/code-blocks",
+    "/docs/versioning",
+    "/docs/search",
+    "/docs/front-matter/",
+    "/docs/collections/",
+    "/docs/permalinks/",
+    "/docs/assets/",
+    "/user-guide/writing-your-docs/",
+    "/user-guide/deploying-your-docs/",
+    "/dev-guide/plugins/",
+    "/about/license/",
+    "/en/master/usage/quickstart.html",
+    "/en/master/usage/restructuredtext/directives.html",
+    "/en/master/usage/extensions/autodoc.html",
+    "/en/master/glossary.html",
+    "/en/master/man/sphinx-build.html",
+    "/v/order",
+    "/v/layout",
+    "/docs/payments/checkout",
+    "/guides/login",
+    "/api/account",
+]
+
+
 class TestDefaultCrawlExcludePatterns:
     """The out-of-the-box default exclude list blocks common noise without
     accidentally rejecting real content URLs."""
@@ -1504,7 +1619,6 @@ class TestDefaultCrawlExcludePatterns:
             _ECOMMERCE_EXCLUDE,
             _FEED_EXCLUDE,
             _META_EXCLUDE,
-            _TRACKING_EXCLUDE,
             _WP_EXCLUDE,
         )
 
@@ -1516,7 +1630,6 @@ class TestDefaultCrawlExcludePatterns:
             _ATTACHMENT_EXCLUDE,
             _AUTH_EXCLUDE,
             _ECOMMERCE_EXCLUDE,
-            _TRACKING_EXCLUDE,
             _META_EXCLUDE,
         ):
             assert len(category) >= 1
@@ -1596,7 +1709,8 @@ class TestDefaultCrawlExcludePatterns:
         ):
             assert self._matches_any(url), f"should exclude: {url}"
 
-    def test_tracking_param_matches(self):
+    def test_no_pattern_matches_an_address_for_a_campaign_referrer_or_share_parameter(self):
+        """The crawler strips a tracking parameter and fetches the page; no pattern drops it."""
         for url in (
             "https://example.com/article?utm_source=newsletter",
             "https://example.com/?fbclid=abc123",
@@ -1608,8 +1722,11 @@ class TestDefaultCrawlExcludePatterns:
             "https://example.com/?igshid=ig",
             "https://example.com/?pk_campaign=spring",
             "https://example.com/?affiliate=partner",
+            "https://example.com/docs?ref=sidebar",
+            "https://example.com/post?replytocom=5",
+            "https://example.com/post?share=twitter",
         ):
-            assert self._matches_any(url), f"should exclude: {url}"
+            assert not self._matches_any(url), f"should NOT exclude: {url}"
 
     def test_meta_and_static_matches(self):
         for url in (
@@ -1641,6 +1758,24 @@ class TestDefaultCrawlExcludePatterns:
             "https://example.com/plant_problems/yellow-leaves",
         ):
             assert not self._matches_any(url), f"should NOT exclude: {url}"
+
+    @pytest.mark.parametrize(("pattern", "url"), list(ADDRESS_FOR_EACH_DEFAULT_PATTERN.items()))
+    def test_each_pattern_matches_the_address_it_exists_for(self, pattern, url):
+        assert re.search(pattern, url), f"{pattern} should exclude: {url}"
+
+    def test_the_address_table_has_one_row_for_each_default_pattern(self):
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        assert len(set(DEFAULT_CRAWL_EXCLUDE_PATTERNS)) == len(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        assert set(ADDRESS_FOR_EACH_DEFAULT_PATTERN) == set(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+
+    @pytest.mark.parametrize("path", CONTENT_PATHS)
+    def test_no_pattern_matches_a_content_address(self, path):
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        url = f"https://docs.example{path}"
+        matching = [p for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS if re.search(p, url)]
+        assert matching == [], f"should NOT exclude: {url}"
 
 
 class TestCrawlExcludePatternsValidator:
@@ -2276,23 +2411,19 @@ class TestCrawlExclusionsMatchWholeSegments:
         assert not self._excluded(url)
 
     @pytest.mark.parametrize(
-        ("url", "excluded"),
+        "url",
         [
-            ("https://x.dev/docs?ref=sidebar", False),
-            ("https://x.dev/p?share=twitter", False),
-            ("https://x.dev/p?utm_source=newsletter", True),
-            ("https://x.dev/p?fbclid=abc", True),
-            ("https://x.dev/p?replytocom=5", True),
+            "https://docs.example/docs/payments/checkout",
+            "http://host/v/order",
+            "https://x/guides/login",
+            "https://docs.example/api/account",
+            "https://docs.example/en/latest/profile/",
+            "https://docs.example/search?q=/cart",
+            "https://docs.example/page#/login",
         ],
     )
-    def test_only_campaign_tokens_are_treated_as_tracking(self, url, excluded):
-        """?ref= and ?share= are ordinary content links on docs and forum
-        platforms; dropping one can drop the only URL that reaches a page."""
-        import re
-
-        from lilbee.core.config.defaults import _TRACKING_EXCLUDE
-
-        assert any(re.search(p, url) for p in _TRACKING_EXCLUDE) is excluded
+    def test_a_generic_name_below_the_first_path_segment_is_not_excluded(self, url):
+        assert not self._excluded(url)
 
     @pytest.mark.parametrize(
         "url",
@@ -2303,6 +2434,9 @@ class TestCrawlExclusionsMatchWholeSegments:
             "https://example.com/checkout/step1",
             "https://example.com/login",
             "https://example.com/my-account/orders",
+            "https://shop.example/cart/items",
+            "http://user:secret@shop.example:8080/orders/7",
+            "https://shop.example/account#details",
         ],
     )
     def test_transactional_and_auth_urls_are_still_excluded(self, url):
