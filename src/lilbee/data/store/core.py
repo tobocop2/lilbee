@@ -225,6 +225,9 @@ _RELOCATABLE_TABLES = (
 # the sources table last.
 _REKEY_TABLES = (*_RELOCATABLE_TABLES, (SOURCES_TABLE, INGEST_SOURCE_COLUMNS[SOURCES_TABLE]))
 
+# What stands between two slashes of a source key that is not a file or folder name.
+_NOT_A_KEY_SEGMENT = frozenset({"", ".", ".."})
+
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
 
@@ -265,6 +268,12 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
 def _citations_for_wiki_predicate(wiki_source: str) -> str:
     """SQL predicate selecting every citation row belonging to *wiki_source*."""
     return f"wiki_source = '{escape_sql_string(wiki_source)}'"
+
+
+def _refuse_malformed_key(key: str) -> None:
+    """Raise ValueError unless each slash-separated segment of *key* is a file or folder name."""
+    if _NOT_A_KEY_SEGMENT.intersection(key.split("/")):
+        raise ValueError(f"A re-key takes a source key with a name in each segment, not {key!r}")
 
 
 def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
@@ -2118,8 +2127,11 @@ class Store:
         A key matches when it is *old* or starts with ``old/``, so ``work`` never
         matches ``workshop/x``. Each table takes one update. A second run re-keys
         again when *new* starts with *old*. Titles stay as stored, so *new* must
-        end in the file name *old* ends in.
+        end in the file name *old* ends in. An empty key, or one with an empty,
+        ``.`` or ``..`` segment, raises ValueError before any table changes.
         """
+        _refuse_malformed_key(old)
+        _refuse_malformed_key(new)
         if PurePosixPath(old).name != PurePosixPath(new).name:
             raise ValueError(f"A re-key keeps the last path segment: {old!r} to {new!r}")
         with self._write_lock():
