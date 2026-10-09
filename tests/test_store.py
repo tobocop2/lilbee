@@ -4532,7 +4532,7 @@ class TestRekeySourcesUnder:
         done_between_tables = []
 
         def open_and_let_the_writer_try(name):
-            if name == SOURCES_TABLE:  # six tables hold the new key, this one the old
+            if name == SOURCES_TABLE and write.ident is None:  # the re-key holds the lock
                 write.start()
                 write.join(timeout=_LOCKED_WRITE_WAIT_S)
                 done_between_tables.append(not write.is_alive())
@@ -4550,3 +4550,98 @@ class TestRekeySourcesUnder:
             "other/b.md",
             "work/new.md",
         ]
+
+
+class TestRekeyReplacesAndSkips:
+    def test_a_table_with_no_row_to_move_gets_no_new_version(self, store):
+        _seed_source(store, "work/a.md")
+        versions = {name: store.open_table(name).version for name, _ in _KEY_COLUMNS}
+
+        store.rekey_sources_under("elsewhere", "notes/elsewhere")
+
+        assert {name: store.open_table(name).version for name, _ in _KEY_COLUMNS} == versions
+        store.rekey_sources_under("work", "notes/work")
+        assert store.open_table("_sources").version > versions["_sources"]
+
+    def test_a_moving_row_replaces_what_holds_its_key_in_every_per_file_table(self, store):
+        _seed_source(store, "notes/work/a.md")
+        _seed_source(store, "notes/work/kept.md")
+        store.upsert_source("work/a.md", "the newer hash", 1, SourceType.DOCUMENT)
+        dim = store._config.embedding_dim
+        store.add_chunks(_titled_records("work/a.md", 2, title=None, dim=dim))
+
+        store.rekey_sources_under("work", "notes/work")
+
+        rows = [s for s in store.get_sources() if s["filename"] == "notes/work/a.md"]
+        assert [row["file_hash"] for row in rows] == ["the newer hash"]
+        assert len(store.get_chunks_by_source("notes/work/a.md")) == 2
+        assert store.get_page_texts("notes/work/a.md") == []
+        assert _holders(store, "notes/work/kept.md") == _KEY_COLUMNS
+        assert len(store.get_citations_for_source("notes/work/a.md")) == 1
+
+    def test_nothing_is_replaced_when_one_key_lies_below_the_other(self, store):
+        _seed_source(store, "project/a.md")
+        _seed_source(store, "project/project/a.md")
+
+        store.rekey_sources_under("project", "project/project")
+
+        names = sorted(s["filename"] for s in store.get_sources())
+        assert names == ["project/project/a.md", "project/project/project/a.md"]
+
+
+def _citation(source, key="src1", **changes):
+    return {
+        "wiki_source": "wiki/entities/boeing.md",
+        "wiki_chunk_index": 0,
+        "citation_key": key,
+        "claim_type": "fact",
+        "source_filename": source,
+        "source_hash": "h",
+        "page_start": 0,
+        "page_end": 0,
+        "line_start": 1,
+        "line_end": 2,
+        "excerpt": "it's quoted",
+        "created_at": "",
+        **changes,
+    }
+
+
+class TestDropCitationsRepeatedUnder:
+    def test_only_a_row_the_kept_key_holds_is_deleted(self, store):
+        store.add_citations(
+            [
+                _citation("inner/a.md"),
+                _citation("inner/b.md", page_start=None),
+                _citation("outer/deep/a.md", created_at="later"),
+                _citation("outer/deep/a.md", key="src2"),
+                _citation("outer/deep/b.md", page_start=None),
+                _citation("outer/a.md"),
+            ]
+        )
+
+        store.drop_citations_repeated_under("outer/deep", "inner")
+
+        left = sorted(
+            (row["source_filename"], row["citation_key"])
+            for row in store.open_table("_citations").to_arrow().to_pylist()
+        )
+        assert left == [
+            ("inner/a.md", "src1"),
+            ("inner/b.md", "src1"),
+            ("outer/a.md", "src1"),
+            ("outer/deep/a.md", "src2"),
+        ]
+
+    def test_a_store_without_citations_is_left_alone(self, store):
+        store.drop_citations_repeated_under("outer/deep", "inner")
+
+        assert store.open_table("_citations") is None
+
+    def test_a_removed_document_keeps_the_citations_of_it(self, store):
+        """Lint and prune read them to report and retire a page whose source is gone."""
+        _seed_source(store, "work/a.md")
+
+        assert store.remove_documents(["work/a.md"]).removed == ["work/a.md"]
+
+        assert len(store.get_citations_for_source("work/a.md")) == 1

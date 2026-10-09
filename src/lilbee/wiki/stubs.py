@@ -406,14 +406,12 @@ def drop_sources_from_index(names: set[str], config: Config | None = None) -> No
             save_stub_index(stubs, config)
 
 
-def refresh_sources_under(keys: Iterable[str], config: Config | None = None) -> None:
+def refresh_sources_under(keys: Iterable[str], config: Config) -> None:
     """Re-aggregate each subject the index lists under one of *keys* or a source below it.
 
     For sources whose key changed in the store: their mention rows carry the new
     key, and the index takes it from them.
     """
-    if config is None:
-        config = cfg
     prefixes = list(keys)
     listed = {source for stub in load_stub_index(config).values() for source in stub.sources}
     moved = {source for source in listed if any(is_under(source, prefix) for prefix in prefixes)}
