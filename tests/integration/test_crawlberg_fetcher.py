@@ -29,6 +29,7 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
     CrawlbergFetcher,
+    _queued_url,
     admitted_networks,
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
@@ -160,6 +161,50 @@ QUERY_LINKS = (
 )
 
 
+# The links of the ``/defaults/`` listing on the site's own host, each with the request the
+# crawl makes for it when no exclude pattern matches: a tracking parameter is not sent.
+DEFAULTS_LINKS = {
+    "/wiki/Help:Formatting": "/wiki/Help:Formatting",
+    "/wiki/Manual:Installation_guide": "/wiki/Manual:Installation_guide",
+    "/v/order": "/v/order",
+    "/v/layout": "/v/layout",
+    "/v/tilde?q=~x*y": "/v/tilde?q=%7Ex*y",
+    "/blog/?utm_source=x": "/blog/",
+    "/news/?msclkid=9": "/news/",
+    "/wp-admin/": "/wp-admin/",
+    "/defaults/feed/?utm_source=x": "/defaults/feed/",
+    "/cart": "/cart",
+    "/login?next=/": "/login?next=%2F",
+}
+# The requests of that table the default patterns exclude, each with the pattern that matches it.
+DEFAULTS_EXCLUDED = {
+    "/wp-admin/": r"/wp-admin/",
+    "/defaults/feed/": r"/feed/?$",
+    "/cart": r"^https?://[^/?#]+/cart(?:/|\?|#|$)",
+    "/login?next=%2F": r"^https?://[^/?#]+/login(?:/|\?|#|$)",
+}
+# The requests a crawl of that listing makes before it follows a link: the listing and its sitemap.
+SEED_REQUESTS = {"/defaults/", "/sitemap.xml"}
+# A link of the same listing to a host the crawl does not follow, which a default pattern matches.
+OTHER_HOST_LINK = "http://other.test/feed/"
+# Where a served page that is not a listing starts, besides the listing prefixes.
+PLAIN_PAGE_PREFIXES = (
+    "/wiki/",
+    "/hints/",
+    "/v/",
+    "/blog/",
+    "/news/",
+    "/wp-admin/",
+    "/defaults/",
+    "/cart",
+    "/login",
+)
+FETCHER_LOGGER = "lilbee.crawler.crawlberg_fetcher"
+EXCLUDED_START = "Excluded "
+EXCLUDED_BY = ": it matches the exclude pattern "
+SUMMARY_START = "Links of the crawl of "
+
+
 def _query_page(path: str, filler: str) -> str:
     """The query listing, or a page whose text names the path and query it was served for."""
     if path == "/query/":
@@ -189,7 +234,13 @@ def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
     """The status and body, or redirect target, of each page served at one exact path."""
     image = f"data:image/png;base64,{INLINE_IMAGE_PAYLOAD}"
     logo = f'<img alt="{INLINE_IMAGE_ALT}" src="{image}">'
+    listed = (*DEFAULTS_LINKS, OTHER_HOST_LINK)
+    defaults = "".join(f'<a href="{link}">{link}</a> ' for link in listed)
     return {
+        "/defaults/": (
+            HTTPStatus.OK,
+            f"<html><body><h1>Index</h1>{defaults}{filler}</body></html>",
+        ),
         "/moved": (HTTPStatus.MOVED_PERMANENTLY, "/query/target"),
         INLINE_IMAGE_PAGE: (
             HTTPStatus.OK,
@@ -254,7 +305,7 @@ class _Site:
             links = "".join(f'<a href="{path}p{n}">p{n}</a> ' for n in range(SLOW_PAGES))
             special = '<a href="/wiki/Special:Random">random</a><a href="/wiki/Home">home</a>'
             return 200, f"<html><body><h1>Index</h1>{links}{special}{filler}</body></html>"
-        if path.startswith(("/wide/p", "/slow/p", "/wiki/", "/hints/")):
+        if path.startswith(("/wide/p", "/slow/p", *PLAIN_PAGE_PREFIXES)):
             if path.startswith("/slow/p"):
                 time.sleep(SLOW_DELAY_S)
             return 200, f"<html><body><h1>{path}</h1>{filler}</body></html>"
@@ -477,6 +528,53 @@ class TestCrawlAndSave:
         assert INLINE_IMAGE_ALT in text
         assert INLINE_IMAGE_PAYLOAD not in text
         assert "base64" not in text
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestDefaultExcludePatterns:
+    async def _requested(self, site: _Site) -> set[str]:
+        await crawl_and_save(site.url("/defaults/"), depth=1, max_pages=0)
+        return set(site.paths_since(0, "/")) - SEED_REQUESTS
+
+    async def test_content_pages_are_fetched_and_scaffolding_is_not(self, site):
+        assert await self._requested(site) == {
+            "/wiki/Help:Formatting",
+            "/wiki/Manual:Installation_guide",
+            "/v/order",
+            "/v/layout",
+            "/v/tilde?q=%7Ex*y",
+            "/blog/",
+            "/news/",
+        }
+
+    def test_lilbee_computes_for_each_link_the_request_the_crawl_makes(self, site):
+        """The two crawl tests of this class hold the site to the same request table."""
+        for link, request in DEFAULTS_LINKS.items():
+            assert _queued_url(site.url(link)) == site.url(request)
+
+    async def test_each_fetched_page_is_saved(self, site):
+        paths = await crawl_and_save(site.url("/defaults/"), depth=1, max_pages=0)
+        saved = "\n".join(p.read_text(encoding="utf-8") for p in paths)
+        for path in ("/wiki/Help:Formatting", "/v/order", "/v/layout", "/blog/", "/news/"):
+            assert f"# {path}\n" in saved, path
+        for heading in ("# /wp-admin/\n", "# /cart\n", "# /login"):
+            assert heading not in saved, heading
+
+    async def test_the_log_names_exactly_the_addresses_the_site_never_received(self, site, caplog):
+        caplog.set_level("INFO", logger=FETCHER_LOGGER)
+        requested = await self._requested(site)
+        messages = [record.getMessage() for record in caplog.records]
+        named = dict(
+            message.removeprefix(EXCLUDED_START).split(EXCLUDED_BY, 1)
+            for message in messages
+            if message.startswith(EXCLUDED_START)
+        )
+        never_received = set(DEFAULTS_LINKS.values()) - requested
+        assert never_received == set(DEFAULTS_EXCLUDED)
+        assert named == {site.url(path): pattern for path, pattern in DEFAULTS_EXCLUDED.items()}
+        summaries = [message for message in messages if message.startswith(SUMMARY_START)]
+        assert len(summaries) == 1
+        assert f"follow: {len(DEFAULTS_EXCLUDED)}. " in summaries[0]
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
