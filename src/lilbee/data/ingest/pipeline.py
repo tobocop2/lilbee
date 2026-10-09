@@ -603,9 +603,9 @@ def _plan_items(
 
 
 class _MovePool:
-    """Absent sources indexed by content hash, consumed as moves take them.
+    """Absent sources indexed by content hash, offered to the new files of that content.
 
-    Built once per sync and drained across the streamed plan's batches. The store
+    Built once per sync and read across the streamed plan's batches. The store
     gives each moved file one candidate under its write lock, in name order, so
     a file takes the old key a single-pass plan pairs it with however the corpus
     is sharded and whichever writer asks first.
@@ -625,12 +625,8 @@ class _MovePool:
         """Make the absent sources with these content hashes known; all are from the start."""
 
     def candidates(self, file_hash: str) -> tuple[str, ...]:
-        """The absent sources with this content hash that no move took, in name order."""
+        """The absent sources with this content hash, in name order."""
         return tuple(self._by_hash.get(file_hash, ()))
-
-    def forget(self, file_hash: str, old: str) -> None:
-        """Drop *old*, which a move took, from the candidates of its content hash."""
-        self._by_hash[file_hash].remove(old)
 
 
 class _IndexMovePool(_MovePool):
@@ -839,9 +835,6 @@ async def _absorb_plan_batch(
         await to_ingest_thread(
             _retry_after_lock_timeout, lambda: taken.update(store.relocate_sources(detected))
         )
-        hashes = {entry.name: entry.file_hash for entry in entries}
-        for new, old in taken.items():
-            moves.forget(hashes[new], old)
         # A file whose candidates other writers all took is an add.
         entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
         state.relocated_from.extend(taken.values())
