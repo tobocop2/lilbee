@@ -6,10 +6,11 @@ import hashlib
 import json
 import logging
 import re
+import string
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import urlparse
 
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
@@ -32,26 +33,28 @@ _QUERY_HASH_LEN = 8
 # bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
 METADATA_FLUSH_INTERVAL = 10
 
-# ASCII punctuation the URL standard does not percent-encode in a path. It percent-encodes
-# a space, a double quote, <, >, a backtick, { and }, and every non-ASCII character.
-_URL_STANDARD_SAFE = "!#$%&'()*+,-./:;=@[]^_|~"
-_QUERY_MARK = "?"
+# The characters RFC 3986 section 2.3 calls unreserved: an escape of one names the character.
+_UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
+_PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+_HEX = 16
 
 
-def _reported(url: str) -> str:
-    """*url* as the URL standard serializes it, the form a fetcher reports.
+def _normalized_escape(escape: re.Match[str]) -> str:
+    """The unreserved character *escape* names, or *escape* with upper-case hex digits."""
+    char = chr(int(escape.group(1), _HEX))
+    return char if char in _UNRESERVED else escape.group().upper()
 
-    A backslash before the query is a slash. The query stays as stored.
-    """
-    path, mark, query = url.partition(_QUERY_MARK)
-    return quote(path.replace("\\", "/"), safe=_URL_STANDARD_SAFE) + mark + query
+
+def equivalent_form(url: str) -> str:
+    """*url* with each percent escape normalized as RFC 3986 section 6.2.2 defines."""
+    return _PERCENT_ESCAPE.sub(_normalized_escape, url)
 
 
 def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, list[str]]:
-    """The URLs *meta* holds, grouped by the form a fetcher reports for each."""
+    """The URLs *meta* holds, grouped by their equivalent form."""
     spellings: dict[str, list[str]] = {}
     for url in meta:
-        spellings.setdefault(_reported(url), []).append(url)
+        spellings.setdefault(equivalent_form(url), []).append(url)
     return spellings
 
 

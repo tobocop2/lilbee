@@ -81,6 +81,29 @@ SPELL_REQUESTS = (
     "/spell/caf%C3%A9",
     "/spell/back/slash",
 )
+# Pairs of links a server answers with two pages: a re-crawl keeps each pair as two pages.
+BACKSLASH_PAIR = ("/pair/b\\s", "/pair/b/s")
+PAIR_LINKS = (
+    BACKSLASH_PAIR,
+    ("/pair/ca^ret", "/pair/ca%5Eret"),
+    ("/pair/pi|pe", "/pair/pi%7Cpe"),
+    ("/pair/a+b", "/pair/a%20b"),
+    ("/pair/e%2Fs", "/pair/e/s"),
+    ("/pair/d/%2e%2e/up", "/pair/up"),
+    ("/pair/naïve", "/pair/na%C3%AFve"),
+)
+# A link with an escaped hyphen, and the equivalent address a library holds for it.
+EQUIVALENT_LINK = "/same/x%2Dy"
+EQUIVALENT_STORED = "/same/x-y"
+# How the text of a stored copy starts before a crawl, and how a served page names its request.
+STALE_TEXT = "stale text"
+FRESH_TEXT = "Served"
+# The links each listing page of written addresses holds.
+LINK_LISTINGS = {
+    "/spell/": SPELL_LINKS,
+    "/pair/": tuple(link for pair in PAIR_LINKS for link in pair),
+    "/same/": (EQUIVALENT_LINK,),
+}
 # Flag lists crawlberg refuses, each with a part of the reason it gives.
 REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
     (["--headless=new"], "--headless"),
@@ -143,11 +166,12 @@ def _query_page(path: str, filler: str) -> str:
         links = "".join(f'<a href="{link}">{link}</a> ' for link in QUERY_LINKS)
         links += '<a href="/query/pair?a=1&amp;b=2">pair</a> <A HREF="/query/upper">UPPER</A> '
         return f"<html><head><title>Listing</title></head><body>{links}{filler}</body></html>"
-    if path == "/spell/":
-        links = "".join(f'<a href="{link}">{link}</a> ' for link in SPELL_LINKS)
+    if path in LINK_LISTINGS:
+        links = "".join(f'<a href="{link}">{link}</a> ' for link in LINK_LISTINGS[path])
         head = '<head><meta charset="utf-8"><title>Spell</title></head>'
         return f"<html>{head}<body><h1>Index</h1>{links}{filler}</body></html>"
-    return f"<html><head><title>T</title></head><body><p>Served {path}.</p>{filler}</body></html>"
+    served = f"<p>{FRESH_TEXT} {path}.</p>"
+    return f"<html><head><title>T</title></head><body>{served}{filler}</body></html>"
 
 
 def _scope_or_retry_page(path: str, filler: str) -> tuple[int, str]:
@@ -222,7 +246,7 @@ class _Site:
         fixed = _fixed_pages(filler)
         if path in fixed:
             return fixed[path]
-        if path.startswith(("/query/", "/spell/")):
+        if path.startswith(("/query/", *LINK_LISTINGS)):
             return 200, _query_page(path, filler)
         if path.startswith(("/scope/", "/retry/")):
             return _scope_or_retry_page(path, filler)
@@ -521,56 +545,88 @@ class TestWholeUrlExcludePatterns:
         assert crawled == {"/scope/", *SCOPE_LINKS}
 
 
+def _library_with(*urls: str) -> list[Path]:
+    """A library that holds each of *urls* as spelled, each with its own text no page serves."""
+    entries = {}
+    paths = []
+    for url in urls:
+        name = save.url_to_filename(url)
+        path = cfg.documents_dir / "_web" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"{STALE_TEXT} of {url}", encoding="utf-8")
+        entries[url] = CrawlMeta(
+            file=name, content_hash="stale", crawled_at="2026-01-01T00:00:00+00:00"
+        )
+        paths.append(path)
+    save.save_crawl_metadata(entries)
+    return paths
+
+
+def _pair_library(site: _Site) -> list[tuple[Path, Path]]:
+    """A library that holds both addresses of each pair of PAIR_LINKS: the two copies of each."""
+    copies = _library_with(*(site.url(link) for pair in PAIR_LINKS for link in pair))
+    assert len(set(copies)) == len(copies)
+    return list(zip(copies[::2], copies[1::2], strict=True))
+
+
+def _pair_texts(library: list[tuple[Path, Path]]) -> dict[tuple[str, str], tuple[str, str]]:
+    """The text of the two copies of each pair of PAIR_LINKS."""
+    return {
+        pair: (one.read_text(encoding="utf-8"), other.read_text(encoding="utf-8"))
+        for pair, (one, other) in zip(PAIR_LINKS, library, strict=True)
+    }
+
+
+def _assert_each_pair_is_two_pages(library: list[tuple[Path, Path]]) -> None:
+    """Each pair has a copy the crawl rewrote, and no pair holds one text twice."""
+    texts = _pair_texts(library)
+    assert [pair for pair, both in texts.items() if FRESH_TEXT not in "".join(both)] == []
+    assert [pair for pair, (one, other) in texts.items() if one == other] == []
+    assert [pair for pair, both in texts.items() if not _own_pages(pair, both)] == []
+
+
+def _own_pages(pair: tuple[str, str], texts: tuple[str, str]) -> bool:
+    """Whether each text is the stale copy, or the page the site serves for its own address."""
+    return all(
+        text.startswith(STALE_TEXT) or f"{FRESH_TEXT} {link}." in text
+        for link, text in zip(pair, texts, strict=True)
+    )
+
+
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestStoredSpellingOfAnAddress:
-    def _library_with(self, *urls: str) -> list[Path]:
-        """A library that holds each of *urls* as spelled, with text no page serves."""
-        entries = {}
-        paths = []
-        for url in urls:
-            name = save.url_to_filename(url)
-            path = cfg.documents_dir / "_web" / name
-            path.parent.mkdir(parents=True)
-            path.write_text("stale text", encoding="utf-8")
-            entries[url] = CrawlMeta(
-                file=name, content_hash="stale", crawled_at="2026-01-01T00:00:00+00:00"
-            )
-            paths.append(path)
-        save.save_crawl_metadata(entries)
-        return paths
-
-    async def test_a_page_stored_as_the_link_is_written_is_updated_in_place(self, site):
-        as_written = [site.url(link) for link in SPELL_LINKS]
-        reported = [site.url(path) for path in SPELL_REQUESTS]
-        letter, backslash = self._library_with(as_written[0], as_written[3])
-        await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
-        assert sorted(site.paths_since(0, "/spell/")) == sorted(["/spell/", *SPELL_REQUESTS])
-        assert f"Served {SPELL_REQUESTS[0]}." in letter.read_text(encoding="utf-8")
-        assert f"Served {SPELL_REQUESTS[3]}." in backslash.read_text(encoding="utf-8")
+    async def test_a_page_stored_under_an_equivalent_address_is_updated_in_place(self, site):
+        stored = site.url(EQUIVALENT_STORED)
+        (copy,) = _library_with(stored)
+        await crawl_and_save(site.url("/same/"), depth=1, max_pages=0)
+        assert site.paths_since(0, "/same/x") == [EQUIVALENT_LINK]
+        assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in copy.read_text(encoding="utf-8")
         meta = save.load_crawl_metadata()
-        assert set(meta) == {
-            site.url("/spell/"),
-            as_written[0],
-            reported[1],
-            reported[2],
-            as_written[3],
-        }
-        saved = [path for path in (cfg.documents_dir / "_web").rglob("*.md")]
-        assert len(saved) == len(meta)
+        assert set(meta) == {site.url("/same/"), stored}
+        assert meta[stored].content_hash != "stale"
+        assert len(list((cfg.documents_dir / "_web").rglob("*.md"))) == len(meta)
 
-    async def test_a_page_stored_under_both_spellings_is_rewritten_under_both(self, site):
-        as_written, reported = site.url(SPELL_LINKS[0]), site.url(SPELL_REQUESTS[0])
+    async def test_a_page_stored_under_two_equivalent_addresses_is_rewritten_under_both(self, site):
+        stored, as_written = site.url(EQUIVALENT_STORED), site.url(EQUIVALENT_LINK)
         other = site.url("/elsewhere/page")
-        raw_copy, encoded_copy, other_copy = self._library_with(as_written, reported, other)
-        assert raw_copy != encoded_copy
-        await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
-        assert site.paths_since(0, "/spell/na") == [SPELL_REQUESTS[0]]
-        for copy in (raw_copy, encoded_copy):
-            assert f"Served {SPELL_REQUESTS[0]}." in copy.read_text(encoding="utf-8")
-        assert other_copy.read_text(encoding="utf-8") == "stale text"
+        plain_copy, escaped_copy, other_copy = _library_with(stored, as_written, other)
+        assert plain_copy != escaped_copy
+        await crawl_and_save(site.url("/same/"), depth=1, max_pages=0)
+        for copy in (plain_copy, escaped_copy):
+            assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in copy.read_text(encoding="utf-8")
+        assert other_copy.read_text(encoding="utf-8") == f"{STALE_TEXT} of {other}"
         meta = save.load_crawl_metadata()
-        assert meta[as_written].content_hash == meta[reported].content_hash != "stale"
+        assert meta[stored].content_hash == meta[as_written].content_hash != "stale"
         assert meta[other].content_hash == "stale"
+
+    @posix_only
+    async def test_two_stored_pages_stay_two_pages_after_an_http_recrawl(self, site):
+        library = _pair_library(site)
+        await crawl_and_save(site.url("/pair/"), depth=1, max_pages=0)
+        _assert_each_pair_is_two_pages(library)
+        backslash_copy, _slash_copy = library[PAIR_LINKS.index(BACKSLASH_PAIR)]
+        assert backslash_copy.read_text(encoding="utf-8").startswith(STALE_TEXT)
+        assert len(save.load_crawl_metadata()) >= 1 + 2 * len(PAIR_LINKS)
 
     async def test_a_new_page_is_stored_as_crawlberg_reports_it(self, site):
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
@@ -864,6 +920,12 @@ class TestBrowserLaunch:
             return asyncio.run(
                 crawl_and_save(url, depth=depth, max_pages=max_pages, render_mode=BROWSER)
             )
+
+    @posix_only
+    def test_two_stored_pages_stay_two_pages_after_a_browser_recrawl(self, site):
+        library = _pair_library(site)
+        self._crawl(site.url("/pair/"), depth=1, max_pages=0)
+        _assert_each_pair_is_two_pages(library)
 
     def test_a_chrome_variable_that_names_no_binary_does_not_fail_the_crawl(
         self, site, monkeypatch, tmp_path
