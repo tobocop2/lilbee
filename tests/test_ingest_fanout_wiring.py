@@ -381,33 +381,3 @@ class TestSyncAcrossWorkers:
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
         assert [worker.terminated for worker in context.processes] == [True, True]
-
-
-class TestMergeScope:
-    def test_a_fresh_index_takes_the_shards_whole(self, monkeypatch):
-        scopes = []
-        monkeypatch.setattr(
-            "lilbee.data.store.shard_merge.merge_shards",
-            lambda store, dirs, sources=None: scopes.append(sources),
-        )
-
-        class EmptyStore:
-            def has_chunks(self):
-                return False
-
-        pipeline_mod._merge_worker_shards(EmptyStore(), [], {"a.txt"})
-        assert scopes == [None]
-
-    def test_an_existing_index_takes_only_what_changed(self, monkeypatch):
-        scopes = []
-        monkeypatch.setattr(
-            "lilbee.data.store.shard_merge.merge_shards",
-            lambda store, dirs, sources=None: scopes.append(sources),
-        )
-
-        class FullStore:
-            def has_chunks(self):
-                return True
-
-        pipeline_mod._merge_worker_shards(FullStore(), [], {"a.txt"})
-        assert scopes == [{"a.txt"}]

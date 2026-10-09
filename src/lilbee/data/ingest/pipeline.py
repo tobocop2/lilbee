@@ -1242,19 +1242,6 @@ def _worker_failure_message(failures: list[ShardDone], specs: list[ShardSpec]) -
     )
 
 
-def _merge_worker_shards(store: Store, specs: list[ShardSpec], touched: set[str]) -> None:
-    """Fold every worker's shard into this index.
-
-    A store with no chunks of its own takes the shards whole; one that already
-    holds a corpus takes only the sources this run touched, so a re-sync replaces
-    those rows instead of appending a second copy of everything.
-    """
-    from lilbee.data.store.shard_merge import merge_shards
-
-    scope = touched if store.has_chunks() else None
-    merge_shards(store, [spec.config.lancedb_dir for spec in specs], sources=scope)
-
-
 async def _sync_across_workers(
     specs: list[ShardSpec],
     store: Store,
