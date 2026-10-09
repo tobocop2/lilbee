@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from lilbee.app.settings import _setting_default, _setting_help  # noqa: E402
 from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup  # noqa: E402
 from lilbee.config_meta import (  # noqa: E402
+    ENV_UNSETTABLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
     WRITABLE_CONFIG_FIELDS,
@@ -157,6 +158,10 @@ def _env_var(key: str) -> str:
     return f"LILBEE_{key.upper()}"
 
 
+def _env_cell(key: str) -> str:
+    return "no" if key in ENV_UNSETTABLE_FIELDS else f"`{_env_var(key)}`"
+
+
 def _help_text(key: str) -> str:
     """Return the one documented description for *key*."""
     return _setting_help(key, SETTINGS_MAP.get(key))
@@ -258,7 +263,7 @@ def _description_cell(key: str) -> str:
 def _row(key: str) -> str:
     cells = (
         f"`{key}`",
-        f"`{_env_var(key)}`",
+        _env_cell(key),
         f"`{field_type_name(key)}`",
         _render_default(key),
         _tui_cell(key),

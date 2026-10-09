@@ -15,7 +15,7 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 | Surface | How you set a value | Scope |
 |---|---|---|
-| Environment | `LILBEE_<SETTING>=value` | Every setting in the tables below, plus the environment-only variables at the end. Applies to the process you launch |
+| Environment | `LILBEE_<SETTING>=value` | Every setting whose Environment column names a variable, plus the environment-only variables at the end. Applies to the process you launch |
 | Config file | `setting = value` in `.lilbee/config.toml` | Every setting in the tables below. Persists |
 | TUI | the `/settings` screen, or `/set <setting> <value>` | See the TUI column. Persists |
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
@@ -28,6 +28,8 @@ An environment value that its setting refuses stops every command with one line 
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
+
+**Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
 **TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
 
@@ -297,7 +299,7 @@ These settings have no runtime write path. Set them with a `LILBEE_*` environmen
 | `ingest_max_inflight` | `LILBEE_INGEST_MAX_INFLIGHT` | `int` | `0` | no | yes | yes | no | Files allowed in their compute phase at once during ingest. 0 = auto, scaled to the detected embed fleet. Sizes the extract and embed fan-out, not the planning pass. |
 | `json_mode` | `LILBEE_JSON_MODE` | `bool` | `false` | no | no | no | no | Emit structured JSON from CLI commands. The --json flag sets it for one invocation. |
 | `lancedb_dir` | `LILBEE_LANCEDB_DIR` | `str` | *(computed)* | no | no | no | no | Directory holding the LanceDB vector tables. Defaults to data_root/data/lancedb. |
-| `linked_roots` | `LILBEE_LINKED_ROOTS` | `dict` | *(empty)* | no | write-only | write-only | no | External source roots that `add` registered, as label -> absolute path. `add` and `remove` maintain it; do not edit it by hand. |
+| `linked_roots` | no | `dict` | *(empty)* | no | write-only | write-only | no | External source roots that `add` registered, as label -> absolute path. `add` and `remove` maintain it; do not edit it by hand. |
 | `markdown_rendering` | `LILBEE_MARKDOWN_RENDERING` | `bool` | `true` | no | no | no | no | Render chat replies as Markdown in the TUI. Off draws plain text, which is faster. |
 | `max_embed_chars` | `LILBEE_MAX_EMBED_CHARS` | `int` | `2000` | no | no | no | no | Maximum characters sent to the embedding model per chunk. Longer text is cut. |
 | `models_dir` | `LILBEE_MODELS_DIR` | `str` | *(computed)* | no | no | no | no | Directory holding downloaded model files. Shared across libraries, so a model pulled for one is available to all. |

@@ -156,6 +156,7 @@ class Config(BaseSettings):
         default_factory=dict,
         writable=True,
         public=False,
+        from_env=False,
         description=(
             "External source roots that `add` registered, as label -> absolute path. "
             "`add` and `remove` maintain it; do not edit it by hand"

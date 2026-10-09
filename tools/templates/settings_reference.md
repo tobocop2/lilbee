@@ -15,7 +15,7 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 | Surface | How you set a value | Scope |
 |---|---|---|
-| Environment | `LILBEE_<SETTING>=value` | Every setting in the tables below, plus the environment-only variables at the end. Applies to the process you launch |
+| Environment | `LILBEE_<SETTING>=value` | Every setting whose Environment column names a variable, plus the environment-only variables at the end. Applies to the process you launch |
 | Config file | `setting = value` in `.lilbee/config.toml` | Every setting in the tables below. Persists |
 | TUI | the `/settings` screen, or `/set <setting> <value>` | See the TUI column. Persists |
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
@@ -28,6 +28,8 @@ An environment value that its setting refuses stops every command with one line 
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
+
+**Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
 **TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
 
