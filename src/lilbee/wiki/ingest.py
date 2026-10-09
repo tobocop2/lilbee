@@ -21,6 +21,8 @@ async def incremental_update(changed_sources: set[str], config: Config | None = 
     re-queueing those every sync burns LLM calls and overwrites pending
     review content. Above ``cfg.wiki_ingest_update_cap`` touched pages
     the auto-update bails out and logs a manual-update hint instead.
+    The caller is a sync and holds the sync mark, so no source key moves
+    during the update.
     """
     if config is None:
         config = cfg
