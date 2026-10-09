@@ -225,8 +225,8 @@ class Config(BaseSettings):
     # not the GPU-fed extract/embed batch.
     ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
     # Worker PROCESSES for a bulk ingest (distinct from ingest_workers, which sizes
-    # the planning pass's threads). Each owns a GPU, a private store and its own
-    # slice of the corpus, and the shards are folded into one index at the end.
+    # the planning pass's threads). Each owns a GPU and its own slice of the
+    # corpus, and writes that slice to the one index.
     # 0 = auto: one worker per visible card, used once the corpus is big enough to
     # pay for them. N pins the count; worker i takes card i % card_count, so more
     # workers than cards share a card's engine rather than double-booking it.

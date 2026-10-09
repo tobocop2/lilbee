@@ -1,4 +1,4 @@
-"""Per-GPU ingest fan-out: sharding, worker specs, supervision, and the merge hand-off."""
+"""Per-GPU ingest fan-out: slices, worker specs, supervision, and the one result."""
 
 from __future__ import annotations
 
