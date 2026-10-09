@@ -2302,6 +2302,22 @@ class TestAnOlderBuildSyncedInBetween:
         assert _holders(store, "notes/work/budget.md") > {("_page_texts", "source")}
         assert load_skip_kinds(cfg.data_root)["notes/work/plan.md"] is SkipKind.REMOVED
 
+    def test_a_subject_it_listed_under_a_key_of_the_lift_takes_the_final_key(self, library, notes):
+        """Its remove aggregates the subject index again from rows the lift had moved."""
+        from lilbee.wiki.stubs import load_stub_index
+
+        store = library.store
+        journal = self._killed_at(library, notes, "_land")
+        lifted = journal.lifted("work")
+        _save_stub_index(store)
+        assert f"{lifted}/plan.md" in load_stub_index(cfg)["boeing"].sources
+        assert store.remove_documents([f"{lifted}/plan.md"]).removed == [f"{lifted}/plan.md"]
+        _hold_out(f"{lifted}/plan.md", SkipKind.REMOVED)
+
+        finish_pending_absorb()
+
+        assert load_stub_index(cfg)["boeing"].sources == ("notes/work/budget.md", "workshop/x.md")
+
     def test_a_source_that_keeps_its_label_takes_the_journals_records_alone(
         self, library, tmp_path
     ):
