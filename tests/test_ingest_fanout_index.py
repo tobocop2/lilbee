@@ -580,8 +580,11 @@ class TestWorkerMovePool:
         pool.load([digest])
         return list(pool.candidates(digest))
 
-    def test_no_source_table_means_no_candidate(self, library):
-        assert self._take_all(self._pool(library), "h") == []
+    def test_a_source_table_made_after_the_sync_began_offers_no_candidate(self, library):
+        """On a first sync a sibling's flush makes the table; its rows are files on disk."""
+        pool = self._pool(library)
+        Store(cfg).upsert_source("written-by-a-sibling.txt", "h", 1)
+        assert self._take_all(pool, "h") == []
 
     def test_each_kind_of_source_is_judged_by_its_own_rule(self, library, tmp_path, monkeypatch):
         from lilbee.data.ingest.ignore import IGNORE_FILENAME
