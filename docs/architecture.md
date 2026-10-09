@@ -408,7 +408,7 @@ that design was the two records disagreeing.
 **The write lock is the one serial stage.** Each flush deletes its documents' old rows
 by name. A BTREE index on the name column of the chunk, page text and source tables keeps
 that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
-sit past it. With 8 writers on one store a flush held the lock for 0.06 s at 500,000
+sit past it. With 8 writers on one store a flush held the lock for 0.07 s at 500,000
 rows, against 0.30 s with no index and 0.16 s for a private store of an eighth of the
 rows (a laptop, 16-dimension vectors, 2,000 one-chunk documents a flush).
 
