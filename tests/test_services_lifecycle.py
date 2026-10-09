@@ -128,18 +128,20 @@ def test_signal_without_services_still_exits():
         signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
 
-def test_hard_exit_invokes_the_registered_exit_hook():
-    """A SystemExit swallowed mid-request must still stop the serving loop."""
-    calls: list[None] = []
-    set_server_exit_hook(lambda: calls.append(None))
+@pytest.mark.parametrize("sig", _HARD_EXIT_SIGNALS)
+def test_a_serving_loop_takes_the_hard_exit_and_its_status(sig):
+    """The twin of test_signal_without_services_still_exits: nothing is raised into the loop."""
+    provider = _install_stub_services()
+    statuses: list[int] = []
+    set_server_exit_hook(statuses.append)
     try:
         install_engine_lifecycle_hooks()
-        with pytest.raises(SystemExit):
-            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        signal.getsignal(sig)(sig, None)
         _join_teardown()
     finally:
         set_server_exit_hook(None)
-    assert calls == [None]
+    assert statuses == [128 + sig]
+    provider.shutdown.assert_called_once()
 
 
 def test_cli_entry_point_installs_the_hooks():
