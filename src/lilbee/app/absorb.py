@@ -210,8 +210,16 @@ def _write_registry(config: Config, journal: AbsorbJournal) -> None:
     settings.mutate_value(config.data_root, "linked_roots", _apply)
 
 
+def _sweep_wiki_temp_files(config: Config) -> None:
+    """Delete the temp files an absorb that died left beside the wiki files it was writing."""
+    from lilbee.wiki.shared import remove_dead_temp_files  # heavy: the wiki package loads spaCy
+
+    remove_dead_temp_files(config.data_root / config.wiki_dir)
+
+
 def _roll_forward(config: Config, store: Store, journal: AbsorbJournal) -> None:
     """Finish the absorb *journal* records from its phase; each step is safe to run again."""
+    _sweep_wiki_temp_files(config)
     if journal.phase is AbsorbPhase.LIFT:
         _lift(config, store, journal)
         journal = journal.at(AbsorbPhase.LAND)
