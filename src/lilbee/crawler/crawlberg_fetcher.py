@@ -8,12 +8,14 @@ import importlib.util
 import ipaddress
 import json
 import logging
+import re
+from collections import Counter
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, quote_plus, urlsplit, urlunsplit
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, url_filter
@@ -59,9 +61,45 @@ CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, 
     )
 )
 _MAX_REDIRECTS = 10
-# Tracking query parameters stripped from a discovered link before it is queued: crawlberg's
-# default list, set explicitly. A trailing ``*`` matches by prefix.
-_TRACKING_PARAMS = ("utm_*", "fbclid", "gclid", "ref")
+# Tracking query parameters stripped from a discovered link before it is queued, so the page
+# is fetched once at its plain address. A trailing ``*`` matches by prefix.
+_TRACKING_PARAMS = (
+    "utm_*",
+    "fbclid",
+    "gclid",
+    "msclkid",
+    "yclid",
+    "mc_cid",
+    "mc_eid",
+    "_hsenc",
+    "_hsmi",
+    "hsCtaTracking",
+    "mkt_*",
+    "trk",
+    "trkInfo",
+    "dm_i",
+    "vero_id",
+    "vero_conv",
+    "oly_anon_id",
+    "oly_enc_id",
+    "igshid",
+    "pk_*",
+    "_ga",
+    "affiliate",
+    "aff_id",
+    "aff_ref",
+    "aff",
+    "partner",
+    "srsltid",
+    "replytocom",
+    "ref",
+)
+_PREFIX_MARK = "*"
+# What crawlberg's query encoder leaves as is besides letters, digits and ``-._``, and the one
+# character Python's encoder leaves as is that crawlberg's does not.
+_FORM_SAFE = "*"
+_TILDE = "~"
+_TILDE_ENCODED = "%7E"
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
@@ -120,6 +158,7 @@ class _Event:
     depth: int = _SEED_DEPTH
     markdown: str = ""
     error: str = ""
+    links: tuple[str, ...] = ()
 
     @property
     def refused_by_ssrf(self) -> bool:
@@ -371,6 +410,7 @@ def _parse_event(raw: object) -> _Event | None:
         result["url"],
         depth=result.get("depth", _SEED_DEPTH),
         markdown=markdown.get("content") or "",
+        links=tuple(link["url"] for link in result.get("links") or ()),
     )
 
 
@@ -428,6 +468,93 @@ def _single_result(page: FetchedPage | None, url: str) -> FetchedPage:
     return FetchedPage(url=url, success=False, error=_NO_CONTENT)
 
 
+def _is_tracking_param(name: str) -> bool:
+    """True when crawlberg strips the query parameter *name* from a discovered link."""
+    return any(
+        name.startswith(param.removesuffix(_PREFIX_MARK))
+        if param.endswith(_PREFIX_MARK)
+        else name == param
+        for param in _TRACKING_PARAMS
+    )
+
+
+def _form_encoded(text: str) -> str:
+    """*text* as crawlberg writes it in a query: only letters, digits and ``*-._`` stay as is."""
+    return quote_plus(text, safe=_FORM_SAFE).replace(_TILDE, _TILDE_ENCODED)
+
+
+def _queued_url(link: str) -> str:
+    """*link* as crawlberg queues it: no fragment, no tracking parameter, a form-encoded query."""
+    parts = urlsplit(link)
+    query = "&".join(
+        f"{_form_encoded(name)}={_form_encoded(value)}"
+        for name, value in parse_qsl(parts.query, keep_blank_values=True)
+        if not _is_tracking_param(name)
+    )
+    return urlunsplit(parts._replace(query=query, fragment=""))
+
+
+class _ExcludedLinks:
+    """The addresses one crawl leaves out because an exclude pattern matches them.
+
+    crawlberg counts the addresses it excludes and names none. This makes crawlberg's
+    decision again for each link of a page, so the log can name the address and the pattern.
+    """
+
+    def __init__(self, spec: _CrawlSpec, seed_url: str) -> None:
+        self._seed_url = seed_url
+        self._seed_host = urlsplit(seed_url).hostname or ""
+        self._depth = spec.depth
+        self._include_subdomains = spec.filters.include_subdomains
+        self._patterns = tuple(re.compile(pattern) for pattern in spec.filters.exclude_patterns)
+        self._seen_links: set[str] = set()
+        self._checked: set[str] = set()
+        self._counts: Counter[str] = Counter()
+        self._examples: dict[str, str] = {}
+
+    def record(self, event: _Event) -> None:
+        """Log each link of *event* that the crawl leaves out, the first time a page holds it."""
+        if self._depth is not None and event.depth >= self._depth:
+            return
+        new_links = [link for link in event.links if link not in self._seen_links]
+        self._seen_links.update(new_links)
+        for url in map(_queued_url, new_links):
+            if url not in self._checked and self._in_scope(url):
+                self._checked.add(url)
+                self._check(url)
+
+    def _in_scope(self, url: str) -> bool:
+        host = urlsplit(url).hostname or ""
+        return url_filter.host_in_scope(
+            host, self._seed_host, include_subdomains=self._include_subdomains
+        )
+
+    def _check(self, url: str) -> None:
+        matched = next((p.pattern for p in self._patterns if p.search(url)), None)
+        if matched is None:
+            return
+        self._counts[matched] += 1
+        self._examples.setdefault(matched, url)
+        log.info("Excluded %s: it matches the exclude pattern %s", url, matched)
+
+    def log_summary(self) -> None:
+        """Warn once with the number of excluded links and an example for each pattern."""
+        if not self._counts:
+            return
+        per_pattern = "; ".join(
+            f"{pattern} matches {count}, for example {self._examples[pattern]}"
+            for pattern, count in self._counts.items()
+        )
+        log.warning(
+            "Links of the crawl of %s that an exclude pattern matched and the crawl did not "
+            "follow: %d. %s. The crawl_exclude_patterns setting holds the patterns. "
+            "Run the crawl at the INFO log level to list every address.",
+            self._seed_url,
+            self._counts.total(),
+            per_pattern,
+        )
+
+
 class CrawlbergFetcher:
     """:class:`WebFetcher` implementation backed by crawlberg."""
 
@@ -478,14 +605,19 @@ class CrawlbergFetcher:
         like a link filtered out before it is fetched; a refused seed is a failed page.
         """
         spec = _CrawlSpec(depth, max_pages, timeout, concurrency, filters)
-        async with aclosing(self._stream(spec, seed_url, cancel)) as events:
-            async for event in events:
-                if event.refused_by_ssrf and event.url != seed_url:
-                    log.debug("crawlberg refused %s: %s", event.url, event.error)
-                    continue
-                page = await _to_page(event, seed_url)
-                if page is not None:
-                    yield page
+        excluded = _ExcludedLinks(spec, seed_url)
+        try:
+            async with aclosing(self._stream(spec, seed_url, cancel)) as events:
+                async for event in events:
+                    excluded.record(event)
+                    if event.refused_by_ssrf and event.url != seed_url:
+                        log.debug("crawlberg refused %s: %s", event.url, event.error)
+                        continue
+                    page = await _to_page(event, seed_url)
+                    if page is not None:
+                        yield page
+        finally:
+            excluded.log_summary()
 
 
 # Protocol conformance check: CrawlbergFetcher is structurally a WebFetcher.
