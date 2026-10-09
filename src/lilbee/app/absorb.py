@@ -213,10 +213,15 @@ def _write_records(config: Config, journal: AbsorbJournal, held: dict[str, HeldO
 
 
 def _refresh_wiki_index(config: Config, journal: AbsorbJournal) -> None:
-    """Give the wiki's subject index the new keys of the absorbed sources."""
+    """Give the wiki's subject index the new keys of the absorbed sources.
+
+    A subject can list a key of the lift: an older lilbee that removes a file
+    between the phases aggregates the index from the rows as they are then.
+    """
     from lilbee.wiki.stubs import refresh_sources_under  # heavy: the wiki package loads spaCy
 
-    refresh_sources_under(journal.moves, config)
+    lifted = [journal.lifted(old) for old in journal.moves]
+    refresh_sources_under([*journal.moves, *lifted], config)
 
 
 def _write_registry(config: Config, journal: AbsorbJournal) -> None:
