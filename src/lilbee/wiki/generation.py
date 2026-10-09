@@ -44,6 +44,7 @@ from lilbee.wiki.shared import (
     WikiLogAction,
     WikiSubdir,
     atomic_write_text,
+    remove_dead_temp_files,
 )
 from lilbee.wiki.stats import BuildStats, BuildStatsDict
 from lilbee.wiki.synthesis import (
@@ -270,6 +271,7 @@ def build_wiki(
         config = cfg
     stats = BuildStats.ensure(stats)
     wiki_root = config.data_root / config.wiki_dir
+    remove_dead_temp_files(wiki_root)
     archive_legacy_concept_pages(wiki_root, config.data_dir, store, config)
 
     grouped = group_entities_by_primary_source(entities)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import tempfile
@@ -12,7 +13,10 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+import psutil
 import yaml
+
+log = logging.getLogger(__name__)
 
 MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 
@@ -23,6 +27,14 @@ MIN_CLUSTER_SOURCES = 3  # minimum unique sources for a synthesis page
 # on any one surface. Re-entrant: a writer holding it calls helpers that take
 # it again (a prune that lints, a lint that records a log entry).
 WIKI_BUILD_LOCK = threading.RLock()
+
+# A temp file of ``atomic_write_text``: this prefix, the writer's process id, a
+# hyphen, what ``mkstemp`` adds, and the suffix.
+_TEMP_PREFIX = ".lilbee-"
+_TEMP_SUFFIX = ".tmp"
+_TEMP_NAME_RE = re.compile(
+    rf"{re.escape(_TEMP_PREFIX)}(?P<pid>[0-9]+)-[a-z0-9_]+{re.escape(_TEMP_SUFFIX)}"
+)
 
 
 class WikiSubdir(StrEnum):
@@ -196,10 +208,11 @@ def atomic_write_text(path: Path, text: str) -> None:
 
     A crash mid-write leaves the previous page intact rather than a truncated
     one. ``mkstemp`` creates the temp file owner-only and ``os.replace`` keeps
-    that mode.
+    that mode. The temp file carries the writer's process id in its name.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
+    prefix = f"{_TEMP_PREFIX}{os.getpid()}-"
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=prefix, suffix=_TEMP_SUFFIX)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             handle.write(text)
@@ -207,6 +220,24 @@ def atomic_write_text(path: Path, text: str) -> None:
     except BaseException:
         Path(tmp_name).unlink(missing_ok=True)
         raise
+
+
+def _left_by_a_dead_writer(name: str) -> bool:
+    """Whether *name* is a temp file of ``atomic_write_text`` whose process has ended."""
+    match = _TEMP_NAME_RE.fullmatch(name)
+    return match is not None and not psutil.pid_exists(int(match["pid"]))
+
+
+def remove_dead_temp_files(wiki_root: Path) -> None:
+    """Delete each temp file under *wiki_root* that a wiki writer left when its process died."""
+    with WIKI_BUILD_LOCK:
+        for directory, _subdirs, names in os.walk(wiki_root):
+            for name in filter(_left_by_a_dead_writer, names):
+                left = Path(directory, name)
+                try:
+                    left.unlink(missing_ok=True)
+                except OSError as exc:
+                    log.warning("Could not delete the leftover temp file %s: %s", left, exc)
 
 
 def frontmatter_span(lines: list[str]) -> tuple[int, int] | None:

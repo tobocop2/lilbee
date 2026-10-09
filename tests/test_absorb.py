@@ -48,6 +48,7 @@ from lilbee.runtime.absorb_journal import (
 from lilbee.runtime.lock import SyncRunningError, sync_running
 from tests.conftest import make_mock_services
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
+from tests.test_wiki_shared import leave_temp_of_a_dead_writer
 
 
 class _Killed(BaseException):
@@ -2363,6 +2364,56 @@ class TestAWikiBuildAndAnAbsorb:
             control.start()
             control.join()
         assert free == [True, False]
+
+
+class TestTempFilesOfAKilledWriter:
+    """What a wiki writer leaves when its process dies before the rename."""
+
+    @staticmethod
+    def _left(wiki_root: Path) -> tuple[list[Path], Path]:
+        """Temp files of a dead writer beside a page and the subject index, and another tool's."""
+        dead = [
+            leave_temp_of_a_dead_writer(wiki_root / "entities"),
+            leave_temp_of_a_dead_writer(wiki_root),
+        ]
+        other = wiki_root / "entities" / "boeing.md.tmp"
+        other.write_text("another tool's", encoding="utf-8")
+        return dead, other
+
+    def test_an_absorb_removes_them_and_leaves_another_tools_file(self, library, notes):
+        _seeded_child(library.store, notes)
+        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
+
+        assert register_sources([notes]).absorbed == ["work"]
+
+        assert [path for path in dead if path.exists()] == [] and other.exists()
+
+    def test_the_finish_of_an_interrupted_absorb_removes_them(self, library, notes):
+        _seeded_child(library.store, notes)
+        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
+            register_sources([notes])
+        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
+
+        assert finish_pending_absorb() == ["notes/work"]
+
+        assert [path for path in dead if path.exists()] == [] and other.exists()
+
+    def test_a_build_removes_them_and_leaves_another_tools_file(self, library):
+        from lilbee.wiki import generation
+
+        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
+
+        assert generation.build_wiki([], library.provider, library.store, cfg) == []
+
+        assert [path for path in dead if path.exists()] == [] and other.exists()
+
+    def test_an_add_that_takes_nothing_in_leaves_them(self, library, notes):
+        """The control: only an absorb or a build walks the wiki for them."""
+        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
+
+        assert register_sources([notes]).absorbed == []
+
+        assert [path for path in dead if not path.exists()] == [] and other.exists()
 
 
 class TestACancelledJsonAdd:
