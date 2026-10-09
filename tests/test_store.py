@@ -4690,6 +4690,21 @@ class TestSourcesOfOneSlice:
         assert sorted(latest["same"]) == ["a.md", "b.md", "later.md"]
 
 
+class TestMissingSources:
+    def test_names_with_no_source_row_are_returned(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._SOURCE_SCAN_BATCH_ROWS", 2)
+        for name in ("a.md", "b.md", "c.md"):
+            store.upsert_source(name, "h", 0)
+        assert store.missing_sources(["a.md", "gone.md", "c.md", "lost.md"]) == {
+            "gone.md",
+            "lost.md",
+        }
+        assert store.missing_sources([]) == set()
+
+    def test_with_no_source_table_every_name_is_missing(self, store):
+        assert store.missing_sources(["a.md"]) == {"a.md"}
+
+
 class TestRelocateGivesEachMoveOneCandidate:
     def test_a_move_whose_old_row_is_gone_is_skipped(self, store):
         store.add_chunks(_one_source_records("kept.md", 1) + _one_source_records("ghost.md", 1))

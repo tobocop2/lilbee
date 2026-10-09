@@ -1126,6 +1126,14 @@ def _forget_in_wiki(removed: list[str]) -> None:
     forget_removed_from_wiki_index(removed)
 
 
+def _forget_missing_in_wiki() -> None:
+    """Drop from the wiki's browse index each source that left the source table."""
+    # circular: lilbee.app.ingest imports this module for sync
+    from lilbee.app.ingest import forget_missing_from_wiki_index
+
+    forget_missing_from_wiki_index()
+
+
 def _sources_in_scope(store: Store, shard: ShardId | None) -> list[SourceRecord]:
     """The source rows this sync plans against: all of them, or a worker's own slice."""
     if shard is None:
@@ -1242,16 +1250,20 @@ async def _sync_across_workers(
     cancel: CancelSignal | None,
 ) -> SyncResult:
     """Ingest on one worker per GPU, each writing the one index, then run the corpus-wide passes."""
-    verdicts = await run_workers(
-        specs, options=options, quiet=quiet, on_progress=on_progress, cancel=cancel
-    )
+    try:
+        verdicts = await run_workers(
+            specs, options=options, quiet=quiet, on_progress=on_progress, cancel=cancel
+        )
+    finally:
+        # No worker tells the wiki index what it removed or re-keyed, and a stopped one
+        # reports nothing, so the index is read against the source table instead.
+        await to_ingest_thread(_forget_missing_in_wiki)
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError
     if failures := [verdict for verdict in verdicts if verdict.error is not None]:
         raise RuntimeError(_worker_failure_message(failures, specs))
     result = aggregate_results(verdicts)
     touched = set(result.added) | set(result.updated) | set(result.relocated)
-    await to_ingest_thread(_forget_in_wiki, result.removed)
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
     if prune_ignored:
         ignored = await to_ingest_thread(
@@ -1389,7 +1401,7 @@ async def sync(
     # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
     # leaves this pass to the parent.
     ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
-    # A worker removes only keys from its own slice; the parent tells the wiki index.
+    # A worker removes only keys from its own slice; the parent reconciles the wiki index.
     refused = _forget_refused(scan.excluded, existing_sources, forget_in_wiki=shard is None)
 
     # Sources whose backing file is not on disk this pass. A vanished file is NOT
