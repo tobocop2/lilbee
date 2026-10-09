@@ -4315,6 +4315,34 @@ class TestRekeySourcesUnder:
         for key in ("plan.md.bak", "plan.mdx/y.md", "my/plan.md"):
             assert _holders(store, key) == _KEY_COLUMNS
 
+    @pytest.mark.parametrize(
+        ("old", "new"),
+        [("wo\x00rk", "notes/wo\x00rk"), ("work", "no\x00tes/work"), ("work\x00", "work\x00")],
+        ids=["old-holds-a-nul", "new-holds-a-nul", "both-end-in-a-nul"],
+    )
+    def test_a_key_with_a_nul_is_refused_by_name_and_nothing_moves(self, store, old, new):
+        _seed_source(store, "work/a.md")
+        before = _dump(store)
+
+        with pytest.raises(ValueError, match="without a NUL character, not ") as refused:
+            store.rekey_sources_under(old, new)
+
+        assert repr(old if "\x00" in old else new) in str(refused.value)
+        assert _dump(store) == before
+
+    @pytest.mark.parametrize(
+        "name",
+        ["back\\slash.md", "new\nline.md", "tab\there.md"],
+        ids=["backslash", "newline", "tab"],
+    )
+    def test_a_character_a_file_name_can_hold_stays_a_key(self, store, name):
+        """Discovery writes these keys on macOS and Linux, so a re-key moves them."""
+        _seed_source(store, f"work/{name}")
+
+        store.rekey_sources_under("work", "notes/work")
+
+        assert _holders(store, f"notes/work/{name}") == _KEY_COLUMNS
+
     def test_the_members_of_a_single_file_archive_move_with_it(self, store):
         _seed_source(store, "docs.zip")
         _seed_source(store, "docs.zip/in/a.txt")
