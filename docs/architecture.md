@@ -408,9 +408,12 @@ that design was the two records disagreeing.
 **The write lock is the one serial stage.** Each flush deletes its documents' old rows
 by name. A BTREE index on the name column of the chunk, page text and source tables keeps
 that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
-sit past it. With 8 writers on one store a flush held the lock for 0.07 s at 500,000
-rows, against 0.30 s with no index and 0.16 s for a private store of an eighth of the
-rows (a laptop, 16-dimension vectors, 2,000 one-chunk documents a flush).
+sit past it. With 8 writers on one store a flush held the lock for 0.09 s at 100,000
+rows and 0.08 s at 250,000 rows, against 0.14 s at both sizes for a private store of an
+eighth of the rows. A one-process flush held it for 0.08 s and 0.09 s, against 0.11 s
+and 0.20 s before the flush kept the index (a laptop, 1024-dimension vectors, 2,000
+one-chunk documents a flush, the median of 24 flushes; 500,000 rows at 1024 dimensions
+is not measured).
 
 **A renamed file.** The old name can belong to another worker's slice. A worker looks up
 the content hash of each new file in the source table as the sync found it. That gives
