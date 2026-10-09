@@ -15,7 +15,7 @@ import zipfile
 
 import pytest
 
-from lilbee.core.config import cfg
+from lilbee.core.config import active_config, cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.store import Store
@@ -254,8 +254,12 @@ class TestEqualToOneProcess:
     async def test_a_refused_format_leaves_the_index(self, tmp_path, monkeypatch):
         from lilbee.data.ingest import discovery
 
-        removed = []
+        removed, forgotten = [], []
         refused = {".rst": discovery.ExclusionReason.VECTOR_GRAPHIC}
+        monkeypatch.setattr(
+            "lilbee.app.ingest.forget_removed_from_wiki_index",
+            lambda names: forgotten.append((active_config().data_root.name, list(names))),
+        )
 
         async def history(library):
             library.write_notes("note", 12)
@@ -268,6 +272,11 @@ class TestEqualToOneProcess:
         fanned, single = await _play(tmp_path, history)
         assert removed == [["legacy.rst"], ["legacy.rst"]]
         assert len(fanned.sources()) == 12
+        # The wiki index is the library's: no worker forgets the file under a root of its own.
+        assert [call for call in forgotten if call[1]] == [
+            ("fanned", ["legacy.rst"]),
+            ("single", ["legacy.rst"]),
+        ]
         _assert_equal_to_one_process(fanned, single)
 
 
