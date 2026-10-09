@@ -2105,10 +2105,11 @@ async def test_a_start_that_meets_the_stop_at_its_lock_starts_no_thread(kind: st
             release.wait(5.0)
 
         controller._lock = lock = _StopsAtItsFirstAcquire(controller)
+        task_id = ""
         try:
             with patch.object(controller, "_run_detect_pending", _wait):
                 if kind == "task":
-                    controller.start_task("late", TaskType.SYNC, _wait)
+                    task_id = controller.start_task("late", TaskType.SYNC, _wait)
                 else:
                     controller.start_detect_pending()
             started = [
@@ -2120,6 +2121,12 @@ async def test_a_start_that_meets_the_stop_at_its_lock_starts_no_thread(kind: st
             release.set()
     assert not lock.armed
     assert started == []
+    if kind == "task":
+        # A promotion refuses on its own, so only the row shows whether the start saw the stop.
+        row = controller.queue.get_task(task_id)
+        assert row is not None
+        assert (row.status, row.cancel_origin) == (TaskStatus.CANCELLED, CancelOrigin.EXIT)
+        assert task_id not in controller._task_targets
 
 
 class _TellsWhoWaits:
