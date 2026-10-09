@@ -279,15 +279,10 @@ def _make_flush_page(
     written_paths: list[Path],
     counter: _FlushCounter,
 ) -> Callable[[CrawlResult], Any]:
-    """Build a per-result flush closure that batches metadata writes via ``to_thread``.
-
-    A page whose URL *meta* holds only in another spelling is saved under that spelling.
-    """
+    """A flush closure that saves a page under every spelling of its URL that *meta* holds."""
     spellings = save.stored_spellings(meta)
 
-    def _sync_flush(result: CrawlResult) -> Path | None:
-        if result.url not in meta:
-            result = replace(result, url=spellings.get(result.url, result.url))
+    def _save_as(result: CrawlResult) -> Path | None:
         outcome = save._save_single_result(result, meta)
         if outcome is None:
             return None
@@ -298,11 +293,15 @@ def _make_flush_page(
             counter.pending = 0
         return outcome.path
 
-    async def flush_page(result: CrawlResult) -> Path | None:
-        path = await asyncio.to_thread(_sync_flush, result)
-        if path is not None:
-            written_paths.append(path)
-        return path
+    def _sync_flush(result: CrawlResult) -> list[Path]:
+        stored = spellings.get(result.url, [result.url])
+        saved = (_save_as(replace(result, url=url)) for url in stored)
+        return [path for path in saved if path is not None]
+
+    async def flush_page(result: CrawlResult) -> list[Path]:
+        paths = await asyncio.to_thread(_sync_flush, result)
+        written_paths.extend(paths)
+        return paths
 
     return flush_page
 
@@ -338,7 +337,7 @@ async def _run_crawl(
     on_progress: DetailedProgressCallback | None,
     cancel: threading.Event | None,
     include_subdomains: bool,
-    flush_page: Callable[[Any], Awaitable[Path | None]],
+    flush_page: Callable[[Any], Awaitable[list[Path]]],
     render_mode: CrawlRenderMode,
 ) -> int:
     """Run the single-URL or recursive crawl. Returns ``pages_seen``.

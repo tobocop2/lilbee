@@ -132,14 +132,13 @@ def _expected_chromium_revision() -> str | None:
 
 
 def _shell_in(directory: Path) -> Path | None:
-    """The headless shell file under *directory*, if Playwright finished installing it."""
+    """The headless shell path under *directory*, if Playwright finished installing it.
+
+    A path that cannot run counts, so a crawl reports it and installs nothing over it.
+    """
     if not (directory / _INSTALL_COMPLETE_MARKER).is_file():
         return None
-    matches = (
-        path
-        for path in sorted(directory.rglob("*"))
-        if path.name in _HEADLESS_SHELL_NAMES and path.is_file()
-    )
+    matches = (path for path in sorted(directory.rglob("*")) if path.name in _HEADLESS_SHELL_NAMES)
     return next(matches, None)
 
 

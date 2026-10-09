@@ -32,19 +32,27 @@ _QUERY_HASH_LEN = 8
 # bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
 METADATA_FLUSH_INTERVAL = 10
 
-# ASCII punctuation the URL standard leaves as written in a path. It percent-encodes a
-# space, a double quote, <, >, a backtick, { and }, and every non-ASCII character.
-_URL_STANDARD_SAFE = "!#$%&'()*+,-./:;=?@[\\]^_|~"
+# ASCII punctuation the URL standard does not percent-encode in a path. It percent-encodes
+# a space, a double quote, <, >, a backtick, { and }, and every non-ASCII character.
+_URL_STANDARD_SAFE = "!#$%&'()*+,-./:;=@[]^_|~"
+_QUERY_MARK = "?"
 
 
-def _escaped(url: str) -> str:
-    """*url* percent-encoded as the URL standard serializes it, the form a fetcher reports."""
-    return quote(url, safe=_URL_STANDARD_SAFE)
+def _reported(url: str) -> str:
+    """*url* as the URL standard serializes it, the form a fetcher reports.
+
+    A backslash before the query is a slash. The query stays as stored.
+    """
+    path, mark, query = url.partition(_QUERY_MARK)
+    return quote(path.replace("\\", "/"), safe=_URL_STANDARD_SAFE) + mark + query
 
 
-def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, str]:
-    """Each URL *meta* holds in another spelling than its percent-encoded form, by that form."""
-    return {escaped: url for url in meta if (escaped := _escaped(url)) != url}
+def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, list[str]]:
+    """The URLs *meta* holds, grouped by the form a fetcher reports for each."""
+    spellings: dict[str, list[str]] = {}
+    for url in meta:
+        spellings.setdefault(_reported(url), []).append(url)
+    return spellings
 
 
 def url_to_filename(url: str) -> str:

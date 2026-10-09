@@ -72,10 +72,15 @@ RETRY_STATUSES = {
     "/retry/busy": HTTPStatus.SERVICE_UNAVAILABLE,
 }
 SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
-# Links as a page writes them: a raw letter, a raw space, and one already percent-encoded.
-SPELL_LINKS = ("/spell/naïve", "/spell/raw space", "/spell/caf%C3%A9")
-# The same three addresses as crawlberg reports and requests them.
-SPELL_REQUESTS = ("/spell/na%C3%AFve", "/spell/raw%20space", "/spell/caf%C3%A9")
+# Links as a page writes them: a raw letter, a raw space, one already percent-encoded, a backslash.
+SPELL_LINKS = ("/spell/naïve", "/spell/raw space", "/spell/caf%C3%A9", "/spell/back\\slash")
+# The same four addresses as crawlberg reports and requests them.
+SPELL_REQUESTS = (
+    "/spell/na%C3%AFve",
+    "/spell/raw%20space",
+    "/spell/caf%C3%A9",
+    "/spell/back/slash",
+)
 # Flag lists crawlberg refuses, each with a part of the reason it gives.
 REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
     (["--headless=new"], "--headless"),
@@ -103,6 +108,14 @@ HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
 )
+# The client hints lilbee sent with that browser user agent to a loopback site.
+CLIENT_HINTS = {
+    "sec-ch-ua": '"Chromium";v="116", "Not_A Brand";v="8", "Google Chrome";v="116"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Linux"',
+}
+# A page with a script and a link, the script, and the linked page.
+HINT_PAGES = ("/hints/", "/hints/app.js", "/hints/next")
 # Pages in the recursive browser crawl that must start Chromium once.
 BROWSER_CRAWL_PAGES = 3
 # A page whose image carries its own bytes in a ``data:`` address, here a one-pixel PNG.
@@ -158,6 +171,11 @@ def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
             HTTPStatus.OK,
             f"<html><body><h1>Logo</h1>{logo}{filler}</body></html>",
         ),
+        "/hints/": (
+            HTTPStatus.OK,
+            '<html><head><script src="/hints/app.js"></script></head><body><h1>Hints</h1>'
+            f'<a href="/hints/next">next</a>{filler}</body></html>',
+        ),
     }
 
 
@@ -167,6 +185,7 @@ class _Site:
     def __init__(self) -> None:
         self.requests: list[tuple[float, str]] = []
         self.agents: list[tuple[str, str]] = []
+        self.hints: list[tuple[str, dict[str, str]]] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._server.daemon_threads = True
@@ -185,6 +204,15 @@ class _Site:
         with self._lock:
             return [agent for path, agent in self.agents if path.startswith(prefix)]
 
+    def hints_for(self, prefix: str) -> dict[str, list[dict[str, str]]]:
+        """The client hint headers of each request for a path under *prefix*, by path."""
+        with self._lock:
+            found: dict[str, list[dict[str, str]]] = {}
+            for path, hints in self.hints:
+                if path.startswith(prefix):
+                    found.setdefault(path, []).append(hints)
+            return found
+
     def close(self) -> None:
         self._server.shutdown()
         self._server.server_close()
@@ -202,7 +230,7 @@ class _Site:
             links = "".join(f'<a href="{path}p{n}">p{n}</a> ' for n in range(SLOW_PAGES))
             special = '<a href="/wiki/Special:Random">random</a><a href="/wiki/Home">home</a>'
             return 200, f"<html><body><h1>Index</h1>{links}{special}{filler}</body></html>"
-        if path.startswith(("/wide/p", "/slow/p", "/wiki/")):
+        if path.startswith(("/wide/p", "/slow/p", "/wiki/", "/hints/")):
             if path.startswith("/slow/p"):
                 time.sleep(SLOW_DELAY_S)
             return 200, f"<html><body><h1>{path}</h1>{filler}</body></html>"
@@ -219,6 +247,12 @@ class _Site:
                 with site._lock:
                     site.requests.append((time.monotonic(), self.path))
                     site.agents.append((self.path, self.headers.get("User-Agent", "")))
+                    hints = {
+                        name.lower(): value
+                        for name, value in self.headers.items()
+                        if name.lower().startswith("sec-ch-")
+                    }
+                    site.hints.append((self.path, hints))
                 status, body = site._body(self.path)
                 if status == HTTPStatus.MOVED_PERMANENTLY:
                     self.send_response(status)
@@ -489,27 +523,54 @@ class TestWholeUrlExcludePatterns:
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestStoredSpellingOfAnAddress:
-    def _library_with(self, url: str) -> Path:
-        """A library that holds *url* under the spelling given, with text no page serves."""
-        name = save.url_to_filename(url)
-        path = cfg.documents_dir / "_web" / name
-        path.parent.mkdir(parents=True)
-        path.write_text("stale text", encoding="utf-8")
-        entry = CrawlMeta(file=name, content_hash="stale", crawled_at="2026-01-01T00:00:00+00:00")
-        save.save_crawl_metadata({url: entry})
-        return path
+    def _library_with(self, *urls: str) -> list[Path]:
+        """A library that holds each of *urls* as spelled, with text no page serves."""
+        entries = {}
+        paths = []
+        for url in urls:
+            name = save.url_to_filename(url)
+            path = cfg.documents_dir / "_web" / name
+            path.parent.mkdir(parents=True)
+            path.write_text("stale text", encoding="utf-8")
+            entries[url] = CrawlMeta(
+                file=name, content_hash="stale", crawled_at="2026-01-01T00:00:00+00:00"
+            )
+            paths.append(path)
+        save.save_crawl_metadata(entries)
+        return paths
 
     async def test_a_page_stored_as_the_link_is_written_is_updated_in_place(self, site):
         as_written = [site.url(link) for link in SPELL_LINKS]
         reported = [site.url(path) for path in SPELL_REQUESTS]
-        stored_page = self._library_with(as_written[0])
+        letter, backslash = self._library_with(as_written[0], as_written[3])
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
         assert sorted(site.paths_since(0, "/spell/")) == sorted(["/spell/", *SPELL_REQUESTS])
-        assert f"Served {SPELL_REQUESTS[0]}." in stored_page.read_text(encoding="utf-8")
+        assert f"Served {SPELL_REQUESTS[0]}." in letter.read_text(encoding="utf-8")
+        assert f"Served {SPELL_REQUESTS[3]}." in backslash.read_text(encoding="utf-8")
         meta = save.load_crawl_metadata()
-        assert set(meta) == {site.url("/spell/"), as_written[0], reported[1], reported[2]}
+        assert set(meta) == {
+            site.url("/spell/"),
+            as_written[0],
+            reported[1],
+            reported[2],
+            as_written[3],
+        }
         saved = [path for path in (cfg.documents_dir / "_web").rglob("*.md")]
         assert len(saved) == len(meta)
+
+    async def test_a_page_stored_under_both_spellings_is_rewritten_under_both(self, site):
+        as_written, reported = site.url(SPELL_LINKS[0]), site.url(SPELL_REQUESTS[0])
+        other = site.url("/elsewhere/page")
+        raw_copy, encoded_copy, other_copy = self._library_with(as_written, reported, other)
+        assert raw_copy != encoded_copy
+        await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
+        assert site.paths_since(0, "/spell/na") == [SPELL_REQUESTS[0]]
+        for copy in (raw_copy, encoded_copy):
+            assert f"Served {SPELL_REQUESTS[0]}." in copy.read_text(encoding="utf-8")
+        assert other_copy.read_text(encoding="utf-8") == "stale text"
+        meta = save.load_crawl_metadata()
+        assert meta[as_written].content_hash == meta[reported].content_hash != "stale"
+        assert meta[other].content_hash == "stale"
 
     async def test_a_new_page_is_stored_as_crawlberg_reports_it(self, site):
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
@@ -577,19 +638,49 @@ class TestRefusedLaunchFlags:
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestShellThatCannotRun:
-    """A headless shell without the execute permission is installed, and crawlberg refuses it."""
+    """A headless shell path that cannot run is installed, and crawlberg refuses it."""
+
+    def _shell_dir(self, tmp_path: Path) -> Path:
+        """The folder of a finished headless shell install at revision 1, with no shell in it."""
+        directory = tmp_path / f"{bootstrap._HEADLESS_SHELL_DIR_PREFIX}1"
+        directory.mkdir()
+        (directory / bootstrap._INSTALL_COMPLETE_MARKER).write_bytes(b"")
+        return directory
+
+    @posix_only
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
+    @pytest.mark.parametrize("shape", ["dangling-link", "directory"])
+    async def test_a_shell_path_that_is_no_file_is_named_and_starts_no_install(
+        self, site, monkeypatch, tmp_path, depth: int, shape: str
+    ):
+        shell = self._shell_dir(tmp_path) / "chrome-headless-shell"
+        if shape == "directory":
+            shell.mkdir()
+        else:
+            shell.symlink_to(tmp_path / "no-such-target")
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1")
+        installs: list[object] = []
+
+        async def install(on_progress: object) -> None:
+            installs.append(on_progress)
+
+        monkeypatch.setattr(bootstrap, "_install_chromium", install)
+        with pytest.raises(CrawlEngineRefusedError) as refused:
+            await crawl_and_save(site.url("/wiki/Home"), depth=depth, render_mode=BROWSER)
+        assert installs == []
+        assert str(refused.value).startswith(f"{NO_SETTING}invalid_config: browser.chrome_path")
+        assert f"'{shell}'" in str(refused.value)
+        assert site.paths_since(0, "/wiki/Home") == []
 
     @posix_only
     @pytest.mark.parametrize("depth", [0, 1], ids=["single-page", "recursive"])
     async def test_a_browser_crawl_names_the_shell_and_starts_no_install(
         self, site, monkeypatch, tmp_path, depth: int
     ):
-        directory = tmp_path / f"{bootstrap._HEADLESS_SHELL_DIR_PREFIX}1"
-        directory.mkdir()
-        shell = directory / "chrome-headless-shell"
+        shell = self._shell_dir(tmp_path) / "chrome-headless-shell"
         shell.write_text("#!/bin/sh\n", encoding="utf-8")
         shell.chmod(stat.S_IRUSR | stat.S_IWUSR)
-        (directory / bootstrap._INSTALL_COMPLETE_MARKER).write_bytes(b"")
         monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1")
         installs: list[object] = []
@@ -828,6 +919,14 @@ class TestBrowserLaunch:
         assert len(paths) == 1
         assert set(site.agents_for("/wiki/Home")) == {BROWSER_USER_AGENT}
 
+    def test_a_page_its_script_and_a_followed_page_carry_the_client_hints(self, site):
+        paths = self._crawl(site.url("/hints/"), depth=1)
+        assert len(paths) == 2
+        hints = site.hints_for("/hints/")
+        assert sorted(hints) == sorted(HINT_PAGES)
+        for page in HINT_PAGES:
+            assert hints[page] == [CLIENT_HINTS] * len(hints[page]), page
+
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestUserAgent:
@@ -841,3 +940,8 @@ class TestUserAgent:
     async def test_a_single_page_request_carries_the_http_user_agent(self, site):
         await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
         assert site.agents_for("/wiki/Home") == [HTTP_USER_AGENT]
+
+    async def test_http_requests_carry_no_client_hints(self, site):
+        await crawl_and_save(site.url("/hints/"), depth=1, render_mode=HTTP)
+        assert site.hints_for("/hints/") == {"/hints/": [{}], "/hints/next": [{}]}
+        assert set(site.agents_for("/hints/")) == {HTTP_USER_AGENT}

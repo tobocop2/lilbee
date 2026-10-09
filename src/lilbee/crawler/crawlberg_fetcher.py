@@ -13,6 +13,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
+from urllib.parse import urlsplit
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, url_filter
@@ -77,13 +78,27 @@ _REFUSED_SETTING_MESSAGES = {
 }
 _NO_CONTENT = "No content extracted"
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
-# The user agent of every request in each render mode, the same on every platform.
+# The Chrome release and the platform a browser crawl names, on every platform it runs on.
+_CHROME_MAJOR = 116
+_CHROME_PLATFORM = "Linux"
+# The user agent of every request in each render mode.
 _USER_AGENTS = {
     CrawlRenderMode.HTTP: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     CrawlRenderMode.BROWSER: (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
+        f"Mozilla/5.0 (X11; {_CHROME_PLATFORM} x86_64) AppleWebKit/537.36 "
+        f"Chrome/{_CHROME_MAJOR}.0.0.0 Safari/537.36"
     ),
 }
+# The client hint every request of a browser crawl carries.
+_BRAND_HINT = {
+    "sec-ch-ua": (
+        f'"Chromium";v="{_CHROME_MAJOR}", "Not_A Brand";v="8", "Google Chrome";v="{_CHROME_MAJOR}"'
+    )
+}
+# The client hints Chrome sends only to a secure origin.
+_SECURE_ORIGIN_HINTS = {"sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": f'"{_CHROME_PLATFORM}"'}
+_SECURE_SCHEME = "https"
+_LOCALHOST = "localhost"
 
 
 class _EventKind(StrEnum):
@@ -248,8 +263,31 @@ def _browser_config(
     )
 
 
+def _is_loopback(host: str) -> bool:
+    """True when *host* is ``localhost``, a name under it, or a loopback address."""
+    if host == _LOCALHOST or host.endswith(f".{_LOCALHOST}"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _client_hints(render_mode: CrawlRenderMode, seed_url: str) -> dict[str, str]:
+    """The client hint headers of a crawl from *seed_url*; an HTTP crawl sends none.
+
+    Chrome treats an https origin and a loopback host as secure.
+    """
+    if render_mode is not CrawlRenderMode.BROWSER:
+        return {}
+    seed = urlsplit(seed_url)
+    if seed.scheme == _SECURE_SCHEME or _is_loopback(seed.hostname or ""):
+        return _BRAND_HINT | _SECURE_ORIGIN_HINTS
+    return dict(_BRAND_HINT)
+
+
 def _crawl_config(
-    render_mode: CrawlRenderMode, spec: _CrawlSpec, chrome_args: Sequence[str]
+    render_mode: CrawlRenderMode, spec: _CrawlSpec, chrome_args: Sequence[str], seed_url: str
 ) -> crawlberg.CrawlConfig:
     """The crawlberg config for one crawl, with every default lilbee depends on set."""
     import crawlberg
@@ -271,6 +309,7 @@ def _crawl_config(
         tracking_params=list(_TRACKING_PARAMS),
         request_timeout=timeout_ms,
         user_agent=_USER_AGENTS[render_mode],
+        custom_headers=_client_hints(render_mode, seed_url),
         rate_limit_ms=pacing.rate_limit_ms,
         rate_limit_jitter_ratio=pacing.jitter_ratio,
         max_redirects=_MAX_REDIRECTS,
@@ -411,7 +450,7 @@ class CrawlbergFetcher:
         self, spec: _CrawlSpec, seed_url: str, cancel: CancelToken | None
     ) -> AsyncGenerator[_Event, None]:
         """This crawl's events; browser mode finds the headless shell before any engine starts."""
-        config = _crawl_config(self._render_mode, spec, self._chrome_args)
+        config = _crawl_config(self._render_mode, spec, self._chrome_args, seed_url)
         return _events(config, seed_url, cancel)
 
     async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
