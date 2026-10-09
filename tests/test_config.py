@@ -5,7 +5,10 @@ import os
 import re
 import subprocess
 import sys
+import types
+from enum import Enum
 from pathlib import Path
+from typing import Union, get_args, get_origin
 from unittest import mock
 
 import pytest
@@ -2307,6 +2310,33 @@ _FALLBACK_VARIABLES = [
 ]
 
 
+# The text, path and collection settings whose own rule refuses a hostile string.
+_OPEN_SETTINGS_THAT_REFUSE = {
+    "chat_model",
+    "embedding_model",
+    "vision_model",
+    "reranker_model",
+    "force_ocr_pages",
+    "ocr_language",
+    "placement",
+    "linked_roots",
+}
+
+
+_TEXT = "text"
+
+
+def _kind_of(field) -> str:
+    """flag, choice or number, "optional" before it when None is allowed, else text."""
+    annotation = field.annotation
+    optional = get_origin(annotation) in (Union, types.UnionType)
+    members = [m for m in get_args(annotation) if m is not type(None)] if optional else [annotation]
+    for kind, base in (("flag", bool), ("choice", Enum), ("number", (int, float))):
+        if all(isinstance(member, type) and issubclass(member, base) for member in members):
+            return f"optional {kind}" if optional else kind
+    return _TEXT
+
+
 def _refusal_of(tmp_path, toml: str, **env: str) -> str | None:
     """The line Config() stops with for *toml* and *env*, or None when it builds."""
     (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
@@ -2404,7 +2434,7 @@ class TestARefusedVariableStops:
         )
 
     def test_a_refused_variable_of_any_setting_stops_with_the_one_line(self, tmp_path):
-        """Every setting, each hostile string: the load takes the value or stops on that line."""
+        """Every setting, each hostile string: a stop names it, and exactly these settings stop."""
         assert _refusal_of(tmp_path, _STORED_TOML) is None
         fields = list(Config.model_fields)
         assert len(fields) > 150
@@ -2418,14 +2448,12 @@ class TestARefusedVariableStops:
                 assert line.startswith(f"{variable} = {bad!r} is "), line
                 assert "\n" not in line and "; " not in line.removeprefix(variable), line
                 refused.add(key)
-        numbers = {
-            name for name, field in Config.model_fields.items() if field.annotation in (int, float)
-        }
-        assert len(numbers) > 50
-        assert numbers <= refused
-        stored = {"ocr", "sessions_enabled", "num_ctx", "force_ocr_pages", "reranker_type"}
-        assert stored | {"vision_model", "linked_roots"} <= refused
-        assert refused.isdisjoint(_VARIABLE_FALLS_BACK)
+        kinds = {name: _kind_of(field) for name, field in Config.model_fields.items()}
+        for kind in ("flag", "choice", "number", "optional number"):
+            assert sum(1 for found in kinds.values() if found == kind) > 10, kind
+        closed = {name for name, kind in kinds.items() if kind != _TEXT}
+        expected = (closed - _VARIABLE_FALLS_BACK) | _OPEN_SETTINGS_THAT_REFUSE
+        assert sorted(refused ^ expected) == []
 
     def test_the_entry_point_check_raises_what_the_load_raises(self, tmp_path):
         env = {**clean_env(tmp_path), "LILBEE_TOP_K": "many"}
