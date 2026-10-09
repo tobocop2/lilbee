@@ -2270,6 +2270,12 @@ class Store:
 
         return RemoveResult(removed=removed, not_found=not_found)
 
+    def remove_rows_of(self, names: list[str]) -> None:
+        """Delete what every per-document table holds for *names*, source record or none."""
+        with self._write_lock():
+            self._remove_many_unlocked(names)
+        self._invalidate_source_cache()
+
     def clear_table(self, name: str, predicate: str) -> bool:
         """Delete rows matching *predicate* from *name*. Acquires write lock.
 
