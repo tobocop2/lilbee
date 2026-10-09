@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import threading
 
 import pytest
@@ -167,7 +168,7 @@ class TestSyncDispatch:
     async def test_a_worker_leaves_the_corpus_wide_passes_to_the_parent(
         self, corpus, monkeypatch, services
     ):
-        """Per-shard index builds are thrown away by the merge, which rebuilds them."""
+        """The passes are corpus-wide, so one run in the parent covers every worker."""
         ran = []
         monkeypatch.setattr(
             pipeline_mod,
@@ -189,24 +190,17 @@ class TestSyncDispatch:
         monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: context)
         monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: fanout.shard_specs(cfg, 2, 1))
         cancel = threading.Event()
-        merged = []
 
         def silent_shard(spec, options, messages, stop):
             cancel.set()
             context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_merge_worker_shards",
-            lambda store, specs, touched: merged.append(touched),
-        )
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(
                 pipeline_mod.sync(quiet=True, cancel=cancel), timeout=_CANCEL_BOUND_S
             )
         assert [worker.terminated for worker in context.processes] == [True, True]
-        assert merged == []
 
 
 class TestSyncAcrossWorkers:
@@ -245,7 +239,6 @@ class TestSyncAcrossWorkers:
         verdicts,
         *,
         cancel=None,
-        merged,
         passes=None,
         store=None,
         prune_ignored=False,
@@ -258,11 +251,6 @@ class TestSyncAcrossWorkers:
                 passes.append(kwargs)
 
         monkeypatch.setattr(pipeline_mod, "run_workers", fake_run_workers)
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_merge_worker_shards",
-            lambda store, specs, touched: merged.append(touched),
-        )
         monkeypatch.setattr(pipeline_mod, "_run_post_ingest_passes", fake_passes)
         events = []
         result = await pipeline_mod._sync_across_workers(
@@ -276,20 +264,35 @@ class TestSyncAcrossWorkers:
         )
         return result, events
 
-    async def test_a_clean_run_merges_what_the_workers_touched(self, specs, monkeypatch):
-        merged = []
+    async def test_a_clean_run_runs_the_passes_over_what_the_workers_touched(
+        self, specs, monkeypatch
+    ):
+        passes = []
         result, events = await self._run(
-            specs, monkeypatch, self._verdicts(None, None), merged=merged
+            specs, monkeypatch, self._verdicts(None, None), passes=passes
         )
         assert sorted(result.added) == ["f0.txt", "f1.txt"]
-        assert merged == [{"f0.txt", "f1.txt"}]
+        [kwargs] = passes
+        assert kwargs["touched"] == {"f0.txt", "f1.txt"}
+        assert kwargs["indexed_anything"] is True
         assert EventType.SYNC_DONE in events
+
+    async def test_the_parent_tells_the_wiki_index_what_the_workers_removed(
+        self, specs, monkeypatch
+    ):
+        """A worker has no wiki index of its own, so its refused files reach the parent's."""
+        forgotten = []
+        monkeypatch.setattr("lilbee.app.ingest.forget_removed_from_wiki_index", forgotten.append)
+        verdicts = self._one_verdict(SyncResult(removed=["old.gz"]))
+        result, _ = await self._run(specs, monkeypatch, verdicts)
+        assert forgotten == [["old.gz"]]
+        assert result.removed == ["old.gz"]
 
     async def test_a_removal_only_run_rebuilds_the_clusters(self, specs, monkeypatch):
         """A removed source leaves stale concept nodes behind unless Leiden runs again."""
         passes = []
         verdicts = self._one_verdict(SyncResult(removed=["gone.txt"]))
-        await self._run(specs, monkeypatch, verdicts, merged=[], passes=passes)
+        await self._run(specs, monkeypatch, verdicts, passes=passes)
         [kwargs] = passes
         assert kwargs["cluster_removed"] == ["gone.txt"]
         assert kwargs["cluster_added"] == [] and kwargs["cluster_updated"] == []
@@ -299,7 +302,7 @@ class TestSyncAcrossWorkers:
         """A move changes no concept co-occurrence, so Leiden has nothing new to see."""
         passes = []
         verdicts = self._one_verdict(SyncResult(relocated=["moved.txt"]))
-        await self._run(specs, monkeypatch, verdicts, merged=[], passes=passes)
+        await self._run(specs, monkeypatch, verdicts, passes=passes)
         [kwargs] = passes
         assert kwargs["cluster_added"] == []
         assert kwargs["cluster_updated"] == []
@@ -324,57 +327,49 @@ class TestSyncAcrossWorkers:
         )
         monkeypatch.setattr(pipeline_mod, "get_services", lambda: type("S", (), {"store": store})())
 
-        result, _ = await self._run(
-            specs,
-            monkeypatch,
-            self._verdicts(None, None),
-            merged=[],
-            store=store,
-            prune_ignored=True,
-        )
-        assert result.removed == ["app.min.js"]
+        verdicts = self._one_verdict(SyncResult(removed=["old.gz"]))
+        result, _ = await self._run(specs, monkeypatch, verdicts, store=store, prune_ignored=True)
+        # What a worker refused stays in the result beside what the patterns exclude.
+        assert result.removed == ["app.min.js", "old.gz"]
 
-    async def test_a_failed_worker_stops_the_merge_and_says_so(self, specs, monkeypatch):
-        """A partial merge is an index silently short of rows, which is the bug being fixed."""
-        merged = []
-        with pytest.raises(
-            RuntimeError, match=r"worker 1 .*sync\.log.*: RuntimeError: out of memory"
-        ):
+    async def test_a_failed_worker_fails_the_sync_and_says_what_is_kept(self, specs, monkeypatch):
+        """A sync that ended as a success would hide an index short of the failed slice."""
+        passes = []
+        with pytest.raises(RuntimeError) as raised:
             await self._run(
                 specs,
                 monkeypatch,
                 self._verdicts(None, "RuntimeError: out of memory"),
-                merged=merged,
+                passes=passes,
             )
-        assert merged == []
+        message = str(raised.value)
+        assert re.search(r"worker 1 .*sync\.log.*: RuntimeError: out of memory", message)
+        assert message.startswith("1 ingest worker(s) failed: ")
+        assert "The files the workers finished are in the index" in message
+        assert "not updated" not in message
+        assert passes == []
 
-    async def test_a_cancelled_run_does_not_merge(self, specs, monkeypatch):
+    async def test_a_cancelled_run_skips_the_passes(self, specs, monkeypatch):
         cancel = threading.Event()
         cancel.set()
-        merged = []
+        passes = []
         with pytest.raises(asyncio.CancelledError):
             await self._run(
-                specs, monkeypatch, self._verdicts(None, None), cancel=cancel, merged=merged
+                specs, monkeypatch, self._verdicts(None, None), cancel=cancel, passes=passes
             )
-        assert merged == []
+        assert passes == []
 
     async def test_a_cancel_ends_a_run_whose_workers_are_silent(self, specs, monkeypatch):
         """The sync hands its cancel to the fan-out, which ends with no worker message."""
         context = FakeContext()
         monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: context)
         cancel = threading.Event()
-        merged = []
 
         def silent_shard(spec, options, messages, stop):
             cancel.set()
             context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
-        monkeypatch.setattr(
-            pipeline_mod,
-            "_merge_worker_shards",
-            lambda store, specs, touched: merged.append(touched),
-        )
         run = pipeline_mod._sync_across_workers(
             specs,
             store=_EmptyStore(),
@@ -386,7 +381,6 @@ class TestSyncAcrossWorkers:
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
         assert [worker.terminated for worker in context.processes] == [True, True]
-        assert merged == []
 
 
 class TestMergeScope:

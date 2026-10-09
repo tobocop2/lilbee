@@ -62,6 +62,7 @@ from lilbee.data.ingest.discovery import (
     discover_corpus,
     discover_files,
     file_hash,
+    resolve_source_path,
     resolve_source_root,
 )
 from lilbee.data.ingest.errors import error_reason
@@ -626,10 +627,41 @@ class _MovePool:
             candidates.sort()
         self._by_hash = by_hash
 
+    def load(self, hashes: Iterable[str]) -> None:
+        """Make the absent sources with these content hashes known; all are from the start."""
+
     def take(self, file_hash: str) -> str | None:
         """The next absent source with this content hash, or None."""
         matches = self._by_hash.get(file_hash)
         return matches.pop(0) if matches else None
+
+
+class _IndexMovePool(_MovePool):
+    """Absent sources of every slice, found by content hash in the index.
+
+    A fan-out worker holds the source rows of its own slice, and the old name of
+    a moved file can belong to any slice. The lookup reads the source table as
+    the sync found it: a row written since belongs to a file that is on disk.
+    """
+
+    def __init__(self, store: Store, is_absent: Callable[[str], bool]) -> None:
+        super().__init__([], {})
+        self._store = store
+        self._version = store.sources_version()
+        self._is_absent = is_absent
+        self._loaded: set[str] = set()
+
+    def load(self, hashes: Iterable[str]) -> None:
+        """Look up the absent sources with these content hashes, once for each hash."""
+        wanted = sorted(set(hashes) - self._loaded)
+        self._loaded.update(wanted)
+        if self._version is None or not wanted:
+            return
+        found = self._store.sources_by_hash(wanted, version=self._version)
+        for digest, names in found.items():
+            absent = sorted(name for name in names if self._is_absent(name))
+            if absent:
+                self._by_hash[digest] = absent
 
 
 def _detect_moves(
@@ -685,6 +717,48 @@ def _absent_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) ->
         for s in sources
         if s["filename"] not in disk_files and s["source_type"] != SourceType.IMPORTED
     ]
+
+
+def _worker_move_pool(
+    store: Store,
+    shard: ShardId,
+    disk_files: dict[str, Path],
+    gone: Collection[str],
+    rules: IgnoreRules,
+) -> _IndexMovePool:
+    """The move pool of one fan-out worker, over the absent sources of every slice.
+
+    The worker walked its own slice, so for a source of another slice it asks the
+    disk: the source is absent when no file is at its path or a pattern excludes it.
+    """
+
+    def _is_absent(name: str) -> bool:
+        if name in gone:
+            return False
+        if shard.owns(name):
+            return name not in disk_files
+        resolved = resolve_source_root(name)
+        if resolved is None:
+            return not resolve_source_path(name).is_file()
+        base, path = resolved
+        return not path.is_file() or rules.excludes_path(path, base=base)
+
+    return _IndexMovePool(store, _is_absent)
+
+
+def _move_pool(
+    store: Store,
+    shard: ShardId | None,
+    sources: list[SourceRecord],
+    disk_files: dict[str, Path],
+    gone: Collection[str],
+    rules: IgnoreRules,
+) -> _MovePool:
+    """The absent sources a brand-new file of this sync can be paired with as a move."""
+    if shard is not None:
+        return _worker_move_pool(store, shard, disk_files, gone, rules)
+    absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
+    return _MovePool(absent, {source["filename"]: source for source in sources})
 
 
 # A plan batch is only done when its slowest hash is, so the first one is small (work
@@ -762,12 +836,17 @@ async def _absorb_plan_batch(
     state.added.update(plan.added)
     state.updated.update(plan.updated)
 
+    if new_hashes := [e.file_hash for e in entries if e.name in plan.added]:
+        await to_ingest_thread(moves.load, new_hashes)
     detected = _detect_moves(entries, plan.added, moves)
     if detected:
         relocations = [(m.old, m.new, m.stat) for m in detected]
+        skipped: set[str] = set()
         await to_ingest_thread(
-            _retry_after_lock_timeout, lambda: store.relocate_sources(relocations)
+            _retry_after_lock_timeout, lambda: skipped.update(store.relocate_sources(relocations))
         )
+        # A move another writer made first is an add: its old row is gone.
+        detected = [m for m in detected if m.old not in skipped]
         entries, relocated = _apply_moves(detected, entries, plan.added)
         state.relocated_from.extend(m.old for m in detected)
         for name in relocated:
@@ -788,7 +867,7 @@ async def _plan_batches(
     disk_files: dict[str, Path],
     existing_sources: dict[str, SourceRecord],
     skip_markers: dict[str, str],
-    absent: list[str],
+    moves: _MovePool,
     state: _StreamedPlan,
     cancel: CancelSignal | None,
 ) -> AsyncGenerator[list[FileToProcess]]:
@@ -801,7 +880,6 @@ async def _plan_batches(
     feeds. Empty batches are not yielded, so the first yield means there is work.
     """
     items = sorted(disk_files.items())
-    moves = _MovePool(absent, existing_sources)
     progress = _PlanProgress(len(items))
     stop = _StreamStop(cancel)
     workers = _plan_workers()
@@ -1030,25 +1108,40 @@ def _forget_ignored(sources: list[SourceRecord], rules: IgnoreRules) -> list[str
     names = _ignored_sources(sources, rules)
     if not names:
         return []
-    from lilbee.app.ingest import forget_removed_from_wiki_index
-
     removed = list(get_services().store.remove_documents(names).removed)
-    forget_removed_from_wiki_index(removed)
+    _forget_in_wiki(removed)
     return removed
 
 
 def _forget_refused(
-    excluded: Mapping[str, ExclusionReason], existing: Mapping[str, SourceRecord]
+    excluded: Mapping[str, ExclusionReason],
+    existing: Mapping[str, SourceRecord],
+    *,
+    forget_in_wiki: bool,
 ) -> list[str]:
     """Drop indexed sources that discovery now refuses. Returns what went."""
     names = [name for name in excluded if name in existing]
     if not names:
         return []
+    removed = list(get_services().store.remove_documents(names).removed)
+    if forget_in_wiki:
+        _forget_in_wiki(removed)
+    return removed
+
+
+def _forget_in_wiki(removed: list[str]) -> None:
+    """Drop removed sources from the wiki's browse index."""
+    # circular: lilbee.app.ingest imports this module for sync
     from lilbee.app.ingest import forget_removed_from_wiki_index
 
-    removed = list(get_services().store.remove_documents(names).removed)
     forget_removed_from_wiki_index(removed)
-    return removed
+
+
+def _sources_in_scope(store: Store, shard: ShardId | None) -> list[SourceRecord]:
+    """The source rows this sync plans against: all of them, or a worker's own slice."""
+    if shard is None:
+        return store.get_sources()
+    return store.get_sources_where(shard.owns)
 
 
 def _require_embedding_model() -> None:
@@ -1136,15 +1229,16 @@ async def _update_wiki(changed_sources: set[str], config: Config) -> None:
 
 
 def _worker_failure_message(failures: list[ShardDone], specs: list[ShardSpec]) -> str:
-    """What a failed fan-out reports; its workers' shards are kept for the re-run."""
+    """What a failed fan-out reports; the files its workers finished are in the index."""
     detail = "; ".join(
         f"worker {failure.index} ({specs[failure.index].config.data_root / WORKER_LOG_NAME}): "
         f"{failure.error}"
         for failure in failures
     )
     return (
-        f"{len(failures)} ingest worker(s) failed, so the index was not updated: {detail}. "
-        "Their work is kept: re-running sync continues from where they stopped."
+        f"{len(failures)} ingest worker(s) failed: {detail}. "
+        "The files the workers finished are in the index: "
+        "re-running sync continues from where they stopped."
     )
 
 
@@ -1171,7 +1265,7 @@ async def _sync_across_workers(
     on_progress: DetailedProgressCallback,
     cancel: CancelSignal | None,
 ) -> SyncResult:
-    """Ingest on one worker per GPU, then fold their shards into the one index."""
+    """Ingest on one worker per GPU, each writing the one index, then run the corpus-wide passes."""
     verdicts = await run_workers(
         specs, options=options, quiet=quiet, on_progress=on_progress, cancel=cancel
     )
@@ -1181,12 +1275,13 @@ async def _sync_across_workers(
         raise RuntimeError(_worker_failure_message(failures, specs))
     result = aggregate_results(verdicts)
     touched = set(result.added) | set(result.updated) | set(result.relocated)
-    await to_ingest_thread(_merge_worker_shards, store, specs, touched)
+    await to_ingest_thread(_forget_in_wiki, result.removed)
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
     if prune_ignored:
-        result.removed = await to_ingest_thread(
+        ignored = await to_ingest_thread(
             _forget_ignored, store.get_sources(), IgnoreRules.for_corpus(active_config().data_root)
         )
+        result.removed = [*ignored, *result.removed]
     await _run_post_ingest_passes(
         store,
         indexed_anything=bool(touched),
@@ -1269,8 +1364,8 @@ async def sync(
     When *prune_ignored* is set, sources a ``.lilbeeignore`` now excludes are
     dropped from the index. Off by default: the patterns govern what sync takes
     in, and removing what a past sync already indexed is the caller's decision.
-    A *shard* runs this sync as one worker of a multi-GPU fan-out: it sees only
-    its slice of the corpus and leaves the corpus-wide passes to the parent.
+    A *shard* runs this sync as one worker of a multi-GPU fan-out: it writes its
+    slice of the corpus to the index and leaves the corpus-wide passes to the parent.
     """
     config = await to_ingest_thread(_config_with_persisted_roots, shard)
     _store = get_services().store
@@ -1291,10 +1386,7 @@ async def sync(
             specs,
             _store,
             prune_ignored=prune_ignored,
-            options=ShardOptions(
-                parent_pid=os.getpid(),
-                force_rebuild=force_rebuild,
-            ),
+            options=ShardOptions(parent_pid=os.getpid()),
             quiet=quiet,
             on_progress=on_progress,
             cancel=cancel,
@@ -1304,7 +1396,7 @@ async def sync(
     rules = IgnoreRules.for_corpus(records_root)
     scan = discover_corpus(shard, rules)
     disk_files = scan.files
-    sources = _store.get_sources()
+    sources = _sources_in_scope(_store, shard)
     existing_sources = {s["filename"]: s for s in sources}
     skip_markers = load_skip_markers(records_root)
 
@@ -1316,11 +1408,11 @@ async def sync(
     flush_failed: set[str] = set()
     _log_excluded(scan.excluded)
 
-    # Opt-in, and corpus-wide: a worker sees one slice but the whole sources
-    # table, so it leaves this pass to the parent rather than racing its siblings.
+    # Opt-in, and corpus-wide: a worker reads one slice of the sources, so it
+    # leaves this pass to the parent.
     ignored = _forget_ignored(sources, rules) if prune_ignored and shard is None else []
-    # Shard-safe: a worker removes only keys from its own slice.
-    refused = _forget_refused(scan.excluded, existing_sources)
+    # A worker removes only keys from its own slice; the parent tells the wiki index.
+    refused = _forget_refused(scan.excluded, existing_sources, forget_in_wiki=shard is None)
 
     # Sources whose backing file is not on disk this pass. A vanished file is NOT
     # removed: it stays indexed and searchable, a dead path-link the user
@@ -1328,7 +1420,7 @@ async def sync(
     # identical file to its old key below. What was just removed leaves the set,
     # where it could otherwise capture a real move.
     gone = set(ignored) | set(refused)
-    absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
+    moves = _move_pool(_store, shard, sources, disk_files, gone, rules)
 
     # The planning pass stats (and where needed hashes) every file on disk, batch by
     # batch off the event loop and overlapped with ingest. A brand-new file whose
@@ -1336,7 +1428,7 @@ async def sync(
     # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
     state = _StreamedPlan(corpus_total=len(disk_files))
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
-    plan_batches = _plan_batches(disk_files, existing_sources, skip_markers, absent, state, cancel)
+    plan_batches = _plan_batches(disk_files, existing_sources, skip_markers, moves, state, cancel)
 
     # Snapshot the cumulative truncation counter so the delta over this sync can
     # surface "N chunks truncated" instead of being lost in per-chunk debug logs.
@@ -1386,8 +1478,7 @@ async def sync(
     )
 
     if shard is None:
-        # A worker's shard is merged before the indexes are built, so the passes
-        # run once corpus-wide in the parent instead of once per shard.
+        # The passes are corpus-wide, so a fan-out runs them once, in the parent.
         await _run_post_ingest_passes(
             _store,
             indexed_anything=bool(state.planned or relocated),
@@ -1404,7 +1495,7 @@ async def sync(
     # ended up in neither the index nor an accounting set was dropped without a
     # signal. Surface it loudly instead of letting a whole dataset vanish quietly.
     if missing := _reconcile_missing(
-        disk_files, _store.get_sources(), failed, skipped, state.held_out
+        disk_files, _sources_in_scope(_store, shard), failed, skipped, state.held_out
     ):
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "

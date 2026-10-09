@@ -1,0 +1,495 @@
+"""A fan-out sync leaves the index a one-process sync of the same history leaves.
+
+Workers run as threads over a real store, through the real gate: the history is
+played once with ``ingest_processes = 2`` (or 3) and once with ``1``, and every
+table of the two indexes is compared.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+import zipfile
+
+import pytest
+
+from lilbee.core.config import cfg
+from lilbee.data.ingest import fanout
+from lilbee.data.ingest import pipeline as pipeline_mod
+from lilbee.data.store import Store
+from lilbee.data.types import ShardId, SyncResult
+from tests._fanout_library import Library, services_for
+from tests.test_ingest_fanout import FakeContext
+
+
+@pytest.fixture(autouse=True)
+def restored_process_state():
+    """The config and the environment the fan-out gate changes; siblings must not inherit them."""
+    config, environ = cfg.model_copy(), dict(os.environ)
+    yield
+    for name in type(cfg).model_fields:
+        setattr(cfg, name, getattr(config, name))
+    os.environ.clear()
+    os.environ.update(environ)
+
+
+@pytest.fixture(autouse=True)
+def workers_as_threads(monkeypatch):
+    """Run each worker on a thread over a real store, and let a small corpus fan out."""
+    monkeypatch.setattr(fanout, "_MIN_FILES_FOR_FANOUT", 1)
+    monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: FakeContext())
+    monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
+    monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.child_guard.bind_lifetime_to_parent", lambda pid: None
+    )
+    monkeypatch.setattr("lilbee.app.services.build_services", services_for)
+
+
+def _name_owned_by(index: int, count: int, stem: str) -> str:
+    """A file name in slice *index* of *count*."""
+    shard = ShardId(index=index, count=count, records_root=cfg.data_root)
+    return next(
+        name for name in (f"{stem}{number}.txt" for number in range(1000)) if shard.owns(name)
+    )
+
+
+async def _play(tmp_path, history, processes: int = 2) -> tuple[Library, Library]:
+    """Play *history* on a fan-out library and on a one-process library."""
+    fanned = Library(tmp_path / "fanned", processes)
+    await history(fanned)
+    single = Library(tmp_path / "single", 1)
+    await history(single)
+    fanned.use()
+    return fanned, single
+
+
+def _assert_equal_to_one_process(fanned: Library, single: Library) -> None:
+    oracle = single.dump()
+    assert oracle["_sources"], "the one-process index is empty, so the comparison proves nothing"
+    assert fanned.dump() == oracle
+    assert fanned.private_stores() == []
+
+
+class TestWhereTheWorkIs:
+    async def test_the_workers_run_and_write_the_index_themselves(self, tmp_path, caplog):
+        library = Library(tmp_path / "lib", 2)
+        names = library.write_notes("note", 12)
+        with caplog.at_level(logging.WARNING, logger=fanout.log.name):
+            result = await library.sync()
+        assert "Ingesting across 2 worker processes" in caplog.text
+        assert sorted(result.added) == sorted(names)
+        assert library.sources() == sorted(names)
+        assert library.private_stores() == []
+        assert not (library.root / "shards" / "w0" / "data").exists()
+
+    async def test_a_repeat_sync_reports_every_file_unchanged(self, tmp_path):
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 12)
+        await library.sync()
+        again = await library.sync()
+        assert (again.added, again.updated, again.unchanged) == ([], [], 12)
+
+    async def test_a_worker_reads_only_the_sources_of_its_own_slice(self, tmp_path, monkeypatch):
+        library = Library(tmp_path / "lib", 2)
+        names = library.write_notes("note", 12)
+        await library.sync()
+        whole, sliced = [], []
+        real_all, real_where = Store.get_sources, Store.get_sources_where
+        monkeypatch.setattr(
+            Store, "get_sources", lambda self, **kw: whole.append(1) or real_all(self, **kw)
+        )
+
+        def _where(self, keep):
+            rows = real_where(self, keep)
+            sliced.append(sorted(row["filename"] for row in rows))
+            return rows
+
+        monkeypatch.setattr(Store, "get_sources_where", _where)
+        await library.sync()
+        # Each worker reads its slice for the plan and again for the reconciliation.
+        assert len(sliced) == 4
+        assert sorted(name for part in sliced for name in part) == sorted([*names, *names])
+        assert max(len(part) for part in sliced) < len(names)
+        assert whole == []
+
+
+class TestEqualToOneProcess:
+    async def test_removed_files_stay_out_when_a_sync_refills_an_empty_index(self, tmp_path):
+        async def history(library):
+            names = library.write_notes("note", 12)
+            await library.sync()
+            library.remove(*names)
+            library.write("new.txt", "A new note.")
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert fanned.sources() == ["new.txt"]
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_removed_file_stays_out_and_nothing_warns_about_force(self, tmp_path, caplog):
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            library.remove("note7.txt")
+            await library.sync()
+            await library.sync()
+
+        with caplog.at_level(logging.WARNING):
+            fanned, single = await _play(tmp_path, history)
+        assert "note7.txt" not in fanned.sources()
+        assert len(fanned.sources()) == 11
+        assert "Ingesting across 2 worker processes" in caplog.text
+        assert "--force" not in caplog.text
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_change_of_the_worker_count_duplicates_nothing(self, tmp_path):
+        counts = []
+
+        async def history(library):
+            library.write_notes("note", 24)
+            await library.sync()
+            if library.processes > 1:
+                library.processes = 3
+            counts.append((await library.sync()).added)
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert counts == [[], []]
+        assert len(fanned.sources()) == len(set(fanned.sources())) == 24
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_an_archive_added_to_an_existing_index_brings_its_members(self, tmp_path):
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            # A fixed member time, so the two libraries hold one archive, byte for byte.
+            with zipfile.ZipFile(library.documents / "bundle.zip", "w") as bundle:
+                for member, text in (("alpha.txt", "turbines"), ("beta.txt", "pumps")):
+                    entry = zipfile.ZipInfo(member, date_time=(2020, 1, 1, 0, 0, 0))
+                    bundle.writestr(entry, f"Member text about {text}.")
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        members = [name for name in fanned.sources() if name.startswith("bundle.zip")]
+        assert members == ["bundle.zip", "bundle.zip/alpha.txt", "bundle.zip/beta.txt"]
+        _assert_equal_to_one_process(fanned, single)
+
+    @pytest.mark.parametrize("new_slice", [0, 1], ids=["same-slice", "other-slice"])
+    async def test_a_renamed_file_loses_its_old_name(self, tmp_path, new_slice):
+        old = _name_owned_by(0, 2, "old")
+        new = _name_owned_by(new_slice, 2, "renamed")
+        results = []
+
+        async def history(library):
+            library.write_notes("note", 12)
+            library.write(old, "The one file that is renamed.")
+            await library.sync()
+            (library.documents / old).rename(library.documents / new)
+            results.append(await library.sync())
+
+        fanned, single = await _play(tmp_path, history)
+        assert old not in fanned.sources()
+        assert new in fanned.sources()
+        assert results[0].relocated == results[1].relocated == [new]
+        assert results[0].added == []
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_copy_of_an_indexed_file_in_the_other_slice_is_indexed_beside_it(
+        self, tmp_path
+    ):
+        first, copy = _name_owned_by(0, 2, "first"), _name_owned_by(1, 2, "copy")
+
+        async def history(library):
+            library.write_notes("note", 12)
+            library.write(first, "Text that two files share.")
+            await library.sync()
+            library.write(copy, "Text that two files share.")
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert {first, copy} <= set(fanned.sources())
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_an_edited_then_removed_file_stays_out(self, tmp_path):
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            library.write("note3.txt", "note 3 was edited after the first sync.")
+            library.remove("note3.txt")
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert "note3.txt" not in fanned.sources()
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_forced_rebuild_indexes_every_file_once(self, tmp_path):
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            await library.sync(force_rebuild=True)
+
+        fanned, single = await _play(tmp_path, history)
+        assert len(fanned.sources()) == len(set(fanned.sources())) == 12
+        assert len(fanned.chunk_sources()) == len(set(fanned.chunk_sources())) == 12
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_refused_format_leaves_the_index(self, tmp_path, monkeypatch):
+        from lilbee.data.ingest import discovery
+
+        removed = []
+        refused = {".rst": discovery.ExclusionReason.VECTOR_GRAPHIC}
+
+        async def history(library):
+            library.write_notes("note", 12)
+            library.write("legacy.rst", "A file whose format is refused later.")
+            await library.sync()
+            with monkeypatch.context() as patch:
+                patch.setattr(discovery, "excluded_extension_reasons", lambda: refused)
+                removed.append((await library.sync()).removed)
+
+        fanned, single = await _play(tmp_path, history)
+        assert removed == [["legacy.rst"], ["legacy.rst"]]
+        assert len(fanned.sources()) == 12
+        _assert_equal_to_one_process(fanned, single)
+
+
+_STOPS = ("before_the_start", "first_report", "every_report", "in_a_write")
+
+
+class TestAStoppedSync:
+    def _stop_at(self, moment: str, cancel: threading.Event, monkeypatch) -> None:
+        """Set *cancel* at one step of the next fan-out sync."""
+        if moment == "before_the_start":
+            real_run = pipeline_mod.run_workers
+
+            async def _run(*args, **kwargs):
+                cancel.set()
+                return await real_run(*args, **kwargs)
+
+            monkeypatch.setattr(pipeline_mod, "run_workers", _run)
+        elif moment == "in_a_write":
+            real_write = Store.write_chunks_batch
+
+            def _write(store, items):
+                cancel.set()
+                return real_write(store, items)
+
+            monkeypatch.setattr(Store, "write_chunks_batch", _write)
+        else:
+            wanted = {"first_report": 1, "every_report": 2}[moment]
+            real_drain, seen = fanout._drain, []
+
+            def _drain(messages):
+                drained = real_drain(messages)
+                seen.extend(message for message in drained if message.kind == "done")
+                if len(seen) >= wanted:
+                    cancel.set()
+                return drained
+
+            monkeypatch.setattr(fanout, "_drain", _drain)
+
+    @pytest.mark.parametrize("moment", _STOPS)
+    async def test_the_next_sync_equals_a_clean_run(self, tmp_path, monkeypatch, moment):
+        finished = []
+
+        async def history(library):
+            library.write_notes("note", 8)
+            await library.sync()
+            library.write_notes("report", 8)
+            if library.processes > 1:
+                cancel = threading.Event()
+                with monkeypatch.context() as patch:
+                    self._stop_at(moment, cancel, patch)
+                    with pytest.raises(asyncio.CancelledError):
+                        await library.sync(cancel=cancel)
+                finished.append(library.sources())
+            await library.sync()
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert len(fanned.sources()) == 16
+        if moment == "every_report":
+            # Both workers finished, so the stopped sync left every file searchable.
+            assert len(finished[0]) == 16
+        assert set(finished[0]) <= set(fanned.sources())
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_failed_worker_keeps_what_the_others_finished(self, tmp_path, monkeypatch):
+        kept = []
+
+        async def history(library):
+            library.write_notes("note", 8)
+            await library.sync()
+            library.write_notes("report", 8)
+            if library.processes > 1:
+                real_shard = fanout.run_shard
+
+                def _one_dies(spec, options, messages, stop):
+                    if spec.shard.index == 1:
+                        messages.put(
+                            fanout.ShardDone(
+                                kind="done", index=1, result=None, error="OSError: disk"
+                            )
+                        )
+                        return
+                    real_shard(spec, options, messages, stop)
+
+                with monkeypatch.context() as patch:
+                    patch.setattr(fanout, "run_shard", _one_dies)
+                    with pytest.raises(RuntimeError, match=r"1 ingest worker\(s\) failed"):
+                        await library.sync()
+                kept.append(library.sources())
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        slice_zero = ShardId(index=0, count=2, records_root=cfg.data_root)
+        reports = [f"report{index}.txt" for index in range(8)]
+        assert [name for name in reports if slice_zero.owns(name)] == [
+            name for name in kept[0] if name.startswith("report")
+        ]
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_write_that_stops_before_its_source_rows_leaves_no_second_copy(
+        self, tmp_path, monkeypatch
+    ):
+        """Chunks with no source row are what a writer killed in its flush leaves behind."""
+        failed = []
+
+        async def history(library):
+            library.write_notes("note", 8)
+            await library.sync()
+            library.write_notes("report", 8)
+            if library.processes > 1:
+                with monkeypatch.context() as patch:
+                    patch.setattr(Store, "_replace_source_rows_unlocked", _stops)
+                    failed.extend((await library.sync()).failed)
+                orphans = [name for name in library.chunk_sources() if name.startswith("report")]
+                assert len(orphans) == 8
+                assert not any(name.startswith("report") for name in library.sources())
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert len(failed) == 8
+        assert len(fanned.chunk_sources()) == len(set(fanned.chunk_sources())) == 16
+        _assert_equal_to_one_process(fanned, single)
+
+
+def _stops(store, rows):
+    """A flush that ends after its chunks and before its source rows."""
+    raise OSError("the writer stopped")
+
+
+class TestSyncsAtOnce:
+    async def test_a_one_process_sync_during_a_fan_out_sync_indexes_each_file_once(
+        self, tmp_path, monkeypatch
+    ):
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 8)
+        await library.sync()
+        names = library.write_notes("report", 12)
+        plans = iter([fanout.shard_specs(cfg, 2, 1), []])
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: next(plans))
+
+        results = await asyncio.gather(library.sync(), library.sync())
+
+        assert {name for result in results for name in result.added} == set(names)
+        assert len(library.sources()) == len(set(library.sources())) == 20
+        assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 20
+
+    async def test_two_fan_out_syncs_at_once_index_each_file_once(self, tmp_path):
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 8)
+        await library.sync()
+        library.write_notes("report", 12)
+
+        results = await asyncio.gather(library.sync(), library.sync())
+
+        assert all(isinstance(result, SyncResult) for result in results)
+        assert len(library.sources()) == len(set(library.sources())) == 20
+        assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 20
+
+    async def test_a_move_another_writer_made_first_becomes_an_add(self, tmp_path, monkeypatch):
+        """Two new files with one content claim the one absent source; one of them wins."""
+        old = _name_owned_by(0, 2, "old")
+        twins = [_name_owned_by(0, 2, "twin"), _name_owned_by(1, 2, "twin")]
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 8)
+        library.write(old, "Text that the two new files share.")
+        await library.sync()
+        (library.documents / old).unlink()
+        for name in twins:
+            library.write(name, "Text that the two new files share.")
+
+        result = await library.sync()
+
+        assert len(result.relocated) == len(result.added) == 1
+        assert sorted([*result.relocated, *result.added]) == sorted(twins)
+        assert old not in library.sources()
+        assert set(twins) <= set(library.sources())
+        assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 10
+
+
+class TestWorkerMovePool:
+    """What a worker counts as an absent source, for each kind of source key."""
+
+    @pytest.fixture()
+    def library(self, tmp_path):
+        return Library(tmp_path / "lib", 2)
+
+    def _pool(self, library, *, disk_files=(), gone=()):
+        from lilbee.data.ingest.ignore import IgnoreRules
+
+        shard = ShardId(index=0, count=2, records_root=cfg.data_root)
+        rules = IgnoreRules.for_corpus(cfg.data_root)
+        files = {name: library.documents / name for name in disk_files}
+        return pipeline_mod._worker_move_pool(Store(cfg), shard, files, set(gone), rules)
+
+    def _take_all(self, pool, digest):
+        pool.load([digest])
+        return [name for name in iter(lambda: pool.take(digest), None)]
+
+    def test_no_source_table_means_no_candidate(self, library):
+        assert self._take_all(self._pool(library), "h") == []
+
+    def test_each_kind_of_source_is_judged_by_its_own_rule(self, library, tmp_path):
+        from lilbee.data.ingest.ignore import IGNORE_FILENAME
+
+        mine_on_disk, mine_gone, mine_removed = (
+            _name_owned_by(0, 2, stem) for stem in ("here", "gone", "removed")
+        )
+        theirs_on_disk, theirs_gone, theirs_ignored = (
+            _name_owned_by(1, 2, stem) for stem in ("there", "lost", "skip")
+        )
+        # A root that is one file: its key is its label, with no path below it.
+        lonely, kept = _name_owned_by(1, 2, "lonely"), _name_owned_by(1, 2, "kept")
+        present = tmp_path / "present.txt"
+        present.write_text("a single-file root that is on disk", encoding="utf-8")
+        cfg.linked_roots = {lonely: str(tmp_path / "missing.txt"), kept: str(present)}
+        (cfg.data_root / IGNORE_FILENAME).write_text("skip*.txt\n", encoding="utf-8")
+        for name in (theirs_on_disk, theirs_ignored):
+            library.write(name, "on disk")
+        store = Store(cfg)
+        names = (
+            mine_on_disk,
+            mine_gone,
+            mine_removed,
+            theirs_on_disk,
+            theirs_gone,
+            theirs_ignored,
+            lonely,
+            kept,
+        )
+        for name in names:
+            store.upsert_source(name, "same", 1)
+
+        pool = self._pool(library, disk_files=[mine_on_disk], gone=[mine_removed])
+        candidates = self._take_all(pool, "same")
+
+        # Of this slice: only the file that left the disk and was not just removed.
+        # Of the other slice: no file at the path, or a pattern excludes it.
+        assert candidates == sorted([mine_gone, theirs_gone, theirs_ignored, lonely])
+        # A second load of one hash asks the index nothing and offers nothing twice.
+        assert self._take_all(pool, "same") == []

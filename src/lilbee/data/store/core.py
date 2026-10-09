@@ -261,6 +261,9 @@ _KEY_INDEX_STALE_FLUSHES = 32
 # replace would join millions of filenames into one delete predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
 
+# Rows per Arrow batch when a filtered read walks the whole source table.
+_SOURCE_SCAN_BATCH_ROWS = 20_000
+
 # Rows per Arrow batch when the aggregate scan walks the whole chunks table;
 # bounds the decoded-text working set while the scan stays columnar.
 _TERM_SCAN_BATCH_ROWS = 20_000
@@ -1916,6 +1919,46 @@ class Store:
         query = query.limit(limit)
         return cast("list[SourceRecord]", query.to_list())
 
+    def get_sources_where(self, keep: Callable[[str], bool]) -> list[SourceRecord]:
+        """Source records whose filename *keep* accepts, read in batches.
+
+        A row *keep* refuses never becomes a Python object, so a caller that wants
+        one slice of a large table holds only that slice.
+        """
+        import pyarrow as pa
+
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        kept: list[SourceRecord] = []
+        for batch in table.search().limit(None).to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            mask = pa.array([keep(name) for name in batch.column("filename").to_pylist()])
+            kept.extend(cast("list[SourceRecord]", batch.filter(mask).to_pylist()))
+        return kept
+
+    def sources_version(self) -> int | None:
+        """The version of the source table now, or None when there is no table."""
+        table = self.open_table(SOURCES_TABLE)
+        return None if table is None else int(table.version)
+
+    def sources_by_hash(self, hashes: Sequence[str], *, version: int) -> dict[str, list[str]]:
+        """Document sources at *version* of the source table, by content hash, for *hashes*."""
+        found: dict[str, list[str]] = {}
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return found
+        table.checkout(version)
+        documents = f"source_type != '{escape_sql_string(SourceType.IMPORTED)}'"
+        for start in range(0, len(hashes), _SOURCE_STAT_BATCH_ROWS):
+            quoted = ", ".join(
+                f"'{escape_sql_string(digest)}'"
+                for digest in hashes[start : start + _SOURCE_STAT_BATCH_ROWS]
+            )
+            query = table.search().where(f"file_hash IN ({quoted}) AND {documents}")
+            for row in query.select(["filename", "file_hash"]).limit(None).to_list():
+                found.setdefault(row["file_hash"], []).append(row["filename"])
+        return found
+
     def count_sources(self, *, search: str | None = None) -> int:
         """Count tracked sources matching *search* without materializing rows."""
         table = self.open_table(SOURCES_TABLE)
@@ -2125,8 +2168,11 @@ class Store:
         if table is not None:
             _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
-    def relocate_sources(self, moves: list[tuple[str, str, SourceStat | None]]) -> None:
+    def relocate_sources(self, moves: list[tuple[str, str, SourceStat | None]]) -> list[str]:
         """Re-key moved sources from old filename to new, preserving their chunks.
+
+        Returns the old names that hold no source row under the lock. Their moves
+        are skipped: another writer moved or removed that source first.
 
         A source whose file moved (same content hash, new path) keeps its chunks
         and embeddings; only its filename key and disk stat change. Each per-source
@@ -2140,14 +2186,18 @@ class Store:
         not worth its risk for what is a rare mass relabel.
         """
         if not moves:
-            return
+            return []
         from lilbee.data.title import derive_title  # circular at module scope
 
+        missing: list[str] = []
         with self._write_lock():
             tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
             sources = self.open_table(SOURCES_TABLE)
             for old, new, stat in moves:
                 where_old = f"= '{escape_sql_string(old)}'"
+                if sources is None or not sources.count_rows(filter=f"filename {where_old}"):
+                    missing.append(old)
+                    continue
                 new_title = self._relocated_title(sources, old, new, derive_title)
                 for table, column in tables:
                     if table is None:
@@ -2158,16 +2208,16 @@ class Store:
                     if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
                         values[_TITLE_COLUMN] = new_title
                     table.update(where=f"{column} {where_old}", values=values)
-                if sources is not None:
-                    row_values: dict[str, object] = {"filename": new}
-                    if new_title is not _KEEP_TITLE:
-                        row_values["title"] = new_title
-                    if stat is not None:
-                        row_values["size_bytes"] = stat.size_bytes
-                        row_values["mtime_ns"] = stat.mtime_ns
-                        row_values["stat_captured_ns"] = stat.captured_ns
-                    sources.update(where=f"filename {where_old}", values=row_values)
+                row_values: dict[str, object] = {"filename": new}
+                if new_title is not _KEEP_TITLE:
+                    row_values["title"] = new_title
+                if stat is not None:
+                    row_values["size_bytes"] = stat.size_bytes
+                    row_values["mtime_ns"] = stat.mtime_ns
+                    row_values["stat_captured_ns"] = stat.captured_ns
+                sources.update(where=f"filename {where_old}", values=row_values)
         self._invalidate_source_cache()
+        return missing
 
     def _relocated_title(
         self,
