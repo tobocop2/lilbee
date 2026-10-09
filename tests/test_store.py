@@ -1,6 +1,7 @@
 """Tests for LanceDB store operations: hybrid search + FTS index lifecycle."""
 
 import errno
+import re
 import sys
 from contextlib import contextmanager
 from unittest import mock
@@ -4388,3 +4389,46 @@ class TestRekeySourcesUnder:
             store.rekey_sources_under("plan.md", "x/b.md")
 
         assert _holders(store, "plan.md") == _KEY_COLUMNS
+
+    @pytest.mark.parametrize(
+        ("old", "new", "refused"),
+        [
+            ("work", "notes/work/", "notes/work/"),
+            ("work", "notes//work", "notes//work"),
+            ("work", "./work", "./work"),
+            ("work/", "notes/work", "work/"),
+            ("", "/", ""),
+            (".", "", "."),
+            ("", "x", ""),
+        ],
+        ids=[
+            "new-trailing-slash",
+            "new-doubled-slash",
+            "new-dot-segment",
+            "old-trailing-slash",
+            "old-empty-new-root",
+            "old-dot-new-empty",
+            "old-empty",
+        ],
+    )
+    def test_a_malformed_key_is_refused_by_name_and_nothing_moves(self, store, old, new, refused):
+        for key in ("work/a.md", "work", "./a.md", "/abs.md"):
+            _seed_source(store, key)
+        before = _dump(store)
+
+        with pytest.raises(ValueError, match=re.escape(f"not {refused!r}")):
+            store.rekey_sources_under(old, new)
+
+        assert _dump(store) == before
+        assert _holders(store, "work/a.md") == _KEY_COLUMNS
+
+    @pytest.mark.parametrize("key", ["/work", "work/../notes", ".."])
+    def test_a_rooted_key_or_a_parent_segment_is_refused(self, store, key):
+        _seed_source(store, "work/a.md")
+
+        with pytest.raises(ValueError, match=re.escape(f"not {key!r}")):
+            store.rekey_sources_under("work", key)
+        with pytest.raises(ValueError, match=re.escape(f"not {key!r}")):
+            store.rekey_sources_under(key, "work")
+
+        assert _holders(store, "work/a.md") == _KEY_COLUMNS
