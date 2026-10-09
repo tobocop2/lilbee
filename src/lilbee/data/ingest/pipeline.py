@@ -34,7 +34,8 @@ from rich.progress import (
 )
 
 from lilbee.app.services import get_services
-from lilbee.core.config import Config, active_config
+from lilbee.core.config import CONFIG_FILE_NAME, Config, active_config
+from lilbee.core.config.model import toml_values
 from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
     extract_batching,
@@ -1215,6 +1216,21 @@ async def _sync_across_workers(
     return result
 
 
+def _config_with_persisted_roots(shard: ShardId | None) -> Config:
+    """The active config, holding the source registry its config.toml has.
+
+    A file without a registry sets nothing, and a worker keeps the registry
+    its parent loaded.
+    """
+    config = active_config()
+    path = config.data_root / CONFIG_FILE_NAME
+    if shard is None and path.exists():
+        roots = toml_values(path).get("linked_roots")
+        if roots is not None:
+            config.linked_roots = roots
+    return config
+
+
 _SyncParams = ParamSpec("_SyncParams")
 
 
@@ -1256,7 +1272,7 @@ async def sync(
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it sees only
     its slice of the corpus and leaves the corpus-wide passes to the parent.
     """
-    config = active_config()
+    config = await to_ingest_thread(_config_with_persisted_roots, shard)
     _store = get_services().store
 
     if force_rebuild:
