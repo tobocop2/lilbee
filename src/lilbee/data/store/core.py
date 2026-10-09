@@ -1747,8 +1747,7 @@ class Store:
         if pc.count_distinct(arrow.column("source")).as_py() == arrow.num_rows:
             return arrow
         # One row per source, so a caller joining on it cannot fan out. A doubled
-        # row (a source re-merged from a shard) would otherwise multiply every page
-        # it owns. Last wins, matching the dict this replaced; single-threaded
+        # row would otherwise multiply every page it owns. Last wins; single-threaded
         # because that is the only execution mode with an ordered aggregate.
         grouped = arrow.group_by("source", use_threads=False).aggregate(
             [(name, "last") for name in SourceMeta._fields]
@@ -2226,8 +2225,12 @@ class Store:
 
     def member_sources(self, name: str) -> list[str]:
         """Sources ingested out of the archive *name*: every filename under ``name/``."""
-        filenames = [s["filename"] for s in self.get_sources()]
-        return _members_by_archive([name], filenames).get(name, [])
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        under = f"starts_with(filename, '{escape_sql_string(name)}/')"
+        rows = table.search().where(under).select(["filename"]).limit(None).to_list()
+        return [row["filename"] for row in rows]
 
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
