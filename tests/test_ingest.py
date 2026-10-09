@@ -8631,7 +8631,9 @@ class TestSyncLoadsThePersistedRegistry:
     """A sync indexes the roots ``config.toml`` holds, whatever this process loaded earlier."""
 
     @pytest.fixture(autouse=True)
-    def _the_data_root_file_is_the_loaded_one(self, isolated_env, monkeypatch):
+    def _the_data_root_file_is_the_loaded_one(
+        self, isolated_env, monkeypatch, overlay_reads_config_toml
+    ):
         """The layout of the CLI, serve and the TUI: cfg was built from the data root's file."""
         from lilbee.core.config import CONFIG_FILE_NAME, model
 
@@ -8880,6 +8882,28 @@ class TestSyncLoadsThePersistedRegistry:
         assert not unregister.is_alive()
         assert settings.load(cfg.data_root).get("linked_roots") == {}
         assert cfg.linked_roots == {}
+
+    async def test_the_switch_that_turns_config_toml_off_turns_the_load_off(
+        self, isolated_env, tmp_path, monkeypatch
+    ):
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        settings.set_value(cfg.data_root, "linked_roots", {"notes": str(notes)})
+        cfg.linked_roots = {"work": str(work)}
+
+        monkeypatch.setenv("LILBEE_SKIP_TOML_CONFIG", "1")
+        switched_off = await sync(quiet=True)
+        kept = dict(cfg.linked_roots)
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG")
+        switched_on = await sync(quiet=True)
+
+        assert switched_off.added == ["work/old.txt"]
+        assert kept == {"work": str(work)}
+        assert switched_on.added == ["notes/plan.txt"]
+        assert cfg.linked_roots == {"notes": str(notes)}
 
     async def test_an_add_then_a_sync_reads_the_registry_the_add_wrote(
         self, isolated_env, tmp_path

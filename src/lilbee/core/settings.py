@@ -153,14 +153,22 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
     return result
 
 
+def _overlay_file(root: Path) -> Path | None:
+    """The config.toml an overlay of *root* reads: None without one or under the skip switch."""
+    path = _config_path(root)
+    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
+        return None
+    return path
+
+
 def overlay_persisted_settings(root: Path) -> None:
     """Set on cfg each writable setting ``<root>/config.toml`` holds and no variable sets.
 
     A value Config refuses is left out with a warning that names the file, and
     the setting keeps the value it had. ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
-    path = _config_path(root)
-    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
+    path = _overlay_file(root)
+    if path is None:
         return
     harden_private_file(path)
     accepted = toml_values(path)
@@ -176,9 +184,10 @@ def overlay_persisted_roots(config: Config) -> None:
 
     A file without a registry sets nothing. A file that does not parse, or a
     registry Config refuses, is reported and sets nothing.
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
-    path = _config_path(config.data_root)
-    if not path.exists():
+    path = _overlay_file(config.data_root)
+    if path is None:
         return
     with _config_write_lock(config.data_root):
         roots = toml_value(path, "linked_roots")
