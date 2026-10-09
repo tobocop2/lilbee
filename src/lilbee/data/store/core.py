@@ -247,6 +247,15 @@ _NUL = "\x00"
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
 
+# The key column a batched flush deletes by in each table it appends to.
+_FLUSH_KEY_COLUMNS = tuple(
+    (name, INGEST_SOURCE_COLUMNS[name]) for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, SOURCES_TABLE)
+)
+
+# A filtered delete scans every row its key index does not cover. The index is
+# rebuilt once this many flushes of rows sit past it.
+_KEY_INDEX_STALE_FLUSHES = 32
+
 # Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
@@ -317,6 +326,24 @@ def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[
                 members.setdefault(filename[:cut], []).append(filename)
             cut = filename.find("/", cut + 1)
     return members
+
+
+def _refresh_key_index_unlocked(table: LanceTable, column: str, flush_rows: int) -> None:
+    """Rebuild the BTREE index on *column* once enough appended rows sit past it.
+
+    Caller holds ``write_lock()``. A delete filtered on *column* probes the index
+    and scans only the rows past it, so its cost follows the flush size and not
+    the table size. A failure leaves the delete correct and slower.
+    """
+    from lancedb.index import BTree
+
+    try:
+        stats = table.index_stats(f"{column}_idx")
+        unindexed = table.count_rows() if stats is None else stats.num_unindexed_rows
+        if unindexed >= _KEY_INDEX_STALE_FLUSHES * flush_rows:
+            table.create_index(column, config=BTree(), replace=True)
+    except Exception:
+        log.debug("Key index refresh failed on '%s.%s'", table.name, column, exc_info=True)
 
 
 def _sql_equals(column: str, value: object) -> str:
@@ -2019,12 +2046,25 @@ class Store:
             all_records = [rec for it in items for rec in it.records]
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
+            self._refresh_key_indexes_unlocked(items, len(all_records))
             self._cleanup_batch_unlocked(items)
             self._add_page_texts_unlocked(db, items)
             self._add_chunk_records_unlocked(all_records, embedding_model, embedding_dim)
             self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
+
+    def _refresh_key_indexes_unlocked(self, items: list[ChunkWrite], chunk_rows: int) -> None:
+        """Keep the key index of each table this flush appends to current. Caller holds the lock."""
+        flush_rows = {
+            CHUNKS_TABLE: chunk_rows,
+            PAGE_TEXTS_TABLE: sum(len(it.page_texts or []) for it in items),
+            SOURCES_TABLE: len(items),
+        }
+        for name, column in _FLUSH_KEY_COLUMNS:
+            table = self.open_table(name)
+            if table is not None and flush_rows[name]:
+                _refresh_key_index_unlocked(table, column, flush_rows[name])
 
     def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
         """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
