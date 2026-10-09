@@ -652,10 +652,12 @@ class TestMemoryTuningSettingsMap:
 
 
 class TestCrawlRenderModeConfig:
-    def test_default_is_http(self):
+    def test_default_is_http(self, tmp_path, monkeypatch):
         from lilbee.core.config.enums import CrawlRenderMode
         from lilbee.core.config.model import Config
 
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        monkeypatch.delenv("LILBEE_CRAWL_RENDER_MODE", raising=False)
         assert Config().crawl_render_mode is CrawlRenderMode.HTTP
 
     def test_env_var_overrides_to_browser(self, monkeypatch):

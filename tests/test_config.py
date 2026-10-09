@@ -2112,6 +2112,22 @@ def _build_with(tmp_path, toml: str, **env: str):
         return _build_cfg()
 
 
+class TestSkipTomlConfig:
+    def test_the_load_reads_no_config_toml_while_the_variable_is_one(self, tmp_path):
+        """The twin: the same file sets top_k and warns once the variable is gone or is not 1."""
+        toml = 'top_k = 9\nchunk_size = "big"\n'
+        skipped, quiet = _build_with(tmp_path, toml, LILBEE_SKIP_TOML_CONFIG="1")
+        assert Config.model_fields["top_k"].default != 9
+        assert (skipped.top_k, quiet) == (Config.model_fields["top_k"].default, ())
+        for env in ({}, {"LILBEE_SKIP_TOML_CONFIG": "0"}):
+            read, warnings = _build_with(tmp_path, toml, **env)
+            assert read.top_k == 9
+            assert warnings == (
+                "config.toml: chunk_size = 'big' is not a whole number; "
+                "chunk_size uses its default",
+            )
+
+
 # A TOML value no scalar, path, list or table setting takes as it stands.
 _HOSTILE_TOML_VALUES = ("[[1]]", "{ a = [1] }", "-1", "1.5", "true", '"many"', '"\\u0000"')
 
