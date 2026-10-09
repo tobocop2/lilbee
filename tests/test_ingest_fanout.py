@@ -616,6 +616,38 @@ class TestRunWorkers:
         assert seen_before_the_kill == [False, False]
         assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
 
+    async def test_a_worker_that_leaves_during_the_grace_is_not_killed(
+        self, fake_context, monkeypatch, caplog
+    ):
+        """Only the worker that outlasts the grace is killed, and only it gets the warning."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 0.5)
+
+        def shard(spec, options, messages, stop):
+            messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            )
+            if spec.shard.index == 0:
+                stop.wait(_CANCEL_BOUND_S)  # leaves on the stop, as a worker that obeys the TERM
+            else:
+                fake_context.processes[1].killed.wait(_CANCEL_BOUND_S)
+
+        monkeypatch.setattr(fanout, "run_shard", shard)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            await asyncio.wait_for(
+                fanout.run_workers(
+                    [_spec(0), _spec(1)],
+                    options=fanout.ShardOptions(parent_pid=os.getpid()),
+                    quiet=True,
+                    on_progress=lambda kind, data: None,
+                    cancel=None,
+                ),
+                timeout=_CANCEL_BOUND_S,
+            )
+        leaver, deaf = fake_context.processes
+        assert (leaver.killed.is_set(), deaf.killed.is_set()) == (False, True)
+        warned = [r.getMessage() for r in caplog.records if "did not exit" in r.getMessage()]
+        assert warned == [f"Ingest worker {deaf.name} did not exit; killing it"]
+
     async def test_a_cancel_during_the_grace_kills_the_workers_at_once(
         self, fake_context, monkeypatch
     ):
