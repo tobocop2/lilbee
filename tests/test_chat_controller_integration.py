@@ -2177,15 +2177,28 @@ def _watched_controller(app: LilbeeApp, slots: int = 1) -> tuple[TaskBarControll
 
 
 @pytest.mark.asyncio
-async def test_a_second_starter_cannot_promote_a_task_before_its_target_is_stored() -> None:
+@pytest.mark.parametrize("moment", ["inside_the_hold", "at_the_release"])
+async def test_a_second_starter_cannot_promote_a_task_before_its_target_is_stored(
+    moment: str,
+) -> None:
     """A task is enqueued with its target in one hold, so each of two starters gets a worker."""
     app = LilbeeApp()
     async with app.run_test() as pilot:
-        controller, hooks = _watched_controller(app, slots=2)
         ran: list[str] = []
-        hooks["after_enqueue"] = lambda: controller.start_task(
-            "second", TaskType.DOWNLOAD, lambda _reporter: ran.append("second")
-        )
+
+        def _start_second() -> None:
+            controller.start_task(
+                "second", TaskType.DOWNLOAD, lambda _reporter: ran.append("second")
+            )
+
+        if moment == "inside_the_hold":
+            controller, hooks = _watched_controller(app, slots=2)
+            hooks["after_enqueue"] = _start_second
+        else:
+            # One slot: the second starter promotes the first task, the only row that is due.
+            controller, _hooks = _watched_controller(app)
+            controller._lock = lock = _StartsATaskOnRelease(_start_second)
+            lock.armed = True
         controller.start_task("first", TaskType.DOWNLOAD, lambda _reporter: ran.append("first"))
         await wait_until(pilot, lambda: len(ran) == 2, timeout=_SETTLE_SECONDS)
     assert sorted(ran) == ["first", "second"]
