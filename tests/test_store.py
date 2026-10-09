@@ -4629,6 +4629,61 @@ class TestRekeySourcesUnder:
         ]
 
 
+class TestSourcesOfOneSlice:
+    def test_no_source_table_reads_as_no_rows_and_no_version(self, store):
+        assert store.get_sources_where(lambda name: True) == []
+        assert store.sources_version() is None
+        assert store.sources_by_hash(["h"], version=1) == {}
+
+    def test_only_the_accepted_rows_are_returned_across_batches(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._SOURCE_SCAN_BATCH_ROWS", 2)
+        for index in range(5):
+            store.upsert_source(f"f{index}.md", f"hash{index}", 1)
+        kept = store.get_sources_where(lambda name: name in {"f0.md", "f3.md", "f4.md"})
+        assert sorted(row["filename"] for row in kept) == ["f0.md", "f3.md", "f4.md"]
+        assert {row["file_hash"] for row in kept} == {"hash0", "hash3", "hash4"}
+        assert sorted(kept[0]) == sorted(store.get_sources()[0])
+
+    def test_a_hash_lookup_reads_the_table_as_it_was_at_the_version(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 2)
+        store.upsert_source("a.md", "same", 1)
+        store.upsert_source("b.md", "same", 1)
+        store.upsert_source("c.md", "other", 1)
+        store.upsert_source("pack.md", "same", 1, SourceType.IMPORTED)
+        version = store.sources_version()
+        store.upsert_source("later.md", "same", 1)
+
+        found = store.sources_by_hash(["missing", "other", "same"], version=version)
+
+        assert {digest: sorted(names) for digest, names in found.items()} == {
+            "other": ["c.md"],
+            "same": ["a.md", "b.md"],
+        }
+        latest = store.sources_by_hash(["same"], version=store.sources_version())
+        assert sorted(latest["same"]) == ["a.md", "b.md", "later.md"]
+
+
+class TestRelocateReportsSkippedMoves:
+    def test_a_move_whose_old_row_is_gone_is_skipped_and_named(self, store):
+        store.add_chunks(_one_source_records("kept.md", 1) + _one_source_records("ghost.md", 1))
+        store.upsert_source("kept.md", "h1", 1)
+
+        skipped = store.relocate_sources(
+            [("ghost.md", "new.md", None), ("kept.md", "moved.md", None)]
+        )
+
+        assert skipped == ["ghost.md"]
+        # The skipped move re-keys nothing: its chunks keep the old name.
+        assert len(store.get_chunks_by_source("ghost.md")) == 1
+        assert store.get_chunks_by_source("new.md") == []
+        assert len(store.get_chunks_by_source("moved.md")) == 1
+        assert [row["filename"] for row in store.get_sources()] == ["moved.md"]
+
+    def test_with_no_source_table_every_move_is_skipped(self, store):
+        assert store.relocate_sources([("a.md", "b.md", None)]) == ["a.md"]
+        assert store.relocate_sources([]) == []
+
+
 class TestRemoveRowsOf:
     def test_the_rows_of_a_key_go_with_or_without_its_source_record(self, store):
         _seed_source(store, "work/a.md")

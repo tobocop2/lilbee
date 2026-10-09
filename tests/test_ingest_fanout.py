@@ -226,13 +226,12 @@ class TestPlanFanout:
 
 
 class TestShardSpecs:
-    def test_each_worker_gets_a_private_store_and_the_shared_corpus(self):
+    def test_each_worker_gets_the_one_index_and_the_shared_corpus(self):
         specs = fanout.shard_specs(cfg, processes=2, devices=2)
         roots = [spec.config.data_root for spec in specs]
         assert roots == [cfg.data_root / "shards" / "w0", cfg.data_root / "shards" / "w1"]
-        assert [spec.config.lancedb_dir for spec in specs] == [
-            root / "data" / "lancedb" for root in roots
-        ]
+        # Every worker writes the index itself: none has a store of its own.
+        assert [spec.config.lancedb_dir for spec in specs] == [cfg.lancedb_dir, cfg.lancedb_dir]
         # The corpus is read in place: no worker gets its own copy of it.
         assert {spec.config.documents_dir for spec in specs} == {cfg.documents_dir}
         # So are its skip records.
@@ -412,7 +411,7 @@ class TestRunShard:
         spec = _spec(1)
         fanout.run_shard(
             spec,
-            fanout.ShardOptions(parent_pid=os.getppid(), force_rebuild=True),
+            fanout.ShardOptions(parent_pid=os.getppid()),
             messages,
             threading.Event(),
         )
@@ -420,7 +419,8 @@ class TestRunShard:
         assert (verdict.index, verdict.error) == (1, None)
         assert verdict.result.added == ["a.txt"]
         assert seen["shard"] == spec.shard
-        assert seen["force_rebuild"] is True
+        # A rebuild drops the index, which every worker shares: only the parent may.
+        assert "force_rebuild" not in seen
         assert seen["quiet"] is True
 
     def test_a_worker_that_raises_reports_the_failure_instead_of_dying_silently(self, monkeypatch):

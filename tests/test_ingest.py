@@ -2177,7 +2177,6 @@ class TestFanoutReadsTheCorpusSkipRecords:
                 "lilbee.providers.fleet.child_guard.bind_lifetime_to_parent", lambda pid: None
             )
             monkeypatch.setattr("lilbee.app.services.build_services", lambda config: mock_svc)
-            monkeypatch.setattr(pipeline, "_merge_worker_shards", lambda *args: None)
         else:
             monkeypatch.setattr(pipeline, "plan_fanout", list)
         return request.param
@@ -4020,7 +4019,7 @@ class TestStreamedPlan:
         cancel = threading.Event()
         cancel.set()  # shard 0 plans nothing, ahead drops to None, shard 1 breaks
         state = _StreamedPlan()
-        shards = _plan_batches(disk, {}, {}, [], state, cancel)
+        shards = _plan_batches(disk, {}, {}, pipeline._MovePool([], {}), state, cancel)
         yielded = [shard async for shard in shards]
         assert yielded == []  # the break stopped planning the remaining shards
         assert state.planned == 0
@@ -4046,7 +4045,9 @@ class TestStreamedPlan:
             return real_plan_items(*args, **kwargs)
 
         monkeypatch.setattr(pipeline, "_plan_items", _plan_items)
-        shards = [shard async for shard in _plan_batches(disk, {}, {}, [], _StreamedPlan(), None)]
+        moves = pipeline._MovePool([], {})
+        batches = _plan_batches(disk, {}, {}, moves, _StreamedPlan(), None)
+        shards = [shard async for shard in batches]
         assert [entry.name for shard in shards for entry in shard] == sorted(disk)
         assert planned_on == ["lilbee-plan-driver_0"] * 3
 
