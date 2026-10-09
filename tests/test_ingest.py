@@ -8625,3 +8625,143 @@ class TestSkippedScanReportsTheOcrThatRan:
         result = await sync(quiet=True)
         assert result.skipped == ["empty.md"]
         assert result.skipped_ocr == {}
+
+
+class TestSyncLoadsThePersistedRegistry:
+    """A sync indexes the roots ``config.toml`` holds, whatever this process loaded earlier."""
+
+    @staticmethod
+    def _root(tmp_path, label, filename):
+        root = tmp_path / label
+        root.mkdir()
+        (root / filename).write_text(f"text of {filename}", encoding="utf-8")
+        return root
+
+    async def test_a_root_another_process_added_is_indexed(self, isolated_env, tmp_path):
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        settings.set_value(cfg.data_root, "linked_roots", {"notes": str(notes)})
+        cfg.linked_roots = {}  # what a server started before the add still holds
+
+        result = await sync(quiet=True)
+
+        assert result.added == ["notes/plan.txt"]
+        assert cfg.linked_roots == {"notes": str(notes)}
+
+    async def test_a_root_another_process_removed_is_not_walked(self, isolated_env, tmp_path):
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        (isolated_env / "owned.txt").write_text("owned text", encoding="utf-8")
+        settings.set_value(cfg.data_root, "linked_roots", {})
+        cfg.linked_roots = {"work": str(work)}
+
+        result = await sync(quiet=True)
+
+        assert result.added == ["owned.txt"]
+        assert cfg.linked_roots == {}
+
+    async def test_a_replaced_registry_wins_and_other_settings_stay(self, isolated_env, tmp_path):
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        settings.update_values(
+            cfg.data_root, {"linked_roots": {"notes": str(notes)}, "chunk_size": 111}
+        )
+        cfg.linked_roots = {"work": str(work)}
+        chunk_size = cfg.chunk_size
+
+        result = await sync(quiet=True)
+
+        assert result.added == ["notes/plan.txt"]
+        assert chunk_size != 111
+        assert cfg.chunk_size == chunk_size
+
+    @pytest.mark.parametrize(
+        ("config_text", "warning"),
+        [
+            (None, None),
+            ("chunk_size = 111\n", None),
+            ("linked_roots = [unclosed\n", "Failed to read"),
+            ('linked_roots = "notes"\n', "linked_roots = 'notes'"),
+        ],
+        ids=["no-file", "no-registry-key", "unreadable", "refused-value"],
+    )
+    async def test_a_file_without_a_usable_registry_keeps_the_loaded_one(
+        self, isolated_env, tmp_path, caplog, config_text, warning
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        if config_text is not None:
+            (cfg.data_root / CONFIG_FILE_NAME).write_text(config_text, encoding="utf-8")
+        cfg.linked_roots = {"work": str(work)}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            result = await sync(quiet=True)
+
+        assert result.added == ["work/old.txt"]
+        assert cfg.linked_roots == {"work": str(work)}
+        warnings = [r.getMessage() for r in caplog.records if r.name.endswith("load_warnings")]
+        assert len(warnings) == (0 if warning is None else 1)
+        assert all(warning in message for message in warnings)
+
+    async def test_an_add_then_a_sync_reads_the_registry_the_add_wrote(
+        self, isolated_env, tmp_path
+    ):
+        from lilbee.app.ingest import register_sources
+        from lilbee.data.ingest import sync
+
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        register_sources([notes])
+        loaded = dict(cfg.linked_roots)
+
+        first = await sync(quiet=True)
+        second = await sync(quiet=True)
+
+        assert loaded == {"notes": str(notes.resolve())}
+        assert cfg.linked_roots == loaded
+        assert first.added == ["notes/plan.txt"]
+        assert second.unchanged == 1
+        assert second.added == []
+
+    async def test_a_worker_keeps_the_registry_its_parent_loaded(self, isolated_env, tmp_path):
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+        from lilbee.data.ingest.fanout import ShardId
+
+        work = self._root(tmp_path, "work", "old.txt")
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        settings.set_value(cfg.data_root, "linked_roots", {"notes": str(notes)})
+        cfg.linked_roots = {"work": str(work)}
+
+        result = await sync(quiet=True, shard=ShardId(index=0, count=1, records_root=cfg.data_root))
+
+        assert result.added == ["work/old.txt"]
+        assert cfg.linked_roots == {"work": str(work)}
+
+    async def test_a_scoped_config_gets_the_registry_and_the_global_one_stays(
+        self, isolated_env, tmp_path
+    ):
+        from lilbee.core import settings
+        from lilbee.core.config import config_scope
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        settings.set_value(cfg.data_root, "linked_roots", {"notes": str(notes)})
+        cfg.linked_roots = {"work": str(work)}
+        scoped = cfg.model_copy(update={"linked_roots": {}})
+
+        with config_scope(scoped):
+            result = await sync(quiet=True)
+
+        assert result.added == ["notes/plan.txt"]
+        assert scoped.linked_roots == {"notes": str(notes)}
+        assert cfg.linked_roots == {"work": str(work)}
