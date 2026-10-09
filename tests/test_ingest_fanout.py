@@ -16,6 +16,7 @@ import rich.progress
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
+from lilbee.runtime.lock import LockingUnsupportedError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -281,6 +282,40 @@ class TestRemovePrivateStores:
             fanout.remove_private_stores(tmp_path)
         assert (stuck.exists(), free.exists()) == (True, False)
         assert f"Could not delete the unused worker store {stuck}: in use" in caplog.text
+
+    def test_a_data_root_with_a_sync_on_it_keeps_its_stores_and_says_nothing(
+        self, tmp_path, caplog
+    ):
+        from lilbee.runtime.lock import source_keys_in_use
+
+        store = self._store(tmp_path, "w0", 10)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            with source_keys_in_use(tmp_path):
+                fanout.remove_private_stores(tmp_path)
+            assert store.exists()
+            assert caplog.records == []
+            fanout.remove_private_stores(tmp_path)
+        assert not store.exists()
+        assert len(caplog.records) == 1
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [OSError("read-only file system"), LockingUnsupportedError("no file locking here")],
+        ids=["cannot-lock", "no-locking"],
+    )
+    def test_a_data_root_that_cannot_be_locked_keeps_its_stores(
+        self, tmp_path, caplog, monkeypatch, refusal
+    ):
+        store = self._store(tmp_path, "w0", 10)
+
+        def _refuse(data_root):
+            raise refusal
+
+        monkeypatch.setattr("lilbee.runtime.lock._require_locking", _refuse)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+        assert store.exists()
+        assert caplog.records == []
 
 
 class TestShardSpecs:

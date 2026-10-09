@@ -29,6 +29,12 @@ from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.engine_lock import ENGINE_DIR_ENV
+from lilbee.runtime.lock import (
+    LockingUnsupportedError,
+    ResetRefusedError,
+    SyncRunningError,
+    syncs_held_off,
+)
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -83,6 +89,7 @@ WORKER_LOG_NAME = "sync.log"
 # Where each worker of an earlier lilbee kept a store of its own, under the shards directory.
 _PRIVATE_STORE_GLOB = "w*/data"
 _BYTES_PER_MB = 1024 * 1024
+_STORES_IN_USE = "a sync is running on this library"
 
 
 @dataclass(frozen=True)
@@ -198,14 +205,29 @@ def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -
 
 
 def remove_private_stores(data_root: Path) -> None:
-    """Delete the store each worker of an earlier lilbee kept under *data_root*.
+    """Delete the store each worker of an earlier lilbee kept under *data_root*, if no sync runs.
 
-    The index holds every document those stores hold, and nothing reads them. A
-    file the index shares by hard link frees no space, so it is not counted.
+    An earlier lilbee's fan-out sync writes those stores and merges them while it
+    holds the data root's sync mark, so they go only while syncs are held off.
+    The caller holds no sync mark of its own. A data root with a sync on it, or
+    one that cannot be locked, keeps its stores for a later sync.
     """
     stores = sorted((data_root / SHARDS_DIRNAME).glob(_PRIVATE_STORE_GLOB))
     if not stores:
         return
+    try:
+        with syncs_held_off(data_root, _STORES_IN_USE):
+            _delete_stores(stores, data_root)
+    except (SyncRunningError, ResetRefusedError, LockingUnsupportedError) as exc:
+        log.debug("Left the worker stores of an earlier lilbee under %s: %s", data_root, exc)
+
+
+def _delete_stores(stores: list[Path], data_root: Path) -> None:
+    """Delete *stores* and log the space that frees.
+
+    The index holds every document those stores hold, and nothing reads them. A
+    file the index shares by hard link frees no space, so it is not counted.
+    """
     freed = sum(
         entry.stat().st_size
         for store in stores

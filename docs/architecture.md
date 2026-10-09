@@ -427,8 +427,13 @@ fails. A cancelled sync stops the workers. In both cases the files the workers f
 are in the index and searchable, and the next sync continues from there. The search
 indexes cover them after the next sync that indexes something.
 
-**Stores from an earlier lilbee.** The first fan-out sync deletes each
-`shards/w*/data` directory and logs the space it frees.
+**Stores from an earlier lilbee.** A sync deletes each `shards/w*/data` directory before
+it starts, and logs the space that frees. It does so only while it holds every other
+sync off the data root, with the lock a reset uses: an earlier lilbee's fan-out sync
+holds the sync mark for as long as it writes and merges those stores. When another sync
+is running, the directories stay and a later sync deletes them. A lilbee older than the
+sync mark (before 0.6.90b448) holds nothing a newer one can see, so do not run its
+fan-out sync and a newer lilbee's sync on one data root at once.
 
 ---
 

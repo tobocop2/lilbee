@@ -1242,7 +1242,6 @@ async def _sync_across_workers(
     cancel: CancelSignal | None,
 ) -> SyncResult:
     """Ingest on one worker per GPU, each writing the one index, then run the corpus-wide passes."""
-    await to_ingest_thread(remove_private_stores, active_config().data_root)
     verdicts = await run_workers(
         specs, options=options, quiet=quiet, on_progress=on_progress, cancel=cancel
     )
@@ -1309,6 +1308,8 @@ def _marks_sync_running(
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
         data_root = active_config().data_root
+        # Before the mark: this sync's own mark would read as a sync that uses the stores.
+        await to_ingest_thread(remove_private_stores, data_root)
         while True:
             async with sync_running(data_root):
                 # An absorb writes its journal with every sync stopped, so none appears in here.
