@@ -113,6 +113,7 @@ class TaskCenter(Screen[None]):
         # Subscribe + tick only while visible; install_screen keeps this
         # instance alive across switch_view, so anchoring either on
         # on_mount would fire into a detached DOM after navigating away.
+        # The queue calls this under the controller lock, so it must not call the controller.
         self.app.task_bar.queue.subscribe(self._on_queue_change)
         if self._tick_timer is None:
             self._tick_timer = self.set_interval(_TICK_INTERVAL_SECONDS, self._advance_tick)
