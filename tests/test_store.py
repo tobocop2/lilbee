@@ -2402,7 +2402,6 @@ class TestRemoveDocuments:
             mock.patch.object(store, "get_sources", return_value=rows),
             mock.patch.object(store, "_remove_many_unlocked") as mock_del,
         ):
-            assert store.member_sources("docs.zip") == ["docs.zip/a.pdf"]
             result = store.remove_documents(["docs.zip"])
             assert result.removed == ["docs.zip", "docs.zip/a.pdf"]
             assert result.not_found == []
@@ -4627,6 +4626,33 @@ class TestRekeySourcesUnder:
             "other/b.md",
             "work/new.md",
         ]
+
+
+class TestMemberSources:
+    def test_only_the_names_under_the_archive_are_its_members(self, store):
+        names = (
+            "docs.zip",
+            "docs.zip/a.pdf",
+            "docs.zip/in/b.txt",
+            "docs.zip.bak",
+            "docs_zip/c.txt",
+        )
+        for name in names:
+            store.upsert_source(name, "h", 1)
+        assert sorted(store.member_sources("docs.zip")) == ["docs.zip/a.pdf", "docs.zip/in/b.txt"]
+
+    def test_a_quote_or_a_wildcard_in_the_name_is_matched_as_text(self, store):
+        for name in ("it's 100%.zip/a.txt", "it's 100x.zip/a.txt"):
+            store.upsert_source(name, "h", 1)
+        assert store.member_sources("it's 100%.zip") == ["it's 100%.zip/a.txt"]
+
+    def test_no_source_table_means_no_members(self, store):
+        assert store.member_sources("docs.zip") == []
+
+    def test_the_whole_source_table_is_never_read(self, store):
+        store.upsert_source("docs.zip/a.pdf", "h", 1)
+        with mock.patch.object(store, "get_sources", side_effect=AssertionError("whole read")):
+            assert store.member_sources("docs.zip") == ["docs.zip/a.pdf"]
 
 
 class TestSourcesOfOneSlice:
