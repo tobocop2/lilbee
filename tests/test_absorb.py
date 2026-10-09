@@ -2224,6 +2224,70 @@ class TestAnOlderBuildSyncedInBetween:
             assert finished[part] == clean[part], part
         assert _holders(store, "notes/work/gone.md") == {("_citations", "source_filename")}
 
+    @pytest.mark.parametrize(
+        ("step", "seen"),
+        [("_lift", "work"), ("_land", None), ("_write_registry", "notes/work")],
+        ids=["old-key", "temporary-key", "final-key"],
+    )
+    async def test_a_file_it_removed_stays_removed_under_the_key_it_takes(
+        self, library, notes, step, seen
+    ):
+        """It holds the file out at the key it saw; the journal has no record of that file."""
+        store = library.store
+        journal = self._killed_at(library, notes, step)
+        key = f"{seen or journal.lifted('work')}/plan.md"
+        assert store.remove_documents([key]).removed == [key]
+        _hold_out(key, SkipKind.REMOVED)
+
+        assert finish_pending_absorb() == ["notes/work"]
+
+        assert load_skip_markers(cfg.data_root) == {
+            "notes/work/broken.md": "hash of work/broken.md",
+            "notes/work/gone.md": "hash of work/gone.md",
+            "notes/work/plan.md": f"hash of {key}",
+        }
+        kinds = load_skip_kinds(cfg.data_root)
+        assert kinds["notes/work/plan.md"] is SkipKind.REMOVED
+        assert kinds["notes/work/broken.md"] is SkipKind.FAILED
+        assert _keys(library) == ["notes/work/budget.md", "workshop/x.md"]
+
+    def test_a_removal_during_a_half_done_lift_leaves_no_row_of_the_file(self, library, notes):
+        """Its remove finds the rows of the tables that had not moved; the others land."""
+        store = library.store
+        journal = self._killed_at(library, notes, "_land")
+        lifted = f"{journal.lifted('work')}/plan.md"
+        store.rekey_sources_under(lifted, "work/plan.md")
+        store.add_page_texts(
+            [{"source": lifted, "page": 1, "text": "moved before it", "content_type": "text"}]
+        )
+        assert store.remove_documents(["work/plan.md"]).removed == ["work/plan.md"]
+        _hold_out("work/plan.md", SkipKind.REMOVED)
+
+        finish_pending_absorb()
+
+        assert _holders(store, "notes/work/plan.md") == {("_citations", "source_filename")}
+        assert _holders(store, "notes/work/budget.md") > {("_page_texts", "source")}
+        assert load_skip_kinds(cfg.data_root)["notes/work/plan.md"] is SkipKind.REMOVED
+
+    def test_a_source_that_keeps_its_label_takes_the_journals_records_alone(
+        self, library, tmp_path
+    ):
+        """Its old keys read as final keys, so nothing on disk is carried for it."""
+        project = tmp_path / "src" / "project"
+        _write(project / "project" / "plan.md", "# Plan\n\nThe plan.\n")
+        assert register_sources([project / "project"]).registered == ["project"]
+        _seed(library.store, "project/plan.md")
+        _hold_out("project/gone.md", SkipKind.REMOVED)
+        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
+            register_sources([project])
+        _hold_out("project/since.md", SkipKind.REMOVED)
+
+        finish_pending_absorb()
+
+        assert load_skip_markers(cfg.data_root) == {
+            "project/project/gone.md": "hash of project/gone.md"
+        }
+
     def test_an_edit_since_the_removal_stays_indexed(self, library, notes):
         from lilbee.data.store import SourceType
 

@@ -4552,6 +4552,23 @@ class TestRekeySourcesUnder:
         ]
 
 
+class TestRemoveRowsOf:
+    def test_the_rows_of_a_key_go_with_or_without_its_source_record(self, store):
+        _seed_source(store, "work/a.md")
+        _seed_source(store, "work/b.md")
+        _seed_source(store, "work/kept.md")
+        store.delete_source("work/a.md")
+        assert store.remove_documents(["work/a.md"]).not_found == ["work/a.md"]
+        assert _holders(store, "work/a.md") == _KEY_COLUMNS - {("_sources", "filename")}
+
+        store.remove_rows_of(["work/a.md", "work/b.md"])
+
+        assert _holders(store, "work/a.md") == {("_citations", "source_filename")}
+        assert _holders(store, "work/b.md") == {("_citations", "source_filename")}
+        assert _holders(store, "work/kept.md") == _KEY_COLUMNS
+        assert [source["filename"] for source in store.get_sources()] == ["work/kept.md"]
+
+
 class TestRekeyReplacesAndSkips:
     def test_a_table_with_no_row_to_move_gets_no_new_version(self, store):
         _seed_source(store, "work/a.md")
