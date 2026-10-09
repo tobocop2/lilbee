@@ -873,7 +873,9 @@ their index entries and get the names `notes/work/...`, so nothing is read or
 embedded again, and the sync that follows indexes the other files in `notes`.
 A file you removed from `work` stays removed. `lilbee --json add` lists the
 sources a folder took in under `absorbed`, and so do `/api/add` and
-`lilbee_add`. A script that names a document by its old name, such as
+`lilbee_add`. `Lilbee.add` in the Python library takes the source in too, but
+it returns the result of the sync only and names no source. A script that
+names a document by its old name, such as
 `lilbee remove work/plan.md`, must use `notes/work/plan.md` from then on.
 
 The folder cannot take a source in while a sync runs. The add then stops with
