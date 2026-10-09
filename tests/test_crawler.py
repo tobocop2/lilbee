@@ -253,13 +253,38 @@ class TestStoredSpellings:
                 "https://example.com/t/ïñ/deep page",
                 "https://example.com/t/%C3%AF%C3%B1/deep%20page",
             ),
+            ("https://example.com/t/back\\slash", "https://example.com/t/back/slash"),
+            ("https://example.com/t/a\\b?x=c\\d", "https://example.com/t/a/b?x=c\\d"),
+            ("https://example.com/t/a b?x={c}`d", "https://example.com/t/a%20b?x={c}`d"),
         ],
-        ids=["letter", "space", "script", "punctuation", "two-segments"],
+        ids=[
+            "letter",
+            "space",
+            "script",
+            "punctuation",
+            "two-segments",
+            "backslash",
+            "backslash-in-query",
+            "punctuation-in-query",
+        ],
     )
-    def test_an_address_stored_as_written_is_found_by_its_encoded_form(
+    def test_an_address_stored_as_written_is_found_by_its_reported_form(
         self, stored: str, reported: str
     ):
-        assert stored_spellings(_stored(stored)) == {reported: stored}
+        assert stored_spellings(_stored(stored)) == {reported: [stored]}
+
+    def test_every_stored_spelling_of_one_address_is_listed(self):
+        reported = "https://example.com/t/tri%20%C3%B6"
+        spellings = [
+            "https://example.com/t/tri ö",
+            "https://example.com/t/tri%20ö",
+            reported,
+        ]
+        other = "https://example.com/t/other"
+        assert stored_spellings(_stored(*spellings, other)) == {
+            reported: spellings,
+            other: [other],
+        }
 
     @pytest.mark.parametrize(
         "url",
@@ -273,8 +298,8 @@ class TestStoredSpellings:
         ],
         ids=["encoded", "encoded-slash", "percent", "kept-punctuation", "query", "plain"],
     )
-    def test_an_address_already_in_its_encoded_form_has_no_other_spelling(self, url: str):
-        assert stored_spellings(_stored(url)) == {}
+    def test_an_address_already_in_its_reported_form_is_its_only_spelling(self, url: str):
+        assert stored_spellings(_stored(url)) == {url: [url]}
 
     def test_empty_metadata_has_no_spellings(self):
         assert stored_spellings({}) == {}
@@ -673,6 +698,24 @@ class TestChromiumInstalledMatching:
         monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
 
         assert not os.access(shell, os.X_OK)
+        assert bootstrap.headless_shell_executable() == shell
+        assert bootstrap.chromium_installed() is True
+
+    @posix_only
+    @pytest.mark.parametrize("shape", ["dangling-link", "directory"])
+    def test_a_shell_path_that_is_no_file_counts_as_installed(self, tmp_path, monkeypatch, shape):
+        from lilbee.crawler import bootstrap
+
+        shell = _install_shell(tmp_path, "1208")
+        shell.unlink()
+        if shape == "directory":
+            shell.mkdir()
+        else:
+            shell.symlink_to(tmp_path / "no-such-target")
+        monkeypatch.setattr(bootstrap, "_browsers_cache_path", lambda: tmp_path)
+        monkeypatch.setattr(bootstrap, "_expected_chromium_revision", lambda: "1208")
+
+        assert not shell.is_file()
         assert bootstrap.headless_shell_executable() == shell
         assert bootstrap.chromium_installed() is True
 
@@ -1488,23 +1531,29 @@ class TestCrawlAndSave:
         assert meta[stored].file == url_to_filename(stored)
 
     @patch("lilbee.crawler.runner.crawl_recursive")
-    async def test_an_address_stored_in_both_spellings_keeps_the_reported_one(
+    async def test_a_page_stored_under_several_spellings_is_rewritten_under_each(
         self, mock_crawl_recursive, isolated_env
     ):
-        stored = "https://example.com/t/naïve"
-        reported = "https://example.com/t/na%C3%AFve"
-        save_crawl_metadata(_stored(stored, reported))
+        reported = "https://example.com/t/tri%20%C3%B6"
+        spellings = ["https://example.com/t/tri ö", "https://example.com/t/tri%20ö", reported]
+        other = "https://example.com/t/other"
+        save_crawl_metadata(_stored(*spellings, other))
 
         async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
-            result = CrawlResult(url=reported, markdown="# Naive")
+            result = CrawlResult(url=reported, markdown="# Tri")
             await kwargs["on_result"](result)  # type: ignore[operator]
             return [result]
 
         mock_crawl_recursive.side_effect = crawl
-        await crawl_and_save("https://example.com/", depth=1)
+        paths = await crawl_and_save("https://example.com/", depth=1)
+        web = cfg.documents_dir / "_web"
+        assert paths == [web / url_to_filename(url) for url in spellings]
+        assert len(set(paths)) == len(spellings)
+        assert [path.read_text(encoding="utf-8") for path in paths] == ["# Tri"] * len(spellings)
         meta = load_crawl_metadata()
-        assert meta[reported].content_hash == content_hash("# Naive")
-        assert meta[stored].content_hash == "old"
+        assert set(meta) == {*spellings, other}
+        assert [meta[url].content_hash for url in spellings] == [content_hash("# Tri")] * 3
+        assert meta[other].content_hash == "old"
 
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
