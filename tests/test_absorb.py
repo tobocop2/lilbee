@@ -2253,37 +2253,116 @@ class TestAnOlderBuildSyncedInBetween:
 
 
 class TestAWikiBuildAndAnAbsorb:
-    def test_an_absorb_is_refused_while_a_wiki_build_writes(self, library, notes):
+    """A wiki writer holds the sync mark from its first read of a source key to its last page."""
+
+    @staticmethod
+    def _refusal(notes: Path) -> str:
+        with pytest.raises(SyncRunningError) as raised:
+            register_sources([notes])
+        return str(raised.value)
+
+    def _full_build(self, notes: Path, refused: list[str]) -> None:
         from lilbee.wiki import generation
 
+        refuse = self._refusal
+
+        class _Extractor:
+            def extract(self, chunks: list) -> list:
+                refused.append(refuse(notes))
+                return []
+
+        def _build(*_args: object, **_kwargs: object) -> list[Path]:
+            refused.append(refuse(notes))
+            return []
+
+        with (
+            mock.patch.object(generation, "get_entity_extractor", return_value=_Extractor()),
+            mock.patch.object(generation, "build_wiki", _build),
+        ):
+            assert generation.run_full_build(cfg)["count"] == 0
+
+    def _synthesis(self, notes: Path, refused: list[str]) -> None:
+        from lilbee.wiki import generation
+
+        def _pages(*_args: object, **_kwargs: object) -> list[Path]:
+            refused.append(self._refusal(notes))
+            return []
+
+        with mock.patch.object(generation, "generate_synthesis_pages", _pages):
+            assert generation.run_full_synthesize(cfg)["count"] == 0
+
+    def _one_page(self, notes: Path, refused: list[str]) -> None:
+        from lilbee.wiki import lazy
+
+        def _index(_config: object) -> dict:
+            refused.append(self._refusal(notes))
+            return {}
+
+        with (
+            mock.patch.object(lazy, "load_stub_index", _index),
+            pytest.raises(lazy.UnknownStubError, match="no indexed page named 'boeing'"),
+        ):
+            lazy.generate_stub_page("boeing", svc_mod.get_services().store, cfg)
+
+    @pytest.mark.parametrize(
+        ("writer", "reads"),
+        [("_full_build", 2), ("_synthesis", 1), ("_one_page", 1)],
+    )
+    def test_an_absorb_is_refused_while_a_wiki_writer_holds_source_keys(
+        self, library, notes, writer, reads
+    ):
         _seeded_child(library.store, notes)
         refused: list[str] = []
 
-        def _pages(*_args, **_kwargs):
-            with pytest.raises(SyncRunningError) as raised:
-                register_sources([notes])
-            refused.append(str(raised.value))
-            return []
+        getattr(self, writer)(notes, refused)
 
-        with mock.patch.object(generation, "_build_pages", _pages):
-            assert generation.build_wiki([], library.provider, library.store, cfg) == []
-
-        assert refused == ["A sync or a wiki build is running. Add notes again when it ends."]
+        text = "A sync or a wiki build is running. Add notes again when it ends."
+        assert refused == [text] * reads
         assert sorted(_registry()) == ["work"] and not absorb_pending(cfg.data_root)
         assert register_sources([notes]).absorbed == ["work"]
 
-    def test_a_build_without_a_config_holds_the_mark_of_the_active_root(self, library, notes):
-        from lilbee.wiki import generation
+    @pytest.mark.parametrize("writer", ["_full_build", "_synthesis", "_one_page"])
+    def test_a_wiki_writer_takes_the_mark_while_the_wiki_mutex_is_free(
+        self, library, notes, writer
+    ):
+        """An absorb holds the mark and then takes the mutex; the other order would deadlock."""
+        import threading
+        from contextlib import contextmanager
+
+        from lilbee.runtime import lock
+        from lilbee.wiki import generation, lazy
+        from lilbee.wiki.shared import WIKI_BUILD_LOCK
 
         _seeded_child(library.store, notes)
+        free: list[bool] = []
+        real = lock.source_keys_in_use
 
-        def _pages(*_args, **_kwargs):
-            with pytest.raises(SyncRunningError):
-                register_sources([notes])
-            return []
+        def _try() -> None:
+            taken = WIKI_BUILD_LOCK.acquire(blocking=False)
+            free.append(taken)
+            if taken:
+                WIKI_BUILD_LOCK.release()
 
-        with mock.patch.object(generation, "_build_pages", _pages):
-            assert generation.build_wiki([], library.provider, library.store) == []
+        @contextmanager
+        def _marked(data_root: Path):
+            other = threading.Thread(target=_try)
+            other.start()
+            other.join()
+            with real(data_root):
+                yield
+
+        with (
+            mock.patch.object(generation, "source_keys_in_use", _marked),
+            mock.patch.object(lazy, "source_keys_in_use", _marked),
+        ):
+            getattr(self, writer)(notes, [])
+
+        assert free == [True]
+        with WIKI_BUILD_LOCK:  # the control: the probe reads a held mutex as held
+            control = threading.Thread(target=_try)
+            control.start()
+            control.join()
+        assert free == [True, False]
 
 
 class TestACancelledJsonAdd:
