@@ -7005,6 +7005,68 @@ class TestSyncCancelledExit:
         }
         assert [type(r.exc_info[1]) for r in _cancel_error_records(caplog)] == [OSError]
 
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
+    @pytest.mark.parametrize("kind", ["owned", "new"])
+    def test_a_cancelled_add_that_cannot_read_the_registry_still_exits_as_a_cancel(
+        self, isolated_env, tmp_path, mock_svc, caplog, kind, flags
+    ):
+        """config.toml breaks as the Ctrl+C lands; an owned file has no root to un-register."""
+        import asyncio
+        import tomllib
+
+        src = cfg.documents_dir / "owned.txt" if kind == "owned" else self._source(tmp_path)
+        src.write_text("content", encoding="utf-8")
+
+        async def _ctrl_c_as_the_registry_breaks(*, cancel, **_kwargs):
+            (cfg.data_root / "config.toml").write_text("linked_roots = [", encoding="utf-8")
+            cancel.set()
+            raise asyncio.CancelledError
+
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.app.ingest"),
+            mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_as_the_registry_breaks),
+        ):
+            result = runner.invoke(app, [*flags, "add", str(src)])
+        assert result.exit_code == 130, result.output
+        # The un-registration of a new root reads the file first, then the naming reads it.
+        failures = [r.exc_info[1] for r in _cancel_error_records(caplog)]
+        assert [type(failure) for failure in failures] == [tomllib.TOMLDecodeError] * (
+            1 if kind == "owned" else 2
+        )
+        stopped = f"Sync cancelled. It also hit an error: {failures[-1]}."
+        if flags:
+            assert json.loads(result.output) == {"error": stopped}
+        else:
+            assert " ".join(result.output.split()).endswith(stopped)
+
+    def test_a_cancelled_add_names_its_file_when_the_skip_records_cannot_change(
+        self, isolated_env, tmp_path, mock_svc
+    ):
+        """The root is un-registered though its records failed, so the file is still named."""
+        import asyncio
+
+        src = self._source(tmp_path)
+
+        async def _ctrl_c_as_the_records_break(*, cancel, **_kwargs):
+            broken.start()
+            cancel.set()
+            raise asyncio.CancelledError
+
+        broken = mock.patch(
+            "lilbee.app.ingest.unmark_sources_under", side_effect=OSError("records locked")
+        )
+        try:
+            with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_as_the_records_break):
+                result = runner.invoke(app, ["--json", "add", str(src)])
+        finally:
+            broken.stop()
+        assert result.exit_code == 130, result.output
+        assert json.loads(result.output) == {
+            "error": "Add cancelled. scan.txt was not added. It also hit an error: records locked.",
+            "not_added": ["scan.txt"],
+        }
+        assert cfg.linked_roots == {}
+
     def test_a_cancelled_sync_reports_json_in_json_mode(self, mock_svc):
         with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
             result = runner.invoke(app, ["--json", "sync"])

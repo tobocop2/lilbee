@@ -439,8 +439,22 @@ class AddRollback:
             self._before = {}
 
     def forget_unfinished(self) -> None:
-        """Un-register each root the sync indexed nothing under, then name what the corpus lacks."""
+        """Un-register each root the sync indexed nothing under, then name what the corpus lacks.
+
+        An error a step raises is named with the cancel, and the other step still runs.
+        """
+        for step in (self._forget_roots, self._name_missing):
+            try:
+                step()
+            except Exception as exc:
+                self.note_error(exc)
+
+    def _forget_roots(self) -> None:
+        """Un-register each root with no file indexed since the sync started."""
         forget_unfinished_roots(self._roots, self._before)
+
+    def _name_missing(self) -> None:
+        """Take the name of each given path the corpus does not hold."""
         self.not_added = names_outside_corpus(self.paths)
 
     def _stopped(self, nothing_dropped: str) -> str:

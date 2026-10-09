@@ -7724,6 +7724,33 @@ class TestTuiSurface:
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers, data") not in toasts
 
+    def test_do_add_names_a_rollback_error_with_the_cancel(self, isolated_env, tmp_path):
+        """A cancelled TUI add whose rollback cannot read the registry still ends as a cancel."""
+        import asyncio
+
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        screen = ChatScreen.__new__(ChatScreen)
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = True
+        reporter.cancelled_by_user.return_value = True
+        stopped = f"{msg.SYNC_CANCELLED_RESUME} It also hit an error: unreadable."
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+            mock.patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(tracked=["owned.txt"]),
+            ),
+            mock.patch("lilbee.runtime.asyncio_loop.run", side_effect=asyncio.CancelledError),
+            mock.patch("lilbee.app.ingest.settings.load", side_effect=OSError("unreadable")),
+            pytest.raises(TaskCancelledError) as raised,
+        ):
+            screen._do_add([tmp_path / "owned.txt"], reporter)
+        assert str(raised.value) == stopped
+
 
 def test_every_add_surface_names_each_registration_outcome():
     """The surfaces that render a registration name the taken-label and overlap outcomes."""
