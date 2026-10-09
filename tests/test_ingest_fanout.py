@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import queue as queue_mod
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 import rich.progress
@@ -23,6 +25,9 @@ from lilbee.runtime.progress import (
     OcrBackendUsed,
     SyncDoneEvent,
 )
+
+# Far above the drain interval: a run that waits for a worker message fails here, not hangs.
+_CANCEL_BOUND_S = 5.0
 
 
 class FakeProcess:
@@ -486,30 +491,37 @@ class TestRunWorkers:
         assert verdicts[0].error is None
         assert "before reporting" in verdicts[1].error
 
-    async def test_a_cancel_reaches_the_workers(self, fake_context, monkeypatch):
-        stopped = threading.Event()
-
-        def fake_shard(spec, options, messages, stop):
-            while not stop.is_set():
-                pass
-            stopped.set()
-            messages.put(
-                fanout.ShardDone(
-                    kind="done", index=spec.shard.index, result=None, error="CancelledError: "
-                )
-            )
-
-        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+    @pytest.mark.parametrize("moment", ["before_the_start", "while_a_worker_is_silent"])
+    async def test_a_cancel_ends_the_run_without_a_worker_message(
+        self, fake_context, monkeypatch, moment
+    ):
+        """The parent reads the cancel on its own clock, so a silent worker does not hold it."""
         cancel = threading.Event()
-        cancel.set()
-        await fanout.run_workers(
+        stops = []
+
+        def silent_shard(spec, options, messages, stop):
+            stops.append(stop)
+            cancel.set()
+            worker = fake_context.processes[spec.shard.index]
+            while not worker.terminated:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(fanout, "run_shard", silent_shard)
+        if moment == "before_the_start":
+            cancel.set()
+        run = fanout.run_workers(
             [_spec(0)],
             options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=cancel,
         )
-        assert stopped.is_set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        (worker,) = fake_context.processes
+        assert worker.terminated
+        assert not worker.is_alive()
+        assert [stop.is_set() for stop in stops] == [True]
 
     async def test_a_worker_still_running_after_its_verdict_is_stopped(
         self, fake_context, monkeypatch

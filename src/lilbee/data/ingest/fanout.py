@@ -64,7 +64,7 @@ _MIN_FANOUT_WORKERS = 2
 # How often a worker reports its counters to the parent.
 _REPORT_INTERVAL_S = 0.25
 
-# How long the parent sleeps between drains of the worker message queue.
+# How long the parent sleeps between drains of the worker message queue and reads of the cancel.
 _DRAIN_INTERVAL_S = 0.1
 
 # Grace for the queue's feeder thread to flush a dead worker's last messages.
@@ -303,13 +303,16 @@ def _shard_progress_bar(quiet: bool) -> Progress:
 async def _supervise(
     workers: Sequence[BaseProcess],
     messages: Queue[ShardMessage],
-    stop: Event,
     *,
     quiet: bool,
     on_progress: DetailedProgressCallback,
     cancel: CancelSignal | None,
 ) -> dict[int, ShardDone]:
-    """Drain worker messages until every worker has reported, keeping one bar current."""
+    """Drain worker messages until every worker has reported, keeping one bar current.
+
+    Raises ``asyncio.CancelledError`` within one drain interval of a set *cancel*,
+    whether or not a worker reports.
+    """
     verdicts: dict[int, ShardDone] = {}
     aggregate = _Aggregate(on_progress)
     with _shard_progress_bar(quiet) as progress:
@@ -322,7 +325,7 @@ async def _supervise(
                     done, planned = aggregate.update(message)
                     progress.update(task, completed=done, total=planned or None)
             if cancel is not None and cancel.is_set():
-                stop.set()
+                raise asyncio.CancelledError
             if not any(worker.is_alive() for worker in workers):
                 verdicts.update(_final_verdicts(workers, messages, verdicts))
                 break
@@ -380,7 +383,7 @@ async def run_workers(
     on_progress: DetailedProgressCallback,
     cancel: CancelSignal | None,
 ) -> list[ShardDone]:
-    """Run every worker to completion and return their verdicts, in shard order."""
+    """Run every worker and return their verdicts, in shard order; a cancel terminates them."""
     context = multiprocessing.get_context("spawn")
     messages: Queue[ShardMessage] = context.Queue()
     stop = context.Event()
@@ -397,7 +400,7 @@ async def run_workers(
         worker.start()
     try:
         verdicts = await _supervise(
-            workers, messages, stop, quiet=quiet, on_progress=on_progress, cancel=cancel
+            workers, messages, quiet=quiet, on_progress=on_progress, cancel=cancel
         )
     finally:
         _stop_workers(workers, stop)
