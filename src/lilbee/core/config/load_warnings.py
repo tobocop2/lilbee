@@ -28,13 +28,17 @@ def _mark(message: str) -> str:
     return hashlib.sha256(message.encode("utf-8")).hexdigest()[:_MARK_LENGTH]
 
 
-def warn_on_load(message: str) -> None:
-    """Log *message* unless this process tree already did, and keep it for a collecting load."""
+def warn_on_load(message: str, version: str = "") -> None:
+    """Log *message* unless this process tree already did, and keep it for a collecting load.
+
+    With *version*, the state of the file the message is about, a message that
+    was logged for another state of that file is logged again.
+    """
     found = _collected.get()
     if found is not None and message not in found:
         found.append(message)
     shown = [mark for mark in os.environ.get(SHOWN_ENV_VAR, "").split(_MARK_SEPARATOR) if mark]
-    mark = _mark(message)
+    mark = _mark(message + version)
     if mark in shown:
         return
     log.warning("%s", message)

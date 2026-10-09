@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -8882,6 +8883,127 @@ class TestSyncLoadsThePersistedRegistry:
         assert not unregister.is_alive()
         assert settings.load(cfg.data_root).get("linked_roots") == {}
         assert cfg.linked_roots == {}
+
+    def test_an_unregister_waits_for_the_assignment_of_the_loaded_registry(
+        self, isolated_env, tmp_path
+    ):
+        """The seam is the assignment: an un-register that got in there would be overwritten."""
+        from lilbee.app.ingest import register_sources, unregister_roots
+        from lilbee.core import settings
+
+        register_sources([self._root(tmp_path, "work", "old.txt")])
+        unregister = threading.Thread(target=unregister_roots, args=(["work"],))
+        done_before_the_assignment = []
+
+        class _ConfigWithASeam:
+            data_root = cfg.data_root
+
+            @property
+            def linked_roots(self):
+                return cfg.linked_roots
+
+            @linked_roots.setter
+            def linked_roots(self, value):
+                unregister.start()
+                unregister.join(timeout=1.0)
+                done_before_the_assignment.append(not unregister.is_alive())
+                cfg.linked_roots = value
+
+        settings.overlay_persisted_roots(_ConfigWithASeam())
+        unregister.join(timeout=30)
+
+        assert done_before_the_assignment == [False]
+        assert not unregister.is_alive()
+        assert settings.load(cfg.data_root).get("linked_roots") == {}
+        assert cfg.linked_roots == {}
+
+    async def test_the_overlay_and_a_sync_report_one_bad_registry_once_between_them(
+        self, isolated_env, tmp_path, caplog
+    ):
+        from lilbee.core import settings
+        from lilbee.core.config import CONFIG_FILE_NAME
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        path = cfg.data_root / CONFIG_FILE_NAME
+        path.write_text('linked_roots = "notes"\n', encoding="utf-8")
+        cfg.linked_roots = {"work": str(work)}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            settings.overlay_persisted_settings(cfg.data_root)
+            after_the_overlay = self._load_warnings(caplog)
+            result = await sync(quiet=True)
+            after_the_sync = self._load_warnings(caplog)
+            path.write_text("linked_roots = 3\n", encoding="utf-8")
+            await sync(quiet=True)
+            after_the_sync_of_the_changed_file = self._load_warnings(caplog)
+            settings.overlay_persisted_settings(cfg.data_root)
+
+        first = (
+            f"{path}: linked_roots = 'notes' is not a table of names and values; "
+            "linked_roots keeps its value"
+        )
+        second = (
+            f"{path}: linked_roots = 3 is not a table of names and values; "
+            "linked_roots keeps its value"
+        )
+        assert result.added == ["work/old.txt"]
+        assert after_the_overlay == [first]
+        assert after_the_sync == [first]
+        assert after_the_sync_of_the_changed_file == [first, second]
+        assert self._load_warnings(caplog) == [first, second]
+
+    async def test_a_bad_registry_that_returns_after_a_repair_is_reported_again(
+        self, isolated_env, tmp_path, caplog
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        path = cfg.data_root / CONFIG_FILE_NAME
+        cfg.linked_roots = {"work": str(work)}
+        bad, good = 'linked_roots = "notes"\n', f'[linked_roots]\nwork = "{work.as_posix()}"\n'
+
+        def _write(text: str, mtime_ns: int) -> None:
+            path.write_text(text, encoding="utf-8")
+            os.utime(path, ns=(mtime_ns, mtime_ns))
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            _write(bad, 1_000_000_000)
+            await sync(quiet=True)
+            await sync(quiet=True)
+            _write(good, 2_000_000_000)
+            await sync(quiet=True)
+            _write(bad, 3_000_000_000)
+            await sync(quiet=True)
+            await sync(quiet=True)
+
+        reported = (
+            f"{path}: linked_roots = 'notes' is not a table of names and values; "
+            "linked_roots keeps its value"
+        )
+        assert self._load_warnings(caplog) == [reported, reported]
+
+    async def test_a_file_that_cannot_be_read_at_all_is_reported_once(
+        self, isolated_env, tmp_path, caplog, monkeypatch
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME, model
+
+        path = cfg.data_root / CONFIG_FILE_NAME
+        path.write_text("linked_roots = 3\n", encoding="utf-8")
+        real_stat = Path.stat
+
+        def _no_stat(target, **kwargs):
+            if target == path:
+                raise OSError("gone")
+            return real_stat(target, **kwargs)
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            monkeypatch.setattr(Path, "stat", _no_stat)
+            assert model.toml_value(path, "linked_roots") is None
+            assert model.toml_value(path, "linked_roots") is None
+
+        assert len(self._load_warnings(caplog)) == 1
 
     async def test_the_switch_that_turns_config_toml_off_turns_the_load_off(
         self, isolated_env, tmp_path, monkeypatch
