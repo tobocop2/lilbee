@@ -349,17 +349,22 @@ def _refresh_key_index_unlocked(table: LanceTable, column: str, flush_rows: int)
 
     Caller holds ``write_lock()``. A delete filtered on *column* probes the index
     and scans only the rows past it, so its cost follows the flush size and not
-    the table size. A failure leaves the delete correct and slower.
+    the table size.
     """
     from lancedb.index import BTree
 
+    stats = table.index_stats(f"{column}_idx")
+    unindexed = table.count_rows() if stats is None else stats.num_unindexed_rows
+    if unindexed >= _KEY_INDEX_STALE_FLUSHES * flush_rows:
+        table.create_index(column, config=BTree(), replace=True)
+
+
+def _holds_rows(table: LanceTable) -> bool:
+    """Whether *table* holds a row; a table that cannot be counted is taken to hold one."""
     try:
-        stats = table.index_stats(f"{column}_idx")
-        unindexed = table.count_rows() if stats is None else stats.num_unindexed_rows
-        if unindexed >= _KEY_INDEX_STALE_FLUSHES * flush_rows:
-            table.create_index(column, config=BTree(), replace=True)
+        return bool(table.count_rows())
     except Exception:
-        log.debug("Key index refresh failed on '%s.%s'", table.name, column, exc_info=True)
+        return True
 
 
 def _sql_equals(column: str, value: object) -> str:
@@ -398,6 +403,8 @@ class Store:
         # Scalar indexes (source/chunk_type) are built at ingest; a serve-only
         # store builds them lazily from the search path.
         self._scalar_ready: bool = False
+        # Tables whose failed key index refresh was already warned about.
+        self._key_index_warned: set[str] = set()
         self._db: LanceDBConnection | None = None
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
@@ -2012,8 +2019,29 @@ class Store:
         }
         for name, column in _FLUSH_KEY_COLUMNS:
             table = self.open_table(name)
-            if table is not None and flush_rows[name]:
+            if table is None or not flush_rows[name]:
+                continue
+            try:
                 _refresh_key_index_unlocked(table, column, flush_rows[name])
+            except Exception:
+                self._report_key_index_failure(table, name, column)
+
+    def _report_key_index_failure(self, table: LanceTable, name: str, column: str) -> None:
+        """Warn once for a populated table whose key index cannot be refreshed, then at debug.
+
+        The delete stays correct and scans the table, so every flush costs more
+        as the table grows.
+        """
+        first = name not in self._key_index_warned and _holds_rows(table)
+        if first:
+            self._key_index_warned.add(name)
+        log.log(
+            logging.WARNING if first else logging.DEBUG,
+            "Key index refresh failed on '%s.%s'; each write scans the table until it succeeds",
+            name,
+            column,
+            exc_info=True,
+        )
 
     def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
         """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""

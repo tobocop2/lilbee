@@ -1,6 +1,7 @@
 """Tests for LanceDB store operations: hybrid search + FTS index lifecycle."""
 
 import errno
+import logging
 import re
 import sys
 import threading
@@ -1765,6 +1766,63 @@ class TestWriteChunksBatch:
 
         assert len(store.get_chunks_by_source("a.md")) == 1
         assert [s["chunk_count"] for s in store.get_sources()] == [1]
+
+    def test_a_refresh_that_keeps_failing_warns_once_for_each_table(
+        self, store, monkeypatch, caplog
+    ):
+        import lancedb.table
+
+        def _refuse(self, name):
+            raise OSError("index files are gone")
+
+        def _warned():
+            return sorted(
+                record.getMessage()
+                for record in caplog.records
+                if record.levelno == logging.WARNING and "Key index refresh" in record.getMessage()
+            )
+
+        self._flush(store, "a.md", chunks=2)
+        monkeypatch.setattr(lancedb.table.LanceTable, "index_stats", _refuse)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.data.store.core"):
+            self._flush(store, "b.md", chunks=2)
+            once = _warned()
+            self._flush(store, "c.md", chunks=2)
+            self._flush(store, "d.md", chunks=2)
+        scans = "each write scans the table until it succeeds"
+        assert once == [
+            f"Key index refresh failed on '_sources.filename'; {scans}",
+            f"Key index refresh failed on 'chunks.source'; {scans}",
+        ]
+        assert _warned() == once
+        # The later failures are still logged, below the level a user sees.
+        assert sum("Key index refresh" in record.getMessage() for record in caplog.records) == 6
+
+    def test_a_refresh_that_fails_on_an_empty_table_is_not_a_warning(
+        self, store, monkeypatch, caplog
+    ):
+        import lancedb.table
+
+        def _refuse(self, name):
+            raise OSError("index files are gone")
+
+        self._flush(store, "a.md", chunks=2)
+        store.remove_documents(["a.md"])
+        monkeypatch.setattr(lancedb.table.LanceTable, "index_stats", _refuse)
+        with caplog.at_level(logging.DEBUG, logger="lilbee.data.store.core"):
+            self._flush(store, "b.md", chunks=2)
+        levels = {record.levelno for record in caplog.records if "Key index" in record.getMessage()}
+        assert levels == {logging.DEBUG}
+
+    def test_a_table_that_cannot_be_counted_is_taken_to_hold_rows(self):
+        from lilbee.data.store.core import _holds_rows
+
+        table = mock.MagicMock()
+        table.count_rows.side_effect = OSError("cannot count")
+        assert _holds_rows(table) is True
+        table.count_rows.side_effect = None
+        table.count_rows.return_value = 0
+        assert _holds_rows(table) is False
 
     def test_batch_uses_the_patient_lock_timeout(self, store):
         """The flush lock waits BATCH_LOCK_TIMEOUT, not the interactive 30s.
