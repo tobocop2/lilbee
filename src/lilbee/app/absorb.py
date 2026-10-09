@@ -8,7 +8,12 @@ import secrets
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import Config, active_config
-from lilbee.data.ingest.skip_marker import rekey_skip_records, skip_records_lock
+from lilbee.data.ingest.skip_marker import (
+    SkipRecords,
+    rekey_skip_records,
+    skip_records_lock,
+    update_skip_records,
+)
 from lilbee.data.store import Store
 from lilbee.data.types import is_under
 from lilbee.runtime.absorb_journal import (
@@ -56,19 +61,55 @@ def _clear_targets(store: Store, targets: list[str]) -> None:
         store.remove_documents(occupied)
 
 
+def _shadows(journal: AbsorbJournal) -> list[str]:
+    """Each temporary key of an absorbed source at which a source inside it lands.
+
+    Two registered sources that lie inside each other indexed the files of the
+    inner one twice. The inner source's entries are the ones that land.
+    """
+    return [
+        journal.lifted(outer_old) + inner_new[len(outer_new) :]
+        for outer_old, outer_new in journal.moves.items()
+        for inner_new in journal.moves.values()
+        if inner_new != outer_new and is_under(inner_new, outer_new)
+    ]
+
+
+def _drop_shadows(config: Config, store: Store, journal: AbsorbJournal) -> None:
+    """Remove what an outer source indexed and recorded for the files of a source inside it."""
+    shadows = _shadows(journal)
+    if not shadows:
+        return
+    _clear_targets(store, shadows)
+
+    def _drop(records: SkipRecords) -> None:
+        for name in list(records.markers):
+            if any(is_under(name, shadow) for shadow in shadows):
+                records.markers.pop(name)
+
+    update_skip_records(config.data_root, _drop)
+
+
 def _lift(config: Config, store: Store, journal: AbsorbJournal) -> None:
     """Move each absorbed source to its temporary key, then clear the keys it lands on."""
     for old in journal.moves:
         _rekey(config, store, old, journal.lifted(old))
     _clear_targets(store, list(journal.moves.values()))
+    _drop_shadows(config, store, journal)
 
 
 def _land(config: Config, store: Store, journal: AbsorbJournal) -> None:
-    """Move each absorbed source from its temporary key to its key below the parent."""
+    """Move each absorbed source from its temporary key to its key below the parent.
+
+    No temporary key is a final key, so the moves run in any order. A file two
+    sources indexed must be single before the first of them lands.
+    """
     for old, new in journal.moves.items():
         if not is_under(new, old):
             # An older build that synced since the lift moved these keys back.
             _rekey(config, store, old, journal.lifted(old))
+    _drop_shadows(config, store, journal)
+    for old, new in journal.moves.items():
         _rekey(config, store, journal.lifted(old), new)
 
 
