@@ -6179,26 +6179,96 @@ _SHORT_TEXT_LINES = ("a perfectly clean native text layer.",)
 _LONG_TEXT_LINES = ("a long and perfectly clean native text layer with many words.",) * 4
 
 
-def _layout_pdf(layout: str, text_lines: tuple[str, ...] = _SHORT_TEXT_LINES) -> bytes:
-    """A PDF with one page per letter of *layout*: T has a text layer, S is an image of text."""
+# Small print with characters Tesseract confuses: OCR of this line returns other characters.
+_CONFUSABLE_LINE = "ref l1O0-Il|5S8B: 0.00 1,000.50"
+_SMALL_PRINT_POINTS = 5
+_BODY_POINTS = 12
+# xberg's floor of non-blank characters for a page to count as having usable text.
+_USABLE_TEXT_CHARS = 32
+_SCAN_SIZE = (1240, 1754)
+_HALF_SCAN_SIZE = (1240, 877)
+
+
+def _page_line(number: int, line: str) -> str:
+    """The text a T page of ``_layout_pdf`` draws for *line*."""
+    return f"Page {number} with {line}"
+
+
+def _scan_line(number: int, row: int) -> str:
+    """The text an S page of ``_layout_pdf`` shows on *row* of its image."""
+    return f"Scanned page {number} line {row} with words"
+
+
+def _non_blank(text: str) -> int:
+    return len("".join(text.split()))
+
+
+def _draw_scan(pdf, number: int, size: tuple[int, int]) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+    from reportlab.lib.utils import ImageReader
+
+    scan = Image.new("RGB", size, "white")
+    draw = ImageDraw.Draw(scan)
+    font = ImageFont.load_default(size=36)
+    for row in range(size[1] // 110):
+        draw.text((100, 60 + row * 100), _scan_line(number, row), fill="black", font=font)
+    pdf.drawImage(ImageReader(scan), 0, 0, width=595, height=842 * size[1] // _SCAN_SIZE[1])
+
+
+def _draw_text_page(pdf, number: int, text_lines: tuple[str, ...]) -> None:
+    for row, line in enumerate(text_lines):
+        pdf.drawString(72, 720 - row * 20, _page_line(number, line))
+
+
+def _draw_scanned_page(pdf, number: int, _text_lines: tuple[str, ...]) -> None:
+    _draw_scan(pdf, number, _SCAN_SIZE)
+
+
+def _draw_image_and_text_page(pdf, number: int, text_lines: tuple[str, ...]) -> None:
+    _draw_scan(pdf, number, _HALF_SCAN_SIZE)
+    _draw_text_page(pdf, number, text_lines)
+
+
+def _draw_page_number_page(pdf, number: int, _text_lines: tuple[str, ...]) -> None:
+    pdf.drawString(290, 30, str(number))
+
+
+def _draw_whitespace_page(pdf, _number: int, _text_lines: tuple[str, ...]) -> None:
+    pdf.drawString(72, 720, "     ")
+
+
+def _draw_hidden_text_page(pdf, number: int, text_lines: tuple[str, ...]) -> None:
+    pdf.setFillColorRGB(1, 1, 1)
+    _draw_text_page(pdf, number, text_lines)
+
+
+# T: a text layer. S: an image of text. B: an image of text under a text layer.
+# N: a page number only. W: whitespace only. H: a text layer drawn in white, so no OCR sees it.
+_PAGE_DRAWERS = {
+    "T": _draw_text_page,
+    "S": _draw_scanned_page,
+    "B": _draw_image_and_text_page,
+    "N": _draw_page_number_page,
+    "W": _draw_whitespace_page,
+    "H": _draw_hidden_text_page,
+}
+
+
+def _layout_pdf(
+    layout: str,
+    text_lines: tuple[str, ...] = _SHORT_TEXT_LINES,
+    points: int = _BODY_POINTS,
+) -> bytes:
+    """A PDF with one page per letter of *layout*, drawn by ``_PAGE_DRAWERS``."""
     import io
 
-    from PIL import Image, ImageDraw
-    from reportlab.lib.utils import ImageReader
     from reportlab.pdfgen import canvas
 
-    scan = Image.new("RGB", (1240, 1754), "white")
-    draw = ImageDraw.Draw(scan)
-    for line in range(20):
-        draw.text((100, 100 + line * 60), f"Scanned page line {line} with words", fill="black")
     buf = io.BytesIO()
     pdf = canvas.Canvas(buf)
     for number, kind in enumerate(layout, start=1):
-        if kind == "T":
-            for row, line in enumerate(text_lines):
-                pdf.drawString(72, 720 - row * 20, f"Page {number} with {line}")
-        else:
-            pdf.drawImage(ImageReader(scan), 0, 0, width=595, height=842)
+        pdf.setFont("Helvetica", points)
+        _PAGE_DRAWERS[kind](pdf, number, text_lines)
         pdf.showPage()
     pdf.save()
     return buf.getvalue()
@@ -6217,14 +6287,17 @@ class TestTesseractUnderRealXberg:
         cfg.vision_model = ""
 
     @staticmethod
-    def _ocr_pages(pdf: bytes, ocr: OcrMode) -> list[int]:
+    def _extract(pdf: bytes, ocr: OcrMode):
         from lilbee.data.extract.xberg import extract_document
         from lilbee.data.ingest import ExtractMode, extraction_config
 
         cfg.ocr = ocr
         config = extraction_config(ExtractMode.PAGINATED)
-        doc = extract_document(pdf, "application/pdf", filename="f.pdf", config=config)
-        return [page.page_number for page in doc.pages if page.ocr_confidence is not None]
+        return extract_document(pdf, "application/pdf", filename="f.pdf", config=config)
+
+    def _ocr_pages(self, pdf: bytes, ocr: OcrMode) -> list[int]:
+        pages = self._extract(pdf, ocr).pages
+        return [page.page_number for page in pages if page.ocr_confidence is not None]
 
     def test_ocr_all_rereads_a_born_digital_pdf(self):
         assert self._ocr_pages(make_pdf(pages=2), OcrMode.AUTO) == []
@@ -6237,17 +6310,58 @@ class TestTesseractUnderRealXberg:
     @pytest.mark.parametrize(
         ("layout", "text_lines", "expected"),
         [
-            ("SST", _LONG_TEXT_LINES, [1, 2]),
-            ("SST", _SHORT_TEXT_LINES, [1, 2, 3]),
-            ("TSS", _SHORT_TEXT_LINES, [1, 2, 3]),
-            ("TTSS", _SHORT_TEXT_LINES, [3, 4]),
+            pytest.param("SST", _LONG_TEXT_LINES, [1, 2], id="scans-then-a-paragraph"),
+            pytest.param("SST", _SHORT_TEXT_LINES, [1, 2], id="scans-then-one-line"),
+            pytest.param("TSS", _SHORT_TEXT_LINES, [2, 3], id="one-line-then-scans"),
+            pytest.param("TTSS", _SHORT_TEXT_LINES, [3, 4], id="half-scans"),
+            pytest.param("SSS", _SHORT_TEXT_LINES, [1, 2, 3], id="every-page-scanned"),
+            pytest.param("TTT", _SHORT_TEXT_LINES, [], id="no-page-scanned"),
+            pytest.param("SBT", _LONG_TEXT_LINES, [1], id="image-and-text-on-one-page"),
+            pytest.param("TNT", _LONG_TEXT_LINES, [2], id="page-number-only"),
+            pytest.param("TWT", _LONG_TEXT_LINES, [2], id="whitespace-only"),
         ],
     )
-    def test_auto_reads_every_page_only_when_the_file_has_almost_no_text(
-        self, layout, text_lines, expected
-    ):
-        """The whole-file rule is the amount of text, not the share of scanned pages."""
+    def test_auto_reads_only_the_pages_without_usable_text(self, layout, text_lines, expected):
         assert self._ocr_pages(_layout_pdf(layout, text_lines), OcrMode.AUTO) == expected
+
+    @pytest.mark.parametrize(
+        ("chars", "expected"),
+        [(_USABLE_TEXT_CHARS - 1, [1, 2, 3]), (_USABLE_TEXT_CHARS, [1, 3])],
+    )
+    def test_a_page_has_usable_text_from_32_non_blank_characters(self, chars, expected):
+        line = "x" * (chars - _non_blank(_page_line(2, "")))
+        assert _non_blank(_page_line(2, line)) == chars
+        assert self._ocr_pages(_layout_pdf("STS", (line,)), OcrMode.AUTO) == expected
+
+    def test_ocr_text_replaces_a_text_layer_too_short_to_be_usable(self):
+        line = "x" * (_USABLE_TEXT_CHARS - 1 - _non_blank(_page_line(2, "")))
+        usable = "y" * (_USABLE_TEXT_CHARS - _non_blank(_page_line(3, "")))
+        doc = self._extract(_layout_pdf("SHT", (line,)), OcrMode.AUTO)
+        kept = self._extract(_layout_pdf("SHT", (usable,)), OcrMode.AUTO)
+        assert _page_line(2, line) not in doc.pages[1].content
+        assert _page_line(2, usable) in kept.pages[1].content
+        assert _page_line(3, usable) in kept.pages[2].content
+
+    @pytest.mark.parametrize("layout", ["STS", "SST", "TSS"])
+    async def test_auto_keeps_native_text_and_adds_the_ocr_text_of_scanned_pages(
+        self, isolated_env, mock_svc, layout
+    ):
+        """The text page is one small-print line that OCR misreads, so reading it fails this."""
+        from lilbee.data.ingest import ingest_document
+
+        cfg.ocr = OcrMode.AUTO
+        f = isolated_env / "mixed.pdf"
+        f.write_bytes(_layout_pdf(layout, (_CONFUSABLE_LINE,), points=_SMALL_PRINT_POINTS))
+        pages: list = []
+        await ingest_document(f, "mixed.pdf", "pdf", page_texts_out=pages)
+        assert [page["page"] for page in pages] == [1, 2, 3]
+        texts = {page["page"]: " ".join(page["text"].split()) for page in pages}
+        native = {n: _page_line(n, _CONFUSABLE_LINE) for n in (1, 2, 3) if layout[n - 1] == "T"}
+        scanned = {n: _scan_line(n, 0) for n in (1, 2, 3) if layout[n - 1] == "S"}
+        assert {n: texts[n] for n in native} == native
+        assert all(first_row in texts[n] for n, first_row in scanned.items())
+        whole = " ".join(texts[n] for n in (1, 2, 3))
+        assert [whole.count(part) for part in (*native.values(), *scanned.values())] == [1, 1, 1]
 
     @pytest.mark.parametrize(("ocr", "warned"), [(OcrMode.OFF, True), (OcrMode.AUTO, False)])
     async def test_a_mixed_pdf_under_ocr_off_names_its_skipped_pages(
