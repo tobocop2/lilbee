@@ -463,12 +463,13 @@ async def test_downloads_run_four_at_a_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_row_put_straight_on_the_queue_is_promoted_with_no_worker() -> None:
-    """A row with no target becomes active when a slot frees, and no thread starts for it."""
+async def test_rows_put_straight_on_the_queue_are_promoted_with_no_worker() -> None:
+    """A finished task promotes a row of every idle type; a row with no target gets no thread."""
     app = _Host()
     async with app.run_test():
         controller = TaskBarController(app)
-        task_id = controller.add_task("bare", TaskType.SYNC.value)
+        bare = [controller.add_task("bare", kind.value) for kind in (TaskType.SYNC, TaskType.WIKI)]
         controller.complete_task(controller.add_task("other", TaskType.CRAWL.value))
-        assert controller.queue.get_task(task_id).status == TaskStatus.ACTIVE
+        statuses = [controller.queue.get_task(task_id).status for task_id in bare]
+        assert statuses == [TaskStatus.ACTIVE, TaskStatus.ACTIVE]
         assert controller._workers == {}
