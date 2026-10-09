@@ -30,6 +30,14 @@ from lilbee.runtime.progress import (
 _CANCEL_BOUND_S = 5.0
 
 
+async def _until(condition) -> None:
+    """Yield to the loop until *condition* holds; fail instead of hanging."""
+    deadline = time.monotonic() + _CANCEL_BOUND_S
+    while not condition():
+        assert time.monotonic() < deadline, "the condition never held"
+        await asyncio.sleep(0.005)
+
+
 class FakeProcess:
     """A worker that runs its target on a thread, so supervision is testable."""
 
@@ -564,80 +572,63 @@ class TestRunWorkers:
         )
         assert fake_context.processes[0].killed.is_set()
 
-    async def test_workers_that_ignore_the_stop_share_one_grace(self, fake_context, monkeypatch):
-        """Every worker is terminated before any is waited for, and the waits spend one bound."""
-        grace = 0.2
-        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", grace)
-        calls = []
-
-        class Recorded(FakeProcess):
-            def terminate(self):
-                calls.append(("terminate", self.name, None))
-                super().terminate()
-
-            def join(self, timeout=None):
-                calls.append(("join", self.name, timeout))
-                super().join(timeout)
-
-        monkeypatch.setattr(
-            fake_context,
-            "Process",
-            lambda target, args, name: (
-                fake_context.processes.append(Recorded(target, args, name))
-                or fake_context.processes[-1]
-            ),
-        )
+    def _deaf_workers(self, fake_context, monkeypatch):
+        """Workers that report, then end only when they are killed."""
 
         def deaf_shard(spec, options, messages, stop):
             messages.put(
                 fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
             )
-            fake_context.processes[spec.shard.index].killed.wait(5)
+            fake_context.processes[spec.shard.index].killed.wait(_CANCEL_BOUND_S)
 
         monkeypatch.setattr(fanout, "run_shard", deaf_shard)
-        await fanout.run_workers(
+        return fanout.run_workers(
             [_spec(0), _spec(1)],
             options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=None,
         )
-        kinds = [kind for kind, _name, _timeout in calls]
-        assert kinds[:2] == ["terminate", "terminate"]
-        graces = [
-            timeout for kind, _name, timeout in calls if kind == "join" and timeout is not None
-        ]
-        assert len(graces) == 2
-        assert sum(graces) <= grace + 0.05
-        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
 
-    async def test_the_wait_for_the_workers_runs_off_the_event_loop(
+    async def test_workers_that_ignore_the_stop_share_one_grace(self, fake_context, monkeypatch):
+        """Two workers that ignore the terminate are killed after one grace, not after two."""
+        grace = 0.5
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", grace)
+        run = asyncio.ensure_future(self._deaf_workers(fake_context, monkeypatch))
+        await _until(lambda: len(fake_context.processes) == 2)
+        await _until(lambda: all(worker.terminated for worker in fake_context.processes))
+        terminated_at = time.monotonic()
+        await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        waited = time.monotonic() - terminated_at
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
+        assert grace * 0.5 < waited < grace * 1.8
+
+    async def test_the_wait_for_the_workers_leaves_the_event_loop_free(
         self, fake_context, monkeypatch
     ):
-        stopped_on = []
-        real_stop = fanout._stop_workers
+        """Another coroutine runs between the terminate and the kill."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 0.5)
+        run = asyncio.ensure_future(self._deaf_workers(fake_context, monkeypatch))
+        await _until(lambda: len(fake_context.processes) == 2)
+        await _until(lambda: all(worker.terminated for worker in fake_context.processes))
+        seen_before_the_kill = [worker.killed.is_set() for worker in fake_context.processes]
+        await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        assert seen_before_the_kill == [False, False]
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
 
-        def recording_stop(workers, stop):
-            stopped_on.append(threading.current_thread())
-            real_stop(workers, stop)
-
-        monkeypatch.setattr(fanout, "_stop_workers", recording_stop)
-        monkeypatch.setattr(
-            fanout,
-            "run_shard",
-            lambda spec, options, messages, stop: messages.put(
-                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
-            ),
-        )
-        await fanout.run_workers(
-            [_spec(0)],
-            options=fanout.ShardOptions(parent_pid=os.getpid()),
-            quiet=True,
-            on_progress=lambda kind, data: None,
-            cancel=None,
-        )
-        assert len(stopped_on) == 1
-        assert stopped_on[0] is not threading.current_thread()
+    async def test_a_cancel_during_the_grace_kills_the_workers_at_once(
+        self, fake_context, monkeypatch
+    ):
+        """The caller's cancel does not leave a worker behind, and does not wait out the grace."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 10 * _CANCEL_BOUND_S)
+        run = asyncio.ensure_future(self._deaf_workers(fake_context, monkeypatch))
+        await _until(lambda: len(fake_context.processes) == 2)
+        await _until(lambda: all(worker.terminated for worker in fake_context.processes))
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
+        assert [worker.is_alive() for worker in fake_context.processes] == [False, False]
 
     async def test_a_live_worker_is_terminated_when_the_run_ends(self, fake_context, monkeypatch):
         def fake_shard(spec, options, messages, stop):

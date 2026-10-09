@@ -73,6 +73,9 @@ _FINAL_DRAIN_S = 1.0
 # How long the workers get, together, to exit on a terminate before they are killed.
 _WORKER_EXIT_GRACE_S = 30.0
 
+# How often the parent looks for the workers' exit during that grace.
+_EXIT_POLL_S = 0.01
+
 # Where a worker's console output lands, under its own data root.
 WORKER_LOG_NAME = "sync.log"
 
@@ -358,24 +361,32 @@ def _final_verdicts(
     return late
 
 
-def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
+async def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
     """Terminate every live worker, give them one grace period together, then kill the rest.
 
     A worker owns a GPU fleet, and its teardown can outlast a TERM; a plain join
     would hang the sync behind it instead of returning a result it already has.
+    The wait yields to the event loop, and a cancel during it kills at once.
     """
     stop.set()
     for worker in workers:
         if worker.is_alive():
             worker.terminate()
-    deadline = time.monotonic() + _WORKER_EXIT_GRACE_S
-    for worker in workers:
-        worker.join(max(0.0, deadline - time.monotonic()))
-    for worker in workers:
-        if worker.is_alive():
-            log.warning("Ingest worker %s did not exit; killing it", worker.name)
-            worker.kill()
+    try:
+        await _exited_or_grace_over(workers)
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                log.warning("Ingest worker %s did not exit; killing it", worker.name)
+                worker.kill()
             worker.join()
+
+
+async def _exited_or_grace_over(workers: Sequence[BaseProcess]) -> None:
+    """Return once no worker is alive, or once the exit grace has passed."""
+    deadline = time.monotonic() + _WORKER_EXIT_GRACE_S
+    while time.monotonic() < deadline and any(worker.is_alive() for worker in workers):
+        await asyncio.sleep(_EXIT_POLL_S)
 
 
 async def run_workers(
@@ -406,7 +417,7 @@ async def run_workers(
             workers, messages, quiet=quiet, on_progress=on_progress, cancel=cancel
         )
     finally:
-        await asyncio.to_thread(_stop_workers, workers, stop)
+        await _stop_workers(workers, stop)
     return [verdicts[index] for index in sorted(verdicts)]
 
 
