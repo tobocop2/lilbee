@@ -85,6 +85,21 @@ class TestWhereTheWorkIs:
         assert library.private_stores() == []
         assert not (library.root / "shards" / "w0" / "data").exists()
 
+    async def test_the_first_fan_out_sync_deletes_the_stores_an_earlier_lilbee_left(
+        self, tmp_path, caplog
+    ):
+        library = Library(tmp_path / "lib", 2)
+        names = library.write_notes("note", 12)
+        old_store = library.root / "shards" / "w0" / "data" / "lancedb"
+        old_store.mkdir(parents=True)
+        (old_store / "chunks.lance").write_bytes(b"x" * 2048)
+        with caplog.at_level(logging.WARNING, logger=fanout.log.name):
+            await library.sync()
+            await library.sync()
+        assert library.private_stores() == []
+        assert library.sources() == sorted(names)
+        assert caplog.text.count("Deleted 1 unused worker store(s)") == 1
+
     async def test_a_repeat_sync_reports_every_file_unchanged(self, tmp_path):
         library = Library(tmp_path / "lib", 2)
         library.write_notes("note", 12)

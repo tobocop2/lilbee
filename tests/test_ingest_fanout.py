@@ -225,6 +225,64 @@ class TestPlanFanout:
         assert [spec.device for spec in specs] == [0, 1, 2, 3]
 
 
+class TestRemovePrivateStores:
+    def _store(self, root, worker, size):
+        store = root / "shards" / worker / "data"
+        (store / "lancedb").mkdir(parents=True)
+        (store / "lancedb" / "vectors.lance").write_bytes(b"x" * size)
+        return store
+
+    def test_every_private_store_goes_and_one_line_says_what_it_freed(self, tmp_path, caplog):
+        megabyte = 1024 * 1024
+        stores = [self._store(tmp_path, "w0", megabyte), self._store(tmp_path, "w7", megabyte // 2)]
+        # A file the index shares by hard link frees nothing when its second name goes.
+        os.link(stores[0] / "lancedb" / "vectors.lance", tmp_path / "in-the-index.lance")
+        log_file = tmp_path / "shards" / "w0" / fanout.WORKER_LOG_NAME
+        log_file.write_text("a worker's log", encoding="utf-8")
+        engine = tmp_path / "shards" / "gpu0" / "engine"
+        engine.mkdir(parents=True)
+
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+
+        assert [store.exists() for store in stores] == [False, False]
+        assert log_file.exists() and engine.exists()
+        assert (tmp_path / "in-the-index.lance").stat().st_size == megabyte
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Deleted 2 unused worker store(s) of an earlier lilbee under {tmp_path / 'shards'}, "
+            "freeing 0.5 MB"
+        ]
+
+    def test_a_data_root_with_no_private_store_is_left_alone_and_says_nothing(
+        self, tmp_path, caplog
+    ):
+        log_file = tmp_path / "shards" / "w0" / fanout.WORKER_LOG_NAME
+        log_file.parent.mkdir(parents=True)
+        log_file.write_text("a worker's log", encoding="utf-8")
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+            fanout.remove_private_stores(tmp_path / "no-such-root")
+        assert log_file.read_text(encoding="utf-8") == "a worker's log"
+        assert caplog.records == []
+
+    def test_a_store_that_cannot_be_deleted_is_named_and_the_rest_still_go(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        stuck, free = self._store(tmp_path, "w0", 10), self._store(tmp_path, "w1", 10)
+        real_rmtree = fanout.shutil.rmtree
+
+        def _rmtree(path):
+            if path == stuck:
+                raise PermissionError("in use")
+            real_rmtree(path)
+
+        monkeypatch.setattr(fanout.shutil, "rmtree", _rmtree)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+        assert (stuck.exists(), free.exists()) == (True, False)
+        assert f"Could not delete the unused worker store {stuck}: in use" in caplog.text
+
+
 class TestShardSpecs:
     def test_each_worker_gets_the_one_index_and_the_shared_corpus(self):
         specs = fanout.shard_specs(cfg, processes=2, devices=2)

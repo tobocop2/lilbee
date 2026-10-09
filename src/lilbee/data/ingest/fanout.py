@@ -8,6 +8,7 @@ import logging
 import multiprocessing
 import os
 import queue
+import shutil
 import sys
 import time
 from dataclasses import dataclass
@@ -78,6 +79,10 @@ _EXIT_POLL_S = 0.01
 
 # Where a worker's console output lands, under its own data root.
 WORKER_LOG_NAME = "sync.log"
+
+# Where each worker of an earlier lilbee kept a store of its own, under the shards directory.
+_PRIVATE_STORE_GLOB = "w*/data"
+_BYTES_PER_MB = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -189,6 +194,34 @@ def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -
             "ingest_workers": plan_share,
             "extraction_threads": max(1, threads // processes) if threads else 0,
         }
+    )
+
+
+def remove_private_stores(data_root: Path) -> None:
+    """Delete the store each worker of an earlier lilbee kept under *data_root*.
+
+    The index holds every document those stores hold, and nothing reads them. A
+    file the index shares by hard link frees no space, so it is not counted.
+    """
+    stores = sorted((data_root / SHARDS_DIRNAME).glob(_PRIVATE_STORE_GLOB))
+    if not stores:
+        return
+    freed = sum(
+        entry.stat().st_size
+        for store in stores
+        for entry in store.rglob("*")
+        if entry.is_file() and entry.stat().st_nlink == 1
+    )
+    for store in stores:
+        try:
+            shutil.rmtree(store)
+        except OSError as exc:
+            log.warning("Could not delete the unused worker store %s: %s", store, exc)
+    log.warning(
+        "Deleted %d unused worker store(s) of an earlier lilbee under %s, freeing %.1f MB",
+        len(stores),
+        data_root / SHARDS_DIRNAME,
+        freed / _BYTES_PER_MB,
     )
 
 
