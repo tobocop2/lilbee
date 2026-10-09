@@ -8850,6 +8850,37 @@ class TestSyncLoadsThePersistedRegistry:
             "linked_roots keeps its value"
         ]
 
+    async def test_an_unregister_during_the_load_waits_and_is_not_overwritten(
+        self, isolated_env, tmp_path, monkeypatch
+    ):
+        from lilbee.app.ingest import register_sources, unregister_roots
+        from lilbee.core import settings
+        from lilbee.core.config import model
+        from lilbee.data.ingest import sync
+
+        register_sources([self._root(tmp_path, "work", "old.txt")])
+        read = model._TomlSource.__call__
+        unregister = threading.Thread(target=unregister_roots, args=(["work"],))
+        done_before_the_load_set_the_registry = []
+
+        def read_and_let_the_unregister_try(source):
+            values = read(source)  # the load holds a registry with work in it
+            if unregister.ident is None:
+                unregister.start()
+                unregister.join(timeout=1.0)
+                done_before_the_load_set_the_registry.append(not unregister.is_alive())
+            return values
+
+        monkeypatch.setattr(model._TomlSource, "__call__", read_and_let_the_unregister_try)
+
+        await sync(quiet=True)
+        unregister.join(timeout=30)
+
+        assert done_before_the_load_set_the_registry == [False]
+        assert not unregister.is_alive()
+        assert settings.load(cfg.data_root).get("linked_roots") == {}
+        assert cfg.linked_roots == {}
+
     async def test_an_add_then_a_sync_reads_the_registry_the_add_wrote(
         self, isolated_env, tmp_path
     ):
