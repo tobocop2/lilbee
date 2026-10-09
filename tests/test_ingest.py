@@ -8630,6 +8630,17 @@ class TestSkippedScanReportsTheOcrThatRan:
 class TestSyncLoadsThePersistedRegistry:
     """A sync indexes the roots ``config.toml`` holds, whatever this process loaded earlier."""
 
+    @pytest.fixture(autouse=True)
+    def _the_data_root_file_is_the_loaded_one(self, isolated_env, monkeypatch):
+        """The layout of the CLI, serve and the TUI: cfg was built from the data root's file."""
+        from lilbee.core.config import CONFIG_FILE_NAME, model
+
+        monkeypatch.setattr(model, "loaded_config_file", cfg.data_root / CONFIG_FILE_NAME)
+
+    @staticmethod
+    def _load_warnings(caplog):
+        return [r.getMessage() for r in caplog.records if r.name.endswith("load_warnings")]
+
     @staticmethod
     def _root(tmp_path, label, filename):
         root = tmp_path / label
@@ -8683,17 +8694,50 @@ class TestSyncLoadsThePersistedRegistry:
         assert cfg.chunk_size == chunk_size
 
     @pytest.mark.parametrize(
-        ("config_text", "warning"),
+        ("config_text", "reported"),
         [
-            (None, None),
-            ("chunk_size = 111\n", None),
-            ("linked_roots = [unclosed\n", "Failed to read"),
-            ('linked_roots = "notes"\n', "linked_roots = 'notes'"),
+            ("linked_roots = [unclosed\n", "Failed to read {path}, ignoring"),
+            ('linked_roots = "notes"\n', "{path}: linked_roots = 'notes' "),
+            ('linked_roots = ["notes"]\n', "{path}: linked_roots = ['notes'] "),
+            ("linked_roots = 3\n", "{path}: linked_roots = 3 "),
+            ("[linked_roots]\nnotes = 3\n", "{path}: linked_roots = {{'notes': 3}} "),
+            (
+                '[linked_roots.notes]\nat = "/x"\n',
+                "{path}: linked_roots = {{'notes': {{'at': '/x'}}}} ",
+            ),
         ],
-        ids=["no-file", "no-registry-key", "unreadable", "refused-value"],
+        ids=["unreadable", "string", "list", "integer", "non-string-value", "table-value"],
     )
-    async def test_a_file_without_a_usable_registry_keeps_the_loaded_one(
-        self, isolated_env, tmp_path, caplog, config_text, warning
+    async def test_a_registry_a_sync_cannot_load_is_reported_once_and_the_loaded_one_stays(
+        self, isolated_env, tmp_path, caplog, config_text, reported
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        path = cfg.data_root / CONFIG_FILE_NAME
+        path.write_text(config_text, encoding="utf-8")
+        cfg.linked_roots = {"work": str(work)}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            first = await sync(quiet=True)
+            second = await sync(quiet=True)
+
+        assert first.added == ["work/old.txt"]
+        assert second.unchanged == 1
+        assert cfg.linked_roots == {"work": str(work)}
+        warnings = self._load_warnings(caplog)
+        assert len(warnings) == 1
+        assert warnings[0].startswith(reported.format(path=path))
+        assert warnings[0].endswith(("ignoring", "; linked_roots keeps its value"))
+
+    @pytest.mark.parametrize(
+        "config_text",
+        [None, "", "chunk_size = 111\n", 'linked_roots = ""\n'],
+        ids=["no-file", "zero-bytes", "no-registry-key", "blank-string"],
+    )
+    async def test_a_file_that_sets_no_registry_keeps_the_loaded_one_in_silence(
+        self, isolated_env, tmp_path, caplog, config_text
     ):
         from lilbee.core.config import CONFIG_FILE_NAME
         from lilbee.data.ingest import sync
@@ -8708,9 +8752,103 @@ class TestSyncLoadsThePersistedRegistry:
 
         assert result.added == ["work/old.txt"]
         assert cfg.linked_roots == {"work": str(work)}
-        warnings = [r.getMessage() for r in caplog.records if r.name.endswith("load_warnings")]
-        assert len(warnings) == (0 if warning is None else 1)
-        assert all(warning in message for message in warnings)
+        assert self._load_warnings(caplog) == []
+
+    async def test_a_registry_that_goes_bad_another_way_is_reported_again(
+        self, isolated_env, tmp_path, caplog
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        path = cfg.data_root / CONFIG_FILE_NAME
+        cfg.linked_roots = {"work": str(work)}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            path.write_text('linked_roots = "notes"\n', encoding="utf-8")
+            await sync(quiet=True)
+            path.write_text("linked_roots = 3\n", encoding="utf-8")
+            await sync(quiet=True)
+            await sync(quiet=True)
+
+        assert self._load_warnings(caplog) == [
+            f"{path}: linked_roots = 'notes' is not a table of names and values; "
+            "linked_roots keeps its value",
+            f"{path}: linked_roots = 3 is not a table of names and values; "
+            "linked_roots keeps its value",
+        ]
+        assert cfg.linked_roots == {"work": str(work)}
+
+    async def test_a_refused_setting_beside_a_good_registry_is_not_the_syncs_to_report(
+        self, isolated_env, tmp_path, caplog
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME
+        from lilbee.data.ingest import sync
+
+        notes = self._root(tmp_path, "notes", "plan.txt")
+        (cfg.data_root / CONFIG_FILE_NAME).write_text(
+            f'top_k = "many"\n[linked_roots]\nnotes = "{notes.as_posix()}"\n', encoding="utf-8"
+        )
+        cfg.linked_roots = {}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            result = await sync(quiet=True)
+
+        assert result.added == ["notes/plan.txt"]
+        assert self._load_warnings(caplog) == []
+
+    async def test_a_file_this_process_did_not_load_is_reported_the_same_way(
+        self, isolated_env, tmp_path, caplog, monkeypatch
+    ):
+        from lilbee.core.config import CONFIG_FILE_NAME, model
+        from lilbee.data.ingest import sync
+
+        monkeypatch.setattr(model, "loaded_config_file", None)
+        work = self._root(tmp_path, "work", "old.txt")
+        path = cfg.data_root / CONFIG_FILE_NAME
+        path.write_text('linked_roots = "notes"\n', encoding="utf-8")
+        cfg.linked_roots = {"work": str(work)}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            result = await sync(quiet=True)
+
+        assert result.added == ["work/old.txt"]
+        assert len(self._load_warnings(caplog)) == 1
+        assert self._load_warnings(caplog)[0].startswith(f"{path}: linked_roots = 'notes' ")
+
+    async def test_a_registry_the_load_reported_is_not_reported_again_by_a_sync(
+        self, isolated_env, tmp_path, caplog, monkeypatch
+    ):
+        """The twin: the registry that goes bad another way after the load is reported."""
+        from lilbee.core.config import CONFIG_FILE_NAME, model
+        from lilbee.data.ingest import sync
+
+        work = self._root(tmp_path, "work", "old.txt")
+        path = cfg.data_root / CONFIG_FILE_NAME
+        path.write_text("linked_roots = 3\n", encoding="utf-8")
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setenv("LILBEE_DATA", str(cfg.data_root))
+        _loaded, at_load = model._build_cfg()
+        monkeypatch.setattr(model, "load_warnings", at_load)
+        cfg.linked_roots = {"work": str(work)}
+
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            caplog.clear()
+            first = await sync(quiet=True)
+            after_the_same_file = self._load_warnings(caplog)
+            path.write_text('linked_roots = "notes"\n', encoding="utf-8")
+            await sync(quiet=True)
+
+        assert at_load == (
+            "config.toml: linked_roots = 3 is not a table of names and values; "
+            "linked_roots uses its default",
+        )
+        assert first.added == ["work/old.txt"]
+        assert after_the_same_file == []
+        assert self._load_warnings(caplog) == [
+            f"{path}: linked_roots = 'notes' is not a table of names and values; "
+            "linked_roots keeps its value"
+        ]
 
     async def test_an_add_then_a_sync_reads_the_registry_the_add_wrote(
         self, isolated_env, tmp_path
