@@ -83,10 +83,15 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_model_show(model)` | Catalog + installed metadata for one model ref. |
 | `lilbee_model_rm(model, source)` | Delete an installed model from disk. |
 | `lilbee_catalog_browse(task, search, size, installed, featured, max_fit, sort, limit, offset)` | Browse the model picks + Hugging Face. Use before `lilbee_model_pull` to pick what to install. `max_fit` is the worst hardware fit to return (`fits` / `tight` / `wont_run`). Each returned entry includes the model's `architecture` and a `compat` field (`supported` / `unsupported` / `unknown`); check `compat` before pulling. Filters apply before paging: `has_more` means another match exists, and `truncated` means the scan stopped early, so narrow the search to reach more. |
-| `lilbee_settings_list(group)` | Every writable setting with value, default, type, help text, choices, `reindex_required`. Groups: `Models`, `Retrieval`, `Generation`, `Ingest`, `Wiki`, `Memory`, `Crawling`, `Local-Servers`, `API-Keys`, `Display`, `System`, `General`. |
-| `lilbee_settings_get(key)` | One setting's current value + metadata. |
+| `lilbee_settings_list(group)` | Every writable setting with value, default (what a reset falls back to without a `LILBEE_*` variable: the profile value, else the built-in), type, help text, choices, `reindex_required`, `advanced`, and `source`: the layer that supplies the value (`env`, `user`, `profile`, `built_in` or `auto`). Treat an unknown `source` as no source. Groups: `Models`, `Retrieval`, `Generation`, `Ingest`, `Wiki`, `Memory`, `Crawling`, `Local-Servers`, `API-Keys`, `Display`, `System`, `General`. `advanced: true` marks a setting the TUI folds into its tab's collapsed section; it is listed and settable the same as any other. |
+| `lilbee_settings_get(key)` | One setting's current value + metadata, including `source`. |
 | `lilbee_settings_set(updates)` | Atomically update writable settings. Persists to `config.toml`, invalidates in-process model and provider caches. `warnings` names a setting left in conflict, such as `enable_ocr = false` with a vision model set (no OCR runs). |
-| `lilbee_settings_reset(keys)` | Reset writable settings to their built-in defaults. |
+| `lilbee_settings_reset(keys)` | Remove your value for each setting, so it falls back to its `LILBEE_*` variable, the profile, or the built-in value. `warnings` names a setting the reset leaves in conflict, as `settings_set` does. |
+| `lilbee_profile_list()` | The project's active profile (with `status`: `current` / `changed` / `missing` / `broken`, and `changes`: each profile setting you set, with `yours`, the `profile_value` and `profile_source` it falls back to without you, and its `effect`) and every profile, each with `credit`, `tested_on`, its values and, for a broken file, `error`. Profile tools appear only when `mcp_profiles_enabled` is on. |
+| `lilbee_profile_show(name)` | One profile and the `diff` applying it makes: each change with its `effect` (`reindex` / `new_files_only` / `now`), and the values of yours it keeps. Names match loosely (`court-filings` finds "Court filings"). |
+| `lilbee_profile_apply(name)` | Make a profile the project's. Your own values and `LILBEE_*` variables stay. When `reindex_required` is true, rebuild before trusting search results. |
+| `lilbee_profile_manage(action, name, new_name, folder, content, filename, from_profile, overwrite)` | Profile files: `new`, `save` (the project's settings as `name`, then switch to it), `update`, `discard` (returns `dropped`, `reindex_required`: when true, rebuild, and `warnings` naming a setting left in conflict), `duplicate` / `rename` (to `new_name`), `delete`, `export` (returns `content`), `import` / `validate` (a file's `content` and its `filename`, not a path). `folder` is `global` (all projects, default) or `project`. |
+| `lilbee_analyze_dismiss()` | Hide the analyze tip for this project. Returns `analyzed`, `tip_dismissed` and `tip_shows`. Appears with the profile tools. |
 | `lilbee_export_dataset(output, fmt, source)` | Write a per-page `{source, page, text}` dataset to a file (parquet or jsonl, no vectors). No embedding. |
 | `lilbee_memory_remember(text, kind, shared, agent_id)` | Save a durable note (`kind` = `"fact"` / `"preference"`). Embeds text, so it obeys the shared-embedder rule. Memory tools only appear when `memory_enabled` is on. |
 | `lilbee_memory_recall(query, limit, agent_id)` | Recall your saved memories by relevance. Embeds the query (shared-embedder rule). |
@@ -110,6 +115,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 | `lilbee_crawl(url, depth, max_pages, render_mode, include_subdomains)` | Start a non-blocking crawl. Default `depth=0` fetches one page; pass a depth (or `null` for the whole site) to follow links. Returns `task_id`; poll `lilbee_crawl_status`. |
 | `lilbee_model_pull(model, source, allow_unsupported)` | Download a model. Streams progress as MCP notifications. Large models take minutes. Set `allow_unsupported=true` to override the architecture-compat check; without it, the call returns a structured error with `code: "unsupported_arch"` and the supported-architecture list. |
 | `lilbee_import_dataset(dataset, fmt)` | Import a per-page dataset file, re-embedding every page under the current model. Replaces existing copies of each source. Streams progress as MCP notifications. |
+| `lilbee_analyze(directory, apply, save, target)` | Read the documents lilbee indexes, or an absolute `directory` on the server, and recommend a profile. Returns the report: file types, scanned pages, tables, lengths, languages, and the `recommendation` with its `changes`. Saves nothing unless `apply` (save and switch) or `save` (a name, no switch); `target` (`project` / `global`) needs one of them. Over `analyze_max_files` documents it reads an even sample. No model runs, so it does not pin the embedder, but a large corpus takes a while. Appears with the profile tools. |
 | `lilbee_reset(confirm)` | Wipe the entire index and data dir. Pass `confirm=true`. Destructive. |
 
 ### GPU placement (multi-GPU boxes)
@@ -269,12 +275,12 @@ For a clean slate: `lilbee_reset(confirm=true)` via the worker.
 written reference: every setting, its default, and a column per surface saying whether
 MCP can set it. Three cases need an extra step after the write succeeds.
 
-**A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled` and
-`mcp_sessions_enabled` decide which tools register, and that is decided once, when the
-server starts. `lilbee_settings_set({"wiki": true})` succeeds and persists, and the
-`lilbee_wiki_*` tools still are not there. Tell the user to restart the lilbee MCP server;
-do not report the feature as broken. `lilbee_wiki_status` works either way, so read it to
-confirm `wiki_enabled` before and after.
+**A setting that changes the tool list needs a reconnect.** `wiki`, `memory_enabled`,
+`mcp_sessions_enabled` and `mcp_profiles_enabled` decide which tools register, and that
+is decided once, when the server starts. `lilbee_settings_set({"wiki": true})` succeeds
+and persists, and the `lilbee_wiki_*` tools still are not there. Tell the user to
+restart the lilbee MCP server; do not report the feature as broken. `lilbee_wiki_status`
+works either way, so read it to confirm `wiki_enabled` before and after.
 
 **Turning a feature on does not run it.** After enabling the wiki, pages exist only once
 you build them: `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for a single page,

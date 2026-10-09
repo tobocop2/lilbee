@@ -11,10 +11,25 @@ from pydantic import BaseModel, Field, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
+from lilbee.app.profiles import (
+    ActiveProfile,
+    ApplyResult,
+    ChangeRow,
+    DiffRow,
+    DiscardResult,
+    ProfileDiff,
+    ProfileEffect,
+    ProfileLocation,
+    ProfileStatus,
+    SaveResult,
+    credit_line,
+)
+from lilbee.app.settings import SettingInfo
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
-from lilbee.core.config.enums import CrawlRenderMode, KvCacheType
+from lilbee.core.config.enums import CrawlRenderMode, FtsLanguage, KvCacheType, SettingSource
 from lilbee.core.health_warnings import HealthWarning
+from lilbee.core.profile_files import ProfileEntry, ProfileFolder, ProfileValidation
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
 from lilbee.providers.roles import EngineBackend, WorkerRole
@@ -25,7 +40,15 @@ from lilbee.wiki.entity_extractor import EntityKind
 if TYPE_CHECKING:
     from lilbee.app.agent_configs.detect import ClientDetection
     from lilbee.app.agent_configs.document import AgentConfigDocument
+    from lilbee.app.analyze import (
+        AnalyzeReport,
+        LanguageRow,
+        Recommendation,
+        SavedProfile,
+        TipState,
+    )
     from lilbee.app.placement import PlacementView
+    from lilbee.data.analyze import PdfSignals
 
 
 def decode_chunk_type(value: str | None) -> ChunkType | None:
@@ -324,8 +347,14 @@ class SetModelResponse(BaseModel):
     warnings: list[str] = []
 
 
+class ConfigResetRequest(BaseModel):
+    """Request body for POST /api/config/reset."""
+
+    keys: list[str]
+
+
 class ConfigUpdateResponse(BaseModel):
-    """Response for PATCH /api/config."""
+    """Response for PATCH /api/config and POST /api/config/reset."""
 
     updated: list[str]
     reindex_required: bool
@@ -384,6 +413,12 @@ class ConfigResponse(BaseModel):
     model_config = {"extra": "allow"}
 
 
+class ConfigSourcesResponse(BaseModel):
+    """Response for GET /api/config/sources: the layer that supplies each GET /api/config key."""
+
+    sources: dict[str, SettingSource]
+
+
 class ConfigFieldSchema(BaseModel):
     """Metadata for one configuration field, so a client can render its control.
 
@@ -399,12 +434,58 @@ class ConfigFieldSchema(BaseModel):
     group: SettingGroup
     help: str
     choices: list[str] | None
+    advanced: bool
 
 
 class ConfigSchemaResponse(BaseModel):
     """Response for GET /api/config/schema."""
 
     fields: list[ConfigFieldSchema]
+
+
+class SettingValueResponse(BaseModel):
+    """One setting's current value and source, for the CLI's ``lilbee settings`` JSON output.
+
+    Field names match the MCP ``settings_list``/``settings_get`` wire shape.
+    """
+
+    key: str
+    value: Any
+    default: Any
+    type: str
+    nullable: bool
+    group: SettingGroup
+    help: str
+    choices: list[str] | None
+    reindex_required: bool
+    source: SettingSource
+    advanced: bool
+
+    @classmethod
+    def from_info(cls, info: SettingInfo) -> SettingValueResponse:
+        return cls(
+            key=info.key,
+            value=info.value,
+            default=info.default,
+            type=info.type,
+            nullable=info.nullable,
+            group=info.group,
+            help=info.help_text,
+            choices=list(info.choices) if info.choices else None,
+            reindex_required=info.reindex_required,
+            source=info.source,
+            advanced=info.advanced,
+        )
+
+
+class SettingsListResponse(BaseModel):
+    """Response for the CLI's ``lilbee settings list --json``."""
+
+    settings: list[SettingValueResponse]
+
+    @classmethod
+    def from_infos(cls, infos: list[SettingInfo]) -> SettingsListResponse:
+        return cls(settings=[SettingValueResponse.from_info(info) for info in infos])
 
 
 class ModelsShowResponse(BaseModel):
@@ -1008,4 +1089,444 @@ class AgentConfigResponse(BaseModel):
             config=document.config,
             content=document.content,
             stdio_config=document.stdio_config,
+        )
+
+
+class ProfileAuthorResponse(BaseModel):
+    """One credited author of a profile."""
+
+    name: str
+    github: str | None
+
+
+class ProfileEntryResponse(BaseModel):
+    """One profile file; ``error`` names why a broken file cannot be used."""
+
+    name: str
+    folder: ProfileFolder
+    path: str
+    valid: bool
+    error: str | None
+    shadowed_by: ProfileFolder | None
+    description: str | None
+    authors: list[ProfileAuthorResponse]
+    credit: str | None
+    tested_on: str | None
+    evidence: str | None
+    min_lilbee: str | None
+    values: dict[str, Any]
+
+    @classmethod
+    def from_entry(cls, entry: ProfileEntry) -> ProfileEntryResponse:
+        """The canonical serialized profile, shared by the HTTP, MCP, and CLI surfaces."""
+        profile = entry.file
+        authors = profile.authors if profile is not None else ()
+        return cls(
+            name=entry.name,
+            folder=entry.folder,
+            path=entry.path.as_posix(),
+            valid=profile is not None,
+            error=entry.error,
+            shadowed_by=entry.shadowed_by,
+            description=profile.description if profile is not None else None,
+            authors=[ProfileAuthorResponse(name=a.name, github=a.github) for a in authors],
+            credit=credit_line(authors),
+            tested_on=profile.tested_on if profile is not None else None,
+            evidence=profile.evidence if profile is not None else None,
+            min_lilbee=profile.min_lilbee if profile is not None else None,
+            values=dict(profile.values) if profile is not None else {},
+        )
+
+
+class ProfileListResponse(BaseModel):
+    """Response for GET /api/profiles: every profile file, highest precedence first."""
+
+    profiles: list[ProfileEntryResponse]
+
+
+class ProfileChangeRowResponse(BaseModel):
+    """A profile setting you set, and the value and source it falls back to without you."""
+
+    key: str
+    yours: Any
+    profile_value: Any
+    profile_source: SettingSource
+    effect: ProfileEffect
+
+    @classmethod
+    def from_row(cls, row: ChangeRow) -> ProfileChangeRowResponse:
+        """One serialized change row."""
+        return cls(
+            key=row.key,
+            yours=row.yours,
+            profile_value=row.profile_value,
+            profile_source=row.profile_source,
+            effect=row.effect,
+        )
+
+
+class ActiveProfileResponse(BaseModel):
+    """The project's applied profile, its recorded values, your changes, and its file's state."""
+
+    name: str
+    status: ProfileStatus
+    error: str | None
+    values: dict[str, Any]
+    changes: list[ProfileChangeRowResponse]
+    profile: ProfileEntryResponse | None
+
+    @classmethod
+    def from_active(cls, current: ActiveProfile) -> ActiveProfileResponse:
+        """The canonical serialized active profile, shared by every surface."""
+        entry = current.entry
+        return cls(
+            name=current.name,
+            status=current.status,
+            error=current.error,
+            values=dict(current.values),
+            changes=[ProfileChangeRowResponse.from_row(row) for row in current.changes],
+            profile=ProfileEntryResponse.from_entry(entry) if entry is not None else None,
+        )
+
+
+class ProfileDiffRowResponse(BaseModel):
+    """One setting a profile apply changes, and when the change takes effect."""
+
+    key: str
+    current: Any
+    current_source: SettingSource
+    new: Any
+    effect: ProfileEffect
+
+    @classmethod
+    def from_row(cls, row: DiffRow) -> ProfileDiffRowResponse:
+        """One serialized diff row."""
+        return cls(
+            key=row.key,
+            current=row.current,
+            current_source=row.current_source,
+            new=row.new,
+            effect=row.effect,
+        )
+
+
+class ProfileDiffResponse(BaseModel):
+    """Response for GET /api/profiles/{name}/diff."""
+
+    name: str
+    changes: list[ProfileDiffRowResponse]
+    kept: list[str]
+    untouched_count: int
+
+    @classmethod
+    def from_diff(cls, diff: ProfileDiff) -> ProfileDiffResponse:
+        """The canonical serialized diff, shared by every surface."""
+        return cls(
+            name=diff.name,
+            changes=[ProfileDiffRowResponse.from_row(row) for row in diff.changes],
+            kept=list(diff.kept),
+            untouched_count=diff.untouched_count,
+        )
+
+
+class ProfileApplyResponse(BaseModel):
+    """Response for POST /api/profiles/{name}/apply."""
+
+    name: str
+    changes: list[ProfileDiffRowResponse]
+    reindex_required: bool
+    new_files_only: list[str]
+    warnings: list[str] = []
+
+    @classmethod
+    def from_result(cls, result: ApplyResult) -> ProfileApplyResponse:
+        """The canonical serialized apply result, shared by every surface."""
+        return cls(
+            name=result.name,
+            changes=[ProfileDiffRowResponse.from_row(row) for row in result.changes],
+            reindex_required=result.reindex_required,
+            new_files_only=list(result.new_files_only),
+            warnings=list(result.warnings),
+        )
+
+
+class ProfileLocationResponse(BaseModel):
+    """A profile file an operation wrote or removed."""
+
+    name: str
+    folder: ProfileFolder
+    path: str
+
+    @classmethod
+    def from_location(cls, location: ProfileLocation) -> ProfileLocationResponse:
+        """One serialized profile location."""
+        return cls(name=location.name, folder=location.folder, path=location.path.as_posix())
+
+
+class ProfileSaveResponse(ProfileLocationResponse):
+    """A saved profile file, the settings of yours it took over, and any setting it leaves
+    in conflict."""
+
+    absorbed: list[str]
+    warnings: list[str] = []
+
+    @classmethod
+    def from_save(cls, result: SaveResult) -> ProfileSaveResponse:
+        """The canonical serialized save or update result, shared by every surface."""
+        location = result.location
+        return cls(
+            name=location.name,
+            folder=location.folder,
+            path=location.path.as_posix(),
+            absorbed=list(result.absorbed),
+            warnings=list(result.warnings),
+        )
+
+
+class ProfileDiscardResponse(BaseModel):
+    """Response for POST /api/profiles/discard: your settings removed, whether to rebuild,
+    and any setting the discard leaves in conflict."""
+
+    dropped: list[str]
+    reindex_required: bool
+    warnings: list[str] = []
+
+    @classmethod
+    def from_result(cls, result: DiscardResult) -> ProfileDiscardResponse:
+        """The canonical serialized discard result, shared by every surface."""
+        return cls(
+            dropped=list(result.dropped),
+            reindex_required=result.reindex_required,
+            warnings=list(result.warnings),
+        )
+
+
+class ProfileValidationResponse(BaseModel):
+    """Every problem found in one profile file; ``valid`` when there is none."""
+
+    name: str
+    valid: bool
+    problems: list[str]
+
+    @classmethod
+    def from_validation(cls, result: ProfileValidation) -> ProfileValidationResponse:
+        """The canonical serialized validation, shared by every surface."""
+        return cls(name=result.name, valid=result.valid, problems=list(result.problems))
+
+
+class ProfileSaveRequest(BaseModel):
+    """Request body for POST /api/profiles: save the project's settings as a new profile."""
+
+    name: str
+    target: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class ProfileNewRequest(BaseModel):
+    """Request body for POST /api/profiles/new: a template, optionally from a profile."""
+
+    name: str
+    from_profile: str | None = None
+    target: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class ProfileDuplicateRequest(BaseModel):
+    """Request body for POST /api/profiles/{name}/duplicate."""
+
+    new_name: str
+    target: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class ProfileRenameRequest(BaseModel):
+    """Request body for PATCH /api/profiles/{name}."""
+
+    new_name: str
+
+
+class ProfileImportRequest(BaseModel):
+    """Request body for POST /api/profiles/import: a profile file's text and its file name."""
+
+    content: str
+    filename: str
+    target: ProfileFolder = ProfileFolder.GLOBAL
+    overwrite: bool = False
+
+
+class ProfileValidateRequest(BaseModel):
+    """Request body for POST /api/profiles/validate: a profile file's text and its file name."""
+
+    content: str
+    filename: str
+    folder: ProfileFolder = ProfileFolder.GLOBAL
+
+
+class AnalyzeFailureResponse(BaseModel):
+    """A sampled file analyze could not read."""
+
+    file: str
+    error: str
+
+
+class AnalyzePdfResponse(BaseModel):
+    """PDF pages, scans and tables; ``scanned_share`` also counts image files at the sample rate."""
+
+    files: int
+    pages: int
+    scanned_pages: int
+    scanned_share: float
+    files_with_tables: int
+    tables: int
+    median_pages: float | None
+
+    @classmethod
+    def from_signals(cls, pdf: PdfSignals) -> AnalyzePdfResponse:
+        """The serialized PDF signals."""
+        return cls(
+            files=pdf.files,
+            pages=pdf.pages,
+            scanned_pages=pdf.scanned_pages,
+            scanned_share=pdf.scanned_share,
+            files_with_tables=pdf.files_with_tables,
+            tables=pdf.tables,
+            median_pages=pdf.median_pages,
+        )
+
+
+class AnalyzeLanguageResponse(BaseModel):
+    """A detected language (ISO 639-3), its share of text files, its stemmer, and OCR support."""
+
+    code: str
+    share: float
+    fts_language: FtsLanguage | None
+    ocr_supported: bool
+
+    @classmethod
+    def from_row(cls, row: LanguageRow) -> AnalyzeLanguageResponse:
+        """One serialized language row."""
+        return cls(
+            code=row.code,
+            share=row.share,
+            fts_language=row.fts_language,
+            ocr_supported=row.ocr_supported,
+        )
+
+
+class AnalyzeReasonResponse(BaseModel):
+    """Why the recommendation sets a setting; the key ``profile`` explains the built-in pick."""
+
+    key: str
+    text: str
+
+
+class AnalyzeRecommendationResponse(BaseModel):
+    """The picked built-in, the derived profile, and what applying it changes."""
+
+    builtin: str
+    name: str | None
+    values: dict[str, Any]
+    changes: list[ProfileDiffRowResponse]
+    kept: list[str]
+    reasons: list[AnalyzeReasonResponse]
+    notes: list[str]
+
+    @classmethod
+    def from_recommendation(cls, rec: Recommendation) -> AnalyzeRecommendationResponse:
+        """The serialized recommendation."""
+        return cls(
+            builtin=rec.builtin,
+            name=rec.name,
+            values=dict(rec.values),
+            changes=[ProfileDiffRowResponse.from_row(row) for row in rec.changes],
+            kept=list(rec.kept),
+            reasons=[AnalyzeReasonResponse(key=r.key, text=r.text) for r in rec.reasons],
+            notes=list(rec.notes),
+        )
+
+
+class AnalyzeSavedResponse(ProfileLocationResponse):
+    """The profile analyze saved or switched to, its file, whether the project now uses it,
+    and any setting it leaves in conflict."""
+
+    applied: bool
+    warnings: list[str] = []
+
+    @classmethod
+    def from_saved(cls, saved: SavedProfile) -> AnalyzeSavedResponse:
+        """The serialized saved profile."""
+        return cls(
+            name=saved.name,
+            folder=saved.folder,
+            path=saved.path.as_posix(),
+            applied=saved.applied,
+            warnings=list(saved.warnings),
+        )
+
+
+class AnalyzeResponse(BaseModel):
+    """One analyze run: what it read and what it recommends; the shape every surface returns.
+
+    ``files_read`` counts the documents extracted without error, out of ``documents_total``;
+    ``files_counted`` code, image and archive files are counted and never read.
+    """
+
+    files_total: int
+    documents_total: int
+    files_read: int
+    files_counted: int
+    cap: int
+    failed: list[AnalyzeFailureResponse]
+    file_types: dict[str, int]
+    code_share: float
+    pdf: AnalyzePdfResponse
+    median_chars: float | None
+    languages: list[AnalyzeLanguageResponse]
+    recommendation: AnalyzeRecommendationResponse
+    saved: AnalyzeSavedResponse | None
+
+    @classmethod
+    def from_report(cls, report: AnalyzeReport) -> AnalyzeResponse:
+        """The canonical serialized analyze report, shared by every surface."""
+        signals = report.signals
+        return cls(
+            files_total=signals.files_total,
+            documents_total=signals.documents_total,
+            files_read=signals.files_read,
+            files_counted=signals.files_counted,
+            cap=signals.cap,
+            failed=[AnalyzeFailureResponse(file=f.file, error=f.error) for f in signals.failed],
+            file_types=dict(signals.file_types),
+            code_share=signals.code_share,
+            pdf=AnalyzePdfResponse.from_signals(signals.pdf),
+            median_chars=signals.median_chars,
+            languages=[AnalyzeLanguageResponse.from_row(row) for row in report.languages],
+            recommendation=AnalyzeRecommendationResponse.from_recommendation(report.recommendation),
+            saved=None if report.saved is None else AnalyzeSavedResponse.from_saved(report.saved),
+        )
+
+
+class AnalyzeRequestBody(BaseModel):
+    """Request body for POST /api/analyze.
+
+    No ``directory`` reads the corpus; otherwise an absolute folder on the server.
+    ``save`` names the saved profile, ``apply`` also switches to it, and ``target``
+    (project or global) needs one of them.
+    """
+
+    directory: str | None = None
+    apply: bool = False
+    save: str | None = None
+    target: ProfileFolder | None = None
+
+
+class AnalyzeStateResponse(BaseModel):
+    """Whether the project was analyzed, hid the analyze tip, and would see the tip now."""
+
+    analyzed: bool
+    tip_dismissed: bool
+    tip_shows: bool
+
+    @classmethod
+    def from_state(cls, state: TipState) -> AnalyzeStateResponse:
+        """The tip state as sent over HTTP and MCP."""
+        return cls(
+            analyzed=state.analyzed, tip_dismissed=state.tip_dismissed, tip_shows=state.tip_shows
         )

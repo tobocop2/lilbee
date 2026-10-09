@@ -4,7 +4,7 @@ import logging
 import os
 import threading
 import tomllib
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterable, Mapping
 from contextlib import contextmanager
 from pathlib import Path, PurePath
 from typing import Any, TypeVar
@@ -12,9 +12,22 @@ from typing import Any, TypeVar
 import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core.config import CONFIG_FILE_NAME, cfg
-from lilbee.core.config.model import value_is_set
+from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config.defaults import SKIP_TOML_ENV
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import (
+    PROFILE_NAME_KEY,
+    PROFILE_TABLE,
+    PROFILE_VALUES_KEY,
+    ROOT_DERIVED_FIELDS,
+    Resolved,
+    read_layers,
+    resolve_all,
+    sanitize_soft_fields,
+)
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
+
+log = logging.getLogger(__name__)
 
 _settings_lock = threading.Lock()
 
@@ -117,11 +130,32 @@ def update_values(data_root: Path, updates: dict[str, Any]) -> None:
 
 
 def delete_values(data_root: Path, keys: list[str]) -> None:
-    """Batch delete multiple keys from config.toml (single write)."""
+    """Batch delete multiple keys from config.toml (single write, none when no key is present)."""
     with _config_write_lock(data_root):
         current = load(data_root)
-        for key in keys:
+        present = [key for key in dict.fromkeys(keys) if key in current]
+        if not present:
+            return
+        for key in present:
+            del current[key]
+        save(data_root, current)
+
+
+def write_profile_table(
+    data_root: Path, name: str, values: Mapping[str, Any], drop: Iterable[str] = ()
+) -> None:
+    """Replace the ``[profile]`` table with *name* and *values* and remove the *drop* keys.
+
+    Other top-level keys stay as they are; one write does both.
+    """
+    table: dict[str, Any] = {PROFILE_NAME_KEY: name}
+    if values:
+        table[PROFILE_VALUES_KEY] = dict(values)
+    with _config_write_lock(data_root):
+        current = load(data_root)
+        for key in drop:
             current.pop(key, None)
+        current[PROFILE_TABLE] = table
         save(data_root, current)
 
 
@@ -142,43 +176,37 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
     return result
 
 
-def overlay_persisted_settings(root: Path) -> None:
-    """Overlay persisted scalars from ``<root>/config.toml`` onto cfg, skipping bad values.
-
-    An explicit ``LILBEE_<FIELD>`` env var wins over config.toml (the documented
-    precedence): cfg already holds the env-loaded value, so a key whose env var is
-    set is left untouched rather than overwritten by the persisted file. An empty
-    persisted value is skipped, except on a clearable model role, where it clears it.
-
-    ``LILBEE_SKIP_TOML_CONFIG=1`` disables this overlay entirely, matching the
-    pydantic-settings source in ``config/model.py`` so the escape hatch is honored
-    on every config-read path (import-time load, CLI callback, MCP server).
-    """
-    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1":
-        return
-    log = logging.getLogger(__name__)
-    try:
-        persisted = load(root)
-    except (OSError, ValueError):
-        log.warning("Failed to read %s/config.toml; using in-memory defaults", root)
-        return
-    if not persisted:
-        return
-    overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
-    env_prefix = cfg.model_config.get("env_prefix", "")
-    for key, raw in persisted.items():
-        if key not in overlayable:
-            continue
-        if value_is_set(key, os.environ.get(f"{env_prefix}{key.upper()}")):
-            continue
-        if not value_is_set(key, raw):
-            continue
+def _assign_resolved(
+    config: Config, resolved: Mapping[str, Resolved], keys: Iterable[str], root: Path
+) -> None:
+    """Set each of *keys* on *config* to its resolved value, warning on one the field rejects."""
+    sanitized = sanitize_soft_fields(dict(resolved), root)
+    for key in keys:
+        entry = sanitized[key]
         try:
-            setattr(cfg, key, raw)
+            setattr(config, key, entry.value)
         except (ValueError, TypeError) as exc:
-            log.warning(
-                "Ignoring invalid persisted value for %s in %s: %s",
-                key,
-                root,
-                exc,
-            )
+            log.warning("Ignoring invalid %s value for %s in %s: %s", entry.source, key, root, exc)
+
+
+def sync_from_resolver(config: Config, keys: Iterable[str]) -> None:
+    """Set each of *keys* on *config* to the value the resolver gives under its data root."""
+    root = config.data_root
+    _assign_resolved(config, resolve_all(read_layers(root)), keys, root)
+
+
+def overlay_persisted_settings(root: Path) -> None:
+    """Set every overlayable key on cfg to its resolved value under ``root``.
+
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables the overlay. A root-derived path at its
+    built-in keeps the value the caller set from ``root``.
+    """
+    if os.environ.get(SKIP_TOML_ENV) == "1":
+        return
+    resolved = resolve_all(read_layers(root))
+    keys = [
+        key
+        for key in sorted(set(WRITABLE_CONFIG_FIELDS) | MODEL_ROLE_FIELDS)
+        if not (key in ROOT_DERIVED_FIELDS and resolved[key].source is SettingSource.BUILT_IN)
+    ]
+    _assign_resolved(cfg, resolved, keys, root)

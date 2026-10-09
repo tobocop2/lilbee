@@ -1208,7 +1208,7 @@ class TestSyncHint:
 
         with (
             mock.patch("lilbee.data.ingest.detect_pending", return_value=3) as detect,
-            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen.run_sync") as run_sync,
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
@@ -1269,12 +1269,12 @@ class TestSyncHint:
 
     @pytest.mark.asyncio
     async def test_shift_s_triggers_sync_and_clears_hint(self) -> None:
-        """Pressing S from any screen routes to ChatScreen._run_sync and clears the hint."""
+        """Pressing S from any screen routes to ChatScreen.run_sync and clears the hint."""
         from lilbee.cli.tui.app import LilbeeApp
 
         with (
             mock.patch("lilbee.data.ingest.detect_pending", return_value=2),
-            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen.run_sync") as run_sync,
         ):
             app = LilbeeApp()
             async with app.run_test() as pilot:
@@ -1302,7 +1302,7 @@ class TestSyncHint:
 
         with (
             mock.patch("lilbee.data.ingest.detect_pending", return_value=0),
-            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen._run_sync") as run_sync,
+            mock.patch("lilbee.cli.tui.screens.chat.ChatScreen.run_sync") as run_sync,
         ):
             app = LilbeeApp(initial_view="Catalog")
             async with app.run_test() as pilot:
@@ -1381,7 +1381,7 @@ class TestSyncHint:
 
                 app.task_bar.start_detect_pending = _track  # type: ignore[method-assign]
 
-                app.screen._run_sync()
+                app.screen.run_sync()
                 gate.wait(timeout=5)
                 for _ in range(50):
                     queue = app.task_bar.queue
@@ -1510,7 +1510,7 @@ class TestRunSyncRetry:
             assert len(timers) == 2 and switches == ["Chat", "Chat"]
             timers[1]()  # attempts=0: gives up without scheduling
             assert len(timers) == 2
-        chat._run_sync.assert_not_called()
+        chat.run_sync.assert_not_called()
 
     def test_run_sync_retry_stops_when_the_app_is_tearing_down(self) -> None:
         """A pending retry firing after the screens are gone must do nothing."""
@@ -1531,7 +1531,7 @@ class TestRunSyncRetry:
             laters[0]()  # fires with an empty stack: returns immediately
         switch.assert_not_called()
         timer.assert_not_called()
-        chat._run_sync.assert_not_called()
+        chat.run_sync.assert_not_called()
 
 
 def _is_one_action_two_ways(first: str, second: str) -> bool:

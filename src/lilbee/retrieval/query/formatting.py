@@ -12,6 +12,7 @@ from markdown_it.token import Token
 
 from lilbee.core.text import collapse_whitespace
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, is_memory_source
+from lilbee.data.types import CODE_CONTENT_TYPE
 
 CONTEXT_TEMPLATE = """Context:
 {context}
@@ -142,7 +143,7 @@ def _location_suffix(result: SearchChunk) -> str:
     if result.content_type == "pdf" and (result.page_start or result.page_end):
         ps, pe = result.page_start, result.page_end
         return f"page {ps}" if ps == pe else f"pages {ps}-{pe}"
-    if result.content_type == "code" and (result.line_start or result.line_end):
+    if result.content_type == CODE_CONTENT_TYPE and (result.line_start or result.line_end):
         ls, le = result.line_start, result.line_end
         return f"line {ls}" if ls == le else f"lines {ls}-{le}"
     return ""

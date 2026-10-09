@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import StrEnum
 from typing import ClassVar
 
 from textual import events, on
@@ -16,7 +17,7 @@ from lilbee.cli.tui import messages as msg
 
 
 class ConfirmPill(Static, can_focus=True):
-    """Focusable yes/no pill; Enter, Space or a click picks it."""
+    """Focusable dialog pill; Enter, Space or a click picks the answer it stands for."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("enter", "select", "Pick", show=False),
@@ -26,11 +27,11 @@ class ConfirmPill(Static, can_focus=True):
     class Picked(Message):
         """A pill was picked, carrying the answer it stands for."""
 
-        def __init__(self, answer: bool) -> None:
+        def __init__(self, answer: bool | StrEnum) -> None:
             super().__init__()
             self.answer = answer
 
-    def __init__(self, label: str, *, pill_id: str, answer: bool) -> None:
+    def __init__(self, label: str, *, pill_id: str, answer: bool | StrEnum) -> None:
         super().__init__(label, id=pill_id)
         self._answer = answer
 
@@ -75,7 +76,7 @@ class ConfirmDialog(ModalScreen[bool]):
     @on(ConfirmPill.Picked)
     def _on_pill_picked(self, event: ConfirmPill.Picked) -> None:
         event.stop()
-        self.dismiss(event.answer)
+        self.dismiss(event.answer is True)
 
     def action_confirm(self) -> None:
         self.dismiss(True)

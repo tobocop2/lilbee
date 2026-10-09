@@ -35,9 +35,17 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 **CLI.** The command that writes this setting, or `no`.
 
+**Advanced.** `yes` means the TUI folds this setting into the collapsed "Advanced" section at the bottom of its tab: a normal user never needs it to get good results. `no` means the setting stays with the tab's regular rows. Every setting is still reachable through every other surface either way.
+
+## Where a value comes from
+
+Each setting takes its value from the first source that sets it: a non-empty environment variable (`env`), then `config.toml` (`user`), then the project's profile (`profile`), then lilbee's default. A default that lilbee computes at runtime is `auto`; any other default is `built_in`. An empty `LILBEE_<SETTING>=` sets nothing.
+
+The TUI marks an override with a pill on the setting's row: `set by you` for a `config.toml` value, and the variable's name for an environment value. Resetting a setting removes its `config.toml` value, so its pill goes away. MCP returns the source in the `source` field of `lilbee_settings_list` and `lilbee_settings_get`. HTTP returns it from `GET /api/config/sources`, as `{"sources": {"<setting>": "<source>"}}` over the same settings as `GET /api/config`.
+
 ## Three rules that apply only over MCP
 
-**Some settings change the tool list, and the change needs a reconnect.** `wiki`, `memory_enabled` and `mcp_sessions_enabled` decide which tools register. The gate runs once, when the server is built, and MCP sends no `tools/list_changed` notification from here. So `lilbee_settings_set({"wiki": true})` succeeds and persists, and the `lilbee_wiki_*` tools still do not appear until the client reconnects. Ask the user to restart the MCP server. `lilbee_wiki_status` and `lilbee_wiki_wipe` register either way, so a caller can always read the wiki's state and can always delete pages an earlier build wrote.
+**Some settings change the tool list, and the change needs a reconnect.** `wiki`, `memory_enabled`, `mcp_sessions_enabled` and `mcp_profiles_enabled` decide which tools register. The gate runs once, when the server is built, and MCP sends no `tools/list_changed` notification from here. So `lilbee_settings_set({"wiki": true})` succeeds and persists, and the `lilbee_wiki_*` tools still do not appear until the client reconnects. Ask the user to restart the MCP server. `lilbee_wiki_status` and `lilbee_wiki_wipe` register either way, so a caller can always read the wiki's state and can always delete pages an earlier build wrote.
 
 **Turning a feature on does not run it.** Setting `wiki` generates no pages. Build them with `lilbee_wiki_index`, then `lilbee_wiki_generate(slug)` for one page on demand, or `lilbee_wiki_build` for the whole corpus, which spends about one LLM call per source document. Set `wiki_auto_update` to regenerate touched pages after each sync.
 

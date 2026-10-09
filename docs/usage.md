@@ -210,6 +210,8 @@ tab-complete; `/help` opens the same catalog live.
 | `/memories` | | Browse, delete, or share saved memories |
 | `/settings` | | View or change settings |
 | `/set <key> <val>` | | Change a setting (e.g. `/set temperature 0.7`) |
+| `/profile [name]` | | Switch the settings profile. No args opens the Profile tab in Settings |
+| `/analyze [dir\|report\|off]` | | Recommend a profile for your documents or a folder. `report` opens the last report; `off` hides the analyze tip |
 | `/theme <name>` | | Switch theme |
 | `/status` | | Show indexed documents and config |
 | `/login <token>` | | Log in to HuggingFace |
@@ -926,6 +928,100 @@ lilbee memory recall "what language"             # recall facts by relevance
 lilbee memory remove <id>                        # delete a memory by id
 ```
 
+### Profiles
+
+A profile is a named set of ingest, OCR, chunking and retrieval settings.
+Every write goes to all projects unless you pass `--target project`.
+
+In the TUI, Settings opens on the Profile tab. It lists your values
+against the profile's with the reindex cost of each, and saves, updates
+or discards them. When a discard reverts a setting the index is built
+with, the tab offers a rebuild. Picking another profile shows what
+changes before anything is applied. `/profile <name>` does the same from chat, and
+`/profile` alone opens the tab.
+
+Manage profiles, on the same tab, opens the profile library. It lists
+every profile with its folder, and marks shadowed and broken files with
+the reason. Enter applies the highlighted profile, and the keys shown in
+the library duplicate, rename, delete, export or import it.
+Profiles that ship with lilbee cannot be renamed or deleted.
+
+```bash
+lilbee profile show                           # this project's profile and your changes to it
+lilbee profile list                           # every profile, with credit and broken files
+lilbee profile diff "Scanned archive"         # what applying it changes
+lilbee profile apply scanned-archive --reindex  # apply, then rebuild when a change needs it
+lilbee profile save "Court filings"           # save your settings as a profile and switch to it
+lilbee profile update                         # write your settings into the active profile
+lilbee profile discard                        # drop your values so the profile's show through
+lilbee profile new "Mine" --from research-papers
+lilbee profile duplicate "Scanned archive" "My scans"
+lilbee profile rename "My scans" "Old scans"
+lilbee profile delete "Old scans"
+lilbee profile export "Court filings" ./shared/
+lilbee profile import ./shared/court-filings.toml --target project
+lilbee profile validate court-filings.toml
+```
+
+#### Share a profile
+
+To share a profile, export it to a file and send the file. The other
+person imports it:
+
+```bash
+lilbee profile export "Court filings" ./court-filings.toml
+lilbee profile import ./court-filings.toml
+```
+
+A profile file can credit its authors and name the corpus it was tuned
+on. `lilbee profile list` and the Profile tab show both:
+
+```toml
+[profile]
+name = "Court filings"
+authors = [{ name = "Jane Doe", github = "janedoe" }]
+tested_on = "4,000 scanned county court filings"
+```
+
+### Analyze
+
+`lilbee analyze` reads your documents and recommends a profile. It
+changes nothing until you pass `--apply` or `--save`. No AI model runs:
+lilbee extracts the files with OCR off and reads the file types, code
+share, scanned pages, tables, lengths and languages. Code, image and
+archive files are counted, not read. When there are more than
+`analyze_max_files` documents (500 by default), lilbee reads an evenly
+spaced sample of them, and the report says how many it read.
+
+The recommendation is the closest built-in profile plus corpus
+adjustments, saved as "<built-in> (<project>)". The search language
+(`fts_language`) follows the most common language. When there are scans,
+the OCR languages (`ocr_language`) come from the text pages, and the
+report says so. Your own values and `LILBEE_*` variables stay.
+
+```bash
+lilbee analyze                        # the files lilbee indexes; saves nothing
+lilbee analyze ~/papers               # any folder, before you add it
+lilbee analyze --apply                # save the recommendation and switch to it
+lilbee analyze --save "My papers"     # save it under a name without switching
+lilbee analyze --apply --target global  # save to the global folder; needs --apply or --save
+lilbee analyze --off                  # hide the tip
+lilbee --json analyze                 # the report as one JSON object
+```
+
+`lilbee init` and `lilbee add` print a one-line tip before ingest
+starts while the project is on the Default profile, was never
+analyzed, and has no documents yet. Analyzing, applying any profile, or `lilbee analyze --off`
+hides it. Press Ctrl+C to cancel a run; a cancelled run saves nothing.
+
+In the TUI, `/analyze [dir]` (or "Analyze documents" in the command
+palette) runs in the task bar. When it finishes, a notice says so and
+`/analyze report` opens the report; it never opens over what you are
+typing. Apply shows what the profile changes and asks before it
+switches; Save only saves it without switching. While you type `/add`,
+the argument hint shows the same tip until the project has documents.
+`/analyze off` hides it.
+
 ### Sessions
 
 See [Sessions](#sessions). Ids accept any unique prefix.
@@ -985,6 +1081,8 @@ port file, and `lilbee agent-config` hands it to local clients. The surface
 covers search (with SSE streaming variants for `ask` and `chat`),
 document lifecycle, crawling, model management, memory
 (`GET`/`POST`/`PATCH`/`DELETE /api/memories`, when memory is enabled),
+profiles (`/api/profiles`: list, show, the active profile, diff, apply,
+and every profile file operation),
 saved conversations (`/api/sessions`: list, read, create, append, fork,
 rename, delete, the compaction summary, and `GET /api/sessions/{id}/markdown`
 for a markdown export whose `Content-Disposition` header names the file),
@@ -1408,7 +1506,7 @@ reporting the model fits.
 Lower `system_memory_reserve_gb` on a machine with a lot of RAM and nothing else
 running, if a model that offloads to host memory is being refused.
 
-Both are writable at runtime through `/settings`, `lilbee config set`, and MCP.
+Both are writable at runtime through `/settings`, `lilbee settings set`, and MCP.
 
 **If a model is refused for memory it looks like it should have:** run
 `lilbee placement preview` to see what the planner budgeted. The planner charges

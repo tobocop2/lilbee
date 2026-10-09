@@ -1,0 +1,6 @@
+[profile]
+name = "Default"
+description = "lilbee's built-in settings, for a mixed collection of documents."
+format = 1
+
+[values]

@@ -29,6 +29,7 @@ class EventType(StrEnum):
     SETUP_DONE = "setup_done"
     WIKI_PHASE = "wiki_phase"
     WIKI_PAGE = "wiki_page"
+    ANALYZE = "analyze"
 
 
 class SseEvent(StrEnum):
@@ -263,3 +264,11 @@ class WikiPageEvent(BaseModel):
     pages: int
     current: int
     total: int
+
+
+class AnalyzeEvent(BaseModel):
+    """Emitted after each batch of files corpus analysis reads."""
+
+    done: int
+    total: int
+    file: str

@@ -1,0 +1,7 @@
+[profile]
+name = "Code repository"
+description = "Source code and its docs, where images are not text to search."
+format = 1
+
+[values]
+enable_ocr = false

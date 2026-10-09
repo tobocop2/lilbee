@@ -23,6 +23,8 @@ from lilbee.app.version import get_version
 from lilbee.cli import app
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import SettingSource
+from lilbee.core.config.resolve import read_layers, resolve
 from lilbee.core.security import PathTraversalError
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
@@ -1032,9 +1034,7 @@ class TestApplyOverrides:
         assert cfg.data_root == env_dir
         assert cfg.documents_dir == docs_dir
 
-    def test_lilbee_documents_dir_env_wins_over_config_toml(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    def test_lilbee_documents_dir_env_wins_over_config_toml(self, tmp_path, monkeypatch):
         """LILBEE_DOCUMENTS_DIR also wins over a persisted documents_dir."""
         from lilbee.cli import apply_overrides
 
@@ -1048,6 +1048,21 @@ class TestApplyOverrides:
         monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", str(docs_dir))
         apply_overrides(data_dir=root)
         assert cfg.documents_dir == docs_dir
+
+    @pytest.mark.parametrize("persisted", [True, False])
+    def test_blank_lilbee_documents_dir_is_unset(self, tmp_path, monkeypatch, persisted):
+        from lilbee.cli import apply_overrides
+
+        root = tmp_path / "root"
+        root.mkdir()
+        persisted_dir = tmp_path / "persisted"
+        if persisted:
+            (root / "config.toml").write_text(
+                f'documents_dir = "{persisted_dir.as_posix()}"\n', encoding="utf-8"
+            )
+        monkeypatch.setenv("LILBEE_DOCUMENTS_DIR", "  ")
+        apply_overrides(data_dir=root)
+        assert cfg.documents_dir == (persisted_dir if persisted else root / "documents")
 
     def test_generation_option_overrides(self):
         from lilbee.cli import apply_overrides
@@ -1075,7 +1090,7 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.7
         cfg.temperature = None
 
-    def test_data_dir_overlays_per_root_config_toml(self, tmp_path, overlay_reads_config_toml):
+    def test_data_dir_overlays_per_root_config_toml(self, tmp_path):
         """A per-vault config.toml in the data-dir must be re-read when --data-dir lands.
 
         Regression: cfg's scalar fields (chat_model, embedding_model, ...) were
@@ -1099,43 +1114,64 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/qwen3:4b"
         assert cfg.embedding_model == "ollama/nomic-embed-text:v1.5"
 
-    def test_data_dir_config_toml_clearing_the_vision_model_beats_the_ambient_one(
-        self, tmp_path, overlay_reads_config_toml
-    ):
-        """An empty vision_model in the data-dir clears it; an empty chat_model does not."""
+    def test_data_dir_config_toml_clearing_the_vision_model_beats_the_ambient_one(self, tmp_path):
+        """An empty vision_model in the data-dir clears it; an empty chunk_size is unset."""
         from lilbee.cli import apply_overrides
 
         cfg.vision_model = "org/Ambient-Vision-GGUF/ambient-Q4_K_M.gguf"
-        cfg.chat_model = "ollama/ambient-chat:latest"
-        cfg.top_k = 5
         (tmp_path / "config.toml").write_text(
-            'vision_model = ""\nchat_model = ""\ntop_k = 9\n', encoding="utf-8"
+            'vision_model = ""\nchunk_size = ""\ntop_k = 9\n[profile.values]\nchunk_size = 900\n',
+            encoding="utf-8",
         )
 
         apply_overrides(data_dir=tmp_path)
 
         assert cfg.vision_model == ""
-        assert cfg.chat_model == "ollama/ambient-chat:latest"
+        assert cfg.chunk_size == 900
         assert cfg.top_k == 9
+        assert resolve("vision_model", read_layers(cfg.data_root)).source is SettingSource.USER
 
-    def test_data_dir_without_config_toml_leaves_cfg_unchanged(
-        self, tmp_path, overlay_reads_config_toml
-    ):
-        """An empty / missing config.toml must not stomp on existing cfg values."""
+    def test_callback_flags_survive_the_subcommand_overlay(self, tmp_path, monkeypatch):
+        """--model before the subcommand outlives the subcommand's own data-root overlay."""
+        from lilbee.cli import apply_overrides
+        from lilbee.cli.app import chat_model_overridden
+
+        (tmp_path / "config.toml").write_text(
+            'chat_model = "ollama/persisted:latest"\ntop_k = 7\n', encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        apply_overrides(model="ollama/flag:latest", temperature=0.5)
+        apply_overrides()
+        assert cfg.chat_model == "ollama/flag:latest"
+        assert cfg.temperature == 0.5
+        assert cfg.top_k == 7
+        assert chat_model_overridden()
+
+    def test_each_invocation_starts_with_no_overrides(self):
+        """The callback forgets flags from an earlier invocation in the same process."""
+        from lilbee.cli import apply_overrides
+        from lilbee.cli.app import chat_model_overridden
+
+        apply_overrides(model="ollama/flag:latest")
+        assert chat_model_overridden()
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+        assert not chat_model_overridden()
+
+    def test_data_dir_without_config_toml_resets_cfg_to_built_in(self, tmp_path):
+        """A root with no config.toml gives the built-ins, not the previous root's values."""
         from lilbee.cli import apply_overrides
 
-        cfg.chat_model = "ollama/kept-from-import:latest"
-        cfg.embedding_model = "ollama/kept-embed:latest"
+        cfg.chat_model = "ollama/from-import-root:latest"
+        cfg.embedding_model = "ollama/from-import-root-embed:latest"
         # tmp_path has no config.toml.
 
         apply_overrides(data_dir=tmp_path)
 
-        assert cfg.chat_model == "ollama/kept-from-import:latest"
-        assert cfg.embedding_model == "ollama/kept-embed:latest"
+        assert cfg.chat_model == ""
+        assert cfg.embedding_model == ""
 
-    def test_data_dir_overlay_covers_writable_scalar_fields(
-        self, tmp_path, overlay_reads_config_toml
-    ):
+    def test_data_dir_overlay_covers_writable_scalar_fields(self, tmp_path):
         """Writable scalar fields (e.g. temperature, top_k) overlay too, not just models."""
         from lilbee.cli import apply_overrides
 
@@ -1149,9 +1185,7 @@ class TestApplyOverrides:
         assert cfg.temperature == 0.2
         assert cfg.top_k == 20
 
-    def test_use_global_overlays_global_config_toml(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    def test_use_global_overlays_global_config_toml(self, tmp_path, monkeypatch):
         """--global must also re-read the global root's config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -1167,9 +1201,7 @@ class TestApplyOverrides:
         assert cfg.data_root == fake_global
         assert cfg.chat_model == "ollama/from-global:latest"
 
-    def test_lilbee_data_env_overlays_config_toml(
-        self, tmp_path, monkeypatch, overlay_reads_config_toml
-    ):
+    def test_lilbee_data_env_overlays_config_toml(self, tmp_path, monkeypatch):
         """The LILBEE_DATA env-var path must also overlay its config.toml."""
         from lilbee.cli import apply_overrides
 
@@ -1210,7 +1242,7 @@ class TestApplyOverrides:
         apply_overrides(use_global=True)
         assert os.environ.get("LILBEE_DATA") == str(fake_global)
 
-    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path, overlay_reads_config_toml):
+    def test_data_dir_overlay_skips_unknown_keys(self, tmp_path):
         """Stale or unrecognised keys in config.toml don't blow up startup."""
         from lilbee.cli import apply_overrides
 
@@ -1224,9 +1256,7 @@ class TestApplyOverrides:
         assert cfg.chat_model == "ollama/from-vault:latest"
         assert not hasattr(cfg, "totally_unknown_key")
 
-    def test_data_dir_overlay_logs_and_skips_invalid_value(
-        self, tmp_path, caplog, overlay_reads_config_toml
-    ):
+    def test_data_dir_overlay_logs_and_skips_invalid_value(self, tmp_path, caplog):
         """A malformed persisted value is logged and skipped, not raised."""
         from lilbee.cli import apply_overrides
 
@@ -1240,25 +1270,18 @@ class TestApplyOverrides:
         assert cfg.top_k == 7
         assert any("top_k" in rec.message for rec in caplog.records)
 
-    def test_data_dir_overlay_handles_unreadable_config_toml(
-        self, tmp_path, monkeypatch, caplog, overlay_reads_config_toml
-    ):
-        """A read failure on config.toml is logged and treated as 'no overlay'."""
+    def test_data_dir_overlay_treats_unreadable_config_toml_as_empty(self, tmp_path, caplog):
+        """A config.toml that fails to parse is logged and contributes no values."""
         from lilbee.cli import apply_overrides
-        from lilbee.core import settings as settings_mod
 
-        cfg.chat_model = "ollama/kept:latest"
-
-        def _boom(_root):
-            raise OSError("simulated read failure")
-
-        monkeypatch.setattr(settings_mod, "load", _boom)
+        cfg.chat_model = "ollama/from-import-root:latest"
+        (tmp_path / "config.toml").write_text("chat_model = [unclosed\n", encoding="utf-8")
 
         with caplog.at_level(logging.WARNING):
             apply_overrides(data_dir=tmp_path)
 
-        assert cfg.chat_model == "ollama/kept:latest"
-        assert any("config.toml" in rec.message for rec in caplog.records)
+        assert cfg.chat_model == ""
+        assert any("config.toml" in rec.getMessage() for rec in caplog.records)
 
 
 class TestGlobalFlag:
@@ -1649,6 +1672,13 @@ class TestSearch:
         result = runner.invoke(app, ["search", "q", "--top-k", "500"])
         assert result.exit_code == 0
         assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 100
+
+    def test_search_omitted_top_k_uses_configured_value(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        result = runner.invoke(app, ["search", "q"])
+        assert result.exit_code == 0
+        assert mock_svc.searcher.search.call_args.kwargs["top_k"] == 7
 
     def test_search_rejects_non_positive_top_k(self, mock_svc):
         for bad in ("0", "-3"):

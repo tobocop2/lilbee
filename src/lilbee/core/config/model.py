@@ -18,13 +18,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from lilbee.core.system import scaled_chat_ctx_target_default
 
 from .defaults import (
-    CONFIG_FILE_NAME,
     DEFAULT_ALLOWED_NER_LABELS,
     DEFAULT_CORS_ORIGIN_REGEX,
     DEFAULT_CRAWL_EXCLUDE_PATTERNS,
     DEFAULT_GENERAL_SYSTEM_PROMPT,
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
+    ENV_PREFIX,
+    SKIP_TOML_ENV,
 )
 from .enums import (
     ChatMode,
@@ -34,12 +35,18 @@ from .enums import (
     KvCacheType,
     LlmProvider,
     OcrPageStrategy,
+    ProfileScope,
     ReasoningMode,
     RerankerType,
     TableModel,
     WikiEntityMode,
 )
-from .parsing import parse_bool
+from .parsing import (
+    parse_bool,
+    parse_gpu_device_list,
+    parse_optional_int,
+    parse_tristate_bool,
+)
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -94,7 +101,7 @@ class Config(BaseSettings):
     """Runtime configuration: one singleton instance, mutated by CLI overrides."""
 
     model_config = SettingsConfigDict(
-        env_prefix="LILBEE_",
+        env_prefix=ENV_PREFIX,
         validate_assignment=True,
         arbitrary_types_allowed=True,
         extra="ignore",
@@ -175,22 +182,28 @@ class Config(BaseSettings):
             "change it only to match a model lilbee cannot introspect"
         ),
     )
-    chunk_size: int = ConfigField(default=512, ge=64, writable=True, reindex=True)
-    chunk_overlap: int = ConfigField(default=100, ge=0, writable=True, reindex=True)
+    chunk_size: int = ConfigField(
+        default=512, ge=64, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
+    chunk_overlap: int = ConfigField(
+        default=100, ge=0, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
     # A file over this many chunks is skipped before embedding; 0 lifts the ceiling.
-    max_chunks_per_file: int = ConfigField(default=3_000, ge=0, writable=True)
+    max_chunks_per_file: int = ConfigField(
+        default=3_000, ge=0, writable=True, profile=ProfileScope.INGEST
+    )
     # Workers for the parallel discovery/hash planning pass. 0 = auto, sized to
     # the container-aware CPU budget (see runtime.cpu.available_cpu_count).
     # `add --max-cpus N` sets this per invocation. Sizes only the planning pass,
     # not the GPU-fed extract/embed batch.
-    ingest_workers: int = ConfigField(default=0, ge=0, writable=True)
+    ingest_workers: int = ConfigField(default=0, ge=0, writable=True, derived=True)
     # Worker PROCESSES for a bulk ingest (distinct from ingest_workers, which sizes
     # the planning pass's threads). Each owns a GPU, a private store and its own
     # slice of the corpus, and the shards are folded into one index at the end.
     # 0 = auto: one worker per visible card, used once the corpus is big enough to
     # pay for them. N pins the count; worker i takes card i % card_count, so more
     # workers than cards share a card's engine rather than double-booking it.
-    ingest_processes: int = ConfigField(default=0, ge=0, writable=True)
+    ingest_processes: int = ConfigField(default=0, ge=0, writable=True, derived=True)
     # Passages packed into one embed request. Larger batches keep a GPU's
     # continuous-batching slots full: small per-passage requests leave the card
     # batch-starved (~96% util, low throughput). The engine still re-splits to
@@ -227,15 +240,21 @@ class Config(BaseSettings):
         ge=1,
         description="Maximum characters sent to the embedding model per chunk. Longer text is cut",
     )
-    top_k: int = ConfigField(default=12, ge=1, writable=True)
-    max_distance: float = ConfigField(default=0.75, ge=0.0, writable=True)
+    top_k: int = ConfigField(default=12, ge=1, writable=True, profile=ProfileScope.RETRIEVAL)
+    max_distance: float = ConfigField(
+        default=0.75, ge=0.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
     # Abstention floor against the [0, 1] fused relevance score (0.0 = no
     # filtering). When every retrieved chunk falls below it, ask refuses instead
     # of feeding noise as context. The fused score normalizes against the
     # configured weight budget (a constant), so an arm's top hit scores a stable
     # share of it; useful floors start around 0.4. Tune against your own corpus.
-    min_relevance_score: float = ConfigField(default=0.0, ge=0.0, writable=True)
-    adaptive_threshold: bool = ConfigField(default=False, writable=True)
+    min_relevance_score: float = ConfigField(
+        default=0.0, ge=0.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
+    adaptive_threshold: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.RETRIEVAL
+    )
     rag_system_prompt: str = ConfigField(
         default=DEFAULT_RAG_SYSTEM_PROMPT, min_length=1, writable=True
     )
@@ -254,7 +273,9 @@ class Config(BaseSettings):
     # None = auto-detect (use OCR if chat model is vision-capable).
     # True = force OCR regardless of detection.
     # False = disable OCR entirely.
-    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+    enable_ocr: bool | None = ConfigField(
+        default=None, writable=True, profile=ProfileScope.INGEST, derived=True
+    )
     # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
     # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
     # needs matching headroom here.
@@ -277,30 +298,49 @@ class Config(BaseSettings):
     # Tesseract OCR language codes for the scanned-document fallback (used when no
     # vision model is set), e.g. ["eng"] or ["eng", "deu"]. Set via env as
     # LILBEE_OCR_LANGUAGE="eng+deu". xberg requires a non-empty list.
-    ocr_language: list[str] = ConfigField(default_factory=lambda: ["eng"], writable=True)
+    ocr_language: list[str] = ConfigField(
+        default_factory=lambda: ["eng"], writable=True, profile=ProfileScope.INGEST
+    )
     # PDF pages xberg OCRs. auto = pages whose native text fails its quality
     # check; scanned_pages also OCRs every page graded as a scan.
-    ocr_strategy: OcrPageStrategy = ConfigField(default=OcrPageStrategy.AUTO, writable=True)
+    ocr_strategy: OcrPageStrategy = ConfigField(
+        default=OcrPageStrategy.AUTO, writable=True, profile=ProfileScope.INGEST
+    )
     # Scan-grade threshold for scanned_pages. A slide with a full-bleed
     # background image grades 0.5, so lower this to OCR such slides too.
-    ocr_scan_confidence: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
+    ocr_scan_confidence: float = ConfigField(
+        default=0.7, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST
+    )
     # 1-indexed pages that lilbee OCRs in every PDF; while set, it replaces the
     # ocr_strategy page selection. Env form: LILBEE_FORCE_OCR_PAGES="1,3".
-    force_ocr_pages: list[int] = ConfigField(default_factory=list, writable=True)
+    force_ocr_pages: list[int] = ConfigField(
+        default_factory=list, writable=True, profile=ProfileScope.INGEST
+    )
     # Typed entity table for exact counting/cross-referencing; corpus-scale pass, off by default.
-    entity_extraction: bool = ConfigField(default=False, writable=True)
-    semantic_chunking: bool = ConfigField(default=False, writable=True)
-    topic_threshold: float = ConfigField(default=0.75, ge=0.0, le=1.0, writable=True)
+    entity_extraction: bool = ConfigField(default=False, writable=True, profile=ProfileScope.INGEST)
+    semantic_chunking: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
+    # Boundary-similarity threshold; only applied when semantic_chunking is on.
+    topic_threshold: float = ConfigField(
+        default=0.75, ge=0.0, le=1.0, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
     # Size chunks in real tokens via the embedder's tokenizer backend, not the
     # chars-per-token heuristic. Plain/heading chunkers only; semantic sizes by chars.
-    token_sizing: bool = ConfigField(default=False, writable=True, reindex=True)
+    token_sizing: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
     # Index each recognized table as its own markdown-serialized chunk.
-    table_extraction: bool = ConfigField(default=False, writable=True, reindex=True)
+    table_extraction: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
     # Layout-aware PDF extraction (reading-order sort, header/footer stripping),
     # run in xberg's AUTO strategy so detection only fires when it helps. Off by
     # default: enabling it downloads the ONNX layout and table-structure models
     # and adds per-page inference, which a CPU-only ingest pays for.
-    layout_detection: bool = ConfigField(default=False, writable=True, reindex=True)
+    layout_detection: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.INGEST, reindex=True
+    )
     # Table structure model; only applied when layout_detection is on.
     table_model: TableModel = ConfigField(
         default=TableModel.SLANET_AUTO, writable=True, reindex=True
@@ -313,12 +353,14 @@ class Config(BaseSettings):
     # Coalesce concurrent extractions into one xberg extract_batch call.
     batch_extraction: bool = ConfigField(default=False, writable=True)
     batch_extraction_size: int = ConfigField(default=8, ge=1, writable=True)
+    # Files analyze extracts; a larger corpus is sampled evenly down to this many.
+    analyze_max_files: int = ConfigField(default=500, ge=1, writable=True)
     # xberg's shared thread budget: PDF rendering, OCR and ONNX inference. It
     # also bounds concurrent Tesseract sessions, which xberg further limits to
     # what free memory holds. 0 = auto, runtime.cpu.cpu_quota() (half the usable
     # CPUs). The rayon pool is fixed at the first extraction, so a change takes
     # full effect after a restart.
-    extraction_threads: int = ConfigField(default=0, ge=0, writable=True)
+    extraction_threads: int = ConfigField(default=0, ge=0, writable=True, derived=True)
     # Size of anyio's thread pool: synchronous handlers (MCP tools, sync routes)
     # that may run off the event loop at once. The ceiling on agents one daemon
     # serves before their calls queue.
@@ -366,7 +408,7 @@ class Config(BaseSettings):
     # 1.1 is llama.cpp's default. Leaving this at None caused n-gram loops
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
-    num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
+    num_ctx: int | None = ConfigField(default=None, ge=1, writable=True, derived=True)
     max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
@@ -390,44 +432,58 @@ class Config(BaseSettings):
     # Retrieval quality knobs.
 
     # Max chunks per source in top-k; prevents one large file monopolizing results.
-    diversity_max_per_source: int = ConfigField(default=5, ge=1, writable=True)
+    diversity_max_per_source: int = ConfigField(
+        default=5, ge=1, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # MMR relevance/diversity tradeoff; 0 = max diversity, 1 = pure relevance
     # (Carbonell & Goldstein 1998).
-    mmr_lambda: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+    mmr_lambda: float = ConfigField(
+        default=0.5, ge=0.0, le=1.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Vector-only search retrieves this many candidates per final result so
     # MMR reranking has a pool to diversify from. Hybrid search ignores it:
     # fusion arms stay exactly top_k deep.
-    candidate_multiplier: int = ConfigField(default=3, ge=1, writable=True)
+    candidate_multiplier: int = ConfigField(
+        default=3, ge=1, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Third lexical arm in hybrid search: BM25 over document titles, fused with
     # the vector and chunk arms so a query naming a document by title surfaces
     # its chunks. Off by default until the eval harness measures it.
-    title_search: bool = ConfigField(default=False, writable=True)
+    title_search: bool = ConfigField(default=False, writable=True, profile=ProfileScope.RETRIEVAL)
 
     # Title arm weight relative to a full arm in rank fusion (1.0 = equal voice
     # with the vector and chunk arms).
-    title_search_weight: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+    title_search_weight: float = ConfigField(
+        default=0.5, ge=0.0, le=1.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Lexical (BM25) arm weight relative to the vector arm in rank fusion.
     # 1.0 gives the two arms equal voice; lowering it lets
     # a strong dense embedder dominate on corpora where the lexical arm adds
     # noise rather than signal. The right value is corpus-dependent and set by
     # the retrieval benchmark, not guessed here.
-    lexical_fusion_weight: float = ConfigField(default=1.0, ge=0.0, le=1.0, writable=True)
+    lexical_fusion_weight: float = ConfigField(
+        default=1.0, ge=0.0, le=1.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Adaptive fusion: scale the BM25 arm per query by vector-arm confidence
     # instead of a fixed lexical_fusion_weight (a peaked dense ranking downweights
     # lexical, a flat one keeps it). OFF by default, pending a benchmark run to
     # confirm it beats the fixed weight. lexical_fusion_weight is the ceiling the
     # rule scales down from. Set adaptive_fusion=true to enable it.
-    adaptive_fusion: bool = ConfigField(default=False, writable=True)
+    adaptive_fusion: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Vector-similarity margin at which the lexical arm is fully silenced; smaller
     # = more aggressive downweighting. 0 disables adaptation entirely (the lexical
     # arm keeps its full fixed weight).
-    adaptive_fusion_margin: float = ConfigField(default=0.15, ge=0.0, le=2.0, writable=True)
+    adaptive_fusion_margin: float = ConfigField(
+        default=0.15, ge=0.0, le=2.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Stemmer/stop-word language for the BM25 (FTS) indexes, a tantivy language
     # name ("English", "German", "French", ...). Applied when an index is
@@ -435,7 +491,7 @@ class Config(BaseSettings):
     # A bad name would otherwise fail index creation quietly and hybrid search
     # would degrade to vector-only.
     fts_language: FtsLanguage = ConfigField(
-        default=FtsLanguage.ENGLISH, writable=True, reindex=True
+        default=FtsLanguage.ENGLISH, writable=True, profile=ProfileScope.RETRIEVAL, reindex=True
     )
 
     @field_validator("fts_language", mode="before")
@@ -451,59 +507,79 @@ class Config(BaseSettings):
     # Prefix each chunk's document title to its embedding input (the stored
     # chunk text is unchanged). Changes the embedding space: toggling it needs
     # `lilbee rebuild`, so it ships off.
-    embed_titles: bool = ConfigField(default=False, writable=True, reindex=True)
+    embed_titles: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.RETRIEVAL, reindex=True
+    )
 
     # Contextual retrieval: prepend one LLM-written sentence situating each
     # chunk in its document to the embedding input. One generation per chunk,
     # so ingest slows substantially; stored text and citations stay verbatim.
     # Toggling needs `lilbee rebuild`.
-    contextual_enrichment: bool = ConfigField(default=False, writable=True, reindex=True)
+    contextual_enrichment: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.RETRIEVAL, reindex=True
+    )
 
     # Drop tables-of-contents and classification-banner cover/title pages from
     # search results. OFF by default; validate per corpus, since the cover-page
     # heuristic can also fire on short banner-carrying body pages. A query-matched
     # or top-ranked page is never dropped, so removal is limited to structural
     # chunks the query did not hit.
-    filter_structural_chunks: bool = ConfigField(default=False, writable=True)
+    filter_structural_chunks: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Chunk count at/above which sync builds an approximate (ANN) vector index
     # so search stays fast at millions of vectors. Below this, search uses exact
     # flat scan (faster and exact for small vaults). 0 disables the ANN index.
-    ann_index_threshold: int = ConfigField(default=50_000, ge=0, writable=True)
+    ann_index_threshold: int = ConfigField(
+        default=50_000, ge=0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Condense a follow-up question into a standalone retrieval query using
     # the chat history (one LLM call; skipped when there is no history).
     # Without it, "what about his brother?" is embedded and BM25-matched
     # with its pronouns.
-    history_rewrite: bool = ConfigField(default=False, writable=True)
+    history_rewrite: bool = ConfigField(
+        default=False, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Route questions by shape before top-k retrieval: a question naming a
     # document resolves to that document's chunks; a count-shaped question
     # runs a full-corpus scan (a count is a corpus property top-k cannot
     # answer). Unrecognized shapes take the topical path unchanged.
-    intent_routing: bool = ConfigField(default=True, writable=True)
+    intent_routing: bool = ConfigField(default=True, writable=True, profile=ProfileScope.RETRIEVAL)
 
     # Ask the chat model to classify count questions the deterministic
     # patterns miss (phrasing variants, other languages). Adds one short LLM
     # call to every turn the patterns don't already route, so it's opt-in.
-    intent_llm: bool = ConfigField(default=False, writable=True)
+    intent_llm: bool = ConfigField(default=False, writable=True, profile=ProfileScope.RETRIEVAL)
 
     # LLM-generated alternative queries for expansion. 0 disables.
-    query_expansion_count: int = ConfigField(default=3, ge=0, writable=True)
+    query_expansion_count: int = ConfigField(
+        default=3, ge=0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Skip LLM expansion when tokenized query length ≤ this. The LLM round-trip
     # dominates latency on small local models; short queries already have strong
     # BM25/vector signal. Concept-graph expansion still runs. 0 disables the skip.
-    expansion_short_query_tokens: int = ConfigField(default=2, ge=0, writable=True)
+    expansion_short_query_tokens: int = ConfigField(
+        default=2, ge=0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Cosine-distance step when adaptive-widening retry kicks in.
-    adaptive_threshold_step: float = ConfigField(default=0.2, gt=0.0, writable=True)
+    adaptive_threshold_step: float = ConfigField(
+        default=0.2, gt=0.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Reject expansion variants below expansion_similarity_threshold.
-    expansion_guardrails: bool = ConfigField(default=True, writable=True)
+    expansion_guardrails: bool = ConfigField(
+        default=True, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Min cosine similarity between question and variant embeddings.
-    expansion_similarity_threshold: float = ConfigField(default=0.5, ge=0.0, le=1.0, writable=True)
+    expansion_similarity_threshold: float = ConfigField(
+        default=0.5, ge=0.0, le=1.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Saturating BM25 confidence (s / (s + 5)) above which query expansion is
     # skipped; 0.8 corresponds to a raw BM25 score of 20.
@@ -528,7 +604,9 @@ class Config(BaseSettings):
     )
 
     # Chunks included in LLM context after adaptive selection.
-    max_context_sources: int = ConfigField(default=8, ge=1, writable=True)
+    max_context_sources: int = ConfigField(
+        default=8, ge=1, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Adjacent chunks pulled from the same source on each side of every
     # selected chunk and merged into one contiguous passage, so a hit that
@@ -537,13 +615,17 @@ class Config(BaseSettings):
     # the merged text is token-budget-bounded anyway, so a large value only
     # inflates per-query fetch cost -- and a misread as a token count (e.g.
     # 50000) would build a megabyte-long IN-predicate per source.
-    neighbor_expansion: int = ConfigField(default=0, ge=0, le=100, writable=True)
+    neighbor_expansion: int = ConfigField(
+        default=0, ge=0, le=100, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # HyDE (Gao et al. 2022): hypothetical-answer embedding search. +~500ms.
-    hyde: bool = ConfigField(default=False, writable=True)
+    hyde: bool = ConfigField(default=False, writable=True, profile=ProfileScope.RETRIEVAL)
 
     # HyDE result weight relative to real-doc search (0.0-1.0).
-    hyde_weight: float = ConfigField(default=0.7, ge=0.0, le=1.0, writable=True)
+    hyde_weight: float = ConfigField(
+        default=0.7, ge=0.0, le=1.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # HyDE prompt template. Must contain {question} placeholder.
     hyde_prompt: str = Field(
@@ -563,7 +645,9 @@ class Config(BaseSettings):
     reranker_model: str = ConfigField(default="", public=True)
 
     # auto detects cross-encoder vs LLM reranker by GGUF arch; override forces one.
-    reranker_type: RerankerType = ConfigField(default=RerankerType.AUTO, writable=True, public=True)
+    reranker_type: RerankerType = ConfigField(
+        default=RerankerType.AUTO, writable=True, public=True, derived=True
+    )
     # Relevance prompt for LLM rerankers; empty uses the built-in generic template.
     # A format string with {query} and {document} placeholders.
     reranker_prompt: str = ConfigField(default="", writable=True, public=True)
@@ -598,20 +682,28 @@ class Config(BaseSettings):
     memory_auto_extract: bool = ConfigField(default=False, writable=True)
 
     # Candidate count sent to the reranker.
-    rerank_candidates: int = ConfigField(default=60, ge=1, writable=True, public=True)
+    rerank_candidates: int = ConfigField(
+        default=60, ge=1, writable=True, profile=ProfileScope.RETRIEVAL, public=True
+    )
 
     # Blend reranker scores with the retrieval fusion signal (position-aware).
     # Off = the cross-encoder's own ordering stands unblended, which isolates
     # the reranker's effect when measuring it.
-    rerank_blend: bool = ConfigField(default=True, writable=True, public=True)
+    rerank_blend: bool = ConfigField(
+        default=True, writable=True, profile=ProfileScope.RETRIEVAL, public=True
+    )
 
     # Drop candidates whose RAW reranker score falls below this; unset = off.
     # The scale is provider/model specific (bge logits can be negative, hosted
     # rerankers use 0..1), so set it against observed scores.
-    rerank_min_score: float | None = ConfigField(default=None, writable=True, public=True)
+    rerank_min_score: float | None = ConfigField(
+        default=None, writable=True, profile=ProfileScope.RETRIEVAL, public=True
+    )
 
     # Date-range filter; only fires when a temporal keyword is detected.
-    temporal_filtering: bool = ConfigField(default=True, writable=True)
+    temporal_filtering: bool = ConfigField(
+        default=True, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # If True, emit <think>…</think> content as separate SSE reasoning events;
     # if False, strip it silently.
@@ -724,8 +816,8 @@ class Config(BaseSettings):
     # vision) is reserved. A positive value pins the count. The extra replicas are
     # ingest-only and reclaimed when ingest ends; the persistent query embedder /
     # vision (replica 0) always exists if its model fits.
-    embed_replicas: int = ConfigField(default=0, ge=0, writable=True)
-    vision_replicas: int = ConfigField(default=0, ge=0, writable=True)
+    embed_replicas: int = ConfigField(default=0, ge=0, writable=True, derived=True)
+    vision_replicas: int = ConfigField(default=0, ge=0, writable=True, derived=True)
 
     # Seconds a model stays loaded after last use. 0 = unload immediately.
     model_keep_alive: int = ConfigField(default=300, ge=0, writable=True)
@@ -764,6 +856,7 @@ class Config(BaseSettings):
         default_factory=scaled_chat_ctx_target_default,
         ge=512,
         writable=True,
+        derived=True,
     )
 
     # Condense turns that outgrow chat_n_ctx_target into carried notes instead
@@ -785,11 +878,14 @@ class Config(BaseSettings):
     # tools cost schema on every request whether or not anything uses them.
     mcp_sessions_enabled: bool = ConfigField(default=False, writable=True)
 
+    # The profile tools over MCP, off by default for the same schema cost.
+    mcp_profiles_enabled: bool = ConfigField(default=False, writable=True)
+
     # Explicit ceiling for the dynamic n_ctx picker. ``None`` (default)
     # lets the model's training_ctx from GGUF metadata be the ceiling,
     # so a 128K-context model can reach for it on a host with the RAM
     # to back it. Set explicitly to cap below the model's training_ctx.
-    num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True)
+    num_ctx_max: int | None = ConfigField(default=None, ge=512, writable=True, derived=True)
 
     # Flash attention. None (default) = on, True = force on, False = off
     # for backends or models where it misbehaves.
@@ -838,7 +934,7 @@ class Config(BaseSettings):
     # adapter when one is present. The autodetect is silent on failure
     # (no vulkaninfo, single device, parse error), leaving the
     # Vulkan-loader's default ordering in place.
-    gpu_devices: str | None = ConfigField(default=None, writable=True)
+    gpu_devices: str | None = ConfigField(default=None, writable=True, derived=True)
 
     # Primary GPU index passed to ``Llama(main_gpu=...)``. Only matters
     # when multiple devices remain visible after ``gpu_devices``; with
@@ -856,6 +952,7 @@ class Config(BaseSettings):
         default=None,
         writable=True,
         public=False,
+        derived=True,
         description=(
             "Manual multi-GPU placement spec. It fully replaces the automatic planner: "
             "each active role pins to the listed device indices. Edit it with the "
@@ -976,16 +1073,20 @@ class Config(BaseSettings):
     )
 
     # Neighborhood size for the mutual-kNN graph. 0 = auto-scale from corpus size.
-    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True)
+    wiki_clusterer_k: int = ConfigField(default=0, ge=0, writable=True, derived=True)
 
     # LazyGraphRAG-style concept graph. Requires the [graph] extra.
-    concept_graph: bool = ConfigField(default=True, writable=True)
+    concept_graph: bool = ConfigField(default=True, writable=True, profile=ProfileScope.RETRIEVAL)
 
     # Weight of concept overlap boost relative to vector similarity.
-    concept_boost_weight: float = ConfigField(default=0.3, ge=0.0, le=1.0, writable=True)
+    concept_boost_weight: float = ConfigField(
+        default=0.3, ge=0.0, le=1.0, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # Max noun-phrase concepts extracted per chunk.
-    concept_max_per_chunk: int = ConfigField(default=5, ge=1, writable=True)
+    concept_max_per_chunk: int = ConfigField(
+        default=5, ge=1, writable=True, profile=ProfileScope.RETRIEVAL
+    )
 
     # spaCy NER labels kept by the wiki entity extractor. Anything not
     # in this set (QUANTITY, CARDINAL, DATE, TIME, MONEY, PERCENT,
@@ -1142,15 +1243,16 @@ class Config(BaseSettings):
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
             try:
-                return parse_bool(v)
+                return parse_tristate_bool(v)
             except ValueError:
                 # bool() on a non-empty string is True, so falling through here
                 # turned an unparseable value into "on". Warn and auto-detect,
-                # matching the sibling validators.
-                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
+                # matching the sibling validators. The resolver has already
+                # named the real source for an env/config.toml/profile value
+                # by the time it reaches here; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid enable_ocr=%r, using auto", v)
                 return None
         return bool(v)
 
@@ -1199,11 +1301,12 @@ class Config(BaseSettings):
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
             try:
-                return parse_bool(v)
+                return parse_tristate_bool(v)
             except ValueError:
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
                 log.warning("Invalid flash_attention=%r, using auto", v)
                 return None
         return bool(v)
@@ -1215,15 +1318,13 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "none"):
-                return None
-            if label == "cpu":
-                return 0
             try:
-                return int(label)
+                return parse_optional_int(v, aliases={"cpu": 0})
             except ValueError:
-                log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid n_gpu_layers=%r, using auto", v)
                 return None
         return int(v)
 
@@ -1234,13 +1335,13 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "none"):
-                return None
             try:
-                return int(label)
+                return parse_optional_int(v)
             except ValueError:
-                log.warning("Invalid LILBEE_MAIN_GPU=%r, using auto", v)
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid main_gpu=%r, using auto", v)
                 return None
         return int(v)
 
@@ -1251,17 +1352,14 @@ class Config(BaseSettings):
         if v is None:
             return None
         if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "all", "none"):
+            try:
+                return parse_gpu_device_list(v)
+            except ValueError:
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid gpu_devices=%r, ignoring", v)
                 return None
-            parts = [p.strip() for p in v.split(",") if p.strip()]
-            if not parts:
-                return None
-            for part in parts:
-                if not part.lstrip("-").isdigit():
-                    log.warning("Invalid LILBEE_GPU_DEVICES=%r, ignoring", v)
-                    return None
-            return ",".join(parts)
         return str(v)
 
     @field_validator("placement", mode="before")
@@ -1293,7 +1391,10 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
+                # The resolver has already named the real source for an
+                # env/config.toml/profile value; this only fires for a raw
+                # value set directly on cfg.
+                log.warning("Invalid semantic_chunking=%r, using default False", v)
                 return False
         return bool(v)
 
@@ -1459,13 +1560,7 @@ class Config(BaseSettings):
             toml_dir = local if local else default_data_dir()
         # Same call as the root itself, so this looks where the root resolves to;
         # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
-        toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
-
-        plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_")
-        sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
-            sources.append(_TomlSource(settings_cls, toml_path))
-        return tuple(sources)
+        return (init_settings, _ResolvedSource(canonical_data_root(toml_dir)))
 
     @property
     def model_defaults(self) -> Any:
@@ -1517,41 +1612,21 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     }
 
 
-class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
+class _ResolvedSource:
+    """pydantic-settings source: the value the resolver picks for each field under a root.
 
-    def __init__(self, settings_cls: type[BaseSettings], env_prefix: str) -> None:
-        self._prefix = env_prefix
-        self._fields = set(settings_cls.model_fields)
+    Values are raw strings or TOML types, so field validators handle parsing.
+    """
 
-    def __call__(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for field_name in self._fields:
-            raw = os.environ.get(f"{self._prefix}{field_name.upper()}")
-            if value_is_set(field_name, raw):
-                result[field_name] = raw
-        return result
-
-
-class _TomlSource:
-    """Custom pydantic-settings source that reads config.toml."""
-
-    def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
-        self._path = path
+    def __init__(self, root: Path) -> None:
+        self._root = root
 
     def __call__(self) -> dict[str, Any]:
-        import tomllib
+        # circular: resolve -> model via Config
+        from .resolve import read_layers, resolve_all, sanitize_soft_fields
 
-        try:
-            with self._path.open("rb") as f:
-                data = tomllib.load(f)
-        except (ValueError, OSError):
-            log.warning("Failed to read %s, ignoring", self._path)
-            return {}
-        # An empty string is unset (the field default applies, since pydantic
-        # cannot coerce "" to int|None), except on a clearable model role,
-        # where it clears the model. TOML's native types pass through as-is.
-        return {k: v for k, v in data.items() if value_is_set(k, v)}
+        resolved = sanitize_soft_fields(resolve_all(read_layers(self._root)), self._root)
+        return {key: entry.value for key, entry in resolved.items()}
 
 
 def _build_cfg() -> tuple[Config, Exception | None]:
@@ -1566,11 +1641,11 @@ def _build_cfg() -> tuple[Config, Exception | None]:
     try:
         return Config(), None
     except Exception as exc:
-        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
+        os.environ[SKIP_TOML_ENV] = "1"
         try:
             return Config(), exc
         finally:
-            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+            os.environ.pop(SKIP_TOML_ENV, None)
 
 
 cfg, config_load_error = _build_cfg()

@@ -556,12 +556,25 @@ class TestSearch:
     async def test_chunk_type_passed_to_searcher(self, mock_svc):
         mock_svc.searcher.search.return_value = []
         await handlers.search("test", chunk_type="wiki")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type="wiki")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type="wiki")
 
     async def test_chunk_type_defaults_to_none(self, mock_svc):
         mock_svc.searcher.search.return_value = []
         await handlers.search("test")
-        mock_svc.searcher.search.assert_called_once_with("test", top_k=5, chunk_type=None)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=cfg.top_k, chunk_type=None)
+
+    async def test_omitted_top_k_uses_configured_value(self, mock_svc):
+        """Omitting top_k resolves to cfg.top_k read at call time, not a hardcoded default."""
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        await handlers.search("test")
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=7, chunk_type=None)
+
+    async def test_explicit_top_k_wins_over_configured_value(self, mock_svc):
+        mock_svc.searcher.search.return_value = []
+        cfg.top_k = 7
+        await handlers.search("test", top_k=3)
+        mock_svc.searcher.search.assert_called_once_with("test", top_k=3, chunk_type=None)
 
 
 class TestAsk:
@@ -2392,6 +2405,16 @@ class TestSseEventQueue:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert phase in drained
 
+    async def test_analyze_progress_sheds_under_backpressure(self):
+        from lilbee.runtime.progress import EventType
+        from lilbee.server.handlers.sse import SseEventQueue
+
+        queue = SseEventQueue(max_events=2)
+        for i in range(10):
+            queue.put_event_nowait(f'event: analyze\ndata: {{"done": {i}}}\n\n', EventType.ANALYZE)
+        assert queue.qsize() == 2
+        assert queue.dropped_events == 8
+
     @pytest.mark.parametrize(
         "event_type",
         ["SYNC_DONE", "CRAWL_DONE", "WIKI_PHASE"],
@@ -3885,6 +3908,40 @@ class TestModelHandlersRunBlockingWorkOffLoop:
 
         assert threads and threads[0] != loop_tid
 
+    async def test_set_chat_model_runs_apply_settings_update_off_the_loop(self, tmp_path, mock_svc):
+        """The config.toml write behind PUT /api/models/chat must not stall the loop."""
+        import threading
+
+        from lilbee.app.settings import SettingsUpdateResult
+
+        loop_tid = threading.get_ident()
+        mock_svc.provider.list_models.return_value = [_CHAT_REF]
+        threads, stub = _thread_recorder(
+            SettingsUpdateResult(updated=["chat_model"], reindex_required=False)
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", side_effect=stub):
+            await handlers.set_chat_model(_CHAT_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
+    async def test_set_embedding_model_runs_apply_settings_update_off_the_loop(
+        self, tmp_path, mock_svc
+    ):
+        """Embedding has its own inline apply_settings_update call, unlike the shared helper."""
+        import threading
+
+        from lilbee.app.settings import SettingsUpdateResult
+
+        loop_tid = threading.get_ident()
+        mock_svc.provider.list_models.return_value = [_EMBED_REF]
+        threads, stub = _thread_recorder(
+            SettingsUpdateResult(updated=["embedding_model"], reindex_required=False)
+        )
+        with patch("lilbee.server.handlers.models.apply_settings_update", side_effect=stub):
+            await handlers.set_embedding_model(_EMBED_REF)
+
+        assert threads and all(tid != loop_tid for tid in threads)
+
 
 class TestPlacementHandlersRunOffTheLoop:
     """Placement actions and the Intel util notice shell out to GPU probes,
@@ -4169,12 +4226,45 @@ class TestUpdateConfig:
         cfg.temperature = 0.5
         result = await handlers.update_config({"temperature": None})
         assert result.updated == ["temperature"]
-        assert cfg.temperature is None
+        assert cfg.temperature == 0.1  # the built-in, as a fresh Config() gives
         # Verify delete_value was called (file should not contain temperature)
         from lilbee.core import settings as s
 
         stored = s.load(cfg.data_root)
         assert "temperature" not in stored
+
+    async def test_update_config_null_over_invalid_profile_value_is_refused(self, tmp_path):
+        from lilbee.core import settings as s
+
+        s.update_values(tmp_path, {"rerank_min_score": 0.4})
+        s.write_profile_table(tmp_path, "scanned", {"rerank_min_score": "banana"})
+        cfg.rerank_min_score = 0.4
+        with pytest.raises(ValueError, match="Cannot apply 'rerank_min_score'"):
+            await handlers.update_config({"rerank_min_score": None})
+        assert cfg.rerank_min_score == 0.4
+        assert s.load(cfg.data_root)["rerank_min_score"] == 0.4
+
+    async def test_config_schema_reads_settings_off_the_event_loop(self):
+        from lilbee.server.handlers import config as config_handlers
+
+        with patch.object(asyncio, "to_thread", wraps=asyncio.to_thread) as spy:
+            result = await config_handlers.get_config_schema()
+        spy.assert_called_once_with(config_handlers.list_settings)
+        assert any(entry.key == "top_k" for entry in result.fields)
+
+    async def test_update_config_writes_settings_off_the_event_loop(self, tmp_path):
+        """The config.toml write behind PATCH /api/config must not stall the loop."""
+        from lilbee.server.handlers import config as config_handlers
+
+        with patch.object(asyncio, "to_thread", wraps=asyncio.to_thread) as spy:
+            result = await config_handlers.update_config({"temperature": 0.7})
+        spy.assert_called_once_with(
+            config_handlers.apply_settings_update,
+            {"temperature": 0.7},
+            allow_model_roles=False,
+        )
+        assert result.updated == ["temperature"]
+        assert cfg.temperature == 0.7
 
     async def test_update_config_unknown_field(self):
         with pytest.raises(ValueError, match="Unknown or read-only setting"):
