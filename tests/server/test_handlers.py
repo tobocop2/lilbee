@@ -1195,6 +1195,134 @@ class TestAddDisconnect:
         assert cfg.linked_roots["new.txt"] == str(new.resolve())
 
 
+class TestAddRegistersOffTheLoop:
+    """The registration of /api/add runs in a thread and no cancel leaves it half observed."""
+
+    @pytest.fixture()
+    def held_registration(self):
+        """A registration that waits in its thread until released; records what happens."""
+        from lilbee.app.ingest import RegisterResult
+
+        entered, release = threading.Event(), threading.Event()
+        events: list[str] = []
+
+        def _held(paths, *, force):
+            events.append(f"registering on {threading.current_thread().name}")
+            entered.set()
+            assert release.wait(20), "the loop never ran while the registration was held"
+            events.append("registered")
+            return RegisterResult(registered=[path.name for path in paths])
+
+        with mock.patch("lilbee.server.handlers.ingest.register_sources", _held):
+            yield entered, release, events
+
+    @staticmethod
+    async def _until(event: threading.Event) -> None:
+        async with asyncio.timeout(20):
+            while not event.is_set():
+                await asyncio.sleep(0.01)
+
+    async def test_the_loop_runs_while_the_registration_is_held(self, tmp_path, held_registration):
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.ingest import _run_add
+
+        entered, release, events = held_registration
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        synced = mock.AsyncMock(return_value=mock.Mock(model_dump=lambda: {}))
+
+        with mock.patch("lilbee.data.ingest.sync", synced):
+            task = asyncio.create_task(_run_add([str(src)], False, None, None, SseStream()))
+            await self._until(entered)
+            assert not task.done()
+            release.set()
+            summary = await task
+
+        assert events[0] != f"registering on {threading.main_thread().name}"
+        assert summary.copied == ["scan.txt"] and synced.await_count == 1
+
+    async def test_a_cancel_during_the_registration_lands_when_the_sync_starts(
+        self, tmp_path, held_registration
+    ):
+        """What a disconnect does: the stream's flag and a task cancel, both mid-registration."""
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.ingest import _run_add
+
+        entered, release, events = held_registration
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        sse = SseStream()
+
+        async def _sync(*_args, **_kwargs):
+            events.append("sync started")
+            await asyncio.sleep(0)
+            events.append("sync ran on")
+
+        with mock.patch("lilbee.data.ingest.sync", _sync):
+            task = asyncio.create_task(_run_add([str(src)], False, None, None, sse))
+            await self._until(entered)
+            sse.cancel.set()
+            task.cancel()
+            await asyncio.sleep(0.05)
+            task.cancel()
+            await asyncio.sleep(0.05)
+            assert not task.done(), "the cancel did not wait for the registration"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+        assert events[1:] == ["registered", "sync started"]
+
+    async def test_a_closed_stream_keeps_the_source_locked_until_it_is_registered(
+        self, tmp_path, held_registration
+    ):
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+        from lilbee.server.handlers import add_files_stream
+
+        entered, release, events = held_registration
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        real_release = IngestLockRegistry.release
+
+        def _recording(registry, acquired):
+            events.append("unlocked")
+            real_release(registry, acquired)
+
+        async def _hang(*_args, **_kwargs):
+            await asyncio.sleep(30)
+
+        gen = add_files_stream([str(src)])
+        with (
+            mock.patch.object(IngestLockRegistry, "release", _recording),
+            mock.patch("lilbee.data.ingest.sync", new=_hang),
+        ):
+            reader = asyncio.create_task(gen.__anext__())
+            await self._until(entered)
+            reader.cancel()
+            await asyncio.sleep(0.05)
+            assert "unlocked" not in events and not reader.done()
+            release.set()
+            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+                await reader
+            await gen.aclose()
+
+        assert events[1:] == ["registered", "unlocked"]
+
+    async def test_a_registration_that_raises_ends_the_add_with_its_error(self, tmp_path):
+        from lilbee.runtime.lock import SyncRunningError
+        from lilbee.server.handlers import SseStream
+        from lilbee.server.handlers.ingest import _run_add
+
+        with (
+            mock.patch(
+                "lilbee.server.handlers.ingest.register_sources",
+                side_effect=SyncRunningError("A sync is running. Add notes again when it ends."),
+            ),
+            pytest.raises(SyncRunningError, match="Add notes again when it ends"),
+        ):
+            await _run_add([str(tmp_path)], False, None, None, SseStream())
+
+
 class TestAddIngestHardening:
     """Option-A hardening: ``sync()`` always passes ``needs_cleanup=True``."""
 
