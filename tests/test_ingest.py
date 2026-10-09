@@ -2073,7 +2073,10 @@ class TestSyncMergesItsSkipRecords:
         refused: list[Exception] = []
 
         def _reset() -> None:
-            with pytest.raises(ResetRefusedError, match="A sync or import is running") as caught:
+            whole = (
+                r"^A sync or import is running on this library\. Reset again when it finishes\.$"
+            )
+            with pytest.raises(ResetRefusedError, match=whole) as caught:
                 perform_reset()
             refused.append(caught.value)
 

@@ -4448,6 +4448,27 @@ class TestRekeySourcesUnder:
         assert self._titles(store, "notes/work/plan.md") == {"plan"}
         assert self._titles(store, "notes/work/renamed") == {"renamed"}
 
+    @pytest.mark.parametrize("table", range(1, len(_KEY_COLUMNS) + 1))
+    def test_a_rename_that_dies_at_any_table_and_runs_again_gives_the_new_title(self, store, table):
+        """Each table's title is written before its key, and the sources table moves last."""
+        import lilbee.data.store.core as core_mod
+
+        _seed_source(store, "renamed", title="renamed")
+        real, calls = core_mod._rekey_sql, []
+
+        def _dies(column, old, new):
+            calls.append(column)
+            if len(calls) == table:
+                raise KeyboardInterrupt
+            return real(column, old, new)
+
+        with mock.patch.object(core_mod, "_rekey_sql", _dies), pytest.raises(KeyboardInterrupt):
+            store.rekey_sources_under("renamed", "notes/spring_plan.md")
+        store.rekey_sources_under("renamed", "notes/spring_plan.md")
+
+        assert _holders(store, "notes/spring_plan.md") == _KEY_COLUMNS
+        assert self._titles(store, "notes/spring_plan.md") == {"spring plan"}
+
     def test_the_same_file_name_leaves_every_title_as_stored(self, store):
         """A title that only looks derived stays when the name does not change."""
         _seed_source(store, "plan.md", title="plan")
