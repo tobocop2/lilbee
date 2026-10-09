@@ -2004,6 +2004,47 @@ class TestSettingsMcp:
         assert "temperature" not in persisted
         assert "seed" not in persisted
 
+    @pytest.mark.parametrize(
+        ("key", "good", "bad", "default"),
+        [
+            ("flash_attention", True, "enabled", None),
+            ("n_gpu_layers", 12, "all", None),
+            ("main_gpu", 1, "cuda:0", None),
+            ("gpu_devices", "0,1", "cpu", None),
+            ("semantic_chunking", True, "maybe", False),
+        ],
+    )
+    def test_settings_set_refused_value_of_a_named_exception_stores_the_default(
+        self, isolated_env, key, good, bad, default
+    ):
+        """The losing field: the valid value stored first is gone from cfg and the file."""
+        cfg.data_root = isolated_env
+        settings_set({key: good})
+        assert getattr(cfg, key) != default
+        stored = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert f"{key} = " in stored
+        result = settings_set({key: bad})
+        assert result["updated"] == [key]
+        assert getattr(cfg, key) == default
+        persisted = (isolated_env / "config.toml").read_text(encoding="utf-8")
+        assert bad not in persisted
+        assert persisted != stored
+
+    def test_settings_set_a_list_for_a_named_exception_is_an_error(self, isolated_env):
+        """Only text falls back; a list reaches the validator, which has no branch for it."""
+        cfg.data_root = isolated_env
+        settings_set({"n_gpu_layers": 12})
+        result = settings_set({"n_gpu_layers": [1]})
+        assert "int()" in result["error"]
+        assert cfg.n_gpu_layers == 12
+
+    def test_settings_set_refused_value_of_another_setting_is_an_error(self, isolated_env):
+        cfg.data_root = isolated_env
+        before = cfg.top_k
+        result = settings_set({"top_k": "many"})
+        assert "top_k" in result["error"]
+        assert cfg.top_k == before
+
     def test_settings_set_ocr_returns_no_warning(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"

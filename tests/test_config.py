@@ -29,7 +29,7 @@ from lilbee.core.config import (
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
 from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
 from lilbee.core.config.model import (
-    _VARIABLE_FALLS_BACK,
+    _TAKES_DEFAULT_WHEN_REFUSED,
     _TomlSource,
     env_value,
     value_is_set,
@@ -2452,7 +2452,7 @@ class TestARefusedVariableStops:
         for kind in ("flag", "choice", "number", "optional number"):
             assert sum(1 for found in kinds.values() if found == kind) > 10, kind
         closed = {name for name, kind in kinds.items() if kind != _TEXT}
-        expected = (closed - _VARIABLE_FALLS_BACK) | _OPEN_SETTINGS_THAT_REFUSE
+        expected = (closed - _TAKES_DEFAULT_WHEN_REFUSED) | _OPEN_SETTINGS_THAT_REFUSE
         assert sorted(refused ^ expected) == []
 
     def test_the_entry_point_check_raises_what_the_load_raises(self, tmp_path):
@@ -2465,11 +2465,11 @@ class TestARefusedVariableStops:
         ):
             refuse_environment()
 
-    def test_the_named_exceptions_are_the_five_hardware_settings(self):
-        assert sorted(_VARIABLE_FALLS_BACK) == sorted(key for key, *_ in _FALLBACK_VARIABLES)
+    def test_the_named_exceptions_are_five_settings(self):
+        assert sorted(_TAKES_DEFAULT_WHEN_REFUSED) == sorted(key for key, *_ in _FALLBACK_VARIABLES)
 
     @pytest.mark.parametrize(("key", "bad", "stored", "default"), _FALLBACK_VARIABLES)
-    def test_a_refused_variable_of_a_hardware_setting_falls_back(
+    def test_a_refused_variable_of_a_named_exception_takes_the_default(
         self, tmp_path, key, bad, stored, default
     ):
         """The losing field: the stored value is valid and the variable still decides."""

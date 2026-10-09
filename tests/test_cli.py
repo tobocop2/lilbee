@@ -1632,9 +1632,7 @@ class TestAValidVariableRunsTheCommand:
             ("LILBEE_SEMANTIC_CHUNKING", "auto"),
         ],
     )
-    def test_a_refused_value_of_a_hardware_setting_runs_the_command(
-        self, tmp_path, variable, value
-    ):
+    def test_a_refused_value_of_a_named_exception_runs_the_command(self, tmp_path, variable, value):
         with mock.patch("lilbee.cli.commands.meta.render_status") as status:
             result = runner.invoke(app, ["status", "-d", str(tmp_path)], env={variable: value})
         assert result.exit_code == 0, result.output

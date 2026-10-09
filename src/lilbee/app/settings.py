@@ -21,6 +21,7 @@ from lilbee.core.config.keys import (
     LOAD_AFFECTING_KEYS,
     PROVIDER_SWITCHING_KEYS,
 )
+from lilbee.core.config.model import written_value
 from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.config.schema import field_type_name
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
@@ -255,7 +256,7 @@ def _coerce_value(key: str, value: Any) -> Any:
         from lilbee.modelhub.role_validator import validate_model_task_assignment
 
         return validate_model_task_assignment(key, value)
-    return value
+    return written_value(key, value)
 
 
 def _apply_with_rollback(

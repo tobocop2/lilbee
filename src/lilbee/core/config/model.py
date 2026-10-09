@@ -5,6 +5,7 @@ The settings sources and the TOML parser live here too. Every
 to the same instance defined at module bottom.
 """
 
+import logging
 import os
 import re
 from enum import Enum
@@ -50,6 +51,8 @@ from .parsing import (
 )
 from .validators import ConfigField
 
+log = logging.getLogger(__name__)
+
 # Sentinel for unset Path-typed fields. ``Field(default=Path())`` produces an
 # instance equal to this, so the model_validator can distinguish "user passed
 # the default" from "user explicitly set a value".
@@ -84,9 +87,9 @@ _EXPECTED_BY_ERROR: dict[str, str] = {
 }
 _VALUE_ERROR_PREFIX = "Value error, "
 
-# A variable its setting refuses stops the command, except on these: each tunes
-# hardware use, so it takes its default, the choice lilbee makes itself, with a warning.
-_VARIABLE_FALLS_BACK = frozenset(
+# A variable its setting refuses stops the command and a write of one is refused,
+# except on these: each takes its default, automatic or off, with a warning.
+_TAKES_DEFAULT_WHEN_REFUSED = frozenset(
     {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices", "semantic_chunking"}
 )
 
@@ -1600,11 +1603,11 @@ class _PlainEnvSource:
         return values, _refusals(self._settings_cls, values)
 
     def _stop(self, values: dict[str, Any], refused: dict[str, str]) -> None:
-        """Refuse the variables in *refused*, less the ones that fall back."""
+        """Refuse the variables in *refused*, less the ones that take their default."""
         lines = [
             f"{_variable(self._settings_cls, key)} = {values[key]!r} {reason}"
             for key, reason in refused.items()
-            if key not in _VARIABLE_FALLS_BACK
+            if key not in _TAKES_DEFAULT_WHEN_REFUSED
         ]
         if lines:
             refuse_variable("; ".join(lines))
@@ -1616,7 +1619,7 @@ class _PlainEnvSource:
     def __call__(self) -> dict[str, Any]:
         values, refused = self._read()
         self._stop(values, refused)
-        for key in [key for key in refused if key in _VARIABLE_FALLS_BACK]:
+        for key in [key for key in refused if key in _TAKES_DEFAULT_WHEN_REFUSED]:
             variable = _variable(self._settings_cls, key)
             warn_on_load(f"{variable} = {values[key]!r} {refused[key]}; {key} uses its default")
             values[key] = self._settings_cls.model_fields[key].default
@@ -1677,6 +1680,18 @@ def env_value(field_name: str) -> str | None:
     """What LILBEE_<FIELD_NAME> holds, or None when it is unset or blank."""
     raw = os.environ.get(_variable(Config, field_name))
     return raw if value_is_set(field_name, raw) else None
+
+
+def written_value(key: str, value: Any) -> Any:
+    """What a write of *value* stores in *key*: its default, with a warning, where one applies."""
+    # These settings refuse only text they cannot read; any other type goes to the validator.
+    if key not in _TAKES_DEFAULT_WHEN_REFUSED or not isinstance(value, str):
+        return value
+    reason = _refusals(Config, {key: value}).get(key)
+    if reason is None:
+        return value
+    log.warning("%s = %r %s; %s uses its default", key, value, reason, key)
+    return Config.model_fields[key].default
 
 
 def toml_values(path: Path) -> dict[str, Any]:
