@@ -200,9 +200,7 @@ PLAIN_PAGE_PREFIXES = (
     "/login",
 )
 FETCHER_LOGGER = "lilbee.crawler.crawlberg_fetcher"
-EXCLUDED_START = "Excluded "
-EXCLUDED_BY = ": it matches the exclude pattern "
-SUMMARY_START = "Links of the crawl of "
+LEFT_OUT = "Left out {url}: it matches {pattern}, a pattern of the crawl_exclude_patterns setting"
 
 
 def _query_page(path: str, filler: str) -> str:
@@ -561,20 +559,18 @@ class TestDefaultExcludePatterns:
             assert heading not in saved, heading
 
     async def test_the_log_names_exactly_the_addresses_the_site_never_received(self, site, caplog):
-        caplog.set_level("INFO", logger=FETCHER_LOGGER)
         requested = await self._requested(site)
-        messages = [record.getMessage() for record in caplog.records]
-        named = dict(
-            message.removeprefix(EXCLUDED_START).split(EXCLUDED_BY, 1)
-            for message in messages
-            if message.startswith(EXCLUDED_START)
+        warnings = sorted(
+            record.getMessage()
+            for record in caplog.records
+            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
         )
         never_received = set(DEFAULTS_LINKS.values()) - requested
         assert never_received == set(DEFAULTS_EXCLUDED)
-        assert named == {site.url(path): pattern for path, pattern in DEFAULTS_EXCLUDED.items()}
-        summaries = [message for message in messages if message.startswith(SUMMARY_START)]
-        assert len(summaries) == 1
-        assert f"follow: {len(DEFAULTS_EXCLUDED)}. " in summaries[0]
+        assert warnings == sorted(
+            LEFT_OUT.format(url=site.url(path), pattern=DEFAULTS_EXCLUDED[path])
+            for path in never_received
+        )
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
