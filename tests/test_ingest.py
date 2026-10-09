@@ -7699,21 +7699,26 @@ class TestTuiSurface:
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
 
     def test_do_add_says_a_parent_of_a_source_was_not_added(self, isolated_env, tmp_path):
+        from lilbee.app.ingest import register_sources
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.chat import ChatScreen
         from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
         from lilbee.data.ingest import SyncResult
 
+        papers = tmp_path / "ext" / "lib" / "papers"
+        inner = tmp_path / "ext" / "data" / "sub"
+        for folder in (papers, inner):
+            folder.mkdir(parents=True)
+        register_sources([papers.parent, inner])
         screen = ChatScreen.__new__(ChatScreen)
         notify = MagicMock()
-        registration = RegisterResult(overlapping=["papers", "data"], containing=["data"])
         with (
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
-            mock.patch("lilbee.app.ingest.register_sources", return_value=registration),
             mock.patch("lilbee.runtime.asyncio_loop.run", return_value=SyncResult()),
         ):
-            screen._do_add([tmp_path / "data"], MagicMock(spec=ProgressReporter))
+            screen._do_add([papers, inner.parent], MagicMock(spec=ProgressReporter))
 
+        assert set(cfg.linked_roots) == {"lib", "sub"}
         toasts = [call.args[2] for call in notify.call_args_list]
         assert msg.CMD_ADD_CONTAINING.format(names="data") in toasts
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts

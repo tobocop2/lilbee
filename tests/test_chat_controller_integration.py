@@ -21,6 +21,9 @@ from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBar
 from lilbee.core.config import cfg
 from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
 
+# The longest a test waits for work a task worker thread does.
+_SETTLE_SECONDS = 10.0
+
 
 @pytest.fixture(autouse=True)
 def _gate_releases_at_once():
@@ -1757,7 +1760,7 @@ async def test_an_add_whose_sync_is_cancelled_ends_as_a_cancelled_task(tmp_path:
             await wait_until(
                 pilot,
                 lambda: controller.queue.get_task(task_id).status is not TaskStatus.ACTIVE,
-                timeout=10.0,
+                timeout=_SETTLE_SECONDS,
             )
         assert controller.queue.get_task(task_id).status is TaskStatus.CANCELLED
 
@@ -1789,13 +1792,14 @@ async def test_a_cancelled_sync_row_shows_the_resume_hint() -> None:
 
         with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
             task_id = controller.start_task("Sync", TaskType.SYNC, _target)
-            started.wait(5.0)
+            assert await wait_until(pilot, started.is_set, timeout=_SETTLE_SECONDS)
             controller.cancel_task(task_id)
-            await wait_until(pilot, lambda: task_id not in controller._task_targets, timeout=10.0)
-            await wait_until(pilot, lambda: controller.queue.get_task(task_id).detail != "")
-        task = controller.queue.get_task(task_id)
+            task = controller.queue.get_task(task_id)
+            # The worker posts the hint from its own thread, which no pause drives.
+            assert await wait_until(
+                pilot, lambda: task.detail == msg.SYNC_CANCELLED_RESUME, timeout=_SETTLE_SECONDS
+            )
         assert task.status is TaskStatus.CANCELLED
-        assert task.detail == msg.SYNC_CANCELLED_RESUME
 
 
 @pytest.mark.asyncio
@@ -1999,9 +2003,11 @@ async def test_a_task_started_once_the_stop_has_begun_gets_no_worker(moment: str
         release = threading.Event()
         started: list[str] = []
 
+        def _wait(_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
         def _start_late() -> None:
-            target = lambda _reporter: release.wait(5.0)  # noqa: E731
-            started.append(controller.start_task("late", TaskType.SYNC, target))
+            started.append(controller.start_task("late", TaskType.SYNC, _wait))
 
         if moment == "after_the_copy":
             controller._workers_lock = lock = _StartsATaskOnRelease(_start_late)
