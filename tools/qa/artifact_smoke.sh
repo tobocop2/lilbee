@@ -28,9 +28,8 @@ embed_gguf=$(find "${models_dir}" -name 'nomic-embed-text-v1.5.Q4_K_M.gguf' \( -
 [ -n "${chat_gguf}" ] || { echo "chat model gguf not found under ${models_dir}" >&2; exit 1; }
 [ -n "${embed_gguf}" ] || { echo "embed model gguf not found under ${models_dir}" >&2; exit 1; }
 
-# Leg 0: bundled extras import and functional charset detection. The crawl in
-# leg 4 only reaches chardet when the target response has no charset header,
-# so this leg is the deterministic check for the frozen chardet closure.
+# Leg 0: bundled extras import and functional charset detection, the check for
+# the frozen chardet closure.
 # Skipped with the crawl leg: the check needs the crawler extra.
 if [ "${SKIP_CRAWL:-0}" != "1" ]; then
   "${exe}" self-check-extras

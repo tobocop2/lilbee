@@ -1271,6 +1271,47 @@ async def test_settings_list_editor_invalid_regex_blocks_save():
         assert cfg.crawl_exclude_patterns == ["keep"]
 
 
+async def test_settings_browser_flags_editor_saves_on_blur():
+    """The launch-flag list editor stores each line as one flag."""
+    from textual.widgets import Collapsible
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("--lang=fr\n--mute-audio\n--disable-gpu")
+        ta.blur()
+        flags = ["--lang=fr", "--mute-audio", "--disable-gpu"]
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
+        assert cfg.crawl_browser_extra_args == flags
+        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
+        assert "(3 lines)" in title
+
+
+async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
+    """The editor stores every line and counts it; crawlberg checks the flags at crawl time."""
+    from textual.widgets import Collapsible
+
+    from lilbee.cli.tui.widgets.list_text_area import ListTextArea
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_browser_extra_args = ["--lang=fr"]
+        ta = app.screen.query_one("#ed-crawl_browser_extra_args", ListTextArea)
+        ta.focus()
+        await pilot.pause()
+        ta.load_text("--lang=fr\n--headless=new\nmute-audio")
+        ta.blur()
+        flags = ["--lang=fr", "--headless=new", "mute-audio"]
+        await pump_until(pilot, lambda: cfg.crawl_browser_extra_args == flags)
+        assert cfg.crawl_browser_extra_args == flags
+        title = app.screen.query_one("#collapsible-crawl_browser_extra_args", Collapsible).title
+        assert "(3 lines)" in title
+
+
 async def test_settings_list_editor_restore_defaults():
     """Pressing Restore resets both cfg and the TextArea to the defaults."""
     from textual.widgets import Button

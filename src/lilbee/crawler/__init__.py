@@ -11,7 +11,7 @@ from lilbee.crawler.bootstrap import (
     chromium_installed,
     crawler_browsers_path,
 )
-from lilbee.crawler.crawl4ai_fetcher import crawler_available
+from lilbee.crawler.crawlberg_fetcher import crawler_available
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import (
     CancelToken,

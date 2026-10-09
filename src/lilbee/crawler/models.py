@@ -57,12 +57,7 @@ class FetchedPage:
 
 @dataclass
 class ConcurrencySpec:
-    """Backend-agnostic concurrency + rate-limit knobs.
-
-    The crawl4ai adapter translates these into ``RateLimiter`` and
-    ``SemaphoreDispatcher`` calls; a future adapter with its own
-    BFS loop maps them onto ``asyncio.Semaphore`` + retry logic.
-    """
+    """Backend-agnostic concurrency, pacing and retry settings for one crawl."""
 
     semaphore_count: int = 1
     mean_delay: float = 0.0
@@ -89,8 +84,6 @@ class FilterSpec:
 CancelToken: TypeAlias = threading.Event
 """Cancellation handle the orchestration layer passes to a fetcher.
 
-An already-``set()`` event means "stop as soon as you can". The
-crawl4ai adapter polls it in both its streaming loop and its BFS
-strategy's ``should_cancel`` hook; a future adapter can poll it
-in whatever granularity it supports.
+An already-``set()`` event means "stop as soon as you can". A fetcher
+checks it between pages.
 """

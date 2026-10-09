@@ -328,6 +328,20 @@ class TestOcrLanguage:
             with pytest.raises(ValidationError):
                 setattr(cfg, field, bad)
 
+    def test_a_retry_count_above_the_crawler_limit_is_accepted(self):
+        original = cfg.crawl_retry_max_attempts
+        try:
+            cfg.crawl_retry_max_attempts = 50
+            assert cfg.crawl_retry_max_attempts == 50
+        finally:
+            cfg.crawl_retry_max_attempts = original
+
+    def test_a_retry_count_above_the_crawler_limit_loads_from_the_environment(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_RETRY_MAX_ATTEMPTS"] = "25"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_retry_max_attempts == 25
+
     def test_embedding_dim_override(self):
         with mock.patch.dict(os.environ, {"LILBEE_EMBEDDING_DIM": "1024"}):
             c = Config()
@@ -558,7 +572,6 @@ class TestTomlConfigFile:
             c = Config()
             assert c.cors_origins == ["https://a.example", "https://b.example"]
             assert c.crawl_exclude_patterns == [".*/private/.*"]
-            # No before-validator splitter, so the old str(v) coercion hard-failed here.
             assert c.crawl_browser_extra_args == ["--disable-gpu", "--no-sandbox"]
 
     def test_empty_string_scalar_in_toml_falls_back_to_default(self, tmp_path):
@@ -1464,6 +1477,121 @@ class TestParseEnableOcrFallback:
         assert Config._parse_enable_ocr(0) is False
 
 
+# The first path segment of a site, as a whole segment: how each generic auth or shop name is
+# anchored in the default exclude list.
+_FIRST = r"^https?://[^/?#]+"
+_END = r"(?:/|\?|#|$)"
+# Each default exclude pattern, with one address the pattern is in the list to exclude.
+ADDRESS_FOR_EACH_DEFAULT_PATTERN = {
+    r"/wp-admin/": "https://blog.example/wp-admin/options.php",
+    r"/wp-login(\.php)?": "https://blog.example/wp-login.php",
+    r"/wp-json/": "https://blog.example/wp-json/wp/v2/posts",
+    r"/xmlrpc\.php": "https://blog.example/xmlrpc.php",
+    r"/wp-cron\.php": "https://blog.example/wp-cron.php",
+    r"/wp-includes/": "https://blog.example/wp-includes/js/jquery/jquery.js",
+    r"/wp-content/uploads/": "https://blog.example/wp-content/uploads/2024/06/banner.png",
+    r"\?p=\d+": "https://blog.example/?p=123",
+    r"\?page_id=\d+": "https://blog.example/?page_id=45",
+    r"\?cat=\d+": "https://blog.example/?cat=7",
+    r"/elementor-\d+": "https://blog.example/elementor-1234/",
+    r"\?elementor_library": "https://blog.example/?elementor_library=header",
+    r"/page/\d+/?$": "https://blog.example/news/page/5/",
+    r"\?paged?=\d+": "https://blog.example/?paged=3",
+    r"/20\d{2}(/\d{2}(/\d{2})?)?/?$": "https://blog.example/2024/06/15/",
+    r"/tag/": "https://blog.example/tag/gardening/",
+    r"/category/": "https://blog.example/category/growing/",
+    r"/author/": "https://blog.example/author/tobias/",
+    r"/archives?/?$": "https://blog.example/archive/",
+    r"/comment-page-\d+": "https://blog.example/post/comment-page-2",
+    r"/feed/?$": "https://blog.example/feed/",
+    r"/feed/atom/?$": "https://blog.example/feed/atom/",
+    r"/feed/rdf/?$": "https://blog.example/feed/rdf/",
+    r"/comments/feed/?$": "https://blog.example/comments/feed/",
+    r"/rss/?$": "https://blog.example/rss/",
+    r"/amp/?$": "https://blog.example/article/amp/",
+    r"\?amp=": "https://blog.example/article/?amp=1",
+    r"\?print=": "https://blog.example/article/?print=1",
+    r"/print/?$": "https://blog.example/article/print/",
+    r"\?preview=": "https://blog.example/article/?preview=true",
+    r"/attachment/": "https://blog.example/post/attachment/photo/",
+    r"\?attachment_id=": "https://blog.example/?attachment_id=9",
+    _FIRST + r"/login" + _END: "https://shop.example/login?next=/",
+    _FIRST + r"/logout" + _END: "https://shop.example/logout",
+    _FIRST + r"/register" + _END: "https://shop.example/register/",
+    _FIRST + r"/signup" + _END: "https://shop.example/signup",
+    _FIRST + r"/signin" + _END: "https://shop.example/signin",
+    _FIRST + r"/account" + _END: "https://shop.example/account/addresses",
+    _FIRST + r"/profile" + _END: "https://shop.example/profile/settings",
+    _FIRST + r"/password-reset" + _END: "https://shop.example/password-reset",
+    _FIRST + r"/forgot-password" + _END: "https://shop.example/forgot-password",
+    r"/my-account/": "https://shop.example/my-account/orders/",
+    _FIRST + r"/cart" + _END: "https://shop.example/cart/items",
+    _FIRST + r"/checkout" + _END: "https://shop.example/checkout/step1",
+    _FIRST + r"/wishlist" + _END: "https://shop.example/wishlist",
+    _FIRST + r"/orders?" + _END: "http://shop.example:8080/order/1042",
+    _FIRST + r"/compare" + _END: "https://shop.example/compare?ids=1,2",
+    r"/products\.json": "https://shop.example/products.json",
+    r"/collections/.+/products/.+\?page=": (
+        "https://shop.example/collections/boots/products/alpine?page=2"
+    ),
+    r"/sitemap[^/]*\.xml": "https://blog.example/sitemap_index.xml",
+    r"/robots\.txt": "https://blog.example/robots.txt",
+    r"/humans\.txt": "https://blog.example/humans.txt",
+    r"/favicon\.ico": "https://blog.example/favicon.ico",
+    r"/\.well-known/": "https://blog.example/.well-known/security.txt",
+    (
+        r"\.(jpe?g|png|gif|webp|avif|svg|ico|pdf|docx?|xlsx?|pptx?|zip|tar|gz|mp3|mp4|webm|ogg"
+        r"|ttf|woff2?|css|js|map|json|xml)(\?.*)?$"
+    ): "https://blog.example/img/logo.png?v=3",
+    r"/wiki/Main_Page$": "https://wiki.example/wiki/Main_Page",
+    r"/wiki/Wikipedia:": "https://wiki.example/wiki/Wikipedia:About",
+    r"/wiki/Portal:": "https://wiki.example/wiki/Portal:Science",
+    r"/wiki/Special:": "https://wiki.example/wiki/Special:RecentChanges",
+    r"/wiki/Category:": "https://wiki.example/wiki/Category:Physics",
+    r"/wiki/Template:": "https://wiki.example/wiki/Template:Infobox",
+    r"/wiki/Template_talk:": "https://wiki.example/wiki/Template_talk:Infobox",
+    r"/wiki/Talk:": "https://wiki.example/wiki/Talk:Physics",
+    r"/wiki/File:": "https://wiki.example/wiki/File:Diagram.svg",
+    r"/wiki/File_talk:": "https://wiki.example/wiki/File_talk:Diagram.svg",
+    r"/wiki/User:": "https://wiki.example/wiki/User:Example",
+    r"/wiki/User_talk:": "https://wiki.example/wiki/User_talk:Example",
+    r"/w/index\.php": "https://wiki.example/w/index.php?title=Physics&action=history",
+}
+# Paths of ordinary pages on documentation sites and wikis.
+CONTENT_PATHS = [
+    "/wiki/MediaWiki",
+    "/wiki/Help:Formatting",
+    "/wiki/Help:Links",
+    "/wiki/Help:Tables",
+    "/wiki/Help:Magic_words",
+    "/wiki/Help:Editing_pages",
+    "/wiki/Manual:Installation_guide",
+    "/docs",
+    "/docs/installation",
+    "/docs/markdown-features/code-blocks",
+    "/docs/versioning",
+    "/docs/search",
+    "/docs/front-matter/",
+    "/docs/collections/",
+    "/docs/permalinks/",
+    "/docs/assets/",
+    "/user-guide/writing-your-docs/",
+    "/user-guide/deploying-your-docs/",
+    "/dev-guide/plugins/",
+    "/about/license/",
+    "/en/master/usage/quickstart.html",
+    "/en/master/usage/restructuredtext/directives.html",
+    "/en/master/usage/extensions/autodoc.html",
+    "/en/master/glossary.html",
+    "/en/master/man/sphinx-build.html",
+    "/v/order",
+    "/v/layout",
+    "/docs/payments/checkout",
+    "/guides/login",
+    "/api/account",
+]
+
+
 class TestDefaultCrawlExcludePatterns:
     """The out-of-the-box default exclude list blocks common noise without
     accidentally rejecting real content URLs."""
@@ -1491,7 +1619,6 @@ class TestDefaultCrawlExcludePatterns:
             _ECOMMERCE_EXCLUDE,
             _FEED_EXCLUDE,
             _META_EXCLUDE,
-            _TRACKING_EXCLUDE,
             _WP_EXCLUDE,
         )
 
@@ -1503,7 +1630,6 @@ class TestDefaultCrawlExcludePatterns:
             _ATTACHMENT_EXCLUDE,
             _AUTH_EXCLUDE,
             _ECOMMERCE_EXCLUDE,
-            _TRACKING_EXCLUDE,
             _META_EXCLUDE,
         ):
             assert len(category) >= 1
@@ -1583,7 +1709,8 @@ class TestDefaultCrawlExcludePatterns:
         ):
             assert self._matches_any(url), f"should exclude: {url}"
 
-    def test_tracking_param_matches(self):
+    def test_no_pattern_matches_an_address_for_a_campaign_referrer_or_share_parameter(self):
+        """The crawler strips a tracking parameter and fetches the page; no pattern drops it."""
         for url in (
             "https://example.com/article?utm_source=newsletter",
             "https://example.com/?fbclid=abc123",
@@ -1595,8 +1722,11 @@ class TestDefaultCrawlExcludePatterns:
             "https://example.com/?igshid=ig",
             "https://example.com/?pk_campaign=spring",
             "https://example.com/?affiliate=partner",
+            "https://example.com/docs?ref=sidebar",
+            "https://example.com/post?replytocom=5",
+            "https://example.com/post?share=twitter",
         ):
-            assert self._matches_any(url), f"should exclude: {url}"
+            assert not self._matches_any(url), f"should NOT exclude: {url}"
 
     def test_meta_and_static_matches(self):
         for url in (
@@ -1629,6 +1759,24 @@ class TestDefaultCrawlExcludePatterns:
         ):
             assert not self._matches_any(url), f"should NOT exclude: {url}"
 
+    @pytest.mark.parametrize(("pattern", "url"), list(ADDRESS_FOR_EACH_DEFAULT_PATTERN.items()))
+    def test_each_pattern_matches_the_address_it_exists_for(self, pattern, url):
+        assert re.search(pattern, url), f"{pattern} should exclude: {url}"
+
+    def test_the_address_table_has_one_row_for_each_default_pattern(self):
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        assert len(set(DEFAULT_CRAWL_EXCLUDE_PATTERNS)) == len(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+        assert set(ADDRESS_FOR_EACH_DEFAULT_PATTERN) == set(DEFAULT_CRAWL_EXCLUDE_PATTERNS)
+
+    @pytest.mark.parametrize("path", CONTENT_PATHS)
+    def test_no_pattern_matches_a_content_address(self, path):
+        from lilbee.core.config import DEFAULT_CRAWL_EXCLUDE_PATTERNS
+
+        url = f"https://docs.example{path}"
+        matching = [p for p in DEFAULT_CRAWL_EXCLUDE_PATTERNS if re.search(p, url)]
+        assert matching == [], f"should NOT exclude: {url}"
+
 
 class TestCrawlExcludePatternsValidator:
     def test_newline_separated_string_splits(self):
@@ -1653,32 +1801,111 @@ class TestCrawlExcludePatternsValidator:
         assert Config._split_crawl_exclude_patterns("\n\n  \n") == []
 
 
-class TestCrawlBrowserExtraArgsValidator:
-    def test_newline_separated_string_splits(self):
-        """The persist path joins list values with newlines; reload must split them."""
-        from lilbee.core.config import Config
-
-        result = Config._split_crawl_browser_extra_args("--flag-a\n--flag-b")
-        assert result == ["--flag-a", "--flag-b"]
-
-    def test_list_passes_through_unchanged(self):
-        from lilbee.core.config import Config
-
-        assert Config._split_crawl_browser_extra_args(["--a", "--b"]) == ["--a", "--b"]
-
-    def test_persisted_newline_string_round_trips(self, tmp_path):
-        """A value persisted as a newline-joined string must not crash the whole
-        config load (which would silently discard every other setting)."""
+class TestConfigFileWrittenBeforeCrawlberg:
+    def test_a_retry_count_above_the_crawler_limit_keeps_every_value_of_the_file(self, tmp_path):
         toml_path = tmp_path / "config.toml"
         toml_path.write_text(
-            'crawl_browser_extra_args = "--flag-a\\n--flag-b"\nchat_model = "ollama/keep:latest"\n'
+            "crawl_retry_max_attempts = 25\ncrawl_max_depth = 2\ncrawl_timeout = 12\ntop_k = 7\n",
+            encoding="utf-8",
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            loaded = Config()
+        assert loaded.crawl_retry_max_attempts == 25
+        assert loaded.crawl_max_depth == 2
+        assert loaded.crawl_timeout == 12
+        assert loaded.top_k == 7
+
+
+class TestRemovedCrawlSettings:
+    def test_saved_values_for_removed_crawl_settings_do_not_break_loading(self, tmp_path):
+        """A config.toml written before the crawler settings were removed still loads."""
+        toml_path = tmp_path / "config.toml"
+        toml_path.write_text(
+            "crawl_browser_recycle_pages = 7\n"
+            "crawl_convert_workers = 3\n"
+            'chat_model = "ollama/keep:latest"\n',
+            encoding="utf-8",
         )
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.crawl_browser_extra_args == ["--flag-a", "--flag-b"]
-            assert c.chat_model == "ollama/keep:latest"  # other settings survive
+            assert c.chat_model == "ollama/keep:latest"
+            assert not hasattr(c, "crawl_browser_recycle_pages")
+            assert not hasattr(c, "crawl_convert_workers")
+
+
+# Flag lists crawlberg 1.9.0 refuses at engine creation; lilbee stores each one as given.
+REFUSED_BY_CRAWLBERG: tuple[list[str], ...] = (
+    ["--headless=new"],
+    ["--user-data-dir=/x"],
+    ["disable-gpu"],
+    ["--Lang=fr"],
+    ["--disable-gpu", "--disable-gpu"],
+)
+
+
+class TestCrawlBrowserExtraArgs:
+    def test_default_trims_shared_memory_and_gpu_use(self):
+        assert Config().crawl_browser_extra_args == ["--disable-dev-shm-usage", "--disable-gpu"]
+
+    def test_newline_string_from_config_toml_loads_as_a_list(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'crawl_browser_extra_args = "--lang=fr\\n--mute-audio"\n', encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_env_var_splits_on_newlines_and_drops_blank_lines(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_BROWSER_EXTRA_ARGS"] = "--lang=fr\n\n  --mute-audio  \n"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_toml_list_passes_through(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'crawl_browser_extra_args = ["--user-agent=Lilbee Test/1.0"]\n', encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_browser_extra_args == ["--user-agent=Lilbee Test/1.0"]
+
+    def test_empty_list_is_valid(self):
+        assert Config(crawl_browser_extra_args=[]).crawl_browser_extra_args == []
+
+    @pytest.mark.parametrize("flags", REFUSED_BY_CRAWLBERG, ids=repr)
+    def test_a_flag_crawlberg_refuses_is_stored_unchecked(self, flags: list[str]):
+        assert Config(crawl_browser_extra_args=flags).crawl_browser_extra_args == flags
+
+    def test_a_flag_crawlberg_refuses_loads_from_the_env_var_beside_other_settings(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'chat_model = "ollama/keep:latest"\n', encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        env["LILBEE_CRAWL_BROWSER_EXTRA_ARGS"] = "--headless=new\ndisable-gpu"
+        with mock.patch.dict(os.environ, env, clear=True):
+            loaded = Config()
+            assert loaded.crawl_browser_extra_args == ["--headless=new", "disable-gpu"]
+            assert loaded.chat_model == "ollama/keep:latest"
+
+    def test_a_flag_crawlberg_refuses_loads_from_config_toml_beside_other_settings(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'crawl_browser_extra_args = "--Lang=fr\\n--user-data-dir=/x"\n'
+            'chat_model = "ollama/keep:latest"\n',
+            encoding="utf-8",
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            loaded = Config()
+            assert loaded.crawl_browser_extra_args == ["--Lang=fr", "--user-data-dir=/x"]
+            assert loaded.chat_model == "ollama/keep:latest"
 
 
 class TestPlainEnvSourceSkipsEmpty:
@@ -2184,23 +2411,19 @@ class TestCrawlExclusionsMatchWholeSegments:
         assert not self._excluded(url)
 
     @pytest.mark.parametrize(
-        ("url", "excluded"),
+        "url",
         [
-            ("https://x.dev/docs?ref=sidebar", False),
-            ("https://x.dev/p?share=twitter", False),
-            ("https://x.dev/p?utm_source=newsletter", True),
-            ("https://x.dev/p?fbclid=abc", True),
-            ("https://x.dev/p?replytocom=5", True),
+            "https://docs.example/docs/payments/checkout",
+            "http://host/v/order",
+            "https://x/guides/login",
+            "https://docs.example/api/account",
+            "https://docs.example/en/latest/profile/",
+            "https://docs.example/search?q=/cart",
+            "https://docs.example/page#/login",
         ],
     )
-    def test_only_campaign_tokens_are_treated_as_tracking(self, url, excluded):
-        """?ref= and ?share= are ordinary content links on docs and forum
-        platforms; dropping one can drop the only URL that reaches a page."""
-        import re
-
-        from lilbee.core.config.defaults import _TRACKING_EXCLUDE
-
-        assert any(re.search(p, url) for p in _TRACKING_EXCLUDE) is excluded
+    def test_a_generic_name_below_the_first_path_segment_is_not_excluded(self, url):
+        assert not self._excluded(url)
 
     @pytest.mark.parametrize(
         "url",
@@ -2211,6 +2434,9 @@ class TestCrawlExclusionsMatchWholeSegments:
             "https://example.com/checkout/step1",
             "https://example.com/login",
             "https://example.com/my-account/orders",
+            "https://shop.example/cart/items",
+            "http://user:secret@shop.example:8080/orders/7",
+            "https://shop.example/account#details",
         ],
     )
     def test_transactional_and_auth_urls_are_still_excluded(self, url):

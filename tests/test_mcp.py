@@ -996,7 +996,7 @@ class TestMain:
 
 class TestAddWithUrls:
     async def test_add_url_without_crawler(self, isolated_env):
-        """Adding URLs when crawl4ai not installed returns error."""
+        """Adding URLs when the crawler extra is not installed returns error."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = await add(paths=["https://example.com"])
             assert "error" in result
@@ -1162,7 +1162,7 @@ class TestCrawl:
         assert "error" in result
 
     async def test_crawler_not_installed(self):
-        """Returns error when crawl4ai is not installed."""
+        """Returns error when the crawler extra is not installed."""
         with mock.patch("lilbee.crawler.crawler_available", return_value=False):
             result = await crawl(url="https://example.com")
             assert "error" in result
@@ -1850,6 +1850,18 @@ class TestSettingsMcp:
         assert "top_k" in persisted
         assert "chunk_size" in persisted
 
+    def test_settings_set_stores_browser_launch_flags(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_browser_extra_args": ["--lang=fr", "--mute-audio"]})
+        assert result["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
+
+    def test_settings_set_stores_a_flag_crawlberg_refuses(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_browser_extra_args": ["--user-data-dir=/tmp/profile"]})
+        assert result["updated"] == ["crawl_browser_extra_args"]
+        assert cfg.crawl_browser_extra_args == ["--user-data-dir=/tmp/profile"]
+
     def test_settings_set_warns_when_ocr_off_leaves_the_vision_model_unused(self, isolated_env):
         cfg.data_root = isolated_env
         cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
@@ -2372,7 +2384,7 @@ class TestCatalogBrowseMcp:
 
 # Tool families whose registration depends on ambient state: ``wiki_`` on
 # ``cfg.wiki``, ``memory_`` on ``cfg.memory_enabled``, ``session`` on
-# ``cfg.mcp_sessions_enabled``, ``crawl`` on whether the crawl4ai extra is
+# ``cfg.mcp_sessions_enabled``, ``crawl`` on whether the crawler extra is
 # installed. They are excluded from the budget so it measures
 # one fixed surface. Counting them made the same commit measure 9672 bytes in
 # the docs-site job and 10143 on a developer box, which is how a schema

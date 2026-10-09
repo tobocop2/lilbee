@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import re
+import string
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,30 @@ _QUERY_HASH_LEN = 8
 # Markdown files are durable per-page; metadata batches to keep write volume
 # bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
 METADATA_FLUSH_INTERVAL = 10
+
+# The characters RFC 3986 section 2.3 calls unreserved: an escape of one names the character.
+_UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
+_PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
+_HEX = 16
+
+
+def _normalized_escape(escape: re.Match[str]) -> str:
+    """The unreserved character *escape* names, or *escape* with upper-case hex digits."""
+    char = chr(int(escape.group(1), _HEX))
+    return char if char in _UNRESERVED else escape.group().upper()
+
+
+def equivalent_form(url: str) -> str:
+    """*url* with each percent escape normalized as RFC 3986 section 6.2.2 defines."""
+    return _PERCENT_ESCAPE.sub(_normalized_escape, url)
+
+
+def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, list[str]]:
+    """The URLs *meta* holds, grouped by their equivalent form."""
+    spellings: dict[str, list[str]] = {}
+    for url in meta:
+        spellings.setdefault(equivalent_form(url), []).append(url)
+    return spellings
 
 
 def url_to_filename(url: str) -> str:

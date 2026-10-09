@@ -160,6 +160,13 @@ class TestBlockedNetworks:
         networks = get_blocked_networks()
         assert any(_ip.ip_address("10.1.2.3") in n for n in networks)
 
+    @pytest.mark.parametrize("addr", ["240.0.0.1", "255.255.255.255"])
+    def test_contains_ipv4_reserved_range(self, addr):
+        import ipaddress as _ip
+
+        networks = get_blocked_networks()
+        assert any(_ip.ip_address(addr) in n for n in networks)
+
     @pytest.mark.parametrize(
         "addr",
         [
