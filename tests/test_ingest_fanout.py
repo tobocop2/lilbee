@@ -69,6 +69,13 @@ class FakeProcess:
     def kill(self):
         self.killed.set()
 
+    def wait_terminated(self, bound: float = _CANCEL_BOUND_S) -> bool:
+        """Block until the product terminates this worker; False when *bound* passes first."""
+        deadline = time.monotonic() + bound
+        while not self.terminated and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.terminated
+
 
 class FakeContext:
     """A multiprocessing context whose workers are threads and whose queue is local."""
@@ -115,6 +122,19 @@ def _spec(index: int, count: int = 2, device: int = 0) -> fanout.ShardSpec:
         cpu_share=4,
         visible_devices={"CUDA_VISIBLE_DEVICES": str(device)},
     )
+
+
+class TestFakeProcess:
+    def test_a_worker_nobody_terminates_stops_waiting_at_the_bound(self):
+        worker = FakeProcess(target=lambda: None, args=(), name="never-terminated")
+        started = time.monotonic()
+        assert worker.wait_terminated(bound=0.05) is False
+        assert time.monotonic() - started < _CANCEL_BOUND_S
+
+    def test_a_terminated_worker_stops_waiting_at_once(self):
+        worker = FakeProcess(target=lambda: None, args=(), name="terminated")
+        worker.terminate()
+        assert worker.wait_terminated() is True
 
 
 class TestShardId:
@@ -510,9 +530,7 @@ class TestRunWorkers:
         def silent_shard(spec, options, messages, stop):
             stops.append(stop)
             cancel.set()
-            worker = fake_context.processes[spec.shard.index]
-            while not worker.terminated:
-                time.sleep(0.01)
+            fake_context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
         if moment == "before_the_start":
