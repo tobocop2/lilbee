@@ -3,13 +3,14 @@
 import errno
 import re
 import sys
+import threading
 from contextlib import contextmanager
 from unittest import mock
 
 import numpy as np
 import pytest
 
-from lilbee.core.config import CHUNKS_TABLE, META_TABLE, cfg
+from lilbee.core.config import CHUNKS_TABLE, META_TABLE, SOURCES_TABLE, cfg
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
@@ -4155,6 +4156,9 @@ class TestRelocateTitles:
         assert store._relocated_title(table, "absent.md", "b.md", derive_title) is _KEEP_TITLE
 
 
+# How long a blocked write gets to prove it is not blocked; an unlocked one takes milliseconds.
+_LOCKED_WRITE_WAIT_S = 1.0
+
 _KEY_COLUMNS = {
     ("chunks", "source"),
     ("_page_texts", "source"),
@@ -4432,3 +4436,33 @@ class TestRekeySourcesUnder:
             store.rekey_sources_under(key, "work")
 
         assert _holders(store, "work/a.md") == _KEY_COLUMNS
+
+    def test_a_write_from_a_second_store_waits_until_the_rekey_ends(self, store, monkeypatch):
+        for key in ("work/a.md", "other/b.md"):
+            _seed_source(store, key)
+        writer = Store(store._config)
+        write = threading.Thread(
+            target=writer.upsert_source, args=("work/new.md", "h", 1, SourceType.DOCUMENT)
+        )
+        open_table = store.open_table
+        done_between_tables = []
+
+        def open_and_let_the_writer_try(name):
+            if name == SOURCES_TABLE:  # six tables hold the new key, this one the old
+                write.start()
+                write.join(timeout=_LOCKED_WRITE_WAIT_S)
+                done_between_tables.append(not write.is_alive())
+            return open_table(name)
+
+        monkeypatch.setattr(store, "open_table", open_and_let_the_writer_try)
+
+        store.rekey_sources_under("work", "notes/work")
+        write.join(timeout=30)
+
+        assert done_between_tables == [False]
+        assert not write.is_alive()
+        assert sorted(s["filename"] for s in writer.get_sources()) == [
+            "notes/work/a.md",
+            "other/b.md",
+            "work/new.md",
+        ]
