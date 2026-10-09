@@ -25,6 +25,7 @@ _NO_WORKER_RESTARTS = 0
 _XDIST_PLUGIN = "xdist"
 _EXIT_OK = 0
 _MAKE_RECURSION_ENV_VARS = ("MAKEFLAGS", "MAKELEVEL")
+_MAKE_STDOUT_TAIL_CHARS = 500
 _CRASH_NODEID = "test_toy.py::test_worker_dies"
 _CRASH_REPORT = "crashed while running"
 _EXIT_TESTS_FAILED = 1
@@ -63,8 +64,12 @@ def _make(*args: str, ok: tuple[int, ...] = (_EXIT_OK,)) -> str:
         command, cwd=_REPO_ROOT, capture_output=True, encoding="utf-8", env=make_env
     )
     if result.returncode not in ok:
+        stdout_tail = result.stdout[-_MAKE_STDOUT_TAIL_CHARS:]
         raise RuntimeError(
-            f"{shlex.join(command)} exited {result.returncode}:\n{result.stdout}{result.stderr}"
+            f"{shlex.join(command)} exited {result.returncode}:\n"
+            f"{result.stderr}\n"
+            f"stdout (last {_MAKE_STDOUT_TAIL_CHARS} characters of {len(result.stdout)}):\n"
+            f"{stdout_tail}"
         )
     return result.stdout
 
@@ -158,6 +163,16 @@ def test_a_failed_make_reports_the_command_and_its_output() -> None:
     message = r"-n no-such-target exited 2:\n.*No rule to make target"
     with pytest.raises(RuntimeError, match=message):
         _make("-n", "no-such-target")
+
+
+def test_a_failed_make_puts_stderr_first_and_bounds_stdout() -> None:
+    # `-p` makes stdout the whole rule database (tens of kilobytes); the error is on stderr.
+    with pytest.raises(RuntimeError) as raised:
+        _make("-pRrq", "no-such-target")
+    message = str(raised.value)
+    assert message.startswith("make --no-print-directory -pRrq no-such-target exited 2:\n")
+    assert len(message) < 2 * _MAKE_STDOUT_TAIL_CHARS + 500
+    assert message.index("No rule to make target") < message.index("stdout (last")
 
 
 @pytest.mark.timeout(_RUN_BUDGET_S * 2)
