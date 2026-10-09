@@ -89,7 +89,7 @@ _USER_AGENTS = {
         f"Chrome/{_CHROME_MAJOR}.0.0.0 Safari/537.36"
     ),
 }
-# The client hint every request of a browser crawl carries.
+# The client hint a browser crawl adds to each request to the seed's host, and to no other host.
 _BRAND_HINT = {
     "sec-ch-ua": (
         f'"Chromium";v="{_CHROME_MAJOR}", "Not_A Brand";v="8", "Google Chrome";v="{_CHROME_MAJOR}"'
