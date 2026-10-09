@@ -187,6 +187,8 @@ fleet and wiki import chains that a plain CLI command has no reason to pay for.
 """
 CONTAINS_SOURCE = "contains a source lilbee already indexes, not added: {names}"
 """Said of a directory that is the parent of a registered source; its other files stay out."""
+NOW_INCLUDES = "{parent} now includes {children}"
+"""Said of a new source that took in the registered sources inside it."""
 SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
@@ -221,7 +223,12 @@ def describe_registration(result: RegisterResult) -> str:
         parts.append(f"overlaps a registered source: {', '.join(result.overlapping_inside)}")
     if result.containing:
         parts.append(CONTAINS_SOURCE.format(names=", ".join(result.containing)))
-    return ", ".join(parts) if parts else "Registered 0 source(s)"
+    summary = ", ".join(parts) if parts else "Registered 0 source(s)"
+    took_in = [
+        NOW_INCLUDES.format(parent=parent, children=", ".join(children))
+        for parent, children in result.absorbed_into.items()
+    ]
+    return "; ".join([summary, *took_in])
 
 
 def add_paths(

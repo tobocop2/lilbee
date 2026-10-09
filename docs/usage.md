@@ -866,6 +866,23 @@ that runs before `lilbee ask`. The command exits with status 130. A stopped
 `add` names the files it did not add, and `lilbee --json add` lists them in
 `not_added`.
 
+If you add a folder that contains a source you already added, the folder takes
+that source in. `lilbee add ~/notes` after `lilbee add ~/notes/work` prints
+`Registered 1 source(s); notes now includes work`. The documents of `work` keep
+their index entries and get the names `notes/work/...`, so nothing is read or
+embedded again, and the sync that follows indexes the other files in `notes`.
+A file you removed from `work` stays removed. `lilbee --json add` lists the
+sources a folder took in under `absorbed`, and so do `/api/add` and
+`lilbee_add`. A script that names a document by its old name, such as
+`lilbee remove work/plan.md`, must use `notes/work/plan.md` from then on.
+
+The folder cannot take a source in while a sync runs. The add then stops with
+`A sync is running. Add notes again when it ends.` and changes nothing. A
+source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
+a source of its own. An older lilbee that syncs the same library afterwards
+moves the documents back to their old names, so update every installation that
+shares a library.
+
 ### Manage documents
 
 | Command | Description |

@@ -209,19 +209,17 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
-def parse_frontmatter(text: str) -> dict[str, Any]:
-    """Extract YAML frontmatter fields from a wiki page string.
+def frontmatter_span(lines: list[str]) -> tuple[int, int] | None:
+    """The line indexes of the frontmatter's opening and closing ``---``, or None without one.
 
     A draft carries its marker comments above the frontmatter (drift,
     collision, origin), so the leading marker run is skipped before the
-    opening delimiter is looked for. Without that every marked draft parses
-    as having no frontmatter at all. The writers separate stacked markers with
+    opening delimiter is looked for. The writers separate stacked markers with
     a blank line, so blank lines are consumed too once a marker has been seen,
     and never before one: a page with no marker still requires ``---`` on line
-    zero. Uses line-by-line scanning so ``---`` inside YAML content is not
-    mistaken for the closing delimiter.
+    zero. Scans line by line so ``---`` inside YAML content is not mistaken for
+    the closing delimiter.
     """
-    lines = text.splitlines()
     start = 0
     seen_marker = False
     while start < len(lines):
@@ -233,14 +231,20 @@ def parse_frontmatter(text: str) -> dict[str, Any]:
         seen_marker = seen_marker or is_marker
         start += 1
     if start >= len(lines) or lines[start].strip() != "---":
-        return {}
-    end_idx: int | None = None
+        return None
     for i in range(start + 1, len(lines)):
         if lines[i].strip() == "---":
-            end_idx = i
-            break
-    if end_idx is None:
+            return start, i
+    return None
+
+
+def parse_frontmatter(text: str) -> dict[str, Any]:
+    """Extract YAML frontmatter fields from a wiki page string; empty without frontmatter."""
+    lines = text.splitlines()
+    span = frontmatter_span(lines)
+    if span is None:
         return {}
+    start, end_idx = span
     block = "\n".join(lines[start + 1 : end_idx])
     try:
         return yaml.safe_load(block) or {}

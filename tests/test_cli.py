@@ -7056,10 +7056,11 @@ class TestSyncCancelledExit:
         assert cfg.linked_roots == {"held.txt": str(holder.resolve())}
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
-    def test_an_add_of_the_parent_of_a_registered_folder_says_it_was_not_added(
+    def test_a_cancelled_add_of_the_parent_of_a_registered_folder_keeps_the_parent(
         self, isolated_env, tmp_path, mock_svc, flags
     ):
         from lilbee.app.ingest import register_sources
+        from lilbee.cli.commands.ingest_sync import _SYNC_CANCELLED_MESSAGE
 
         sub = tmp_path / "parent" / "sub"
         sub.mkdir(parents=True)
@@ -7068,16 +7069,16 @@ class TestSyncCancelledExit:
         with mock.patch("lilbee.data.ingest.sync", side_effect=_ctrl_c_sync):
             stopped = runner.invoke(app, [*flags, "add", str(sub.parent)])
         assert stopped.exit_code == 130, stopped.output
-        message = "Add cancelled. parent was not added."
         if flags:
-            assert json.loads(stopped.output) == {"error": message, "not_added": ["parent"]}
+            assert json.loads(stopped.output) == {"error": _SYNC_CANCELLED_MESSAGE}
         else:
-            assert " ".join(stopped.output.split()).endswith(message)
-            assert "contains a source lilbee already indexes, not added: parent" in " ".join(
-                stopped.output.split()
-            )
-            assert "overlaps a registered source" not in stopped.output
-        assert cfg.linked_roots == {"sub": str(sub.resolve())}
+            printed = " ".join(stopped.output.split())
+            assert printed.endswith(_SYNC_CANCELLED_MESSAGE)
+            assert "Registered 1 source(s); parent now includes sub" in printed
+            assert "contains a source" not in printed
+        # The parent took in the rows of sub, so the cancel leaves it registered.
+        assert cfg.linked_roots == {"parent": str(sub.parent.resolve())}
+        mock_svc.store.rekey_sources_under.assert_called()
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["plain", "json"])
     def test_a_cancelled_add_names_a_taken_name_and_not_a_source_the_corpus_holds(

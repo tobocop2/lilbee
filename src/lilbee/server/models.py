@@ -517,8 +517,9 @@ class AddSummary(BaseModel):
     name_taken: list[str] = []
     """Labels held by a different source; nothing was registered and no sync ran."""
     overlapping: list[str] = []
-    """Paths inside or around a registered source; none is registered, and a path
-    around a source has other files that no sync indexes."""
+    """Paths inside a registered source, or around one they cannot take in; none is registered."""
+    absorbed: list[str] = []
+    """Registered sources a path in ``copied`` took in; their documents moved below its name."""
     tracked: list[str] = []
     """Named sources the knowledge base already tracks, so nothing was registered.
 

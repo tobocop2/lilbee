@@ -7457,7 +7457,7 @@ class TestRegisterSources:
         assert result.reached_corpus is False
         assert cfg.linked_roots == {"corpus": str(one.resolve())}
 
-    def test_rejects_root_containing_existing_root(self, isolated_env, tmp_path):
+    def test_a_root_containing_an_existing_root_takes_it_in(self, isolated_env, tmp_path):
         from lilbee.app.ingest import register_sources
         from lilbee.core.config import cfg
 
@@ -7465,12 +7465,11 @@ class TestRegisterSources:
         child.mkdir(parents=True)
         register_sources([child])
         result = register_sources([tmp_path / "data"])  # a parent of the existing root
-        assert result.registered == []
-        assert result.overlapping == ["data"]
-        # The parent's other files are in no source, so it is not in the corpus.
-        assert (result.containing, result.outside_corpus) == (["data"], ["data"])
-        assert result.overlapping_inside == []
-        assert cfg.linked_roots == {"corpus": str(child.resolve())}
+        assert result.registered == ["data"]
+        assert result.absorbed_into == {"data": ["corpus"]}
+        assert (result.overlapping, result.containing, result.outside_corpus) == ([], [], [])
+        assert result.reached_corpus is True
+        assert cfg.linked_roots == {"data": str((tmp_path / "data").resolve())}
 
     def test_rejects_root_that_is_ancestor_of_documents_dir(self, isolated_env, tmp_path):
         # documents_dir lives under tmp_path; registering tmp_path would re-index
@@ -8103,7 +8102,9 @@ class TestTuiSurface:
         toasts = [call.args[2] for call in notify.call_args_list]
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
 
-    def test_do_add_says_a_parent_of_a_source_was_not_added(self, isolated_env, tmp_path):
+    def test_do_add_says_a_parent_of_the_documents_directory_was_not_added(
+        self, isolated_env, tmp_path
+    ):
         from lilbee.app.ingest import register_sources
         from lilbee.cli.tui import messages as msg
         from lilbee.cli.tui.screens.chat import ChatScreen
@@ -8111,23 +8112,22 @@ class TestTuiSurface:
         from lilbee.data.ingest import SyncResult
 
         papers = tmp_path / "ext" / "lib" / "papers"
-        inner = tmp_path / "ext" / "data" / "sub"
-        for folder in (papers, inner):
-            folder.mkdir(parents=True)
-        register_sources([papers.parent, inner])
+        papers.mkdir(parents=True)
+        register_sources([papers.parent])
+        around = isolated_env.parent
         screen = ChatScreen.__new__(ChatScreen)
         notify = MagicMock()
         with (
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
             mock.patch("lilbee.runtime.asyncio_loop.run", return_value=SyncResult()),
         ):
-            screen._do_add([papers, inner.parent], MagicMock(spec=ProgressReporter))
+            screen._do_add([papers, around], MagicMock(spec=ProgressReporter))
 
-        assert set(cfg.linked_roots) == {"lib", "sub"}
+        assert set(cfg.linked_roots) == {"lib"}
         toasts = [call.args[2] for call in notify.call_args_list]
-        assert msg.CMD_ADD_CONTAINING.format(names="data") in toasts
+        assert msg.CMD_ADD_CONTAINING.format(names=around.name) in toasts
         assert msg.CMD_ADD_OVERLAPPING.format(names="papers") in toasts
-        assert msg.CMD_ADD_OVERLAPPING.format(names="papers, data") not in toasts
+        assert msg.CMD_ADD_OVERLAPPING.format(names=f"papers, {around.name}") not in toasts
 
     def test_do_add_names_a_rollback_error_with_the_cancel(self, isolated_env, tmp_path):
         """A cancelled TUI add whose rollback cannot read the registry still ends as a cancel."""

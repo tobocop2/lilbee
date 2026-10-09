@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from lilbee.app.absorb import absorb, finish_pending_absorb, new_journal
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
@@ -19,7 +20,9 @@ from lilbee.data.ingest.discovery import (
     excluded_extension_reasons,
     file_hash,
     resolve_source_path,
+    walk_reaches,
 )
+from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     SkipRecords,
     held_out_names,
@@ -28,6 +31,8 @@ from lilbee.data.ingest.skip_marker import (
     update_skip_records,
 )
 from lilbee.data.store.types import RemoveResult
+from lilbee.data.types import is_under
+from lilbee.runtime.absorb_journal import AbsorbJournal
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _ADD_CANCELLED = "Add cancelled."
@@ -47,7 +52,9 @@ class RegisterResult:
     overlapping: list[str] = field(default_factory=list)
     """Paths nesting under or over ``documents_dir`` or a live root; none is registered."""
     containing: list[str] = field(default_factory=list)
-    """The overlapping paths that contain a source; their other files are in no source."""
+    """The overlapping paths that contain a source they cannot take in; none is registered."""
+    absorbed_into: dict[str, list[str]] = field(default_factory=dict)
+    """Each newly registered label that took in registered sources, with their labels."""
     refused: list[str] = field(default_factory=list)
     """Files whose format lilbee does not index, as ``name: reason``."""
     outside_corpus: list[str] = field(default_factory=list)
@@ -69,6 +76,16 @@ class RegisterResult:
         read as the outcome of the add.
         """
         return bool(self.registered or self.tracked or self.overlapping)
+
+    @property
+    def absorbed(self) -> list[str]:
+        """The labels of the sources a newly registered parent took in."""
+        return [label for labels in self.absorbed_into.values() for label in labels]
+
+    @property
+    def revocable(self) -> list[str]:
+        """The registered labels a cancelled add un-registers: each that took in no source."""
+        return [label for label in self.registered if label not in self.absorbed_into]
 
     @property
     def overlapping_inside(self) -> list[str]:
@@ -110,16 +127,44 @@ def _inside_a_root(src: Path, live_roots: list[Path]) -> bool:
     return any(src.is_relative_to(root) for root in live_roots)
 
 
-def _contains_a_source(src: Path, docs_resolved: Path, live_roots: list[Path]) -> bool:
-    """Whether *src* is an ancestor of ``documents_dir`` or of a live root."""
-    return docs_resolved.is_relative_to(src) or any(root.is_relative_to(src) for root in live_roots)
+def _reached_below(src: Path, roots: dict[str, str]) -> dict[str, Path]:
+    """Each registered root below *src* that the walk of *src* reaches, by label.
+
+    A root whose folder is gone counts by its stored path.
+    """
+    resolved = {label: Path(target).resolve() for label, target in roots.items()}
+    below = {
+        label: path for label, path in resolved.items() if path != src and path.is_relative_to(src)
+    }
+    if not below:
+        return below
+    rules = IgnoreRules.for_corpus(active_config().data_root)
+    return {label: path for label, path in below.items() if walk_reaches(src, path, rules)}
+
+
+def _can_absorb(reached: dict[str, Path]) -> bool:
+    """Whether each root in *reached* can move below a parent with its keys intact.
+
+    A root labelled by another name than its folder's cannot, and neither can a
+    root that lies inside another one in *reached*.
+    """
+    paths = list(reached.values())
+    return all(
+        label == path.name
+        and not any(path != other and path.is_relative_to(other) for other in paths)
+        for label, path in reached.items()
+    )
 
 
 def _classify(
     paths: list[Path], roots: dict[str, str], docs_resolved: Path, *, force: bool
-) -> RegisterResult:
-    """Sort *paths* by what registering each one does, adding every new root to *roots*."""
+) -> tuple[RegisterResult, dict[str, str]]:
+    """Sort *paths* by what registering each one does, leaving *roots* as the registry after it.
+
+    Also returns the key of each source a new parent takes in, with the key it gets.
+    """
     result = RegisterResult()
+    moves: dict[str, str] = {}
     by_target = {target: label for label, target in roots.items()}
     refused = excluded_extension_reasons()
     outside: dict[Path, str] = {}
@@ -141,21 +186,28 @@ def _classify(
         if _inside_a_root(src, live_roots):
             result.overlapping.append(p.name)  # would walk the same files twice
             continue
-        if _contains_a_source(src, docs_resolved, live_roots):
+        reached = _reached_below(src, roots)
+        if docs_resolved.is_relative_to(src) or not _can_absorb(reached):
             result.overlapping.append(p.name)
             result.containing.append(p.name)
             outside.setdefault(src, p.name)
             continue
-        label = _resolve_label(src.name, roots, docs_resolved, force=force)
+        others = {name: target for name, target in roots.items() if name not in reached}
+        label = _resolve_label(src.name, others, docs_resolved, force=force)
         if label is None:
             result.name_taken.append(src.name)
             outside.setdefault(src, src.name)
             continue
+        for child, child_path in reached.items():
+            by_target.pop(roots.pop(child), None)
+            moves[child] = f"{label}/{child_path.relative_to(src).as_posix()}"
         roots[label] = str(src)
         by_target[str(src)] = label
-        result.registered.append(label)
+        result.registered = [name for name in result.registered if name not in reached] + [label]
+        if reached:
+            result.absorbed_into[label] = sorted(reached)
     result.outside_corpus = list(outside.values())
-    return result
+    return result, moves
 
 
 def names_outside_corpus(paths: list[Path]) -> list[str]:
@@ -164,7 +216,7 @@ def names_outside_corpus(paths: list[Path]) -> list[str]:
         return []  # a stopped sync has no paths, and reads no registry to say so
     config = active_config()
     roots = dict(settings.load(config.data_root).get("linked_roots") or {})
-    plan = _classify(paths, roots, config.documents_dir.resolve(), force=False)
+    plan, _moves = _classify(paths, roots, config.documents_dir.resolve(), force=False)
     return [*plan.outside_corpus, *plan.registered]
 
 
@@ -194,6 +246,12 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     under the same target is a no-op; a label already taken by a different live
     root or an owned entry is skipped unless ``force``. The registry is persisted
     so later processes index the same roots.
+
+    A directory that contains registered sources takes each one its walk reaches:
+    the source leaves the registry and its indexed files, skip records and wiki
+    citations move below the new label, with nothing extracted or embedded again.
+    That needs every sync stopped; a running one raises ``SyncRunningError``
+    with nothing changed.
     """
     config = active_config()
     documents_dir = config.documents_dir
@@ -202,24 +260,40 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     if not paths:
         return RegisterResult()
 
-    def _mutate(persisted: dict[str, str] | None) -> tuple[dict[str, str], RegisterResult]:
+    def _mutate(
+        persisted: dict[str, str] | None,
+    ) -> tuple[dict[str, str] | None, tuple[RegisterResult, AbsorbJournal | None]]:
         # Read the registry from config.toml INSIDE the lock (not the possibly
         # stale in-memory copy) so two processes registering roots concurrently
         # cannot lose each other's entry.
-        roots = dict(persisted or {})
-        result = _classify(paths, roots, docs_resolved, force=force)
-        config.linked_roots = roots  # refresh the in-process view (picks up merges)
-        return roots, result
+        before = dict(persisted or {})
+        roots = dict(before)
+        result, moves = _classify(paths, roots, docs_resolved, force=force)
+        if not moves:
+            config.linked_roots = roots  # refresh the in-process view (picks up merges)
+            return roots, (result, None)
+        # The absorb writes the registry after it moved the keys.
+        config.linked_roots = before
+        add = {label: target for label, target in roots.items() if before.get(label) != target}
+        drop = [label for label in before if label not in roots]
+        return persisted, (result, new_journal(moves, add, drop))
 
+    names = [p.name for p in paths]
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root):
-        result = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-        unmark_sources_under(paths)
+        finish_pending_absorb(names)
+        result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+        if journal is not None:
+            absorb(journal, list(result.absorbed_into))
+        unmark_sources_under(paths, spared=[] if journal is None else list(journal.moves.values()))
     return result
 
 
-def unmark_sources_under(paths: list[Path]) -> None:
+def unmark_sources_under(paths: list[Path], *, spared: Iterable[str] = ()) -> None:
     """Drop the skip records (marker, reason and kind) of every source *paths* covers.
+
+    A record at or below a key in *spared* stays: a parent that takes in a
+    source keeps what the user removed from it and what failed in it.
 
     A marker exists to stop *discovery* from resurrecting a source the user
     removed, or from re-paying the extract cost on a file that yielded nothing.
@@ -232,9 +306,12 @@ def unmark_sources_under(paths: list[Path]) -> None:
     to files through the live registry.
     """
 
+    kept = list(spared)
+
     def _drop_covered(records: SkipRecords) -> None:
         for name in _markers_covering(records.markers, paths):
-            records.markers.pop(name)
+            if not any(is_under(name, key) for key in kept):
+                records.markers.pop(name)
 
     update_skip_records(active_config().data_root, _drop_covered)
 
@@ -470,10 +547,6 @@ class AddRollback:
                 return _ADD_CANCELLED_MANY.format(names=", ".join(self.not_added))
 
 
-def _under_root(name: str, label: str) -> bool:
-    return name == label or name.startswith(f"{label}/")
-
-
 def indexed_stamps(labels: list[str]) -> dict[str, str]:
     """The ``ingested_at`` stamp of every indexed source under the roots *labels*."""
     if not labels:
@@ -481,7 +554,7 @@ def indexed_stamps(labels: list[str]) -> dict[str, str]:
     return {
         source["filename"]: source["ingested_at"]
         for source in get_services().store.get_sources()
-        if any(_under_root(source["filename"], label) for label in labels)
+        if any(is_under(source["filename"], label) for label in labels)
     }
 
 
@@ -491,9 +564,7 @@ def forget_unfinished_roots(labels: list[str], before: dict[str, str]) -> list[s
     A file is indexed since *before* when its source is new or its stamp changed.
     """
     finished = [name for name, stamp in indexed_stamps(labels).items() if before.get(name) != stamp]
-    unfinished = [
-        label for label in labels if not any(_under_root(name, label) for name in finished)
-    ]
+    unfinished = [label for label in labels if not any(is_under(name, label) for name in finished)]
     return forget_roots(unfinished) if unfinished else []
 
 
@@ -533,7 +604,7 @@ def _hold_out_removed(names: list[str], roots: list[str]) -> None:
     hashes: dict[str, str] = {}
     unreachable: list[str] = []
     for name in names:
-        if any(_under_root(name, root) for root in roots):
+        if any(is_under(name, root) for root in roots):
             continue  # the root is gone; discovery won't resurrect these
         path = resolve_source_path(name)
         if path.exists():
