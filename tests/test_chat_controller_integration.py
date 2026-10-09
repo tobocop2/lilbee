@@ -2251,6 +2251,83 @@ def _live_workers(*task_ids: str) -> list[str]:
     return [thread.name for thread in threading.enumerate() if thread.name in names]
 
 
+class _MeetsTheStopAtItsFirstAcquire:
+    """A lock whose first acquire waits for the exit stop to set its flag, and for no more.
+
+    The stop runs on its own thread and is held at the release of the hold that
+    set the flag until the first caller has left its own hold, so that caller
+    takes the lock with the flag set and every row still queued.
+    """
+
+    def __init__(self, controller: TaskBarController) -> None:
+        self._lock = threading.Lock()
+        self._stopper = threading.Thread(
+            target=controller.stop_all, kwargs={"budget_s": 0.2}, daemon=True
+        )
+        self._caller: threading.Thread | None = None
+        self._flag_set = threading.Event()
+        self._caller_left = threading.Event()
+        self.armed = False
+        self.met_in_time = False
+
+    def __enter__(self) -> None:
+        if self.armed:
+            self.armed = False
+            self._caller = threading.current_thread()
+            self._stopper.start()
+            self.met_in_time = self._flag_set.wait(_SETTLE_SECONDS)
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        current = threading.current_thread()
+        if current is self._stopper and not self._flag_set.is_set():
+            self._flag_set.set()
+            self._caller_left.wait(_SETTLE_SECONDS)
+        elif current is self._caller:
+            self._caller_left.set()
+
+    def stop_finished(self) -> bool:
+        """Whether the stop this lock started has returned."""
+        self._stopper.join(_SETTLE_SECONDS)
+        return not self._stopper.is_alive()
+
+
+@pytest.mark.asyncio
+async def test_a_promotion_that_meets_the_stop_at_its_lock_starts_no_worker() -> None:
+    """A promotion reads the stop in its hold, so a flag set while it waits for the lock is seen."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        release = threading.Event()
+        first_runs = threading.Event()
+        ran: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            ran.append("first")
+            first_runs.set()
+            release.wait(5.0)
+
+        first = controller.start_task("first", TaskType.SYNC, _wait)
+        queued = controller.start_task(
+            "queued", TaskType.SYNC, lambda _reporter: ran.append("queued")
+        )
+        assert first_runs.wait(_SETTLE_SECONDS)
+        controller._lock = lock = _MeetsTheStopAtItsFirstAcquire(controller)
+        lock.armed = True
+        try:
+            # Frees the one slot: the promotion of the queued row is the first hold.
+            controller.fail_task(first)
+            assert lock.met_in_time
+            assert lock.stop_finished()
+        finally:
+            release.set()
+        await wait_until(pilot, lambda: not _live_workers(first, queued), timeout=_SETTLE_SECONDS)
+        assert controller.queue.get_task(first).status is TaskStatus.FAILED
+        assert _outcome(controller, queued) == _REFUSED_AT_EXIT
+        assert ran == ["first"]
+
+
 @pytest.mark.asyncio
 async def test_a_slot_freed_once_the_stop_has_begun_starts_no_worker() -> None:
     """A promotion reads the stop in its hold, so a row due after the flag is set stays queued."""
