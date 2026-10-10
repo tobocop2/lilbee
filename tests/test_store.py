@@ -19,6 +19,7 @@ from lilbee.data.store import (
     SearchScope,
     SourceMeta,
     SourceMove,
+    SourceRelocation,
     SourceType,
     Store,
     cosine_sim,
@@ -4768,11 +4769,11 @@ class TestRelocateGivesEachMoveOneCandidate:
         store.add_chunks(_one_source_records("kept.md", 1) + _one_source_records("ghost.md", 1))
         store.upsert_source("kept.md", "h1", 1)
 
-        taken = store.relocate_sources(
+        step = store.relocate_sources(
             [SourceMove(("ghost.md",), "new.md", None), SourceMove(("kept.md",), "moved.md", None)]
         )
 
-        assert taken == {"moved.md": "kept.md"}
+        assert step == SourceRelocation({"moved.md": "kept.md"}, settled=2)
         # The skipped move re-keys nothing: its chunks keep the old name.
         assert len(store.get_chunks_by_source("ghost.md")) == 1
         assert store.get_chunks_by_source("new.md") == []
@@ -4787,7 +4788,7 @@ class TestRelocateGivesEachMoveOneCandidate:
 
         taken = store.relocate_sources(
             [SourceMove(shared, "x.md", None), SourceMove(shared, "y.md", None)]
-        )
+        ).taken
 
         assert taken == {"x.md": "a.md", "y.md": "b.md"}
         assert sorted(row["filename"] for row in store.get_sources()) == ["c.md", "x.md", "y.md"]
@@ -4798,13 +4799,13 @@ class TestRelocateGivesEachMoveOneCandidate:
             store.add_chunks(_one_source_records(name, 1))
             store.upsert_source(name, "same", 1)
         shared = ("a.md", "b.md")
-        assert store.relocate_sources([SourceMove(shared, "first.md", None)]) == {
+        assert store.relocate_sources([SourceMove(shared, "first.md", None)]).taken == {
             "first.md": "a.md"
         }
 
         assert store.relocate_sources(
             [SourceMove(shared, "second.md", None), SourceMove(shared, "third.md", None)]
-        ) == {"second.md": "b.md"}
+        ) == SourceRelocation({"second.md": "b.md"}, settled=2)
         assert sorted(row["filename"] for row in store.get_sources()) == ["first.md", "second.md"]
         assert store.get_chunks_by_source("third.md") == []
 
@@ -4816,13 +4817,272 @@ class TestRelocateGivesEachMoveOneCandidate:
 
         taken = store.relocate_sources(
             [SourceMove(tuple(names), f"moved{number}.md", None) for number in range(5)]
-        )
+        ).taken
 
         assert sorted(taken.values()) == names
 
     def test_with_no_source_table_every_move_is_skipped(self, store):
-        assert store.relocate_sources([SourceMove(("a.md",), "b.md", None)]) == {}
-        assert store.relocate_sources([]) == {}
+        assert store.relocate_sources([SourceMove(("a.md",), "b.md", None)]) == SourceRelocation(
+            {}, settled=1
+        )
+        assert store.relocate_sources([]) == SourceRelocation({}, settled=0)
+
+
+def _relocate_one_update_for_each_move(store, moves):
+    """One update of each table for each move: what a batched re-key must leave."""
+    from lilbee.data.store.core import _KEEP_TITLE, _RELOCATABLE_TABLES
+    from lilbee.data.title import derive_title
+
+    sources = store.open_table(SOURCES_TABLE)
+    held = {row["filename"] for row in store.get_sources()}
+    for move in moves:
+        old = next((name for name in move.candidates if name in held), None)
+        if old is None:
+            continue
+        held.discard(old)
+        title = store._relocated_title(sources, old, move.new, derive_title)
+        at_old = f"= '{escape_sql_string(old)}'"
+        for name, column in _RELOCATABLE_TABLES:
+            table = store.open_table(name)
+            values = {column: move.new}
+            if title is not _KEEP_TITLE and "title" in table.schema.names:
+                values["title"] = title
+            table.update(where=f"{column} {at_old}", values=values)
+        row = {"filename": move.new}
+        if title is not _KEEP_TITLE:
+            row["title"] = title
+        if move.stat is not None:
+            row["size_bytes"] = move.stat.size_bytes
+            row["mtime_ns"] = move.stat.mtime_ns
+            row["stat_captured_ns"] = move.stat.captured_ns
+        sources.update(where=f"filename {at_old}", values=row)
+
+
+def _relocate_in_holds(store, moves):
+    """Call the store until every move is settled; the names taken and the holds it took."""
+    taken, settled, holds = {}, 0, 0
+    while settled < len(moves):
+        step = store.relocate_sources(moves[settled:])
+        assert step.settled > 0
+        taken |= step.taken
+        settled += step.settled
+        holds += 1
+    return taken, holds
+
+
+def _twin(store, tmp_path):
+    """A second store over a copy of *store*'s files."""
+    import shutil
+
+    twin_dir = tmp_path / "twin"
+    shutil.copytree(store._config.lancedb_dir, twin_dir)
+    return Store(store._config.model_copy(update={"lancedb_dir": twin_dir}))
+
+
+def _vector_bytes(store):
+    """The bytes of every chunk vector, by chunk text."""
+    rows = store.open_table(CHUNKS_TABLE).to_arrow()
+    vectors = rows.column("vector").to_numpy(zero_copy_only=False)
+    return {
+        text: vector.tobytes()
+        for text, vector in zip(rows.column("chunk").to_pylist(), vectors, strict=True)
+    }
+
+
+def _folder(count):
+    """Seeds and moves for *count* files under ``bulk/`` renamed to ``moved/``."""
+    from lilbee.data.store.types import SourceStat
+
+    seeds = [(f"bulk/part_{number}.md", f"part {number}") for number in range(count)]
+    moves = [
+        SourceMove((key,), f"moved/{key.removeprefix('bulk/')}", SourceStat(number, 2, 3))
+        for number, (key, _title) in enumerate(seeds)
+    ]
+    return seeds, moves
+
+
+_SHARED = ("copy/a.md", "copy/b.md", "copy/c.md")
+# (seeds as (key, title), moves): each history a batched re-key must leave as the per-move one does.
+_RELOCATE_HISTORIES = {
+    "a-folder": _folder(5),
+    "a-folder-with-titles-of-every-kind": (
+        [
+            ("bulk/old_report.md", "old report"),
+            ("bulk/deep/notes-2024.md", "Frankenstein Analysis"),
+            ("bulk/IMG_1234.md", None),
+            ("bulky/stays.md", "stays"),
+        ],
+        [
+            SourceMove(("bulk/old_report.md",), "moved/old_report.md", None),
+            SourceMove(("bulk/deep/notes-2024.md",), "moved/deep/notes-2024.md", None),
+            SourceMove(("bulk/IMG_1234.md",), "moved/IMG_1234.md", None),
+        ],
+    ),
+    "new-file-names": (
+        [
+            ("old_report.md", "old report"),
+            ("notes-2024.md", "Frankenstein Analysis"),
+            ("real_notes.md", "real notes"),
+            ("IMG_1234.md", None),
+        ],
+        [
+            SourceMove(("old_report.md",), "annual_summary.md", None),
+            SourceMove(("notes-2024.md",), "renamed.md", None),
+            SourceMove(("real_notes.md",), "IMG_9999.md", None),
+            SourceMove(("IMG_1234.md",), "found_title.md", None),
+            SourceMove(("gone.md",), "never.md", None),
+        ],
+    ),
+    "one-content": (
+        [(key, "Shared Title") for key in _SHARED],
+        [SourceMove(_SHARED, "kept/x.md", None), SourceMove(_SHARED, "kept/y.md", None)],
+    ),
+    "quotes-and-letters-wider-than-a-byte": (
+        [("it's 100%_höhe/ü ber.md", "ü ber"), ("it's 100%_höhe/日本.md", "日本")],
+        [
+            SourceMove(("it's 100%_höhe/ü ber.md",), "tiefe's/ü ber.md", None),
+            SourceMove(("it's 100%_höhe/日本.md",), "tiefe's/日本.md", None),
+        ],
+    ),
+}
+
+
+class TestRelocateInOnePass:
+    @pytest.mark.parametrize("history", sorted(_RELOCATE_HISTORIES))
+    @pytest.mark.parametrize("bounds", [(2000, 16), (2, 16), (2000, 1)], ids=str)
+    def test_a_batch_leaves_each_table_as_one_update_for_each_move_does(
+        self, store, tmp_path, monkeypatch, history, bounds
+    ):
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", bounds[0])
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", bounds[1])
+        seeds, moves = _RELOCATE_HISTORIES[history]
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+        twin = _twin(store, tmp_path)
+        before, vectors = _dump(store), _vector_bytes(store)
+
+        _relocate_one_update_for_each_move(twin, moves)
+        taken, _holds = _relocate_in_holds(store, moves)
+
+        assert _dump(store) == _dump(twin)
+        assert _dump(store) != before
+        assert _vector_bytes(store) == vectors
+        assert len(vectors) == len(seeds)
+        assert sorted(taken) == sorted(
+            {row["filename"] for row in store.get_sources()} & {move.new for move in moves}
+        )
+
+    def test_a_renamed_folder_takes_one_update_of_each_table(self, store):
+        from lancedb.table import LanceTable
+
+        from lilbee.data.store.core import _RELOCATABLE_TABLES
+
+        seeds, moves = _folder(6)
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+        with (
+            mock.patch.object(
+                LanceTable, "update", autospec=True, side_effect=LanceTable.update
+            ) as updates,
+            mock.patch.object(
+                LanceTable, "merge_insert", autospec=True, side_effect=LanceTable.merge_insert
+            ) as merges,
+        ):
+            store.relocate_sources(moves)
+
+        assert sorted(row["filename"] for row in store.get_sources()) == [m.new for m in moves]
+        assert updates.call_count == len(_RELOCATABLE_TABLES)
+        assert merges.call_count == 1
+
+    def test_a_hold_settles_no_more_moves_than_its_bound(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", 2)
+        seeds, moves = _folder(5)
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+
+        first = store.relocate_sources(moves)
+
+        assert first == SourceRelocation({m.new: m.candidates[0] for m in moves[:2]}, settled=2)
+        left = sorted(row["filename"] for row in store.get_sources() if "bulk/" in row["filename"])
+        assert left == [m.candidates[0] for m in moves[2:]]
+        assert _relocate_in_holds(store, moves[2:])[1] == 2
+
+    def test_a_hold_stops_before_the_update_past_its_bound(self, store, monkeypatch):
+        """Each of these files takes a title of its own, so each is one update."""
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
+        names = ["alpha_plan", "beta_plan", "gamma_plan"]
+        for name in names:
+            _seed_source(store, f"{name}.md", title=name.replace("_", " "))
+        moves = [SourceMove((f"{name}.md",), f"{name}_final.md", None) for name in names]
+
+        first = store.relocate_sources(moves)
+
+        assert first.settled == 2
+        assert sorted(first.taken) == ["alpha_plan_final.md", "beta_plan_final.md"]
+        assert store.relocate_sources(moves[first.settled :]) == SourceRelocation(
+            {"gamma_plan_final.md": "gamma_plan.md"}, settled=1
+        )
+        assert _holders(store, "gamma_plan.md") == set()
+
+    def test_a_move_with_no_candidate_left_is_settled_without_an_update(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 1)
+        _seed_source(store, "kept.md", title="kept")
+        moves = [SourceMove(("ghost.md",), f"new{number}.md", None) for number in range(3)]
+        before = _dump(store)
+
+        assert store.relocate_sources(moves) == SourceRelocation({}, settled=3)
+        assert _dump(store) == before
+
+    def test_a_hold_that_dies_before_the_source_rows_is_finished_by_the_next(self, store, tmp_path):
+        seeds, moves = _folder(4)
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+        twin = _twin(store, tmp_path)
+        _relocate_one_update_for_each_move(twin, moves)
+
+        with (
+            mock.patch.object(
+                type(store), "_replace_moved_source_rows_unlocked", side_effect=KeyboardInterrupt
+            ),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            store.relocate_sources(moves)
+        assert sorted(row["filename"] for row in store.get_sources()) == [
+            m.candidates[0] for m in moves
+        ]
+        store.relocate_sources(moves)
+
+        assert _dump(store) == _dump(twin)
+
+    def test_a_name_the_source_table_holds_twice_moves_with_both_rows(self, store, tmp_path):
+        _seed_source(store, "twice.md", title="twice")
+        store.open_table(SOURCES_TABLE).add(store.open_table(SOURCES_TABLE).to_arrow())
+        twin = _twin(store, tmp_path)
+        moves = [SourceMove(("twice.md",), "moved/twice.md", None)]
+        _relocate_one_update_for_each_move(twin, moves)
+
+        store.relocate_sources(moves)
+
+        assert [row["filename"] for row in store.get_sources()] == ["moved/twice.md"] * 2
+        assert _dump(store) == _dump(twin)
+
+    def test_files_of_one_content_share_one_pass_over_their_old_names(self):
+        from lilbee.data.store.core import _claimed_names
+
+        class Counted(tuple):
+            reads = 0
+
+            def __getitem__(self, index):
+                type(self).reads += 1
+                return super().__getitem__(index)
+
+        names = Counted(f"old{number:03d}.md" for number in range(200))
+        moves = [SourceMove(names, f"new{number}.md", None) for number in range(200)]
+
+        claimed = _claimed_names(moves, set(names[100:]))
+
+        assert claimed == [*names[100:], *([None] * 100)]
+        assert Counted.reads <= 4 * len(names)
 
 
 class TestRemoveRowsOf:

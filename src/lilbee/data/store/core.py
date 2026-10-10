@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable, Iterable, Sequence
+import os
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
 import pyarrow as pa
 
@@ -81,6 +83,7 @@ from .types import (
     SourceMeta,
     SourceMove,
     SourceRecord,
+    SourceRelocation,
     SourceStat,
     SourceStatBackfill,
     SourceType,
@@ -260,6 +263,14 @@ _KEY_INDEX_STALE_FLUSHES = 32
 # replace would join millions of filenames into one delete predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
 
+# One hold of the write lock re-keys at most this many moved sources, with at
+# most this many updates of each table, so a writer that waits is not kept out
+# for the length of a whole plan batch.
+_RELOCATE_HOLD_MOVES = 2000
+_RELOCATE_HOLD_UPDATES = 16
+
+_NULL_TEXT_SQL = "CAST(NULL AS STRING)"
+
 # Rows per Arrow batch when a filtered read walks the whole source table.
 _SOURCE_SCAN_BATCH_ROWS = 20_000
 
@@ -313,8 +324,124 @@ def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
     """
     old_literal = escape_sql_string(old)
     where = f"{column} = '{old_literal}' OR starts_with({column}, '{old_literal}/')"
-    value = f"concat('{escape_sql_string(new)}', substr({column}, {len(old) + 1}))"
-    return where, value
+    return where, _swap_head_sql(column, old, new)
+
+
+def _swap_head_sql(column: str, old_head: str, new_head: str) -> str:
+    """The SQL value of *column* with *new_head* in place of the characters of *old_head*."""
+    return f"concat('{escape_sql_string(new_head)}', substr({column}, {len(old_head) + 1}))"
+
+
+def _text_sql(value: str | None) -> str:
+    """The SQL literal for the nullable text *value*."""
+    return _NULL_TEXT_SQL if value is None else f"'{escape_sql_string(value)}'"
+
+
+def _in_list(names: Iterable[str]) -> str:
+    """The body of a SQL ``IN`` list that holds *names*."""
+    return ", ".join(f"'{escape_sql_string(name)}'" for name in names)
+
+
+def _swapped_heads(old: str, new: str) -> tuple[str, str]:
+    """*old* and *new* without the end they share."""
+    shared = len(os.path.commonprefix((old[::-1], new[::-1])))
+    return old[: len(old) - shared], new[: len(new) - shared]
+
+
+class _RekeyPattern(NamedTuple):
+    """The sources one update re-keys: each swaps *old_head* for *new_head* and takes *title*."""
+
+    old_head: str
+    new_head: str
+    title: str | None
+
+
+@dataclass
+class _RelocationHold:
+    """What one hold re-keys: old names by update, the source rows renamed, the names taken."""
+
+    patterns: dict[_RekeyPattern, list[str]] = field(default_factory=dict)
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    taken: dict[str, str] = field(default_factory=dict)
+    settled: int = 0
+
+
+def _claimed_names(moves: Sequence[SourceMove], unclaimed: set[str]) -> list[str | None]:
+    """The old name each of *moves* takes out of *unclaimed*: its first candidate still there.
+
+    Moves that share one candidates tuple share one cursor into it, so files
+    of one content cost one pass over their old names and not one for each file.
+    """
+    cursors: dict[int, int] = {}
+    claimed: list[str | None] = []
+    for move in moves:
+        pool = move.candidates
+        at = cursors.get(id(pool), 0)
+        while at < len(pool) and pool[at] not in unclaimed:
+            at += 1
+        cursors[id(pool)] = at
+        if at == len(pool):
+            claimed.append(None)
+            continue
+        unclaimed.discard(pool[at])
+        claimed.append(pool[at])
+    return claimed
+
+
+def _title_after_move(
+    row: Mapping[str, Any], old: str, new: str, derive: Callable[[str], str]
+) -> str | None:
+    """The title the source *row* takes when *old* becomes *new*, or ``_KEEP_TITLE``.
+
+    A title that came from the old name follows the new one; any other title stays.
+    """
+    if _TITLE_COLUMN not in row:
+        return _KEEP_TITLE
+    stored = row[_TITLE_COLUMN] or ""
+    if stored != (derive(old) or ""):
+        return _KEEP_TITLE
+    return derive(new) or None
+
+
+def _moved_source_row(row: dict[str, Any], move: SourceMove, title: str | None) -> dict[str, Any]:
+    """The source *row* under *move*'s new name, with *title* and the stat of the file."""
+    moved = {**row, "filename": move.new}
+    if title is not _KEEP_TITLE:
+        moved[_TITLE_COLUMN] = title
+    if move.stat is not None:
+        moved["size_bytes"] = move.stat.size_bytes
+        moved["mtime_ns"] = move.stat.mtime_ns
+        moved["stat_captured_ns"] = move.stat.captured_ns
+    return moved
+
+
+def _plan_hold(
+    moves: Sequence[SourceMove],
+    claimed: list[str | None],
+    rows: Mapping[str, list[dict[str, Any]]],
+    derive: Callable[[str], str],
+) -> _RelocationHold:
+    """Group the claimed *moves* by the update that re-keys them, up to the hold's bound.
+
+    A source whose title does not change shares an update with every source
+    that swaps the same leading text of its key. The plan stops before the move
+    that would need one update more than a hold runs.
+    """
+    hold = _RelocationHold()
+    for move, old in zip(moves, claimed, strict=True):
+        if old is not None:
+            stored = rows[old]
+            title = _title_after_move(stored[0], old, move.new, derive)
+            unchanged = title is _KEEP_TITLE or title == stored[0][_TITLE_COLUMN]
+            heads = _swapped_heads(old, move.new)
+            pattern = _RekeyPattern(*heads, _KEEP_TITLE if unchanged else title)
+            if pattern not in hold.patterns and len(hold.patterns) == _RELOCATE_HOLD_UPDATES:
+                break
+            hold.patterns.setdefault(pattern, []).append(old)
+            hold.rows.extend(_moved_source_row(row, move, title) for row in stored)
+            hold.taken[move.new] = old
+        hold.settled += 1
+    return hold
 
 
 def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[str, list[str]]:
@@ -335,13 +462,20 @@ def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
     wanted = sorted(names)
     held: set[str] = set()
     for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
-        quoted = ", ".join(
-            f"'{escape_sql_string(name)}'"
-            for name in wanted[start : start + _SOURCE_STAT_BATCH_ROWS]
-        )
+        quoted = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
         query = sources.search().where(f"filename IN ({quoted})").select(["filename"])
         held.update(row["filename"] for row in query.limit(None).to_list())
     return held
+
+
+def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """The rows the source table holds for *names*, by filename."""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    if names:
+        query = sources.search().where(f"filename IN ({_in_list(names)})").limit(None)
+        for row in query.to_list():
+            rows.setdefault(row["filename"], []).append(row)
+    return rows
 
 
 def _refresh_key_index_unlocked(table: LanceTable, column: str, flush_rows: int) -> None:
@@ -470,7 +604,7 @@ class Store:
         """Open/create the chunks table, adding the title column to pre-title tables."""
         table = ensure_table(self.get_db(), CHUNKS_TABLE, self._chunks_schema())
         if _TITLE_COLUMN not in table.schema.names:
-            table.add_columns({_TITLE_COLUMN: "CAST(NULL AS STRING)"})
+            table.add_columns({_TITLE_COLUMN: _NULL_TEXT_SQL})
             self._backfill_stem_titles_unlocked(table)
         return table
 
@@ -1914,7 +2048,7 @@ class Store:
         """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
         defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
-        defaults |= {name: "CAST(NULL AS STRING)" for name in _SOURCE_META_COLUMNS}
+        defaults |= {name: _NULL_TEXT_SQL for name in _SOURCE_META_COLUMNS}
         missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
         if missing:
             table.add_columns(missing)
@@ -2102,73 +2236,70 @@ class Store:
         if table is not None:
             _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
-    def relocate_sources(self, moves: list[SourceMove]) -> dict[str, str]:
-        """Re-key moved sources from an old filename to the new one, preserving their chunks.
+    def relocate_sources(self, moves: Sequence[SourceMove]) -> SourceRelocation:
+        """Re-key the first of *moves* to their new names in one hold of the write lock.
 
-        Returns the old name each new name took. Under the one write lock a move
-        takes the first of its candidates that holds a source row and that no
-        earlier move took; a move with none left is skipped and is absent from
-        the result. The choice and the re-key share the lock, so no two writers
-        take one old name, and a move is skipped only once every candidate is taken.
+        Returns the old name each new name took and how many of *moves* the hold
+        settled; the caller passes the rest again. A move takes the first of its
+        candidates that holds a source row and that no earlier move took; a move
+        with none left is settled and absent from the names taken. The choice and
+        the re-key share the lock, so no two writers take one old name.
 
-        A source whose file moved (same content hash, new path) keeps its chunks
-        and embeddings; only its filename key and disk stat change. Each per-source
-        table's source column, the citation source_filename, and the sources row are
-        updated in place, so a move costs no re-extraction or re-embedding.
-
-        Each table is opened once; the re-key is then a targeted per-move update.
-        A single-statement batch would need a ``CASE`` expression, which LanceDB's
-        update SQL does not support, and a delete+re-add across the vector tables is
-        not worth its risk for what is a rare mass relabel.
+        A moved source keeps its chunks and vectors: only its key, a title that
+        came from the old name, and its disk stat change. Sources that swap the
+        same leading text of their key take one update of each table together,
+        and the source table takes the new rows and loses the old ones in one
+        merge. A hold settles at most ``_RELOCATE_HOLD_MOVES`` moves and runs at
+        most ``_RELOCATE_HOLD_UPDATES`` updates of each table. Chunk tables
+        change before the source table, so a hold that dies between them leaves
+        the old names for the next sync to move again.
         """
-        taken: dict[str, str] = {}
         if not moves:
-            return taken
+            return SourceRelocation({}, 0)
         with self._write_lock():
-            sources = self.open_table(SOURCES_TABLE)
-            if sources is None:
-                return taken
-            tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
-            unclaimed = _held_sources(sources, {name for move in moves for name in move.candidates})
-            for move in moves:
-                old = next((name for name in move.candidates if name in unclaimed), None)
-                if old is None:
-                    continue
-                unclaimed.discard(old)
-                taken[move.new] = old
-                self._rekey_source_unlocked(sources, tables, old, move)
+            step = self._relocate_hold_unlocked(moves[:_RELOCATE_HOLD_MOVES])
         self._invalidate_source_cache()
-        return taken
+        return step
 
-    def _rekey_source_unlocked(
-        self,
-        sources: LanceTable,
-        tables: list[tuple[LanceTable | None, str]],
-        old: str,
-        move: SourceMove,
-    ) -> None:
-        """Put *move*'s new name on every row keyed *old*. Caller holds ``write_lock()``."""
+    def _relocate_hold_unlocked(self, moves: Sequence[SourceMove]) -> SourceRelocation:
+        """Claim and re-key *moves* up to the hold's bound. Caller holds ``write_lock()``."""
         from lilbee.data.title import derive_title  # circular at module scope
 
-        where_old = f"= '{escape_sql_string(old)}'"
-        new_title = self._relocated_title(sources, old, move.new, derive_title)
-        for table, column in tables:
+        sources = self.open_table(SOURCES_TABLE)
+        if sources is None:
+            return SourceRelocation({}, len(moves))
+        pools = {id(move.candidates): move.candidates for move in moves}.values()
+        unclaimed = _held_sources(sources, {name for pool in pools for name in pool})
+        claimed = _claimed_names(moves, unclaimed)
+        rows = _source_rows(sources, [old for old in claimed if old is not None])
+        hold = _plan_hold(moves, claimed, rows, derive_title)
+        if hold.taken:
+            self._rekey_tables_unlocked(hold.patterns)
+            self._replace_moved_source_rows_unlocked(sources, hold)
+        return SourceRelocation(hold.taken, hold.settled)
+
+    def _rekey_tables_unlocked(self, patterns: Mapping[_RekeyPattern, list[str]]) -> None:
+        """Run one update of each per-source table for each of *patterns*. Caller holds the lock."""
+        for name, column in _RELOCATABLE_TABLES:
+            table = self.open_table(name)
             if table is None:
                 continue
-            values: dict[str, object] = {column: move.new}
-            # Stem titles track the filename; re-derive them on the same
-            # handle and statement as the re-key.
-            if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
-                values[_TITLE_COLUMN] = new_title
-            table.update(where=f"{column} {where_old}", values=values)
-        row_values: dict[str, object] = {"filename": move.new}
-        if new_title is not _KEEP_TITLE:
-            row_values["title"] = new_title
-        if move.stat is not None:
-            row_values["size_bytes"] = move.stat.size_bytes
-            row_values["mtime_ns"] = move.stat.mtime_ns
-            row_values["stat_captured_ns"] = move.stat.captured_ns
-        sources.update(where=f"filename {where_old}", values=row_values)
+            titled = _TITLE_COLUMN in table.schema.names
+            for pattern, olds in patterns.items():
+                values = {column: _swap_head_sql(column, pattern.old_head, pattern.new_head)}
+                if titled and pattern.title is not _KEEP_TITLE:
+                    values[_TITLE_COLUMN] = _text_sql(pattern.title)
+                table.update(where=f"{column} IN ({_in_list(olds)})", values_sql=values)
+
+    def _replace_moved_source_rows_unlocked(
+        self, sources: LanceTable, hold: _RelocationHold
+    ) -> None:
+        """Put *hold*'s source rows in place of the old ones in one commit. Lock held."""
+        moved = pa.Table.from_pylist(hold.rows, schema=sources.schema)
+        merge = sources.merge_insert("filename").when_matched_update_all()
+        merge = merge.when_not_matched_insert_all()
+        old_rows = f"filename IN ({_in_list(hold.taken.values())})"
+        merge.when_not_matched_by_source_delete(old_rows).execute(moved)
 
     def _relocated_title(
         self,
@@ -2195,12 +2326,9 @@ class Store:
             )
         except Exception:
             return _KEEP_TITLE
-        if not rows or "title" not in rows[0]:
+        if not rows:
             return _KEEP_TITLE
-        stored = rows[0]["title"] or ""
-        if stored != (derive(old) or ""):
-            return _KEEP_TITLE
-        return derive(new) or None
+        return _title_after_move(rows[0], old, new, derive)
 
     def rekey_sources_under(self, old: str, new: str) -> None:
         """Re-key the source *old* and every source below it to *new*, keeping chunks and vectors.

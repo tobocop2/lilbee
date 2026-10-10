@@ -422,6 +422,14 @@ file the first of them that still holds a source row, and re-keys it in the same
 So no two workers take one old name. A file is an add only when every old name of its
 content is taken, so no old name stays while a file of its content is added.
 
+**A renamed folder.** Files that swap the same leading text of their name, as every file
+of a renamed folder does, take one update of each table together, and their source rows
+change in one merge. The vectors are not read or embedded again. A file whose title came
+from its old name takes an update of its own. One hold of the write lock re-keys at most
+2,000 files with at most 16 updates of each table, and the sync pauses for 0.1 s between
+two holds, so a flush of another worker gets the lock. A sync that stops between two
+holds leaves the remaining files under their old names, and the next sync moves them.
+
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
 
