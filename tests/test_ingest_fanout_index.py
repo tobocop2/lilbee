@@ -291,6 +291,23 @@ class TestWhereTheWorkIs:
         assert dropped[0].startswith("Sync reconciliation: 1 document file(s) on disk are absent")
         assert dropped[0].endswith("(possible silent drop): note3.txt")
 
+    async def test_a_worker_names_no_file_that_was_skipped_or_held_out(self, tmp_path, caplog):
+        """Each has no source row and is accounted for: one reads as empty, one was removed."""
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 12)
+        library.write("empty.txt", "")
+        with caplog.at_level(logging.WARNING, logger=pipeline_mod.log.name):
+            first = await library.sync()
+            library.remove("note3.txt")
+            second = await library.sync()
+
+        assert first.skipped == ["empty.txt"]
+        assert [held.filename for held in second.held_out] == ["empty.txt"]
+        assert second.unchanged == 11
+        assert not {"empty.txt", "note3.txt"} & set(library.sources())
+        named = [r.getMessage() for r in caplog.records if "Sync reconciliation" in r.getMessage()]
+        assert named == []
+
 
 class TestEqualToOneProcess:
     async def test_removed_files_stay_out_when_a_sync_refills_an_empty_index(self, tmp_path):
@@ -373,6 +390,32 @@ class TestEqualToOneProcess:
         assert [name for name in fanned.sources() if ".zip" in name] == sorted(
             f"{archive}{member}"
             for archive in ("bundle.zip", copy)
+            for member in ("", "/alpha.txt", "/beta.txt")
+        )
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_copy_of_an_archive_inside_folders_takes_no_member_as_a_move(self, tmp_path):
+        """A member's key holds a slash for each folder above its archive, then the archive's."""
+        results = []
+
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            (library.documents / "shelf" / "box").mkdir(parents=True)
+            _write_bundle(library.documents / "shelf" / "box" / "bundle.zip")
+            await library.sync()
+            shutil.copyfile(
+                library.documents / "shelf" / "box" / "bundle.zip",
+                library.documents / "shelf" / "box" / "copy.zip",
+            )
+            results.append(await library.sync())
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert [result.relocated for result in results] == [[], []]
+        assert [name for name in fanned.sources() if ".zip" in name] == sorted(
+            f"shelf/box/{archive}{member}"
+            for archive in ("bundle.zip", "copy.zip")
             for member in ("", "/alpha.txt", "/beta.txt")
         )
         _assert_equal_to_one_process(fanned, single)
