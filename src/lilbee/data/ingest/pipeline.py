@@ -699,18 +699,35 @@ def _apply_moves(
     return remaining, sorted(moved_new)
 
 
+def _in_archive(name: str, on_disk: Callable[[str], bool]) -> bool:
+    """Whether source *name* is a member of an archive that *on_disk* finds.
+
+    A member's key is its archive's key, a slash, and its path in the archive.
+    """
+    cut = name.find("/")
+    while cut != -1:
+        if on_disk(name[:cut]):
+            return True
+        cut = name.find("/", cut + 1)
+    return False
+
+
 def _absent_sources(sources: list[SourceRecord], disk_files: dict[str, Path]) -> list[str]:
     """Document sources whose backing file is not on disk this sync.
 
     A vanished file is never removed on its own (its chunks stay searchable, a
     dead path-link discovered at open time); this set exists only to pair a
     reappeared identical file to its old key in move detection. Imported sources
-    have no backing file, so they are excluded.
+    have no backing file, so they are excluded. An archive member has no file
+    of its own and carries its archive's hash: it is absent only when its
+    archive is.
     """
     return [
         s["filename"]
         for s in sources
-        if s["filename"] not in disk_files and s["source_type"] != SourceType.IMPORTED
+        if s["filename"] not in disk_files
+        and s["source_type"] != SourceType.IMPORTED
+        and not _in_archive(s["filename"], disk_files.__contains__)
     ]
 
 
@@ -725,18 +742,20 @@ def _worker_move_pool(
 
     The worker walked its own slice, so for a source of another slice it asks the
     disk: the source is absent when no file is at its path or a pattern excludes it.
+    An archive member is absent only when its archive is.
     """
 
-    def _is_absent(name: str) -> bool:
-        if name in gone:
-            return False
+    def _on_disk(name: str) -> bool:
         if shard.owns(name):
-            return name not in disk_files
+            return name in disk_files
         resolved = resolve_source_root(name)
         if resolved is None:
-            return not resolve_source_path(name).is_file()
+            return resolve_source_path(name).is_file()
         base, path = resolved
-        return not path.is_file() or rules.excludes_path(path, base=base)
+        return path.is_file() and not rules.excludes_path(path, base=base)
+
+    def _is_absent(name: str) -> bool:
+        return name not in gone and not _on_disk(name) and not _in_archive(name, _on_disk)
 
     return _IndexMovePool(store, _is_absent)
 

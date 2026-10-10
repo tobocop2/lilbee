@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import threading
 import zipfile
 from unittest import mock
@@ -87,6 +88,14 @@ async def _play(tmp_path, history, processes: int = 2) -> tuple[Library, Library
     await history(single)
     fanned.use()
     return fanned, single
+
+
+def _write_bundle(path) -> None:
+    """An archive of two members with a fixed member time, so two libraries hold the same bytes."""
+    with zipfile.ZipFile(path, "w") as bundle:
+        for member, text in (("alpha.txt", "turbines"), ("beta.txt", "pumps")):
+            entry = zipfile.ZipInfo(member, date_time=(2020, 1, 1, 0, 0, 0))
+            bundle.writestr(entry, f"Member text about {text}.")
 
 
 def _files_under(root) -> list[str]:
@@ -289,16 +298,40 @@ class TestEqualToOneProcess:
         async def history(library):
             library.write_notes("note", 12)
             await library.sync()
-            # A fixed member time, so the two libraries hold one archive, byte for byte.
-            with zipfile.ZipFile(library.documents / "bundle.zip", "w") as bundle:
-                for member, text in (("alpha.txt", "turbines"), ("beta.txt", "pumps")):
-                    entry = zipfile.ZipInfo(member, date_time=(2020, 1, 1, 0, 0, 0))
-                    bundle.writestr(entry, f"Member text about {text}.")
+            _write_bundle(library.documents / "bundle.zip")
             await library.sync()
 
         fanned, single = await _play(tmp_path, history)
         members = [name for name in fanned.sources() if name.startswith("bundle.zip")]
         assert members == ["bundle.zip", "bundle.zip/alpha.txt", "bundle.zip/beta.txt"]
+        _assert_equal_to_one_process(fanned, single)
+
+    @pytest.mark.parametrize("beside", [True, False], ids=["same-slice", "other-slice"])
+    async def test_a_copy_of_an_archive_takes_no_member_of_it_as_a_move(self, tmp_path, beside):
+        """A member carries its archive's hash and has no file, and its archive is on disk."""
+        copy = next(
+            name
+            for name in (f"copy{number}.zip" for number in range(1000))
+            if (slice_of(name, 2) == slice_of("bundle.zip", 2)) is beside
+        )
+        results = []
+
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            _write_bundle(library.documents / "bundle.zip")
+            await library.sync()
+            shutil.copyfile(library.documents / "bundle.zip", library.documents / copy)
+            results.append(await library.sync())
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        assert [result.relocated for result in results] == [[], []]
+        assert [name for name in fanned.sources() if ".zip" in name] == sorted(
+            f"{archive}{member}"
+            for archive in ("bundle.zip", copy)
+            for member in ("", "/alpha.txt", "/beta.txt")
+        )
         _assert_equal_to_one_process(fanned, single)
 
     @pytest.mark.parametrize("new_slice", [0, 1], ids=["same-slice", "other-slice"])
@@ -874,6 +907,26 @@ class TestWorkerMovePool:
         monkeypatch.setattr(Store, "sources_by_hash", lambda *args, **kw: asked.append(args))
         assert self._take_all(pool, "same") == candidates
         assert asked == []
+
+    def test_a_member_is_absent_only_when_its_archive_is(self, library):
+        """The archive is asked of the walk in this slice and of the disk in the other one."""
+        mine, theirs, lost = (
+            next(
+                name
+                for name in (f"{stem}{number}.zip" for number in range(1000))
+                if slice_of(name, 2) == index
+            )
+            for stem, index in (("mine", 0), ("theirs", 1), ("lost", 1))
+        )
+        library.write(theirs, "an archive on disk in the other slice")
+        store = Store(cfg)
+        for archive in (mine, theirs, lost):
+            for name in (archive, f"{archive}/a.txt", f"{archive}/deep/b.txt"):
+                store.upsert_source(name, "same", 1)
+
+        pool = self._pool(library, disk_files=[mine])
+
+        assert self._take_all(pool, "same") == [lost, f"{lost}/a.txt", f"{lost}/deep/b.txt"]
 
 
 def _subjects_of(chunks):
