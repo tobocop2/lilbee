@@ -18,6 +18,7 @@ import lilbee.app.services as svc_mod
 from lilbee.app.ingest import RegisterResult
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
+from lilbee.data.store import FailedPage
 from lilbee.data.types import ExtractMode, OcrBackendName
 from lilbee.runtime.progress import OcrBackendUsed
 from tests.conftest import make_pdf
@@ -1598,7 +1599,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "empty.txt"
         f.write_text("   ")
-        result, _, _ = await ingest_document(f, "empty.txt", "text")
+        result, _, _, _ = await ingest_document(f, "empty.txt", "text")
         assert result == []
 
     async def test_ingest_code_empty_chunks(self, isolated_env, mock_svc):
@@ -1658,7 +1659,7 @@ class TestIngestHelpers:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        result, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        result, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(result) == 2
         assert result[0]["page_start"] == 1
         assert result[1]["page_start"] == 2
@@ -4802,7 +4803,7 @@ class TestBatchExtractionRouting:
             try:
                 f = isolated_env / "d.pdf"
                 f.write_bytes(b"fake")
-                records, _, _ = await ingest_document(f, "d.pdf", "pdf")
+                records, _, _, _ = await ingest_document(f, "d.pdf", "pdf")
             finally:
                 await batcher.close()
                 reset_active_batcher(token)
@@ -4827,7 +4828,7 @@ class TestBatchExtractionRouting:
         f.write_bytes(make_pdf(pages=1))
         token = set_active_batcher(batcher)
         try:
-            records, _, _ = await ingest_document(f, "doc.pdf", "pdf")
+            records, _, _, _ = await ingest_document(f, "doc.pdf", "pdf")
         finally:
             await batcher.close()
             reset_active_batcher(token)
@@ -4846,7 +4847,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert all(r["chunk_type"] == ChunkType.RAW for r in records)
 
@@ -4866,7 +4867,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 3
         table_records = [r for r in records if r["chunk_type"] == ChunkType.TABLE]
         assert len(table_records) == 2
@@ -4894,7 +4895,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert records[-1]["chunk_type"] == ChunkType.TABLE
         assert records[-1]["chunk"] == spanned
 
@@ -4910,7 +4911,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.RAW
 
@@ -4930,7 +4931,7 @@ class TestTableChunks:
 
         f = isolated_env / "test.pdf"
         f.write_bytes(b"fake")
-        records, _, _ = await ingest_document(f, "test.pdf", "pdf")
+        records, _, _, _ = await ingest_document(f, "test.pdf", "pdf")
         assert len(records) == 1
         assert records[0]["chunk_type"] == ChunkType.TABLE
         assert records[0]["chunk_index"] == 0
@@ -5355,7 +5356,7 @@ class TestIngestDocumentEdgeCases:
         empty_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=empty_result)
         with mock.patch("lilbee.data.extract.xberg.aextract_document", mock_extract):
-            result, _, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
+            result, _, _, _ = await ingest_document(isolated_env / "e.xml", "e.xml", "xml")
         assert result == []
 
     async def test_no_chunks_returns_empty(self, isolated_env):
@@ -5365,7 +5366,7 @@ class TestIngestDocumentEdgeCases:
         no_chunks_result = mock.MagicMock(chunks=[], metadata=Metadata())
         mock_extract = mock.AsyncMock(return_value=no_chunks_result)
         with mock.patch("lilbee.data.extract.xberg.aextract_document", mock_extract):
-            result, _, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
+            result, _, _, _ = await ingest_document(isolated_env / "s.xml", "s.xml", "xml")
         assert result == []
 
 
@@ -6379,6 +6380,54 @@ class TestTesseractUnderRealXberg:
         assert (expected in caplog.text) is warned
 
 
+class _FirstPageOnlyVisionBackend(_CountingVisionBackend):
+    """A 'lilbee-vision' backend that reads the first page it gets and raises on the rest."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._first = threading.Lock()
+
+    def process_image(self, image_bytes, config):
+        if not self._first.acquire(blocking=False):
+            raise RuntimeError("the model is gone")
+        return super().process_image(image_bytes, config)
+
+
+class TestFailedOcrPagesFromXberg:
+    """The adapter reads the records real xberg writes when a page's OCR raises."""
+
+    def test_each_page_whose_ocr_raised_becomes_a_failed_page(self, isolated_env):
+        from xberg import register_ocr_backend, unregister_ocr_backend
+
+        from lilbee.data.extract.xberg import extract_document, failed_ocr_pages
+        from lilbee.data.ingest import ExtractMode, extraction_config
+        from lilbee.data.store import FailedPage
+
+        cfg.ocr = OcrMode.ALL
+        cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+        config = extraction_config(ExtractMode.PAGINATED)
+        register_ocr_backend(_FirstPageOnlyVisionBackend())
+        try:
+            doc = extract_document(
+                make_pdf(pages=3), "application/pdf", filename="born.pdf", config=config
+            )
+        finally:
+            unregister_ocr_backend(OcrBackendName.LILBEE_VISION)
+
+        records = doc.ocr_page_failures
+        assert [type(record).__name__ for record in records] == ["OcrPageFailure"] * 2
+        read = [page.page_number for page in doc.pages if "OCR-TEXT" in page.content]
+        assert len(read) == 1
+        error = (
+            "Plugin 'lilbee-vision' method 'process_image' failed: RuntimeError: the model is gone"
+        )
+        assert failed_ocr_pages(doc) == tuple(
+            FailedPage(page=number, error=error, recovered=False)
+            for number in (1, 2, 3)
+            if number not in read
+        )
+
+
 class TestVisionOcrStopsOnCancel:
     """A set cancel stops the vision model before each page, against real xberg."""
 
@@ -6515,7 +6564,7 @@ class TestIngestDocumentOcrPath:
 
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        result, _, _ = await ingest_document(f, "scan.pdf", "pdf")
+        result, _, _, _ = await ingest_document(f, "scan.pdf", "pdf")
         assert result == []
         assert "no usable text" in caplog.text
 
@@ -6754,7 +6803,7 @@ class TestOcrCancel:
         mock_kf.side_effect = fake_extract
         f = isolated_env / "scan.pdf"
         f.write_bytes(b"x")
-        records, _, _ = await ingest_document(f, "scan.pdf", "pdf", cancel=threading.Event())
+        records, _, _, _ = await ingest_document(f, "scan.pdf", "pdf", cancel=threading.Event())
         assert len(calls) == 5
         assert len(records) == 1
 
@@ -8625,3 +8674,343 @@ class TestSkippedScanReportsTheOcrThatRan:
         result = await sync(quiet=True)
         assert result.skipped == ["empty.md"]
         assert result.skipped_ocr == {}
+
+
+_PAGE_3_FAILED = FailedPage(page=3, error="vision backend timed out", recovered=False)
+_PAGE_5_FAILED = FailedPage(page=5, error="returned no text", recovered=True)
+_PAGE_3_ROW = {"page": 3, "error": "vision backend timed out", "recovered": False}
+_PAGE_5_ROW = {"page": 5, "error": "returned no text", "recovered": True}
+_PAGE_3_LINE = "page 3: vision backend timed out"
+
+
+def _partly_read_doc(*pages: FailedPage, num_chunks: int = 2):
+    """An xberg document that lists *pages* as its failed OCR pages; None when there are none."""
+    import types
+
+    doc = _make_xberg_result(text="Readable page text. " * 20, num_chunks=num_chunks)
+    doc.ocr_page_failures = [
+        types.SimpleNamespace(page=page.page, error=page.error, recovered=page.recovered)
+        for page in pages
+    ] or None
+    return doc
+
+
+class TestPartlyReadFiles:
+    """A file whose OCR failed on some pages is indexed and reported as partly read."""
+
+    async def _sync_scan(self, isolated_env, doc, **sync_kwargs):
+        from lilbee.data.ingest import sync
+
+        events: list[tuple[object, object]] = []
+        (isolated_env / "scan.pdf").write_bytes(b"%PDF-1.4 scanned")
+        with mock.patch(
+            "lilbee.data.extract.xberg.aextract_document",
+            new_callable=mock.AsyncMock,
+            return_value=doc,
+        ) as extract:
+            result = await sync(
+                quiet=True, on_progress=lambda et, data: events.append((et, data)), **sync_kwargs
+            )
+        return result, events, extract
+
+    async def test_the_file_is_indexed_and_its_failed_pages_are_reported(self, isolated_env):
+        from lilbee.data.types import PartialFile
+        from lilbee.runtime.progress import BatchStatus, EventType, FileStatus
+
+        store = _install_real_store()
+        result, events, _ = await self._sync_scan(
+            isolated_env, _partly_read_doc(_PAGE_3_FAILED, _PAGE_5_FAILED)
+        )
+
+        assert result.added == ["scan.pdf"]
+        assert result.partial == [PartialFile("scan.pdf", [_PAGE_3_FAILED, _PAGE_5_FAILED])]
+        by_type = {event_type: data for event_type, data in events}
+        assert by_type[EventType.FILE_DONE].status is FileStatus.PARTIAL
+        assert by_type[EventType.BATCH_PROGRESS].status is BatchStatus.PARTIAL
+        assert by_type[EventType.SYNC_DONE].partial == 1
+        [row] = store.get_sources()
+        assert row["chunk_count"] == 2
+        assert row["ocr_page_failures"] == [_PAGE_3_ROW, _PAGE_5_ROW]
+
+    async def test_a_file_whose_only_failed_page_was_recovered_is_partly_read(self, isolated_env):
+        from lilbee.data.types import PartialFile
+
+        store = _install_real_store()
+        result, _, _ = await self._sync_scan(isolated_env, _partly_read_doc(_PAGE_5_FAILED))
+
+        assert result.partial == [PartialFile("scan.pdf", [_PAGE_5_FAILED])]
+        assert store.get_sources()[0]["ocr_page_failures"] == [_PAGE_5_ROW]
+
+    async def test_a_fully_read_file_reports_no_partial_and_stores_no_pages(self, isolated_env):
+        from lilbee.runtime.progress import EventType, FileStatus
+
+        store = _install_real_store()
+        result, events, _ = await self._sync_scan(isolated_env, _partly_read_doc())
+
+        assert result.added == ["scan.pdf"]
+        assert result.partial == []
+        by_type = {event_type: data for event_type, data in events}
+        assert by_type[EventType.FILE_DONE].status is FileStatus.OK
+        assert by_type[EventType.SYNC_DONE].partial == 0
+        assert store.get_sources()[0]["ocr_page_failures"] is None
+
+    async def test_a_normal_sync_does_not_read_a_partly_read_file_again(self, isolated_env):
+        _install_real_store()
+        doc = _partly_read_doc(_PAGE_3_FAILED)
+        await self._sync_scan(isolated_env, doc)
+
+        again, _, extract = await self._sync_scan(isolated_env, doc)
+
+        extract.assert_not_called()
+        assert (again.unchanged, again.updated, again.partial) == (1, [], [])
+
+    async def test_retry_skipped_reads_it_again_and_a_full_read_clears_the_pages(
+        self, isolated_env
+    ):
+        store = _install_real_store()
+        await self._sync_scan(isolated_env, _partly_read_doc(_PAGE_3_FAILED))
+
+        retried, _, extract = await self._sync_scan(
+            isolated_env, _partly_read_doc(), retry_skipped=True
+        )
+
+        assert extract.await_count > 0
+        assert (retried.updated, retried.partial) == (["scan.pdf"], [])
+        assert store.get_sources()[0]["ocr_page_failures"] is None
+
+    async def test_retry_skipped_leaves_a_fully_read_file_alone(self, isolated_env):
+        _install_real_store()
+        await self._sync_scan(isolated_env, _partly_read_doc())
+
+        retried, _, extract = await self._sync_scan(
+            isolated_env, _partly_read_doc(), retry_skipped=True
+        )
+
+        extract.assert_not_called()
+        assert (retried.unchanged, retried.updated) == (1, [])
+
+    async def test_a_file_with_failed_pages_and_no_chunks_is_skipped_not_partial(
+        self, isolated_env
+    ):
+        from lilbee.runtime.progress import EventType, FileStatus
+
+        result, events, _ = await self._sync_scan(
+            isolated_env, _partly_read_doc(_PAGE_3_FAILED, num_chunks=0)
+        )
+
+        assert (result.skipped, result.partial, result.added) == (["scan.pdf"], [], [])
+        assert result.reasons == {"scan.pdf": f"no text extracted (0 chunks); {_PAGE_3_LINE}"}
+        by_type = {event_type: data for event_type, data in events}
+        assert by_type[EventType.FILE_DONE].status is FileStatus.OK
+
+    async def test_a_partly_read_file_whose_write_fails_is_failed_not_partial(
+        self, isolated_env, mock_svc
+    ):
+        mock_svc.store.write_chunks_batch.side_effect = RuntimeError("disk full")
+
+        result, _, _ = await self._sync_scan(isolated_env, _partly_read_doc(_PAGE_3_FAILED))
+
+        assert (result.failed, result.partial, result.added) == (["scan.pdf"], [], [])
+
+    async def test_the_result_names_why_each_failed_and_skipped_file_was_not_indexed(
+        self, isolated_env
+    ):
+        from lilbee.data.ingest import sync
+
+        (isolated_env / "broken.pdf").write_bytes(b"%PDF-1.4 broken")
+        (isolated_env / "blank.md").write_text("   ", encoding="utf-8")
+        (isolated_env / "fine.md").write_text("# Fine\n\nReadable text.", encoding="utf-8")
+
+        async def _extract(data, *_args, filename, **_kwargs):
+            if filename == "broken.pdf":
+                raise RuntimeError("the file is encrypted")
+            return _make_xberg_result(text=data.decode(), num_chunks=1 if data.strip() else 0)
+
+        with mock.patch("lilbee.data.extract.xberg.aextract_document", side_effect=_extract):
+            result = await sync(quiet=True)
+
+        assert result.added == ["fine.md"]
+        assert result.reasons == {
+            "broken.pdf": "RuntimeError: the file is encrypted",
+            "blank.md": "no text extracted (0 chunks)",
+        }
+
+    def test_an_archive_reports_each_partly_read_member_under_its_own_name(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, PartialFile, _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        record = {"chunk": "readable"}
+        members = [
+            MemberRecords("box.zip/a.pdf", "pdf", [record], [], SourceMeta(), (_PAGE_3_FAILED,)),
+            MemberRecords("box.zip/b.pdf", "pdf", [record], [], SourceMeta()),
+            MemberRecords("box.zip/c.pdf", "pdf", [], [], SourceMeta(), (_PAGE_5_FAILED,)),
+        ]
+        result = _IngestResult("box.zip", Path("box.zip"), 2, error=None, members=members)
+        partial: dict[str, list[PartialFile]] = {}
+
+        status = pipeline._classify_result(result, {"box.zip": None}, {}, {}, {}, None, partial)
+
+        assert status is BatchStatus.PARTIAL
+        assert partial == {"box.zip": [PartialFile("box.zip/a.pdf", [_PAGE_3_FAILED])]}
+
+    def test_an_archive_member_with_failed_pages_and_no_records_is_not_partly_read(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, PartialFile, _IngestResult
+        from lilbee.runtime.progress import BatchStatus, FileStatus
+
+        members = [
+            MemberRecords("box.zip/a.pdf", "pdf", [], [], SourceMeta(), (_PAGE_3_FAILED,)),
+            MemberRecords("box.zip/b.pdf", "pdf", [{"chunk": "readable"}], [], SourceMeta()),
+        ]
+        result = _IngestResult("box.zip", Path("box.zip"), 1, error=None, members=members)
+        partial: dict[str, list[PartialFile]] = {}
+
+        batch = pipeline._classify_result(result, {"box.zip": None}, {}, {}, {}, None, partial)
+        file_done = pipeline._done_status(any(m.failed_pages and m.records for m in members))
+
+        assert (batch, file_done) == (BatchStatus.INGESTED, FileStatus.OK)
+        assert partial == {}
+        assert pipeline._member_write(members[0], "h1", None).ocr_page_failures == []
+
+    def test_a_file_with_page_text_only_is_skipped_with_its_failed_pages_and_stores_none(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import PartialFile, _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        result = _IngestResult(
+            "scan.pdf",
+            Path("scan.pdf"),
+            0,
+            error=None,
+            file_hash="h",
+            records=[],
+            page_texts=[{"source": "scan.pdf", "page": 1, "text": "x"}],
+            failed_pages=[_PAGE_3_FAILED],
+        )
+        partial: dict[str, list[PartialFile]] = {}
+        reasons: dict[str, str] = {}
+        skipped: dict = {}
+
+        status = pipeline._classify_result(
+            result, {"scan.pdf": None}, {}, {}, skipped, reasons, partial
+        )
+        store = MagicMock()
+        with mock.patch("lilbee.data.ingest.pipeline.get_services") as services:
+            services.return_value.store = store
+            pipeline._flush_batch([result])
+
+        assert status is BatchStatus.INGESTED
+        assert (partial, list(skipped)) == ({}, ["scan.pdf"])
+        assert reasons == {
+            "scan.pdf": f"stored page text only (0 searchable chunks); {_PAGE_3_LINE}"
+        }
+        [write] = store.write_chunks_batch.call_args.args[0]
+        assert write.ocr_page_failures == []
+
+    def test_a_skipped_file_s_reason_lists_at_most_the_display_cap_of_pages(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+
+        pages = [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 8)]
+        result = _IngestResult("scan.pdf", Path("scan.pdf"), 0, error=None, failed_pages=pages)
+        reasons: dict[str, str] = {}
+
+        pipeline._classify_result(result, {}, {}, {}, {}, reasons)
+
+        shown = [f"page {number}: boom" for number in range(1, 6)]
+        assert reasons["scan.pdf"] == "; ".join(
+            ["no text extracted (0 chunks)", *shown, "and 2 more"]
+        )
+
+    def test_a_partly_read_file_is_classified_partial_without_a_collector(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.types import _IngestResult
+        from lilbee.runtime.progress import BatchStatus
+
+        result = _IngestResult("a.pdf", Path("a.pdf"), 1, error=None, failed_pages=[_PAGE_3_FAILED])
+
+        assert pipeline._classify_result(result, {}, {}, {}, {}) is BatchStatus.PARTIAL
+
+    def test_an_archive_member_write_carries_the_member_s_failed_pages(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords
+
+        member = MemberRecords(
+            "box.zip/a.pdf", "pdf", [{"chunk": "readable"}], [], SourceMeta(), (_PAGE_3_FAILED,)
+        )
+
+        assert pipeline._member_write(member, "h1", None).ocr_page_failures == [_PAGE_3_FAILED]
+
+    async def test_an_archive_with_a_partly_read_member_is_reported_partial(
+        self, isolated_env, mock_svc
+    ):
+        from lilbee.data.ingest import sync
+        from lilbee.data.store import SourceMeta
+        from lilbee.data.types import MemberRecords, PartialFile
+        from lilbee.runtime.progress import EventType, FileStatus
+
+        (isolated_env / "box.zip").write_bytes(b"PK archive bytes")
+        record = {"chunk": "readable", "chunk_index": 0, "vector": [0.1] * 768}
+        members = [
+            MemberRecords("box.zip/a.pdf", "pdf", [record], [], SourceMeta(), (_PAGE_3_FAILED,)),
+            MemberRecords("box.zip/b.pdf", "pdf", [record], [], SourceMeta()),
+        ]
+        events: list[tuple[object, object]] = []
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.ingest_archive",
+            new_callable=mock.AsyncMock,
+            return_value=members,
+        ):
+            result = await sync(quiet=True, on_progress=lambda et, data: events.append((et, data)))
+
+        assert result.added == ["box.zip"]
+        assert result.partial == [PartialFile("box.zip/a.pdf", [_PAGE_3_FAILED])]
+        file_done = next(data for event_type, data in events if event_type is EventType.FILE_DONE)
+        assert file_done.status is FileStatus.PARTIAL
+        written = {
+            item.source: item.ocr_page_failures
+            for call in mock_svc.store.write_chunks_batch.call_args_list
+            for item in call.args[0]
+        }
+        assert written["box.zip/a.pdf"] == [_PAGE_3_FAILED]
+        assert written["box.zip/b.pdf"] == []
+
+    def test_retry_rereads_the_archive_of_a_partly_read_member_and_only_files_on_disk(self):
+        from lilbee.data.ingest import pipeline
+        from lilbee.data.store import SOURCE_STAT_UNKNOWN
+
+        def _row(name, pages=None):
+            return {
+                "filename": name,
+                "file_hash": "h",
+                "ingested_at": "",
+                "chunk_count": 1,
+                "source_type": "document",
+                "size_bytes": 10,
+                "ocr_page_failures": pages,
+            }
+
+        existing = {
+            name: _row(name, pages)
+            for name, pages in (
+                ("box.zip", None),
+                ("box.zip/inner/a.pdf", [_PAGE_3_ROW]),
+                ("scan.pdf", [_PAGE_5_ROW]),
+                ("gone.pdf", [_PAGE_5_ROW]),
+                ("fine.pdf", None),
+            )
+        }
+        disk = {name: Path(name) for name in ("box.zip", "scan.pdf", "fine.pdf")}
+
+        planned = pipeline._sources_to_plan(existing, disk, reread_partial=True)
+
+        changed = {name for name, row in planned.items() if row["file_hash"] == ""}
+        assert changed == {"box.zip", "scan.pdf"}
+        assert planned["scan.pdf"]["size_bytes"] == SOURCE_STAT_UNKNOWN
+        assert planned["gone.pdf"] is existing["gone.pdf"]
+        assert existing["scan.pdf"]["file_hash"] == "h"
+        assert pipeline._sources_to_plan(existing, disk, reread_partial=False) is existing

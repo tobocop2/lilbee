@@ -20,6 +20,12 @@ from lilbee.app.settings import SCANNED_PAGES_LABEL
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
+from lilbee.data.types import (
+    PARTLY_READ_FILE_COLUMN,
+    PARTLY_READ_PAGES_COLUMN,
+    PARTLY_READ_TITLE,
+    failed_page_lines,
+)
 from lilbee.runtime.console import PlainConsole, styled
 
 if TYPE_CHECKING:
@@ -147,6 +153,8 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         )
         yield ""
 
+    yield from _render_partly_read(status)
+
     if not status.sources:
         yield (
             "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
@@ -170,6 +178,26 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     )
 
 
+def _render_partly_read(status: StatusResult) -> Generator[RenderableType, None, None]:
+    """Yield the table of indexed sources with pages whose OCR failed, when there are any."""
+    partly_read = [source for source in status.sources if source.ocr_page_failures]
+    if not partly_read:
+        return
+    table = Table(title=PARTLY_READ_TITLE)
+    table.add_column(PARTLY_READ_FILE_COLUMN, style=theme.ACCENT)
+    table.add_column(PARTLY_READ_PAGES_COLUMN, style=theme.MUTED)
+    for source in partly_read:
+        table.add_row(
+            Text(source.filename), Text("\n".join(failed_page_lines(source.ocr_page_failures)))
+        )
+    yield table
+    yield styled(
+        (str(status.partial_total), theme.LABEL),
+        PARTLY_READ_RETRY_HINT,
+    )
+    yield ""
+
+
 def render_status(con: PlainConsole) -> None:
     """Print status info (documents, paths, chunk counts)."""
     from lilbee.app.status import gather_status
@@ -189,6 +217,8 @@ CONTAINS_SOURCE = "contains a source lilbee already indexes, not added: {names}"
 """Said of a directory that is the parent of a registered source; its other files stay out."""
 SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
+PARTLY_READ_RETRY_HINT = " partly read; 'lilbee sync --retry-skipped' reads them again"
+"""Follows the count under the partly read table of ``status``."""
 
 
 def print_prefixed(con: PlainConsole, prefix: str, detail: object, *, style: str) -> None:

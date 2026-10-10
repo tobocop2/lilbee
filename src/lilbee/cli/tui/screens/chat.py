@@ -59,6 +59,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     close_stream,
     open_local_file,
     remember_from_input,
+    report_ingest,
     unregister_added_roots,
 )
 from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
@@ -908,15 +909,9 @@ class ChatScreen(Screen[None]):
         sync_result = asyncio_loop.run(
             sync(quiet=True, on_progress=build_add_progress_callback(reporter), cancel=reporter)
         )
-        if sync_result.failed:
-            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(sync_result.failed)))
-        if sync_result.skipped:
-            # Files yielding no text beside indexed siblings are a partial
-            # success; only an add whose own roots contributed nothing failed.
-            skipped_msg = msg.sync_skipped_message(sync_result, tui_log_path())
-            if registered and not add_indexed_anything(registered, sync_result):
-                raise RuntimeError(skipped_msg)
-            call_from_thread(self, self.notify, skipped_msg, severity="warning")
+        report_ingest(reporter, sync_result)
+        self._warn_or_fail_add(sync_result, registered)
+        self._report_partly_read(sync_result)
         self._report_unsaved_skip_records(sync_result)
         if sync_result.relocated:
             call_from_thread(
@@ -2424,7 +2419,13 @@ class ChatScreen(Screen[None]):
         label = "Markdown" if use_md else "Plain text"
         self.notify(msg.CHAT_RENDERING.format(label=label))
 
-    def _run_sync(self, *, force_rebuild: bool = False, prune_ignored: bool = False) -> None:
+    def _run_sync(
+        self,
+        *,
+        force_rebuild: bool = False,
+        prune_ignored: bool = False,
+        retry_skipped: bool = False,
+    ) -> None:
         """Enqueue a document sync (or full rebuild) in the task bar."""
         if self._sync_active:
             self.notify(msg.SYNC_ALREADY_ACTIVE, severity="warning")
@@ -2438,7 +2439,12 @@ class ChatScreen(Screen[None]):
 
         def _target(reporter: ProgressReporter) -> None:
             try:
-                self._do_sync(reporter, force_rebuild=force_rebuild, prune_ignored=prune_ignored)
+                self._do_sync(
+                    reporter,
+                    force_rebuild=force_rebuild,
+                    prune_ignored=prune_ignored,
+                    retry_skipped=retry_skipped,
+                )
             finally:
                 self._sync_active = False
                 # Re-detect after every sync attempt: success drives the
@@ -2455,6 +2461,7 @@ class ChatScreen(Screen[None]):
         *,
         force_rebuild: bool = False,
         prune_ignored: bool = False,
+        retry_skipped: bool = False,
     ) -> None:
         """Sync body. Runs on worker thread."""
         from lilbee.data.ingest import sync
@@ -2469,14 +2476,20 @@ class ChatScreen(Screen[None]):
                     cancel=reporter,
                     force_rebuild=force_rebuild,
                     prune_ignored=prune_ignored,
+                    retry_skipped=retry_skipped,
                 )
             )
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(msg.SYNC_CANCELLED_RESUME) from exc
         if prune_ignored:
             call_from_thread(self, self.notify, msg.prune_ignored_message(len(result.removed)))
+        report = report_ingest(reporter, result)
         if result.failed:
-            raise RuntimeError(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
+            failed_msg = msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed))
+            if not report.indexed:
+                raise RuntimeError(failed_msg)
+            call_from_thread(self, self.notify, failed_msg, severity="warning")
+        self._report_partly_read(result)
         if result.skipped:
             call_from_thread(
                 self,
@@ -2492,6 +2505,35 @@ class ChatScreen(Screen[None]):
                 severity="warning",
             )
         self._report_unsaved_skip_records(result)
+
+    def _warn_or_fail_add(self, result: SyncResult, registered: list[str]) -> None:
+        """Warn about the files an add did not index, or fail the add.
+
+        Files that failed or yielded no text beside indexed siblings are a partial
+        success. An add whose own roots contributed nothing fails, and so does an
+        add whose sync had failed files and indexed nothing.
+        """
+        messages: list[str] = []
+        if result.failed:
+            messages.append(msg.SYNC_FAILED_FILES.format(files=", ".join(result.failed)))
+        if result.skipped:
+            messages.append(msg.sync_skipped_message(result, tui_log_path()))
+        roots_empty = bool(registered) and not add_indexed_anything(registered, result)
+        nothing_indexed = not (result.added or result.updated or result.relocated)
+        if messages and (roots_empty or (result.failed and nothing_indexed)):
+            raise RuntimeError(messages[0])
+        for message in messages:
+            call_from_thread(self, self.notify, message, severity="warning")
+
+    def _report_partly_read(self, result: SyncResult) -> None:
+        """Warn when OCR failed on pages of files a sync indexed."""
+        if result.partial:
+            call_from_thread(
+                self,
+                self.notify,
+                msg.SYNC_PARTLY_READ.format(count=len(result.partial)),
+                severity="warning",
+            )
 
     def _report_unsaved_skip_records(self, result: SyncResult) -> None:
         """Show the error when a sync could not save which files it held out."""

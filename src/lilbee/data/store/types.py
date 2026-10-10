@@ -58,6 +58,23 @@ class SourceMeta(NamedTuple):
     created_at: str = ""
 
 
+@dataclass(frozen=True)
+class FailedPage:
+    """One page whose OCR failed; ``recovered`` when the page still has other content."""
+
+    page: int
+    error: str
+    recovered: bool
+
+
+class FailedPageRow(TypedDict):
+    """A ``FailedPage`` as the ``_sources`` table stores it."""
+
+    page: int
+    error: str
+    recovered: bool
+
+
 class ChunkWrite(NamedTuple):
     """One document's chunks plus its source-table update, for a batched write.
 
@@ -76,6 +93,8 @@ class ChunkWrite(NamedTuple):
     page_texts: list[dict] | None = None
     source_type: SourceType = SourceType.DOCUMENT
     meta: SourceMeta | None = None
+    # The pages whose OCR failed; empty when every page was read.
+    ocr_page_failures: list[FailedPage] | None = None
 
 
 class ChunkType(StrEnum):
@@ -225,6 +244,9 @@ class SourceRecord(TypedDict):
     title: NotRequired[str | None]
     authors: NotRequired[str | None]
     created_at: NotRequired[str | None]
+    # The pages whose OCR failed, read through ``failed_pages``; absent or None
+    # when every page was read.
+    ocr_page_failures: NotRequired[list[FailedPageRow] | None]
 
 
 # Sentinel for the stat columns on rows written before they existed (or for
@@ -242,6 +264,11 @@ class SourceStat(NamedTuple):
     size_bytes: int
     mtime_ns: int
     captured_ns: int = SOURCE_STAT_UNKNOWN
+
+
+def failed_pages(record: SourceRecord) -> list[FailedPage]:
+    """The pages of *record* whose OCR failed; empty when the column is absent or NULL."""
+    return [FailedPage(**row) for row in record.get("ocr_page_failures") or []]
 
 
 def source_stat(record: SourceRecord) -> SourceStat | None:

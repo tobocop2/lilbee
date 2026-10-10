@@ -72,11 +72,20 @@ class FileStartEvent(BaseModel):
     current_file: int
 
 
+class FileStatus(StrEnum):
+    """How one file's ingestion ended, as FileDoneEvent.status reports it."""
+
+    OK = "ok"
+    PARTIAL = "partial"
+    SKIPPED = "skipped"
+    ERROR = "error"
+
+
 class FileDoneEvent(BaseModel):
-    """Emitted when a file finishes ingestion (success or error)."""
+    """Emitted when a file finishes ingestion (success, partly read, skipped or error)."""
 
     file: str
-    status: str
+    status: FileStatus
     chunks: int
 
 
@@ -84,6 +93,7 @@ class BatchStatus(StrEnum):
     """Status values for BatchProgressEvent.status."""
 
     INGESTED = "ingested"
+    PARTIAL = "partial"
     SKIPPED = "skipped"
     FAILED = "failed"
     RASTERIZING = "rasterizing"
@@ -209,6 +219,7 @@ class SyncDoneEvent(BaseModel):
     failed: int
     skipped: int = 0
     relocated: int = 0
+    partial: int = 0
 
 
 class SetupStartEvent(BaseModel):

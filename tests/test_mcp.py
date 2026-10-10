@@ -16,7 +16,8 @@ from lilbee.core.config.enums import OcrMode
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
-from lilbee.data.store import SearchChunk, Store
+from lilbee.data.store import FailedPage, SearchChunk, Store
+from lilbee.data.types import PartialFile
 from lilbee.mcp_server import (
     add,
     catalog_browse,
@@ -291,6 +292,22 @@ class TestStatus:
         cfg.ocr = OcrMode.OFF
         assert status()["ocr_note"] == "skipped (ocr = off)"
 
+    def test_status_lists_failed_pages_per_source_and_counts_partly_read_files(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "scan.pdf",
+                "file_hash": "h" * 20,
+                "chunk_count": 3,
+                "ingested_at": "2026-01-01",
+                "ocr_page_failures": [{"page": 2, "error": "timed out", "recovered": False}],
+            }
+        ]
+        result = status()
+        assert result["partial_total"] == 1
+        assert result["sources"][0]["ocr_page_failures"] == [
+            {"page": 2, "error": "timed out", "recovered": False}
+        ]
+
     def test_status_includes_entities_when_enabled(self, mock_svc):
         cfg.entity_extraction = True
         mock_svc.store.open_table.return_value = None
@@ -547,6 +564,21 @@ class TestListDocuments:
         mock_svc.store.get_sources.return_value = []
         result = list_documents()
         assert result["total"] == 0
+
+    def test_each_document_lists_its_failed_ocr_pages(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [
+            {
+                "filename": "scan.pdf",
+                "chunk_count": 3,
+                "ocr_page_failures": [{"page": 2, "error": "timed out", "recovered": False}],
+            },
+            {"filename": "a.md", "chunk_count": 1, "ocr_page_failures": None},
+        ]
+        documents = list_documents()["documents"]
+        assert [doc["ocr_page_failures"] for doc in documents] == [
+            [{"page": 2, "error": "timed out", "recovered": False}],
+            [],
+        ]
 
 
 class TestReset:
@@ -1120,6 +1152,44 @@ class TestAdd:
         src.write_text("content")
         result = await add([str(src)])
         assert "warning" in result
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+        ),
+    )
+    async def test_add_reports_partly_read_files_with_a_warning(self, mock_sync, tmp_path):
+        src = tmp_path / "scan.pdf"
+        src.write_bytes(b"%PDF-1.4")
+        result = await add([str(src)])
+        assert result["warning"] == "some files were partly read"
+        assert result["sync"]["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+
+    @mock.patch(
+        "lilbee.data.ingest.sync",
+        new_callable=AsyncMock,
+        return_value=SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            failed=["bad.pdf"],
+            reasons={"bad.pdf": "the file is encrypted"},
+        ),
+    )
+    async def test_sync_output_carries_partial_files_and_reasons(self, mock_sync):
+        result = await sync()
+        assert result["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert result["reasons"] == {"bad.pdf": "the file is encrypted"}
 
 
 class TestMain:

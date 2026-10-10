@@ -414,3 +414,18 @@ class TestRunSyncBackground:
         with patch.object(sync_mod, "_on_sync_done") as mock_osd:
             done_cb(mock_future)
             mock_osd.assert_called_once_with(con, mock_future, chat_mode=True)
+
+
+def test_format_sync_summary_names_partly_read_files() -> None:
+    summary = sync_mod._format_sync_summary(2, 0, 0, 1, partial=1)
+    assert summary == "2 added, 1 partly read, 1 failed"
+
+
+def test_sync_done_printers_show_the_partly_read_count(capsys) -> None:
+    done = SyncDoneEvent(added=1, updated=0, removed=0, failed=0, partial=1)
+    printed = MagicMock()
+    sync_mod._print_done(printed, done)
+    assert printed.print.call_args.args[0] == "Synced: 1 added, 1 partly read"
+
+    sync_mod._chat_sync_callback(sync_mod.SyncStatus())(EventType.SYNC_DONE, done)
+    assert "1 added, 1 partly read" in capsys.readouterr().out

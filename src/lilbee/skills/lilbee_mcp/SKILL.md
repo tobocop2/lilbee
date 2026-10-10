@@ -75,7 +75,7 @@ wait ~10s, re-check `lilbee_status`, retry. Don't switch tools.
 |---|---|
 | `lilbee_search(query, top_k, scope)` | Retrieve relevant chunks. `top_k` omitted falls back to `cfg.top_k` so `settings_set` governs candidate count. Cap `top_k` at ~20 for small-context chat models (Gemma 4 at `n_ctx=7168`, Qwen3 with widened retrieval); higher values can produce tool responses that exceed the next chat turn's budget. `scope`: `"both"` (default) or `"raw"` for ingested docs/code; only use `"wiki"` when `lilbee_status` shows a built wiki, otherwise it silently falls back to the full pool. No LLM call. |
 | `lilbee_status()` | Indexed sources, total chunks, active model refs. First call of any session. |
-| `lilbee_list_documents()` | All indexed sources with chunk counts. |
+| `lilbee_list_documents()` | All indexed sources with chunk counts. `ocr_page_failures` lists the pages of a source whose OCR failed, each as `{page, error, recovered}`; `lilbee_sync` and `lilbee_add` list the same entries under `partial[].pages`. |
 | `lilbee_init(path)` | Create a `.lilbee/` in the given dir and switch the session to it. |
 | `lilbee_remove(names)` | Remove documents from the index by name, folder, or glob (source files are kept). |
 | `lilbee_crawl_status(task_id)` | Poll a non-blocking crawl: `pending` / `running` / `done` / `failed`. |
