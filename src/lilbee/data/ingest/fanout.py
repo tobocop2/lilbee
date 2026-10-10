@@ -9,6 +9,7 @@ import multiprocessing
 import os
 import queue
 import shutil
+import stat
 import sys
 import time
 from dataclasses import dataclass
@@ -241,12 +242,19 @@ def _delete_stores(stores: list[Path], data_root: Path) -> None:
 
 
 def _reclaimable_bytes(store: Path) -> int:
-    """The bytes deleting *store* frees: a file with a second hard link frees none."""
-    return sum(
-        entry.stat().st_size
-        for entry in store.rglob("*")
-        if entry.is_file() and entry.stat().st_nlink == 1
-    )
+    """The bytes deleting *store* frees: a file with a second hard link frees none.
+
+    A file that cannot be read ends the count, which then states less than was freed.
+    """
+    total = 0
+    try:
+        for entry in store.rglob("*"):
+            status = entry.lstat()
+            if stat.S_ISREG(status.st_mode) and status.st_nlink == 1:
+                total += status.st_size
+    except OSError as exc:
+        log.debug("Stopped measuring the worker store %s: %s", store, exc)
+    return total
 
 
 def _apply_shard_env(spec: ShardSpec) -> None:
