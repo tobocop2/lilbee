@@ -41,6 +41,7 @@ from lilbee.runtime.progress import (
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
+from tests.conftest import EARLIER_SYNC_RUNNING
 
 runner = CliRunner()
 
@@ -276,6 +277,40 @@ class TestSync:
         assert result.exit_code == 1
         assert "Error:" in result.output
         assert "does not support file locking" in result.output
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_sync_of_an_earlier_lilbee_stops_the_command(
+        self, isolated_env, mock_svc, earlier_sync_running, command
+    ):
+        result = runner.invoke(app, [command])
+
+        assert result.exit_code == 1
+        assert " ".join(result.output.split()) == f"Error: {EARLIER_SYNC_RUNNING}"
+        assert earlier_sync_running.exists()
+        mock_svc.store.drop_all.assert_not_called()
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_sync_of_an_earlier_lilbee_stops_the_command_in_json(
+        self, isolated_env, earlier_sync_running, command
+    ):
+        result = runner.invoke(app, ["--json", command])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"error": EARLIER_SYNC_RUNNING}
+
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    def test_a_sync_of_an_earlier_lilbee_stops_an_add_after_it_registered(
+        self, isolated_env, earlier_sync_running, json_flag
+    ):
+        source = isolated_env / "notes.txt"
+        source.write_text("hello world", encoding="utf-8")
+
+        result = runner.invoke(app, [*json_flag, "add", str(source)])
+
+        assert result.exit_code == 1
+        assert EARLIER_SYNC_RUNNING in " ".join(result.output.split())
+        assert "Traceback" not in result.output
+        assert cfg.linked_roots == {"notes.txt": str(source.resolve())}
 
 
 class TestRebuild:
@@ -862,6 +897,15 @@ class TestAutoSync:
         result = runner.invoke(app, ["ask", "test"])
         assert result.exit_code == 0
         assert "Synced:" in result.output
+
+    def test_a_sync_of_an_earlier_lilbee_stops_ask_before_it_answers(
+        self, isolated_env, mock_svc, earlier_sync_running
+    ):
+        result = runner.invoke(app, ["ask", "test"])
+
+        assert result.exit_code == 1
+        assert " ".join(result.output.split()) == f"Error: {EARLIER_SYNC_RUNNING}"
+        mock_svc.searcher.ask_stream.assert_not_called()
 
     def test_auto_sync_background(self) -> None:
         from rich.console import Console
