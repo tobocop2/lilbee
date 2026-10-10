@@ -105,10 +105,10 @@ class OcrBackendUsed(StrEnum):
 
     @classmethod
     def chosen(cls, enable_ocr: bool | None, vision_model: str) -> "OcrBackendUsed":
-        """The backend a configuration picks: OCR off wins, then a set vision model."""
-        if enable_ocr is False:
-            return cls.NONE
-        return cls.VISION if vision_model else cls.TESSERACT
+        """The backend a configuration picks: the vision model, else Tesseract unless OCR is off."""
+        if vision_model:
+            return cls.VISION
+        return cls.NONE if enable_ocr is False else cls.TESSERACT
 
 
 _EXTRACT_STEP_NAMES: dict[OcrBackendUsed, str] = {

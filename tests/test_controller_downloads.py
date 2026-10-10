@@ -12,6 +12,7 @@ Tests cover both the generic ``start_task`` API and the typed
 
 from __future__ import annotations
 
+import asyncio
 import threading
 import time
 from unittest.mock import patch
@@ -24,6 +25,7 @@ from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 from lilbee.runtime.cancellation import TaskCancelledError
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import LilbeeAppHost, await_chat, ready_services
 
 
@@ -256,6 +258,29 @@ async def test_finalize_task_cancelled_branch_routes_through_queue() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_worker_whose_coroutine_was_cancelled_ends_as_a_cancelled_task() -> None:
+    """A cancel of the task's coroutine on the loop reaches the worker as asyncio.CancelledError."""
+    app = _Host()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+
+        def _cancelled_on_the_loop(_reporter: ProgressReporter) -> None:
+            raise asyncio.CancelledError
+
+        task_id = controller.start_task(
+            "demo-loop-cancel", TaskType.SYNC, _cancelled_on_the_loop, indeterminate=True
+        )
+
+        def _status() -> TaskStatus | None:
+            task = controller.queue.get_task(task_id)
+            return None if task is None else task.status
+
+        await wait_until(pilot, lambda: _status() == TaskStatus.CANCELLED, timeout=5.0)
+        assert _status() == TaskStatus.CANCELLED
+        assert controller.queue.active_tasks == []
+
+
+@pytest.mark.asyncio
 async def test_start_download_enqueues_under_download_type() -> None:
     """start_download delegates to start_task with TaskType.DOWNLOAD."""
     app = _Host()
@@ -438,9 +463,13 @@ async def test_downloads_run_four_at_a_time() -> None:
 
 
 @pytest.mark.asyncio
-async def test_spawn_worker_without_target_is_noop() -> None:
-    """Defensive: _spawn_task_worker with unknown task_id does nothing."""
+async def test_rows_put_straight_on_the_queue_are_promoted_with_no_worker() -> None:
+    """A finished task promotes a row of every idle type; a row with no target gets no thread."""
     app = _Host()
     async with app.run_test():
         controller = TaskBarController(app)
-        controller._spawn_task_worker("unknown-task-id")  # must not raise
+        bare = [controller.add_task("bare", kind.value) for kind in (TaskType.SYNC, TaskType.WIKI)]
+        controller.complete_task(controller.add_task("other", TaskType.CRAWL.value))
+        statuses = [controller.queue.get_task(task_id).status for task_id in bare]
+        assert statuses == [TaskStatus.ACTIVE, TaskStatus.ACTIVE]
+        assert controller._workers == {}

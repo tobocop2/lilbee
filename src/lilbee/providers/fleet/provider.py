@@ -75,6 +75,7 @@ from lilbee.providers.warm_progress import (
     WarmProgressTracker,
     is_active_warm,
 )
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.daemon_call import DaemonCall
 from lilbee.runtime.engine_lock import (
     ENGINE_DIR_ENV,
@@ -520,17 +521,26 @@ class _VisionDispatcher:
         self._assigned: dict[LlamaServerClient, int] = {}
 
     @contextmanager
-    def slot(self, pool: Sequence[_VisionReplica]) -> Iterator[LlamaServerClient]:
-        """Hold one batching slot on the pool's best replica; yields that client."""
-        client = self._acquire(pool)
+    def slot(
+        self, pool: Sequence[_VisionReplica], cancel: CancelSignal | None = None
+    ) -> Iterator[LlamaServerClient]:
+        """Hold one batching slot on the pool's best replica; yields that client.
+
+        A set *cancel* raises ``TaskCancelledError`` while the request still waits.
+        """
+        client = self._acquire(pool, cancel)
         try:
             yield client
         finally:
             self._release(client)
 
-    def _acquire(self, pool: Sequence[_VisionReplica]) -> LlamaServerClient:
+    def _acquire(
+        self, pool: Sequence[_VisionReplica], cancel: CancelSignal | None
+    ) -> LlamaServerClient:
         with self._cond:
             while True:
+                if cancel is not None and cancel.is_set():
+                    raise TaskCancelledError
                 client = self._pick(pool)
                 if client is not None:
                     self._assigned[client] = self._assigned.get(client, 0) + 1
@@ -566,14 +576,18 @@ class _VisionDispatcher:
 _VISION_DISPATCHER = _VisionDispatcher()
 
 
-def _dispatch_vision(pool: Sequence[_VisionReplica], call: Callable[[LlamaServerClient], _T]) -> _T:
+def _dispatch_vision(
+    pool: Sequence[_VisionReplica],
+    call: Callable[[LlamaServerClient], _T],
+    cancel: CancelSignal | None = None,
+) -> _T:
     """Run *call* on a replica with a free batching slot, failing over once.
 
     Blocks until a slot frees rather than racing requests at a full server. A
     connection-level failure marks the replica unhealthy and retries once on
     another replica's slot; with no other replica the failure surfaces.
     """
-    with _VISION_DISPATCHER.slot(pool) as client:
+    with _VISION_DISPATCHER.slot(pool, cancel) as client:
         try:
             result = call(client)
         except Exception as exc:
@@ -587,7 +601,7 @@ def _dispatch_vision(pool: Sequence[_VisionReplica], call: Callable[[LlamaServer
     others = [replica for replica in pool if replica.client is not failed]
     if not others:
         raise _no_healthy_replica_error(failed, cause) from cause
-    with _VISION_DISPATCHER.slot(others) as retry_client:
+    with _VISION_DISPATCHER.slot(others, cancel) as retry_client:
         try:
             retry_result = call(retry_client)
         except Exception as retry_exc:
@@ -599,43 +613,32 @@ def _dispatch_vision(pool: Sequence[_VisionReplica], call: Callable[[LlamaServer
 
 
 def _vision_call(
-    client: LlamaServerClient, messages: Sequence[Mapping[str, Any]], timeout: float | None
+    client: LlamaServerClient,
+    messages: Sequence[Mapping[str, Any]],
+    timeout: float | None,
+    cancel: CancelSignal | None = None,
 ) -> str:
-    """Run a vision chat on *client*, enforcing *timeout* like the in-process OCR.
+    """Run a vision chat on *client*, bounded by a total *timeout* (``None`` or 0: no limit).
 
     The repeat penalty stops a page looping one line; ``cfg.vision_ocr_max_tokens``
     caps generation if a loop still escapes it. A timeout surfaces as a
     ``ProviderError`` so the page-level OCR caller can fail just that page.
     Callers hold a dispatcher slot, so queue time isn't billed against the timeout.
+    A set *cancel* aborts the request at once, before or after its first token.
     """
-
     options = {
         "max_tokens": cfg.vision_ocr_max_tokens,
         "repeat_penalty": _VISION_REPEAT_PENALTY,
         "repeat_last_n": _VISION_REPEAT_LAST_N,
     }
-    if timeout and timeout > 0:
-        return _bounded_vision_chat(client, messages, options, timeout)
-    return client.chat(messages, options=options, stream=False)
-
-
-def _bounded_vision_chat(
-    client: LlamaServerClient,
-    messages: Sequence[Mapping[str, Any]],
-    options: dict[str, Any],
-    timeout: float,
-) -> str:
-    """One vision chat streamed under a total *timeout*, released promptly on expiry.
-
-    ``chat_bounded`` streams the response in this thread and closes it (freeing the
-    in-flight slot) once the deadline passes, so a trickling upstream can't outlive
-    the caller. Its deadline signal is re-worded as the vision OCR timeout.
-    """
+    deadline_s = timeout if timeout and timeout > 0 else None
     try:
-        return client.chat_bounded(messages, options=options, deadline_s=timeout)
+        return client.chat_abortable(
+            messages, options=options, deadline_s=deadline_s, cancel=cancel
+        )
     except ChatDeadlineError:
         raise ProviderError(
-            f"Vision OCR timed out after {timeout:.0f}s.",
+            f"Vision OCR timed out after {timeout:g}s.",
             provider=_PROVIDER_NAME,
         ) from None
 
@@ -644,6 +647,7 @@ def _ocr_dispatch(
     pool: Sequence[_VisionReplica],
     messages: Sequence[Mapping[str, Any]],
     deadline: float | None,
+    cancel: CancelSignal | None = None,
 ) -> str:
     """OCR *messages* on a free replica slot, retrying transient failures until *deadline*.
 
@@ -662,10 +666,10 @@ def _ocr_dispatch(
         remaining = max(0.0, deadline - time.monotonic()) if deadline is not None else None
         if remaining == 0.0:
             raise _PageBudgetExhausted
-        return _vision_call(client, messages, remaining)
+        return _vision_call(client, messages, remaining, cancel)
 
     return retry_on_busy(
-        lambda: _dispatch_vision(pool, _attempt),
+        lambda: _dispatch_vision(pool, _attempt, cancel),
         retries=_VISION_BUSY_RETRIES,
         deadline=deadline,
     )
@@ -951,9 +955,6 @@ class FleetProvider:
         # across concurrent callers, so the off-thread warm-up and an on-demand call
         # can't start two swaps. Held only during startup, NOT while routing.
         self._build_lock = threading.Lock()
-        # Single-flight for starting vision on request: concurrent OCR pages wait
-        # for the first page's re-plan instead of each re-planning.
-        self._vision_request_lock = threading.Lock()
         # Spawn-lifecycle listeners (set by the TUI via add_spawn_listener). Stored
         # so warm-up can report per-role progress as it pre-loads each upstream.
         self._on_spawning: Callable[[WorkerRole], None] | None = None
@@ -1890,7 +1891,13 @@ class FleetProvider:
             )
 
     def vision_ocr(
-        self, png_bytes: bytes, model: str, prompt: str = "", *, timeout: float | None = None
+        self,
+        png_bytes: bytes,
+        model: str,
+        prompt: str = "",
+        *,
+        timeout: float | None = None,
+        cancel: CancelSignal | None = None,
     ) -> str:
         from lilbee.vision import build_vision_messages, resolve_ocr_prompt
 
@@ -1899,7 +1906,7 @@ class FleetProvider:
         effective = model or str(cfg.vision_model)
         messages = build_vision_messages(prompt or resolve_ocr_prompt(effective), png_bytes)
         try:
-            return _ocr_dispatch(pool, messages, _ocr_deadline(timeout))
+            return _ocr_dispatch(pool, messages, _ocr_deadline(timeout), cancel)
         except _PageBudgetExhausted:
             raise ProviderError(
                 "Vision OCR timed out waiting for a free vision slot.",
@@ -1928,7 +1935,6 @@ class FleetProvider:
         only when no matching launch snapshot exists (a reload can momentarily
         drop it between two reads).
         """
-        self._serve_vision_on_request()
         clients = self._require_clients(WorkerRole.VISION)
         launches = self._role_launches(WorkerRole.VISION)
         if launches and len(launches) == len(clients):
@@ -1938,28 +1944,6 @@ class FleetProvider:
             ]
         fallback_slots = max(1, cfg.vision_ocr_concurrency)
         return [_VisionReplica(client, fallback_slots) for client in clients]
-
-    def _serve_vision_on_request(self) -> None:
-        """Re-plan the fleet with vision for an OCR call that ``enable_ocr`` false left out.
-
-        Only a request that turned OCR on reaches vision OCR while the setting is
-        off, so the call itself is the demand. The re-plan is the diff-driven pass
-        a vision model change runs: it restarts the groups whose launches change,
-        which includes chat where chat and vision share one group. A failed
-        re-plan drops the grant, so the next page tries again.
-        """
-        ref = str(cfg.vision_model)
-        if not ref:
-            return
-        with self._vision_request_lock:
-            if planning.vision_role_wanted(ref):
-                return
-            planning.grant_vision_on_request()
-            try:
-                self._dispatch_reload("fleet-vision-on-request", wait=True)
-            except BaseException:
-                planning.revoke_vision_on_request()
-                raise
 
     # PDF/image OCR now runs inside xberg via the registered lilbee-vision
     # backend (see data.extract.backends.vision_ocr); this provider only exposes
@@ -2407,11 +2391,8 @@ class FleetProvider:
 
         The whole fleet is re-planned, but only the roles whose launches changed
         restart, so the other roles' loaded models stay resident (*role* names
-        the change for the thread label; the diff decides what restarts). A vision
-        setting change drops any on-request vision, so the plan follows the setting.
+        the change for the thread label; the diff decides what restarts).
         """
-        if role is WorkerRole.VISION:
-            planning.revoke_vision_on_request()
         self._dispatch_reload(f"fleet-reload-{role.value}", wait=wait)
 
     def reload_placement(self, *, wait: bool = False) -> None:
@@ -2672,6 +2653,4 @@ class FleetProvider:
         ).start()
 
     def shutdown(self) -> None:
-        # The on-request vision grant is process-wide; the next provider starts from the setting.
-        planning.revoke_vision_on_request()
         self._shutdown_swap()

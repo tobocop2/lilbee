@@ -47,7 +47,7 @@ def test_run_sync_with_signal_cancel_installs_and_restores_sigint(monkeypatch) -
     monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=False))
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
-    result = ingest_sync._run_sync_with_signal_cancel()
+    result = ingest_sync.run_sync_with_signal_cancel()
     assert result == "sync-result"
     # The previous handler is restored after the run.
     assert signal.getsignal(signal.SIGINT) is original
@@ -63,7 +63,7 @@ def test_run_sync_with_signal_cancel_passes_cancel_event(monkeypatch) -> None:
     monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=True))
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
-    ingest_sync._run_sync_with_signal_cancel(force_rebuild=True, retry_skipped=True)
+    ingest_sync.run_sync_with_signal_cancel(force_rebuild=True, retry_skipped=True)
     assert isinstance(captured["cancel"], threading.Event)
     assert captured["force_rebuild"] is True
     assert captured["retry_skipped"] is True
@@ -76,7 +76,7 @@ def test_rebuild_rejects_non_sync_result(monkeypatch) -> None:
     # off an unexpected type.
     monkeypatch.setattr(ingest_sync, "apply_overrides", lambda **_k: None)
     monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=False))
-    monkeypatch.setattr(ingest_sync, "_run_sync_with_signal_cancel", lambda **_k: "not-a-result")
+    monkeypatch.setattr(ingest_sync, "run_sync_with_signal_cancel", lambda **_k: "not-a-result")
     with pytest.raises(TypeError, match="Expected SyncResult"):
         ingest_sync.rebuild()
 
@@ -96,7 +96,7 @@ def test_sigint_during_sync_sets_cancel_event(monkeypatch) -> None:
     monkeypatch.setattr(ingest_sync, "cfg", mock.MagicMock(json_mode=True))
     monkeypatch.setattr("lilbee.data.ingest.sync", _fake_sync)
 
-    result = ingest_sync._run_sync_with_signal_cancel()
+    result = ingest_sync.run_sync_with_signal_cancel()
     assert result == "cancelled-clean"
     assert seen_cancel["event"].is_set()
 
@@ -119,7 +119,7 @@ def test_run_sync_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
 
     def _run() -> None:
         try:
-            result.append(ingest_sync._run_sync_with_signal_cancel())
+            result.append(ingest_sync.run_sync_with_signal_cancel())
         except BaseException as e:
             exc.append(e)
 
@@ -130,8 +130,7 @@ def test_run_sync_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
     assert result == ["ok"]
 
 
-def test_run_crawl_with_signal_cancel_noop_off_main_thread(monkeypatch) -> None:
-    """_run_crawl_with_signal_cancel also skips signal.signal off the main thread."""
+def test_run_crawl_with_signal_cancel_returns_its_pages_off_the_main_thread(monkeypatch) -> None:
     cancel_event = threading.Event()
 
     async def _fake_crawl(url, **kwargs) -> list:

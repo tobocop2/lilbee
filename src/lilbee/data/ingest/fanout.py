@@ -25,6 +25,7 @@ from rich.progress import (
 from lilbee.core.config import active_config
 from lilbee.data.ingest.errors import error_reason
 from lilbee.data.types import ShardId, SyncResult
+from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.engine_lock import ENGINE_DIR_ENV
 from lilbee.runtime.progress import (
@@ -63,14 +64,17 @@ _MIN_FANOUT_WORKERS = 2
 # How often a worker reports its counters to the parent.
 _REPORT_INTERVAL_S = 0.25
 
-# How long the parent sleeps between drains of the worker message queue.
+# How long the parent sleeps between drains of the worker message queue and reads of the cancel.
 _DRAIN_INTERVAL_S = 0.1
 
 # Grace for the queue's feeder thread to flush a dead worker's last messages.
 _FINAL_DRAIN_S = 1.0
 
-# How long a worker gets to exit on its own before it is killed.
+# How long the workers get, together, to exit on a terminate before they are killed.
 _WORKER_EXIT_GRACE_S = 30.0
+
+# How often the parent looks for the workers' exit during that grace.
+_EXIT_POLL_S = 0.01
 
 # Where a worker's console output lands, under its own data root.
 WORKER_LOG_NAME = "sync.log"
@@ -294,6 +298,7 @@ def _shard_progress_bar(quiet: bool) -> Progress:
         BarColumn(),
         MofNCompleteColumn(),
         TimeElapsedColumn(),
+        console=PlainConsole(),
         disable=quiet,
     )
 
@@ -301,13 +306,16 @@ def _shard_progress_bar(quiet: bool) -> Progress:
 async def _supervise(
     workers: Sequence[BaseProcess],
     messages: Queue[ShardMessage],
-    stop: Event,
     *,
     quiet: bool,
     on_progress: DetailedProgressCallback,
     cancel: CancelSignal | None,
 ) -> dict[int, ShardDone]:
-    """Drain worker messages until every worker has reported, keeping one bar current."""
+    """Drain worker messages until every worker has reported, keeping one bar current.
+
+    Raises ``asyncio.CancelledError`` within one drain interval of a set *cancel*,
+    whether or not a worker reports.
+    """
     verdicts: dict[int, ShardDone] = {}
     aggregate = _Aggregate(on_progress)
     with _shard_progress_bar(quiet) as progress:
@@ -320,7 +328,7 @@ async def _supervise(
                     done, planned = aggregate.update(message)
                     progress.update(task, completed=done, total=planned or None)
             if cancel is not None and cancel.is_set():
-                stop.set()
+                raise asyncio.CancelledError
             if not any(worker.is_alive() for worker in workers):
                 verdicts.update(_final_verdicts(workers, messages, verdicts))
                 break
@@ -353,21 +361,32 @@ def _final_verdicts(
     return late
 
 
-def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
-    """Ask every live worker to stop, then wait for it, then insist.
+async def _stop_workers(workers: Sequence[BaseProcess], stop: Event) -> None:
+    """Terminate every live worker, give them one grace period together, then kill the rest.
 
     A worker owns a GPU fleet, and its teardown can outlast a TERM; a plain join
     would hang the sync behind it instead of returning a result it already has.
+    The wait yields to the event loop, and a cancel during it kills at once.
     """
     stop.set()
     for worker in workers:
         if worker.is_alive():
             worker.terminate()
-        worker.join(_WORKER_EXIT_GRACE_S)
-        if worker.is_alive():
-            log.warning("Ingest worker %s did not exit; killing it", worker.name)
-            worker.kill()
+    try:
+        await _exited_or_grace_over(workers)
+    finally:
+        for worker in workers:
+            if worker.is_alive():
+                log.warning("Ingest worker %s did not exit; killing it", worker.name)
+                worker.kill()
             worker.join()
+
+
+async def _exited_or_grace_over(workers: Sequence[BaseProcess]) -> None:
+    """Return once no worker is alive, or once the exit grace has passed."""
+    deadline = time.monotonic() + _WORKER_EXIT_GRACE_S
+    while time.monotonic() < deadline and any(worker.is_alive() for worker in workers):
+        await asyncio.sleep(_EXIT_POLL_S)
 
 
 async def run_workers(
@@ -378,7 +397,7 @@ async def run_workers(
     on_progress: DetailedProgressCallback,
     cancel: CancelSignal | None,
 ) -> list[ShardDone]:
-    """Run every worker to completion and return their verdicts, in shard order."""
+    """Run every worker and return their verdicts, in shard order; a cancel terminates them."""
     context = multiprocessing.get_context("spawn")
     messages: Queue[ShardMessage] = context.Queue()
     stop = context.Event()
@@ -395,10 +414,10 @@ async def run_workers(
         worker.start()
     try:
         verdicts = await _supervise(
-            workers, messages, stop, quiet=quiet, on_progress=on_progress, cancel=cancel
+            workers, messages, quiet=quiet, on_progress=on_progress, cancel=cancel
         )
     finally:
-        _stop_workers(workers, stop)
+        await _stop_workers(workers, stop)
     return [verdicts[index] for index in sorted(verdicts)]
 
 

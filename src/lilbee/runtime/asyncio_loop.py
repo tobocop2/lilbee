@@ -22,6 +22,8 @@ T = TypeVar("T")
 # below give every caller one place to depend on instead of duplicating the
 # string + isinstance check inline.
 _EXECUTOR_SHUTDOWN_MSG = "cannot schedule new futures after shutdown"
+# Seconds the pending tasks get to unwind when the loop shuts down.
+_DRAIN_BUDGET_S = 10.0
 
 
 def is_executor_shutdown(exc: BaseException) -> bool:
@@ -73,8 +75,8 @@ def run(coro: Coroutine[Any, Any, T]) -> T:
         raise asyncio.CancelledError(*exc.args) from None
 
 
-def shutdown() -> None:
-    """Cancel pending tasks, stop the loop, join the thread. Idempotent."""
+def shutdown(drain_budget_s: float = _DRAIN_BUDGET_S) -> None:
+    """Cancel pending tasks and wait *drain_budget_s* for them, then stop the loop. Idempotent."""
     global _loop, _thread
     with _lock:
         loop, _loop = _loop, None
@@ -83,7 +85,7 @@ def shutdown() -> None:
         return
     # Best-effort drain; always stop the loop even if drain raised.
     with contextlib.suppress(Exception):
-        asyncio.run_coroutine_threadsafe(_drain(loop), loop).result(timeout=10.0)
+        asyncio.run_coroutine_threadsafe(_drain(loop), loop).result(timeout=drain_budget_s)
     loop.call_soon_threadsafe(loop.stop)
     if thread is not None:
         thread.join(timeout=10.0)

@@ -8,6 +8,8 @@ These exercise the public entry points (``_cmd_add``, ``_start_crawl``,
 from __future__ import annotations
 
 import contextlib
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -15,10 +17,14 @@ import pytest
 
 from lilbee.catalog import CatalogModel
 from lilbee.cli.tui.app import LilbeeApp
-from lilbee.cli.tui.task_queue import TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import CancelOrigin, TaskQueue, TaskStatus, TaskType
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter, TaskBarController
 from lilbee.core.config import cfg
+from tests._async_wait import poll_until, wait_until
 from tests._lilbee_app_test_host import await_chat, pump_until, ready_services
+
+# The longest a test waits for work a task worker thread does.
+_SETTLE_SECONDS = 10.0
 
 
 @pytest.fixture(autouse=True)
@@ -268,6 +274,7 @@ def test_do_crawl_reports_setup_progress() -> None:
         depth,
         max_pages,
         on_progress,
+        cancel=None,
         quiet=False,
         include_subdomains=False,
         render_mode=None,
@@ -323,6 +330,7 @@ def test_do_crawl_reports_page_progress() -> None:
         depth,
         max_pages,
         on_progress,
+        cancel=None,
         quiet=False,
         include_subdomains=False,
         render_mode=None,
@@ -372,6 +380,7 @@ def test_do_crawl_notifies_page_failures() -> None:
         depth,
         max_pages,
         on_progress,
+        cancel=None,
         quiet=False,
         include_subdomains=False,
         render_mode=None,
@@ -492,7 +501,7 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     from lilbee.data.ingest import SyncResult
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=2),
@@ -529,7 +538,7 @@ def test_do_sync_done_event_reports_completion() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.SYNC_DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
@@ -574,7 +583,7 @@ def test_do_sync_reports_what_pruning_dropped() -> None:
     reporter = MagicMock(spec=ProgressReporter)
     notes: list[str] = []
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         assert prune_ignored is True
         return SyncResult(removed=["vendor/lib.min.js"])
 
@@ -613,7 +622,7 @@ def test_do_sync_raises_on_sync_failed() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         return SyncResult(failed=["broken.pdf"])
 
     captured: list[Exception] = []
@@ -633,16 +642,18 @@ def test_do_sync_raises_on_sync_failed() -> None:
     assert "broken.pdf" in str(captured[0])
 
 
-def test_do_sync_translates_cancellation() -> None:
-    """asyncio.CancelledError becomes a RuntimeError the controller can surface."""
+def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
+    """asyncio.CancelledError becomes a task cancel that carries the resume hint."""
     import threading
 
+    from lilbee.cli.tui import messages as msg
     from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.runtime.cancellation import TaskCancelledError
 
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         import asyncio as _asyncio
 
         raise _asyncio.CancelledError
@@ -660,8 +671,68 @@ def test_do_sync_translates_cancellation() -> None:
     t.start()
     t.join(timeout=5)
     assert captured, "_do_sync should have raised"
-    assert isinstance(captured[0], RuntimeError)
-    assert "cancelled" in str(captured[0]).lower()
+    assert isinstance(captured[0], TaskCancelledError)
+    assert str(captured[0]) == msg.SYNC_CANCELLED_RESUME
+
+
+def test_do_sync_hands_the_task_reporter_to_sync_as_its_cancel() -> None:
+    """Cancelling the task reaches the sync itself, not only its progress callback."""
+    import threading
+
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest import SyncResult
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    received: list[object] = []
+
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+        received.append(cancel)
+        return SyncResult()
+
+    def _worker() -> None:
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            screen._do_sync(reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert received == [reporter]
+
+
+def test_do_add_hands_the_task_reporter_to_sync_as_its_cancel(tmp_path: Path) -> None:
+    """Cancelling an /add task reaches the sync itself, not only its progress callback."""
+    import threading
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from lilbee.data.ingest import SyncResult
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    received: list[object] = []
+
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+        received.append(cancel)
+        return SyncResult(added=[src.name])
+
+    def _worker() -> None:
+        screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+        with (
+            patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(registered=[src.name]),
+            ),
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+        ):
+            screen._do_add([src], reporter)
+
+    t = threading.Thread(target=_worker, daemon=True)
+    t.start()
+    t.join(timeout=5)
+    assert received == [reporter]
 
 
 @pytest.mark.asyncio
@@ -1001,7 +1072,7 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
@@ -1051,7 +1122,7 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         # Per-page rasterization progress fires while the file is being
         # processed (FILE_START has already named it via the relative source
         # name); the BATCH_PROGRESS event itself is emitted by the OCR
@@ -1121,7 +1192,7 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         # Three files start concurrently. The pipeline emits FILE_START for each.
         on_progress(
             EventType.FILE_START, FileStartEvent(file="a.pdf", current_file=1, total_files=3)
@@ -1312,6 +1383,7 @@ def test_do_add_names_ocr_off_when_the_only_file_skipped_with_ocr_off(tmp_path: 
     )
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
+    reporter.is_set.return_value = False  # a failed add, not a cancel
     captured: list[Exception] = []
 
     def _worker() -> None:
@@ -1453,6 +1525,7 @@ def test_do_add_raises_when_nothing_indexed(tmp_path: Path) -> None:
     src.write_bytes(b"x")
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
+    reporter.is_set.return_value = False  # a failed add, not a cancel
 
     from lilbee.app.ingest import RegisterResult
 
@@ -1493,6 +1566,7 @@ def test_do_add_other_sources_do_not_mask_a_dead_add(tmp_path: Path) -> None:
     src.write_bytes(b"x")
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
+    reporter.is_set.return_value = False  # a failed add, not a cancel
 
     from lilbee.app.ingest import RegisterResult
 
@@ -1543,6 +1617,75 @@ async def test_cmd_crawl_with_valid_url_routes_to_start_crawl() -> None:
         mock_start.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_cancelling_a_tui_crawl_stops_its_sync(tmp_path, monkeypatch) -> None:
+    """Cancelling a /crawl task stops the crawl's sync and skips the follow-up sync."""
+    import asyncio
+    import threading
+    from unittest.mock import AsyncMock
+
+    from lilbee.app.services import CrawlerSyncState, get_services
+    from lilbee.cli.tui import messages as msg
+    from lilbee.core.config.enums import CrawlRenderMode
+    from lilbee.crawler.models import CrawlResult
+    from tests._async_wait import wait_until
+
+    monkeypatch.setattr(cfg, "documents_dir", tmp_path / "documents")
+    monkeypatch.setattr(cfg, "data_dir", tmp_path / "data")
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    monkeypatch.setattr(cfg, "crawl_sync_interval", 1)
+    (tmp_path / "documents").mkdir()
+    (tmp_path / "data").mkdir()
+    sync_started = threading.Event()
+    seen: list[object] = []
+
+    async def _sync_until_cancelled(**kwargs):
+        cancel = kwargs.get("cancel")
+        seen.append(cancel)
+        sync_started.set()
+        for _ in range(200):
+            if cancel is not None and cancel.is_set():
+                raise asyncio.CancelledError
+            await asyncio.sleep(0.01)
+        raise AssertionError("the crawl's sync never saw the task's cancel")
+
+    async def _fake_single(url, *, quiet=False, on_progress=None, render_mode=None):
+        return CrawlResult(url=url, markdown="# page")
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        screen = await await_chat(app, pilot)
+        assert screen is not None
+        services = get_services()
+        services.crawler_semaphore = None
+        services.crawler_sync_state = CrawlerSyncState()
+        notified: list[str] = []
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+        with (
+            patch("lilbee.cli.tui.screens.chat.crawler_available", return_value=True),
+            patch("lilbee.cli.tui.screens.chat.require_valid_crawl_url"),
+            patch("lilbee.crawler.runner._ensure_crawler_ready", new_callable=AsyncMock),
+            patch("lilbee.crawler.runner.crawl_single", side_effect=_fake_single),
+            patch("lilbee.data.ingest.sync", _sync_until_cancelled),
+            patch.object(screen, "_run_sync") as follow_up_sync,
+        ):
+            screen._cmd_crawl("https://example.com/c --depth 0")
+            assert await wait_until(pilot, sync_started.is_set, max_pauses=500)
+            crawl = next(
+                t for t in app.task_bar.queue.active_tasks if t.task_type == TaskType.CRAWL.value
+            )
+            app.task_bar.cancel_task(crawl.task_id)
+            worker = next(t for t in threading.enumerate() if t.name == f"task-{crawl.task_id}")
+            await asyncio.to_thread(worker.join, 5)
+            assert not worker.is_alive()
+            await pilot.pause()
+        assert len(seen) == 1
+        assert seen[0] is not None and seen[0].is_set()
+        follow_up_sync.assert_not_called()
+        success = msg.CMD_CRAWL_SUCCESS.format(count=1, url="https://example.com/c")
+        assert success not in notified
+
+
 def test_do_sync_throttles_rapid_embed_events() -> None:
     """Two EMBED events within the throttle window → only the first updates."""
     import threading
@@ -1553,7 +1696,7 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 
@@ -1583,3 +1726,693 @@ async def test_run_task_worker_noop_when_target_popped_before_start() -> None:
         # Simulate the race: entry popped before worker body runs.
         controller._task_targets.pop(task_id, None)
         controller._run_task_worker(task_id)  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_an_add_whose_sync_is_cancelled_ends_as_a_cancelled_task(tmp_path: Path) -> None:
+    """An /add whose sync raises CancelledError finalizes its row as cancelled."""
+    import asyncio
+
+    from lilbee.app.ingest import RegisterResult
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from tests._async_wait import wait_until
+
+    src = tmp_path / "doc.pdf"
+    src.write_bytes(b"x")
+
+    async def fake_sync(**_kwargs):
+        raise asyncio.CancelledError
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        screen = ChatScreen.__new__(ChatScreen)
+        screen.notify = lambda *a, **kw: None  # type: ignore[assignment]
+        with (
+            patch(
+                "lilbee.app.ingest.register_sources",
+                return_value=RegisterResult(registered=[src.name]),
+            ),
+            patch("lilbee.cli.tui.screens.chat.unregister_added_roots"),
+            patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+        ):
+            task_id = controller.start_task(
+                "Add doc.pdf", TaskType.ADD, lambda reporter: screen._do_add([src], reporter)
+            )
+            await wait_until(
+                pilot,
+                lambda: controller.queue.get_task(task_id).status is not TaskStatus.ACTIVE,
+                timeout=_SETTLE_SECONDS,
+            )
+        assert controller.queue.get_task(task_id).status is TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_sync_row_shows_the_resume_hint() -> None:
+    """Cancelling a TUI sync leaves the row cancelled with the hint to press S."""
+    import asyncio
+    import threading
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens.chat import ChatScreen
+    from tests._async_wait import wait_until
+
+    async def fake_sync(*, cancel, **_kwargs):
+        while not cancel.is_set():
+            await asyncio.sleep(0.02)
+        raise asyncio.CancelledError
+
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        screen = ChatScreen.__new__(ChatScreen)
+        started = threading.Event()
+
+        def _target(reporter: ProgressReporter) -> None:
+            started.set()
+            screen._do_sync(reporter)
+
+        with patch("lilbee.data.ingest.sync", side_effect=fake_sync):
+            task_id = controller.start_task("Sync", TaskType.SYNC, _target)
+            assert await wait_until(pilot, started.is_set, timeout=_SETTLE_SECONDS)
+            controller.cancel_task(task_id)
+            task = controller.queue.get_task(task_id)
+            # The worker posts the hint from its own thread, which no pause drives.
+            assert await wait_until(
+                pilot, lambda: task.detail == msg.SYNC_CANCELLED_RESUME, timeout=_SETTLE_SECONDS
+            )
+        assert task.status is TaskStatus.CANCELLED
+
+
+@pytest.mark.asyncio
+async def test_stop_all_cancels_queued_and_running_tasks_within_its_budget() -> None:
+    """A wedged worker costs at most the budget; queued rows are cancelled too."""
+    import threading
+    import time
+
+    from lilbee.cli.tui.task_queue import TaskStatus
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        running = controller.start_task(
+            "wedged", TaskType.SYNC, lambda _reporter: release.wait(10.0)
+        )
+        queued = controller.start_task("next", TaskType.SYNC, lambda _reporter: None)
+        started = time.monotonic()
+        controller.stop_all(budget_s=0.2)
+        elapsed = time.monotonic() - started
+        release.set()
+        assert elapsed < 2.0
+        statuses = {
+            task_id: controller.queue.get_task(task_id).status for task_id in (running, queued)
+        }
+        assert statuses == {running: TaskStatus.CANCELLED, queued: TaskStatus.CANCELLED}
+
+
+@pytest.mark.asyncio
+async def test_stop_all_spends_one_budget_on_the_drain_and_the_joins() -> None:
+    """A coroutine that outlasts the budget costs the exit the budget once, not once per wait."""
+    import asyncio
+    import threading
+    import time
+
+    from lilbee.runtime import asyncio_loop
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        waiting = threading.Event()
+        release = threading.Event()
+
+        async def _slow_to_unwind() -> None:
+            try:
+                waiting.set()
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(15.0)  # a write that outlasts the exit budget
+                raise
+
+        def _target(_reporter: ProgressReporter) -> None:
+            asyncio.run_coroutine_threadsafe(_slow_to_unwind(), asyncio_loop.get_loop())
+            release.wait(30.0)
+
+        controller.start_task("Sync", TaskType.SYNC, _target)
+        assert waiting.wait(5.0)
+        started = time.monotonic()
+        controller.stop_all(budget_s=2.0)
+        elapsed = time.monotonic() - started
+        release.set()
+        assert 1.5 < elapsed < 3.5  # two waits of the budget take 4 seconds
+
+
+class _OwnedLock:
+    """A lock that knows which thread holds it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.owner: int | None = None
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+        self.owner = threading.get_ident()
+
+    def __exit__(self, *_exc: object) -> None:
+        self.owner = None
+        self._lock.release()
+
+
+class _WatchedWorkers(dict):
+    """A worker map that records, per operation, whether its thread held the lock."""
+
+    def __init__(self, lock: _OwnedLock) -> None:
+        super().__init__()
+        self._lock = lock
+        self.held: dict[str, list[bool]] = {
+            "start": [],
+            "spawn": [],
+            "worker_exit": [],
+            "stop_all": [],
+        }
+        self.started_at_spawn: list[bool] = []
+
+    def _note(self, site: str) -> None:
+        self.held[site].append(self._lock.owner == threading.get_ident())
+
+    def watch_starts(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Record, for each task worker started, whether the starting thread held the lock."""
+        real_start = threading.Thread.start
+
+        def _start(thread: threading.Thread) -> None:
+            if thread.name.startswith("task-"):
+                self._note("start")
+            real_start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", _start)
+
+    def __setitem__(self, task_id, thread) -> None:
+        self._note("spawn")
+        self.started_at_spawn.append(thread.ident is not None)
+        super().__setitem__(task_id, thread)
+
+    def pop(self, *args):
+        self._note("worker_exit")
+        return super().pop(*args)
+
+    def values(self):
+        self._note("stop_all")
+        return super().values()
+
+
+async def _spawn_end_and_stop(pilot, monkeypatch: pytest.MonkeyPatch) -> _WatchedWorkers:
+    """Run one task through spawn, worker exit and the stop path on a watched worker map."""
+    from tests._async_wait import wait_until
+
+    controller = TaskBarController(pilot.app)
+    controller._lock = _OwnedLock()
+    controller._workers = workers = _WatchedWorkers(controller._lock)
+    workers.watch_starts(monkeypatch)
+    controller.start_task("watched", TaskType.SYNC, lambda _reporter: None)
+    assert await wait_until(pilot, lambda: workers.held["worker_exit"] != [], timeout=5.0)
+    controller.stop_all(budget_s=0.1)
+    return workers
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("site", ["spawn", "worker_exit", "stop_all"])
+async def test_the_worker_map_is_read_and_written_under_its_lock(
+    site: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each site touches the worker map on the thread that holds the lock at that moment."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        workers = await _spawn_end_and_stop(pilot, monkeypatch)
+    assert workers.held[site] == [True]
+
+
+@pytest.mark.asyncio
+async def test_a_task_worker_is_started_in_the_lock_before_it_enters_the_map(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The stop path joins every thread in the map, and a join before the start raises."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        workers = await _spawn_end_and_stop(pilot, monkeypatch)
+    assert workers.held["start"] == [True]
+    assert workers.started_at_spawn == [True]
+
+
+class _StartsATaskOnRelease:
+    """A lock whose release, once armed, starts a task before any other thread can run."""
+
+    def __init__(self, start_task) -> None:
+        self._lock = threading.Lock()
+        self._start_task = start_task
+        self.armed = False
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        if self.armed:
+            self.armed = False
+            self._start_task()
+
+
+class _ArmsOnCopy(dict):
+    """A worker map that arms its lock when the stop path copies it."""
+
+    def __init__(self, lock: _StartsATaskOnRelease) -> None:
+        super().__init__()
+        self._lock = lock
+
+    def values(self):
+        self._lock.armed = True
+        return super().values()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moment", ["after_the_copy", "after_the_stop"])
+async def test_a_task_started_once_the_stop_has_begun_gets_no_worker(moment: str) -> None:
+    """The stop joins the workers it copied; a later start is refused and cancelled as an exit."""
+    from lilbee.cli.tui.task_queue import CancelOrigin
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        started: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        def _start_late() -> None:
+            started.append(controller.start_task("late", TaskType.SYNC, _wait))
+
+        if moment == "after_the_copy":
+            controller._lock = lock = _StartsATaskOnRelease(_start_late)
+            controller._workers = _ArmsOnCopy(lock)
+        try:
+            controller.stop_all(budget_s=0.2)
+            if moment == "after_the_stop":
+                _start_late()
+            (late,) = started
+            task = controller.queue.get_task(late)
+            assert dict(controller._workers) == {}
+            assert (task.status, task.cancel_origin) == (TaskStatus.CANCELLED, CancelOrigin.EXIT)
+            assert late not in controller._task_targets
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+async def test_a_sync_stopped_at_exit_starts_no_pending_detection() -> None:
+    """The re-detect a sync starts on its way out does not run into the exit teardown."""
+    import threading
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        detected: list[bool] = []
+
+        def _sync_target(reporter: ProgressReporter) -> None:
+            try:
+                while not reporter.is_set():
+                    threading.Event().wait(0.02)
+            finally:
+                controller.start_detect_pending()
+
+        with patch.object(controller, "_run_detect_pending", lambda: detected.append(True)):
+            controller.start_task("Sync", TaskType.SYNC, _sync_target)
+            controller.stop_all(budget_s=2.0)
+        assert detected == []
+        assert controller._detect_thread is None
+
+
+@pytest.mark.asyncio
+async def test_stop_all_waits_for_a_detection_already_running() -> None:
+    """A detection in flight when the app exits finishes before the teardown."""
+    import threading
+
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        finished = threading.Event()
+
+        def _detect() -> None:
+            release.wait(5.0)
+            finished.set()
+
+        with patch.object(controller, "_run_detect_pending", _detect):
+            controller.start_detect_pending()
+            threading.Timer(0.2, release.set).start()
+            controller.stop_all(budget_s=3.0)
+        assert finished.is_set()
+
+
+class _StopsAtItsFirstAcquire:
+    """A lock whose first acquire runs the whole exit stop before it lets the caller in."""
+
+    def __init__(self, controller: TaskBarController) -> None:
+        self._lock = threading.Lock()
+        self._controller = controller
+        self.armed = True
+
+    def __enter__(self) -> None:
+        if self.armed:
+            self.armed = False
+            self._controller.stop_all(budget_s=0.2)
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["task", "detection"])
+async def test_a_start_that_meets_the_stop_at_its_lock_starts_no_thread(kind: str) -> None:
+    """The stop is read in the hold that starts a thread, so a stop run at the acquire is seen."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        before = set(threading.enumerate())
+
+        def _wait(*_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        controller._lock = lock = _StopsAtItsFirstAcquire(controller)
+        task_id = ""
+        try:
+            with patch.object(controller, "_run_detect_pending", _wait):
+                if kind == "task":
+                    task_id = controller.start_task("late", TaskType.SYNC, _wait)
+                else:
+                    controller.start_detect_pending()
+            started = [
+                thread.name
+                for thread in set(threading.enumerate()) - before
+                if thread.name.startswith(("task-", "detect-pending"))
+            ]
+        finally:
+            release.set()
+    assert not lock.armed
+    assert started == []
+    if kind == "task":
+        # A promotion refuses on its own, so only the row shows whether the start saw the stop.
+        row = controller.queue.get_task(task_id)
+        assert row is not None
+        assert (row.status, row.cancel_origin) == (TaskStatus.CANCELLED, CancelOrigin.EXIT)
+        assert task_id not in controller._task_targets
+
+
+class _TellsWhoWaits:
+    """A lock that says when a thread had to wait for it."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.waited = threading.Event()
+
+    def __enter__(self) -> None:
+        if not self._lock.acquire(blocking=False):
+            self.waited.set()
+            self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+
+
+class _RunsBesideTheQueue(TaskQueue):
+    """A queue that runs a hook on another thread at a step, until it ends or waits for the lock."""
+
+    def __init__(self, gate: _TellsWhoWaits, slots: int = 1) -> None:
+        super().__init__(capacity={TaskType.DOWNLOAD.value: slots})
+        self._gate = gate
+        self.hooks: dict[str, Callable[[], object]] = {}
+
+    def _run_beside(self, step: str) -> None:
+        hook = self.hooks.pop(step, None)
+        if hook is None:
+            return
+        self._gate.waited.clear()
+        thread = threading.Thread(target=hook, daemon=True)
+        thread.start()
+        assert poll_until(lambda: not thread.is_alive() or self._gate.waited.is_set())
+
+    def enqueue(self, *args, **kwargs) -> str:
+        self._run_beside("before_enqueue")
+        task_id = super().enqueue(*args, **kwargs)
+        self._run_beside("after_enqueue")
+        return task_id
+
+    @property
+    def queued_tasks(self):
+        self._run_beside("before_rows_read")
+        return super().queued_tasks
+
+    @property
+    def active_tasks(self):
+        tasks = super().active_tasks
+        self._run_beside("rows_read")
+        return tasks
+
+
+def _watched_controller(app: LilbeeApp, slots: int = 1) -> tuple[TaskBarController, dict]:
+    """A controller whose queue runs hooks beside it; returns it with the hook table."""
+    controller = TaskBarController(app)
+    controller._lock = gate = _TellsWhoWaits()
+    controller.queue = queue = _RunsBesideTheQueue(gate, slots)
+    return controller, queue.hooks
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("moment", ["inside_the_hold", "at_the_release"])
+async def test_a_second_starter_cannot_promote_a_task_before_its_target_is_stored(
+    moment: str,
+) -> None:
+    """A task is enqueued with its target in one hold, so each of two starters gets a worker."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        ran: list[str] = []
+
+        def _start_second() -> None:
+            controller.start_task(
+                "second", TaskType.DOWNLOAD, lambda _reporter: ran.append("second")
+            )
+
+        if moment == "inside_the_hold":
+            controller, hooks = _watched_controller(app, slots=2)
+            hooks["after_enqueue"] = _start_second
+        else:
+            # One slot: the second starter promotes the first task, the only row that is due.
+            controller, _hooks = _watched_controller(app)
+            controller._lock = lock = _StartsATaskOnRelease(_start_second)
+            lock.armed = True
+        controller.start_task("first", TaskType.DOWNLOAD, lambda _reporter: ran.append("first"))
+        await wait_until(pilot, lambda: len(ran) == 2, timeout=_SETTLE_SECONDS)
+    assert sorted(ran) == ["first", "second"]
+
+
+def _outcome(controller: TaskBarController, task_id: str) -> tuple:
+    """The status and cancel origin of a row, and whether its target is still held."""
+    task = controller.queue.get_task(task_id)
+    return (task.status, task.cancel_origin, task_id in controller._task_targets)
+
+
+_REFUSED_AT_EXIT = (TaskStatus.CANCELLED, CancelOrigin.EXIT, False)
+
+
+@pytest.mark.asyncio
+async def test_a_task_started_while_the_stop_cancels_is_cancelled_too() -> None:
+    """A task started behind an active one, after the stop read its rows, is not left queued."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller, hooks = _watched_controller(app)
+        release = threading.Event()
+        late: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        first = controller.start_task("first", TaskType.SYNC, _wait)
+
+        def _start_late() -> None:
+            late.append(controller.start_task("late", TaskType.SYNC, _wait))
+
+        hooks["rows_read"] = _start_late
+        try:
+            controller.stop_all(budget_s=0.2)
+            # The wedged first worker still holds its target, so the map is not just empty.
+            assert _outcome(controller, first) == (TaskStatus.CANCELLED, CancelOrigin.EXIT, True)
+            assert [_outcome(controller, task_id) for task_id in late] == [_REFUSED_AT_EXIT]
+        finally:
+            release.set()
+
+
+def _live_workers(*task_ids: str) -> list[str]:
+    """The names of the worker threads of *task_ids* that are alive."""
+    names = {f"task-{task_id}" for task_id in task_ids}
+    return [thread.name for thread in threading.enumerate() if thread.name in names]
+
+
+class _MeetsTheStopAtItsFirstAcquire:
+    """A lock whose first acquire waits for the exit stop to set its flag, and for no more.
+
+    The stop runs on its own thread and is held at the release of the hold that
+    set the flag until the first caller has left its own hold, so that caller
+    takes the lock with the flag set and every row still queued.
+    """
+
+    def __init__(self, controller: TaskBarController) -> None:
+        self._lock = threading.Lock()
+        self._stopper = threading.Thread(
+            target=controller.stop_all, kwargs={"budget_s": 0.2}, daemon=True
+        )
+        self._caller: threading.Thread | None = None
+        self._flag_set = threading.Event()
+        self._caller_left = threading.Event()
+        self.armed = False
+        self.met_in_time = False
+
+    def __enter__(self) -> None:
+        if self.armed:
+            self.armed = False
+            self._caller = threading.current_thread()
+            self._stopper.start()
+            self.met_in_time = self._flag_set.wait(_SETTLE_SECONDS)
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        current = threading.current_thread()
+        if current is self._stopper and not self._flag_set.is_set():
+            self._flag_set.set()
+            self._caller_left.wait(_SETTLE_SECONDS)
+        elif current is self._caller:
+            self._caller_left.set()
+
+    def stop_finished(self) -> bool:
+        """Whether the stop this lock started has returned."""
+        self._stopper.join(_SETTLE_SECONDS)
+        return not self._stopper.is_alive()
+
+
+@pytest.mark.asyncio
+async def test_a_promotion_that_meets_the_stop_at_its_lock_starts_no_worker() -> None:
+    """A promotion reads the stop in its hold, so a flag set while it waits for the lock is seen."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller = TaskBarController(app)
+        release = threading.Event()
+        first_runs = threading.Event()
+        ran: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            ran.append("first")
+            first_runs.set()
+            release.wait(5.0)
+
+        first = controller.start_task("first", TaskType.SYNC, _wait)
+        queued = controller.start_task(
+            "queued", TaskType.SYNC, lambda _reporter: ran.append("queued")
+        )
+        assert first_runs.wait(_SETTLE_SECONDS)
+        controller._lock = lock = _MeetsTheStopAtItsFirstAcquire(controller)
+        lock.armed = True
+        try:
+            # Frees the one slot: the promotion of the queued row is the first hold.
+            controller.fail_task(first)
+            assert lock.met_in_time
+            assert lock.stop_finished()
+        finally:
+            release.set()
+        await wait_until(pilot, lambda: not _live_workers(first, queued), timeout=_SETTLE_SECONDS)
+        assert controller.queue.get_task(first).status is TaskStatus.FAILED
+        assert _outcome(controller, queued) == _REFUSED_AT_EXIT
+        assert ran == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_a_slot_freed_once_the_stop_has_begun_starts_no_worker() -> None:
+    """A promotion reads the stop in its hold, so a row due after the flag is set stays queued."""
+    app = LilbeeApp()
+    async with app.run_test() as pilot:
+        controller, hooks = _watched_controller(app)
+        release = threading.Event()
+        first_runs = threading.Event()
+        ran: list[str] = []
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            ran.append("first")
+            first_runs.set()
+            release.wait(5.0)
+
+        first = controller.start_task("first", TaskType.SYNC, _wait)
+        queued = controller.start_task(
+            "queued", TaskType.SYNC, lambda _reporter: ran.append("queued")
+        )
+        assert first_runs.wait(_SETTLE_SECONDS)
+        # The stop has set its flag and has not read the rows yet.
+        hooks["before_rows_read"] = lambda: controller.fail_task(first)
+        try:
+            controller.stop_all(budget_s=0.2)
+        finally:
+            release.set()
+        # A worker ends through the app thread, so the wait pumps it.
+        await wait_until(pilot, lambda: not _live_workers(first, queued), timeout=_SETTLE_SECONDS)
+        assert _live_workers(first, queued) == []
+        assert controller.queue.get_task(first).status is TaskStatus.FAILED
+        assert _outcome(controller, queued) == _REFUSED_AT_EXIT
+        assert ran == ["first"]
+
+
+@pytest.mark.asyncio
+async def test_the_stop_begins_before_or_after_a_start_and_never_inside_one() -> None:
+    """A stop that arrives while a start holds the lock waits, then cancels the task it started."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller, hooks = _watched_controller(app)
+        release = threading.Event()
+        stopped = threading.Event()
+
+        def _wait(_reporter: ProgressReporter) -> None:
+            release.wait(5.0)
+
+        def _stop() -> None:
+            controller.stop_all(budget_s=0.2)
+            stopped.set()
+
+        controller.start_task("first", TaskType.SYNC, _wait)
+        hooks["before_enqueue"] = _stop
+        try:
+            late = controller.start_task("late", TaskType.SYNC, _wait)
+            assert stopped.wait(_SETTLE_SECONDS)
+            assert _outcome(controller, late) == _REFUSED_AT_EXIT
+        finally:
+            release.set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("canceller", ["user", "exit"])
+async def test_a_queued_task_that_is_cancelled_keeps_no_target(canceller: str) -> None:
+    """No worker will drop a queued row's target, so the cancel drops it."""
+    app = LilbeeApp()
+    async with app.run_test():
+        controller = TaskBarController(app)
+        release = threading.Event()
+        running = controller.start_task(
+            "wedged", TaskType.SYNC, lambda _reporter: release.wait(5.0)
+        )
+        queued = controller.start_task("next", TaskType.SYNC, lambda _reporter: None)
+        try:
+            if canceller == "user":
+                controller.cancel_task(queued)
+            else:
+                controller.stop_all(budget_s=0.1)
+            assert controller.queue.get_task(queued).status is TaskStatus.CANCELLED
+            assert set(controller._task_targets) == {running}
+        finally:
+            release.set()

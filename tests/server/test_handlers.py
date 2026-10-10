@@ -3,18 +3,24 @@
 import asyncio
 import contextlib
 import hashlib
+import socket
+import threading
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 from unittest.mock import Mock
 
+import httpx
 import numpy as np
 import pytest
+import uvicorn
 from litestar.testing import AsyncTestClient
 from xberg import Metadata
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.server import auth as _auth_mod
+from tests._async_wait import poll_until
 from tests.server.conftest import parse_sse_events as _parse_sse_events
 
 
@@ -981,6 +987,28 @@ class TestAddIngestMutex:
         assert retry is not None
         retry.release()
 
+    async def test_a_cancelled_add_keeps_the_source_for_the_next_sync(self, isolated_env, tmp_path):
+        """A REST client has no cancel of its own, so a stopped add keeps what it registered."""
+        from lilbee.core.config import cfg
+        from lilbee.server.handlers import add_files_stream
+
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        registered_during_sync: list[dict[str, str]] = []
+
+        async def _cancelled(*_args, **_kwargs):
+            registered_during_sync.append(dict(cfg.linked_roots))
+            raise asyncio.CancelledError
+
+        with (
+            mock.patch("lilbee.data.ingest.sync", new=_cancelled),
+            contextlib.suppress(asyncio.CancelledError),
+        ):
+            await self._collect(add_files_stream([str(src)]))
+
+        assert registered_during_sync == [{"scan.txt": str(src.resolve())}]
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+
     async def test_mutex_released_on_task_cancellation(self, isolated_env, tmp_path):
         """Task cancellation during ingest still releases the source mutex."""
         from lilbee.app.services import get_services
@@ -1004,6 +1032,109 @@ class TestAddIngestMutex:
         retry = await get_services().ingest_lock_registry.try_acquire("slow.txt")
         assert retry is not None
         retry.release()
+
+
+class _ServedApp:
+    """The real app served by uvicorn on a loopback port, in a background thread."""
+
+    def __init__(self) -> None:
+        from lilbee.server.app import create_app
+
+        self._socket = socket.socket()
+        self._socket.bind(("127.0.0.1", 0))
+        self.url = f"http://127.0.0.1:{self._socket.getsockname()[1]}"
+        self._server = uvicorn.Server(uvicorn.Config(create_app(), log_level="warning"))
+        self._thread = threading.Thread(
+            target=self._server.run, kwargs={"sockets": [self._socket]}, daemon=True
+        )
+
+    def __enter__(self) -> str:
+        self._thread.start()
+        assert poll_until(lambda: self._server.started), "the server did not start"
+        return self.url
+
+    def __exit__(self, *exc: object) -> None:
+        self._server.should_exit = True
+        self._thread.join(10)
+        self._socket.close()
+
+
+def _first_event(lines: Iterator[str]) -> str:
+    """The name of the first SSE event in *lines*."""
+    return next(line.split(":", 1)[1].strip() for line in lines if line.startswith("event:"))
+
+
+class TestAddDisconnect:
+    """A client that closes the /api/add stream over real HTTP, as the Obsidian plugin does."""
+
+    @pytest.fixture()
+    def parked_sync(self):
+        """A sync that reports its first file, then waits to be cancelled; counts its starts."""
+        from lilbee.runtime.progress import EventType, FileStartEvent
+
+        started: list[None] = []
+
+        async def _parked(*_args, on_progress, **_kwargs):
+            started.append(None)
+            on_progress(
+                EventType.FILE_START, FileStartEvent(file="x", current_file=1, total_files=1)
+            )
+            await asyncio.sleep(30)
+
+        with mock.patch("lilbee.data.ingest.sync", new=_parked):
+            yield started
+
+    @pytest.fixture()
+    def released(self):
+        """The source names whose ingest lock was released, which happens after the run unwinds."""
+        from lilbee.runtime.ingest_lock import IngestLockRegistry
+
+        names: list[str] = []
+        release = IngestLockRegistry.release
+
+        def _recording(registry, acquired):
+            held = [name for name, _lock in acquired]
+            release(registry, acquired)
+            names.extend(held)
+
+        with mock.patch.object(IngestLockRegistry, "release", _recording):
+            yield names
+
+    def test_a_dropped_stream_keeps_the_source(self, tmp_path, parked_sync, released):
+        """The plugin's idle abort, or a dropped socket, is not a user cancel."""
+        src = tmp_path / "scan.txt"
+        src.write_text("contents", encoding="utf-8")
+        body = {"paths": [str(src)]}
+
+        with _ServedApp() as url, httpx.Client(base_url=url, timeout=30) as http:
+            with http.stream("POST", "/api/add", json=body, headers=_auth_headers()) as resp:
+                assert _first_event(resp.iter_lines()) == "file_start"
+            assert poll_until(lambda: "scan.txt" in released), "the add never unwound"
+
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+
+    def test_a_return_on_already_ingesting_keeps_the_sources_it_started(
+        self, tmp_path, parked_sync, released
+    ):
+        """The plugin stops reading at already_ingesting; the sources that did start stay."""
+        busy = tmp_path / "busy.txt"
+        busy.write_text("busy", encoding="utf-8")
+        new = tmp_path / "new.txt"
+        new.write_text("new", encoding="utf-8")
+        both = {"paths": [str(busy), str(new)]}
+
+        with _ServedApp() as url, httpx.Client(base_url=url, timeout=30) as http:
+            holder_body = {"paths": [str(busy)]}
+            with http.stream("POST", "/api/add", json=holder_body, headers=_auth_headers()) as held:
+                # A collected line iterator closes its response, which would free busy.txt.
+                held_lines = held.iter_lines()
+                assert _first_event(held_lines) == "file_start"
+                with http.stream("POST", "/api/add", json=both, headers=_auth_headers()) as resp:
+                    assert _first_event(resp.iter_lines()) == "already_ingesting"
+                    assert poll_until(lambda: len(parked_sync) == 2), "new.txt never started"
+                assert poll_until(lambda: "new.txt" in released), "the add never unwound"
+
+        assert cfg.linked_roots["new.txt"] == str(new.resolve())
 
 
 class TestAddIngestHardening:

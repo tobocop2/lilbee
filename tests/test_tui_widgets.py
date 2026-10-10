@@ -3465,6 +3465,25 @@ class TestTaskQueue:
         q = TaskQueue()
         assert q.cancel("nonexistent") is False
 
+    def test_a_cancel_reason_lands_only_on_a_cancelled_row(self) -> None:
+        from lilbee.cli.tui.task_queue import TaskQueue
+
+        q = TaskQueue()
+        cancelled = q.enqueue(lambda: None, "A", "sync")
+        running = q.enqueue(lambda: None, "B", "download")
+        q.advance("sync")
+        q.advance("download")
+        q.update_task(running, 10, "Downloading")
+        assert q.cancel(cancelled) is True
+        q.set_cancel_reason(cancelled, "Press S to resume.")
+        q.set_cancel_reason(running, "Press S to resume.")
+        cancelled_task = q.get_task(cancelled)
+        running_task = q.get_task(running)
+        assert cancelled_task is not None
+        assert running_task is not None
+        assert cancelled_task.detail == "Press S to resume."
+        assert running_task.detail == "Downloading"
+
     def test_cancel_done_task_is_noop(self) -> None:
         """terminal rows are immutable. Cancel on DONE returns False
         and leaves status + completed_at frozen."""

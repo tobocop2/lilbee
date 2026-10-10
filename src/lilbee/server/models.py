@@ -222,8 +222,6 @@ class StatusResponse(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped; ``skipped_total`` is the real count."""
     skipped_total: int = 0
-    ocr_warning: str | None = None
-    """Set when a vision model is configured but ``enable_ocr`` is false."""
     ocr_note: str | None = None
     """Which OCR engine runs for scanned pages; None when OCR is off."""
 
@@ -321,7 +319,6 @@ class SetModelResponse(BaseModel):
 
     model: str
     reindex_required: bool = False
-    warnings: list[str] = []
 
 
 class ConfigUpdateResponse(BaseModel):
@@ -329,7 +326,6 @@ class ConfigUpdateResponse(BaseModel):
 
     updated: list[str]
     reindex_required: bool
-    warnings: list[str] = []
 
 
 class CrawlRequest(BaseModel):
@@ -507,7 +503,8 @@ class AddSummary(BaseModel):
     name_taken: list[str] = []
     """Labels held by a different source; nothing was registered and no sync ran."""
     overlapping: list[str] = []
-    """Paths inside or around a registered source; that source covers them in the sync."""
+    """Paths inside or around a registered source; none is registered, and a path
+    around a source has other files that no sync indexes."""
     tracked: list[str] = []
     """Named sources the knowledge base already tracks, so nothing was registered.
 

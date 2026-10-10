@@ -2154,21 +2154,11 @@ async def test_status_screen_config_shows_models(mock_svc):
         assert "OCR" in rendered
 
 
-@pytest.mark.parametrize("enable_ocr", [False, None])
-async def test_status_screen_warns_when_ocr_off_keeps_the_vision_model_unused(mock_svc, enable_ocr):
-    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    cfg.enable_ocr = enable_ocr
-    app = StatusTestApp()
-    async with app.run_test(size=(160, 40)) as _pilot:
-        rendered = str(app.screen.query_one("#config-info", Static).render())
-        assert "Vision model" in rendered
-        assert ("OCR is off (enable_ocr = false)" in rendered) is (enable_ocr is False)
-
-
 @pytest.mark.parametrize(
     ("vision_model", "enable_ocr", "expected"),
     [
         ("org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", None, "used instead of Tesseract"),
+        ("org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", False, "used instead of Tesseract"),
         ("", True, "Tesseract runs OCR"),
     ],
 )
@@ -2179,7 +2169,9 @@ async def test_status_screen_names_the_ocr_engine(mock_svc, vision_model, enable
     async with app.run_test(size=(160, 40)) as _pilot:
         rendered = str(app.screen.query_one("#config-info", Static).render())
         assert "Vision model" in rendered
+        assert "Tesseract OCR" in rendered
         assert expected in rendered
+        assert "OCR is off" not in rendered
 
 
 async def test_status_screen_config_pills_render(mock_svc):
@@ -14873,7 +14865,7 @@ def test_settings_help_content_names_the_ocr_engine_on_ocr_rows(key):
     cfg.enable_ocr = False
     assert help_content(key, SETTINGS_MAP[key]).plain == SETTINGS_MAP[key].help_text
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    assert "OCR is off" in help_content(key, SETTINGS_MAP[key]).plain
+    assert "used instead of Tesseract" in help_content(key, SETTINGS_MAP[key]).plain
 
 
 def test_settings_help_content_has_no_ocr_note_on_other_rows():
@@ -15133,15 +15125,19 @@ async def test_settings_clearing_the_vision_model_updates_both_ocr_notes():
 
 async def test_settings_turning_ocr_off_updates_the_vision_model_row():
     from lilbee.app.settings_map import SETTINGS_MAP
+    from tests._async_wait import wait_until
 
     cfg.enable_ocr = None
-    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    cfg.vision_model = ""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
+        assert "Tesseract runs OCR" in _ocr_help_texts(screen)["vision_model"]
         screen._persist_value("enable_ocr", SETTINGS_MAP["enable_ocr"], "false")
-        await pilot.pause()
-        assert "OCR is off" in _ocr_help_texts(screen)["vision_model"]
+        await wait_until(
+            pilot, lambda: "Tesseract runs OCR" not in _ocr_help_texts(screen)["vision_model"]
+        )
+        assert _ocr_help_texts(screen)["vision_model"] == SETTINGS_MAP["vision_model"].help_text
 
 
 async def test_settings_model_picker_dismissed_reload_failure_notifies_the_bracketed_error():

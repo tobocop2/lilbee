@@ -127,11 +127,9 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     yield _label_line("Reranker", reranker)
     if status.config.enable_ocr is not None:
         ocr_label = "enabled" if status.config.enable_ocr else "disabled"
-        yield _label_line("OCR", ocr_label)
+        yield _label_line("Tesseract OCR", ocr_label)
     if status.ocr_note is not None:
         yield _label_line("OCR engine", status.ocr_note)
-    if status.ocr_warning is not None:
-        yield styled((status.ocr_warning, theme.WARNING))
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
         yield _label_line("Entities", f"{status.entities.rows} entities extracted ({names})")
@@ -190,6 +188,8 @@ The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``)
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the
 fleet and wiki import chains that a plain CLI command has no reason to pay for.
 """
+CONTAINS_SOURCE = "contains a source lilbee already indexes, not added: {names}"
+"""Said of a directory that is the parent of a registered source; its other files stay out."""
 SEARCHING_FOR = "Searching for: {query}"
 """The stderr line ``ask`` prints when retrieval ran on a rewritten follow-up."""
 
@@ -220,8 +220,10 @@ def describe_registration(result: RegisterResult) -> str:
         parts.append(f"Registered {len(result.registered)} source(s)")
     if result.tracked:
         parts.append(f"already tracked: {', '.join(result.tracked)}")
-    if result.overlapping:
-        parts.append(f"overlaps a registered source: {', '.join(result.overlapping)}")
+    if result.overlapping_inside:
+        parts.append(f"overlaps a registered source: {', '.join(result.overlapping_inside)}")
+    if result.containing:
+        parts.append(CONTAINS_SOURCE.format(names=", ".join(result.containing)))
     return ", ".join(parts) if parts else "Registered 0 source(s)"
 
 
@@ -233,13 +235,16 @@ def add_paths(
     background: bool = False,
     chat_mode: bool = False,
     sync_status: SyncStatus | None = None,
-    run_sync: Callable[[], object] | None = None,
+    run_sync: Callable[[RegisterResult], object] | None = None,
+    sync_anyway: bool = False,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
     and this function returns immediately after registering. *run_sync*
-    overrides the foreground sync call (the CLI passes a Ctrl+C-cancellable
-    runner); it defaults to a plain ``asyncio.run(sync())``.
+    overrides the foreground sync call and receives the registration result
+    (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
+    ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
+    when *sync_anyway* says the caller has other new content to index.
     """
     registration = register_paths(paths, con, force=force)
     summary = describe_registration(registration)
@@ -247,7 +252,7 @@ def add_paths(
         print(summary)
     else:
         con.print(Text(summary, style=theme.MUTED), soft_wrap=True)
-    if not registration.reached_corpus:
+    if not (registration.reached_corpus or sync_anyway):
         return
 
     if background:
@@ -256,7 +261,7 @@ def add_paths(
         run_sync_background(con, chat_mode=chat_mode, sync_status=sync_status)
         return
 
-    result = run_sync() if run_sync is not None else _run_foreground_sync()
+    result = run_sync(registration) if run_sync is not None else _run_foreground_sync()
     con.print(result)
 
 
@@ -276,11 +281,14 @@ def sync_result_to_json(result: object) -> dict:
     return {"command": "sync", **result.model_dump()}
 
 
-def auto_sync(con: PlainConsole, *, background: bool = False) -> None:
+def auto_sync(
+    con: PlainConsole, run_sync: Callable[[], object], *, background: bool = False
+) -> None:
     """Run document sync before queries.
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
-    sync blocks until complete (for ``lilbee ask``).
+    *run_sync* (the CLI's Ctrl+C-cancellable runner) blocks until the sync
+    completes (for ``lilbee ask``).
     """
     if background:
         from lilbee.cli.sync import run_sync_background
@@ -289,13 +297,16 @@ def auto_sync(con: PlainConsole, *, background: bool = False) -> None:
         return
 
     from lilbee.cli.sync import _format_sync_summary
-    from lilbee.data.ingest import sync
+    from lilbee.data.ingest import SyncResult
 
     try:
-        result = asyncio.run(sync())
+        result = run_sync()
     except RuntimeError as exc:
         print_prefixed(con, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
+    # The sync runner is typed to return object; narrow it before reading counts.
+    if not isinstance(result, SyncResult):
+        raise TypeError(f"Expected SyncResult, got {type(result).__name__}")
     summary = _format_sync_summary(
         len(result.added),
         len(result.updated),

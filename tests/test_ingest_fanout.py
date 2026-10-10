@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import queue as queue_mod
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
+import rich.progress
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
@@ -22,6 +25,17 @@ from lilbee.runtime.progress import (
     OcrBackendUsed,
     SyncDoneEvent,
 )
+
+# Far above the drain interval: a run that waits for a worker message fails here, not hangs.
+_CANCEL_BOUND_S = 5.0
+
+
+async def _until(condition) -> None:
+    """Yield to the loop until *condition* holds; fail instead of hanging."""
+    deadline = time.monotonic() + _CANCEL_BOUND_S
+    while not condition():
+        assert time.monotonic() < deadline, "the condition never held"
+        await asyncio.sleep(0.005)
 
 
 class FakeProcess:
@@ -439,6 +453,30 @@ class TestRunWorkers:
         assert [verdict.index for verdict in verdicts] == [0, 1]
         assert max(data.current for _, data in events) == 4
 
+    @pytest.mark.parametrize("quiet", [True, False])
+    async def test_the_bar_never_uses_rich_s_global_console(self, fake_context, monkeypatch, quiet):
+        """Rich's global console fixes its terminal detection when first built; a bar skips it."""
+
+        def _global_console():
+            raise AssertionError("the fan-out bar asked for rich's global console")
+
+        def fake_shard(spec, options, messages, stop):
+            done = fanout.ShardDone(
+                kind="done", index=spec.shard.index, result=SyncResult(), error=None
+            )
+            messages.put(done)
+
+        monkeypatch.setattr(rich.progress, "get_console", _global_console)
+        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+        verdicts = await fanout.run_workers(
+            [_spec(0)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=quiet,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+        assert [verdict.error for verdict in verdicts] == [None]
+
     async def test_a_worker_that_dies_without_a_verdict_is_recorded_as_failed(
         self, fake_context, monkeypatch
     ):
@@ -461,30 +499,37 @@ class TestRunWorkers:
         assert verdicts[0].error is None
         assert "before reporting" in verdicts[1].error
 
-    async def test_a_cancel_reaches_the_workers(self, fake_context, monkeypatch):
-        stopped = threading.Event()
-
-        def fake_shard(spec, options, messages, stop):
-            while not stop.is_set():
-                pass
-            stopped.set()
-            messages.put(
-                fanout.ShardDone(
-                    kind="done", index=spec.shard.index, result=None, error="CancelledError: "
-                )
-            )
-
-        monkeypatch.setattr(fanout, "run_shard", fake_shard)
+    @pytest.mark.parametrize("moment", ["before_the_start", "while_a_worker_is_silent"])
+    async def test_a_cancel_ends_the_run_without_a_worker_message(
+        self, fake_context, monkeypatch, moment
+    ):
+        """The parent reads the cancel on its own clock, so a silent worker does not hold it."""
         cancel = threading.Event()
-        cancel.set()
-        await fanout.run_workers(
+        stops = []
+
+        def silent_shard(spec, options, messages, stop):
+            stops.append(stop)
+            cancel.set()
+            worker = fake_context.processes[spec.shard.index]
+            while not worker.terminated:
+                time.sleep(0.01)
+
+        monkeypatch.setattr(fanout, "run_shard", silent_shard)
+        if moment == "before_the_start":
+            cancel.set()
+        run = fanout.run_workers(
             [_spec(0)],
             options=fanout.ShardOptions(parent_pid=os.getpid()),
             quiet=True,
             on_progress=lambda kind, data: None,
             cancel=cancel,
         )
-        assert stopped.is_set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        (worker,) = fake_context.processes
+        assert worker.terminated
+        assert not worker.is_alive()
+        assert [stop.is_set() for stop in stops] == [True]
 
     async def test_a_worker_still_running_after_its_verdict_is_stopped(
         self, fake_context, monkeypatch
@@ -526,6 +571,96 @@ class TestRunWorkers:
             cancel=None,
         )
         assert fake_context.processes[0].killed.is_set()
+
+    def _deaf_workers(self, fake_context, monkeypatch):
+        """Workers that report, then end only when they are killed."""
+
+        def deaf_shard(spec, options, messages, stop):
+            messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            )
+            fake_context.processes[spec.shard.index].killed.wait(_CANCEL_BOUND_S)
+
+        monkeypatch.setattr(fanout, "run_shard", deaf_shard)
+        return fanout.run_workers(
+            [_spec(0), _spec(1)],
+            options=fanout.ShardOptions(parent_pid=os.getpid()),
+            quiet=True,
+            on_progress=lambda kind, data: None,
+            cancel=None,
+        )
+
+    async def test_workers_that_ignore_the_stop_share_one_grace(self, fake_context, monkeypatch):
+        """Two workers that ignore the terminate are killed after one grace, not after two."""
+        grace = 0.5
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", grace)
+        run = asyncio.ensure_future(self._deaf_workers(fake_context, monkeypatch))
+        await _until(lambda: len(fake_context.processes) == 2)
+        await _until(lambda: all(worker.terminated for worker in fake_context.processes))
+        terminated_at = time.monotonic()
+        await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        waited = time.monotonic() - terminated_at
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
+        assert grace * 0.5 < waited < grace * 1.8
+
+    async def test_the_wait_for_the_workers_leaves_the_event_loop_free(
+        self, fake_context, monkeypatch
+    ):
+        """Another coroutine runs between the terminate and the kill."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 0.5)
+        run = asyncio.ensure_future(self._deaf_workers(fake_context, monkeypatch))
+        await _until(lambda: len(fake_context.processes) == 2)
+        await _until(lambda: all(worker.terminated for worker in fake_context.processes))
+        seen_before_the_kill = [worker.killed.is_set() for worker in fake_context.processes]
+        await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        assert seen_before_the_kill == [False, False]
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
+
+    async def test_a_worker_that_leaves_during_the_grace_is_not_killed(
+        self, fake_context, monkeypatch, caplog
+    ):
+        """Only the worker that outlasts the grace is killed, and only it gets the warning."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 0.5)
+
+        def shard(spec, options, messages, stop):
+            messages.put(
+                fanout.ShardDone(kind="done", index=spec.shard.index, result=None, error="x")
+            )
+            if spec.shard.index == 0:
+                stop.wait(_CANCEL_BOUND_S)  # leaves on the stop, as a worker that obeys the TERM
+            else:
+                fake_context.processes[1].killed.wait(_CANCEL_BOUND_S)
+
+        monkeypatch.setattr(fanout, "run_shard", shard)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            await asyncio.wait_for(
+                fanout.run_workers(
+                    [_spec(0), _spec(1)],
+                    options=fanout.ShardOptions(parent_pid=os.getpid()),
+                    quiet=True,
+                    on_progress=lambda kind, data: None,
+                    cancel=None,
+                ),
+                timeout=_CANCEL_BOUND_S,
+            )
+        leaver, deaf = fake_context.processes
+        assert (leaver.killed.is_set(), deaf.killed.is_set()) == (False, True)
+        warned = [r.getMessage() for r in caplog.records if "did not exit" in r.getMessage()]
+        assert warned == [f"Ingest worker {deaf.name} did not exit; killing it"]
+
+    async def test_a_cancel_during_the_grace_kills_the_workers_at_once(
+        self, fake_context, monkeypatch
+    ):
+        """The caller's cancel does not leave a worker behind, and does not wait out the grace."""
+        monkeypatch.setattr(fanout, "_WORKER_EXIT_GRACE_S", 10 * _CANCEL_BOUND_S)
+        run = asyncio.ensure_future(self._deaf_workers(fake_context, monkeypatch))
+        await _until(lambda: len(fake_context.processes) == 2)
+        await _until(lambda: all(worker.terminated for worker in fake_context.processes))
+        run.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(run, timeout=_CANCEL_BOUND_S)
+        assert [worker.killed.is_set() for worker in fake_context.processes] == [True, True]
+        assert [worker.is_alive() for worker in fake_context.processes] == [False, False]
 
     async def test_a_live_worker_is_terminated_when_the_run_ends(self, fake_context, monkeypatch):
         def fake_shard(spec, options, messages, stop):

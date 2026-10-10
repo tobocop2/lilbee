@@ -406,7 +406,7 @@ vectors live on disk twice until the merge becomes a metadata-only Lance commit.
 
 **When something breaks.** A worker that fails leaves its shard in place, stops the merge
 and names itself and its log, rather than producing an index that is silently short of
-rows.
+rows. A cancelled sync stops before the merge in the same way.
 
 ---
 

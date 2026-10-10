@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import threading
+import time
 from itertools import pairwise
 
 import httpx
@@ -21,6 +24,7 @@ from lilbee.providers.fleet.client import (
     _ThinkInliner,
 )
 from lilbee.providers.roles import RerankMode
+from lilbee.runtime.cancellation import TaskCancelledError
 
 
 def _embed_body(vectors: list[list[float]]) -> dict[str, object]:
@@ -67,7 +71,9 @@ def _handler(request: httpx.Request) -> httpx.Response:
 def _unprobed_client(handler=_handler) -> LlamaServerClient:
     """A client whose template has not yet been probed for strict alternation."""
     http = httpx.Client(transport=httpx.MockTransport(handler), base_url="http://gpu0")
-    return LlamaServerClient("http://gpu0", "test-model", http=http)
+    return LlamaServerClient(
+        "http://gpu0", "test-model", http=http, async_transport=httpx.MockTransport(handler)
+    )
 
 
 def _client(handler=_handler) -> LlamaServerClient:
@@ -606,24 +612,73 @@ def test_chat_stream_forwards_caller_timeout() -> None:
     assert seen["timeout"] == 7.5
 
 
-def test_chat_bounded_accumulates_streamed_content() -> None:
+def test_chat_abortable_accumulates_streamed_content() -> None:
     client = _client()
-    assert client.chat_bounded([{"role": "user", "content": "hi"}], deadline_s=5.0) == "Hello"
+    assert client.chat_abortable([{"role": "user", "content": "hi"}], deadline_s=5.0) == "Hello"
     assert client.in_flight == 0  # slot released on the normal exit
 
 
-def test_chat_bounded_raises_and_releases_slot_on_deadline() -> None:
-    """A blown deadline surfaces ChatDeadlineError and frees the in-flight slot.
+def test_chat_abortable_counts_in_flight_while_the_request_runs() -> None:
+    """The router balances on in_flight, so a vision page counts while the server has it."""
+    seen: list[int] = []
+    clients: list[LlamaServerClient] = []
 
-    A per-phase httpx timeout leaks the socket read (and its in-flight increment)
-    past the deadline; the streamed total-deadline path must release it promptly.
-    """
-    client = _client()
-    with pytest.raises(ChatDeadlineError):
-        # deadline_s=0 is already spent by the first streamed frame, so the loop's
-        # monotonic check trips and the with-block closes the stream at once.
-        client.chat_bounded([{"role": "user", "content": "hi"}], deadline_s=0.0)
+    def handler(_request: httpx.Request) -> httpx.Response:
+        seen.append(clients[0].in_flight)
+        return httpx.Response(200, text=_STREAM_BODY)
+
+    clients.append(_client(handler))
+    assert clients[0].chat_abortable([{"role": "user", "content": "hi"}]) == "Hello"
+    assert seen == [1]
+    assert clients[0].in_flight == 0
+
+
+def _headers_held():
+    """An async handler that sends no response headers for ten seconds."""
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(10.0)
+        return httpx.Response(200, text=_STREAM_BODY)
+
+    return handler
+
+
+def test_chat_abortable_raises_and_releases_slot_on_deadline() -> None:
+    """A blown deadline surfaces ChatDeadlineError at once, before any header arrives."""
+    client = _client(_headers_held())
+    started = time.monotonic()
+    with pytest.raises(ChatDeadlineError, match=r"exceeded its 0\.2s deadline"):
+        client.chat_abortable([{"role": "user", "content": "hi"}], deadline_s=0.2)
+    assert time.monotonic() - started < 2.0
     assert client.in_flight == 0
+
+
+@pytest.mark.parametrize("deadline_s", [None, 30.0], ids=["no-deadline", "deadline"])
+def test_chat_abortable_stops_before_headers_once_cancelled(deadline_s: float | None) -> None:
+    """A cancel set while the server holds its headers aborts the request at once."""
+    client = _client(_headers_held())
+    cancel = threading.Event()
+    threading.Timer(0.2, cancel.set).start()
+    started = time.monotonic()
+    with pytest.raises(TaskCancelledError):
+        client.chat_abortable(
+            [{"role": "user", "content": "hi"}], deadline_s=deadline_s, cancel=cancel
+        )
+    assert time.monotonic() - started < 2.0
+    assert client.in_flight == 0
+
+
+def test_chat_abortable_surfaces_a_server_error_body() -> None:
+    """The error body of a streamed response is read before it is reported."""
+
+    async def body():
+        yield b"decode failed"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=body())
+
+    with pytest.raises(ProviderError, match="decode failed"):
+        _client(handler).chat_abortable([{"role": "user", "content": "hi"}])
 
 
 def test_chat_result_reads_usage_from_response() -> None:
@@ -2515,3 +2570,25 @@ def test_count_chat_prompt_tokens_renders_what_the_chat_call_sends() -> None:
     assert client._needs_alternation is True
     assert rendered[-1] == chat_sent[-1]
     assert "tool" not in [m["role"] for m in rendered[-1]]
+
+
+def test_chat_abortable_stops_reading_once_the_run_is_cancelled() -> None:
+    """A cancel set mid-stream closes the response and frees the slot."""
+    from unittest.mock import MagicMock
+
+    async def trickle(_request: httpx.Request) -> httpx.Response:
+        async def frames():
+            yield b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n'
+            await asyncio.sleep(10.0)
+            yield b"data: [DONE]\n\n"
+
+        return httpx.Response(200, content=frames())
+
+    client = _client(trickle)
+    cancel = MagicMock()
+    cancel.is_set.side_effect = [False, False, True]
+    started = time.monotonic()
+    with pytest.raises(TaskCancelledError):
+        client.chat_abortable([{"role": "user", "content": "hi"}], deadline_s=5.0, cancel=cancel)
+    assert time.monotonic() - started < 2.0
+    assert client.in_flight == 0
