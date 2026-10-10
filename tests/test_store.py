@@ -5066,6 +5066,17 @@ class TestRelocateInOnePass:
         assert [row["filename"] for row in store.get_sources()] == ["moved/twice.md"] * 2
         assert _dump(store) == _dump(twin)
 
+    def test_a_move_onto_a_name_that_holds_a_row_leaves_the_moved_row_there(self, store):
+        """One update for each move leaves two rows for the name; the merge leaves the moved one."""
+        store.upsert_source("old.md", "hash of the moved file", 1)
+        store.upsert_source("new.md", "hash of another file", 1)
+
+        store.relocate_sources([SourceMove(("old.md",), "new.md", None)])
+
+        assert [(row["filename"], row["file_hash"]) for row in store.get_sources()] == [
+            ("new.md", "hash of the moved file")
+        ]
+
     def test_files_of_one_content_share_one_pass_over_their_old_names(self):
         from lilbee.data.store.core import _claimed_names
 
