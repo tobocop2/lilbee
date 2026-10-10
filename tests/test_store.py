@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from unittest import mock
 
 import numpy as np
@@ -5448,6 +5449,17 @@ class TestRemoveRowsOf:
         assert _holders(store, "work/b.md") == {("_citations", "source_filename")}
         assert _holders(store, "work/kept.md") == _KEY_COLUMNS
         assert [source["filename"] for source in store.get_sources()] == ["work/kept.md"]
+
+
+class TestSourcesIngestedSince:
+    def test_sources_ingested_since_a_time(self, store):
+        assert store.sources_ingested_since("") == []
+        store.upsert_source("early.md", "h", 1)
+        between = datetime.now(UTC).isoformat()
+        store.upsert_source("late.md", "h", 1)
+
+        assert store.sources_ingested_since(between) == ["late.md"]
+        assert sorted(store.sources_ingested_since("")) == ["early.md", "late.md"]
 
 
 class TestRekeyReplacesAndSkips:

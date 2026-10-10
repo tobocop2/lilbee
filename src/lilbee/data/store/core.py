@@ -2127,6 +2127,14 @@ class Store:
                 found.setdefault(row["file_hash"], []).append(row["filename"])
         return found
 
+    def sources_ingested_since(self, since: str) -> list[str]:
+        """The filename of each source row written at or after *since*, an ISO time in UTC."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        query = table.search().where(f"ingested_at >= '{escape_sql_string(since)}'")
+        return [row["filename"] for row in query.select(["filename"]).limit(None).to_list()]
+
     def count_sources(self, *, search: str | None = None) -> int:
         """Count tracked sources matching *search* without materializing rows."""
         table = self.open_table(SOURCES_TABLE)
