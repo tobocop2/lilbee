@@ -6,6 +6,7 @@ import re
 import sys
 import threading
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from unittest import mock
 
 import numpy as np
@@ -5431,6 +5432,17 @@ class TestSourcesWithoutChunks:
         assert dropped == [SOURCES_TABLE]
         assert store.open_table(CHUNKS_TABLE).count_rows() == 1
         assert store.get_sources() == []
+
+
+class TestSourcesIngestedSince:
+    def test_sources_ingested_since_a_time(self, store):
+        assert store.sources_ingested_since("") == []
+        store.upsert_source("early.md", "h", 1)
+        between = datetime.now(UTC).isoformat()
+        store.upsert_source("late.md", "h", 1)
+
+        assert store.sources_ingested_since(between) == ["late.md"]
+        assert sorted(store.sources_ingested_since("")) == ["early.md", "late.md"]
 
 
 class TestRekeyReplacesAndSkips:

@@ -672,23 +672,29 @@ def forget_removed_from_wiki_index(removed: list[str]) -> None:
         log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
 
 
-def forget_missing_from_wiki_index() -> None:
+def forget_missing_from_wiki_index() -> set[str]:
     """Drop from the wiki's browse index each source it lists that holds no source row.
 
     For a writer that cannot name what left the index: the workers of a fan-out
-    sync remove and re-key sources, and one that stops reports nothing. Best
+    sync remove and re-key sources, and one that stops reports nothing. Returns
+    the sources the index lists in their place, which are re-keyed ones. Best
     effort, as the removal already succeeded.
     """
     config = active_config()
     if not config.wiki:
-        return
+        return set()
     from lilbee.wiki.stubs import drop_sources_from_index, load_stub_index
 
     try:
         listed = {name for stub in load_stub_index(config).values() for name in stub.sources}
-        drop_sources_from_index(get_services().store.missing_sources(listed), config)
+        missing = get_services().store.missing_sources(listed)
+        if not missing:
+            return set()
+        drop_sources_from_index(missing, config)
+        return {name for stub in load_stub_index(config).values() for name in stub.sources} - listed
     except Exception:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
+        return set()
 
 
 @contextmanager

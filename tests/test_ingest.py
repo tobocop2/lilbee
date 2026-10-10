@@ -5746,8 +5746,25 @@ class TestForgetMissingFromWikiIndex:
             mock.MagicMock(side_effect=RuntimeError("index unreadable")),
         )
         with caplog.at_level("WARNING", logger=ingest_mod.log.name):
-            ingest_mod.forget_missing_from_wiki_index()
+            assert ingest_mod.forget_missing_from_wiki_index() == set()
         assert "Failed to drop missing documents from the wiki index" in caplog.text
+
+    def test_with_no_source_missing_the_index_is_read_once_and_not_written(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        mock_svc.store.missing_sources.return_value = set()
+        read = mock.MagicMock(return_value={})
+        dropped = mock.MagicMock()
+        monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
+        monkeypatch.setattr("lilbee.wiki.stubs.drop_sources_from_index", dropped)
+
+        assert ingest_mod.forget_missing_from_wiki_index() == set()
+        assert read.call_count == 1
+        dropped.assert_not_called()
 
     def test_with_the_wiki_off_the_index_is_not_read(self, isolated_env, monkeypatch):
         from lilbee.app import ingest as ingest_mod
@@ -5756,7 +5773,7 @@ class TestForgetMissingFromWikiIndex:
         monkeypatch.setattr(cfg, "wiki", False)
         read = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
-        ingest_mod.forget_missing_from_wiki_index()
+        assert ingest_mod.forget_missing_from_wiki_index() == set()
         read.assert_not_called()
 
 

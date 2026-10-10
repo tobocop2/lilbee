@@ -484,6 +484,13 @@ end, the parent drops each source the browse index lists that holds no source ro
 a file a worker removed or renamed leaves the browse index even when the sync fails or
 is cancelled.
 
+With the wiki on, the first write of a sync leaves the file `wiki_pass_owed` in the data
+root, with the time, and the wiki pass at the end of the sync deletes it. A sync that
+stops between the two leaves the file. The next sync, in one process or with workers,
+gives the browse index every source written since that time, then deletes the file. A
+sync that finds no such file reads no source row for the wiki, and with the wiki off no
+sync reads or writes the file.
+
 **When something breaks.** A worker that fails names itself and its log, and the sync
 fails. A cancelled sync stops the workers. In both cases the files the workers finished
 are in the index and searchable, and the next sync continues from there. The search

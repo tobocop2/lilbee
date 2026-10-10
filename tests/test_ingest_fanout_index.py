@@ -20,6 +20,11 @@ import pytest
 from lilbee.core.config import active_config, cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
+from lilbee.data.ingest.wiki_owed import (
+    WIKI_OWED_FILENAME,
+    note_wiki_pass_owed,
+    wiki_pass_owed_since,
+)
 from lilbee.data.store import Store
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.lock import SyncRunningError, source_keys_in_use, sync_running
@@ -974,3 +979,176 @@ class TestTheWikiIndex:
         assert one_process[f"about-{new}"] == (new,)
         assert f"about-{old}" not in one_process
         assert fan_out == one_process
+
+    def _subjects(self, library) -> dict[str, tuple[str, ...]]:
+        library.use()
+        return {slug: stub.sources for slug, stub in load_stub_index(cfg).items()}
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_the_sync_after_a_stopped_one_lists_what_the_stopped_one_indexed(
+        self, tmp_path, monkeypatch, processes
+    ):
+        """The oracle is a library whose sync of the same files never stops."""
+        owed_reads = []
+        real_since = Store.sources_ingested_since
+        monkeypatch.setattr(
+            Store,
+            "sources_ingested_since",
+            lambda store, since: owed_reads.append(since) or real_since(store, since),
+        )
+        stopped = Library(tmp_path / "stopped", processes)
+        stopped.write_notes("note", 4)
+        await stopped.sync()
+        reports = stopped.write_notes("report", 8)
+        cancel = threading.Event()
+        with monkeypatch.context() as patch:
+            TestAStoppedSync()._stop_at("in_a_write", cancel, patch)
+            with pytest.raises(asyncio.CancelledError):
+                await stopped.sync(cancel=cancel)
+        indexed = [name for name in stopped.sources() if name.startswith("report")]
+        assert indexed, "the stopped sync indexed nothing, so the next one owes nothing"
+        assert not set(indexed) & set(self._listed(stopped))
+        assert (stopped.root / WIKI_OWED_FILENAME).is_file()
+        assert owed_reads == []
+
+        after = await stopped.sync()
+        assert sorted([*indexed, *after.added]) == sorted(reports)
+        assert len(owed_reads) == 1
+        assert not (stopped.root / WIKI_OWED_FILENAME).exists()
+        await stopped.sync()
+        assert len(owed_reads) == 1
+
+        clean = Library(tmp_path / "clean", processes)
+        clean.write_notes("note", 4)
+        await clean.sync()
+        clean.write_notes("report", 8)
+        await clean.sync()
+        assert self._listed(clean) == sorted([f"note{n}.txt" for n in range(4)] + reports)
+        assert self._subjects(stopped) == self._subjects(clean)
+        assert stopped.dump() == clean.dump()
+
+    async def test_a_sync_that_stops_after_a_rename_leaves_the_index_under_the_new_name(
+        self, tmp_path, monkeypatch
+    ):
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        cancel = threading.Event()
+        real = Store.relocate_sources
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                Store, "relocate_sources", lambda store, moves: cancel.set() or real(store, moves)
+            )
+            with pytest.raises(asyncio.CancelledError):
+                await library.sync(cancel=cancel)
+        assert "renamed.txt" in library.sources()
+        assert "old.txt" in self._listed(library)
+
+        await library.sync()
+
+        subjects = self._subjects(library)
+        assert subjects["about-renamed.txt"] == ("renamed.txt",)
+        assert "about-old.txt" not in subjects
+        assert "old.txt" not in self._listed(library)
+
+    async def test_a_refresh_that_fails_keeps_the_mark_for_the_next_sync(
+        self, tmp_path, monkeypatch
+    ):
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        with monkeypatch.context() as patch:
+            patch.setattr("lilbee.wiki.stubs.refresh_stub_index", mock.Mock(side_effect=OSError))
+            await library.sync()
+        assert self._listed(library) == []
+        assert (library.root / WIKI_OWED_FILENAME).is_file()
+
+        await library.sync()
+
+        assert self._listed(library) == [f"note{n}.txt" for n in range(4)]
+        assert not (library.root / WIKI_OWED_FILENAME).exists()
+
+    async def test_a_mark_with_no_time_owes_every_source(self, tmp_path):
+        library = Library(tmp_path / "lib", 1)
+        names = library.write_notes("note", 4)
+        await library.sync()
+        Store(cfg).clear_wiki_mentions()
+        (library.root / WIKI_OWED_FILENAME).write_text("", encoding="utf-8")
+
+        await library.sync()
+
+        mentioned = {row["source"] for row in Store(cfg).wiki_mention_rows()}
+        assert mentioned == set(names)
+
+    async def test_an_earlier_mark_keeps_its_time(self, tmp_path):
+        library = Library(tmp_path / "lib", 1)
+        mark = library.root / WIKI_OWED_FILENAME
+        mark.write_text("2020-01-01T00:00:00+00:00", encoding="utf-8")
+
+        note_wiki_pass_owed(library.root)
+
+        assert wiki_pass_owed_since(library.root) == "2020-01-01T00:00:00+00:00"
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_with_the_wiki_off_a_sync_reads_and_leaves_no_mark(
+        self, tmp_path, monkeypatch, processes
+    ):
+        cfg.wiki = False
+        reads, notes = [], []
+        monkeypatch.setattr(pipeline_mod, "wiki_pass_owed_since", reads.append)
+        monkeypatch.setattr(pipeline_mod, "note_wiki_pass_owed", notes.append)
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 8)
+        cancel = threading.Event()
+        with monkeypatch.context() as patch:
+            TestAStoppedSync()._stop_at("in_a_write", cancel, patch)
+            with pytest.raises(asyncio.CancelledError):
+                await library.sync(cancel=cancel)
+        await library.sync()
+
+        assert library.sources() != []
+        assert (reads, notes) == ([], [])
+        assert not (library.root / WIKI_OWED_FILENAME).exists()
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_sync_with_nothing_owed_reads_the_mark_and_no_source_row(
+        self, tmp_path, monkeypatch, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 8)
+        await library.sync()
+        assert not (library.root / WIKI_OWED_FILENAME).exists()
+        owed_reads, refreshes, mark_reads = [], [], []
+        monkeypatch.setattr(Store, "sources_ingested_since", lambda *args: owed_reads.append(args))
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refreshes.append)
+        real_read = pipeline_mod.wiki_pass_owed_since
+        monkeypatch.setattr(
+            pipeline_mod,
+            "wiki_pass_owed_since",
+            lambda root: mark_reads.append(root.name) or real_read(root),
+        )
+
+        result = await library.sync()
+
+        assert result.unchanged == 8
+        assert (owed_reads, refreshes) == ([], [])
+        # The parent reads the mark; no worker does.
+        assert mark_reads == ["lib"]
+
+    async def test_a_sync_sets_the_mark_once_however_many_batches_it_plans(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setattr(pipeline_mod, "_PLAN_SHARD_MIN_FILES", 2)
+        notes = []
+        real_note = pipeline_mod.note_wiki_pass_owed
+        monkeypatch.setattr(
+            pipeline_mod, "note_wiki_pass_owed", lambda root: notes.append(1) or real_note(root)
+        )
+        library = Library(tmp_path / "lib", 1)
+        names = library.write_notes("note", 12)
+
+        await library.sync()
+
+        assert notes == [1]
+        assert self._listed(library) == sorted(names)
