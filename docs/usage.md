@@ -232,6 +232,13 @@ Center with live progress. `/cancel` cancels the active operation. The TUI
 stays responsive throughout; each inference role (chat, embed, rerank,
 vision) runs in its own subprocess so a stuck model doesn't lock the chat.
 
+A finished sync or add shows one of three colours. Green means every file was
+indexed in full. Amber means the task indexed files, and some files were partly
+read, failed or skipped. Red means files failed and the task indexed nothing,
+or the sync itself stopped with an error. Press `i` on a row, or click it, to
+list the partly read files with one line for each failed page, and the
+failed and skipped files with their reasons.
+
 ### Wiki
 
 lilbee analyzes the documents you've indexed and writes a wiki about them,
@@ -662,7 +669,10 @@ lilbee --json wiki wipe --yes                  # delete every generated page and
 ]}
 
 // lilbee --json status
-{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0}
+{"config": {...}, "sources": [{"filename": "manual.pdf", "chunk_count": 42}], "document_count": 1, "total_chunks": 42, "index": {"embedding_model": "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf", "embedding_dim": 768}, "skipped": [], "skipped_total": 0, "partial_total": 0}
+
+// lilbee --json sync  (OCR failed on one page of a scanned PDF, one file failed)
+{"command": "sync", "added": ["scan.pdf"], "updated": [], "failed": ["locked.pdf"], "skipped": [], "partial": [{"name": "scan.pdf", "pages": [{"page": 3, "error": "...", "recovered": false}]}], "reasons": {"locked.pdf": "..."}, ...}
 
 // lilbee --json model pull <ref>  (streams events, then a final "done" line)
 {"event": "progress", "model": "...", "bytes": 12345678, "total": 999999999}
@@ -885,9 +895,25 @@ A file that fails to ingest is held out of later syncs, and `lilbee status`
 lists it. `lilbee remove` also takes held-out files, by name, folder or glob.
 The TUI `/delete` takes a held-out file by name, and Tab completes it. A removed
 file stays out of every later sync and leaves the status list.
-`lilbee sync --retry-skipped` retries failed files only, so it does not bring a
-removed file back. To restore a removed file, edit it, add its path again, or
-run `lilbee rebuild`.
+`lilbee sync --retry-skipped` retries failed files and reads partly read files
+again. It does not bring a removed file back. To restore a removed file, edit
+it, add its path again, or run `lilbee rebuild`.
+
+When OCR fails on some pages of a file, lilbee indexes the text it has and
+reports the file as partly read. `lilbee sync`, `lilbee add` and
+`lilbee rebuild` print a `Partly read` count and, for each file, one line for
+each failed page: `page 3: <error>`. The line ends with `(other text kept)`
+when the page still has native text or text from an embedded image. With
+`--json`, `partial` lists each file as `{"name", "pages"}`. Each entry of
+`pages` is `{"page", "error", "recovered"}`: the page number from 1, the OCR
+error, and whether the page kept other text. `reasons` gives the reason for
+each failed or skipped file. `lilbee status` lists the partly read files in a
+`Partly read` table; with `--json`, each source carries `ocr_page_failures`
+with the same entries, and the result carries `partial_total`. The text output
+shows the first five failed pages of a file and counts the rest; `--json`
+carries all of them. A normal sync does not read a partly read file again.
+`lilbee sync --retry-skipped` reads it again, and so does a sync after the
+file changes. A later read without failed pages clears the list.
 
 ### Wiki
 
@@ -1001,6 +1027,18 @@ is running, and the full OpenAPI schema is published at the
 [REST API reference](https://lilbee.sh/api/). (Note: this is the HTTP server
 reference. A Python-library API reference is still being written; for now,
 the source under `src/lilbee/` is the canonical reference.)
+
+A partly read file is an indexed file with at least one page whose OCR
+failed. Each failed page is `{"page", "error", "recovered"}`: the page number
+from 1, the OCR error, and whether the page kept native text or text from an
+embedded image. The API reports partly read files in these places:
+
+- The `done` event of `POST /api/sync`, and `sync` in the `done` event of `POST /api/add` and `POST /api/add/upload`: `partial` lists each partly read file as `{"name", "pages"}`, where `pages` holds its failed pages, and `reasons` maps each failed or skipped file to its reason.
+- The `file_done` progress event: `status` is `ok`, `partial`, `skipped` or `error`. The `sync_done` event carries a `partial` count, and `batch_progress` uses the `partial` status for the same files.
+- `GET /api/status`: each source carries `ocr_page_failures`, and `partial_total` counts the sources that have any.
+- `GET /api/documents`: each document carries `ocr_page_failures`.
+
+`POST /api/sync` with `{"retry_skipped": true}` reads the partly read files again.
 
 Server-specific env vars live in the [Server table](#server) below.
 
@@ -1551,6 +1589,10 @@ surface can clear it:
 `lilbee status`, the TUI status screen and the OCR rows of `/settings` show one
 "Scanned pages" line: read by the vision model, read by Tesseract with its
 languages, every page read (`ocr = all`), or skipped (`ocr = off`).
+
+If OCR fails on some pages of a file, lilbee keeps the text it has and
+reports the file as partly read on every surface. See
+[Manage documents](#manage-documents).
 
 | | Tesseract | Vision model |
 |---|---|---|

@@ -15,7 +15,7 @@ from lilbee.app.services import set_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, OcrMode
 from lilbee.data.ingest import SyncResult
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import FailedPage, SearchChunk
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.retrieval.query.searcher import RagContext
 from lilbee.runtime.progress import OcrBackendUsed, SseErrorCode
@@ -1948,6 +1948,7 @@ class TestSyncStreamDoneDelivery:
             "failed": 0,
             "skipped": 0,
             "relocated": 0,
+            "partial": 0,
         }
         assert lists_done["added"] == ["fast.txt"]
 
@@ -1987,6 +1988,7 @@ class TestSyncStreamDoneDelivery:
             "failed": 0,
             "skipped": 0,
             "relocated": 0,
+            "partial": 0,
         }
 
     async def test_put_threadsafe_defers_enqueue_to_loop(self):
@@ -4515,6 +4517,24 @@ class TestListDocuments:
         assert result.documents[0].chunk_count == 5
         assert result.has_more is False
 
+    async def test_each_document_lists_its_failed_ocr_pages(self, mock_svc):
+        _fake_source_store(
+            mock_svc,
+            [
+                {
+                    "filename": "scan.pdf",
+                    "chunk_count": 5,
+                    "ocr_page_failures": [{"page": 2, "error": "timed out", "recovered": False}],
+                },
+                {"filename": "a.md", "chunk_count": 1, "ocr_page_failures": None},
+            ],
+        )
+        result = await handlers.list_documents()
+        assert [doc.model_dump()["ocr_page_failures"] for doc in result.documents] == [
+            [{"page": 2, "error": "timed out", "recovered": False}],
+            [],
+        ]
+
     async def test_empty(self, mock_svc):
         _fake_source_store(mock_svc, [])
         result = await handlers.list_documents()
@@ -6270,3 +6290,131 @@ class TestSseQueueEviction:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert drained == ["token-1", "token-2", "done"]
         assert queue.dropped_events == 0
+
+
+class TestPartlyReadOverHttp:
+    async def test_status_carries_failed_pages_per_source_and_the_partial_count(self):
+        from lilbee.app.status import SourceInfo, StatusConfig, StatusResult
+
+        gathered = StatusResult(
+            document_count=1,
+            config=StatusConfig(
+                documents_dir="docs", data_dir="data", chat_model="c", embedding_model="e"
+            ),
+            sources=[
+                SourceInfo(
+                    filename="scan.pdf",
+                    file_hash="h",
+                    chunk_count=3,
+                    ingested_at="2026",
+                    ocr_page_failures=[FailedPage(page=2, error="timed out", recovered=False)],
+                )
+            ],
+            total_chunks=3,
+            partial_total=1,
+        )
+        with patch("lilbee.server.handlers.gather_status", return_value=gathered):
+            response = await handlers.status()
+
+        assert response.partial_total == 1
+        assert response.model_dump()["sources"][0]["ocr_page_failures"] == [
+            {"page": 2, "error": "timed out", "recovered": False}
+        ]
+
+    async def test_the_sync_stream_done_frame_names_partial_files_and_reasons(self):
+        from lilbee.data.types import PartialFile
+
+        result = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            failed=["bad.pdf"],
+            reasons={"bad.pdf": "the file is encrypted"},
+        )
+
+        async def partly_read_sync(*, on_progress, **_kwargs):
+            from lilbee.runtime.progress import EventType, FileDoneEvent, FileStatus, SyncDoneEvent
+
+            on_progress(
+                EventType.FILE_DONE,
+                FileDoneEvent(file="scan.pdf", status=FileStatus.PARTIAL, chunks=3),
+            )
+            on_progress(
+                EventType.SYNC_DONE,
+                SyncDoneEvent(added=1, updated=0, removed=0, failed=1, partial=1),
+            )
+            return result
+
+        with patch("lilbee.data.ingest.sync", side_effect=partly_read_sync):
+            events = [event async for event in handlers.sync_stream()]
+
+        file_done = next(e for e in events if e.startswith("event: file_done"))
+        assert json.loads(file_done.split("data: ")[1])["status"] == "partial"
+        sync_done = next(e for e in events if e.startswith("event: sync_done"))
+        assert json.loads(sync_done.split("data: ")[1])["partial"] == 1
+        done = json.loads(next(e for e in events if e.startswith("event: done")).split("data: ")[1])
+        assert done["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert done["reasons"] == {"bad.pdf": "the file is encrypted"}
+
+    def test_the_add_summary_keeps_partial_files_and_reasons_of_its_sync(self):
+        from lilbee.data.types import PartialFile
+        from lilbee.server.models import AddSummary, SyncSummary
+
+        result = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            skipped=["blank.pdf"],
+            reasons={"blank.pdf": "no text extracted (0 chunks)"},
+        )
+        summary = AddSummary(
+            copied=["scan.pdf"], errors=[], sync=SyncSummary(**result.model_dump())
+        )
+
+        dumped = summary.model_dump(mode="json")["sync"]
+        assert dumped["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert dumped["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
+
+    async def _partly_read_sync(self, **_kwargs):
+        from lilbee.data.types import PartialFile
+
+        return SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            skipped=["blank.pdf"],
+            reasons={"blank.pdf": "no text extracted (0 chunks)"},
+        )
+
+    def _done_sync(self, events):
+        done = next(e for e in events if e.startswith("event: done"))
+        return json.loads(done.split("data: ")[1])["sync"]
+
+    async def test_the_add_stream_done_frame_names_partial_files_and_reasons(self, isolated_env):
+        scan = isolated_env / "documents" / "scan.pdf"
+        scan.write_bytes(b"%PDF-1.4")
+        with patch("lilbee.data.ingest.sync", side_effect=self._partly_read_sync):
+            events = [e async for e in handlers.add_files_stream([str(scan)])]
+
+        sync = self._done_sync(events)
+        assert sync["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert sync["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
+
+    async def test_the_upload_stream_done_frame_names_partial_files_and_reasons(self, isolated_env):
+        with patch("lilbee.data.ingest.sync", side_effect=self._partly_read_sync):
+            events = [e async for e in handlers.add_uploads_stream([("scan.pdf", b"%PDF-1.4")])]
+
+        sync = self._done_sync(events)
+        assert sync["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert sync["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}

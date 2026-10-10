@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
-from xberg import ConcurrencyConfig, ExtractionConfig, ProgressEvent
+from xberg import (
+    ConcurrencyConfig,
+    ExtractedDocument,
+    ExtractionConfig,
+    ProcessingWarning,
+    ProgressEvent,
+)
 
 from lilbee.core.config import cfg
 from lilbee.core.config.context import config_scope
 from lilbee.data.extract import xberg as xberg_extract
+from lilbee.data.store import FailedPage
 
 
 class _FakeResult:
@@ -255,3 +263,40 @@ async def test_extract_document_in_a_running_loop_reads_the_scoped_config():
     with mock.patch("xberg.progress.extract", _capture_extract(captured)), config_scope(scoped):
         xberg_extract.extract_document(b"x", "text/plain", config=ExtractionConfig())
     assert captured["config"].concurrency == ConcurrencyConfig(max_threads=3)
+
+
+def _doc(failures):
+    """A stand-in for xberg's ExtractedDocument carrying only its failed-page list."""
+    return SimpleNamespace(ocr_page_failures=failures)
+
+
+def _failure(page, error, recovered):
+    """A stand-in for one xberg OcrPageFailure record."""
+    return SimpleNamespace(page=page, error=error, recovered=recovered)
+
+
+def test_failed_ocr_pages_copies_each_record_of_the_document_in_order():
+    doc = _doc([_failure(3, "backend timed out", False), _failure(7, "no content", True)])
+    assert xberg_extract.failed_ocr_pages(doc) == (
+        FailedPage(page=3, error="backend timed out", recovered=False),
+        FailedPage(page=7, error="no content", recovered=True),
+    )
+
+
+def test_failed_ocr_pages_is_empty_when_the_document_lists_no_failed_page():
+    assert xberg_extract.failed_ocr_pages(_doc(None)) == ()
+
+
+def test_failed_ocr_pages_is_empty_for_a_real_document_with_only_ocr_warnings():
+    doc = ExtractedDocument(
+        content="x",
+        mime_type="text/plain",
+        processing_warnings=[ProcessingWarning(source="ocr", message="OCR of page 3 failed")],
+    )
+    assert xberg_extract.failed_ocr_pages(doc) == ()
+
+
+def test_failed_ocr_pages_keeps_every_record_of_a_long_list():
+    failures = [_failure(number, "boom", False) for number in range(1, 201)]
+    pages = xberg_extract.failed_ocr_pages(_doc(failures))
+    assert [page.page for page in pages] == list(range(1, 201))

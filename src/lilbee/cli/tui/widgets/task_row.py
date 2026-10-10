@@ -14,11 +14,18 @@ from time import monotonic
 
 from textual.app import ComposeResult
 from textual.content import Content
+from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Label, Static
 
 from lilbee.cli.tui.pill import pill
-from lilbee.cli.tui.task_queue import Task, TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import (
+    COMPLETED_STATUSES,
+    TERMINAL_STATUSES,
+    Task,
+    TaskStatus,
+    TaskType,
+)
 from lilbee.cli.tui.widgets.progress_cell import (
     frozen_indeterminate_cell,
     indeterminate_cell,
@@ -34,6 +41,7 @@ _STATUS_CLASS: dict[TaskStatus, str] = {
     TaskStatus.QUEUED: "-queued",
     TaskStatus.ACTIVE: "-active",
     TaskStatus.DONE: "-done",
+    TaskStatus.PARTIAL: "-partial",
     TaskStatus.FAILED: "-failed",
     TaskStatus.CANCELLED: "-cancelled",
 }
@@ -63,14 +71,10 @@ _STATUS_BG: dict[TaskStatus, str] = {
     TaskStatus.QUEUED: "$surface-lighten-2",
     TaskStatus.ACTIVE: "$primary",
     TaskStatus.DONE: "$success-lighten-2",
+    TaskStatus.PARTIAL: "$warning",
     TaskStatus.FAILED: "$error-lighten-2",
     TaskStatus.CANCELLED: "$warning-lighten-2",
 }
-
-
-_TERMINAL_STATUSES: frozenset[TaskStatus] = frozenset(
-    {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.CANCELLED}
-)
 
 
 def _build_head(task: Task, elapsed: str) -> Content:
@@ -81,7 +85,7 @@ def _build_head(task: Task, elapsed: str) -> Content:
     """
     type_bg = _TASK_TYPE_BG.get(task.task_type, _TASK_TYPE_BG_FALLBACK)
     status_bg = _STATUS_BG[task.status]
-    status_fg = "$text bold" if task.status in _TERMINAL_STATUSES else "$text"
+    status_fg = "$text bold" if task.status in TERMINAL_STATUSES else "$text"
     parts = [
         Content.styled(task.name, "bold"),
         Content(" "),
@@ -116,8 +120,15 @@ class TaskRow(Widget, can_focus=True):
     """One task, rendered as three stacked lines.
 
     Focusable so ``Tab`` / ``j`` / ``k`` in the Task Center moves between
-    rows and ``c`` cancels the focused task.
+    rows and ``c`` cancels the focused task. A click asks for the row's detail.
     """
+
+    class DetailRequested(Message):
+        """Posted when the row is clicked, carrying the task whose detail to show."""
+
+        def __init__(self, task_id: str) -> None:
+            super().__init__()
+            self.task_id = task_id
 
     DEFAULT_CSS = ""  # all styling lives in task_center.tcss
 
@@ -140,7 +151,7 @@ class TaskRow(Widget, can_focus=True):
         Quietly no-ops until the row's child labels have mounted, so the
         first few poll ticks (before compose settles) don't error.
         """
-        # State class: exactly one of the 5 modifier classes is active.
+        # State class: exactly one of the status modifier classes is active.
         target_class = _STATUS_CLASS.get(task.status, "")
         for cls in _STATUS_CLASSES:
             self.set_class(cls == target_class, cls)
@@ -163,23 +174,29 @@ class TaskRow(Widget, can_focus=True):
         # A DONE task's detail is whatever the last progress tick wrote
         # ("442/610 MB", "Syncing foo.md..."): stale and confusing now that the
         # bar reads 100%. FAILED / CANCELLED keep their detail: it's the reason.
-        is_done = task.status == TaskStatus.DONE
+        # A row with a report keeps it too: it counts the files that were not fully
+        # indexed and names the key that lists them.
         parts: list[Content] = []
-        if not is_done and task.detail:
+        stale = task.status == TaskStatus.DONE and task.report is None
+        if not stale and task.detail:
             parts.append(Content(task.detail))
-        if not (task.indeterminate or is_done):
+        if not (task.indeterminate or task.status in COMPLETED_STATUSES):
             parts.append(Content.styled(f"{task.progress:.1f}%", "bold"))
         meta.update(Content("  ").join(parts))
 
         if task.indeterminate:
             # Terminal rows freeze the bar so a cancelled/failed/done
             # task doesn't keep reading as live work.
-            if task.status in _TERMINAL_STATUSES:
+            if task.status in TERMINAL_STATUSES:
                 bar.update(frozen_indeterminate_cell())
             else:
                 bar.update(indeterminate_cell(tick))
         else:
             bar.update(progress_cell(task.progress))
+
+    def on_click(self) -> None:
+        """Ask the screen to show this task's detail."""
+        self.post_message(self.DetailRequested(self._task_id))
 
     def flash_completed(self) -> None:
         """Mark the row as 'just completed' for a 2-second visual flash."""

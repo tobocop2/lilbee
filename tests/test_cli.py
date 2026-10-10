@@ -7656,3 +7656,106 @@ class TestSyncCancelledExit:
         assert json.loads(result.output) == {"error": "Sync cancelled."}
         assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
         mock_svc.searcher.ask_raw.assert_not_called()
+
+
+class TestPartlyReadCliOutput:
+    """sync and rebuild report files indexed without some pages."""
+
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    def test_rebuild_reports_partly_read_files(self, json_flag):
+        from lilbee.data.ingest import SyncResult
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        partly_read = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            skipped=["blank.pdf"],
+            reasons={"blank.pdf": "no text extracted (0 chunks)"},
+        )
+        with mock.patch(
+            "lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=partly_read
+        ):
+            result = runner.invoke(app, [*json_flag, "rebuild"])
+
+        assert result.exit_code == 0
+        if json_flag:
+            payload = json.loads(result.output)
+            assert payload["partial"] == [
+                {
+                    "name": "scan.pdf",
+                    "pages": [{"page": 2, "error": "timed out", "recovered": False}],
+                }
+            ]
+            assert payload["reasons"] == {"blank.pdf": "no text extracted (0 chunks)"}
+        else:
+            assert "Partly read: 1" in result.output
+            assert "page 2: timed out" in result.output
+
+    def test_rebuild_without_partly_read_files_prints_no_partly_read_line(self):
+        from lilbee.data.ingest import SyncResult
+
+        clean = SyncResult(added=["a.txt"])
+        with mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=clean):
+            result = runner.invoke(app, ["rebuild"])
+
+        assert "Partly read" not in result.output
+
+    def test_sync_json_carries_partial_files_and_reasons(self):
+        from lilbee.data.ingest import SyncResult
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        partly_read = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+            failed=["bad.pdf"],
+            reasons={"bad.pdf": "the file is encrypted"},
+        )
+        with mock.patch(
+            "lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=partly_read
+        ):
+            result = runner.invoke(app, ["--json", "sync"])
+
+        payload = json.loads(result.output)
+        assert payload["partial"] == [
+            {"name": "scan.pdf", "pages": [{"page": 2, "error": "timed out", "recovered": False}]}
+        ]
+        assert payload["reasons"] == {"bad.pdf": "the file is encrypted"}
+
+    @pytest.mark.parametrize("json_flag", [[], ["--json"]], ids=["plain", "json"])
+    def test_add_reports_partly_read_files(self, json_flag, isolated_env, tmp_path):
+        from lilbee.data.ingest import SyncResult
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        src = tmp_path / "source" / "scan.pdf"
+        src.parent.mkdir()
+        src.write_bytes(b"%PDF-1.4")
+        partly_read = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=2, error="timed out", recovered=False)])
+            ],
+        )
+        with mock.patch(
+            "lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=partly_read
+        ):
+            result = runner.invoke(app, [*json_flag, "add", str(src)])
+
+        assert result.exit_code == 0
+        if json_flag:
+            sync = json.loads(result.output.strip())["sync"]
+            assert sync["partial"] == [
+                {
+                    "name": "scan.pdf",
+                    "pages": [{"page": 2, "error": "timed out", "recovered": False}],
+                }
+            ]
+        else:
+            assert "Partly read: 1" in result.output
+            assert "page 2: timed out" in result.output

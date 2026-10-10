@@ -13,6 +13,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, default_data_dir
 from lilbee.data.ingest.skip_marker import describe_skips, held_out_names
+from lilbee.data.store import FailedPage, failed_pages
 from lilbee.data.types import SkippedSource
 
 LILBEE_LABEL_MAX_LEN = 40
@@ -119,6 +120,8 @@ class SourceInfo(BaseModel):
     file_hash: str
     chunk_count: int
     ingested_at: str
+    ocr_page_failures: list[FailedPage] = []
+    """The pages whose OCR failed; empty when every page was read."""
 
 
 class EntityStatus(BaseModel):
@@ -142,6 +145,8 @@ class StatusResult(BaseModel):
     skipped: list[SkippedSource] = []
     """Files a skip marker holds out of the index, capped at ``STATUS_SKIPPED_LIMIT``."""
     skipped_total: int = 0
+    partial_total: int = 0
+    """Indexed sources with pages whose OCR failed; each lists them in ``ocr_page_failures``."""
     ocr_note: str = ""
     """What happens to scanned pages: skipped, or read by which engine."""
 
@@ -187,6 +192,7 @@ def gather_status() -> StatusResult:
                 file_hash=s["file_hash"][:12],
                 chunk_count=s["chunk_count"],
                 ingested_at=s["ingested_at"][:19],
+                ocr_page_failures=failed_pages(s),
             )
             for s in sorted_sources
         ],
@@ -195,6 +201,7 @@ def gather_status() -> StatusResult:
         entities=entity_status(),
         skipped=skipped,
         skipped_total=skipped_total,
+        partial_total=sum(1 for s in sources if s.get("ocr_page_failures")),
         ocr_note=scanned_pages_state(),
     )
 

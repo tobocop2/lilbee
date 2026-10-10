@@ -931,8 +931,11 @@ class LilbeeApp(App[None]):
         except KeyError:
             return None
 
-    def action_run_sync(self) -> None:
+    def action_run_sync(self, retry_skipped: bool = False) -> None:
         """Trigger an explicit document sync from any screen (S key).
+
+        With *retry_skipped*, the sync also retries failed files and reads
+        partly read files again.
 
         The TaskBar hint is rendered globally, so the trigger must work
         everywhere. Routes to the registered ChatScreen which owns the
@@ -942,7 +945,7 @@ class LilbeeApp(App[None]):
         from lilbee.cli.tui.screens.chat import ChatScreen
 
         if isinstance(self.screen, ChatScreen):
-            self.screen._run_sync()
+            self.screen._run_sync(retry_skipped=retry_skipped)
             return
         chat = self.chat_screen()
         if chat is None:
@@ -955,7 +958,7 @@ class LilbeeApp(App[None]):
             if not self.screen_stack:
                 return  # the app is tearing down; nothing left to sync
             if isinstance(self.screen, ChatScreen):
-                chat._run_sync()
+                chat._run_sync(retry_skipped=retry_skipped)
                 return
             if attempts > 0:
                 self.switch_view(msg.DEFAULT_VIEW)

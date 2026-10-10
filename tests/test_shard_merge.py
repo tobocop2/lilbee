@@ -297,3 +297,26 @@ class TestReconciliation:
         _write_shard(tmp_path / "w0", ["a.txt"])
         merge_shards(store, [tmp_path / "w0"])
         assert "across the ingest workers" not in caplog.text
+
+
+class TestSourceFailedPagesMerge:
+    def test_a_shard_s_failed_pages_reach_an_index_that_predates_the_column(self, tmp_path, store):
+        from lilbee.data.store.schema import _sources_failed_pages_field, _sources_schema
+
+        column = _sources_failed_pages_field()
+        page_3 = {"page": 3, "error": "timed out", "recovered": False}
+        old_schema = pa.schema([f for f in _sources_schema() if f.name != column.name])
+        store.get_db().create_table(SOURCES_TABLE, schema=old_schema)
+        shard = lancedb.connect(str(tmp_path / "w0"))
+        shard.create_table(
+            SOURCES_TABLE,
+            pa.table(
+                {"filename": ["scan.pdf"], column.name: [[page_3]]},
+                schema=pa.schema([pa.field("filename", pa.utf8()), column]),
+            ),
+        )
+
+        merge_shards(store, [tmp_path / "w0"])
+
+        [row] = store.get_sources()
+        assert (row["filename"], row["ocr_page_failures"]) == ("scan.pdf", [page_3])

@@ -14,9 +14,13 @@ from conftest import (
     make_test_catalog_model as _make_model,
 )
 from lilbee.catalog import CatalogResult
+from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
+from lilbee.cli.tui.task_queue import Task, TaskStatus
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
+from lilbee.data.store import FailedPage
+from lilbee.data.types import PartialFile, SyncResult
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -1388,7 +1392,7 @@ class TestSyncHint:
                 await pilot.press("escape")
                 await pilot.press("S")
                 await pilot.pause()
-                run_sync.assert_called_once()
+                run_sync.assert_called_once_with(retry_skipped=False)
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -1415,12 +1419,12 @@ class TestSyncHint:
                 import asyncio
                 import time
 
-                app.action_run_sync()
+                app.action_run_sync(retry_skipped=True)
                 deadline = time.monotonic() + 20
                 while time.monotonic() < deadline and not run_sync.called:
                     await pilot.pause()
                     await asyncio.sleep(0.02)
-                run_sync.assert_called_once()
+                run_sync.assert_called_once_with(retry_skipped=True)
 
     @pytest.mark.asyncio
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
@@ -1456,7 +1460,9 @@ class TestSyncHint:
         observed: list[int] = []
         gate = _threading.Event()
 
-        def _do_sync_target(self_screen, reporter, *, force_rebuild=False, prune_ignored=False):
+        def _do_sync_target(
+            self_screen, reporter, *, force_rebuild=False, prune_ignored=False, retry_skipped=False
+        ):
             observed.append(self_screen.app.task_bar.pending_sync_count)
             gate.set()
 
@@ -1741,3 +1747,140 @@ def test_is_one_action_two_ways(first: str, second: str, one_action: bool) -> No
     """
     assert _is_one_action_two_ways(first, second) is one_action
     assert _is_one_action_two_ways(second, first) is one_action, "must be symmetric"
+
+
+_SCAN_PARTLY_READ = PartialFile(
+    "scan.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
+)
+_PARTLY_READ_SYNC = SyncResult(
+    added=["scan.pdf"],
+    partial=[_SCAN_PARTLY_READ],
+    failed=["bad.pdf"],
+    reasons={"bad.pdf": "the file is encrypted"},
+)
+
+
+async def _tui_sync(
+    result: SyncResult, *, retry: bool = False
+) -> tuple[Task, dict[str, object], list[str]]:
+    """Run one sync in the real app, started as the user starts it.
+
+    Returns its task, the kwargs the sync got, and the text of each toast.
+    """
+    from lilbee.cli.tui.app import LilbeeApp
+
+    seen: dict[str, object] = {}
+
+    async def fake_sync(**kwargs: object) -> SyncResult:
+        seen.update(kwargs)
+        return result
+
+    with (
+        mock.patch("lilbee.data.ingest.detect_pending", return_value=0),
+        mock.patch("lilbee.data.ingest.sync", side_effect=fake_sync),
+    ):
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await await_chat(app, pilot)
+            if retry:
+                app.action_run_sync(retry_skipped=True)
+            else:
+                await pilot.press("escape")
+                await pilot.press("S")
+            finished: list[Task] = []
+            for _ in range(400):
+                finished = [t for t in app.task_bar.queue.history if t.task_type == "sync"]
+                if finished:
+                    break
+                await pilot.pause(delay=0.01)
+            toasts = [notification.message for notification in app._notifications]
+    assert finished, "the sync task did not finish"
+    return finished[0], seen, toasts
+
+
+class TestSyncTaskColour:
+    @pytest.mark.asyncio
+    async def test_failed_files_beside_indexed_ones_end_the_sync_partial(self) -> None:
+        task, seen, _ = await _tui_sync(_PARTLY_READ_SYNC)
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.failed == {"bad.pdf": "the file is encrypted"}
+        assert "1 partly read" in task.detail
+        assert seen["retry_skipped"] is False
+
+    @pytest.mark.asyncio
+    async def test_failed_files_with_nothing_indexed_fail_the_sync_and_keep_the_report(
+        self,
+    ) -> None:
+        nothing = SyncResult(failed=["bad.pdf"], reasons={"bad.pdf": "the file is encrypted"})
+        task, _, _ = await _tui_sync(nothing)
+        assert task.status is TaskStatus.FAILED
+        assert task.detail == msg.SYNC_FAILED_FILES.format(files="bad.pdf")
+        assert task.report is not None
+        assert task.report.failed == {"bad.pdf": "the file is encrypted"}
+
+    @pytest.mark.asyncio
+    async def test_only_skipped_files_and_nothing_indexed_end_the_sync_done(self) -> None:
+        skipped = SyncResult(skipped=["odd.bin"], reasons={"odd.bin": "unsupported format"})
+        task, _, _ = await _tui_sync(skipped)
+        assert task.status is TaskStatus.DONE
+        assert task.report is not None
+        assert task.report.skipped == {"odd.bin": "unsupported format"}
+
+    @pytest.mark.asyncio
+    async def test_a_partly_read_file_alone_ends_the_sync_partial(self) -> None:
+        task, _, _ = await _tui_sync(SyncResult(added=["scan.pdf"], partial=[_SCAN_PARTLY_READ]))
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.partial == (_SCAN_PARTLY_READ,)
+        assert (task.report.failed, task.report.skipped) == ({}, {})
+
+    @pytest.mark.asyncio
+    async def test_a_partly_read_file_that_was_read_again_ends_the_sync_partial(self) -> None:
+        task, _, _ = await _tui_sync(SyncResult(updated=["scan.pdf"], partial=[_SCAN_PARTLY_READ]))
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.indexed == 1
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_file_beside_a_relocated_one_ends_the_sync_partial(self) -> None:
+        result = SyncResult(
+            relocated=["moved.md"], skipped=["odd.bin"], reasons={"odd.bin": "unsupported format"}
+        )
+        task, _, _ = await _tui_sync(result)
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.indexed == 1
+
+    @pytest.mark.asyncio
+    async def test_a_skipped_file_beside_an_indexed_one_ends_the_sync_partial(self) -> None:
+        result = SyncResult(
+            added=["a.md"], skipped=["odd.bin"], reasons={"odd.bin": "unsupported format"}
+        )
+        task, _, _ = await _tui_sync(result)
+        assert task.status is TaskStatus.PARTIAL
+        assert task.report is not None
+        assert task.report.skipped == {"odd.bin": "unsupported format"}
+        assert (task.report.partial, task.report.failed) == ((), {})
+
+    @pytest.mark.asyncio
+    async def test_a_sync_with_partly_read_files_says_so_in_a_toast(self) -> None:
+        result = SyncResult(added=["scan.pdf"], partial=[_SCAN_PARTLY_READ])
+        _, _, toasts = await _tui_sync(result)
+        assert msg.SYNC_PARTLY_READ.format(count=1) in toasts
+
+    @pytest.mark.asyncio
+    async def test_a_clean_sync_shows_no_partly_read_toast(self) -> None:
+        _, _, toasts = await _tui_sync(SyncResult(added=["a.md"]))
+        assert msg.SYNC_PARTLY_READ.format(count=0) not in toasts
+
+    @pytest.mark.asyncio
+    async def test_a_clean_sync_ends_done_with_no_report(self) -> None:
+        task, _, _ = await _tui_sync(SyncResult(added=["a.md"]))
+        assert (task.status, task.report) == (TaskStatus.DONE, None)
+
+    @pytest.mark.asyncio
+    async def test_a_retry_started_from_the_app_reaches_the_sync(self) -> None:
+        task, seen, _ = await _tui_sync(SyncResult(), retry=True)
+        assert task.status is TaskStatus.DONE
+        assert seen["retry_skipped"] is True

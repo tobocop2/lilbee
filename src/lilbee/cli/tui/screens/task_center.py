@@ -29,7 +29,8 @@ from textual.widgets import Footer, Label
 
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
-from lilbee.cli.tui.task_queue import Task, TaskStatus
+from lilbee.cli.tui.screens.task_detail import TaskDetailModal
+from lilbee.cli.tui.task_queue import COMPLETED_STATUSES, Task, TaskStatus
 from lilbee.cli.tui.widgets.task_row import TaskRow
 
 if TYPE_CHECKING:
@@ -64,7 +65,7 @@ class TaskCenter(Screen[None]):
 
     CSS_PATH = "task_center.tcss"
     AUTO_FOCUS = "#task-rows"
-    HELP = "Background task monitor.\n\nPress r to refresh, c to cancel the focused task."
+    HELP = msg.TASK_CENTER_HELP
 
     app: LilbeeApp  # type: ignore[assignment]
 
@@ -77,6 +78,7 @@ class TaskCenter(Screen[None]):
         # [ ] / q still leave. Never shadow `c` with a hidden binding.
         Binding("c", "cancel_task", "Cancel", show=True),
         Binding("C", "clear_history", "Clear done", show=False),
+        Binding("i", "task_detail", msg.TASK_CENTER_DETAILS, show=False),
     ]
 
     def compose(self) -> ComposeResult:
@@ -180,6 +182,25 @@ class TaskCenter(Screen[None]):
         if active is not None:
             self.app.task_bar.cancel_task(active.task_id)
 
+    def action_task_detail(self) -> None:
+        """Open the detail view of the task whose row has focus."""
+        focused = self.focused
+        # focus can rest on the scroll container, which has no task
+        if isinstance(focused, TaskRow) and focused.id:
+            self._show_task_detail(focused.id.removeprefix("task-"))
+
+    def on_task_row_detail_requested(self, event: TaskRow.DetailRequested) -> None:
+        """Open the detail view of a clicked row; a row with no report stays as it is."""
+        self._show_task_detail(event.task_id, say_when_none=False)
+
+    def _show_task_detail(self, task_id: str, *, say_when_none: bool = True) -> None:
+        """Push the detail modal for *task_id*; *say_when_none* toasts when it has no report."""
+        task = self.app.task_bar.queue.get_task(task_id)
+        if task is not None and task.report is not None:
+            self.app.push_screen(TaskDetailModal(task.name, task.report))
+        elif say_when_none:
+            self.notify(msg.TASK_DETAIL_NONE)
+
     def action_cursor_down(self) -> None:
         self.focus_next()
 
@@ -265,7 +286,7 @@ class TaskCenter(Screen[None]):
         counts: Counter[TaskStatus] = Counter(t.status for t in tasks)
         active = counts[TaskStatus.ACTIVE]
         queued = counts[TaskStatus.QUEUED]
-        done = counts[TaskStatus.DONE]
+        done = sum(counts[status] for status in COMPLETED_STATUSES)
         body = msg.TASK_CENTER_COUNTS.format(active=active, queued=queued, done=done)
         if active > 0:
             spinner = _COUNTS_SPINNER_FRAMES[self._tick % len(_COUNTS_SPINNER_FRAMES)]
