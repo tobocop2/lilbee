@@ -343,6 +343,26 @@ def _walk_root(
                 yield entry
 
 
+def walk_reaches(base: Path, target: Path, rules: IgnoreRules) -> bool:
+    """Whether the walk of *base* reaches *target*, a file or a directory below it.
+
+    Applies the checks ``_walk_root`` makes on the way down: a pruned directory
+    name, a dot-file, and what ``.lilbeeignore`` excludes. A path that does not
+    exist is read as a directory.
+    """
+    ignore_dirs = active_config().ignore_dirs
+    is_file = target.is_file()
+    parts = target.relative_to(base).parts
+    current = base
+    for index, part in enumerate(parts, start=1):
+        current = current / part
+        is_dir = not (is_file and index == len(parts))
+        hidden = is_ignored_dir(part, ignore_dirs) if is_dir else part.startswith(".")
+        if hidden or rules.excludes_entry(current, base=base, is_dir=is_dir):
+            return False
+    return True
+
+
 def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
     """Yield every file lilbee knows in the owned tree and in each registered root.
 

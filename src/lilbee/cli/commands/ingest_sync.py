@@ -292,9 +292,16 @@ def _cancellable_progress(
 def _exit_cancelled(rollback: AddRollback) -> NoReturn:
     """Report a cancelled command and exit with the Ctrl+C status."""
     message = rollback.message(_SYNC_CANCELLED_MESSAGE)
-    not_added = rollback.not_added
     if cfg.json_mode:
-        json_output({"error": message, "not_added": not_added} if not_added else {"error": message})
+        payload: dict[str, object] = {"error": message}
+        if rollback.not_added:
+            payload["not_added"] = rollback.not_added
+        if rollback.absorbed_into:
+            payload["copied"] = list(rollback.absorbed_into)
+            payload["absorbed"] = [
+                label for labels in rollback.absorbed_into.values() for label in labels
+            ]
+        json_output(payload)
     else:
         console.print(Text(message, style=theme.WARNING))
     raise SystemExit(_EXIT_INTERRUPTED) from None
@@ -560,6 +567,7 @@ def _add_json_mode(
         "copied": reg_result.registered,
         "name_taken": reg_result.name_taken,
         "overlapping": reg_result.overlapping,
+        "absorbed": reg_result.absorbed,
         "tracked": reg_result.tracked,
         "refused": reg_result.refused,
         "crawled": len(crawled_paths),
@@ -579,8 +587,10 @@ def _register_and_sync(
     """Register the files and sync; returns the JSON result, or None after human output."""
 
     def _sync(registration: RegisterResult) -> object:
+        rollback.absorbed_into = registration.absorbed_into
+
         def _sync_starts() -> None:
-            rollback.registered(registration.registered, cancel_event)
+            rollback.registered(registration.revocable, cancel_event)
 
         return _run_sync(cancel_event, before_sync=_sync_starts)
 

@@ -11,8 +11,8 @@ from typing import Any, TypeVar
 import tomli_w
 
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
-from lilbee.core.config import CONFIG_FILE_NAME, cfg
-from lilbee.core.config.model import env_value, toml_values
+from lilbee.core.config import CONFIG_FILE_NAME, Config, cfg
+from lilbee.core.config.model import env_value, toml_value, toml_values
 from lilbee.core.config.parsing import migrate_ocr_keys, without_refused_ocr
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
@@ -153,14 +153,22 @@ def mutate_value(data_root: Path, key: str, fn: Callable[[Any], tuple[Any, T]]) 
     return result
 
 
+def _overlay_file(root: Path) -> Path | None:
+    """The config.toml an overlay of *root* reads: None without one or under the skip switch."""
+    path = _config_path(root)
+    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
+        return None
+    return path
+
+
 def overlay_persisted_settings(root: Path) -> None:
     """Set on cfg each writable setting ``<root>/config.toml`` holds and no variable sets.
 
     A value Config refuses is left out with a warning that names the file, and
     the setting keeps the value it had. ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
     """
-    path = _config_path(root)
-    if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
+    path = _overlay_file(root)
+    if path is None:
         return
     harden_private_file(path)
     accepted = toml_values(path)
@@ -169,3 +177,19 @@ def overlay_persisted_settings(root: Path) -> None:
     for key, value in stored.items():
         if key in overlayable and env_value(key) is None:
             setattr(cfg, key, value)
+
+
+def overlay_persisted_roots(config: Config) -> None:
+    """Set on *config* the source registry its config.toml holds, under the lock a writer takes.
+
+    A file without a registry sets nothing. A file that does not parse, or a
+    registry Config refuses, is reported and sets nothing.
+    ``LILBEE_SKIP_TOML_CONFIG=1`` disables it.
+    """
+    path = _overlay_file(config.data_root)
+    if path is None:
+        return
+    with _config_write_lock(config.data_root):
+        roots = toml_value(path, "linked_roots")
+        if roots is not None:
+            config.linked_roots = roots

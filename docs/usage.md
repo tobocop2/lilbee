@@ -866,6 +866,38 @@ that runs before `lilbee ask`. The command exits with status 130. A stopped
 `add` names the files it did not add, and `lilbee --json add` lists them in
 `not_added`.
 
+If you add a folder that contains a source you already added, the folder takes
+that source in. `lilbee add ~/notes` after `lilbee add ~/notes/work` prints
+`Registered 1 source(s); notes now includes work`. The documents of `work` keep
+their index entries and get the names `notes/work/...`, so nothing is read or
+embedded again, and the sync that follows indexes the other files in `notes`.
+A file you removed from `work` stays removed. `lilbee --json add` lists the
+sources a folder took in under `absorbed`, and so do `/api/add` and
+`lilbee_add`. `Lilbee.add` in the Python library takes the source in too, but
+it returns the result of the sync only and names no source. A script that
+names a document by its old name, such as
+`lilbee remove work/plan.md`, must use `notes/work/plan.md` from then on.
+
+The folder cannot take a source in while a sync runs, while the wiki writes
+pages (a wiki build, a synthesis run, or a page opened from the browse tree),
+or while a removal runs. The add then stops and changes nothing. During a sync
+or a wiki write it prints
+`A sync or a wiki build is running. Add notes again when it ends.` Run the add
+again when the other work ends. A
+source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
+a source of its own. An older lilbee that was started before the add still
+holds the old list of sources, and its next sync moves the documents back to
+their old names and indexes files you removed from `work`. Update every
+installation that shares a library, and restart each one after the add.
+
+If the add is interrupted, finish it before an older lilbee touches the
+library. To finish it, start lilbee with the same or a newer version, or run
+`lilbee status` or `lilbee sync`. If an older lilbee already synced, removed a
+file or ran `lilbee reset` before the add finished, update it and finish the
+add. Then remove again any file you had removed, because the older lilbee can
+index it again and record it as a failure, or can miss a removal that a crash
+cut short. If you reset the library, run `lilbee reset` again.
+
 ### Manage documents
 
 | Command | Description |
@@ -879,7 +911,7 @@ that runs before `lilbee ask`. The command exits with status 130. A stopped
 | `lilbee rebuild` | Nuke the database and re-ingest everything |
 | `lilbee export pages.parquet` | Write a per-page text dataset (parquet or jsonl, no vectors) |
 | `lilbee import pages.parquet` | Import a dataset, re-embedding it with the current model |
-| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync or import runs on the same library |
+| `lilbee reset` | Factory reset. Deletes all documents and data. Refuses while a sync, an import, a wiki build or an add that takes a source in runs on the same library |
 
 A file that fails to ingest is held out of later syncs, and `lilbee status`
 lists it. `lilbee remove` also takes held-out files, by name, folder or glob.

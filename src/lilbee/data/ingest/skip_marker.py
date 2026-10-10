@@ -9,17 +9,20 @@ hash and reason it was written for. A stored kind counts only while both still
 match; otherwise the record reads as a removal when its reason is
 ``REMOVED_SKIP_REASON`` and as a failure when it is not. Production writes go
 through ``update_skip_records`` and ``clear_skip_markers``, both under one
-cross-process lock.
+cross-process lock. A write first replaces ``skip_records.pending.json`` with
+the three new texts, and a reader takes them from there until the write ends,
+so the three files change together.
 """
 
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import TypedDict
@@ -33,6 +36,8 @@ log = logging.getLogger(__name__)
 SKIP_MARKER_FILENAME = "skipped_sources.json"
 SKIP_REASON_FILENAME = "skip_reasons.json"
 SKIP_KIND_FILENAME = "skip_kinds.json"
+SKIP_PENDING_FILENAME = "skip_records.pending.json"
+_RECORD_FILENAMES = (SKIP_MARKER_FILENAME, SKIP_REASON_FILENAME, SKIP_KIND_FILENAME)
 DEFAULT_SKIP_REASON = "held out by an earlier sync"
 REMOVED_SKIP_REASON = "removed via remove (re-add the source or run retry-skipped to restore)"
 # A sync, a /delete, and a reset from another process all change these records.
@@ -72,36 +77,122 @@ class SkipRecords:
     kinds: dict[str, SkipKind] = field(default_factory=dict)
 
 
-def _load_json_map(path: Path) -> dict[str, object]:
-    """Load a JSON object, or empty dict on any read/parse error."""
-    if not path.exists():
-        return {}
+@dataclass(frozen=True)
+class _PendingWrite:
+    """A write of the three sidecars that has started: what each becomes and what it replaces."""
+
+    after: dict[str, str]
+    """The text each sidecar gets, by file name."""
+    before: dict[str, str | None]
+    """The digest of the bytes each sidecar held, None for a file that was absent."""
+
+
+def _json_map(text: str, name: str) -> dict[str, object]:
+    """The JSON object *text* holds, or an empty dict when it holds none."""
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        log.debug("Sidecar %s unreadable, treating as empty: %s", path.name, exc)
+        raw = json.loads(text)
+    except json.JSONDecodeError as exc:
+        log.debug("Sidecar %s unreadable, treating as empty: %s", name, exc)
         return {}
     if not isinstance(raw, dict):  # the file is untyped JSON
         return {}
     return {str(k): v for k, v in raw.items()}
 
 
-def _load_str_map(path: Path) -> dict[str, str]:
-    """Load a ``{str: str}`` JSON file, or empty dict on any read/parse error."""
-    return {k: v for k, v in _load_json_map(path).items() if isinstance(v, str)}
+def _read_text(path: Path) -> str | None:
+    """The text of *path*, or None when it cannot be read; an absent file is not opened."""
+    if not path.exists():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        log.debug("Sidecar %s unreadable, treating as empty: %s", path.name, exc)
+        return None
 
 
-def _write_json_map(path: Path, data: Mapping[str, object]) -> None:
-    """Replace *path* atomically with a JSON object. Best-effort."""
+def _digest(text: str | None) -> str | None:
+    """A digest of *text*, None for a file that is absent."""
+    return None if text is None else hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _pending_write(data_root: Path) -> _PendingWrite | None:
+    """The write a pending file records, or None without one that can be read."""
+    text = _read_text(data_root / SKIP_PENDING_FILENAME)
+    if text is None:
+        return None
+    raw = _json_map(text, SKIP_PENDING_FILENAME)
+    after, before = raw.get("after"), raw.get("before")
+    # the pending file is untyped JSON
+    if not isinstance(after, dict) or not isinstance(before, dict):
+        return None
+    if not all(isinstance(after.get(name), str) for name in _RECORD_FILENAMES):
+        return None
+    return _PendingWrite(after, {name: before.get(name) for name in _RECORD_FILENAMES})
+
+
+def _record_texts(
+    data_root: Path, names: tuple[str, ...] = _RECORD_FILENAMES
+) -> dict[str, str | None]:
+    """The text of each sidecar in *names*, by file name: from a pending write while it stands.
+
+    Without a pending file only the sidecars in *names* are read.
+    """
+    on_disk = {name: _read_text(data_root / name) for name in names}
+    # Checked after the read, so a write that started during it is seen.
+    if not (data_root / SKIP_PENDING_FILENAME).exists():
+        return on_disk
+    return _texts_through_pending_write(data_root)
+
+
+def _texts_through_pending_write(data_root: Path) -> dict[str, str | None]:
+    """The text of every sidecar while a pending file is there.
+
+    A pending write stands while each sidecar holds what the write replaces or
+    what it writes. Another text means a lilbee without this file wrote since,
+    and the sidecars are then the newer state.
+    """
+    on_disk = {name: _read_text(data_root / name) for name in _RECORD_FILENAMES}
+    pending = _pending_write(data_root)
+    if pending is None:
+        return on_disk
+    for name, text in on_disk.items():
+        if _digest(text) not in (pending.before[name], _digest(pending.after[name])):
+            return on_disk
+    return dict(pending.after)
+
+
+def _load_json_map(data_root: Path, filename: str) -> dict[str, object]:
+    """The JSON object the sidecar *filename* holds, or an empty dict on any read error."""
+    text = _record_texts(data_root, (filename,))[filename]
+    return {} if text is None else _json_map(text, filename)
+
+
+def _str_map(raw: Mapping[str, object]) -> dict[str, str]:
+    """The entries of *raw* whose value is a string."""
+    return {k: v for k, v in raw.items() if isinstance(v, str)}
+
+
+def _replace_text(path: Path, text: str) -> bool:
+    """Replace *path* atomically with *text*; False when it could not be written."""
     tmp = path.with_suffix(path.suffix + ".tmp")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(data, sort_keys=True), encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
         os.replace(tmp, path)
     except OSError as exc:
         log.warning("Failed to persist %s: %s", path, exc)
         with contextlib.suppress(OSError):
             tmp.unlink()
+        return False
+    return True
+
+
+def _write_json_map(path: Path, data: Mapping[str, object]) -> None:
+    """Replace *path* atomically with a JSON object. Best-effort."""
+    _replace_text(path, json.dumps(data, sort_keys=True))
 
 
 def _unlink(path: Path) -> None:
@@ -113,7 +204,7 @@ def _unlink(path: Path) -> None:
 
 def load_skip_markers(data_root: Path) -> dict[str, str]:
     """Load the filename → failed-hash map, or empty dict on any read error."""
-    return _load_str_map(data_root / SKIP_MARKER_FILENAME)
+    return _str_map(_load_json_map(data_root, SKIP_MARKER_FILENAME))
 
 
 def write_skip_markers(data_root: Path, markers: dict[str, str]) -> None:
@@ -123,7 +214,7 @@ def write_skip_markers(data_root: Path, markers: dict[str, str]) -> None:
 
 def load_skip_reasons(data_root: Path) -> dict[str, str]:
     """Load the filename → skip-reason map (informational), empty on any read error."""
-    return _load_str_map(data_root / SKIP_REASON_FILENAME)
+    return _str_map(_load_json_map(data_root, SKIP_REASON_FILENAME))
 
 
 def write_skip_reasons(data_root: Path, reasons: dict[str, str]) -> None:
@@ -142,9 +233,11 @@ def _kind_of(stored: object, marker: str, reason: str | None) -> SkipKind:
 
 def _load_records(data_root: Path) -> SkipRecords:
     """Read the three sidecars; a marker without a matching stored kind reads by its reason."""
-    markers = load_skip_markers(data_root)
-    reasons = load_skip_reasons(data_root)
-    stored = _load_json_map(data_root / SKIP_KIND_FILENAME)
+    texts = _record_texts(data_root)
+    maps = {name: {} if text is None else _json_map(text, name) for name, text in texts.items()}
+    markers = _str_map(maps[SKIP_MARKER_FILENAME])
+    reasons = _str_map(maps[SKIP_REASON_FILENAME])
+    stored = maps[SKIP_KIND_FILENAME]
     kinds = {
         name: _kind_of(stored.get(name), marker, reasons.get(name))
         for name, marker in markers.items()
@@ -153,15 +246,48 @@ def _load_records(data_root: Path) -> SkipRecords:
 
 
 def write_skip_records(data_root: Path, records: SkipRecords) -> None:
-    """Replace the three sidecars; each kind names the hash and reason it is written for."""
-    write_skip_markers(data_root, records.markers)
-    write_skip_reasons(data_root, records.reasons)
+    """Replace the three sidecars together; each kind names the hash and reason it is for.
+
+    The pending file is written first and holds the three texts, so a write
+    that stops part way reads as complete. Best-effort: errors are logged.
+    """
     stored = {
         name: _StoredKind(kind=kind, hash=marker, reason=records.reasons.get(name))
         for name, kind in records.kinds.items()
         if (marker := records.markers.get(name)) is not None
     }
-    _write_json_map(data_root / SKIP_KIND_FILENAME, stored)
+    maps = (records.markers, records.reasons, stored)
+    after = {
+        name: json.dumps(data, sort_keys=True)
+        for name, data in zip(_RECORD_FILENAMES, maps, strict=True)
+    }
+    before = {name: _digest(_read_text(data_root / name)) for name in _RECORD_FILENAMES}
+    pending = data_root / SKIP_PENDING_FILENAME
+    _replace_text(pending, json.dumps(asdict(_PendingWrite(after, before)), sort_keys=True))
+    _apply(data_root, after)
+
+
+def _apply(data_root: Path, texts: Mapping[str, str]) -> None:
+    """Give each sidecar its text of a pending write, then end the write."""
+    written = [_replace_text(data_root / name, text) for name, text in texts.items()]
+    if all(written):
+        _unlink(data_root / SKIP_PENDING_FILENAME)
+
+
+def _settle(data_root: Path) -> None:
+    """Finish or drop a write that did not end; the caller holds the records lock."""
+    if not (data_root / SKIP_PENDING_FILENAME).exists():
+        return
+    pending = _pending_write(data_root)
+    if pending is not None and _record_texts(data_root) == pending.after:
+        _apply(data_root, pending.after)
+    else:
+        _unlink(data_root / SKIP_PENDING_FILENAME)
+
+
+def load_skip_records(data_root: Path) -> SkipRecords:
+    """The skip markers with the reason and the kind of each, as they are on disk."""
+    return _load_records(data_root)
 
 
 def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
@@ -193,6 +319,7 @@ def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) 
     Reasons and kinds whose marker is gone are dropped in the same write.
     """
     with skip_records_lock(data_root):
+        _settle(data_root)
         records = _load_records(data_root)
         before = SkipRecords(dict(records.markers), dict(records.reasons), dict(records.kinds))
         change(records)
@@ -249,9 +376,20 @@ def describe_skips(data_root: Path, names: Iterable[str]) -> list[SkippedSource]
     ]
 
 
+def describe_failures(data_root: Path, names: Iterable[str]) -> list[SkippedSource]:
+    """Each of *names* an ingestion failure holds out, with its reason, in order."""
+    records = _load_records(data_root)
+    return [
+        SkippedSource(filename=name, reason=records.reasons.get(name, DEFAULT_SKIP_REASON))
+        for name in names
+        if records.kinds.get(name) is SkipKind.FAILED
+    ]
+
+
 def clear_skip_markers(data_root: Path) -> None:
     """Delete the marker file and both sidecars. No-op if absent."""
     with skip_records_lock(data_root):
+        _settle(data_root)
         _unlink(data_root / SKIP_MARKER_FILENAME)
         _unlink(data_root / SKIP_REASON_FILENAME)
         _unlink(data_root / SKIP_KIND_FILENAME)

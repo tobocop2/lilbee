@@ -62,7 +62,7 @@ class ParsedCitation:
     line_number: int  # 1-based line number in the markdown
 
 
-def _fence_flags(lines: list[str]) -> list[bool]:
+def fence_flags(lines: list[str]) -> list[bool]:
     """Per-line ``inside a code fence`` flags, fence delimiters included.
 
     Footnote definitions and ``[^srcN]`` markers inside a fence are example
@@ -92,7 +92,7 @@ def parse_wiki_citations(markdown: str) -> list[ParsedCitation]:
 
     citations: list[ParsedCitation] = []
     seen: set[str] = set()
-    for line_idx, fenced in enumerate(_fence_flags(lines)):
+    for line_idx, fenced in enumerate(fence_flags(lines)):
         if fenced:
             continue
         match = FOOTNOTE_RE.match(lines[line_idx])
@@ -124,13 +124,13 @@ def render_citation_block(citations: list[CitationRecord]) -> str:
 def footnote_marker_keys(body: str) -> set[str]:
     """Citation keys the body's ``[^srcN]`` markers reference, fences excluded.
 
-    Shares :func:`_fence_flags` with the parser and the scrubber: a marker the
+    Shares :func:`fence_flags` with the parser and the scrubber: a marker the
     other two treat as example syntax must not count as a section's citation.
     """
     lines = body.splitlines()
     return {
         key
-        for line, fenced in zip(lines, _fence_flags(lines), strict=True)
+        for line, fenced in zip(lines, fence_flags(lines), strict=True)
         if not fenced
         for key in CITE_RE.findall(line)
     }
@@ -155,7 +155,7 @@ def scrub_unverified_markers(body: str, verified: list[CitationRecord]) -> str:
     lines = body.splitlines(keepends=True)
     kept = [
         line if fenced else _scrub_line(line, keys)
-        for line, fenced in zip(lines, _fence_flags(lines), strict=True)
+        for line, fenced in zip(lines, fence_flags(lines), strict=True)
         if fenced or not FOOTNOTE_RE.match(line)
     ]
     return "".join(kept)

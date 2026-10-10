@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
+from lilbee.data.types import is_under
 
 from .entity_extractor import EntityKind, get_entity_extractor
 from .generation import _corpus_chunks
@@ -31,6 +32,7 @@ from .shared import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from lilbee.core.config import Config
@@ -402,6 +404,18 @@ def drop_sources_from_index(names: set[str], config: Config | None = None) -> No
         stubs.update(recomputed)
         if stubs != previous:
             save_stub_index(stubs, config)
+
+
+def refresh_sources_under(keys: Iterable[str], config: Config) -> None:
+    """Re-aggregate each subject the index lists under one of *keys* or a source below it.
+
+    For sources whose key changed in the store: their mention rows carry the new
+    key, and the index takes it from them.
+    """
+    prefixes = list(keys)
+    listed = {source for stub in load_stub_index(config).values() for source in stub.sources}
+    moved = {source for source in listed if any(is_under(source, prefix) for prefix in prefixes)}
+    drop_sources_from_index(moved, config)
 
 
 def _is_placeholder(draft: Path) -> bool:

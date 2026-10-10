@@ -30,6 +30,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from lilbee.runtime.absorb_journal import absorb_pending
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -282,6 +284,11 @@ def get_services() -> Services:
         # resolution doesn't re-enter this half-built get_services.
         reconcile_embedding_dim(registry)
         _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
+        if absorb_pending(cfg.data_root):
+            # heavy: the absorb loads the ingest pipeline
+            from lilbee.app.absorb import finish_pending_absorb_at_start
+
+            finish_pending_absorb_at_start(cfg, _state.singleton.store)
         # Eager start is the default: pay the spawn cost per role server at TUI mount
         # so the first user action lands on a warm fleet. Roles whose model is unset
         # are skipped, so a setup with only chat + embed never spawns rerank or

@@ -72,7 +72,7 @@ from lilbee.data.store import (
 )
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
-from lilbee.runtime.lock import ResetRefusedError
+from lilbee.runtime.lock import ResetRefusedError, SyncRunningError
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -446,7 +446,7 @@ async def add(
         reg_result = await anyio.to_thread.run_sync(
             functools.partial(register_sources, valid, force=force)
         )
-    except SkipRecordsLockError as exc:
+    except (SkipRecordsLockError, SyncRunningError) as exc:
         return _error(str(exc))
     errors.extend(reg_result.refused)
     reached = reg_result.reached_corpus or bool(crawled_count)
@@ -456,6 +456,7 @@ async def add(
         "copied": reg_result.registered,
         "name_taken": reg_result.name_taken,
         "overlapping": reg_result.overlapping,
+        "absorbed": reg_result.absorbed,
         "tracked": reg_result.tracked,
         "crawled": crawled_count,
         "errors": errors,

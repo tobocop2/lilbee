@@ -34,6 +34,7 @@ from rich.progress import (
 )
 
 from lilbee.app.services import get_services
+from lilbee.core import settings
 from lilbee.core.config import Config, active_config
 from lilbee.data.extract.chunk import ChunkLimitError
 from lilbee.data.extract.document import (
@@ -80,8 +81,7 @@ from lilbee.data.ingest.skip_marker import (
     SkipRecordsLockError,
     clear_failed_markers,
     clear_skip_markers,
-    describe_skips,
-    held_out_names,
+    describe_failures,
     load_skip_markers,
     update_skip_records,
 )
@@ -119,6 +119,7 @@ from lilbee.data.types import (
     SyncResult,
     _IngestResult,
 )
+from lilbee.runtime.absorb_journal import absorb_pending
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -949,12 +950,6 @@ def _persist_skip_records(
     return None
 
 
-def _failures_among(records_root: Path, held: Iterable[str]) -> list[str]:
-    """The files in *held* that an ingestion failure holds out, in order; removals are left out."""
-    failed = set(held_out_names(records_root))
-    return [name for name in held if name in failed]
-
-
 def _report_index_mismatch(store: Store) -> IndexMismatch | None:
     """Name an index built with another embedder than cfg; the sync leaves it as it is.
 
@@ -1215,6 +1210,22 @@ async def _sync_across_workers(
     return result
 
 
+def _config_with_persisted_roots(shard: ShardId | None) -> Config:
+    """The active config with its config.toml's source registry; a worker keeps its parent's."""
+    config = active_config()
+    if shard is None:
+        settings.overlay_persisted_roots(config)
+    return config
+
+
+def _finish_pending_absorb() -> None:
+    """Finish an interrupted absorb, which needs every sync stopped."""
+    # circular: lilbee.app.absorb imports lilbee.data.ingest for the skip records
+    from lilbee.app.absorb import finish_pending_absorb
+
+    finish_pending_absorb()
+
+
 _SyncParams = ParamSpec("_SyncParams")
 
 
@@ -1225,8 +1236,13 @@ def _marks_sync_running(
 
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
-        async with sync_running(active_config().data_root):
-            return await run(*args, **kwargs)
+        data_root = active_config().data_root
+        while True:
+            async with sync_running(data_root):
+                # An absorb writes its journal with every sync stopped, so none appears in here.
+                if not absorb_pending(data_root):
+                    return await run(*args, **kwargs)
+            await to_ingest_thread(_finish_pending_absorb)
 
     return _marked
 
@@ -1256,7 +1272,7 @@ async def sync(
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it sees only
     its slice of the corpus and leaves the corpus-wide passes to the parent.
     """
-    config = active_config()
+    config = await to_ingest_thread(_config_with_persisted_roots, shard)
     _store = get_services().store
 
     if force_rebuild:
@@ -1406,7 +1422,7 @@ async def sync(
         failed=list(failed),
         skipped=list(skipped),
         skipped_ocr={name: ocr for name, ocr in skipped.items() if ocr is not None},
-        held_out=describe_skips(records_root, _failures_among(records_root, state.held_out)),
+        held_out=describe_failures(records_root, state.held_out),
         truncated=get_services().embedder.truncated_total - truncated_before,
         index_mismatch=index_mismatch,
         skip_records_error=skip_records_error,

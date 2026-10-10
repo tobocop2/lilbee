@@ -1629,7 +1629,12 @@ class _PlainEnvSource:
 
 
 class _TomlSource:
-    """Reads config.toml as a settings source; *label* names the file in a warning."""
+    """Reads config.toml as a settings source; *label* names the file in a warning.
+
+    With *only*, it reads that one key and no other. It reports nothing in
+    *reported*, the warnings of the load that built cfg from this file, and
+    with *per_change* it reports the rest once per change of the file.
+    """
 
     def __init__(
         self,
@@ -1638,12 +1643,28 @@ class _TomlSource:
         label: str = CONFIG_FILE_NAME,
         otherwise: str = _USES_ITS_DEFAULT,
         reported: tuple[str, ...] = (),
+        only: str | None = None,
+        per_change: bool = False,
     ) -> None:
         self._settings_cls = settings_cls
         self._path = path
         self._label = label
         self._otherwise = otherwise
         self._reported = reported
+        self._only = only
+        self._per_change = per_change
+
+    def _file_version(self) -> str:
+        """What changes when the file does: its size and the time it was last written."""
+        try:
+            stat = self._path.stat()
+        except OSError:
+            return ""
+        return f"{stat.st_mtime_ns}:{stat.st_size}"
+
+    def _warn(self, message: str) -> None:
+        """Report *message* once, and with *per_change* once more for each change of the file."""
+        warn_on_load(message, self._file_version() if self._per_change else "")
 
     def _line(
         self, label: str, otherwise: str, refused: tuple[str, str], values: dict[str, Any]
@@ -1662,17 +1683,19 @@ class _TomlSource:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
         except (ValueError, OSError):
-            warn_on_load(f"Failed to read {self._path}, ignoring")
+            unreadable = f"Failed to read {self._path}, ignoring"
+            if unreadable not in self._reported:
+                self._warn(unreadable)
             return {}
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
-        values = {k: v for k, v in data.items() if value_is_set(k, v)}
+        values = {k: v for k, v in data.items() if value_is_set(k, v) and self._only in (None, k)}
         refused = _refusals(self._settings_cls, values)
         for item in refused.items():
             # The load that built cfg words its report of this file its own way.
             if self._line(CONFIG_FILE_NAME, _USES_ITS_DEFAULT, item, values) not in self._reported:
-                warn_on_load(self._line(self._label, self._otherwise, item, values))
+                self._warn(self._line(self._label, self._otherwise, item, values))
         return {key: value for key, value in values.items() if key not in refused}
 
 
@@ -1694,15 +1717,27 @@ def written_value(key: str, value: Any) -> Any:
     return Config.model_fields[key].default
 
 
-def toml_values(path: Path) -> dict[str, Any]:
-    """What the config.toml at *path* sets over a loaded cfg, less each value Config refuses."""
+def toml_values(path: Path, only: str | None = None) -> dict[str, Any]:
+    """What the config.toml at *path* sets over a loaded cfg, less each value Config refuses.
+
+    With *only*, it reads that one key and no other. A file that does not parse
+    and a refused value are each reported once per change of the file, less
+    what the load reported when the file is the one cfg is built from.
+    """
     return _TomlSource(
         Config,
         path,
         label=str(path),
         otherwise="keeps its value",
         reported=load_warnings if path == loaded_config_file else (),
+        only=only,
+        per_change=True,
     )()
+
+
+def toml_value(path: Path, key: str) -> Any:
+    """What the config.toml at *path* sets for *key*, or None when it sets none Config accepts."""
+    return toml_values(path, only=key).get(key)
 
 
 def refuse_environment() -> None:
