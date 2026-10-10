@@ -677,21 +677,28 @@ def forget_missing_from_wiki_index() -> set[str]:
 
     For a writer that cannot name what left the index: the workers of a fan-out
     sync remove and re-key sources, and one that stops reports nothing. Returns
-    the sources the index lists in their place, which are re-keyed ones. Best
-    effort, as the removal already succeeded.
+    the sources the index lists in their place, which are re-keyed ones and which
+    the caller owes a refresh. With no extractor no refresh can take them, so the
+    index is left as it is. Best effort, as the removal already succeeded.
     """
     config = active_config()
     if not config.wiki:
         return set()
-    from lilbee.wiki.stubs import drop_sources_from_index, load_stub_index
+    from lilbee.wiki.stubs import (
+        drop_sources_from_index,
+        index_extractor_available,
+        listed_sources,
+    )
 
     try:
-        listed = {name for stub in load_stub_index(config).values() for name in stub.sources}
+        if not index_extractor_available(config):
+            return set()
+        listed = listed_sources(config)
         missing = get_services().store.missing_sources(listed)
         if not missing:
             return set()
         drop_sources_from_index(missing, config)
-        return {name for stub in load_stub_index(config).values() for name in stub.sources} - listed
+        return listed_sources(config) - listed
     except Exception:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
         return set()
