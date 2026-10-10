@@ -7,11 +7,13 @@ from pathlib import Path
 from typing import Any
 
 import typer
+from typer._click import Context
+from typer.core import TyperCommand
 
 from lilbee.app.services import install_engine_lifecycle_hooks
 from lilbee.app.version import get_version
 from lilbee.cli.helpers import json_output as json_out
-from lilbee.core.config import cfg, config_load_error
+from lilbee.core.config import RefusedVariableError, cfg, refuse_environment
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.onefile_cache import cleanup_stale_onefile_caches
@@ -150,6 +152,35 @@ def apply_overrides(
             setattr(cfg, attr, value)
 
 
+def _refuse_environment(json_output: bool) -> None:
+    """Exit with one error line when the environment sets a variable lilbee does not run with."""
+    try:
+        refuse_environment()
+    except RefusedVariableError as exc:
+        if json_output:
+            json_out({"error": str(exc)})
+        else:
+            typer.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1) from None
+
+
+class RefusingCommand(TyperCommand):
+    """A command that refuses the environment when it runs, after its --help is parsed."""
+
+    def invoke(self, ctx: Context) -> Any:
+        _refuse_environment(cfg.json_mode)
+        return super().invoke(ctx)
+
+
+def refuse_environment_in(typer_app: typer.Typer) -> None:
+    """Make every command registered on *typer_app*, nested groups included, a refusing one."""
+    for command in typer_app.registered_commands:
+        command.cls = RefusingCommand
+    for group in typer_app.registered_groups:
+        if group.typer_instance is not None:
+            refuse_environment_in(group.typer_instance)
+
+
 @app.callback()
 def _default(
     ctx: typer.Context,
@@ -171,14 +202,6 @@ def _default(
     if show_version:
         typer.echo(f"lilbee {get_version()}")
         raise SystemExit(0)
-
-    if config_load_error is not None and not json_output:
-        # Print to stderr so JSON-mode output stays parseable.
-        sys.stderr.write(
-            "Warning: persisted config has values this version doesn't accept; "
-            "running with defaults until you fix it.\n"
-            f"  Detail: {config_load_error}\n"
-        )
 
     env_level = os.environ.get("LILBEE_LOG_LEVEL", "")
     level_str = (log_level or env_level or "WARNING").upper()
@@ -219,6 +242,7 @@ def _default(
     # Backend-level logging toggles are applied lazily by SdkLLMProvider
     # on first use, so nothing else is needed here.
     if ctx.invoked_subcommand is None:
+        _refuse_environment(json_output)
         if cfg.json_mode:
             json_out({"error": "Interactive chat requires a terminal, not --json"})
             raise SystemExit(1)

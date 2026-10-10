@@ -1,7 +1,6 @@
 """The :class:`Config` dataclass and the ``cfg`` singleton.
 
-The settings sources, TOML parser, and the resilient builder that falls
-back to defaults on stale-config validation failures live here too. Every
+The settings sources and the TOML parser live here too. Every
 ``from lilbee.core.config import cfg`` resolves through ``lilbee.core.config.__init__``
 to the same instance defined at module bottom.
 """
@@ -9,10 +8,12 @@ to the same instance defined at module bottom.
 import logging
 import os
 import re
+from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationError, ValidationInfo, field_validator, model_validator
+from pydantic_core import ErrorDetails
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from lilbee.core.system import scaled_chat_ctx_target_default
@@ -33,13 +34,21 @@ from .enums import (
     FtsLanguage,
     KvCacheType,
     LlmProvider,
+    OcrMode,
     OcrPageStrategy,
     ReasoningMode,
     RerankerType,
     TableModel,
     WikiEntityMode,
 )
-from .parsing import parse_bool
+from .load_warnings import collecting, refuse_variable, warn_on_load
+from .parsing import (
+    migrate_ocr_keys,
+    parse_bool,
+    refuse_retired_ocr_env,
+    refused_value_fallback,
+    warn_retired_ocr_keys,
+)
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -57,12 +66,42 @@ _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 # clears one of these; on every other field an empty value counts as unset.
 CLEARABLE_MODEL_FIELDS = frozenset({"vision_model", "reranker_model"})
 
+# What a refused value is not, by pydantic error type. An error outside this
+# map carries its own text.
+_EXPECTED_BY_ERROR: dict[str, str] = {
+    "int_parsing": "a whole number",
+    "int_from_float": "a whole number",
+    "int_type": "a whole number",
+    "float_parsing": "a number",
+    "float_type": "a number",
+    "bool_parsing": "true or false",
+    "bool_type": "true or false",
+    "string_type": "text",
+    "path_type": "a path",
+    "list_type": "a list",
+    "dict_type": "a table of names and values",
+    "greater_than_equal": "{ge} or more",
+    "greater_than": "more than {gt}",
+    "less_than_equal": "{le} or less",
+    "less_than": "less than {lt}",
+}
+_VALUE_ERROR_PREFIX = "Value error, "
+_USES_ITS_DEFAULT = "uses its default"
+
+# A variable its setting refuses stops the command and a write of one is refused,
+# except on these: each takes its default, automatic or off, with a warning.
+_TAKES_DEFAULT_WHEN_REFUSED = frozenset(
+    {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices", "semantic_chunking"}
+)
+
 
 def value_is_set(field_name: str, raw: object) -> bool:
-    """Whether an env or config.toml value is set: non-empty, or empty on a clearable model role."""
+    """Whether an env or config.toml value is set: not blank, or blank on a clearable model role."""
     if raw is None:
         return False
-    return raw != "" or field_name in CLEARABLE_MODEL_FIELDS
+    # A source hands over a string or any TOML type; only a string can be blank.
+    blank = isinstance(raw, str) and not raw.strip()
+    return not blank or field_name in CLEARABLE_MODEL_FIELDS
 
 
 def _as_int(item: Any) -> int:
@@ -121,6 +160,7 @@ class Config(BaseSettings):
         default_factory=dict,
         writable=True,
         public=False,
+        from_env=False,
         description=(
             "External source roots that `add` registered, as label -> absolute path. "
             "`add` and `remove` maintain it; do not edit it by hand"
@@ -250,11 +290,8 @@ class Config(BaseSettings):
             "Use a .lilbeeignore file for per-library patterns"
         ),
     )
-    # OCR for scanned PDFs via vision-capable chat model.
-    # None = auto-detect (use OCR if chat model is vision-capable).
-    # True = force OCR regardless of detection.
-    # False = disable OCR entirely.
-    enable_ocr: bool | None = ConfigField(default=None, writable=True)
+    # Which pages OCR reads; vision_model picks the engine (set: vision, empty: Tesseract).
+    ocr: OcrMode = ConfigField(default=OcrMode.AUTO, writable=True)
     # Per-page timeout in seconds for vision OCR (0 = no limit). Sized so a dense
     # full-page scan finishes on modest hardware; a raised vision_ocr_max_tokens
     # needs matching headroom here.
@@ -1129,31 +1166,6 @@ class Config(BaseSettings):
             valid = ", ".join(repr(m.value) for m in ChatMode)
             raise ValueError(f"chat_mode must be one of {{{valid}}}, got {v!r}") from exc
 
-    @field_validator("enable_ocr", mode="before")
-    @classmethod
-    def _parse_enable_ocr(cls, v: Any) -> bool | None:
-        """Parse enable_ocr from env var string or direct value.
-
-        Accepts: true/false/1/0/yes/no (case-insensitive), empty string
-        or None for auto-detect.
-        """
-        if v is None:
-            return None
-        if isinstance(v, bool):
-            return v
-        if isinstance(v, str):
-            if v.strip().lower() in ("", "auto", "none"):
-                return None
-            try:
-                return parse_bool(v)
-            except ValueError:
-                # bool() on a non-empty string is True, so falling through here
-                # turned an unparseable value into "on". Warn and auto-detect,
-                # matching the sibling validators.
-                log.warning("Invalid LILBEE_ENABLE_OCR=%r, using auto", v)
-                return None
-        return bool(v)
-
     @field_validator("ocr_language", mode="before")
     @classmethod
     def _parse_ocr_language(cls, v: Any) -> list[str]:
@@ -1204,8 +1216,7 @@ class Config(BaseSettings):
             try:
                 return parse_bool(v)
             except ValueError:
-                log.warning("Invalid flash_attention=%r, using auto", v)
-                return None
+                raise ValueError("use true, false or auto") from None
         return bool(v)
 
     @field_validator("n_gpu_layers", mode="before")
@@ -1223,8 +1234,7 @@ class Config(BaseSettings):
             try:
                 return int(label)
             except ValueError:
-                log.warning("Invalid LILBEE_N_GPU_LAYERS=%r, using auto", v)
-                return None
+                raise ValueError("use a whole number, cpu or auto") from None
         return int(v)
 
     @field_validator("main_gpu", mode="before")
@@ -1240,8 +1250,7 @@ class Config(BaseSettings):
             try:
                 return int(label)
             except ValueError:
-                log.warning("Invalid LILBEE_MAIN_GPU=%r, using auto", v)
-                return None
+                raise ValueError("use a whole number or auto") from None
         return int(v)
 
     @field_validator("gpu_devices", mode="before")
@@ -1259,8 +1268,7 @@ class Config(BaseSettings):
                 return None
             for part in parts:
                 if not part.lstrip("-").isdigit():
-                    log.warning("Invalid LILBEE_GPU_DEVICES=%r, ignoring", v)
-                    return None
+                    raise ValueError("use GPU indexes separated by commas, or auto")
             return ",".join(parts)
         return str(v)
 
@@ -1286,15 +1294,14 @@ class Config(BaseSettings):
     @field_validator("semantic_chunking", mode="before")
     @classmethod
     def _parse_semantic_chunking(cls, v: Any) -> bool:
-        """Parse from env string; invalid values warn and fall back to False."""
+        """A bool as it stands, a string through parse_bool."""
         if isinstance(v, bool):
             return v
         if isinstance(v, str):
             try:
                 return parse_bool(v)
             except ValueError:
-                log.warning("Invalid LILBEE_SEMANTIC_CHUNKING=%r, using default False", v)
-                return False
+                raise ValueError("use true or false") from None
         return bool(v)
 
     @field_validator(
@@ -1400,6 +1407,15 @@ class Config(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
+    def _migrate_retired_ocr_keys(cls, data: Any) -> Any:
+        """Replace a stored enable_ocr value with the ocr mode it stands for."""
+        if not isinstance(data, dict):
+            return data
+        warn_retired_ocr_keys(data)
+        return migrate_ocr_keys(data, str(data.get("vision_model") or ""))
+
+    @model_validator(mode="before")
+    @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
         from lilbee.core.system import (
             canonical_data_root,
@@ -1447,23 +1463,10 @@ class Config(BaseSettings):
         dotenv_settings: Any,
         file_secret_settings: Any,
     ) -> tuple[Any, ...]:
-        from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
-
-        # .strip() to match _resolve_defaults; a padded value would otherwise
-        # send the root and its config.toml to different directories.
-        data_env = os.environ.get("LILBEE_DATA", "").strip()
-        if data_env:
-            toml_dir = Path(data_env)
-        else:
-            local = find_local_root()
-            toml_dir = local if local else default_data_dir()
-        # Same call as the root itself, so this looks where the root resolves to;
-        # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
-        toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
-
-        plain_env = _PlainEnvSource(settings_cls, env_prefix="LILBEE_")
+        plain_env = _PlainEnvSource(settings_cls)
         sources: list[Any] = [init_settings, plain_env]
-        if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
+        toml_path = _config_file()
+        if toml_path is not None:
             sources.append(_TomlSource(settings_cls, toml_path))
         return tuple(sources)
 
@@ -1517,27 +1520,140 @@ def _model_defaults_dict(defaults: Any) -> dict[str, Any]:
     }
 
 
-class _PlainEnvSource:
-    """Reads LILBEE_* env vars as plain strings so field validators handle parsing."""
+def _config_file() -> Path | None:
+    """The config.toml a load reads, or None when there is none or the load skips it."""
+    from lilbee.core.system import canonical_data_root, default_data_dir, find_local_root
 
-    def __init__(self, settings_cls: type[BaseSettings], env_prefix: str) -> None:
-        self._prefix = env_prefix
-        self._fields = set(settings_cls.model_fields)
+    # .strip() to match _resolve_defaults; a padded value would otherwise
+    # send the root and its config.toml to different directories.
+    data_env = os.environ.get("LILBEE_DATA", "").strip()
+    if data_env:
+        toml_dir = Path(data_env)
+    else:
+        local = find_local_root()
+        toml_dir = local if local else default_data_dir()
+    # Same call as the root itself, so this looks where the root resolves to;
+    # a "~/lilbee" value would otherwise search a literal ./~ and find nothing.
+    toml_path = canonical_data_root(toml_dir) / CONFIG_FILE_NAME
+    if toml_path.exists() and os.environ.get("LILBEE_SKIP_TOML_CONFIG") != "1":
+        return toml_path
+    return None
+
+
+def _enum_of(settings_cls: type[BaseSettings], key: str) -> type[Enum] | None:
+    """The enum the field *key* is typed as, or None for any other type."""
+    annotation = settings_cls.model_fields[key].annotation
+    # An annotation is a class, a union or a generic alias; only a class can be an enum.
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return annotation
+    return None
+
+
+def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
+    """The environment variable that sets *field_name*."""
+    return f"{settings_cls.model_config.get('env_prefix', '')}{field_name.upper()}"
+
+
+def _expected(error: ErrorDetails) -> str:
+    """What one validation error says about the value, in the words of a settings file."""
+    words = _EXPECTED_BY_ERROR.get(error["type"])
+    if words is None:
+        return f"is refused ({error['msg'].removeprefix(_VALUE_ERROR_PREFIX)})"
+    return "is not " + words.format(**error.get("ctx", {}))
+
+
+def _refusal(probe: BaseSettings, key: str, value: Any) -> str | None:
+    """Why the field's own validators refuse *value* on the throwaway *probe*, or None."""
+    settings_cls = type(probe)
+    try:
+        settings_cls.__pydantic_validator__.validate_assignment(probe, key, value)
+    except ValidationError as exc:
+        enum = _enum_of(settings_cls, key)
+        if enum is not None:
+            return "is not one of " + ", ".join(str(member.value) for member in enum)
+        return _expected(next(iter(exc.errors())))
+    except TypeError:
+        # A validator handed a TOML type it has no branch for.
+        return f"is not a value {key} accepts"
+    return None
+
+
+def _refusals(settings_cls: type[BaseSettings], values: dict[str, Any]) -> dict[str, str]:
+    """Why its own field refuses each of *values* that one refuses, by key."""
+    known = [key for key in values if key in settings_cls.model_fields]
+    if not known:
+        return {}
+    probe = settings_cls.model_construct()
+    reasons = {key: _refusal(probe, key, values[key]) for key in known}
+    return {key: reason for key, reason in reasons.items() if reason is not None}
+
+
+class _PlainEnvSource:
+    """Reads LILBEE_* env vars as plain strings; a refused one stops the load or falls back."""
+
+    def __init__(self, settings_cls: type[BaseSettings]) -> None:
+        self._settings_cls = settings_cls
+
+    def _read(self) -> tuple[dict[str, Any], dict[str, str]]:
+        """Each set variable's string by field, and why its setting refuses the ones it does."""
+        values: dict[str, Any] = {}
+        for field_name in self._settings_cls.model_fields:
+            raw = os.environ.get(_variable(self._settings_cls, field_name))
+            if value_is_set(field_name, raw):
+                values[field_name] = raw
+        return values, _refusals(self._settings_cls, values)
+
+    def _stop(self, values: dict[str, Any], refused: dict[str, str]) -> None:
+        """Refuse the variables in *refused*, less the ones that take their default."""
+        lines = [
+            f"{_variable(self._settings_cls, key)} = {values[key]!r} {reason}"
+            for key, reason in refused.items()
+            if key not in _TAKES_DEFAULT_WHEN_REFUSED
+        ]
+        if lines:
+            refuse_variable("; ".join(lines))
+
+    def refuse(self) -> None:
+        """Raise RefusedVariableError for the variables that stop a command."""
+        self._stop(*self._read())
 
     def __call__(self) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for field_name in self._fields:
-            raw = os.environ.get(f"{self._prefix}{field_name.upper()}")
-            if value_is_set(field_name, raw):
-                result[field_name] = raw
-        return result
+        values, refused = self._read()
+        self._stop(values, refused)
+        for key in [key for key in refused if key in _TAKES_DEFAULT_WHEN_REFUSED]:
+            variable = _variable(self._settings_cls, key)
+            warn_on_load(f"{variable} = {values[key]!r} {refused[key]}; {key} uses its default")
+            values[key] = self._settings_cls.model_fields[key].default
+            del refused[key]
+        return {key: value for key, value in values.items() if key not in refused}
 
 
 class _TomlSource:
-    """Custom pydantic-settings source that reads config.toml."""
+    """Reads config.toml as a settings source; *label* names the file in a warning."""
 
-    def __init__(self, settings_cls: type[BaseSettings], path: Path) -> None:
+    def __init__(
+        self,
+        settings_cls: type[BaseSettings],
+        path: Path,
+        label: str = CONFIG_FILE_NAME,
+        otherwise: str = _USES_ITS_DEFAULT,
+        reported: tuple[str, ...] = (),
+    ) -> None:
+        self._settings_cls = settings_cls
         self._path = path
+        self._label = label
+        self._otherwise = otherwise
+        self._reported = reported
+
+    def _line(
+        self, label: str, otherwise: str, refused: tuple[str, str], values: dict[str, Any]
+    ) -> str:
+        """The warning for one *refused* key and reason, as a read under *label* words it."""
+        key, reason = refused
+        fallback = refused_value_fallback(key, values, otherwise)
+        if env_value(key) is not None:
+            fallback = f"{_variable(self._settings_cls, key)} sets {key}"
+        return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
 
     def __call__(self) -> dict[str, Any]:
         import tomllib
@@ -1546,34 +1662,65 @@ class _TomlSource:
             with self._path.open("rb") as f:
                 data = tomllib.load(f)
         except (ValueError, OSError):
-            log.warning("Failed to read %s, ignoring", self._path)
+            warn_on_load(f"Failed to read {self._path}, ignoring")
             return {}
-        # An empty string is unset (the field default applies, since pydantic
+        # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.
-        return {k: v for k, v in data.items() if value_is_set(k, v)}
+        values = {k: v for k, v in data.items() if value_is_set(k, v)}
+        refused = _refusals(self._settings_cls, values)
+        for item in refused.items():
+            # The load that built cfg words its report of this file its own way.
+            if self._line(CONFIG_FILE_NAME, _USES_ITS_DEFAULT, item, values) not in self._reported:
+                warn_on_load(self._line(self._label, self._otherwise, item, values))
+        return {key: value for key, value in values.items() if key not in refused}
 
 
-def _build_cfg() -> tuple[Config, Exception | None]:
-    """Build cfg; on stale-config validation failure, fall back to defaults.
-
-    A persisted ``config.toml`` from before a breaking schema change can
-    contain values the new validators reject. Crashing at module import
-    means every command (``lilbee --help`` included) emits a Python
-    traceback. Falling back to env+defaults lets the package load; the
-    CLI / TUI surfaces the original error before doing real work.
-    """
-    try:
-        return Config(), None
-    except Exception as exc:
-        os.environ["LILBEE_SKIP_TOML_CONFIG"] = "1"
-        try:
-            return Config(), exc
-        finally:
-            os.environ.pop("LILBEE_SKIP_TOML_CONFIG", None)
+def env_value(field_name: str) -> str | None:
+    """What LILBEE_<FIELD_NAME> holds, or None when it is unset or blank."""
+    raw = os.environ.get(_variable(Config, field_name))
+    return raw if value_is_set(field_name, raw) else None
 
 
-cfg, config_load_error = _build_cfg()
+def written_value(key: str, value: Any) -> Any:
+    """What a write of *value* stores in *key*: its default, with a warning, where one applies."""
+    # These settings refuse only text they cannot read; any other type goes to the validator.
+    if key not in _TAKES_DEFAULT_WHEN_REFUSED or not isinstance(value, str):
+        return value
+    reason = _refusals(Config, {key: value}).get(key)
+    if reason is None:
+        return value
+    log.warning("%s = %r %s; %s uses its default", key, value, reason, key)
+    return Config.model_fields[key].default
+
+
+def toml_values(path: Path) -> dict[str, Any]:
+    """What the config.toml at *path* sets over a loaded cfg, less each value Config refuses."""
+    return _TomlSource(
+        Config,
+        path,
+        label=str(path),
+        otherwise="keeps its value",
+        reported=load_warnings if path == loaded_config_file else (),
+    )()
+
+
+def refuse_environment() -> None:
+    """Raise RefusedVariableError for a retired OCR variable or a value its setting refuses."""
+    refuse_retired_ocr_env(os.environ)
+    _PlainEnvSource(Config).refuse()
+
+
+def _build_cfg() -> tuple[Config, tuple[str, ...]]:
+    """Build cfg, with the warnings its sources reported about refused values."""
+    with collecting() as found:
+        built = Config()
+    return built, tuple(found)
+
+
+# The config.toml that cfg is built from; a later read of it reports only what is new.
+loaded_config_file = _config_file()
+cfg, load_warnings = _build_cfg()
 
 # Canonicalize LILBEE_DATA at the cfg.data_root resolution boundary so
 # spawn-context worker subprocesses inherit the same data root.

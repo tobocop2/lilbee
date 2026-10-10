@@ -12,6 +12,7 @@ from lilbee.cli.tui.app import LilbeeApp
 from lilbee.cli.tui.screens.chat import ChatScreen
 from lilbee.cli.tui.widgets.status_bar import ViewTabs
 from lilbee.core.config import cfg
+from tests._async_wait import wait_until
 from tests._lilbee_app_test_host import await_chat
 
 _ALT_CHAT_REF = "Qwen/Qwen3-8B-GGUF/Qwen3-8B-Q4_K_M.gguf"
@@ -256,6 +257,32 @@ async def test_app_falls_back_when_persisted_theme_invalid(_patch_chat_setup) ->
         from lilbee.cli.tui.app import _DEFAULT_THEME
 
         assert app.theme == _DEFAULT_THEME
+
+
+_OCR_LOAD_WARNING = "config.toml: ocr = 'bogus' is not one of auto, all, off; ocr uses its default"
+_TOP_K_LOAD_WARNING = "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
+
+
+@pytest.mark.parametrize(
+    "warnings", [(), (_OCR_LOAD_WARNING,), (_OCR_LOAD_WARNING, _TOP_K_LOAD_WARNING)]
+)
+async def test_startup_toasts_exactly_the_load_warnings(
+    _patch_chat_setup, monkeypatch, warnings
+) -> None:
+    """The toasts at startup are the load warnings and nothing else; a clean load shows none."""
+    monkeypatch.setattr("lilbee.cli.tui.app.load_warnings", warnings)
+    app = LilbeeApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        await await_chat(app, pilot)
+        # Toasts arrive in order, so the probe arriving means every earlier one has.
+        app.notify("probe")
+        assert await wait_until(
+            pilot, lambda: any(n.message == "probe" for n in app._notifications)
+        )
+        assert [(n.message, n.severity) for n in app._notifications] == [
+            *((warning, "warning") for warning in warnings),
+            ("probe", "information"),
+        ]
 
 
 async def test_sync_theme_index_handles_non_dark_theme(_patch_chat_setup) -> None:

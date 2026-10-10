@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections import defaultdict
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -11,13 +10,13 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Collapsible, Input, Select, Static, TextArea
 
-from lilbee.app.settings import OCR_SETTING_KEYS, ocr_engine_note
+from lilbee.app.settings import OCR_SETTING_KEYS, scanned_pages_line
 from lilbee.app.settings_map import SETTINGS_MAP, RenderStyle, SettingDef, SettingGroup
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
-from lilbee.core.config.model import value_is_set
+from lilbee.core.config.model import env_value
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -142,19 +141,17 @@ def env_var_name(key: str) -> str:
 
 def env_pill(key: str) -> Content | None:
     """Pill warning that an env var is overriding TUI edits, or None."""
-    env_name = env_var_name(key)
-    if not value_is_set(key, os.environ.get(env_name)):
+    if env_value(key) is None:
         return None
-    return pill(env_name, "$warning", "$text")
+    return pill(env_var_name(key), "$warning", "$text")
 
 
 def help_content(key: str, defn: SettingDef) -> Content:
-    """Build help text, plus which OCR engine runs on an OCR row; the editor shows the value."""
+    """Build help text, plus the scanned-pages line on an OCR row; the editor shows the value."""
     help_text = Content(defn.help_text)
     if key not in OCR_SETTING_KEYS:
         return help_text
-    note = ocr_engine_note()
-    return help_text if note is None else Content.assemble(help_text, "\n", note)
+    return Content.assemble(help_text, "\n", scanned_pages_line())
 
 
 def title_content(key: str, defn: SettingDef) -> Content:
@@ -198,6 +195,20 @@ _FEATURE_GATED_GROUPS: dict[SettingGroup, Callable[[], bool]] = {
     SettingGroup.CRAWLING: _crawler_installed,
     SettingGroup.WIKI: _wiki_enabled,
 }
+
+
+def _tesseract_reads() -> bool:
+    return not cfg.vision_model
+
+
+# Rows shown only while their gate holds; the screen re-checks them on an OCR key change.
+GATED_ROWS: dict[str, Callable[[], bool]] = {"ocr_language": _tesseract_reads}
+
+
+def row_visible(key: str) -> bool:
+    """Whether a setting row shows now: ocr_language only while Tesseract reads."""
+    gate = GATED_ROWS.get(key)
+    return gate is None or gate()
 
 
 def group_settings() -> dict[SettingGroup, list[tuple[str, SettingDef]]]:
@@ -272,7 +283,8 @@ def make_list_editor(key: str) -> Collapsible:
 
 def make_select(key: str, defn: SettingDef, value: str) -> Select[str]:
     """Create a Select widget for choice-based settings."""
-    choices = [(c, c) for c in (defn.choices or ())]
+    labels = msg.SETTING_CHOICE_LABELS.get(key, {})
+    choices = [(labels.get(c, c), c) for c in (defn.choices or ())]
     if value in {c[1] for c in choices}:
         return Select(
             choices,

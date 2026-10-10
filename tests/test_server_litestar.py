@@ -12,7 +12,9 @@ from litestar.exceptions import NotAuthorizedException
 from litestar.testing import TestClient
 
 from lilbee.catalog.types import ModelTask
-from lilbee.core.config import cfg
+from lilbee.core.config import Config, cfg
+from lilbee.core.config.enums import OcrMode
+from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
 from lilbee.modelhub.role_validator import TaskMismatchError
 from lilbee.runtime.progress import EmbedEvent, EventType
 from tests.server.conftest import parse_sse_events
@@ -758,7 +760,7 @@ class TestSyncRoute:
         assert resp.status_code == 201
         assert b"event: done" in resp.content
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=False,
@@ -766,11 +768,11 @@ class TestSyncRoute:
         )
 
     @mock.patch("lilbee.server.handlers.sync_stream")
-    def test_enable_ocr(self, mock_stream, client):
+    def test_ocr_plumbs_through(self, mock_stream, client):
         mock_stream.return_value = mock_async_gen("event: done\ndata: {}\n\n")
-        client.post("/api/sync", json={"enable_ocr": True})
+        client.post("/api/sync", json={"ocr": "all"})
         mock_stream.assert_called_once_with(
-            enable_ocr=True,
+            ocr=OcrMode.ALL,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=False,
@@ -784,7 +786,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"ocr_timeout": 45})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=45,
             force_rebuild=False,
             retry_skipped=False,
@@ -805,7 +807,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"force_rebuild": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=True,
             retry_skipped=False,
@@ -819,7 +821,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"retry_skipped": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=True,
@@ -833,7 +835,7 @@ class TestSyncRoute:
         resp = client.post("/api/sync", json={"prune_ignored": True})
         assert resp.status_code == 201
         mock_stream.assert_called_once_with(
-            enable_ocr=None,
+            ocr=None,
             ocr_timeout=None,
             force_rebuild=False,
             retry_skipped=False,
@@ -1244,6 +1246,16 @@ class TestConfigSchemaRoute:
         assert entry["nullable"] is False
 
 
+# Each setting that takes its default when refused: a valid write, a refused one, the default.
+_DEFAULT_WHEN_REFUSED_WRITES = [
+    ("flash_attention", True, "enabled", None),
+    ("n_gpu_layers", 12, "all", None),
+    ("main_gpu", 1, "cuda:0", None),
+    ("gpu_devices", "0,1", "cpu", None),
+    ("semantic_chunking", True, "maybe", False),
+]
+
+
 class TestConfigUpdateRoute:
     @mock.patch(
         "lilbee.server.handlers.update_config",
@@ -1295,6 +1307,40 @@ class TestConfigUpdateRoute:
         assert resp.status_code == 400
         body = resp.text
         assert "crawl_exclude_patterns" in body or "regex" in body or "[0]" in body
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_a_blank_optional_number_clears_the_setting(self, client, blank):
+        """PATCH hands the blank to Config, which reads it as unset and not as a number."""
+        cfg.temperature = 0.7
+        cfg.seed = 5
+        resp = client.patch("/api/config", json={"temperature": blank, "seed": blank})
+        assert resp.status_code == 200
+        assert set(resp.json()["updated"]) == {"temperature", "seed"}
+        assert cfg.temperature is None
+        assert cfg.seed is None
+
+    @pytest.mark.parametrize(("key", "good", "bad", "default"), _DEFAULT_WHEN_REFUSED_WRITES)
+    def test_a_refused_value_of_a_named_exception_stores_the_default(
+        self, client, caplog, key, good, bad, default
+    ):
+        """The losing field: the valid value written first is gone after the refused one."""
+        assert client.patch("/api/config", json={key: good}).status_code == 200
+        assert getattr(cfg, key) != default
+        with caplog.at_level("WARNING"):
+            resp = client.patch("/api/config", json={key: bad})
+        assert (resp.status_code, resp.json()["updated"]) == (200, [key])
+        assert getattr(cfg, key) == default
+        warned = [record for record in caplog.records if record.levelname == "WARNING"]
+        assert [record.getMessage() for record in warned] == [
+            f"{key} = {bad!r} {_refusals(Config, {key: bad})[key]}; {key} uses its default"
+        ]
+
+    def test_the_named_exceptions_are_every_setting_a_write_gives_its_default(self, client):
+        """The twin: a refused value of any other setting is a 400 and changes nothing."""
+        assert {key for key, *_ in _DEFAULT_WHEN_REFUSED_WRITES} == _TAKES_DEFAULT_WHEN_REFUSED
+        before = cfg.top_k
+        resp = client.patch("/api/config", json={"top_k": "many"})
+        assert (resp.status_code, cfg.top_k) == (400, before)
 
     def test_crawl_exclude_patterns_accepts_valid_regex(self, client):
         resp = client.patch(

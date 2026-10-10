@@ -34,10 +34,14 @@ from .enums import (
     ClustererBackend as ClustererBackend,
     WikiEntityMode as WikiEntityMode,
 )
+from .load_warnings import (
+    RefusedVariableError as RefusedVariableError,
+)
 from .model import (
     Config as Config,
     cfg as cfg,
-    config_load_error as config_load_error,
+    load_warnings as load_warnings,
+    refuse_environment as refuse_environment,
 )
 from .validators import (
     ConfigField as ConfigField,
@@ -62,10 +66,12 @@ __all__ = [
     "ClustererBackend",
     "Config",
     "ConfigField",
+    "RefusedVariableError",
     "WikiEntityMode",
     "active_config",
     "cfg",
-    "config_load_error",
     "config_scope",
+    "load_warnings",
+    "refuse_environment",
     "validate_ocr_timeout",
 ]

@@ -15,7 +15,7 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 | Surface | How you set a value | Scope |
 |---|---|---|
-| Environment | `LILBEE_<SETTING>=value` | Every setting in the tables below, plus the environment-only variables at the end. Applies to the process you launch |
+| Environment | `LILBEE_<SETTING>=value` | Every setting whose Environment column names a variable, plus the environment-only variables at the end. Applies to the process you launch |
 | Config file | `setting = value` in `.lilbee/config.toml` | Every setting in the tables below. Persists |
 | TUI | the `/settings` screen, or `/set <setting> <value>` | See the TUI column. Persists |
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
@@ -23,9 +23,13 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
 
+An environment value that its setting refuses stops every command with one line that names the variable, the value and what the setting takes. `--help` still prints. The exception is the settings whose default is automatic or off, `flash_attention`, `gpu_devices`, `main_gpu`, `n_gpu_layers` and `semantic_chunking`: a refused value prints a warning and the setting takes its default. A write of text they cannot read over MCP or HTTP stores the default too, with a warning in the log. A refused value in `config.toml` is dropped with a warning: that setting takes its default and the rest of the file loads.
+
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
+
+**Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
 **TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
 
@@ -47,7 +51,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 ## File and environment only
 
-These settings have no runtime write path. Set them with a `LILBEE_*` environment variable, or in `config.toml`, before lilbee starts.
+These settings have no runtime write path. Set them in `config.toml`, or with the variable the Environment column names, before lilbee starts.
 
 <!-- ENV ONLY TABLE -->
 

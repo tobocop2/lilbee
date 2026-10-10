@@ -1350,7 +1350,7 @@ results = bee.search("authentication")
 
 ## Configuration Reference
 
-All settings are configurable via `LILBEE_*` environment variables, `config.toml`, or `/set` in chat mode. The `GET /api/config` endpoint exposes all current values for API clients.
+All settings are configurable in `config.toml`. All except `linked_roots` are also configurable via `LILBEE_*` environment variables, and the writable ones via `/set` in chat mode. The `GET /api/config` endpoint exposes all current values for API clients.
 
 ### Core Settings
 

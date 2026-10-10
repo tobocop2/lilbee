@@ -117,6 +117,14 @@ class TableModel(StrEnum):
     SLANET_WIRELESS = "slanet_wireless"
 
 
+class OcrMode(StrEnum):
+    """Which pages OCR reads."""
+
+    AUTO = "auto"
+    ALL = "all"
+    OFF = "off"
+
+
 class OcrPageStrategy(StrEnum):
     """Which PDF pages xberg OCRs: failed native text only, or also pages graded as scans."""
 

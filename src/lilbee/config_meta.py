@@ -47,3 +47,10 @@ def _derive_field_sets() -> tuple[
 
 
 WRITABLE_CONFIG_FIELDS, REINDEX_FIELDS, PUBLIC_CONFIG_FIELDS = _derive_field_sets()
+
+# Settings of a type no environment string parses into, so no variable sets them.
+ENV_UNSETTABLE_FIELDS = frozenset(
+    name
+    for name, info in Config.model_fields.items()
+    if not _get_extra(info, "from_env", default=True)
+)

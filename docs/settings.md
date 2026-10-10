@@ -15,7 +15,7 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 | Surface | How you set a value | Scope |
 |---|---|---|
-| Environment | `LILBEE_<SETTING>=value` | Every setting in the tables below, plus the environment-only variables at the end. Applies to the process you launch |
+| Environment | `LILBEE_<SETTING>=value` | Every setting whose Environment column names a variable, plus the environment-only variables at the end. Applies to the process you launch |
 | Config file | `setting = value` in `.lilbee/config.toml` | Every setting in the tables below. Persists |
 | TUI | the `/settings` screen, or `/set <setting> <value>` | See the TUI column. Persists |
 | MCP | `lilbee_settings_set({"setting": value})` | See the MCP column. Persists |
@@ -23,9 +23,13 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
 
+An environment value that its setting refuses stops every command with one line that names the variable, the value and what the setting takes. `--help` still prints. The exception is the settings whose default is automatic or off, `flash_attention`, `gpu_devices`, `main_gpu`, `n_gpu_layers` and `semantic_chunking`: a refused value prints a warning and the setting takes its default. A write of text they cannot read over MCP or HTTP stores the default too, with a warning in the log. A refused value in `config.toml` is dropped with a warning: that setting takes its default and the rest of the file loads.
+
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 
 ## Reading the surface columns
+
+**Environment.** The variable that sets it. `no` means no variable does, because the value is a table that an environment string cannot hold.
 
 **TUI.** `yes` is editable in place. `picker` opens a model chooser instead of a text field. `read-only` is shown but not editable. `no` is not on the screen.
 
@@ -53,7 +57,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `reranker_model` | `LILBEE_RERANKER_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Cross-encoder model for result reranking (empty = off). |
 | `reranker_prompt` | `LILBEE_RERANKER_PROMPT` | `str` | *(empty)* | yes | yes | yes | no | Relevance prompt for LLM rerankers (blank uses the built-in template). |
 | `reranker_type` | `LILBEE_RERANKER_TYPE` | `str` | `auto` | yes | yes | yes | no | Reranker serving mode: auto (detect cross-encoder vs LLM by model), cross_encoder, or llm. One of `auto`, `cross_encoder`, `llm`. |
-| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Vision model for scanned PDF OCR; when set it reads every scanned page, whatever enable_ocr says. Clear it (empty value, including an empty LILBEE_VISION_MODEL) to use Tesseract, or to turn OCR off when enable_ocr is false. |
+| `vision_model` | `LILBEE_VISION_MODEL` | `str` | *(empty)* | picker | yes | role API | no | Picks the OCR engine: a set vision model reads scanned pages, an empty one (including an empty LILBEE_VISION_MODEL) leaves them to Tesseract. The ocr setting decides whether pages are read. |
 
 ## Retrieval
 
@@ -131,7 +135,6 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `top_k_sampling` | `LILBEE_TOP_K_SAMPLING` | `int|null` | `40` | yes | yes | yes | no | Top-K sampling: number of tokens to consider. |
 | `top_p` | `LILBEE_TOP_P` | `float|null` | `0.9` | yes | yes | yes | no | Nucleus sampling cutoff probability. |
 | `usable_vram_fraction` | `LILBEE_USABLE_VRAM_FRACTION` | `float` | `0.9` | yes | yes | yes | no | Share of a GPU placement may fill, leaving room for fragmentation and driver overhead (0.5-1.0). Raise it if a model that should fit is being refused; lower it if loads fail near the top of the card. |
-| `vision_replicas` | `LILBEE_VISION_REPLICAS` | `int` | `0` | yes | yes | yes | no | Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count). |
 
 ## Ingest
 
@@ -142,28 +145,34 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `batch_extraction_size` | `LILBEE_BATCH_EXTRACTION_SIZE` | `int` | `8` | yes | yes | yes | no | Max files per extract_batch call when batch extraction is on. |
 | `chunk_overlap` | `LILBEE_CHUNK_OVERLAP` | `int` | `100` | yes | yes | yes | no | Tokens of overlap between adjacent chunks (preserves context across boundaries). **Reindex** with `lilbee rebuild` after changing. |
 | `chunk_size` | `LILBEE_CHUNK_SIZE` | `int` | `512` | yes | yes | yes | no | Document chunk size in tokens (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
-| `enable_ocr` | `LILBEE_ENABLE_OCR` | `bool|null` | *(none)* | yes | yes | yes | no | Tesseract OCR for scanned PDFs when no vision model is set (empty or true = on, false = off). A set vision model always runs. |
 | `entity_extraction` | `LILBEE_ENTITY_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Extract typed entities automatically at sync (schema induced on first run). |
 | `extraction_threads` | `LILBEE_EXTRACTION_THREADS` | `int` | `0` | yes | yes | yes | no | Threads xberg uses for PDF rendering, OCR and layout models, and the most Tesseract OCR sessions that run at once (0 = auto, half the available cores). Takes full effect after a restart. |
 | `extraction_timeout` | `LILBEE_EXTRACTION_TIMEOUT` | `int` | `0` | yes | yes | yes | no | Wall-clock seconds one file gets to extract before ingest gives up on it (0 = no limit). |
-| `force_ocr_pages` | `LILBEE_FORCE_OCR_PAGES` | `list` | *(empty)* | yes | yes | yes | no | PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3) or one per line. |
 | `ingest_processes` | `LILBEE_INGEST_PROCESSES` | `int` | `0` | yes | yes | yes | no | Ingest worker processes, one GPU each (0 = auto, one per card). Used once the corpus is big enough to pay for them; 1 keeps ingest in this process. |
 | `ingest_workers` | `LILBEE_INGEST_WORKERS` | `int` | `0` | yes | yes | yes | no | Workers for discovering and hashing files (0 = auto, all available cores). |
 | `layout_detection` | `LILBEE_LAYOUT_DETECTION` | `bool` | `false` | yes | yes | yes | no | Layout-aware PDF extraction: reading order plus header/footer stripping (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `max_chunks_per_file` | `LILBEE_MAX_CHUNKS_PER_FILE` | `int` | `3000` | yes | yes | yes | no | Most chunks one file can add to the index; a file over the limit is skipped, not embedded (0 = no limit). Raise it for a long document such as a thousand-page manual at a small chunk_size, then retry skipped files. |
+| `ocr` | `LILBEE_OCR` | `str` | `auto` | yes | yes | yes | no | Scanned pages: auto reads each page without usable text, and every page of a file with almost no text in all; all reads every page of every file on every future ingest; off skips them. vision_model picks the engine. One of `auto`, `all`, `off`. |
 | `ocr_language` | `LILBEE_OCR_LANGUAGE` | `list` | `eng` | yes | yes | yes | no | Tesseract OCR languages when no vision model is set; '+'-join, e.g. eng+deu. |
-| `ocr_scan_confidence` | `LILBEE_OCR_SCAN_CONFIDENCE` | `float` | `0.7` | yes | yes | yes | no | How sure xberg must be that a page is a scan before it OCRs it (0-1). Applies only when ocr_strategy is scanned_pages. Lower it to 0.5 to also OCR slides with a full-page background image. |
-| `ocr_strategy` | `LILBEE_OCR_STRATEGY` | `str` | `auto` | yes | yes | yes | no | PDF pages to OCR: auto (pages whose text layer is missing or garbled) or scanned_pages (also every page that looks like a scan, e.g. a scanned page with a hidden text layer). One of `auto`, `scanned_pages`. |
-| `ocr_timeout` | `LILBEE_OCR_TIMEOUT` | `float` | `300.0` | yes | yes | yes | no | Per-page timeout in seconds for vision OCR (0 = no limit). |
 | `semantic_chunking` | `LILBEE_SEMANTIC_CHUNKING` | `bool` | `false` | yes | yes | yes | no | Opt-in topic-aware chunker (default off; may fragment numbered procedures). |
 | `table_extraction` | `LILBEE_TABLE_EXTRACTION` | `bool` | `false` | yes | yes | yes | no | Index each extracted table as its own chunk (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `table_model` | `LILBEE_TABLE_MODEL` | `str` | `slanet_auto` | yes | yes | yes | no | Table structure model used when layout detection is on: slanet_auto (docling-parity default), other slanet variants, tatr, or disabled (changes invalidate the index). One of `disabled`, `tatr`, `slanet_auto`, `slanet_plus`, `slanet_wired`, `slanet_wireless`. **Reindex** with `lilbee rebuild` after changing. |
 | `token_sizing` | `LILBEE_TOKEN_SIZING` | `bool` | `false` | yes | yes | yes | no | Size chunks by real embedder tokens, not chars; on by itself when the embedder's window is below the character budget (changes invalidate the index). **Reindex** with `lilbee rebuild` after changing. |
 | `topic_threshold` | `LILBEE_TOPIC_THRESHOLD` | `float` | `0.75` | yes | yes | yes | no | Topic-boundary similarity threshold, 0.0-1.0, used when semantic chunking is on. |
+| `worker_pool_eager_start` | `LILBEE_WORKER_POOL_EAGER_START` | `bool` | `true` | yes | yes | yes | no | Spawn every configured role server at TUI startup instead of on first use. Trades cold-start time per role for first-call latency. |
+
+## OCR-Tuning
+
+| Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
+|---|---|---|---|---|---|---|---|---|
+| `force_ocr_pages` | `LILBEE_FORCE_OCR_PAGES` | `list` | *(empty)* | yes | yes | yes | no | PDF page numbers that lilbee OCRs in every PDF, comma-separated (e.g. 1,3) or one per line. |
+| `ocr_scan_confidence` | `LILBEE_OCR_SCAN_CONFIDENCE` | `float` | `0.7` | yes | yes | yes | no | How sure xberg must be that a page is a scan before it OCRs it (0-1). Applies only when ocr_strategy is scanned_pages. Lower it to 0.5 to also OCR slides with a full-page background image. |
+| `ocr_strategy` | `LILBEE_OCR_STRATEGY` | `str` | `auto` | yes | yes | yes | no | PDF pages to OCR: auto (pages whose text layer is missing or garbled, and every page of a PDF with almost no text in all) or scanned_pages (also every page that looks like a scan, e.g. a scanned page with a hidden text layer). One of `auto`, `scanned_pages`. |
+| `ocr_timeout` | `LILBEE_OCR_TIMEOUT` | `float` | `300.0` | yes | yes | yes | no | Per-page timeout in seconds for vision OCR (0 = no limit). |
 | `vision_load_budget_s` | `LILBEE_VISION_LOAD_BUDGET_S` | `float` | `300.0` | yes | yes | yes | no | Wall-clock seconds reserved for the vision worker to load the model. Total PDF-OCR budget = load_budget + ocr_timeout * pages. |
 | `vision_ocr_concurrency` | `LILBEE_VISION_OCR_CONCURRENCY` | `int` | `4` | yes | yes | yes | no | Pages OCR'd concurrently per vision server; each slot adds KV cache memory. |
 | `vision_ocr_max_tokens` | `LILBEE_VISION_OCR_MAX_TOKENS` | `int` | `4096` | yes | yes | yes | no | Hard cap on tokens generated per OCR page (bounds runaway repetition loops); raising it lengthens page generation, so give ocr_timeout headroom. |
-| `worker_pool_eager_start` | `LILBEE_WORKER_POOL_EAGER_START` | `bool` | `true` | yes | yes | yes | no | Spawn every configured role server at TUI startup instead of on first use. Trades cold-start time per role for first-call latency. |
+| `vision_replicas` | `LILBEE_VISION_REPLICAS` | `int` | `0` | yes | yes | yes | no | Vision OCR servers in parallel (0 = auto, one per GPU; positive pins the count). |
 
 ## Wiki
 
@@ -270,7 +279,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 
 ## File and environment only
 
-These settings have no runtime write path. Set them with a `LILBEE_*` environment variable, or in `config.toml`, before lilbee starts.
+These settings have no runtime write path. Set them in `config.toml`, or with the variable the Environment column names, before lilbee starts.
 
 | Setting | Environment | Type | Default | TUI | MCP | HTTP | CLI | Description |
 |---|---|---|---|---|---|---|---|---|
@@ -290,7 +299,7 @@ These settings have no runtime write path. Set them with a `LILBEE_*` environmen
 | `ingest_max_inflight` | `LILBEE_INGEST_MAX_INFLIGHT` | `int` | `0` | no | yes | yes | no | Files allowed in their compute phase at once during ingest. 0 = auto, scaled to the detected embed fleet. Sizes the extract and embed fan-out, not the planning pass. |
 | `json_mode` | `LILBEE_JSON_MODE` | `bool` | `false` | no | no | no | no | Emit structured JSON from CLI commands. The --json flag sets it for one invocation. |
 | `lancedb_dir` | `LILBEE_LANCEDB_DIR` | `str` | *(computed)* | no | no | no | no | Directory holding the LanceDB vector tables. Defaults to data_root/data/lancedb. |
-| `linked_roots` | `LILBEE_LINKED_ROOTS` | `dict` | *(empty)* | no | write-only | write-only | no | External source roots that `add` registered, as label -> absolute path. `add` and `remove` maintain it; do not edit it by hand. |
+| `linked_roots` | no | `dict` | *(empty)* | no | write-only | write-only | no | External source roots that `add` registered, as label -> absolute path. `add` and `remove` maintain it; do not edit it by hand. |
 | `markdown_rendering` | `LILBEE_MARKDOWN_RENDERING` | `bool` | `true` | no | no | no | no | Render chat replies as Markdown in the TUI. Off draws plain text, which is faster. |
 | `max_embed_chars` | `LILBEE_MAX_EMBED_CHARS` | `int` | `2000` | no | no | no | no | Maximum characters sent to the embedding model per chunk. Longer text is cut. |
 | `models_dir` | `LILBEE_MODELS_DIR` | `str` | *(computed)* | no | no | no | no | Directory holding downloaded model files. Shared across libraries, so a model pulled for one is available to all. |
@@ -307,6 +316,7 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_AGENT_ID` | Owner namespace for an MCP agent's memories and sessions. An explicit `agent_id` tool argument wins over it |
 | `LILBEE_CPU_QUOTA` | CPU concurrency cap. Defaults to half the available cores; a non-positive or unparseable value falls back to that default |
 | `LILBEE_DATA` | Data directory for this library, the same value as `data_root`. The older and more common spelling; `--data-dir` overrides it |
+| `LILBEE_ENABLE_OCR` | Retired: any non-blank value stops every command with an error. Use `LILBEE_OCR` |
 | `LILBEE_ENGINE_DIR` | Directory holding the llama-server engine binaries. Set it to run against an engine build other than the bundled one |
 | `LILBEE_EXCLUSIVE_SCOPE` | A directory that at most one server may serve at a time, for a plugin's shared root |
 | `LILBEE_INGEST_CONCURRENCY` | Extraction-admission mode: `static` (the default), `adaptive-conservative`, or `adaptive-aggressive` |
@@ -315,5 +325,5 @@ These are not configuration fields, so they have no row above and `config.toml` 
 | `LILBEE_INGEST_TRACE_FILE` | File the ingest trace is written to |
 | `LILBEE_LOG_LEVEL` | Logging level: DEBUG, INFO, WARNING, or ERROR. `--log-level` overrides it |
 | `LILBEE_NO_SPLASH` | Set to any value to suppress the startup splash animation |
-| `LILBEE_OCR_FORCE` | Force vision OCR on pages that already carry a text layer. It has no effect on those pages today; set `vlm_fallback` instead |
+| `LILBEE_OCR_FORCE` | Retired: any non-blank value stops every command with an error. Use `LILBEE_OCR` |
 | `LILBEE_TOKEN` | Auth token for the HTTP server. The launchers set it to the live session token so no literal token is written to a config file on disk |

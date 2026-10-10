@@ -1,11 +1,18 @@
 """Tests for Config (pydantic-settings BaseSettings) and env var overrides."""
 
+import json
 import os
 import re
+import subprocess
+import sys
+import types
+from enum import Enum
 from pathlib import Path
+from typing import Union, get_args, get_origin
 from unittest import mock
 
 import pytest
+from pydantic import ValidationError
 
 from conftest import PICKS_CHAT, PICKS_RERANK, PICKS_VISION, clean_env
 from lilbee.core.config import (
@@ -13,15 +20,25 @@ from lilbee.core.config import (
     DEFAULT_IGNORE_DIRS,
     SOURCES_TABLE,
     Config,
+    RefusedVariableError,
     cfg,
     config_scope,
+    refuse_environment,
     validate_ocr_timeout,
 )
 from lilbee.core.config.defaults import DEFAULT_CORS_ORIGIN_REGEX
-from lilbee.core.config.model import _TomlSource, value_is_set
+from lilbee.core.config.enums import ChatMode, FtsLanguage, KvCacheType, OcrMode
+from lilbee.core.config.model import (
+    _TAKES_DEFAULT_WHEN_REFUSED,
+    _TomlSource,
+    env_value,
+    value_is_set,
+)
+from lilbee.runtime.progress import OcrBackendUsed
 
 _SAMPLE_CHAT_REF = "Qwen/Qwen3-0.6B-GGUF/Qwen3-0.6B-Q8_0.gguf"
 _SAMPLE_EMBED_REF = "nomic-ai/nomic-embed-text-v1.5-GGUF/nomic-embed-text-v1.5.Q4_K_M.gguf"
+_SAMPLE_VISION_REF = "Qwen/Qwen2.5-VL-3B-Instruct-GGUF/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
 
 
 class TestFromEnvDefaults:
@@ -535,14 +552,14 @@ class TestTomlConfigFile:
             c = Config()
             assert c.rag_system_prompt == "Be brief."
 
-    def test_enable_ocr_from_toml(self, tmp_path):
+    def test_ocr_from_toml(self, tmp_path):
         toml_path = tmp_path / "config.toml"
-        toml_path.write_text("enable_ocr = true\n")
+        toml_path.write_text('ocr = "off"\n', encoding="utf-8")
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
-            assert c.enable_ocr is True
+            assert c.ocr is OcrMode.OFF
 
     def test_list_field_from_toml_stays_a_list(self, tmp_path):
         """A TOML array maps to a native list, not its stringified repr."""
@@ -661,82 +678,163 @@ class TestTomlConfigFile:
             assert c.seed == 123
 
 
-class TestEnableOcrConfig:
-    def test_default_is_none(self, tmp_path) -> None:
+class TestOcrModeConfig:
+    def test_default_is_auto(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            assert c.enable_ocr is None
+            assert Config().ocr is OcrMode.AUTO
 
-    def test_true_from_env(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "true"}):
-            c = Config()
-            assert c.enable_ocr is True
+    @pytest.mark.parametrize("raw", ["auto", "all", "off"])
+    def test_from_env(self, tmp_path, raw) -> None:
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), "LILBEE_OCR": raw}, clear=True):
+            assert Config().ocr is OcrMode(raw)
 
-    def test_false_from_env(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "false"}):
-            c = Config()
-            assert c.enable_ocr is False
-
-    def test_empty_string_means_auto(self, tmp_path) -> None:
-        with mock.patch.dict(
-            os.environ, {**clean_env(tmp_path), "LILBEE_ENABLE_OCR": ""}, clear=True
+    def test_unknown_mode_is_refused(self, tmp_path) -> None:
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            pytest.raises(ValidationError, match="'auto', 'all' or 'off'"),
         ):
-            c = Config()
-            assert c.enable_ocr is None
+            Config(ocr="some")
 
-    def test_auto_string_means_none(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "auto"}):
-            c = Config()
-            assert c.enable_ocr is None
+    @pytest.mark.parametrize("env_var", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
+    def test_retired_env_vars_are_not_read(self, tmp_path, env_var) -> None:
+        """No shim: the retired variables set nothing, only LILBEE_OCR does."""
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), env_var: "0"}, clear=True):
+            assert Config().ocr is OcrMode.AUTO
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), env_var: "1"}, clear=True):
+            assert Config().ocr is OcrMode.AUTO
 
-    def test_yes_no_variants(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "yes"}):
-            c = Config()
-            assert c.enable_ocr is True
 
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "no"}):
-            c = Config()
-            assert c.enable_ocr is False
+class TestRetiredOcrKeysMigrate:
+    """A config.toml written before the ocr setting loads as the mode it meant."""
 
-    def test_numeric_variants(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "1"}):
-            c = Config()
-            assert c.enable_ocr is True
+    @staticmethod
+    def _load(tmp_path, toml: str, **env: str) -> Config:
+        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+            return Config()
 
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "0"}):
-            c = Config()
-            assert c.enable_ocr is False
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ("enable_ocr = false\n", OcrMode.OFF),
+            (f'enable_ocr = false\nvision_model = "{_SAMPLE_VISION_REF}"\n', OcrMode.AUTO),
+            ("enable_ocr = true\n", OcrMode.AUTO),
+            ('enable_ocr = "auto"\n', OcrMode.AUTO),
+            ('enable_ocr = "none"\n', OcrMode.AUTO),
+            ('enable_ocr = "off"\n', OcrMode.OFF),
+            ('enable_ocr = "maybe"\n', OcrMode.AUTO),
+        ],
+    )
+    def test_stored_values_become_the_mode_they_meant(self, tmp_path, toml, expected):
+        assert self._load(tmp_path, toml).ocr is expected
 
-    def test_case_insensitive(self) -> None:
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "TRUE"}):
-            c = Config()
-            assert c.enable_ocr is True
+    def test_a_vision_model_from_the_env_counts(self, tmp_path):
+        """The migration sees the merged settings, so an env vision model keeps OCR on."""
+        loaded = self._load(
+            tmp_path, "enable_ocr = false\n", LILBEE_VISION_MODEL=_SAMPLE_VISION_REF
+        )
+        assert loaded.vision_model == _SAMPLE_VISION_REF
+        assert loaded.ocr is OcrMode.AUTO
 
-    def test_from_toml(self, tmp_path) -> None:
-        toml_path = tmp_path / "config.toml"
-        toml_path.write_text("enable_ocr = true\n")
-        env = clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.enable_ocr is True
+    def test_an_explicit_ocr_wins_over_a_retired_key(self, tmp_path):
+        loaded = self._load(tmp_path, 'enable_ocr = false\nocr = "all"\n')
+        assert loaded.ocr is OcrMode.ALL
 
-    def test_garbage_value_falls_back_to_auto(self) -> None:
-        """An unparseable value must not turn OCR on.
+    def test_an_invalid_ocr_keeps_off_from_enable_ocr_through_a_write(self, tmp_path, caplog):
+        """Load, write another key, reload: OCR stays off and the warning names its source."""
+        import tomllib
 
-        This used to fall through to ``bool()``, and ``bool("maybe")`` is True,
-        so a typo silently enabled an expensive pass. The sibling bool
-        validators warn and take their default; this one now does too.
-        """
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "maybe"}):
-            c = Config()
-            assert c.enable_ocr is None
+        from lilbee.core import settings
 
-    def test_whitespace_only_means_auto(self) -> None:
-        """Whitespace-only strings hit the auto/none branch and return None."""
-        with mock.patch.dict(os.environ, {"LILBEE_ENABLE_OCR": "   "}):
-            c = Config()
-            assert c.enable_ocr is None
+        with caplog.at_level("WARNING"):
+            loaded = self._load(tmp_path, 'enable_ocr = false\nocr = "OFF"\ntop_k = 7\n')
+        assert loaded.ocr is OcrMode.OFF
+        assert (
+            "config.toml: ocr = 'OFF' is not one of auto, all, off; ocr comes from enable_ocr"
+            in caplog.text
+        )
+        assert "ocr uses its default" not in caplog.text
+
+        settings.set_value(tmp_path, "top_k", 9)
+        stored = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+        assert stored == {"ocr": "off", "top_k": 9}
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            reloaded = Config()
+        assert (reloaded.ocr, reloaded.top_k) == (OcrMode.OFF, 9)
+
+    def test_a_write_keeps_a_valid_ocr_over_a_retired_key(self, tmp_path):
+        import tomllib
+
+        from lilbee.core import settings
+
+        (tmp_path / "config.toml").write_text('enable_ocr = false\nocr = "all"\n', encoding="utf-8")
+        settings.set_value(tmp_path, "top_k", 9)
+        stored = tomllib.loads((tmp_path / "config.toml").read_text(encoding="utf-8"))
+        assert stored == {"ocr": "all", "top_k": 9}
+
+    def test_an_invalid_ocr_without_a_retired_key_uses_the_default(self, tmp_path, caplog):
+        with caplog.at_level("WARNING"):
+            loaded = self._load(tmp_path, 'ocr = "OFF"\n')
+        assert loaded.ocr is OcrMode.AUTO
+        assert "config.toml: ocr = 'OFF' is not one of auto, all, off; ocr uses its default" in (
+            caplog.text
+        )
+
+    def test_force_ocr_is_an_unknown_key_that_migrates_nothing(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            loaded = self._load(tmp_path, "enable_ocr = true\nforce_ocr = true\n")
+        assert loaded.ocr is OcrMode.AUTO
+        assert "config.toml: enable_ocr is replaced by ocr;" in caplog.text
+        assert "force_ocr" not in caplog.text
+
+    def test_force_ocr_alone_is_ignored(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            loaded = self._load(tmp_path, "force_ocr = true\ntop_k = 7\n")
+        assert (loaded.ocr, loaded.top_k) == (OcrMode.AUTO, 7)
+        assert caplog.records == []
+
+    def test_the_migration_warns_with_the_replacement(self, tmp_path, caplog):
+        with caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"):
+            self._load(tmp_path, "enable_ocr = false\n")
+        assert (
+            "config.toml: enable_ocr is replaced by ocr; the next settings write saves it"
+            in caplog.text
+        )
+
+
+class TestMigrationMatchesTheOldEngineChoice:
+    """Differential: a migrated enable_ocr picks the engine the old setting picked."""
+
+    @staticmethod
+    def _old_backend(stored: object, vision_model: str) -> OcrBackendUsed:
+        """The engine choice before the ocr setting: vision first, then enable_ocr."""
+        from lilbee.core.config.parsing import parse_bool
+
+        if vision_model:
+            return OcrBackendUsed.VISION
+        if isinstance(stored, bool):
+            enabled: bool | None = stored
+        elif isinstance(stored, str):
+            auto = stored.strip().lower() in ("", "auto", "none")
+            try:
+                enabled = None if auto else parse_bool(stored)
+            except ValueError:
+                enabled = None
+        else:
+            enabled = bool(stored)
+        return OcrBackendUsed.NONE if enabled is False else OcrBackendUsed.TESSERACT
+
+    @pytest.mark.parametrize("vision_model", ["", _SAMPLE_VISION_REF])
+    @pytest.mark.parametrize(
+        "stored", [True, False, "true", "false", "", "auto", "none", "off", "on", "maybe", 0, 1, 2]
+    )
+    def test_the_engine_is_unchanged(self, stored, vision_model):
+        from lilbee.core.config.parsing import migrate_ocr_keys
+
+        migrated = OcrMode(migrate_ocr_keys({"enable_ocr": stored}, vision_model)["ocr"])
+        assert OcrBackendUsed.chosen(migrated, vision_model) is self._old_backend(
+            stored, vision_model
+        )
 
 
 class TestFlashAttentionConfig:
@@ -751,12 +849,13 @@ class TestFlashAttentionConfig:
             c = Config()
             assert c.flash_attention is True
 
-    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
-        """Garbage values fall back to auto rather than crashing the load."""
-        env = {**clean_env(tmp_path), "LILBEE_FLASH_ATTENTION": "maybe?"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.flash_attention is None
+    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_FLASH_ATTENTION="maybe?")
+        assert built.flash_attention is None
+        assert warnings == (
+            "LILBEE_FLASH_ATTENTION = 'maybe?' is refused (use true, false or auto); "
+            "flash_attention uses its default",
+        )
 
     def test_assignment_with_bool(self, tmp_path) -> None:
         """Validator on assignment accepts bool inputs verbatim."""
@@ -791,11 +890,13 @@ class TestNGpuLayersConfig:
             c = Config()
             assert c.n_gpu_layers == 12
 
-    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_N_GPU_LAYERS": "not-a-number"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.n_gpu_layers is None
+    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_N_GPU_LAYERS="all")
+        assert built.n_gpu_layers is None
+        assert warnings == (
+            "LILBEE_N_GPU_LAYERS = 'all' is refused (use a whole number, cpu or auto); "
+            "n_gpu_layers uses its default",
+        )
 
     def test_assignment_with_int(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
@@ -829,11 +930,13 @@ class TestMainGpuConfig:
             c = Config()
             assert c.main_gpu is None
 
-    def test_invalid_string_falls_back_to_none(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "garbage"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.main_gpu is None
+    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_MAIN_GPU="garbage")
+        assert built.main_gpu is None
+        assert warnings == (
+            "LILBEE_MAIN_GPU = 'garbage' is refused (use a whole number or auto); "
+            "main_gpu uses its default",
+        )
 
     def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
         """Direct assignment with a non-string value falls through to int(v)."""
@@ -867,11 +970,13 @@ class TestGpuDevicesConfig:
             c = Config()
             assert c.gpu_devices is None
 
-    def test_non_numeric_falls_back_to_none(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_GPU_DEVICES": "rtx-4060"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.gpu_devices is None
+    def test_a_non_numeric_index_warns_and_means_auto(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_GPU_DEVICES="rtx-4060")
+        assert built.gpu_devices is None
+        assert warnings == (
+            "LILBEE_GPU_DEVICES = 'rtx-4060' is refused "
+            "(use GPU indexes separated by commas, or auto); gpu_devices uses its default",
+        )
 
     def test_only_separators_falls_back_to_none(self, tmp_path) -> None:
         """A string that splits into zero parts ('  ,  ,') normalizes to None."""
@@ -921,16 +1026,53 @@ class TestSemanticChunkingConfig:
         with mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "FALSE"}):
             assert Config().semantic_chunking is False
 
-    def test_invalid_falls_back_to_default(self, caplog) -> None:
-        import logging
+    def test_an_invalid_string_warns_and_means_off(self, tmp_path) -> None:
+        built, warnings = _build_with(tmp_path, "", LILBEE_SEMANTIC_CHUNKING="banana")
+        assert built.semantic_chunking is False
+        assert warnings == (
+            "LILBEE_SEMANTIC_CHUNKING = 'banana' is refused (use true or false); "
+            "semantic_chunking uses its default",
+        )
 
-        with (
-            mock.patch.dict(os.environ, {"LILBEE_SEMANTIC_CHUNKING": "banana"}),
-            caplog.at_level(logging.WARNING, logger="lilbee.core.config"),
-        ):
-            c = Config()
-            assert c.semantic_chunking is False
-        assert any("banana" in rec.message for rec in caplog.records)
+    @pytest.mark.parametrize(
+        ("key", "bad", "stored", "reason"),
+        [
+            ("flash_attention", '"maybe"', None, "is refused (use true, false or auto)"),
+            ("n_gpu_layers", '"lots"', None, "is refused (use a whole number, cpu or auto)"),
+            ("main_gpu", '"first"', None, "is refused (use a whole number or auto)"),
+            (
+                "gpu_devices",
+                '"a,b"',
+                None,
+                "is refused (use GPU indexes separated by commas, or auto)",
+            ),
+            ("semantic_chunking", '"flase"', False, "is refused (use true or false)"),
+        ],
+    )
+    def test_config_toml_drops_the_bad_value_alone_and_names_no_variable(
+        self, tmp_path, key, bad, stored, reason
+    ) -> None:
+        built, warnings = _build_with(tmp_path, f"{key} = {bad}\ntop_k = 7\n")
+        assert (getattr(built, key), built.top_k) == (stored, 7)
+        assert warnings == (f"config.toml: {key} = {bad[1:-1]!r} {reason}; {key} uses its default",)
+
+    @pytest.mark.parametrize(
+        ("key", "bad"),
+        [
+            ("flash_attention", "maybe"),
+            ("n_gpu_layers", "lots"),
+            ("main_gpu", "first"),
+            ("gpu_devices", "a,b"),
+            ("semantic_chunking", "flase"),
+        ],
+    )
+    def test_an_assignment_of_the_bad_value_is_refused(self, tmp_path, key, bad) -> None:
+        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
+            built = Config()
+        before = getattr(built, key)
+        with pytest.raises(ValidationError, match="use "):
+            setattr(built, key, bad)
+        assert getattr(built, key) == before
 
     def test_non_string_non_bool_coerced(self) -> None:
         """Validator coerces non-str, non-bool inputs via ``bool()``.
@@ -1004,12 +1146,11 @@ class TestTopicThresholdConfig:
         with mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "1.0"}):
             assert Config().topic_threshold == 1.0
 
-    def test_out_of_range_raises(self) -> None:
-        from pydantic import ValidationError
-
+    def test_an_out_of_range_variable_is_refused(self) -> None:
+        line = "LILBEE_TOPIC_THRESHOLD = '1.5' is not 1.0 or less"
         with (
             mock.patch.dict(os.environ, {"LILBEE_TOPIC_THRESHOLD": "1.5"}),
-            pytest.raises(ValidationError),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
         ):
             Config()
 
@@ -1058,10 +1199,11 @@ class TestOcrTimeoutConfig:
             c = Config()
             assert c.ocr_timeout == 0
 
-    def test_invalid_raises(self) -> None:
+    def test_an_invalid_variable_is_refused(self) -> None:
+        line = "LILBEE_OCR_TIMEOUT = 'abc' is not a number"
         with (
             mock.patch.dict(os.environ, {"LILBEE_OCR_TIMEOUT": "abc"}),
-            pytest.raises(ValueError),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
         ):
             Config()
 
@@ -1408,38 +1550,16 @@ class TestEmptyStringValidation:
                 ignore_dirs=frozenset(),
             )
 
-    def test_enable_ocr_none_allowed(self, tmp_path):
-        """enable_ocr is nullable, None means auto."""
-        c = Config(
-            data_root=tmp_path,
-            documents_dir=tmp_path / "docs",
-            data_dir=tmp_path / "data",
-            lancedb_dir=tmp_path / "data" / "lancedb",
-            models_dir=tmp_path / "models",
-            chat_model=_SAMPLE_CHAT_REF,
-            embedding_model=_SAMPLE_EMBED_REF,
-            embedding_dim=768,
-            chunk_size=512,
-            chunk_overlap=100,
-            max_embed_chars=2000,
-            top_k=10,
-            max_distance=0.7,
-            rag_system_prompt="You are helpful.",
-            ignore_dirs=frozenset(),
-            enable_ocr=None,
-        )
-        assert c.enable_ocr is None
 
-
-class TestEmptyStringToNone:
-    def test_empty_temperature_falls_back_to_default(self, tmp_path):
+class TestBlankOptionalNumberInTheEnvironment:
+    def test_blank_temperature_variable_uses_the_default(self, tmp_path):
         env = clean_env(tmp_path)
         env["LILBEE_TEMPERATURE"] = ""
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config()
         assert c.temperature == 0.1
 
-    def test_whitespace_seed_becomes_none(self, tmp_path):
+    def test_whitespace_seed_variable_leaves_seed_unset(self, tmp_path):
         env = clean_env(tmp_path)
         env["LILBEE_SEED"] = "   "
         with mock.patch.dict(os.environ, env, clear=True):
@@ -1453,15 +1573,6 @@ class TestIgnoreDirsFallback:
         with mock.patch.dict(os.environ, env, clear=True):
             c = Config(ignore_dirs=42)  # type: ignore[arg-type]
         assert c.ignore_dirs == DEFAULT_IGNORE_DIRS
-
-
-class TestParseEnableOcrFallback:
-    def test_non_string_non_bool_coerced_via_bool(self):
-        """An integer like 42 falls through to bool(v)."""
-        from lilbee.core.config import Config
-
-        assert Config._parse_enable_ocr(42) is True
-        assert Config._parse_enable_ocr(0) is False
 
 
 class TestDefaultCrawlExcludePatterns:
@@ -1748,7 +1859,7 @@ class TestEmptyValueClearsModelRole:
             ("chunk_size", "", False),
             ("chunk_size", "5", True),
             ("chunk_size", 0, True),
-            ("enable_ocr", False, True),
+            ("ocr", "off", True),
         ],
     )
     def test_value_is_set(self, field, raw, expected):
@@ -1934,33 +2045,17 @@ class TestValidateModelTaskAssignment:
         assert exc_info.value.expected_task == ModelTask.RERANK
 
 
-class TestBuildCfgFallback:
-    """The cfg-construction fallback recovers from a stale persisted config.toml."""
+class TestBuildCfg:
+    """The cfg builder returns the config and the warnings its sources reported."""
 
-    def test_falls_back_to_defaults_on_validation_error(self, tmp_path):
-        """A toml carrying an invalid model ref triggers the fallback path."""
-        from lilbee.core.config.model import _build_cfg
-
-        toml_path = tmp_path / "config.toml"
-        # Bare ``name:tag`` is rejected by the new validator.
-        toml_path.write_text('chat_model = "qwen3:0.6b"\n')
-        env = clean_env()
-        env["LILBEE_DATA"] = str(tmp_path)
-        with mock.patch.dict(os.environ, env, clear=True):
-            built_cfg, error = _build_cfg()
-        assert error is not None
-        assert "must be a HuggingFace ref" in str(error)
-        # Falls back to defaults: the role comes back unconfigured.
-        assert built_cfg.chat_model == ""
-
-    def test_returns_none_error_on_clean_load(self, tmp_path):
+    def test_a_clean_load_reports_no_warning(self, tmp_path):
         from lilbee.core.config.model import _build_cfg
 
         env = clean_env(tmp_path)
         env["LILBEE_SKIP_TOML_CONFIG"] = "1"
         with mock.patch.dict(os.environ, env, clear=True):
-            _, error = _build_cfg()
-        assert error is None
+            _, warnings = _build_cfg()
+        assert warnings == ()
 
     def test_fresh_import_honors_toml_model_fields(self, tmp_path):
         """A config.toml with model refs must survive first package import.
@@ -1970,10 +2065,6 @@ class TestBuildCfgFallback:
         config.toml carrying a model field, silently falling back to defaults.
         Only a subprocess exercises the fresh-import path, so this test shells out.
         """
-        import json
-        import subprocess
-        import sys
-
         pinned = "unsloth/MiniMax-M2-GGUF/Q4_K_M/MiniMax-M2-Q4_K_M-00001-of-00003.gguf"
         (tmp_path / "config.toml").write_text(
             f'chat_model = "{pinned}"\nchat_n_ctx_target = 131072\n'
@@ -1983,15 +2074,15 @@ class TestBuildCfgFallback:
         env["PATH"] = os.environ["PATH"]
         probe = (
             "import json\n"
-            "from lilbee.core.config import cfg, config_load_error\n"
-            "print(json.dumps({'error': str(config_load_error), "
+            "from lilbee.core.config import cfg, load_warnings\n"
+            "print(json.dumps({'warnings': list(load_warnings), "
             "'chat_model': str(cfg.chat_model)}))\n"
         )
         result = subprocess.run(
             [sys.executable, "-c", probe], env=env, capture_output=True, text=True, check=True
         )
         payload = json.loads(result.stdout)
-        assert payload["error"] == "None"
+        assert payload["warnings"] == []
         assert payload["chat_model"] == pinned
 
     def test_empty_string_persisted_nullable_uses_default(self, tmp_path):
@@ -2007,9 +2098,599 @@ class TestBuildCfgFallback:
         env = clean_env()
         env["LILBEE_DATA"] = str(tmp_path)
         with mock.patch.dict(os.environ, env, clear=True):
-            built_cfg, error = _build_cfg()
-        assert error is None
+            built_cfg, warnings = _build_cfg()
+        assert warnings == ()
         assert built_cfg.max_tokens == 4096
+
+
+def _build_with(tmp_path, toml: str, **env: str):
+    """Build cfg from *toml* in a fresh data root and *env*; return it with its load warnings."""
+    from lilbee.core.config.model import _build_cfg
+
+    (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+    with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+        return _build_cfg()
+
+
+class TestSkipTomlConfig:
+    def test_the_load_reads_no_config_toml_while_the_variable_is_one(self, tmp_path):
+        """The twin: the same file sets top_k and warns once the variable is gone or is not 1."""
+        toml = 'top_k = 9\nchunk_size = "big"\n'
+        skipped, quiet = _build_with(tmp_path, toml, LILBEE_SKIP_TOML_CONFIG="1")
+        assert Config.model_fields["top_k"].default != 9
+        assert (skipped.top_k, quiet) == (Config.model_fields["top_k"].default, ())
+        for env in ({}, {"LILBEE_SKIP_TOML_CONFIG": "0"}):
+            read, warnings = _build_with(tmp_path, toml, **env)
+            assert read.top_k == 9
+            assert warnings == (
+                "config.toml: chunk_size = 'big' is not a whole number; "
+                "chunk_size uses its default",
+            )
+
+
+# A TOML value no scalar, path, list or table setting takes as it stands.
+_HOSTILE_TOML_VALUES = ("[[1]]", "{ a = [1] }", "-1", "1.5", "true", '"many"', '"\\u0000"')
+
+
+class TestABadValueInConfigTomlKeepsTheRest:
+    """One value config.toml cannot use drops that key alone, with a warning."""
+
+    @pytest.mark.parametrize(
+        ("key", "bad", "default"),
+        [
+            ("ocr", '"OFF"', OcrMode.AUTO),
+            ("ocr", "true", OcrMode.AUTO),
+            ("kv_cache_type", '"q9"', KvCacheType.Q8_0),
+            ("fts_language", '"Klingon"', FtsLanguage.ENGLISH),
+            ("chat_mode", '"banter"', ChatMode.SEARCH),
+        ],
+    )
+    def test_the_bad_key_takes_its_default_and_every_other_key_loads(
+        self, tmp_path, key, bad, default
+    ):
+        toml = (
+            f"{key} = {bad}\ntop_k = 7\n"
+            f'vision_model = "{_SAMPLE_VISION_REF}"\ngemini_api_key = "sk-kept"\n'
+        )
+        built, warnings = _build_with(tmp_path, toml)
+        assert getattr(built, key) == default
+        assert built.top_k == 7
+        assert built.vision_model == _SAMPLE_VISION_REF
+        assert built.gemini_api_key == "sk-kept"
+        assert [w for w in warnings if w.startswith(f"config.toml: {key} = ")] == list(warnings)
+        assert len(warnings) == 1
+
+    @pytest.mark.parametrize(
+        ("line", "warning"),
+        [
+            (
+                'ocr = "OFF"',
+                "config.toml: ocr = 'OFF' is not one of auto, all, off; ocr uses its default",
+            ),
+            (
+                'top_k = "many"',
+                "config.toml: top_k = 'many' is not a whole number; top_k uses its default",
+            ),
+            ("top_k = 0", "config.toml: top_k = 0 is not 1 or more; top_k uses its default"),
+            (
+                'max_distance = "far"',
+                "config.toml: max_distance = 'far' is not a number; max_distance uses its default",
+            ),
+            (
+                'auto_sync = "maybe"',
+                "config.toml: auto_sync = 'maybe' is not true or false; auto_sync uses its default",
+            ),
+            (
+                'num_ctx = "many"',
+                "config.toml: num_ctx = 'many' is not a whole number; num_ctx uses its default",
+            ),
+            (
+                'force_ocr_pages = "abc"',
+                "config.toml: force_ocr_pages = 'abc' is refused "
+                "(force_ocr_pages: 'abc' is not a page number); force_ocr_pages uses its default",
+            ),
+            (
+                'linked_roots = "notatable"',
+                "config.toml: linked_roots = 'notatable' is not a table of names and values; "
+                "linked_roots uses its default",
+            ),
+            ("theme = 5", "config.toml: theme = 5 is not text; theme uses its default"),
+            (
+                "documents_dir = 5",
+                "config.toml: documents_dir = 5 is not a path; documents_dir uses its default",
+            ),
+            (
+                "data_root = 5",
+                "config.toml: data_root = 5 is not a value data_root accepts; "
+                "data_root uses its default",
+            ),
+        ],
+    )
+    def test_the_warning_names_the_key_the_value_and_what_is_allowed(self, tmp_path, line, warning):
+        built, warnings = _build_with(tmp_path, f"{line}\nchunk_size = 321\n")
+        assert warnings == (warning,)
+        assert built.chunk_size == 321
+
+    def test_a_bad_value_of_any_type_on_any_setting_keeps_its_sibling(self, tmp_path):
+        """Every setting, each hostile value: the load holds, and a warned key has its default."""
+        defaults, _ = _build_with(tmp_path, "")
+        fields = [name for name in Config.model_fields if name != "chunk_overlap"]
+        assert len(fields) > 150
+        refused: set[str] = set()
+        for key in fields:
+            for bad in _HOSTILE_TOML_VALUES:
+                built, warnings = _build_with(tmp_path, f"{key} = {bad}\nchunk_overlap = 33\n")
+                assert built.chunk_overlap == 33, (key, bad)
+                if warnings:
+                    assert all(w.startswith(f"config.toml: {key} = ") for w in warnings), warnings
+                    assert getattr(built, key) == getattr(defaults, key), (key, bad)
+                    refused.add(key)
+        plain = {
+            name
+            for name, field in Config.model_fields.items()
+            if field.annotation in (int, float) and name != "chunk_overlap"
+        }
+        assert len(plain) > 50
+        assert plain <= refused
+
+    @pytest.mark.parametrize(
+        ("key", "stored", "loaded"),
+        [("fts_language", "german", FtsLanguage.GERMAN), ("chat_mode", "CHAT", ChatMode.CHAT)],
+    )
+    def test_a_value_the_field_normalizes_is_kept(self, tmp_path, key, stored, loaded):
+        built, warnings = _build_with(tmp_path, f'{key} = "{stored}"\n')
+        assert warnings == ()
+        assert getattr(built, key) is loaded
+
+    def test_a_valid_env_value_still_wins_over_the_bad_toml_value(self, tmp_path):
+        built, warnings = _build_with(tmp_path, 'ocr = "OFF"\ntop_k = 7\n', LILBEE_OCR="all")
+        assert built.ocr is OcrMode.ALL
+        assert built.top_k == 7
+        assert warnings == (
+            "config.toml: ocr = 'OFF' is not one of auto, all, off; LILBEE_OCR sets ocr",
+        )
+
+    def test_a_bad_value_in_both_sources_stops_on_the_variable(self, tmp_path):
+        (tmp_path / "config.toml").write_text('ocr = "nope"\ntop_k = 7\n', encoding="utf-8")
+        line = "LILBEE_OCR = 'bogus' is not one of auto, all, off"
+        with (
+            mock.patch.dict(os.environ, {**clean_env(tmp_path), "LILBEE_OCR": "bogus"}, clear=True),
+            pytest.raises(RefusedVariableError, match=f"^{re.escape(line)}$"),
+        ):
+            Config()
+
+    def test_a_bad_ocr_beside_enable_ocr_names_enable_ocr(self, tmp_path):
+        built, warnings = _build_with(tmp_path, 'ocr = "nope"\nenable_ocr = false\n')
+        assert built.ocr is OcrMode.OFF
+        assert (
+            "config.toml: ocr = 'nope' is not one of auto, all, off; ocr comes from enable_ocr"
+            in (warnings)
+        )
+
+    def test_a_stale_model_ref_drops_that_key_alone(self, tmp_path):
+        built, warnings = _build_with(tmp_path, 'chat_model = "qwen3:0.6b"\ntop_k = 7\n')
+        assert (built.chat_model, built.top_k) == ("", 7)
+        assert len(warnings) == 1
+        assert "must be a HuggingFace ref" in "".join(warnings)
+
+    def test_a_file_that_is_not_toml_is_ignored_with_a_warning(self, tmp_path):
+        built, warnings = _build_with(tmp_path, "top_k = = 7\n")
+        assert built.top_k == Config.model_fields["top_k"].default
+        assert warnings == (f"Failed to read {built.data_root / 'config.toml'}, ignoring",)
+
+    @pytest.mark.parametrize("blank", ['""', '"  "', '"\\t"'])
+    def test_a_blank_string_is_unset(self, tmp_path, blank):
+        built, warnings = _build_with(tmp_path, f"ocr = {blank}\ntop_k = 7\n")
+        assert (built.ocr, built.top_k) == (OcrMode.AUTO, 7)
+        assert warnings == ()
+
+
+# A string no number, flag, choice, page list, table or model setting takes from a variable.
+_HOSTILE_ENV_VALUES = ("many", "-1", "1.5", "{", "qwen3:0.6b")
+
+# Valid values of several types that config.toml holds; none is the setting's default.
+_STORED_TOML = (
+    'top_k = 7\nocr = "off"\nsessions_enabled = false\nmax_distance = 0.25\n'
+    'num_ctx = 2048\nforce_ocr_pages = [2, 4]\nreranker_type = "llm"\n'
+    f'vision_model = "{_SAMPLE_VISION_REF}"\n'
+    '[linked_roots]\nnotes = "/kept/notes"\n'
+)
+
+# One refused variable per kind of setting: the value, a valid stored value, and the reason.
+_REFUSED_VARIABLES = [
+    ("top_k", "many", "7", "is not a whole number"),
+    ("top_k", "0", "7", "is not 1 or more"),
+    ("ocr", "OFF", '"off"', "is not one of auto, all, off"),
+    ("llm_provider", "local", '"remote"', "is not one of auto, remote"),
+    ("auto_sync", "maybe", "false", "is not true or false"),
+    ("sessions_enabled", "flase", "false", "is not true or false"),
+    ("max_distance", "far", "0.25", "is not a number"),
+    ("num_ctx", "many", "2048", "is not a whole number"),
+    (
+        "force_ocr_pages",
+        "abc",
+        "[2, 4]",
+        "is refused (force_ocr_pages: 'abc' is not a page number)",
+    ),
+    ("linked_roots", "notadict", '{ notes = "/kept/notes" }', "is not a table of names and values"),
+]
+
+# The settings whose refused variable falls back: a value origin/main took as auto or off,
+# a valid stored value that is not the default, and the default the load ends on.
+_FALLBACK_VARIABLES = [
+    ("flash_attention", "enabled", "true", None),
+    ("n_gpu_layers", "all", "12", None),
+    ("main_gpu", "cuda:0", "1", None),
+    ("gpu_devices", "cpu", '"0,1"', None),
+    ("semantic_chunking", "auto", "true", False),
+]
+
+
+# The text, path and collection settings whose own rule refuses a hostile string.
+_OPEN_SETTINGS_THAT_REFUSE = {
+    "chat_model",
+    "embedding_model",
+    "vision_model",
+    "reranker_model",
+    "force_ocr_pages",
+    "ocr_language",
+    "placement",
+    "linked_roots",
+}
+
+
+_TEXT = "text"
+
+
+def _kind_of(field) -> str:
+    """flag, choice or number, "optional" before it when None is allowed, else text."""
+    annotation = field.annotation
+    optional = get_origin(annotation) in (Union, types.UnionType)
+    members = [m for m in get_args(annotation) if m is not type(None)] if optional else [annotation]
+    for kind, base in (("flag", bool), ("choice", Enum), ("number", (int, float))):
+        if all(isinstance(member, type) and issubclass(member, base) for member in members):
+            return f"optional {kind}" if optional else kind
+    return _TEXT
+
+
+def _refusal_of(tmp_path, toml: str, **env: str) -> str | None:
+    """The line Config() stops with for *toml* and *env*, or None when it builds."""
+    (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+    with mock.patch.dict(os.environ, {**clean_env(tmp_path), **env}, clear=True):
+        try:
+            Config()
+        except RefusedVariableError as refused:
+            return str(refused)
+    return None
+
+
+class TestARefusedVariableStops:
+    """A LILBEE_* value its setting refuses stops the load with one line, whatever is stored."""
+
+    @staticmethod
+    def _run(tmp_path, variable: str, *args: str) -> subprocess.CompletedProcess[str]:
+        """Run a fresh interpreter with *variable* set to a value its setting refuses."""
+        env = {
+            **clean_env(tmp_path),
+            variable: "bogus",
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        return subprocess.run(
+            [sys.executable, *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+
+    @pytest.mark.parametrize(
+        ("variable", "key", "stored", "expected"),
+        [
+            ("LILBEE_OCR", "ocr", '"off"', "one of auto, all, off"),
+            ("LILBEE_LLM_PROVIDER", "llm_provider", '"remote"', "one of auto, remote"),
+            ("LILBEE_TOP_K", "top_k", "7", "a whole number"),
+            ("LILBEE_SESSIONS_ENABLED", "sessions_enabled", "true", "true or false"),
+        ],
+    )
+    def test_a_real_command_exits_1_with_one_line_and_help_still_prints(
+        self, tmp_path, variable, key, stored, expected
+    ):
+        """config.toml holds a valid value for the same key, and the command still stops."""
+        (tmp_path / "config.toml").write_text(f"{key} = {stored}\n", encoding="utf-8")
+        line = f"{variable} = 'bogus' is not {expected}"
+
+        ran = self._run(tmp_path, variable, "-m", "lilbee", "status")
+        assert ran.returncode == 1
+        assert ran.stderr.splitlines() == [f"Error: {line}"]
+        assert ran.stdout == ""
+
+        as_json = self._run(tmp_path, variable, "-m", "lilbee", "--json", "status")
+        assert as_json.returncode == 1
+        assert json.loads(as_json.stdout) == {"error": line}
+        assert as_json.stderr == ""
+
+        shown = self._run(tmp_path, variable, "-m", "lilbee", "--help")
+        assert shown.returncode == 0, shown.stderr
+        assert "Usage:" in shown.stdout
+        assert shown.stderr == ""
+
+    def test_the_library_object_raises_the_one_error_type(self, tmp_path):
+        probe = (
+            "import sys\n"
+            "from lilbee.api import Lilbee\n"
+            "from lilbee.core.config import RefusedVariableError\n"
+            "try:\n"
+            "    Lilbee(sys.argv[1])\n"
+            "except RefusedVariableError as refused:\n"
+            "    print('REFUSED', refused)\n"
+        )
+        ran = self._run(tmp_path, "LILBEE_TOP_K", "-c", probe, str(tmp_path / "docs"))
+        assert ran.returncode == 0, ran.stderr
+        assert ran.stdout.splitlines() == ["REFUSED LILBEE_TOP_K = 'bogus' is not a whole number"]
+        assert "Traceback" not in ran.stderr
+        assert not (tmp_path / "docs").exists()
+
+    @pytest.mark.parametrize(("key", "bad", "stored", "reason"), _REFUSED_VARIABLES)
+    def test_a_valid_stored_value_does_not_stand_in(self, tmp_path, key, bad, stored, reason):
+        """The twin: the same file builds once the variable is gone, with the stored value."""
+        variable = f"LILBEE_{key.upper()}"
+        toml = f"chunk_size = 321\n{key} = {stored}\n"
+        assert _refusal_of(tmp_path, toml, **{variable: bad}) == f"{variable} = {bad!r} {reason}"
+        built, warnings = _build_with(tmp_path, toml)
+        assert getattr(built, key) != Config.model_fields[key].get_default(
+            call_default_factory=True
+        )
+        assert (built.chunk_size, warnings) == (321, ())
+
+    def test_every_refused_variable_is_named_in_the_one_line(self, tmp_path):
+        assert _refusal_of(tmp_path, "", LILBEE_TOP_K="many", LILBEE_OCR="OFF") == (
+            "LILBEE_TOP_K = 'many' is not a whole number; "
+            "LILBEE_OCR = 'OFF' is not one of auto, all, off"
+        )
+
+    def test_a_refused_variable_of_any_setting_stops_with_the_one_line(self, tmp_path):
+        """Every setting, each hostile string: a stop names it, and exactly these settings stop."""
+        assert _refusal_of(tmp_path, _STORED_TOML) is None
+        fields = list(Config.model_fields)
+        assert len(fields) > 150
+        refused: set[str] = set()
+        for key in fields:
+            variable = f"LILBEE_{key.upper()}"
+            for bad in _HOSTILE_ENV_VALUES:
+                line = _refusal_of(tmp_path, _STORED_TOML, **{variable: bad})
+                if line is None:
+                    continue
+                assert line.startswith(f"{variable} = {bad!r} is "), line
+                assert "\n" not in line and "; " not in line.removeprefix(variable), line
+                refused.add(key)
+        kinds = {name: _kind_of(field) for name, field in Config.model_fields.items()}
+        for kind in ("flag", "choice", "number", "optional number"):
+            assert sum(1 for found in kinds.values() if found == kind) > 10, kind
+        closed = {name for name, kind in kinds.items() if kind != _TEXT}
+        expected = (closed - _TAKES_DEFAULT_WHEN_REFUSED) | _OPEN_SETTINGS_THAT_REFUSE
+        assert sorted(refused ^ expected) == []
+
+    def test_the_entry_point_check_raises_what_the_load_raises(self, tmp_path):
+        env = {**clean_env(tmp_path), "LILBEE_TOP_K": "many"}
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            pytest.raises(
+                RefusedVariableError, match=r"^LILBEE_TOP_K = 'many' is not a whole number$"
+            ),
+        ):
+            refuse_environment()
+
+    def test_the_named_exceptions_are_five_settings(self):
+        assert sorted(_TAKES_DEFAULT_WHEN_REFUSED) == sorted(key for key, *_ in _FALLBACK_VARIABLES)
+
+    @pytest.mark.parametrize(("key", "bad", "stored", "default"), _FALLBACK_VARIABLES)
+    def test_a_refused_variable_of_a_named_exception_takes_the_default(
+        self, tmp_path, key, bad, stored, default
+    ):
+        """The losing field: the stored value is valid and the variable still decides."""
+        variable = f"LILBEE_{key.upper()}"
+        toml = f"chunk_size = 321\n{key} = {stored}\n"
+        assert _refusal_of(tmp_path, toml, **{variable: bad}) is None
+        built, warnings = _build_with(tmp_path, toml, **{variable: bad})
+        assert (getattr(built, key), built.chunk_size) == (default, 321)
+        assert len(warnings) == 1
+        assert warnings[0].startswith(f"{variable} = {bad!r} is refused (use ")
+        assert warnings[0].endswith(f"; {key} uses its default")
+        kept, quiet = _build_with(tmp_path, toml)
+        assert getattr(kept, key) != default
+        assert quiet == ()
+
+    @pytest.mark.parametrize(("key", "bad", "stored", "default"), _FALLBACK_VARIABLES)
+    def test_the_entry_point_check_passes_a_fallback_and_reports_nothing(
+        self, tmp_path, caplog, key, bad, stored, default
+    ):
+        """The stop beside it still fires, so the check did read the environment."""
+        env = {**clean_env(tmp_path), f"LILBEE_{key.upper()}": bad}
+        with mock.patch.dict(os.environ, env, clear=True), caplog.at_level("WARNING"):
+            refuse_environment()
+            os.environ["LILBEE_TOP_K"] = "many"
+            with pytest.raises(
+                RefusedVariableError, match=r"^LILBEE_TOP_K = 'many' is not a whole number$"
+            ):
+                refuse_environment()
+        assert caplog.records == []
+
+    def test_a_real_command_runs_on_a_fallback_and_prints_one_line(self, tmp_path):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_N_GPU_LAYERS": "all",
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        ran = subprocess.run(
+            [sys.executable, "-m", "lilbee", "--json", "status"],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert ran.returncode == 0, ran.stderr
+        assert "error" not in json.loads(ran.stdout)
+        assert [line for line in ran.stderr.splitlines() if "N_GPU_LAYERS" in line] == [
+            "LILBEE_N_GPU_LAYERS = 'all' is refused (use a whole number, cpu or auto); "
+            "n_gpu_layers uses its default"
+        ]
+
+    def test_the_entry_point_check_passes_a_valid_environment(self, tmp_path):
+        env = {**clean_env(tmp_path), "LILBEE_TOP_K": "7", "LILBEE_OCR": " "}
+        with mock.patch.dict(os.environ, env, clear=True):
+            refuse_environment()
+
+    def test_the_import_time_load_leaves_the_stop_to_the_entry_point(self, tmp_path):
+        """The load behind --help: it builds, with nothing from the refused variable."""
+        built, warnings = _build_with(tmp_path, "top_k = 7\n", LILBEE_TOP_K="many")
+        assert (built.top_k, warnings) == (7, ())
+
+    def test_a_stale_model_ref_in_a_variable_stops(self, tmp_path):
+        line = _refusal_of(
+            tmp_path, f'chat_model = "{_SAMPLE_CHAT_REF}"\n', LILBEE_CHAT_MODEL="qwen3:0.6b"
+        )
+        assert line is not None
+        assert line.startswith("LILBEE_CHAT_MODEL = 'qwen3:0.6b' is refused (")
+
+    @pytest.mark.parametrize(
+        ("key", "raw", "loaded"),
+        [("fts_language", "german", FtsLanguage.GERMAN), ("chat_mode", "CHAT", ChatMode.CHAT)],
+    )
+    def test_a_value_the_field_normalizes_is_kept(self, tmp_path, key, raw, loaded):
+        built, warnings = _build_with(tmp_path, "top_k = 7\n", **{f"LILBEE_{key.upper()}": raw})
+        assert getattr(built, key) is loaded
+        assert built.top_k == 7
+        assert warnings == ()
+        assert _refusal_of(tmp_path, "top_k = 7\n", **{f"LILBEE_{key.upper()}": raw}) is None
+
+    @pytest.mark.parametrize(
+        ("variable", "key", "stored", "loaded"),
+        [
+            ("LILBEE_OCR", "ocr", '"off"', OcrMode.OFF),
+            ("LILBEE_TOP_K", "top_k", "7", 7),
+            ("LILBEE_AUTO_SYNC", "auto_sync", "false", False),
+        ],
+    )
+    @pytest.mark.parametrize("blank", ["", "  ", "\t"])
+    def test_a_blank_variable_is_unset(self, tmp_path, variable, key, stored, loaded, blank):
+        """The losing field: config.toml sets the key, so an unset variable shows it."""
+        toml = f"{key} = {stored}\n"
+        assert _refusal_of(tmp_path, toml, **{variable: blank}) is None
+        built, warnings = _build_with(tmp_path, toml, **{variable: blank})
+        assert getattr(built, key) == loaded
+        assert warnings == ()
+
+    def test_a_blank_variable_still_clears_a_model_role(self, tmp_path):
+        built, warnings = _build_with(
+            tmp_path, f'vision_model = "{_SAMPLE_VISION_REF}"\n', LILBEE_VISION_MODEL="  "
+        )
+        assert built.vision_model == ""
+        assert warnings == ()
+
+
+class TestEnvValue:
+    """What one variable holds, asked outside a load."""
+
+    @pytest.mark.parametrize(
+        ("key", "raw", "value"),
+        [
+            ("top_k", "7", "7"),
+            ("top_k", "many", "many"),
+            ("top_k", " ", None),
+            ("vision_model", "", ""),
+        ],
+    )
+    def test_it_is_the_raw_value_or_none(self, monkeypatch, key, raw, value):
+        monkeypatch.setenv(f"LILBEE_{key.upper()}", raw)
+        assert env_value(key) == value
+
+    def test_an_unset_variable_is_none(self, monkeypatch):
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        assert env_value("top_k") is None
+
+
+class TestLoadWarningsAreLoggedOncePerProcessTree:
+    """A load warning reaches the log once, however many loads and children repeat it."""
+
+    _WARNING = "config.toml: top_k = 'many' is not a whole number; top_k uses its default"
+
+    def test_a_second_load_collects_the_warning_and_does_not_log_it_again(self, tmp_path, caplog):
+        from lilbee.core.config.model import _build_cfg
+
+        (tmp_path / "config.toml").write_text(
+            'top_k = "many"\nchunk_size = 321\n', encoding="utf-8"
+        )
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"),
+        ):
+            first = _build_cfg()
+            second = _build_cfg()
+        assert first[1] == second[1] == (self._WARNING,)
+        assert [record.getMessage() for record in caplog.records] == [self._WARNING]
+
+    def test_a_different_warning_is_still_logged(self, tmp_path, caplog):
+        from lilbee.core.config.model import _build_cfg
+
+        path = tmp_path / "config.toml"
+        with (
+            mock.patch.dict(os.environ, clean_env(tmp_path), clear=True),
+            caplog.at_level("WARNING", logger="lilbee.core.config.load_warnings"),
+        ):
+            path.write_text('top_k = "many"\n', encoding="utf-8")
+            _build_cfg()
+            path.write_text('top_k = "lots"\n', encoding="utf-8")
+            _build_cfg()
+        assert [record.getMessage() for record in caplog.records] == [
+            self._WARNING,
+            "config.toml: top_k = 'lots' is not a whole number; top_k uses its default",
+        ]
+
+    def test_a_child_process_does_not_print_the_warning_again(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            'top_k = "many"\nchunk_size = 321\n', encoding="utf-8"
+        )
+        child = (
+            "from lilbee.core.config import cfg, load_warnings; "
+            "print(len(load_warnings), cfg.chunk_size)"
+        )
+        parent = (
+            "import subprocess, sys\n"
+            "from lilbee.core.config import cfg, load_warnings\n"
+            f"done = subprocess.run([sys.executable, '-c', {child!r}],"
+            " capture_output=True, text=True)\n"
+            "print(len(load_warnings), cfg.chunk_size, done.stdout.strip(), repr(done.stderr))\n"
+        )
+        env = {**clean_env(tmp_path), "PYTHONIOENCODING": "utf-8"}
+        done = subprocess.run(
+            [sys.executable, "-c", parent],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert done.stdout.split() == ["1", "321", "1", "321", "''"]
+        assert done.stderr.splitlines() == [self._WARNING]
+
+    @pytest.mark.parametrize("args", [("status",), ("--json", "status")])
+    def test_a_real_command_prints_the_warning_once(self, tmp_path, args):
+        """The command reads its own config.toml twice, at import and when it sets the root."""
+        (tmp_path / "config.toml").write_text(
+            'top_k = "many"\nchunk_size = 321\n', encoding="utf-8"
+        )
+        env = {**clean_env(tmp_path), "LILBEE_NO_SPLASH": "1", "PYTHONIOENCODING": "utf-8"}
+        done = subprocess.run(
+            [sys.executable, "-m", "lilbee", *args],
+            env=env,
+            capture_output=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr
+        assert [line for line in done.stderr.splitlines() if "top_k" in line] == [self._WARNING]
 
 
 class TestChatCtxTargetDefault:
@@ -2141,19 +2822,13 @@ class TestBoolVocabularyMatchesPydantic:
             parse_bool("maybe")
 
     @pytest.mark.parametrize(
-        ("raw", "expected"), [("off", False), ("on", True), ("n", False), ("y", True)]
+        ("raw", "expected"), [("off", OcrMode.OFF), ("on", OcrMode.AUTO), ("n", OcrMode.OFF)]
     )
-    def test_enable_ocr_agrees_with_pydantic(self, raw, expected):
-        """enable_ocr routed through parse_bool; 'off' used to come back True."""
-        from lilbee.core.config.model import Config
+    def test_a_stored_enable_ocr_reads_with_the_same_vocabulary(self, raw, expected):
+        """A retired enable_ocr string migrates through parse_bool's vocabulary."""
+        from lilbee.core.config.parsing import migrate_ocr_keys
 
-        assert Config(enable_ocr=raw).enable_ocr is expected
-
-    def test_enable_ocr_unknown_value_falls_back_to_auto(self):
-        """An unparseable value must not silently become True via bool()."""
-        from lilbee.core.config.model import Config
-
-        assert Config(enable_ocr="maybe").enable_ocr is None
+        assert migrate_ocr_keys({"enable_ocr": raw}, "")["ocr"] == expected
 
 
 class TestCrawlExclusionsMatchWholeSegments:

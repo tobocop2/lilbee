@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.providers.base import ProviderErrorKind
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet import provider as prov_mod
@@ -30,6 +31,7 @@ from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._exit_probe import assert_probe_exits
 
 _GB = 1024**3
+_real_plan_all_launches = planning_mod.plan_all_launches
 
 
 def _fake_client(in_flight: int = 0) -> MagicMock:
@@ -1464,6 +1466,185 @@ def test_vision_slot_capacity_sums_fitted_launch_slots() -> None:
 def test_vision_slot_capacity_none_before_fleet_up() -> None:
     # No launch snapshot yet: the fan-out keeps its own estimate.
     assert FleetProvider().vision_slot_capacity() is None
+
+
+@pytest.fixture
+def ocr_gated_engine(monkeypatch, tmp_path: Path):
+    """An engine planned by the real plan_all_launches, one fake launch per enrolled role."""
+    swap = _install_engine(monkeypatch, tmp_path, launches=[])
+    by_role = {role: _fake_launch(role) for role in (WorkerRole.CHAT, WorkerRole.VISION)}
+    plans: list[set[WorkerRole]] = []
+
+    def _plan(roles, *_args) -> planning_mod.FleetPlan:
+        plans.append(set(roles))
+        return planning_mod.FleetPlan(tuple(by_role[role] for role in by_role if role in roles))
+
+    ocr_client = _fake_client()
+    ocr_client.chat_abortable.return_value = "ocr text"
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: ocr_client)
+    monkeypatch.setattr(planning_mod, "plan_all_launches", _real_plan_all_launches)
+    monkeypatch.setattr("lilbee.providers.fleet.gpu_env.apply_fleet_gpu_env", lambda: None)
+    monkeypatch.setattr(
+        "lilbee.providers.fleet.cuda_runtime.apply_cuda_runtime_env", lambda *_a: None
+    )
+    monkeypatch.setattr(planning_mod, "resolve_llama_server", lambda: Path("/bin/llama-server"))
+    monkeypatch.setattr(planning_mod, "_plan_devices", lambda _binary: [])
+    monkeypatch.setattr(planning_mod, "plan_launches", _plan)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    yield SimpleNamespace(swap=swap, plans=plans)
+    planning_mod.revoke_vision_on_request()
+
+
+def _started_roles(swap: _FakeSwap) -> set[WorkerRole]:
+    return {launch.role for launches in swap.started for launch in launches}
+
+
+def _provider_without_preload(monkeypatch) -> FleetProvider:
+    """A FleetProvider whose reloads load no model off-thread."""
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_preload_restarted", lambda _restarted: None)
+    return p
+
+
+@pytest.mark.parametrize(("ocr_on", "vision_warmed"), [(False, False), (True, True)])
+def test_warm_up_starts_and_warms_vision_only_when_ocr_is_on(
+    monkeypatch, ocr_gated_engine, ocr_on: bool, vision_warmed: bool
+) -> None:
+    monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO if ocr_on else OcrMode.OFF)
+    warmed: list[WorkerRole] = []
+    monkeypatch.setattr(prov_mod, "_warm_role", lambda role, _client: warmed.append(role))
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._warm_up_blocking()
+    assert WorkerRole.CHAT in warmed  # the warm ran
+    assert (WorkerRole.VISION in warmed) is vision_warmed
+    assert (WorkerRole.VISION in _started_roles(ocr_gated_engine.swap)) is vision_warmed
+
+
+@pytest.mark.parametrize("ocr_on", [False, True])
+def test_toggling_ocr_at_runtime_replans_the_vision_role(
+    monkeypatch, ocr_gated_engine, ocr_on: bool
+) -> None:
+    monkeypatch.setattr(cfg, "ocr", OcrMode.OFF if ocr_on else OcrMode.AUTO)
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    assert (WorkerRole.VISION in p._clients) is not ocr_on
+    monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO if ocr_on else OcrMode.OFF)
+    p.reload_role(WorkerRole.VISION, wait=True)
+    assert (WorkerRole.VISION in p._clients) is ocr_on
+    assert WorkerRole.CHAT in p._clients
+
+
+def test_vision_ocr_with_ocr_off_starts_vision_for_the_request(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    assert WorkerRole.VISION not in p._clients
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert WorkerRole.VISION in _started_roles(ocr_gated_engine.swap)
+    assert len(ocr_gated_engine.plans) == 3  # demand, build, then one re-plan for vision
+
+
+def test_vision_ocr_with_ocr_on_does_not_replan(monkeypatch, ocr_gated_engine) -> None:
+    monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
+    p = FleetProvider()
+    p._ensure_fleet()
+    plans_after_build = len(ocr_gated_engine.plans)
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
+    assert len(ocr_gated_engine.plans) == plans_after_build
+
+
+def test_vision_ocr_without_a_vision_model_does_not_replan(monkeypatch, ocr_gated_engine) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "vision_model", "")
+    p = FleetProvider()
+    p._ensure_fleet()
+    plans_after_build = len(ocr_gated_engine.plans)
+    with pytest.raises(ProviderError):
+        p.vision_ocr(b"png", "")
+    assert len(ocr_gated_engine.plans) == plans_after_build
+    assert WorkerRole.CHAT in p._clients  # the fleet came up without vision
+
+
+def test_concurrent_vision_ocr_with_ocr_off_starts_vision_once(
+    monkeypatch, ocr_gated_engine
+) -> None:
+    monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    pages = 4
+    arrived = threading.Condition()
+    arrivals = {"n": 0}
+    serve = p._serve_vision_on_request
+
+    def _counted_serve() -> None:
+        with arrived:
+            arrivals["n"] += 1
+            arrived.notify_all()
+        serve()
+
+    plan = planning_mod.plan_launches
+
+    def _held_plan(roles, *args) -> planning_mod.FleetPlan:
+        if WorkerRole.VISION in roles:
+            # Hold the first vision re-plan until every page is inside the start.
+            with arrived:
+                assert arrived.wait_for(lambda: arrivals["n"] == pages, timeout=10)
+        return plan(roles, *args)
+
+    monkeypatch.setattr(p, "_serve_vision_on_request", _counted_serve)
+    monkeypatch.setattr(planning_mod, "plan_launches", _held_plan)
+    results: list[object] = []
+
+    def _page() -> None:
+        try:
+            results.append(p.vision_ocr(b"png", "org/repo/v.gguf"))
+        except Exception as exc:
+            results.append(exc)
+
+    workers = [threading.Thread(target=_page) for _ in range(pages)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=20)
+    assert results == ["ocr text"] * pages
+    assert sum(WorkerRole.VISION in plan for plan in ocr_gated_engine.plans) == 1
+
+
+def test_a_failed_vision_start_lets_the_next_page_retry(monkeypatch, ocr_gated_engine) -> None:
+    from lilbee.providers.base import ProviderError
+
+    monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    reload_pass = p._reload_pass
+    failures = iter([ProviderError("engine refused", provider="llama-server")])
+
+    def _fail_once(*args, **kwargs) -> None:
+        failure = next(failures, None)
+        if failure is not None:
+            raise failure
+        reload_pass(*args, **kwargs)
+
+    monkeypatch.setattr(p, "_reload_pass", _fail_once)
+    with pytest.raises(ProviderError, match="engine refused"):
+        p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert not planning_mod.vision_role_wanted("org/repo/v.gguf")  # the grant was dropped
+    assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"  # the next page retried
+
+
+def test_a_vision_setting_reload_revokes_the_request_grant(monkeypatch, ocr_gated_engine) -> None:
+    monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert WorkerRole.VISION in p._clients
+    p.reload_role(WorkerRole.VISION, wait=True)
+    assert WorkerRole.VISION not in p._clients
 
 
 def test_vision_dispatcher_caps_each_replica_at_its_slots() -> None:
@@ -4947,6 +5128,58 @@ def test_ladder_rebuilds_partially_dead_compatible_machine_slot_in_place(
     assert stopped == [machine]  # the partially dead engine was stopped...
     assert built and built[0] == machine  # ...and rebuilt in the machine slot
     holder.release_and_check_last()
+
+
+def test_a_services_reset_drops_the_request_vision_grant(monkeypatch, ocr_gated_engine) -> None:
+    from lilbee.app.services import reset_services, set_services
+
+    monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
+    p = _provider_without_preload(monkeypatch)
+    p._ensure_fleet()
+    p.vision_ocr(b"png", "org/repo/v.gguf")
+    assert planning_mod.vision_role_wanted("org/repo/v.gguf")  # the request granted vision
+    services = MagicMock()
+    services.provider = p
+    set_services(services)
+    reset_services()
+    assert not planning_mod.vision_role_wanted("org/repo/v.gguf")
+
+
+def test_ladder_rebuilds_a_pin_equal_engine_that_lacks_the_vision_role(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """ocr is not in the pin, so an OCR-on process rebuilds an OCR-off peer's engine.
+
+    The peer's engine serves only wanted pairs and shares the pin, so the ladder
+    treats it as this contract's own partial cover and rebuilds it in place,
+    restarting the peer's roles, instead of loading a second fleet beside it.
+    """
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    vision = InstanceLaunch(
+        role=WorkerRole.VISION, argv=["/bin/llama-server"], env_overrides={}, model="m-vision"
+    )
+    _swap, machine, built = _install_ladder(
+        monkeypatch, tmp_path, launches=[_chat_launch(), vision]
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod,
+        "_configured_model_for",
+        lambda role: {"chat": "m-chat", "vision": "m-vision"}.get(role.value, ""),
+    )
+    # The OCR-off peer built chat alone; it is still live.
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    peer = hold_user_lock(machine, pid=999_777)
+    monkeypatch.setattr(prov_mod.cfg, "data_root", tmp_path / "root", raising=False)
+    p = FleetProvider()
+    try:
+        assert p._ensure_fleet() is True
+    finally:
+        peer.release_and_check_last()
+    assert stopped == [machine]  # the peer's engine was stopped...
+    assert built and built[0] == machine  # ...and rebuilt in place with vision
 
 
 def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(

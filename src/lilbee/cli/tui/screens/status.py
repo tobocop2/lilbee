@@ -23,7 +23,7 @@ from textual.widgets import Collapsible, DataTable, Static
 from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
-from lilbee.app.settings import ocr_engine_note
+from lilbee.app.settings import SCANNED_PAGES_LABEL, scanned_pages_state
 from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
@@ -89,24 +89,6 @@ def _collapse_home(path: Path | str) -> str:
     return text.replace(home, "~", 1) if text.startswith(home) else text
 
 
-def _ocr_label() -> str:
-    """Return a human-readable OCR status string."""
-    if cfg.enable_ocr is True:
-        return "enabled"
-    if cfg.enable_ocr is False:
-        return "disabled"
-    return "auto"
-
-
-def _ocr_pill() -> Content:
-    """Return a pill reflecting OCR status."""
-    if cfg.enable_ocr is True:
-        return pill("on", "$success", "$text")
-    if cfg.enable_ocr is False:
-        return pill("off", "$warning", "$text")
-    return pill("auto", "$accent", "$text")
-
-
 def _data_dir_pill() -> Content:
     """Return a pill based on whether the data directory exists."""
     if Path(cfg.data_dir).exists():
@@ -124,11 +106,8 @@ def _build_config_content() -> Content:
         ),
         _kv_line("Vision model", cfg.vision_model or "(disabled)", _model_pill(cfg.vision_model)),
         _kv_line("Reranker", cfg.reranker_model or "(disabled)", _model_pill(cfg.reranker_model)),
-        _kv_line("Tesseract OCR", _ocr_label(), _ocr_pill()),
+        _kv_line(SCANNED_PAGES_LABEL, scanned_pages_state()),
     ]
-    note = ocr_engine_note()
-    if note is not None:
-        lines.append(Content(note))
     return Content("\n").join(lines)
 
 

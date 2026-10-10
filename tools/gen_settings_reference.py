@@ -34,6 +34,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))
 from lilbee.app.settings import _setting_default, _setting_help  # noqa: E402
 from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup  # noqa: E402
 from lilbee.config_meta import (  # noqa: E402
+    ENV_UNSETTABLE_FIELDS,
     PUBLIC_CONFIG_FIELDS,
     REINDEX_FIELDS,
     WRITABLE_CONFIG_FIELDS,
@@ -53,6 +54,7 @@ GROUP_ORDER: tuple[SettingGroup, ...] = (
     SettingGroup.RETRIEVAL,
     SettingGroup.GENERATION,
     SettingGroup.INGEST,
+    SettingGroup.OCR_TUNING,
     SettingGroup.WIKI,
     SettingGroup.MEMORY,
     SettingGroup.CRAWLING,
@@ -109,6 +111,14 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         False,
     ),
     "LILBEE_NO_SPLASH": ("Set to any value to suppress the startup splash animation", False),
+    "LILBEE_ENABLE_OCR": (
+        "Retired: any non-blank value stops every command with an error. Use `LILBEE_OCR`",
+        False,
+    ),
+    "LILBEE_OCR_FORCE": (
+        "Retired: any non-blank value stops every command with an error. Use `LILBEE_OCR`",
+        False,
+    ),
     "LILBEE_INGEST_CONCURRENCY": (
         "Extraction-admission mode: `static` (the default), "
         "`adaptive-conservative`, or `adaptive-aggressive`",
@@ -121,14 +131,13 @@ ENV_ONLY: dict[str, tuple[str, bool]] = {
         "A directory that at most one server may serve at a time, for a plugin's shared root",
         False,
     ),
-    "LILBEE_OCR_FORCE": (
-        "Force vision OCR on pages that already carry a text layer. It has no "
-        "effect on those pages today; set `vlm_fallback` instead",
-        False,
-    ),
     # Internal: not settings, and documenting them would invite misuse.
     "LILBEE_PARENT_PID": ("Process plumbing: the parent to watch and exit with", True),
     "LILBEE_LAUNCHER_SERVE_QUIET": ("Internal launcher flag", True),
+    "LILBEE_LOAD_WARNINGS_SHOWN": (
+        "Process plumbing: the load warnings this process tree already printed",
+        True,
+    ),
     "LILBEE_SKIP_TOML_CONFIG": ("Test hook: ignore config.toml for hermetic runs", True),
     "LILBEE_SKIP_MODEL_TASK_VALIDATION": ("Test hook: skip catalog task validation", True),
 }
@@ -147,6 +156,10 @@ HOST_SCALED: dict[str, str] = {
 
 def _env_var(key: str) -> str:
     return f"LILBEE_{key.upper()}"
+
+
+def _env_cell(key: str) -> str:
+    return "no" if key in ENV_UNSETTABLE_FIELDS else f"`{_env_var(key)}`"
 
 
 def _help_text(key: str) -> str:
@@ -250,7 +263,7 @@ def _description_cell(key: str) -> str:
 def _row(key: str) -> str:
     cells = (
         f"`{key}`",
-        f"`{_env_var(key)}`",
+        _env_cell(key),
         f"`{field_type_name(key)}`",
         _render_default(key),
         _tui_cell(key),

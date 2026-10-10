@@ -16,6 +16,7 @@ from rich.table import Table
 from rich.text import Text
 
 from lilbee.app.ingest import RegisterResult, register_sources
+from lilbee.app.settings import SCANNED_PAGES_LABEL
 from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
@@ -125,11 +126,7 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     reranker = status.config.reranker_model or "(disabled)"
     yield _label_line("Vision", vision)
     yield _label_line("Reranker", reranker)
-    if status.config.enable_ocr is not None:
-        ocr_label = "enabled" if status.config.enable_ocr else "disabled"
-        yield _label_line("Tesseract OCR", ocr_label)
-    if status.ocr_note is not None:
-        yield _label_line("OCR engine", status.ocr_note)
+    yield _label_line(SCANNED_PAGES_LABEL, status.ocr_note)
     if status.entities is not None:
         names = ", ".join(status.entities.types) or "schema pending (induced on next sync)"
         yield _label_line("Entities", f"{status.entities.rows} entities extracted ({names})")

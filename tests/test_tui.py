@@ -852,6 +852,25 @@ class TestThemes:
             assert mock_delete.call_args.args[1] == ["seed"]
 
     @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_set_setting_refused_gpu_devices_stores_automatic(
+        self, mock_catalog: mock.MagicMock
+    ) -> None:
+        """The losing field: the valid pin set first is gone; another setting still raises."""
+        mock_catalog.return_value = _EMPTY_CATALOG
+        from lilbee.cli.tui.app import LilbeeApp
+
+        app = LilbeeApp()
+        async with app.run_test() as pilot:
+            await await_chat(app, pilot)
+            await pilot.pause()
+            app.set_setting("gpu_devices", "0,1")
+            assert cfg.gpu_devices == "0,1"
+            app.set_setting("gpu_devices", "cpu")
+            assert cfg.gpu_devices is None
+            with pytest.raises(ValueError, match="top_k"):
+                app.set_setting("top_k", "many")
+
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
     async def test_set_setting_stringifies_list_for_toml(
         self, mock_catalog: mock.MagicMock
     ) -> None:

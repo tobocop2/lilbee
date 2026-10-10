@@ -37,7 +37,7 @@ make format     # Auto-format code
 
 | File | Purpose |
 |------|---------|
-| `config.py` | All settings (env-var configurable) |
+| `config.py` | All settings (env-var configurable, except `linked_roots`) |
 | `ingest.py` | Document sync engine (hash-based change detection) |
 | `query.py` | RAG pipeline (embed → search → generate) |
 | `store.py` | LanceDB operations |

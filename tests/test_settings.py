@@ -52,6 +52,63 @@ class TestLoad:
         assert settings.load(tmp_path) == {"chat_model": "llama3"}
 
 
+class TestRetiredOcrKeysOnDisk:
+    """A config.toml enable_ocr from before the ocr setting reads as ocr and a write replaces it."""
+
+    _VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+
+    @pytest.mark.parametrize(
+        ("toml", "expected"),
+        [
+            ("enable_ocr = false\n", "off"),
+            (f'enable_ocr = false\nvision_model = "{_VISION}"\n', "auto"),
+            ("enable_ocr = true\n", "auto"),
+        ],
+    )
+    def test_load_reads_them_as_ocr(self, tmp_path, monkeypatch, toml, expected):
+        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
+        loaded = settings.load(tmp_path)
+        assert loaded["ocr"] == expected
+        assert "enable_ocr" not in loaded
+
+    def test_the_vision_model_env_var_decides_over_config_toml(self, tmp_path, monkeypatch):
+        (tmp_path / "config.toml").write_text(
+            f'enable_ocr = false\nvision_model = "{self._VISION}"\n', encoding="utf-8"
+        )
+        monkeypatch.setenv("LILBEE_VISION_MODEL", "")
+        assert settings.load(tmp_path)["ocr"] == "off"
+        monkeypatch.delenv("LILBEE_VISION_MODEL")
+        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+        monkeypatch.setenv("LILBEE_VISION_MODEL", self._VISION)
+        assert settings.load(tmp_path)["ocr"] == "auto"
+
+    def test_the_first_settings_write_replaces_them(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "top_k", 5)
+        (tmp_path / "config.toml").write_text("enable_ocr = false\ntop_k = 5\n", encoding="utf-8")
+        appset.apply_settings_update({"top_k": 7})
+        written = (tmp_path / "config.toml").read_text(encoding="utf-8")
+        assert 'ocr = "off"' in written
+        assert "enable_ocr" not in written
+        assert "top_k = 7" in written
+
+    def test_the_data_dir_overlay_applies_the_mode(self, tmp_path, monkeypatch):
+        from lilbee.core.config import cfg
+        from lilbee.core.config.enums import OcrMode
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
+        monkeypatch.delenv("LILBEE_OCR", raising=False)
+        monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
+        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
+        settings.overlay_persisted_settings(tmp_path)
+        assert cfg.ocr is OcrMode.OFF
+
+
 class TestSave:
     def test_save_creates_file(self, tmp_path):
         settings.save(tmp_path, {"chat_model": "llama3"})
@@ -459,7 +516,7 @@ class TestOcrPageSelectionSettings:
         assert SETTINGS_MAP["ocr_scan_confidence"].type is float
         assert SETTINGS_MAP["force_ocr_pages"].type is list
         for key in ("ocr_strategy", "ocr_scan_confidence", "force_ocr_pages"):
-            assert SETTINGS_MAP[key].group == "Ingest"
+            assert SETTINGS_MAP[key].group == "OCR-Tuning"
             assert key in WRITABLE_CONFIG_FIELDS
         assert get_default("ocr_strategy") == "auto"
         assert get_default("ocr_scan_confidence") == 0.7
@@ -552,7 +609,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is int
-        assert defn.group == "Ingest"
+        assert defn.group == "OCR-Tuning"
         assert get_default("vision_ocr_max_tokens") == 4096
 
     def test_vision_ocr_concurrency_in_settings_map(self):
@@ -561,7 +618,7 @@ class TestMemoryTuningSettingsMap:
         assert defn.writable is True
         assert defn.nullable is False
         assert defn.type is int
-        assert defn.group == "Ingest"
+        assert defn.group == "OCR-Tuning"
         assert get_default("vision_ocr_concurrency") == 4
 
     def test_crawl_render_mode_in_settings_map(self):
@@ -595,10 +652,12 @@ class TestMemoryTuningSettingsMap:
 
 
 class TestCrawlRenderModeConfig:
-    def test_default_is_http(self):
+    def test_default_is_http(self, tmp_path, monkeypatch):
         from lilbee.core.config.enums import CrawlRenderMode
         from lilbee.core.config.model import Config
 
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        monkeypatch.delenv("LILBEE_CRAWL_RENDER_MODE", raising=False)
         assert Config().crawl_render_mode is CrawlRenderMode.HTTP
 
     def test_env_var_overrides_to_browser(self, monkeypatch):
@@ -608,14 +667,15 @@ class TestCrawlRenderModeConfig:
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "browser")
         assert Config().crawl_render_mode is CrawlRenderMode.BROWSER
 
-    def test_invalid_value_is_rejected(self, monkeypatch):
-        import pytest
-        from pydantic import ValidationError
-
+    def test_an_invalid_env_value_stops_the_load(self, monkeypatch):
+        from lilbee.core.config import RefusedVariableError
         from lilbee.core.config.model import Config
 
         monkeypatch.setenv("LILBEE_CRAWL_RENDER_MODE", "bogus")
-        with pytest.raises(ValidationError):
+        with pytest.raises(
+            RefusedVariableError,
+            match=r"^LILBEE_CRAWL_RENDER_MODE = 'bogus' is not one of http, browser$",
+        ):
             Config()
 
     def test_browser_memory_lever_defaults(self):
@@ -745,6 +805,162 @@ class TestOverlayPersistedSettings:
             assert cfg.vision_replicas == 1  # config.toml ignored while skipping
         finally:
             cfg.vision_replicas = original
+
+    def test_a_refused_value_in_another_root_names_the_root_and_keeps_the_first_value(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The losing field: the other root's valid vision_replicas is set."""
+        from lilbee.core.config import cfg
+        from lilbee.core.config.model import _build_cfg
+
+        first, other = tmp_path / "first", tmp_path / "other"
+        first.mkdir()
+        other.mkdir()
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setenv("LILBEE_DATA", str(first))
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+        (first / "config.toml").write_text("top_k = 7\nvision_replicas = 1\n", encoding="utf-8")
+        (other / "config.toml").write_text(
+            'top_k = "many"\nvision_replicas = 3\n', encoding="utf-8"
+        )
+        loaded, at_load = _build_cfg()
+        monkeypatch.setattr(cfg, "vision_replicas", loaded.vision_replicas)
+        monkeypatch.setattr(cfg, "top_k", loaded.top_k)
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(other)
+            settings.overlay_persisted_settings(other)
+        assert at_load == ()
+        assert (cfg.vision_replicas, cfg.top_k) == (3, 7)
+        assert [record.getMessage() for record in caplog.records] == [
+            f"{other / 'config.toml'}: top_k = 'many' is not a whole number; top_k keeps its value"
+        ]
+
+    @staticmethod
+    def _load_from(tmp_path, monkeypatch, stored):
+        """Build cfg's twin from *stored* in tmp_path and record it as the load."""
+        from lilbee.core.config import model
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_VISION_REPLICAS", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path))
+        path = tmp_path / "config.toml"
+        path.write_text(stored, encoding="utf-8")
+        loaded, at_load = model._build_cfg()
+        monkeypatch.setattr(model, "loaded_config_file", model._config_file())
+        monkeypatch.setattr(model, "load_warnings", at_load)
+        return path, loaded, at_load
+
+    @pytest.mark.parametrize("stored", ['top_k = "many"\nvision_replicas = 3\n', "top_k = = 9\n"])
+    def test_the_file_cfg_was_built_from_is_not_reported_again(
+        self, tmp_path, monkeypatch, caplog, stored
+    ):
+        """The twin of the two tests beside it, which overlay a file the load did not read."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "vision_replicas", 1)
+        with caplog.at_level("WARNING"):
+            _path, _loaded, at_load = self._load_from(tmp_path, monkeypatch, stored)
+            reported = len(caplog.records)
+            settings.overlay_persisted_settings(tmp_path)
+        assert (len(at_load), reported) == (1, 1)
+        assert len(caplog.records) == reported
+        assert cfg.vision_replicas == (3 if "vision_replicas" in stored else 1)
+
+    @pytest.mark.parametrize(
+        ("after_start", "line"),
+        [
+            ('top_k = "many"\nchunk_size = "big"\n', "top_k = 'many' is not a whole number"),
+            ('top_k = 7\nchunk_size = "huge"\n', "chunk_size = 'huge' is not a whole number"),
+        ],
+    )
+    def test_a_value_that_goes_bad_after_the_load_is_reported_once(
+        self, tmp_path, monkeypatch, caplog, after_start, line
+    ):
+        """The losing field: chunk_size = "big" was reported by the load and is not repeated."""
+        from lilbee.core.config import cfg
+
+        path, loaded, at_load = self._load_from(
+            tmp_path, monkeypatch, 'top_k = 7\nchunk_size = "big"\n'
+        )
+        monkeypatch.setattr(cfg, "top_k", loaded.top_k)
+        path.write_text(after_start, encoding="utf-8")
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+            settings.overlay_persisted_settings(tmp_path)
+        assert at_load == (
+            "config.toml: chunk_size = 'big' is not a whole number; chunk_size uses its default",
+        )
+        key = line.split(" ")[0]
+        assert [record.getMessage() for record in caplog.records] == [
+            f"{path}: {line}; {key} keeps its value"
+        ]
+        assert cfg.top_k == 7
+
+    def test_another_root_with_the_same_bad_line_is_reported_under_its_own_path(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """The load's report covers its own file; another root's identical line is its own news."""
+        from lilbee.core.config import cfg
+
+        _path, loaded, at_load = self._load_from(tmp_path, monkeypatch, 'chunk_size = "big"\n')
+        other = tmp_path / "other"
+        other.mkdir()
+        (other / "config.toml").write_text('chunk_size = "big"\ntop_k = 3\n', encoding="utf-8")
+        monkeypatch.setattr(cfg, "top_k", loaded.top_k)
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(other)
+        assert len(at_load) == 1
+        assert [record.getMessage() for record in caplog.records] == [
+            f"{other / 'config.toml'}: chunk_size = 'big' is not a whole number;"
+            " chunk_size keeps its value"
+        ]
+        assert cfg.top_k == 3
+
+    def test_a_file_that_stops_being_toml_after_the_load_is_reported(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        path, _loaded, at_load = self._load_from(tmp_path, monkeypatch, "top_k = 7\n")
+        path.write_text("top_k = = 9\n", encoding="utf-8")
+        caplog.clear()
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+        assert at_load == ()
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Failed to read {path}, ignoring"
+        ]
+
+    def test_a_file_that_is_not_toml_changes_nothing_and_warns(self, tmp_path, monkeypatch, caplog):
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        path = tmp_path / "config.toml"
+        path.write_text("top_k = = 9\n", encoding="utf-8")
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 4
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Failed to read {path}, ignoring"
+        ]
+
+    def test_a_root_without_config_toml_changes_nothing(self, tmp_path, monkeypatch, caplog):
+        """The twin: the same call with a file in the root does set the value."""
+        from lilbee.core.config import cfg
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.delenv("LILBEE_TOP_K", raising=False)
+        monkeypatch.setattr(cfg, "top_k", 4)
+        with caplog.at_level("WARNING"):
+            settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 4
+        assert caplog.records == []
+        (tmp_path / "config.toml").write_text("top_k = 9\n", encoding="utf-8")
+        settings.overlay_persisted_settings(tmp_path)
+        assert cfg.top_k == 9
 
 
 def test_the_model_roles_that_can_be_off_are_the_clearable_ones():

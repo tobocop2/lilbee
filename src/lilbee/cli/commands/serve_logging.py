@@ -5,12 +5,13 @@ from __future__ import annotations
 import faulthandler
 import logging
 import sys
+from collections.abc import Iterable
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import TracebackType
 from typing import IO
 
-from lilbee.core.config import cfg
+from lilbee.core.config import cfg, load_warnings
 
 logger = logging.getLogger(__name__)
 
@@ -24,8 +25,11 @@ _UVICORN_ACCESS_LOGGER = "uvicorn.access"
 _HEALTH_ACCESS_PATH = "/api/health"
 
 
-def setup_server_log_file() -> Path:
-    """Install a RotatingFileHandler at ``cfg.data_root/logs/server.log``. Idempotent."""
+def setup_server_log_file(earlier: Iterable[str] = ()) -> Path:
+    """Install a RotatingFileHandler at ``cfg.data_root/logs/server.log``. Idempotent.
+
+    A new handler starts with the *earlier* warnings, logged before any handler existed.
+    """
     log_dir = cfg.data_root / _LOG_DIR_NAME
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / _SERVER_LOG_FILE_NAME
@@ -39,6 +43,17 @@ def setup_server_log_file() -> Path:
     file_handler.setFormatter(logging.Formatter(_LOG_FORMAT))
     file_handler.setLevel(logging.INFO)
     root.addHandler(file_handler)
+    for message in earlier:
+        file_handler.handle(
+            logging.makeLogRecord(
+                {
+                    "name": logger.name,
+                    "levelno": logging.WARNING,
+                    "levelname": "WARNING",
+                    "msg": message,
+                }
+            )
+        )
     if root.level > logging.INFO:
         # NOTSET stream handlers delegate to root; pin them so stderr verbosity is unchanged.
         for handler in root.handlers:
@@ -105,7 +120,7 @@ def install_excepthook() -> None:
 
 def setup_server_logging() -> None:
     """File log, fault log, and excepthook for a ``serve`` process."""
-    setup_server_log_file()
+    setup_server_log_file(load_warnings)
     enable_fault_log()
     install_excepthook()
 

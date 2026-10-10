@@ -6,6 +6,7 @@ Integration tests requiring real models live in tests/integration/test_pipeline_
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.core.config.enums import OcrMode
 from lilbee.data.store import Store
 
 
@@ -297,28 +298,18 @@ class TestMaxConcurrent:
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 6
 
-    def test_ocr_off_sizes_to_cpu_quota_without_a_vision_model(self, monkeypatch) -> None:
-        # No OCR backend runs, so the fleet is never asked for vision slots.
+    def test_ocr_off_sizes_to_cpu_quota_despite_a_vision_model(self, monkeypatch) -> None:
+        # ocr = off means no page reaches the vision server, so its slots do not bound
+        # admission and the fleet is never asked for them.
         from lilbee.data.ingest import pipeline
 
         self._stub_vision_capacity(monkeypatch, 5)
         monkeypatch.setattr(pipeline, "cpu_quota", lambda: 6)
-        monkeypatch.setattr(cfg, "enable_ocr", False)
-        monkeypatch.setattr(cfg, "vision_model", "")
+        monkeypatch.setattr(cfg, "ocr", OcrMode.OFF)
+        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
         monkeypatch.setattr(cfg, "embed_replicas", 1)
         assert pipeline._max_concurrent() == 6
         pipeline.get_services().provider.vision_slot_capacity.assert_not_called()
-
-    def test_ocr_off_with_a_vision_model_sizes_to_vision_slots(self, monkeypatch) -> None:
-        # A set vision model reads scans whatever enable_ocr says, so its slots bound admission.
-        from lilbee.data.ingest import pipeline
-
-        self._stub_vision_capacity(monkeypatch, 9)
-        monkeypatch.setattr(pipeline, "cpu_quota", lambda: 6)
-        monkeypatch.setattr(cfg, "enable_ocr", False)
-        monkeypatch.setattr(cfg, "vision_model", "org/repo/model.gguf")
-        monkeypatch.setattr(cfg, "embed_replicas", 1)
-        assert pipeline._max_concurrent() == 9
 
     def test_scales_to_total_vision_slots_when_replicated(self, monkeypatch) -> None:
         # Before the fleet is up (capacity None) the estimate stands: 8 vision replicas

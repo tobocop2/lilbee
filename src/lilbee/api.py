@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING
 # transitively imports spaCy via the wiki package and adds ~3s on first touch.
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.services import build_services, services_scope
-from lilbee.core.config import Config, cfg, config_scope
+from lilbee.core.config import Config, cfg, config_scope, refuse_environment
 from lilbee.core.system import canonical_data_root
 from lilbee.data.store import LOCAL_OWNER, MemoryKind, MemoryRow, SearchScope, scope_to_chunk_type
 
@@ -79,8 +79,10 @@ class Lilbee:
             provider: LLM provider instance. If not given, creates one from config.
 
         Pass documents_dir or config, not both. If neither is given, uses
-        ``Config()`` (same defaults as the CLI).
+        ``Config()`` (same defaults as the CLI). Raises RefusedVariableError when the
+        environment sets a retired OCR variable or a value its setting refuses.
         """
+        refuse_environment()
         if documents_dir is not None and config is not None:
             raise ValueError("Pass documents_dir or config, not both")
 

@@ -16,6 +16,7 @@ from textual.widgets._tabbed_content import ContentTabs
 
 from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
+from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog import (
     CatalogModel,
     CatalogResult,
@@ -46,7 +47,7 @@ from lilbee.cli.tui.task_queue import TaskStatus, TaskType
 from lilbee.cli.tui.widgets.chat_input import ChatInput
 from lilbee.cli.tui.widgets.model_list import ModelList, ModelListSection
 from lilbee.core.config import cfg
-from lilbee.core.config.enums import CrawlRenderMode
+from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.modelhub.model_manager import RemoteModel
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
@@ -2151,27 +2152,35 @@ async def test_status_screen_config_shows_models(mock_svc):
         rendered = str(info.render())
         assert "Chat model" in rendered
         assert "Embed model" in rendered
-        assert "OCR" in rendered
+        assert "Scanned pages" in rendered
 
 
+@pytest.mark.parametrize("size", [(80, 40), (160, 40)])
 @pytest.mark.parametrize(
-    ("vision_model", "enable_ocr", "expected"),
+    ("vision_model", "ocr", "expected"),
     [
-        ("org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", None, "used instead of Tesseract"),
-        ("org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", False, "used instead of Tesseract"),
-        ("", True, "Tesseract runs OCR"),
+        (
+            "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf",
+            OcrMode.AUTO,
+            "read by org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf",
+        ),
+        ("org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf", OcrMode.OFF, "skipped (ocr = off)"),
+        ("", OcrMode.ALL, "every page read by Tesseract (eng) (ocr = all)"),
     ],
 )
-async def test_status_screen_names_the_ocr_engine(mock_svc, vision_model, enable_ocr, expected):
+async def test_status_screen_shows_one_scanned_pages_line(
+    mock_svc, vision_model, ocr, expected, size
+):
     cfg.vision_model = vision_model
-    cfg.enable_ocr = enable_ocr
+    cfg.ocr = ocr
+    cfg.ocr_language = ["eng"]
     app = StatusTestApp()
-    async with app.run_test(size=(160, 40)) as _pilot:
-        rendered = str(app.screen.query_one("#config-info", Static).render())
+    async with app.run_test(size=size) as _pilot:
+        rendered = " ".join(str(app.screen.query_one("#config-info", Static).render()).split())
         assert "Vision model" in rendered
-        assert "Tesseract OCR" in rendered
-        assert expected in rendered
-        assert "OCR is off" not in rendered
+        assert rendered.count("Scanned pages") == 1
+        assert f"Scanned pages {expected}" in rendered
+        assert "Tesseract OCR" not in rendered
 
 
 async def test_status_screen_config_pills_render(mock_svc):
@@ -2375,36 +2384,6 @@ async def test_status_screen_escape_invokes_switch_view():
         with patch.object(app, "switch_view") as switch:
             await _pilot.press("escape")
             switch.assert_called_once_with("Chat")
-
-
-def test_ocr_label_enabled():
-    from lilbee.cli.tui.screens.status import _ocr_label
-
-    cfg.enable_ocr = True
-    assert _ocr_label() == "enabled"
-
-
-def test_ocr_label_disabled():
-    from lilbee.cli.tui.screens.status import _ocr_label
-
-    cfg.enable_ocr = False
-    assert _ocr_label() == "disabled"
-
-
-def test_ocr_pill_enabled():
-    from lilbee.cli.tui.screens.status import _ocr_pill
-
-    cfg.enable_ocr = True
-    result = _ocr_pill()
-    assert "on" in str(result)
-
-
-def test_ocr_pill_disabled():
-    from lilbee.cli.tui.screens.status import _ocr_pill
-
-    cfg.enable_ocr = False
-    result = _ocr_pill()
-    assert "off" in str(result)
 
 
 def test_status_model_pill_truthy():
@@ -3463,6 +3442,16 @@ async def test_chat_slash_set_valid():
     async with app.run_test(size=(120, 40)) as _pilot:
         app.screen._cmd_set("top_k 10")
         assert cfg.top_k == 10
+
+
+async def test_chat_slash_set_names_ocr_for_the_retired_key():
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_set("enable_ocr false")
+        assert mock_notify.call_args.args == (
+            "enable_ocr is replaced by ocr; set ocr to one of auto, all, off",
+        )
 
 
 async def test_chat_slash_set_bool():
@@ -8652,9 +8641,7 @@ def test_add_and_sync_progress_callbacks_show_tesseract_ocr() -> None:
     from lilbee.runtime.progress import EventType, OcrStartEvent
 
     expected = msg.SYNC_TESSERACT_OCR.format(total=212, file="scan.pdf")
-    assert expected == (
-        "Running Tesseract OCR on the scanned pages of scan.pdf (212 pages in the file)"
-    )
+    assert expected == "Running Tesseract OCR on scan.pdf (212 pages in the file)"
     for build in (build_add_progress_callback, build_sync_progress_callback):
         reporter = MagicMock(spec=ProgressReporter)
         build(reporter)(EventType.OCR_START, OcrStartEvent(file="scan.pdf", total_pages=212))
@@ -14846,33 +14833,35 @@ def test_settings_env_pill_when_env_set(monkeypatch):
     """env_pill returns a pill when the LILBEE_* env var is exported."""
     from lilbee.cli.tui.screens.settings_widgets import env_pill
 
-    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "ollama/probe:latest")
     pill_content = env_pill("chat_model")
     assert pill_content is not None
     assert "LILBEE_CHAT_MODEL" in pill_content.plain
 
 
-@pytest.mark.parametrize("key", ["enable_ocr", "vision_model"])
-def test_settings_help_content_names_the_ocr_engine_on_ocr_rows(key):
+@pytest.mark.parametrize("key", ["ocr", "vision_model"])
+def test_settings_help_content_carries_the_scanned_pages_line_on_ocr_rows(key):
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings_widgets import help_content
 
-    cfg.enable_ocr = None
-    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    assert "used instead of Tesseract" in help_content(key, SETTINGS_MAP[key]).plain
+    vision = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
+    cfg.ocr = OcrMode.AUTO
+    cfg.vision_model = vision
+    assert help_content(key, SETTINGS_MAP[key]).plain.endswith(f"Scanned pages: read by {vision}")
     cfg.vision_model = ""
-    assert "Tesseract runs OCR" in help_content(key, SETTINGS_MAP[key]).plain
-    cfg.enable_ocr = False
-    assert help_content(key, SETTINGS_MAP[key]).plain == SETTINGS_MAP[key].help_text
-    cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-    assert "used instead of Tesseract" in help_content(key, SETTINGS_MAP[key]).plain
+    cfg.ocr_language = ["eng"]
+    assert help_content(key, SETTINGS_MAP[key]).plain.endswith(
+        "Scanned pages: read by Tesseract (eng)"
+    )
+    cfg.ocr = OcrMode.OFF
+    assert help_content(key, SETTINGS_MAP[key]).plain.endswith("Scanned pages: skipped (ocr = off)")
 
 
 def test_settings_help_content_has_no_ocr_note_on_other_rows():
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings_widgets import help_content
 
-    cfg.enable_ocr = None
+    cfg.ocr = OcrMode.AUTO
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     assert help_content("top_k", SETTINGS_MAP["top_k"]).plain == SETTINGS_MAP["top_k"].help_text
 
@@ -14889,12 +14878,16 @@ def test_settings_help_content_blank_when_no_help_text():
 
 @pytest.mark.parametrize(
     ("key", "value", "shown"),
-    [("vision_model", "", True), ("chat_model", "", False), ("top_k", "", False)],
+    [
+        ("vision_model", "", True),
+        ("chat_model", "", False),
+        ("top_k", "", False),
+        ("top_k", "7", True),
+        ("top_k", " ", False),
+    ],
 )
-def test_settings_env_pill_follows_whether_an_empty_env_value_overrides(
-    monkeypatch, key, value, shown
-):
-    """An empty LILBEE_* value shows the pill only where it clears the setting."""
+def test_settings_env_pill_follows_whether_the_env_value_overrides(monkeypatch, key, value, shown):
+    """The pill shows where the variable sets the setting: not when it is blank."""
     from lilbee.cli.tui.screens.settings_widgets import env_pill
 
     monkeypatch.setenv(f"LILBEE_{key.upper()}", value)
@@ -14906,7 +14899,7 @@ def test_settings_title_content_renders_env_pill_when_set(monkeypatch):
     from lilbee.app.settings_map import SETTINGS_MAP
     from lilbee.cli.tui.screens.settings_widgets import title_content
 
-    monkeypatch.setenv("LILBEE_CHAT_MODEL", "probe")
+    monkeypatch.setenv("LILBEE_CHAT_MODEL", "ollama/probe:latest")
     content = title_content("chat_model", SETTINGS_MAP["chat_model"])
     assert "LILBEE_CHAT_MODEL" in content.plain
 
@@ -15096,48 +15089,88 @@ async def test_settings_model_picker_dismissed_reloads_worker_once():
 
 def _ocr_help_texts(screen) -> dict[str, str]:
     return {
-        key: str(screen.query_one(f"#row-{key} .setting-help", Static).render())
-        for key in ("enable_ocr", "vision_model")
+        key: " ".join(str(screen.query_one(f"#row-{key} .setting-help", Static).render()).split())
+        for key in ("ocr", "vision_model")
     }
 
 
-async def test_settings_clearing_the_vision_model_updates_both_ocr_notes():
-    """Picking no vision model re-renders the OCR rows to say Tesseract runs."""
+async def test_settings_clearing_the_vision_model_updates_the_ocr_rows():
+    """Picking no vision model re-renders both OCR rows and shows ocr_language again."""
     from unittest.mock import patch
+
+    from tests._async_wait import wait_until
 
     services_mock = MagicMock()
     services_mock.store.has_chunks.return_value = False
-    cfg.enable_ocr = None
+    cfg.ocr = OcrMode.AUTO
+    cfg.ocr_language = ["eng"]
     cfg.vision_model = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
+        language_row = screen.query_one("#row-ocr_language")
         before = _ocr_help_texts(screen)
-        assert all("used instead of Tesseract" in text for text in before.values())
+        assert all("read by org/Test-Vision-GGUF" in text for text in before.values())
+        assert language_row.display is False
         with patch("lilbee.cli.tui.widgets.model_pick.get_services", return_value=services_mock):
             screen._on_model_picker_dismissed("vision_model", "")
             await app.workers.wait_for_complete()
-            await pilot.pause()
+            assert await wait_until(pilot, lambda: language_row.display is True)
         assert cfg.vision_model == ""
         after = _ocr_help_texts(screen)
-        assert all("Tesseract runs OCR" in text for text in after.values())
+        assert all("Scanned pages: read by Tesseract (eng)" in text for text in after.values())
 
 
 async def test_settings_turning_ocr_off_updates_the_vision_model_row():
     from lilbee.app.settings_map import SETTINGS_MAP
     from tests._async_wait import wait_until
 
-    cfg.enable_ocr = None
+    cfg.ocr = OcrMode.AUTO
     cfg.vision_model = ""
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         screen = app.screen
-        assert "Tesseract runs OCR" in _ocr_help_texts(screen)["vision_model"]
-        screen._persist_value("enable_ocr", SETTINGS_MAP["enable_ocr"], "false")
-        await wait_until(
-            pilot, lambda: "Tesseract runs OCR" not in _ocr_help_texts(screen)["vision_model"]
+        assert "read by Tesseract" in _ocr_help_texts(screen)["vision_model"]
+        screen._persist_value("ocr", SETTINGS_MAP["ocr"], "off")
+        assert await wait_until(
+            pilot, lambda: "skipped (ocr = off)" in _ocr_help_texts(screen)["vision_model"]
         )
-        assert _ocr_help_texts(screen)["vision_model"] == SETTINGS_MAP["vision_model"].help_text
+        assert cfg.ocr is OcrMode.OFF
+
+
+@pytest.mark.parametrize("size", [(80, 40), (160, 40)])
+async def test_settings_ocr_picker_shows_the_scanned_pages_labels(size):
+    from textual.widgets import Select
+
+    cfg.ocr = OcrMode.ALL
+    app = SettingsTestApp()
+    async with app.run_test(size=size):
+        select = app.screen.query_one("#ed-ocr", Select)
+        options = [(str(label), value) for label, value in select._options if str(label)]
+        assert options == [("Read", "auto"), ("Read every page", "all"), ("Skip", "off")]
+        assert select.value == "all"
+
+
+def test_settings_lists_the_ocr_tuning_keys_in_their_own_group():
+    from lilbee.cli.tui.screens.settings_widgets import group_settings
+
+    groups = group_settings()
+    tuning = [key for key, _defn in groups[SettingGroup.OCR_TUNING]]
+    assert sorted(tuning) == sorted(
+        [
+            "ocr_timeout",
+            "vision_load_budget_s",
+            "vision_ocr_max_tokens",
+            "vision_ocr_concurrency",
+            "vision_replicas",
+            "ocr_strategy",
+            "ocr_scan_confidence",
+            "force_ocr_pages",
+        ]
+    )
+    ingest = [key for key, _defn in groups[SettingGroup.INGEST]]
+    assert "ocr" in ingest and "ocr_language" in ingest
+    assert not set(tuning) & set(ingest)
 
 
 async def test_settings_model_picker_dismissed_reload_failure_notifies_the_bracketed_error():

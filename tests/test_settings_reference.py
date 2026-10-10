@@ -15,8 +15,13 @@ from unittest.mock import patch
 
 import pytest
 
-from lilbee.config_meta import PUBLIC_CONFIG_FIELDS, WRITABLE_CONFIG_FIELDS
+from lilbee.config_meta import (
+    ENV_UNSETTABLE_FIELDS,
+    PUBLIC_CONFIG_FIELDS,
+    WRITABLE_CONFIG_FIELDS,
+)
 from lilbee.core.config import Config, cfg
+from lilbee.core.config.model import _TAKES_DEFAULT_WHEN_REFUSED, _refusals
 from lilbee.mcp_server import TOOL_GATE_SETTINGS, build_mcp_server
 from lilbee.providers.roles import MODEL_ROLE_FIELDS
 
@@ -52,6 +57,16 @@ class TestReferenceIsCurrent:
         # failure names the setting rather than only failing `make lint`.
         missing = [name for name in Config.model_fields if not generator._help_text(name)]
         assert not missing, f"settings with no help text: {missing}"
+
+    def test_the_prose_names_each_setting_that_takes_its_default_when_refused(self):
+        prose = REFERENCE.read_text(encoding="utf-8").split("## Reading the surface columns")[0]
+        sentence = next(
+            line for line in prose.splitlines() if "The exception is the settings" in line
+        )
+        clause = sentence.split("The exception is the settings")[1].split(":")[0]
+        named = {name for name in Config.model_fields if f"`{name}`" in clause}
+        assert len(named) == 5
+        assert named == _TAKES_DEFAULT_WHEN_REFUSED
 
 
 class TestGeneratedFileIsMachineIndependent:
@@ -117,8 +132,37 @@ class TestEnvironmentOnlyVariables:
             assert name not in text, f"{name} is a test hook and must not be documented"
 
 
+# Strings a variable could hold for some type of setting: numbers, flags, choices,
+# lists, paths, model refs, URLs, and the shapes someone would try for a table.
+_ENV_CANDIDATES = (
+    "1", "0", "7", "0.5", "512", "true", "auto", "none", "all", "off", "a", "a,b", "eng",
+    "/x", "{}", "[]", '{"a": "/x"}', "a=/x", "a:/x", "null", "org/repo/file.gguf",
+    "http://localhost:1", "PERSON", "search", "english", "q8_0", "llm", "remote",
+)  # fmt: skip
+
+
 class TestSurfaceColumns:
     """Each column is derived, so check the derivation against the boundary itself."""
+
+    def test_the_settings_marked_as_set_by_no_variable_are_the_ones_no_string_sets(self):
+        """Every setting against every candidate and its own default as text."""
+        assert len(Config.model_fields) > 150
+        unsettable = set()
+        for key, info in Config.model_fields.items():
+            default = str(info.get_default(call_default_factory=True))
+            if all(_refusals(Config, {key: text}) for text in (*_ENV_CANDIDATES, default)):
+                unsettable.add(key)
+        assert unsettable == ENV_UNSETTABLE_FIELDS == {"linked_roots"}
+
+    def test_a_setting_no_variable_sets_shows_no_variable(self, generator):
+        text = REFERENCE.read_text(encoding="utf-8")
+        assert ENV_UNSETTABLE_FIELDS
+        for key in ENV_UNSETTABLE_FIELDS:
+            assert generator._env_cell(key) == "no"
+            assert f"| `{key}` | no |" in text
+            assert f"LILBEE_{key.upper()}" not in text
+        assert generator._env_cell("top_k") == "`LILBEE_TOP_K`"
+        assert "| `top_k` | `LILBEE_TOP_K` |" in text
 
     @pytest.mark.parametrize("key", sorted(MODEL_ROLE_FIELDS))
     def test_model_roles_are_http_role_api_not_patch_config(self, generator, key):
