@@ -23,7 +23,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from itertools import count
 from pathlib import Path
-from typing import Any, ParamSpec, cast
+from typing import Any, ParamSpec, TypeVar, cast
 
 from rich.progress import (
     BarColumn,
@@ -831,10 +831,7 @@ async def _absorb_plan_batch(
         await to_ingest_thread(moves.load, new_hashes)
     detected = _detect_moves(entries, plan.added, moves)
     if detected:
-        taken: dict[str, str] = {}
-        await to_ingest_thread(
-            _retry_after_lock_timeout, lambda: taken.update(store.relocate_sources(detected))
-        )
+        taken = await to_ingest_thread(_relocate_in_holds, store, detected)
         # A file whose candidates other writers all took is an add.
         entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
         state.relocated_from.extend(taken.values())
@@ -2229,17 +2226,42 @@ def _classify_result(
 # search-triggered FTS optimize holding the store lock past its 30s timeout.
 _FLUSH_RETRY_DELAY_SECONDS = 2.0
 
+# Twice the poll of the store's file lock: a writer that waits looks at least
+# once between two holds of a re-key.
+_RELOCATE_PAUSE_SECONDS = 0.1
 
-def _retry_after_lock_timeout(write: Callable[[], object]) -> None:
+_Written = TypeVar("_Written")
+
+
+def _retry_after_lock_timeout(write: Callable[[], _Written]) -> _Written:
     """Run one store write, retrying once after a lock timeout."""
     try:
-        write()
+        return write()
     except LockTimeoutError:
         log.warning(
             "Store write lock busy; retrying batch flush in %.0fs", _FLUSH_RETRY_DELAY_SECONDS
         )
         time.sleep(_FLUSH_RETRY_DELAY_SECONDS)
-        write()
+        return write()
+
+
+def _relocate_in_holds(store: Store, moves: list[SourceMove]) -> dict[str, str]:
+    """Re-key *moves* one hold of the write lock at a time; the old name each new name took.
+
+    Each hold takes the one-shot lock retry, so a timeout keeps what earlier
+    holds re-keyed. The pause between two holds lets a writer that waits take
+    the lock.
+    """
+    taken: dict[str, str] = {}
+    settled = 0
+    while settled < len(moves):
+        if settled:
+            time.sleep(_RELOCATE_PAUSE_SECONDS)
+        hold = functools.partial(store.relocate_sources, moves[settled:])
+        step = _retry_after_lock_timeout(hold)
+        taken.update(step.taken)
+        settled += step.settled
+    return taken
 
 
 def _flush_batch(buffer: list[_IngestResult]) -> None:

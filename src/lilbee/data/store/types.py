@@ -277,6 +277,13 @@ class SourceMove(NamedTuple):
     stat: SourceStat | None
 
 
+class SourceRelocation(NamedTuple):
+    """One hold of a re-key: the old name each new name took, and how many moves it settled."""
+
+    taken: dict[str, str]
+    settled: int
+
+
 class PageTextRecord(TypedDict):
     """One row of the per-page text dataset, matching ``_page_texts``.
 

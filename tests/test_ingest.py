@@ -96,6 +96,8 @@ def mock_svc():
     store.remove_documents.side_effect = _remove_documents
 
     def _relocate(moves):
+        from lilbee.data.store import SourceRelocation
+
         # Mirror the real re-key: a move takes its first candidate that holds a row.
         taken = {}
         for move in moves:
@@ -103,7 +105,7 @@ def mock_svc():
             if old is not None:
                 _sources[move.new] = {**_sources.pop(old), "filename": move.new}
                 taken[move.new] = old
-        return taken
+        return SourceRelocation(taken, len(moves))
 
     store.relocate_sources.side_effect = _relocate
     store.drop_all.side_effect = lambda: _sources.clear()
@@ -3948,6 +3950,61 @@ class TestStreamedPlan:
         assert result.relocated == ["zmoved.txt"]
         assert "zmoved.txt" not in result.added
         mock_svc.store.relocate_sources.assert_called_once()
+
+    async def test_a_sync_asks_the_store_again_until_every_move_is_settled(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """The store settles one move for each hold; the sync moves all three."""
+        from lilbee.data.ingest import file_hash, pipeline
+
+        for number in range(3):
+            moved = isolated_env / f"zmoved{number}.txt"
+            moved.write_text(f"relocated document {number}", encoding="utf-8")
+            mock_svc.store.upsert_source(
+                f"old/moved{number}.txt", file_hash(moved), 1, source_type="document"
+            )
+        whole = mock_svc.store.relocate_sources.side_effect
+        mock_svc.store.relocate_sources.side_effect = lambda moves: whole(moves[:1])
+        pauses = []
+        monkeypatch.setattr(pipeline.time, "sleep", pauses.append)
+
+        result = await self._sync_with_extraction()
+
+        assert result.relocated == ["zmoved0.txt", "zmoved1.txt", "zmoved2.txt"]
+        assert result.added == []
+        offered = [len(call.args[0]) for call in mock_svc.store.relocate_sources.call_args_list]
+        assert offered == [3, 2, 1]
+        assert pauses == [pipeline._RELOCATE_PAUSE_SECONDS] * 2
+
+    async def test_a_lock_timeout_in_a_later_hold_keeps_the_moves_of_the_earlier_holds(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        from lilbee.data.ingest import file_hash, pipeline
+        from lilbee.runtime.lock import LockTimeoutError
+
+        for number in range(2):
+            moved = isolated_env / f"zmoved{number}.txt"
+            moved.write_text(f"relocated document {number}", encoding="utf-8")
+            mock_svc.store.upsert_source(
+                f"old/moved{number}.txt", file_hash(moved), 1, source_type="document"
+            )
+        whole = mock_svc.store.relocate_sources.side_effect
+        busy = [False, True, False]
+
+        def one_move_or_busy(moves):
+            if busy.pop(0):
+                raise LockTimeoutError("busy")
+            return whole(moves[:1])
+
+        mock_svc.store.relocate_sources.side_effect = one_move_or_busy
+        pauses = []
+        monkeypatch.setattr(pipeline.time, "sleep", pauses.append)
+
+        result = await self._sync_with_extraction()
+
+        assert result.relocated == ["zmoved0.txt", "zmoved1.txt"]
+        assert result.added == []
+        assert pauses == [pipeline._RELOCATE_PAUSE_SECONDS, pipeline._FLUSH_RETRY_DELAY_SECONDS]
 
     async def test_a_relocation_only_sync_leaves_the_clusters_alone(
         self, isolated_env, monkeypatch, mock_svc

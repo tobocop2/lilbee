@@ -12,6 +12,7 @@ import logging
 import os
 import threading
 import zipfile
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -346,6 +347,53 @@ class TestEqualToOneProcess:
         assert [name for name in fanned.sources() if name in olds] == olds[paired:]
         assert len({slice_of(name, processes) for name in news}) > 1
         _assert_equal_to_one_process(fanned, single)
+
+    @pytest.mark.parametrize("hold_moves", [3, 2000], ids=["several-holds", "one-hold"])
+    async def test_a_renamed_folder_is_moved_whole_and_nothing_is_embedded_again(
+        self, tmp_path, monkeypatch, hold_moves
+    ):
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", hold_moves)
+        monkeypatch.setattr(pipeline_mod, "_RELOCATE_PAUSE_SECONDS", 0.0)
+        results = []
+
+        async def history(library):
+            for number in range(14):
+                library.write(f"bulk/part_{number}.txt", f"Part {number} of the folder.")
+            library.write_notes("note", 6)
+            await library.sync()
+            (library.documents / "bulk").rename(library.documents / "moved")
+            fresh = library.write_notes("fresh", 3)
+            results.append((await library.sync(), fresh))
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        moved = sorted(f"moved/part_{number}.txt" for number in range(14))
+        for result, fresh in results:
+            assert sorted(result.relocated) == moved
+            assert sorted(result.added) == sorted(fresh)
+        assert [name for name in fanned.sources() if name.startswith("bulk/")] == []
+        assert [name for name in fanned.sources() if name.startswith("moved/")] == moved
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_renamed_folder_costs_one_update_of_each_table_not_one_for_each_file(
+        self, tmp_path
+    ):
+        from lancedb.table import LanceTable
+
+        from lilbee.data.store.core import _RELOCATABLE_TABLES
+
+        library = Library(tmp_path / "lib", 1)
+        for number in range(14):
+            library.write(f"bulk/part_{number}.txt", f"Part {number} of the folder.")
+        await library.sync()
+        (library.documents / "bulk").rename(library.documents / "moved")
+        real = LanceTable.update
+        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
+            result = await library.sync()
+
+        assert len(result.relocated) == 14
+        rekeys = [call for call in updates.call_args_list if "bulk/" in str(call.kwargs)]
+        assert 1 <= len(rekeys) <= len(_RELOCATABLE_TABLES)
 
     async def test_a_copy_of_an_indexed_file_in_the_other_slice_is_indexed_beside_it(
         self, tmp_path
