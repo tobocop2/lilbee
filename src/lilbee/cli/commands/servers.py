@@ -61,8 +61,28 @@ def _log_loop_exception(_loop: asyncio.AbstractEventLoop, context: dict[str, obj
         logging.getLogger(__name__).error("asyncio task error: %s", context.get("message"))
 
 
-async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> None:
-    """Start uvicorn, write port file, and clean up on shutdown."""
+class _ExitRequest:
+    """The exit a serving loop was asked for; a nonzero status ends the responses in flight."""
+
+    def __init__(self, server: uvicorn.Server, loop: asyncio.AbstractEventLoop) -> None:
+        self.status = 0
+        self._server = server
+        self._loop = loop
+
+    def _cancel_responses(self) -> None:
+        for task in self._server.server_state.tasks:
+            task.cancel()
+
+    def __call__(self, status: int) -> None:
+        self.status = status
+        self._server.should_exit = True
+        if status:
+            # A signal handler calls this, so the loop runs the cancel itself.
+            self._loop.call_soon_threadsafe(self._cancel_responses)
+
+
+async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str) -> int:
+    """Start uvicorn, write port file, clean up on shutdown, and return the exit status."""
     import atexit
 
     from lilbee.parent_monitor import parse_parent_pid, watch_parent_async
@@ -75,8 +95,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     def _cleanup_port_file() -> None:
         port_path.unlink(missing_ok=True)
 
-    def _request_exit() -> None:
-        server.should_exit = True
+    exit_request = _ExitRequest(server, loop)
 
     if not config.loaded:
         config.load()
@@ -88,7 +107,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
     started = False
     parent_watcher: asyncio.Task[None] | None = None
     try:
-        set_server_exit_hook(_request_exit)
+        set_server_exit_hook(exit_request)
         await server.startup()
         started = True
 
@@ -118,6 +137,7 @@ async def _run_server(server: uvicorn.Server, config: uvicorn.Config, host: str)
             # original exception from main_loop reaches the caller intact.
             with contextlib.suppress(AttributeError):
                 await server.shutdown()
+    return exit_request.status
 
 
 def _refuse_to_start(message: str) -> NoReturn:
@@ -190,7 +210,7 @@ def serve(
         install_health_access_filter()
         config = uvicorn.Config(app, host=cfg.server_host, port=cfg.server_port)
         server = uvicorn.Server(config)
-        asyncio.run(_run_server(server, config, cfg.server_host))
+        raise typer.Exit(asyncio.run(_run_server(server, config, cfg.server_host)))
     finally:
         # A signal-driven shutdown stops the fleet on its own thread; hold the
         # locks until it finishes so a successor cannot start while this

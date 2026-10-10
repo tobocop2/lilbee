@@ -6,13 +6,18 @@ Run with:
 
 from __future__ import annotations
 
-import httpx
 import pytest
+from huggingface_hub.utils import http_backoff
 
 from lilbee.catalog.hf_client import DEFAULT_TIMEOUT, HF_API_URL, hf_headers
 from lilbee.catalog.picks import get_picks, reset_picks
 from lilbee.catalog.query import reclassify_by_name, size_bucket
 from lilbee.catalog.types import CatalogSize, ModelTask
+
+# Retries after the first attempt. The library backs off 1, 2 then 4 seconds, so a
+# host that never answers adds 7 seconds to four 30 second timeouts, inside the
+# 180 second cap on an integration test.
+_MAX_RETRIES = 3
 
 pytestmark = [pytest.mark.slow, pytest.mark.live_picks]
 
@@ -28,20 +33,27 @@ def live_picks():
     reset_picks()
 
 
+def repo_gguf_files(hf_repo: str) -> list[str]:
+    """The .gguf files HuggingFace lists for *hf_repo*; a missing repo raises."""
+    resp = http_backoff(
+        "GET",
+        f"{HF_API_URL}/{hf_repo}",
+        max_retries=_MAX_RETRIES,
+        timeout=DEFAULT_TIMEOUT,
+        headers=hf_headers(),
+    )
+    resp.raise_for_status()
+    siblings = resp.json().get("siblings", [])
+    return [s["rfilename"] for s in siblings if s.get("rfilename", "").endswith(".gguf")]
+
+
 def test_every_pick_has_a_gguf(live_picks) -> None:
     """A pick the user cannot actually pull is worse than no pick."""
     # Authenticated request (HF_TOKEN) lifts the unauthenticated rate limit that
-    # otherwise 429s a full sweep from a shared CI IP.
+    # otherwise 429s a full sweep from a shared CI IP. A dropped connection is
+    # retried; a repo the host no longer serves still fails the test.
     for entry in live_picks:
-        resp = httpx.get(
-            f"{HF_API_URL}/{entry.hf_repo}",
-            timeout=DEFAULT_TIMEOUT,
-            headers=hf_headers(),
-        )
-        resp.raise_for_status()
-        siblings = resp.json().get("siblings", [])
-        gguf = [s["rfilename"] for s in siblings if s.get("rfilename", "").endswith(".gguf")]
-        assert gguf, f"{entry.hf_repo} has no .gguf files in siblings"
+        assert repo_gguf_files(entry.hf_repo), f"{entry.hf_repo} has no .gguf files in siblings"
 
 
 def test_chat_picks_span_the_parameter_tiers(live_picks) -> None:

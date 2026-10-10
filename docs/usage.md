@@ -981,8 +981,8 @@ that manages several data dirs (the Obsidian plugin's shared root) can pass
 `LILBEE_EXCLUSIVE_SCOPE=<dir>` to extend the same guarantee across all of them;
 the refusal then names the data dir the running server is serving. To replace a
 running server, ask it to stop with `POST /api/shutdown` (token-authed): it
-shuts down exactly as an external SIGTERM would, and its locks release the
-moment it exits.
+shuts down as an external SIGTERM would, except that it waits for responses in
+flight and exits with status 0. Its locks release the moment it exits.
 
 Every route needs the session token, reads included, `GET /api/health` among
 them; the daemon writes the token to `server.json` (mode `0600`) next to the

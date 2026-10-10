@@ -2511,14 +2511,14 @@ class TestShutdownRoute:
 
         from lilbee.app.services import set_server_exit_hook
 
-        calls: list[None] = []
-        set_server_exit_hook(lambda: calls.append(None))
+        calls: list[int] = []
+        set_server_exit_hook(calls.append)
         try:
             with mock.patch.object(signal_mod, "raise_signal") as raise_signal:
                 response = client.post("/api/shutdown")
                 assert response.status_code == 202
                 assert response.json() == {"status": "shutting_down"}
-                assert calls == [None]
+                assert calls == [0]
                 raise_signal.assert_not_called()
         finally:
             set_server_exit_hook(None)

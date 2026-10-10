@@ -28,7 +28,7 @@ tools/qa/
 ```bash
 uv pip install -r tools/qa/requirements.txt
 LILBEE_QA_LANE=l1-source LILBEE_QA_BIN="$(which lilbee)" \
-  pytest tools/qa/ -m smoke -n auto --dist=loadgroup
+  pytest tools/qa/ -m smoke -n auto --dist=loadgroup --max-worker-restart=0
 ```
 
 `LILBEE_QA_LANE` selects the lane:

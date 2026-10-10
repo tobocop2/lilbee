@@ -1,22 +1,31 @@
 import asyncio
 import errno
 import json
+import signal
+import subprocess
+import sys
+import time
 from unittest import mock
 
 import pytest
 from filelock import FileLock
 from typer.testing import CliRunner
 
+from conftest import clean_env
 from lilbee.cli import app
 from lilbee.core.config import cfg
 from lilbee.server.auth import server_json_path
 
 runner = CliRunner()
 
+_SERVER_START_TIMEOUT_S = 120.0
+_SERVER_STOP_TIMEOUT_S = 60.0
+
 
 def _close_coro(coro, *_args, **_kwargs):
-    """Consume and close the coroutine so Python doesn't warn about it."""
+    """Consume and close the coroutine so Python doesn't warn about it; return exit status 0."""
     coro.close()
+    return 0
 
 
 def _no_locks_available() -> OSError:
@@ -272,13 +281,42 @@ class TestRunServer:
             seen.append(request_server_exit())
 
         fake_server_obj.main_loop = capture_hook
+        in_flight = mock.MagicMock()
+        fake_server_obj.server_state.tasks = {in_flight}
         fake_config = mock.MagicMock()
 
-        asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
+        status = asyncio.run(_run_server(fake_server_obj, fake_config, "127.0.0.1"))
 
         assert seen == [True]
         assert fake_server_obj.should_exit is True
         assert request_server_exit() is False
+        assert status == 0
+        in_flight.cancel.assert_not_called()
+
+    def test_a_hard_exit_ends_the_responses_in_flight_and_returns_its_status(self):
+        """The twin of the test above, where a plain request waits for them and returns 0."""
+        from lilbee.app.services import request_server_exit
+        from lilbee.cli.commands.servers import _run_server
+
+        fake_server_obj = mock.MagicMock()
+        fake_server_obj.servers = []
+        fake_server_obj.startup = mock.AsyncMock()
+        fake_server_obj.shutdown = mock.AsyncMock()
+        in_flight = mock.MagicMock()
+        fake_server_obj.server_state.tasks = {in_flight}
+
+        async def hard_exit() -> None:
+            assert request_server_exit(143) is True
+            await asyncio.sleep(0.01)
+
+        fake_server_obj.main_loop = hard_exit
+
+        status = asyncio.run(_run_server(fake_server_obj, mock.MagicMock(), "127.0.0.1"))
+
+        assert status == 143
+        assert fake_server_obj.should_exit is True
+        in_flight.cancel.assert_called_once_with()
+        fake_server_obj.shutdown.assert_awaited_once()
 
     def test_loads_config_when_not_loaded(self):
         from lilbee.cli.commands.servers import _run_server
@@ -581,6 +619,66 @@ class TestServeScopeReleasedOnDataDirRefusal:
         reacquired = acquire_scope_lock(scope, cfg.data_dir, timeout=0.05)
         assert reacquired is not None
         reacquired.release()
+
+
+class TestServeExitStatus:
+    @mock.patch("lilbee.cli.commands.servers.setup_server_log_file")
+    @mock.patch("lilbee.cli.commands.servers.setup_server_logging")
+    @mock.patch("lilbee.cli.commands.servers.asyncio.run")
+    @mock.patch("lilbee.server.create_app")
+    def test_serve_exits_with_the_status_its_loop_returns(
+        self, mock_create_app, mock_asyncio_run, mock_setup_logging, mock_setup_log_file
+    ):
+        """The lock is free afterwards, so the status leaves after the teardown wait."""
+        from lilbee.runtime.lock import acquire_server_lock
+
+        def run(coro):
+            coro.close()
+            return 143
+
+        mock_create_app.return_value = "fake_app"
+        mock_asyncio_run.side_effect = run
+        result = runner.invoke(app, ["serve"])
+        assert result.exit_code == 143
+        reacquired = acquire_server_lock(cfg.data_dir, timeout=0.05)
+        assert reacquired is not None
+        reacquired.release()
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows delivers no SIGTERM to a handler")
+    def test_a_terminate_ends_a_real_server_cleanly_with_the_signal_status(self, tmp_path):
+        env = {
+            **clean_env(tmp_path),
+            "LILBEE_MODELS_DIR": str(tmp_path / "models"),
+            "LILBEE_NO_SPLASH": "1",
+            "PYTHONIOENCODING": "utf-8",
+        }
+        with (
+            (tmp_path / "out.txt").open("w+", encoding="utf-8") as out,
+            (tmp_path / "err.txt").open("w+", encoding="utf-8") as err,
+        ):
+            server = subprocess.Popen(
+                [sys.executable, "-m", "lilbee", "serve", "--port", "0"],
+                env=env,
+                stdout=out,
+                stderr=err,
+            )
+            try:
+                deadline = time.monotonic() + _SERVER_START_TIMEOUT_S
+                listening = False
+                while not listening and server.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    listening = "Listening on" in (tmp_path / "out.txt").read_text(encoding="utf-8")
+                assert listening, (tmp_path / "err.txt").read_text(encoding="utf-8")
+                server.send_signal(signal.SIGTERM)
+                status = server.wait(timeout=_SERVER_STOP_TIMEOUT_S)
+            finally:
+                if server.poll() is None:
+                    server.kill()
+                    server.wait()
+        stderr = (tmp_path / "err.txt").read_text(encoding="utf-8")
+        assert status == 128 + signal.SIGTERM
+        assert "Traceback" not in stderr
+        assert "Application shutdown complete." in stderr
 
 
 class TestServeHoldsLocksThroughTeardown:
