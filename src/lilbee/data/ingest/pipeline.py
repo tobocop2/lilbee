@@ -617,16 +617,15 @@ class _MovePool:
             record = existing_sources.get(name)
             if record is not None:
                 by_hash.setdefault(record["file_hash"], []).append(name)
-        for candidates in by_hash.values():
-            candidates.sort()
-        self._by_hash = by_hash
+        # One tuple for each content: every new file of that content is offered the same one.
+        self._by_hash = {digest: tuple(sorted(names)) for digest, names in by_hash.items()}
 
     def load(self, hashes: Iterable[str]) -> None:
         """Make the absent sources with these content hashes known; all are from the start."""
 
     def candidates(self, file_hash: str) -> tuple[str, ...]:
         """The absent sources with this content hash, in name order."""
-        return tuple(self._by_hash.get(file_hash, ()))
+        return self._by_hash.get(file_hash, ())
 
 
 class _IndexMovePool(_MovePool):
@@ -652,7 +651,7 @@ class _IndexMovePool(_MovePool):
             return
         found = self._store.sources_by_hash(wanted, version=self._version)
         for digest, names in found.items():
-            absent = sorted(name for name in names if self._is_absent(name))
+            absent = tuple(sorted(name for name in names if self._is_absent(name)))
             if absent:
                 self._by_hash[digest] = absent
 
