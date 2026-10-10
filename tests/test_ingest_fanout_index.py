@@ -21,7 +21,7 @@ from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.store import Store
 from lilbee.data.types import ShardId, SyncResult
-from lilbee.runtime.lock import sync_running
+from lilbee.runtime.lock import SyncRunningError, sync_running
 from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.stubs import load_stub_index
 from tests._fanout_library import Library, services_for
@@ -83,6 +83,15 @@ async def _play(tmp_path, history, processes: int = 2) -> tuple[Library, Library
     return fanned, single
 
 
+def _files_under(root) -> list[str]:
+    """Every file below *root* with its size, the sync lock's own files left out."""
+    return sorted(
+        f"{path.relative_to(root).as_posix()}:{path.stat().st_size}"
+        for path in root.rglob("*")
+        if path.is_file() and not path.name.startswith("sync.")
+    )
+
+
 def _assert_equal_to_one_process(fanned: Library, single: Library) -> None:
     oracle = single.dump()
     assert oracle["_sources"], "the one-process index is empty, so the comparison proves nothing"
@@ -117,31 +126,54 @@ class TestWhereTheWorkIs:
         assert library.sources() == sorted(names)
         assert caplog.text.count("Deleted 1 unused worker store(s)") == 1
 
-    async def test_old_worker_stores_stay_while_another_sync_is_on_the_data_root(
-        self, tmp_path, caplog
+    @pytest.mark.parametrize("processes", [2, 1], ids=["fan-out", "one-process"])
+    async def test_a_sync_beside_the_stores_and_the_mark_of_another_sync_does_not_run(
+        self, tmp_path, caplog, monkeypatch, processes
     ):
-        library = Library(tmp_path / "lib", 2)
+        library = Library(tmp_path / "lib", processes)
         names = library.write_notes("note", 12)
         old_store = library.root / "shards" / "w0" / "data"
         (old_store / "lancedb").mkdir(parents=True)
-
-        def said_about_stores():
-            return [
-                record.getMessage()
-                for record in caplog.records
-                if record.levelno >= logging.WARNING and "worker store" in record.getMessage()
-            ]
+        planned, started = [], []
+        real_plan, real_workers = pipeline_mod.plan_fanout, pipeline_mod.run_workers
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: planned.append(1) or real_plan())
+        monkeypatch.setattr(
+            pipeline_mod,
+            "run_workers",
+            lambda *args, **kwargs: started.append(1) or real_workers(*args, **kwargs),
+        )
 
         with caplog.at_level(logging.WARNING, logger=fanout.log.name):
             # The mark the fan-out sync of an earlier lilbee holds while it uses its stores.
             async with sync_running(library.root):
-                await library.sync()
+                before = _files_under(library.root)
+                with pytest.raises(SyncRunningError) as refused:
+                    await library.sync()
+                assert _files_under(library.root) == before
+            assert str(refused.value) == (
+                "Another sync, possibly of an earlier lilbee, is running on this library. "
+                "Run the sync again when it has finished."
+            )
+            assert (planned, started) == ([], [])
             assert old_store.exists()
-            assert said_about_stores() == []
-            assert library.sources() == sorted(names)
+            assert library.dump() == {}
+            assert caplog.records == []
             await library.sync()
         assert not old_store.exists()
-        assert len(said_about_stores()) == 1
+        assert library.sources() == sorted(names)
+        assert planned, "the sync that ran never reached the gate, so the refusal proves nothing"
+        assert len(started) == (1 if processes > 1 else 0)
+        assert caplog.text.count("Deleted 1 unused worker store(s)") == 1
+
+    async def test_a_sync_beside_the_mark_of_another_sync_runs_when_no_store_exists(self, tmp_path):
+        library = Library(tmp_path / "lib", 2)
+        names = library.write_notes("note", 12)
+        # A worker of this lilbee keeps a log and no store under its directory.
+        (library.root / "shards" / "w0").mkdir(parents=True)
+        async with sync_running(library.root):
+            result = await library.sync()
+        assert sorted(result.added) == sorted(names)
+        assert library.sources() == sorted(names)
 
     async def test_a_one_process_sync_deletes_the_old_worker_stores_too(self, tmp_path):
         library = Library(tmp_path / "lib", 1)
@@ -539,6 +571,24 @@ class TestSyncsAtOnce:
         assert all(isinstance(result, SyncResult) for result in results)
         assert len(library.sources()) == len(set(library.sources())) == 20
         assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 20
+
+    async def test_two_syncs_at_once_beside_the_stores_of_an_earlier_lilbee_both_run(
+        self, tmp_path
+    ):
+        """The first run after an upgrade, started twice: one deletes and the other waits."""
+        library = Library(tmp_path / "lib", 2)
+        names = library.write_notes("note", 12)
+        for worker in ("w0", "w1"):
+            store = library.root / "shards" / worker / "data" / "lancedb"
+            store.mkdir(parents=True)
+            (store / "chunks.lance").write_bytes(b"x" * 2048)
+
+        results = await asyncio.gather(library.sync(), library.sync())
+
+        assert all(isinstance(result, SyncResult) for result in results)
+        assert library.private_stores() == []
+        assert library.sources() == sorted(names)
+        assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 12
 
     async def test_a_move_another_writer_made_first_becomes_an_add(self, tmp_path, monkeypatch):
         """Two new files with one content claim the one absent source; one of them wins."""

@@ -438,10 +438,20 @@ indexes cover them after the next sync that indexes something.
 **Stores from an earlier lilbee.** A sync deletes each `shards/w*/data` directory before
 it starts, and logs the space that frees. It does so only while it holds every other
 sync off the data root, with the lock a reset uses: an earlier lilbee's fan-out sync
-holds the sync mark for as long as it writes and merges those stores. When another sync
-is running, the directories stay and a later sync deletes them. A lilbee older than the
-sync mark (before 0.6.90b448) holds nothing a newer one can see, so do not run its
-fan-out sync and a newer lilbee's sync on one data root at once.
+holds the sync mark for as long as it writes and merges those stores.
+
+When the directories exist and another sync holds the mark, the sync does not run: it
+raises `SyncRunningError` before it reads or writes anything. Every surface reports that
+as it reports any sync that could not start, and the next sync after the other one ends
+deletes the directories and runs. A sync first waits out a holder of the write side (a
+reset, an add that moves keys, another sync that is deleting the same directories), so
+two syncs of this lilbee that start together on an upgraded data root both run. A store
+that cannot be deleted for another reason is named in a warning and the sync runs.
+
+Two limits remain. A lilbee older than 0.6.90b448 holds no sync mark, so do not run its
+fan-out sync at the same time as a newer lilbee on one data directory. An earlier lilbee
+that starts a fan-out sync after the newer one began can hold names twice. A rebuild
+repairs both.
 
 ---
 

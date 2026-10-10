@@ -1356,6 +1356,8 @@ async def sync(
     in, and removing what a past sync already indexed is the caller's decision.
     A *shard* runs this sync as one worker of a multi-GPU fan-out: it writes its
     slice of the corpus to the index and leaves the corpus-wide passes to the parent.
+    Raises ``SyncRunningError``, with nothing read or written, when the worker
+    stores of an earlier lilbee exist and another sync holds the data root's mark.
     """
     config = await to_ingest_thread(_config_with_persisted_roots, shard)
     _store = get_services().store

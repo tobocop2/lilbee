@@ -34,6 +34,7 @@ from lilbee.runtime.lock import (
     LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
+    source_keys_in_use,
     syncs_held_off,
 )
 from lilbee.runtime.progress import (
@@ -90,7 +91,10 @@ WORKER_LOG_NAME = "sync.log"
 # Where each worker of an earlier lilbee kept a store of its own, under the shards directory.
 _PRIVATE_STORE_GLOB = "w*/data"
 _BYTES_PER_MB = 1024 * 1024
-_STORES_IN_USE = "a sync is running on this library"
+_EARLIER_SYNC_RUNNING = (
+    "Another sync, possibly of an earlier lilbee, is running on this library. "
+    "Run the sync again when it has finished."
+)
 
 
 @dataclass(frozen=True)
@@ -206,20 +210,33 @@ def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -
 
 
 def remove_private_stores(data_root: Path) -> None:
-    """Delete the store each worker of an earlier lilbee kept under *data_root*, if no sync runs.
+    """Delete the store each worker of an earlier lilbee kept under *data_root*.
 
-    An earlier lilbee's fan-out sync writes those stores and merges them while it
-    holds the data root's sync mark, so they go only while syncs are held off.
-    The caller holds no sync mark of its own. A data root with a sync on it, or
-    one that cannot be locked, keeps its stores for a later sync.
+    Raises ``SyncRunningError`` when the stores exist and another sync holds the
+    data root's sync mark: an earlier lilbee's fan-out sync writes and merges
+    them under that mark. The caller holds no sync mark of its own.
+    """
+    try:
+        _delete_private_stores(data_root)
+    except SyncRunningError:
+        # A reset, an add that moves keys, or a sync that deletes these stores ends soon.
+        with source_keys_in_use(data_root):
+            pass
+        _delete_private_stores(data_root)
+
+
+def _delete_private_stores(data_root: Path) -> None:
+    """Delete the private stores with syncs held off; a busy sync lock raises ``SyncRunningError``.
+
+    A data root that cannot be locked keeps its stores for a later sync.
     """
     stores = sorted((data_root / SHARDS_DIRNAME).glob(_PRIVATE_STORE_GLOB))
     if not stores:
         return
     try:
-        with syncs_held_off(data_root, _STORES_IN_USE):
+        with syncs_held_off(data_root, _EARLIER_SYNC_RUNNING):
             _delete_stores(stores, data_root)
-    except (SyncRunningError, ResetRefusedError, LockingUnsupportedError) as exc:
+    except (ResetRefusedError, LockingUnsupportedError) as exc:
         log.debug("Left the worker stores of an earlier lilbee under %s: %s", data_root, exc)
 
 

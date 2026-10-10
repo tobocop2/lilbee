@@ -55,6 +55,7 @@ from lilbee.mcp_server import (
 from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_callback
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 from tests._mcp_client import mcp_client
+from tests.conftest import EARLIER_SYNC_RUNNING
 
 
 @pytest.fixture(autouse=True)
@@ -383,6 +384,29 @@ class TestSkipRecordsLockHeld:
             result = await sync(retry_skipped=True)
 
         assert result == {"error": "Could not lock records.lock"}
+
+
+class TestSyncOfAnEarlierLilbeeRunning:
+    """The stores of an earlier lilbee and a held sync mark stop a sync before it starts."""
+
+    async def test_sync_returns_the_refusal_as_an_error(self, mock_svc, earlier_sync_running):
+        result = await sync()
+
+        assert result == {"error": EARLIER_SYNC_RUNNING}
+        assert earlier_sync_running.exists()
+        assert mock_svc.store.mock_calls == []
+
+    async def test_add_registers_the_source_and_returns_the_refusal(
+        self, tmp_path, mock_svc, earlier_sync_running
+    ):
+        src = tmp_path / "test.txt"
+        src.write_text("hello world", encoding="utf-8")
+
+        result = await add([str(src)])
+
+        assert result == {"error": EARLIER_SYNC_RUNNING}
+        assert cfg.linked_roots == {"test.txt": str(src.resolve())}
+        assert mock_svc.store.add_chunks.call_count == 0
 
 
 class TestSync:

@@ -1131,3 +1131,24 @@ def held_records_lock(monkeypatch: pytest.MonkeyPatch):
     holder.acquire()
     yield holder.lock_file
     holder.release()
+
+
+# What a sync says when it stops beside a possible fan-out sync of an earlier lilbee.
+EARLIER_SYNC_RUNNING = (
+    "Another sync, possibly of an earlier lilbee, is running on this library. "
+    "Run the sync again when it has finished."
+)
+
+
+@pytest.fixture
+def earlier_sync_running():
+    """What a running fan-out sync of an earlier lilbee shows: a worker store and the sync mark.
+
+    Yields the store. Request it after the fixture that sets ``cfg.data_root``.
+    """
+    from lilbee.runtime.lock import source_keys_in_use
+
+    store = cfg.data_root / "shards" / "w0" / "data"
+    (store / "lancedb").mkdir(parents=True)
+    with source_keys_in_use(cfg.data_root):
+        yield store

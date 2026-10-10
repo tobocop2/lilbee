@@ -8782,6 +8782,25 @@ async def test_do_sync_reports_held_out_files():
         assert msg.SYNC_HELD_OUT.format(count=1) in messages
 
 
+async def test_a_sync_of_an_earlier_lilbee_fails_the_sync_task_with_the_refusal(
+    earlier_sync_running,
+):
+    """The sync task ends failed and the task bar carries the one line the user acts on."""
+    from tests._async_wait import wait_until
+    from tests.conftest import EARLIER_SYNC_RUNNING
+
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        queue = app.task_bar.queue
+        app.screen._run_sync()
+        await wait_until(pilot, lambda: bool(queue.history), timeout=5.0)
+
+        assert [(task.task_type, task.status.value, task.detail) for task in queue.history] == [
+            ("sync", "failed", EARLIER_SYNC_RUNNING)
+        ]
+        assert earlier_sync_running.exists()
+
+
 async def test_do_sync_reports_unsaved_skip_records():
     """A sync that could not save its held-out record shows the error."""
     import threading
