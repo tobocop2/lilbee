@@ -7260,6 +7260,35 @@ class TestDetectMoves:
         assert [move.new for move in moves] == ["new/a.txt", "new/b.txt"]
         assert {move.candidates for move in moves} == {("old/a.txt", "old/b.txt")}
 
+    def test_files_of_one_hash_share_one_tuple_of_candidates(self):
+        """The plan holds the old names of a content once, however many new files have it."""
+        from lilbee.data.ingest import pipeline
+
+        files = [self._entry(f"new/{number}.txt", "h1") for number in range(3)]
+        added = {entry.name: None for entry in files}
+        existing = {name: self._record(name, "h1") for name in ("old/a.txt", "old/b.txt")}
+        pool = pipeline._MovePool(sorted(existing), existing)
+
+        moves = pipeline._detect_moves(files, added, pool)
+
+        assert [move.candidates for move in moves] == [("old/a.txt", "old/b.txt")] * 3
+        assert len({id(move.candidates) for move in moves}) == 1
+
+    def test_the_index_pool_offers_one_tuple_for_each_content(self):
+        from lilbee.data.ingest import pipeline
+
+        store = MagicMock()
+        store.sources_version.return_value = 7
+        store.sources_by_hash.return_value = {"h1": ["old/b.txt", "old/a.txt", "on-disk.txt"]}
+        pool = pipeline._IndexMovePool(store, lambda name: name != "on-disk.txt")
+        pool.load(["h1"])
+        files = [self._entry(f"new/{number}.txt", "h1") for number in range(3)]
+
+        moves = pipeline._detect_moves(files, {entry.name: None for entry in files}, pool)
+
+        assert [move.candidates for move in moves] == [("old/a.txt", "old/b.txt")] * 3
+        assert len({id(move.candidates) for move in moves}) == 1
+
 
 class TestSyncResultRender:
     def test_str_includes_relocated_line(self):
