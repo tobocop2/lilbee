@@ -5364,6 +5364,75 @@ class TestRelocateInOnePass:
         assert Counted.reads <= 4 * len(names)
 
 
+class TestSourcesWithoutChunks:
+    """The check an index gets once: a source row that counts chunks the chunk table lacks."""
+
+    def _emptied(self, store, *names):
+        store.open_table(CHUNKS_TABLE).delete(f"source IN ({', '.join(repr(n) for n in names)})")
+
+    def test_rows_that_count_chunks_and_have_none_go_and_the_others_stay(self, store, monkeypatch):
+        from lilbee.data.store import SourceType
+
+        monkeypatch.setattr("lilbee.data.store.core._SOURCE_STAT_BATCH_ROWS", 2)
+        for name in ("kept.md", "lost1.md", "lost2.md", "lost3.md", "imported.md"):
+            _seed_source(store, name)
+        store.upsert_source("imported.md", "h", 1, source_type=SourceType.IMPORTED)
+        store.upsert_source("pages-only.pdf", "h", 0)
+        self._emptied(store, "lost1.md", "lost2.md", "lost3.md", "imported.md")
+
+        assert store.forget_sources_without_chunks() == ["lost1.md", "lost2.md", "lost3.md"]
+        assert sorted(row["filename"] for row in store.get_sources()) == [
+            "imported.md",
+            "kept.md",
+            "pages-only.pdf",
+        ]
+
+    def test_the_check_runs_once_for_each_index(self, store):
+        _seed_source(store, "kept.md")
+        _seed_source(store, "lost.md")
+        assert store.forget_sources_without_chunks() == []
+        self._emptied(store, "lost.md")
+
+        assert store.forget_sources_without_chunks() == []
+        assert len(store.get_sources()) == 2
+
+    def test_an_index_with_no_chunk_table_loses_every_row_that_counts_chunks(self, store):
+        store.upsert_source("lost.md", "h", 2)
+        store.upsert_source("pages-only.pdf", "h", 0)
+
+        assert store.forget_sources_without_chunks() == ["lost.md"]
+        assert [row["filename"] for row in store.get_sources()] == ["pages-only.pdf"]
+
+    def test_an_index_with_no_source_table_is_checked_too(self, store):
+        assert store.forget_sources_without_chunks() == []
+        store.upsert_source("written-later.md", "h", 2)
+
+        assert store.forget_sources_without_chunks() == []
+        assert len(store.get_sources()) == 1
+
+    def test_a_drop_that_stops_part_way_leaves_no_source_row(self, store):
+        """Rows of every other table can stay: a file with no source row is indexed again."""
+        _seed_source(store, "a.md")
+        database = store.get_db()
+        real, dropped = type(database).drop_table, []
+
+        def _stops_after_one(db, name, *args, **kwargs):
+            if dropped:
+                raise KeyboardInterrupt
+            dropped.append(name)
+            return real(db, name, *args, **kwargs)
+
+        with (
+            mock.patch.object(type(database), "drop_table", _stops_after_one),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            store.drop_all()
+
+        assert dropped == [SOURCES_TABLE]
+        assert store.open_table(CHUNKS_TABLE).count_rows() == 1
+        assert store.get_sources() == []
+
+
 class TestRemoveRowsOf:
     def test_the_rows_of_a_key_go_with_or_without_its_source_record(self, store):
         _seed_source(store, "work/a.md")

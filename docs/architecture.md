@@ -405,6 +405,13 @@ worker count leave the index a one-process sync leaves. Workers used to keep a s
 each and the parent merged them. No command reached those stores, and each defect of
 that design was the two records disagreeing.
 
+**A source row with no chunks.** Each write of a sync puts the chunks of a file before
+its source row, and a rebuild drops the source table first, so a write that stops part
+way leaves no file that reads as unchanged with nothing to search. An earlier lilbee
+could leave such a row. The first sync on an index checks every source row against the
+chunk table once, deletes the rows that count chunks and have none, and indexes those
+files again. It records the check in `.sources_checked` beside the tables.
+
 **The write lock is the one serial stage.** Each flush deletes its documents' old rows
 by name. A BTREE index on the name column of the chunk, page text and source tables keeps
 that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
