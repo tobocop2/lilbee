@@ -442,10 +442,11 @@ content is taken, so no old name stays while a file of its content is added.
 
 **A renamed folder.** Files that swap the same leading text of their name, as every file
 of a renamed folder does, take one update of each table together, and their source rows
-change in one merge. The vectors are not read or embedded again. A file whose title came
-from its old name takes an update of its own. One hold of the write lock re-keys at most
-2,000 files with at most 16 updates of each table, and the sync pauses for 0.1 s between
-two holds, so a flush of another worker gets the lock. A sync that stops between two
+change in one merge. The vectors are not read or embedded again. Files that also take a
+new title, because their own names changed, share an update for each 32 of them. One hold
+of the write lock re-keys at most 2,000 files with at most 16 updates of the chunk table,
+and the sync pauses for 0.1 s between two holds, so a flush of another worker gets the
+lock. A sync that stops between two
 holds leaves the remaining files under their old names, and the next sync moves them.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide

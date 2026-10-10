@@ -4933,6 +4933,13 @@ _RELOCATE_HISTORIES = {
             SourceMove(("gone.md",), "never.md", None),
         ],
     ),
+    "new-file-names-in-one-folder": (
+        [(f"bulk/ledger_{number}.md", f"ledger {number}") for number in range(5)],
+        [
+            SourceMove((f"bulk/ledger_{number}.md",), f"bulk/paper's_{number}.md", None)
+            for number in range(5)
+        ],
+    ),
     "one-content": (
         [(key, "Shared Title") for key in _SHARED],
         [SourceMove(_SHARED, "kept/x.md", None), SourceMove(_SHARED, "kept/y.md", None)],
@@ -4949,12 +4956,13 @@ _RELOCATE_HISTORIES = {
 
 class TestRelocateInOnePass:
     @pytest.mark.parametrize("history", sorted(_RELOCATE_HISTORIES))
-    @pytest.mark.parametrize("bounds", [(2000, 16), (2, 16), (2000, 1)], ids=str)
+    @pytest.mark.parametrize("bounds", [(2000, 16, 32), (2, 16, 32), (2000, 1, 2)], ids=str)
     def test_a_batch_leaves_each_table_as_one_update_for_each_move_does(
         self, store, tmp_path, monkeypatch, history, bounds
     ):
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", bounds[0])
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", bounds[1])
+        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", bounds[2])
         seeds, moves = _RELOCATE_HISTORIES[history]
         for key, title in seeds:
             _seed_source(store, key, title=title)
@@ -4994,6 +5002,45 @@ class TestRelocateInOnePass:
         assert updates.call_count == len(_RELOCATABLE_TABLES)
         assert merges.call_count == 1
 
+    @pytest.mark.parametrize(("map_keys", "chunk_updates"), [(32, 1), (2, 3)])
+    def test_new_file_names_in_one_folder_share_updates_and_take_their_titles(
+        self, store, monkeypatch, map_keys, chunk_updates
+    ):
+        from lancedb.table import LanceTable
+
+        from lilbee.data.store.core import _RELOCATABLE_TABLES
+
+        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", map_keys)
+        seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+        real = LanceTable.update
+        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
+            step = store.relocate_sources(moves)
+
+        assert step.settled == 5
+        assert updates.call_count == chunk_updates + len(_RELOCATABLE_TABLES) - 1
+        chunks = store.open_table(CHUNKS_TABLE).to_arrow()
+        assert sorted(
+            zip(
+                chunks.column("source").to_pylist(), chunks.column("title").to_pylist(), strict=True
+            )
+        ) == [(f"bulk/paper's_{number}.md", f"paper's {number}") for number in range(5)]
+
+    def test_a_hold_counts_the_updates_that_own_titles_add(self, store, monkeypatch):
+        """Five files with a title each, two titles an update, two updates a hold: four files."""
+        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", 2)
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
+        seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+
+        first = store.relocate_sources(moves)
+
+        assert first.settled == 4
+        assert store.relocate_sources(moves[4:]).settled == 1
+        assert _holders(store, "bulk/ledger_4.md") == set()
+
     def test_a_hold_settles_no_more_moves_than_its_bound(self, store, monkeypatch):
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", 2)
         seeds, moves = _folder(5)
@@ -5008,7 +5055,7 @@ class TestRelocateInOnePass:
         assert _relocate_in_holds(store, moves[2:])[1] == 2
 
     def test_a_hold_stops_before_the_update_past_its_bound(self, store, monkeypatch):
-        """Each of these files takes a title of its own, so each is one update."""
+        """Each of these files swaps a leading text of its own, so each is one update."""
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
         names = ["alpha_plan", "beta_plan", "gamma_plan"]
         for name in names:

@@ -248,6 +248,8 @@ _NUL = "\x00"
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
+# Sentinel: each source of a re-key pattern takes a title of its own.
+_OWN_TITLE = "\x00own"
 
 # The key column a batched flush deletes by in each table it appends to.
 _FLUSH_KEY_COLUMNS = tuple(
@@ -268,6 +270,10 @@ _SOURCE_STAT_BATCH_ROWS = 2000
 # for the length of a whole plan batch.
 _RELOCATE_HOLD_MOVES = 2000
 _RELOCATE_HOLD_UPDATES = 16
+# One update gives at most this many sources a title of their own. The store
+# library builds the map of titles once for each row it updates, so the cost
+# of an update grows with the square of this number.
+_TITLE_MAP_KEYS = 32
 
 _NULL_TEXT_SQL = "CAST(NULL AS STRING)"
 
@@ -332,14 +338,20 @@ def _swap_head_sql(column: str, old_head: str, new_head: str) -> str:
     return f"concat('{escape_sql_string(new_head)}', substr({column}, {len(old_head) + 1}))"
 
 
-def _text_sql(value: str | None) -> str:
-    """The SQL literal for the nullable text *value*."""
-    return _NULL_TEXT_SQL if value is None else f"'{escape_sql_string(value)}'"
-
-
 def _in_list(names: Iterable[str]) -> str:
     """The body of a SQL ``IN`` list that holds *names*."""
     return ", ".join(f"'{escape_sql_string(name)}'" for name in names)
+
+
+def _own_title_sql(column: str, titles: Mapping[str, str]) -> str:
+    """The SQL value that gives each key of *titles* in *column* its title.
+
+    An update of the key and the title can read either key here: the store
+    library computes the two columns in an order that varies between updates.
+    The caller lists each source under its old key and under its new one.
+    """
+    keys, values = _in_list(titles), _in_list(titles.values())
+    return f"map_extract(map(make_array({keys}), make_array({values})), {column})[1]"
 
 
 def _swapped_heads(old: str, new: str) -> tuple[str, str]:
@@ -349,7 +361,7 @@ def _swapped_heads(old: str, new: str) -> tuple[str, str]:
 
 
 class _RekeyPattern(NamedTuple):
-    """The sources one update re-keys: each swaps *old_head* for *new_head* and takes *title*."""
+    """Sources that swap *old_head* for *new_head*; *title* is one text, or a sentinel."""
 
     old_head: str
     new_head: str
@@ -361,9 +373,18 @@ class _RelocationHold:
     """What one hold re-keys: old names by update, the source rows renamed, the names taken."""
 
     patterns: dict[_RekeyPattern, list[str]] = field(default_factory=dict)
+    titles: dict[str, str] = field(default_factory=dict)
     rows: list[dict[str, Any]] = field(default_factory=list)
     taken: dict[str, str] = field(default_factory=dict)
+    updates: int = 0
     settled: int = 0
+
+    def adds_an_update(self, pattern: _RekeyPattern) -> bool:
+        """Whether one more source of *pattern* needs one more update of a table with titles."""
+        olds = self.patterns.get(pattern)
+        if olds is None:
+            return True
+        return pattern.title is _OWN_TITLE and len(olds) % _TITLE_MAP_KEYS == 0
 
 
 def _claimed_names(moves: Sequence[SourceMove], unclaimed: set[str]) -> list[str | None]:
@@ -415,6 +436,13 @@ def _moved_source_row(row: dict[str, Any], move: SourceMove, title: str | None) 
     return moved
 
 
+def _pattern_title(title: str | None, stored: object) -> str | None:
+    """What a re-key pattern does to titles: keep them, clear them, or give each source its own."""
+    if title is _KEEP_TITLE or title == stored:
+        return _KEEP_TITLE
+    return None if title is None else _OWN_TITLE
+
+
 def _plan_hold(
     moves: Sequence[SourceMove],
     claimed: list[str | None],
@@ -423,8 +451,9 @@ def _plan_hold(
 ) -> _RelocationHold:
     """Group the claimed *moves* by the update that re-keys them, up to the hold's bound.
 
-    A source whose title does not change shares an update with every source
-    that swaps the same leading text of its key. The plan stops before the move
+    Sources that swap the same leading text of their key share an update when
+    their titles stay or become NULL, and share one for each ``_TITLE_MAP_KEYS``
+    of them when each takes a title of its own. The plan stops before the move
     that would need one update more than a hold runs.
     """
     hold = _RelocationHold()
@@ -432,12 +461,15 @@ def _plan_hold(
         if old is not None:
             stored = rows[old]
             title = _title_after_move(stored[0], old, move.new, derive)
-            unchanged = title is _KEEP_TITLE or title == stored[0][_TITLE_COLUMN]
-            heads = _swapped_heads(old, move.new)
-            pattern = _RekeyPattern(*heads, _KEEP_TITLE if unchanged else title)
-            if pattern not in hold.patterns and len(hold.patterns) == _RELOCATE_HOLD_UPDATES:
-                break
+            shared = _pattern_title(title, stored[0].get(_TITLE_COLUMN))
+            pattern = _RekeyPattern(*_swapped_heads(old, move.new), shared)
+            if hold.adds_an_update(pattern):
+                if hold.updates == _RELOCATE_HOLD_UPDATES:
+                    break
+                hold.updates += 1
             hold.patterns.setdefault(pattern, []).append(old)
+            if title is not None and shared is _OWN_TITLE:
+                hold.titles[old] = title
             hold.rows.extend(_moved_source_row(row, move, title) for row in stored)
             hold.taken[move.new] = old
         hold.settled += 1
@@ -466,6 +498,23 @@ def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
         query = sources.search().where(f"filename IN ({quoted})").select(["filename"])
         held.update(row["filename"] for row in query.limit(None).to_list())
     return held
+
+
+def _rekey_with_own_titles(
+    table: LanceTable,
+    column: str,
+    key: Mapping[str, str],
+    olds: list[str],
+    new: Mapping[str, str],
+    titles: Mapping[str, str],
+) -> None:
+    """Re-key *olds* in *table* and give each its title, ``_TITLE_MAP_KEYS`` sources an update."""
+    for start in range(0, len(olds), _TITLE_MAP_KEYS):
+        part = olds[start : start + _TITLE_MAP_KEYS]
+        by_old_key = {old: titles[old] for old in part}
+        by_new_key = {new[old]: titles[old] for old in part}
+        values = {**key, _TITLE_COLUMN: _own_title_sql(column, by_old_key | by_new_key)}
+        table.update(where=f"{column} IN ({_in_list(part)})", values_sql=values)
 
 
 def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, list[dict[str, Any]]]:
@@ -2248,8 +2297,9 @@ class Store:
         A moved source keeps its chunks and vectors: only its key, a title that
         came from the old name, and its disk stat change. Sources that swap the
         same leading text of their key take one update of each table together,
-        and the source table takes the new rows and loses the old ones in one
-        merge. A hold settles at most ``_RELOCATE_HOLD_MOVES`` moves and runs at
+        or one for each ``_TITLE_MAP_KEYS`` of them when each takes a title of
+        its own, and the source table takes the new rows and loses the old ones
+        in one merge. A hold settles at most ``_RELOCATE_HOLD_MOVES`` moves and runs at
         most ``_RELOCATE_HOLD_UPDATES`` updates of each table. Chunk tables
         change before the source table, so a hold that dies between them leaves
         the old names for the next sync to move again.
@@ -2274,22 +2324,27 @@ class Store:
         rows = _source_rows(sources, [old for old in claimed if old is not None])
         hold = _plan_hold(moves, claimed, rows, derive_title)
         if hold.taken:
-            self._rekey_tables_unlocked(hold.patterns)
+            self._rekey_tables_unlocked(hold)
             self._replace_moved_source_rows_unlocked(sources, hold)
         return SourceRelocation(hold.taken, hold.settled)
 
-    def _rekey_tables_unlocked(self, patterns: Mapping[_RekeyPattern, list[str]]) -> None:
-        """Run one update of each per-source table for each of *patterns*. Caller holds the lock."""
+    def _rekey_tables_unlocked(self, hold: _RelocationHold) -> None:
+        """Re-key *hold*'s sources in each per-source table. Caller holds ``write_lock()``."""
         for name, column in _RELOCATABLE_TABLES:
             table = self.open_table(name)
             if table is None:
                 continue
             titled = _TITLE_COLUMN in table.schema.names
-            for pattern, olds in patterns.items():
-                values = {column: _swap_head_sql(column, pattern.old_head, pattern.new_head)}
-                if titled and pattern.title is not _KEEP_TITLE:
-                    values[_TITLE_COLUMN] = _text_sql(pattern.title)
-                table.update(where=f"{column} IN ({_in_list(olds)})", values_sql=values)
+            new = {old: taken for taken, old in hold.taken.items()}
+            for pattern, olds in hold.patterns.items():
+                key = {column: _swap_head_sql(column, pattern.old_head, pattern.new_head)}
+                if not titled or pattern.title is _KEEP_TITLE:
+                    table.update(where=f"{column} IN ({_in_list(olds)})", values_sql=key)
+                elif pattern.title is None:
+                    values = key | {_TITLE_COLUMN: _NULL_TEXT_SQL}
+                    table.update(where=f"{column} IN ({_in_list(olds)})", values_sql=values)
+                else:
+                    _rekey_with_own_titles(table, column, key, olds, new, hold.titles)
 
     def _replace_moved_source_rows_unlocked(
         self, sources: LanceTable, hold: _RelocationHold
