@@ -351,7 +351,7 @@ async def sync(
                 prune_ignored=prune_ignored,
                 cancel=cancel,
             )
-        except SkipRecordsLockError as exc:
+        except (SkipRecordsLockError, SyncRunningError) as exc:
             return _error(str(exc))
     return result.model_dump()
 
@@ -446,11 +446,11 @@ async def add(
         reg_result = await anyio.to_thread.run_sync(
             functools.partial(register_sources, valid, force=force)
         )
+        reached = reg_result.reached_corpus or bool(crawled_count)
+        sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
     except (SkipRecordsLockError, SyncRunningError) as exc:
         return _error(str(exc))
     errors.extend(reg_result.refused)
-    reached = reg_result.reached_corpus or bool(crawled_count)
-    sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
     result: dict[str, Any] = {
         "command": "add",
         "copied": reg_result.registered,

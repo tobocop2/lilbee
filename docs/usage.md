@@ -921,6 +921,21 @@ file stays out of every later sync and leaves the status list.
 removed file back. To restore a removed file, edit it, add its path again, or
 run `lilbee rebuild`.
 
+After an upgrade, a sync does not run while a multi-GPU sync of an earlier
+lilbee can still be running on the same library. A sync cannot tell that sync
+from a sync, an import, an add or a wiki build of this lilbee, so each of them
+stops it too until the first sync after the upgrade has run. It stops with one
+line that says so; run the sync again when the other one has finished.
+
+Two cases remain that a sync cannot see:
+
+- A lilbee older than 0.6.90b448 does not mark its syncs. Do not run its
+  multi-GPU sync at the same time as a newer lilbee on one data directory.
+- An earlier lilbee that starts a multi-GPU sync after the newer one began
+  can leave file names in the index twice.
+
+`lilbee rebuild` repairs both.
+
 ### Wiki
 
 ```bash

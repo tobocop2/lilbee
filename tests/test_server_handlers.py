@@ -29,7 +29,7 @@ from lilbee.server.handlers import (
 from lilbee.server.handlers import (
     sse as _sse_h,
 )
-from tests.conftest import install_fake_model
+from tests.conftest import EARLIER_SYNC_RUNNING, install_fake_model
 
 _SAMPLE_CHUNK = SearchChunk(
     source="a.pdf",
@@ -2065,6 +2065,17 @@ class TestSyncStreamDoneDelivery:
         assert "boom" in error_events[0]
         # No done frame should be emitted when sync failed.
         assert done_events == []
+
+    async def test_a_sync_of_an_earlier_lilbee_ends_the_stream_with_one_error(
+        self, mock_svc, earlier_sync_running
+    ):
+        events = [e for e in [e async for e in handlers.sync_stream()] if e]
+
+        assert events == [
+            f"event: error\ndata: {json.dumps({'message': EARLIER_SYNC_RUNNING})}\n\n"
+        ]
+        assert earlier_sync_running.exists()
+        assert mock_svc.store.mock_calls == []
 
     async def test_force_rebuild_flag_reaches_sync(self):
         """sync_stream(force_rebuild=True) plumbs the flag through to ingest.sync."""

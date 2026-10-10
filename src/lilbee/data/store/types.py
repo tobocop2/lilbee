@@ -269,6 +269,21 @@ class SourceStatBackfill(NamedTuple):
     stat: SourceStat
 
 
+class SourceMove(NamedTuple):
+    """A file under a new name, and the absent sources of its content it can take the rows of."""
+
+    candidates: tuple[str, ...]
+    new: str
+    stat: SourceStat | None
+
+
+class SourceRelocation(NamedTuple):
+    """One hold of a re-key: the old name each new name took, and how many moves it settled."""
+
+    taken: dict[str, str]
+    settled: int
+
+
 class PageTextRecord(TypedDict):
     """One row of the per-page text dataset, matching ``_page_texts``.
 

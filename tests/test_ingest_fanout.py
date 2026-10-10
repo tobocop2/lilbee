@@ -1,4 +1,4 @@
-"""Per-GPU ingest fan-out: sharding, worker specs, supervision, and the merge hand-off."""
+"""Per-GPU ingest fan-out: slices, worker specs, supervision, and the one result."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import rich.progress
@@ -16,6 +17,12 @@ import rich.progress
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
+from lilbee.runtime.lock import (
+    LockingUnsupportedError,
+    SyncRunningError,
+    source_keys_in_use,
+    syncs_held_off,
+)
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -28,6 +35,14 @@ from lilbee.runtime.progress import (
 
 # Far above the drain interval: a run that waits for a worker message fails here, not hangs.
 _CANCEL_BOUND_S = 5.0
+
+
+# What a sync says when it stops beside a possible fan-out sync of an earlier lilbee.
+_REFUSAL = "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, is running"
+
+
+def _never_called(*args, **kwargs):
+    raise AssertionError("a data root with no worker store takes no lock")
 
 
 async def _until(condition) -> None:
@@ -68,6 +83,13 @@ class FakeProcess:
 
     def kill(self):
         self.killed.set()
+
+    def wait_terminated(self, bound: float = _CANCEL_BOUND_S) -> bool:
+        """Block until the product terminates this worker; False when *bound* passes first."""
+        deadline = time.monotonic() + bound
+        while not self.terminated and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.terminated
 
 
 class FakeContext:
@@ -115,6 +137,19 @@ def _spec(index: int, count: int = 2, device: int = 0) -> fanout.ShardSpec:
         cpu_share=4,
         visible_devices={"CUDA_VISIBLE_DEVICES": str(device)},
     )
+
+
+class TestFakeProcess:
+    def test_a_worker_nobody_terminates_stops_waiting_at_the_bound(self):
+        worker = FakeProcess(target=lambda: None, args=(), name="never-terminated")
+        started = time.monotonic()
+        assert worker.wait_terminated(bound=0.05) is False
+        assert time.monotonic() - started < _CANCEL_BOUND_S
+
+    def test_a_terminated_worker_stops_waiting_at_once(self):
+        worker = FakeProcess(target=lambda: None, args=(), name="terminated")
+        worker.terminate()
+        assert worker.wait_terminated() is True
 
 
 class TestShardId:
@@ -205,14 +240,218 @@ class TestPlanFanout:
         assert [spec.device for spec in specs] == [0, 1, 2, 3]
 
 
+class TestRemovePrivateStores:
+    def _store(self, root, worker, size):
+        store = root / "shards" / worker / "data"
+        (store / "lancedb").mkdir(parents=True)
+        (store / "lancedb" / "vectors.lance").write_bytes(b"x" * size)
+        return store
+
+    def test_every_private_store_goes_and_one_line_says_what_it_freed(self, tmp_path, caplog):
+        megabyte = 1024 * 1024
+        stores = [self._store(tmp_path, "w0", megabyte), self._store(tmp_path, "w7", megabyte // 2)]
+        # A file the index shares by hard link frees nothing when its second name goes.
+        os.link(stores[0] / "lancedb" / "vectors.lance", tmp_path / "in-the-index.lance")
+        log_file = tmp_path / "shards" / "w0" / fanout.WORKER_LOG_NAME
+        log_file.write_text("a worker's log", encoding="utf-8")
+        engine = tmp_path / "shards" / "gpu0" / "engine"
+        engine.mkdir(parents=True)
+
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+
+        assert [store.exists() for store in stores] == [False, False]
+        assert log_file.exists() and engine.exists()
+        assert (tmp_path / "in-the-index.lance").stat().st_size == megabyte
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Deleted 2 unused worker store(s) of an earlier lilbee under {tmp_path / 'shards'}, "
+            "freeing 0.5 MB"
+        ]
+
+    def test_a_data_root_with_no_private_store_is_left_alone_and_says_nothing(
+        self, tmp_path, caplog
+    ):
+        log_file = tmp_path / "shards" / "w0" / fanout.WORKER_LOG_NAME
+        log_file.parent.mkdir(parents=True)
+        log_file.write_text("a worker's log", encoding="utf-8")
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+            fanout.remove_private_stores(tmp_path / "no-such-root")
+        assert log_file.read_text(encoding="utf-8") == "a worker's log"
+        assert caplog.records == []
+
+    def test_a_store_that_cannot_be_deleted_is_named_and_the_rest_still_go(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        megabyte = 1024 * 1024
+        stuck = self._store(tmp_path, "w0", megabyte)
+        free = self._store(tmp_path, "w1", megabyte // 2)
+        real_rmtree = fanout.shutil.rmtree
+
+        def _rmtree(path):
+            if path == stuck:
+                raise PermissionError("in use")
+            real_rmtree(path)
+
+        monkeypatch.setattr(fanout.shutil, "rmtree", _rmtree)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+            assert (stuck.exists(), free.exists()) == (True, False)
+            could_not = f"Could not delete the unused worker store {stuck}: in use"
+            # The line counts the store that went and the space that left the disk.
+            assert [record.getMessage() for record in caplog.records] == [
+                could_not,
+                f"Deleted 1 unused worker store(s) of an earlier lilbee under "
+                f"{tmp_path / 'shards'}, freeing 0.5 MB",
+            ]
+            caplog.clear()
+            # A sync that deletes nothing says so, and claims no deletion.
+            fanout.remove_private_stores(tmp_path)
+            assert [record.getMessage() for record in caplog.records] == [could_not]
+
+    def test_a_file_that_vanishes_while_it_is_measured_does_not_stop_the_delete(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """A sync must not fail on a store another process is still changing."""
+        megabyte = 1024 * 1024
+        store = self._store(tmp_path, "w0", megabyte)
+        gone = store / "lancedb" / "vectors.lance"
+        real_stat, real_lstat, looked = Path.stat, Path.lstat, []
+
+        def _stat(path, **kwargs):
+            # The file is there for a first look and gone for the next one.
+            if path == gone:
+                looked.append(path)
+                if len(looked) > 1:
+                    raise FileNotFoundError(str(path))
+            return real_stat(path, **kwargs)
+
+        def _lstat(path):
+            if path == gone:
+                raise FileNotFoundError(str(path))
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "stat", _stat)
+        monkeypatch.setattr(Path, "lstat", _lstat)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+        assert not store.exists()
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Deleted 1 unused worker store(s) of an earlier lilbee under {tmp_path / 'shards'}, "
+            "freeing 0.0 MB"
+        ]
+
+    def test_stores_with_a_sync_on_the_data_root_refuse_the_sync_and_stay(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
+        store = self._store(tmp_path, "w0", 10)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            with (
+                source_keys_in_use(tmp_path),
+                pytest.raises(SyncRunningError, match=_REFUSAL) as refused,
+            ):
+                fanout.remove_private_stores(tmp_path)
+            assert str(refused.value) == (
+                "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, "
+                "is running on this library. Run the sync again when it has finished."
+            )
+            assert store.exists()
+            assert caplog.records == []
+            fanout.remove_private_stores(tmp_path)
+        assert not store.exists()
+        assert len(caplog.records) == 1
+
+    def test_no_store_with_a_sync_on_the_data_root_takes_no_lock(self, tmp_path, monkeypatch):
+        (tmp_path / "shards" / "w0").mkdir(parents=True)
+        monkeypatch.setattr(fanout, "syncs_held_off", _never_called)
+        with source_keys_in_use(tmp_path):
+            fanout.remove_private_stores(tmp_path)
+
+    @pytest.mark.parametrize("deletes", [False, True], ids=["a-reset", "a-sync-that-deletes"])
+    def test_a_holder_that_lets_go_inside_the_wait_does_not_refuse_the_sync(
+        self, tmp_path, caplog, monkeypatch, deletes
+    ):
+        """A reset, or another sync of this lilbee on an upgraded data root, is no earlier sync."""
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", _CANCEL_BOUND_S)
+        store = self._store(tmp_path, "w0", 10)
+        holding, waiting = threading.Event(), threading.Event()
+
+        def _the_other_holder():
+            with syncs_held_off(tmp_path, "unused"):
+                holding.set()
+                assert waiting.wait(_CANCEL_BOUND_S)
+                if deletes:
+                    fanout.shutil.rmtree(store)
+
+        def _held_off(data_root, running, wait=0.0):
+            waiting.set()
+            return syncs_held_off(data_root, running, wait)
+
+        monkeypatch.setattr(fanout, "syncs_held_off", _held_off)
+        other = threading.Thread(target=_the_other_holder)
+        other.start()
+        try:
+            assert holding.wait(_CANCEL_BOUND_S)
+            with caplog.at_level("WARNING", logger=fanout.log.name):
+                fanout.remove_private_stores(tmp_path)
+        finally:
+            waiting.set()
+            other.join(_CANCEL_BOUND_S)
+        assert not store.exists()
+        # The stores are listed again under the lock, so one that went is not reported stuck.
+        assert [
+            record.getMessage() for record in caplog.records if "Could not" in record.getMessage()
+        ] == []
+        assert len(caplog.records) == (0 if deletes else 1)
+
+    def test_stores_another_sync_deleted_and_then_marked_do_not_refuse_the_sync(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """The wait ends busy on the mark of a sync that already deleted the stores."""
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
+        store = self._store(tmp_path, "w0", 10)
+        asked = []
+
+        def _held_off(data_root, running, wait=0.0):
+            # The other sync's delete lands after this one listed the stores.
+            fanout.shutil.rmtree(store)
+            asked.append(wait)
+            return syncs_held_off(data_root, running, wait)
+
+        monkeypatch.setattr(fanout, "syncs_held_off", _held_off)
+        with caplog.at_level("WARNING", logger=fanout.log.name), source_keys_in_use(tmp_path):
+            fanout.remove_private_stores(tmp_path)
+        assert asked == [0.05]
+        assert caplog.records == []
+
+    @pytest.mark.parametrize(
+        "refusal",
+        [OSError("read-only file system"), LockingUnsupportedError("no file locking here")],
+        ids=["cannot-lock", "no-locking"],
+    )
+    def test_a_data_root_that_cannot_be_locked_keeps_its_stores(
+        self, tmp_path, caplog, monkeypatch, refusal
+    ):
+        store = self._store(tmp_path, "w0", 10)
+
+        def _refuse(data_root):
+            raise refusal
+
+        monkeypatch.setattr("lilbee.runtime.lock._require_locking", _refuse)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+        assert store.exists()
+        assert caplog.records == []
+
+
 class TestShardSpecs:
-    def test_each_worker_gets_a_private_store_and_the_shared_corpus(self):
+    def test_each_worker_gets_the_one_index_and_the_shared_corpus(self):
         specs = fanout.shard_specs(cfg, processes=2, devices=2)
         roots = [spec.config.data_root for spec in specs]
         assert roots == [cfg.data_root / "shards" / "w0", cfg.data_root / "shards" / "w1"]
-        assert [spec.config.lancedb_dir for spec in specs] == [
-            root / "data" / "lancedb" for root in roots
-        ]
+        # Every worker writes the index itself: none has a store of its own.
+        assert [spec.config.lancedb_dir for spec in specs] == [cfg.lancedb_dir, cfg.lancedb_dir]
         # The corpus is read in place: no worker gets its own copy of it.
         assert {spec.config.documents_dir for spec in specs} == {cfg.documents_dir}
         # So are its skip records.
@@ -392,7 +631,7 @@ class TestRunShard:
         spec = _spec(1)
         fanout.run_shard(
             spec,
-            fanout.ShardOptions(parent_pid=os.getppid(), force_rebuild=True),
+            fanout.ShardOptions(parent_pid=os.getppid()),
             messages,
             threading.Event(),
         )
@@ -400,7 +639,8 @@ class TestRunShard:
         assert (verdict.index, verdict.error) == (1, None)
         assert verdict.result.added == ["a.txt"]
         assert seen["shard"] == spec.shard
-        assert seen["force_rebuild"] is True
+        # A rebuild drops the index, which every worker shares: only the parent may.
+        assert "force_rebuild" not in seen
         assert seen["quiet"] is True
 
     def test_a_worker_that_raises_reports_the_failure_instead_of_dying_silently(self, monkeypatch):
@@ -510,9 +750,7 @@ class TestRunWorkers:
         def silent_shard(spec, options, messages, stop):
             stops.append(stop)
             cancel.set()
-            worker = fake_context.processes[spec.shard.index]
-            while not worker.terminated:
-                time.sleep(0.01)
+            fake_context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
         if moment == "before_the_start":

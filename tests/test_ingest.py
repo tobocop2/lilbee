@@ -94,6 +94,20 @@ def mock_svc():
         return RemoveResult(removed=removed, not_found=not_found)
 
     store.remove_documents.side_effect = _remove_documents
+
+    def _relocate(moves):
+        from lilbee.data.store import SourceRelocation
+
+        # Mirror the real re-key: a move takes its first candidate that holds a row.
+        taken = {}
+        for move in moves:
+            old = next((name for name in move.candidates if name in _sources), None)
+            if old is not None:
+                _sources[move.new] = {**_sources.pop(old), "filename": move.new}
+                taken[move.new] = old
+        return SourceRelocation(taken, len(moves))
+
+    store.relocate_sources.side_effect = _relocate
     store.drop_all.side_effect = lambda: _sources.clear()
     store.ensure_fts_index.return_value = None
     store.get_meta.return_value = None
@@ -397,7 +411,7 @@ class TestSync:
         mock_extract_file.assert_not_called()  # no re-extraction/re-embedding
         store.relocate_sources.assert_called_once()
         moves = store.relocate_sources.call_args.args[0]
-        assert [(old, new) for old, new, _stat in moves] == [("a.txt", "sub/a.txt")]
+        assert [(move.candidates, move.new) for move in moves] == [(("a.txt",), "sub/a.txt")]
 
     async def test_adaptive_mode_ingests_and_stops_controller(
         self, mock_extract_file, isolated_env, monkeypatch
@@ -2177,7 +2191,6 @@ class TestFanoutReadsTheCorpusSkipRecords:
                 "lilbee.providers.fleet.child_guard.bind_lifetime_to_parent", lambda pid: None
             )
             monkeypatch.setattr("lilbee.app.services.build_services", lambda config: mock_svc)
-            monkeypatch.setattr(pipeline, "_merge_worker_shards", lambda *args: None)
         else:
             monkeypatch.setattr(pipeline, "plan_fanout", list)
         return request.param
@@ -3938,6 +3951,61 @@ class TestStreamedPlan:
         assert "zmoved.txt" not in result.added
         mock_svc.store.relocate_sources.assert_called_once()
 
+    async def test_a_sync_asks_the_store_again_until_every_move_is_settled(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        """The store settles one move for each hold; the sync moves all three."""
+        from lilbee.data.ingest import file_hash, pipeline
+
+        for number in range(3):
+            moved = isolated_env / f"zmoved{number}.txt"
+            moved.write_text(f"relocated document {number}", encoding="utf-8")
+            mock_svc.store.upsert_source(
+                f"old/moved{number}.txt", file_hash(moved), 1, source_type="document"
+            )
+        whole = mock_svc.store.relocate_sources.side_effect
+        mock_svc.store.relocate_sources.side_effect = lambda moves: whole(moves[:1])
+        pauses = []
+        monkeypatch.setattr(pipeline.time, "sleep", pauses.append)
+
+        result = await self._sync_with_extraction()
+
+        assert result.relocated == ["zmoved0.txt", "zmoved1.txt", "zmoved2.txt"]
+        assert result.added == []
+        offered = [len(call.args[0]) for call in mock_svc.store.relocate_sources.call_args_list]
+        assert offered == [3, 2, 1]
+        assert pauses == [pipeline._RELOCATE_PAUSE_SECONDS] * 2
+
+    async def test_a_lock_timeout_in_a_later_hold_keeps_the_moves_of_the_earlier_holds(
+        self, isolated_env, monkeypatch, mock_svc
+    ):
+        from lilbee.data.ingest import file_hash, pipeline
+        from lilbee.runtime.lock import LockTimeoutError
+
+        for number in range(2):
+            moved = isolated_env / f"zmoved{number}.txt"
+            moved.write_text(f"relocated document {number}", encoding="utf-8")
+            mock_svc.store.upsert_source(
+                f"old/moved{number}.txt", file_hash(moved), 1, source_type="document"
+            )
+        whole = mock_svc.store.relocate_sources.side_effect
+        busy = [False, True, False]
+
+        def one_move_or_busy(moves):
+            if busy.pop(0):
+                raise LockTimeoutError("busy")
+            return whole(moves[:1])
+
+        mock_svc.store.relocate_sources.side_effect = one_move_or_busy
+        pauses = []
+        monkeypatch.setattr(pipeline.time, "sleep", pauses.append)
+
+        result = await self._sync_with_extraction()
+
+        assert result.relocated == ["zmoved0.txt", "zmoved1.txt"]
+        assert result.added == []
+        assert pauses == [pipeline._RELOCATE_PAUSE_SECONDS, pipeline._FLUSH_RETRY_DELAY_SECONDS]
+
     async def test_a_relocation_only_sync_leaves_the_clusters_alone(
         self, isolated_env, monkeypatch, mock_svc
     ):
@@ -3956,10 +4024,8 @@ class TestStreamedPlan:
         assert result.relocated == ["zmoved.txt"]
         assert result.added == [] and result.updated == []
         mock_svc.concepts.rebuild_clusters.assert_not_called()
-        assert mock_svc.store.relocate_sources.call_args.args[0][0][:2] == (
-            "old/moved.txt",
-            "zmoved.txt",
-        )
+        (move,) = mock_svc.store.relocate_sources.call_args.args[0]
+        assert (move.candidates, move.new) == (("old/moved.txt",), "zmoved.txt")
 
     async def test_cancel_stops_planning_the_rest_of_the_corpus(
         self, isolated_env, monkeypatch, mock_svc
@@ -4020,7 +4086,7 @@ class TestStreamedPlan:
         cancel = threading.Event()
         cancel.set()  # shard 0 plans nothing, ahead drops to None, shard 1 breaks
         state = _StreamedPlan()
-        shards = _plan_batches(disk, {}, {}, [], state, cancel)
+        shards = _plan_batches(disk, {}, {}, pipeline._MovePool([], {}), state, cancel)
         yielded = [shard async for shard in shards]
         assert yielded == []  # the break stopped planning the remaining shards
         assert state.planned == 0
@@ -4046,7 +4112,9 @@ class TestStreamedPlan:
             return real_plan_items(*args, **kwargs)
 
         monkeypatch.setattr(pipeline, "_plan_items", _plan_items)
-        shards = [shard async for shard in _plan_batches(disk, {}, {}, [], _StreamedPlan(), None)]
+        moves = pipeline._MovePool([], {})
+        batches = _plan_batches(disk, {}, {}, moves, _StreamedPlan(), None)
+        shards = [shard async for shard in batches]
         assert [entry.name for shard in shards for entry in shard] == sorted(disk)
         assert planned_on == ["lilbee-plan-driver_0"] * 3
 
@@ -5665,6 +5733,33 @@ class TestRemoveDropsFromWikiIndex:
         assert called == []
 
 
+class TestForgetMissingFromWikiIndex:
+    def test_a_failure_to_read_the_index_is_logged_and_does_not_raise(
+        self, isolated_env, monkeypatch, caplog
+    ):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(
+            "lilbee.wiki.stubs.load_stub_index",
+            mock.MagicMock(side_effect=RuntimeError("index unreadable")),
+        )
+        with caplog.at_level("WARNING", logger=ingest_mod.log.name):
+            ingest_mod.forget_missing_from_wiki_index()
+        assert "Failed to drop missing documents from the wiki index" in caplog.text
+
+    def test_with_the_wiki_off_the_index_is_not_read(self, isolated_env, monkeypatch):
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", False)
+        read = mock.MagicMock()
+        monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
+        ingest_mod.forget_missing_from_wiki_index()
+        read.assert_not_called()
+
+
 class TestRemoveDocumentsDurably:
     def test_writes_skip_marker_for_kept_file(self, isolated_env, mock_svc):
         """A durable delete keeps the file but skip-marks it so sync won't re-ingest."""
@@ -7130,9 +7225,7 @@ class TestDetectMoves:
         existing = {"old/a.txt": self._record("old/a.txt", "h1")}
 
         moves = pipeline._detect_moves(files, added, pipeline._MovePool(to_remove, existing))
-        assert len(moves) == 1
-        assert moves[0].old == "old/a.txt"
-        assert moves[0].new == "new/a.txt"
+        assert [(move.candidates, move.new) for move in moves] == [(("old/a.txt",), "new/a.txt")]
 
     def test_changed_content_is_not_a_move(self):
         from lilbee.data.ingest import pipeline
@@ -7153,7 +7246,7 @@ class TestDetectMoves:
         moves = pipeline._detect_moves(files, {}, pipeline._MovePool([], existing))
         assert moves == []
 
-    def test_duplicate_hash_pairs_one_to_one(self):
+    def test_files_of_one_hash_are_each_offered_every_candidate_in_name_order(self):
         from lilbee.data.ingest import pipeline
 
         files = [self._entry("new/a.txt", "h1"), self._entry("new/b.txt", "h1")]
@@ -7162,11 +7255,39 @@ class TestDetectMoves:
             "old/a.txt": self._record("old/a.txt", "h1"),
             "old/b.txt": self._record("old/b.txt", "h1"),
         }
-        moves = pipeline._detect_moves(
-            files, added, pipeline._MovePool(["old/a.txt", "old/b.txt"], existing)
-        )
-        assert {m.new for m in moves} == {"new/a.txt", "new/b.txt"}
-        assert {m.old for m in moves} == {"old/a.txt", "old/b.txt"}
+        pool = pipeline._MovePool(["old/b.txt", "old/a.txt"], existing)
+        moves = pipeline._detect_moves(files, added, pool)
+        assert [move.new for move in moves] == ["new/a.txt", "new/b.txt"]
+        assert {move.candidates for move in moves} == {("old/a.txt", "old/b.txt")}
+
+    def test_files_of_one_hash_share_one_tuple_of_candidates(self):
+        """The plan holds the old names of a content once, however many new files have it."""
+        from lilbee.data.ingest import pipeline
+
+        files = [self._entry(f"new/{number}.txt", "h1") for number in range(3)]
+        added = {entry.name: None for entry in files}
+        existing = {name: self._record(name, "h1") for name in ("old/a.txt", "old/b.txt")}
+        pool = pipeline._MovePool(sorted(existing), existing)
+
+        moves = pipeline._detect_moves(files, added, pool)
+
+        assert [move.candidates for move in moves] == [("old/a.txt", "old/b.txt")] * 3
+        assert len({id(move.candidates) for move in moves}) == 1
+
+    def test_the_index_pool_offers_one_tuple_for_each_content(self):
+        from lilbee.data.ingest import pipeline
+
+        store = MagicMock()
+        store.sources_version.return_value = 7
+        store.sources_by_hash.return_value = {"h1": ["old/b.txt", "old/a.txt", "on-disk.txt"]}
+        pool = pipeline._IndexMovePool(store, lambda name: name != "on-disk.txt")
+        pool.load(["h1"])
+        files = [self._entry(f"new/{number}.txt", "h1") for number in range(3)]
+
+        moves = pipeline._detect_moves(files, {entry.name: None for entry in files}, pool)
+
+        assert [move.candidates for move in moves] == [("old/a.txt", "old/b.txt")] * 3
+        assert len({id(move.candidates) for move in moves}) == 1
 
 
 class TestSyncResultRender:

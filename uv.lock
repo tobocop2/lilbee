@@ -1780,11 +1780,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/65/c4/d425cb82a956bfe47c7d903dd15fb59c0d0011b805cb5af5e26b581b8537/lancedb-0.39.0-cp310-abi3-win_amd64.whl", hash = "sha256:b93f1eddbb7c0fa55770fc4ad4794d676ca9209e1683cd9535091dd450f12810", size = 103116777, upload-time = "2026-09-21T14:13:42.695Z" },
 ]
 
-[package.optional-dependencies]
-pylance = [
-    { name = "pylance" },
-]
-
 [[package]]
 name = "lark"
 version = "1.3.1"
@@ -1882,7 +1877,6 @@ dependencies = [
     { name = "huggingface-hub" },
     { name = "jinja2" },
     { name = "lancedb" },
-    { name = "lancedb", extra = ["pylance"], marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'" },
     { name = "litestar" },
     { name = "markdown-it-py" },
     { name = "mcp" },
@@ -1963,8 +1957,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "huggingface-hub", specifier = ">=1.27.0" },
     { name = "jinja2", specifier = ">=2.11.3" },
-    { name = "lancedb", marker = "platform_machine == 'x86_64' and sys_platform == 'darwin'", specifier = ">=0.39" },
-    { name = "lancedb", extras = ["pylance"], marker = "platform_machine != 'x86_64' or sys_platform != 'darwin'", specifier = ">=0.39" },
+    { name = "lancedb", specifier = ">=0.39" },
     { name = "lilbee", extras = ["crawler", "litellm", "graph"], marker = "extra == 'release'" },
     { name = "lilbee-engine", marker = "extra == 'engine'", directory = "packaging/engine-wheel" },
     { name = "litellm", marker = "extra == 'litellm'", specifier = ">=1.84.0,<1.104" },
@@ -3435,24 +3428,6 @@ wheels = [
 [package.optional-dependencies]
 crypto = [
     { name = "cryptography" },
-]
-
-[[package]]
-name = "pylance"
-version = "12.0.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "lance-namespace" },
-    { name = "numpy" },
-    { name = "pyarrow" },
-]
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/32/e6/f95aaa102e141a133418ed247051df3077aacb1851ee3bad88f3045fb5fc/pylance-12.0.0-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:58583827b01ae14da220dcea2ea258b008e8d2d20915cf462dee18ddcea068a5", size = 72336247, upload-time = "2026-09-17T16:41:26.318Z" },
-    { url = "https://files.pythonhosted.org/packages/4f/24/1f38770557db8189c63b0eeff497f0a6a9fc799ed2e3b2b023365b3a3ad9/pylance-12.0.0-cp310-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:ca5af2bf6e489b76768b56848b8e9c692ad42d7eedb31a8097fcb57e3146a211", size = 76717015, upload-time = "2026-09-17T16:44:55.744Z" },
-    { url = "https://files.pythonhosted.org/packages/da/a4/4e87599ed6120bb6ae91b7611b9a1685759cc2e12898585c5ee347827168/pylance-12.0.0-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:bac18e8f6fecb9c998c2a7301d782281bac075cf06bb0df5d89fc6fc4e8768e1", size = 80868316, upload-time = "2026-09-17T16:53:32.971Z" },
-    { url = "https://files.pythonhosted.org/packages/c6/81/b1a578be4c3845183f84bcc19cc0e3bacff2052868faeec975e00e3b7bad/pylance-12.0.0-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:df80a7991fbeab9ca206da4c0110e611696e29fc7b79bc9a88309b1b42c5849f", size = 76735408, upload-time = "2026-09-17T16:45:07.137Z" },
-    { url = "https://files.pythonhosted.org/packages/63/1c/2596ba2f0a7dedb28b7e4d07b6d1996365f501fb9329af422afd31a95179/pylance-12.0.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:d002980aa548336682f1445427ea89cf39e71a452297741ca97627192e4a1678", size = 80846740, upload-time = "2026-09-17T17:01:03.452Z" },
-    { url = "https://files.pythonhosted.org/packages/2d/0c/69df299e26b5594e8b919bc16a6a951295da96f2237eadb2e2b52c2b0316/pylance-12.0.0-cp310-abi3-win_amd64.whl", hash = "sha256:0cd59044927c5ee5a6811ea28b6f4860b2d21932828e770d9e5b39522afcf19d", size = 87083663, upload-time = "2026-09-17T16:55:09.236Z" },
 ]
 
 [[package]]
