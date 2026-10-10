@@ -408,12 +408,30 @@ that design was the two records disagreeing.
 **The write lock is the one serial stage.** Each flush deletes its documents' old rows
 by name. A BTREE index on the name column of the chunk, page text and source tables keeps
 that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
-sit past it. With 8 writers on one store a flush held the lock for 0.09 s at 100,000
-rows and 0.08 s at 250,000 rows, against 0.14 s at both sizes for a private store of an
-eighth of the rows. A one-process flush held it for 0.08 s and 0.09 s, against 0.11 s
-and 0.20 s before the flush kept the index (a laptop, 1024-dimension vectors, 2,000
-one-chunk documents a flush, the median of 24 flushes; 500,000 rows at 1024 dimensions
-is not measured).
+sit past it. The delete reads the index and scans the rows past it, so its cost follows
+those rows and not the table: 0.04 s for 2,000 keys with 2,000 rows past the index and
+0.09 s with 62,000.
+
+With one index a flush holds the lock for about 0.24 s at every size measured on Linux.
+The layout it replaces, a store for each worker, held it for 0.15 s at 100,000 rows,
+rising to 0.23 s at 500,000, because each store scanned its own rows. So on Linux a
+flush holds the lock longer than before at 100,000 and 250,000 rows, and as long at
+500,000. On a laptop the order is the reverse. Median hold of 24 flushes, in seconds, 8
+writers, 1024-dimension vectors, 2,000 one-chunk documents a flush:
+
+| Rows in the index | Linux, one index | Linux, a store for each worker | Laptop, one index | Laptop, a store for each worker |
+|---|---|---|---|---|
+| 100,000 | 0.240 | 0.149 | 0.09 | 0.14 |
+| 250,000 | 0.237 | 0.176 | 0.08 | 0.14 |
+| 500,000 | 0.228 | 0.237 | not measured | not measured |
+
+The Linux machine is a rented 8-core host that other tenants load; two runs of one
+layout differ by up to 0.014 s. At 100,000 rows there the parts of a flush are, one index
+against a store for each worker: the delete of old rows 0.071 s against 0.034 s, the
+source rows 0.085 s against 0.049 s, the chunk append 0.052 s against 0.038 s, and the
+index check 0.008 s. A one-process flush holds the lock for 0.21 s at 100,000 rows and
+0.27 s at 250,000 on Linux, against 0.35 s and 0.63 s before the flush kept the index;
+on the laptop 0.08 s and 0.09 s against 0.11 s and 0.20 s.
 
 **A renamed file.** The old name can belong to another worker's slice. A worker looks up
 the content hash of each new file in the source table as the sync found it. That gives
