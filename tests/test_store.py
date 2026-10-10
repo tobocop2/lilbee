@@ -5103,6 +5103,35 @@ class TestRelocateInOnePass:
 
         assert _dump(store) == _dump(twin)
 
+    def test_a_hold_stopped_after_its_first_step_is_finished_by_the_next(self, store, tmp_path):
+        """The step a hold runs first must leave the old names for the next call to move."""
+        seeds, moves = _folder(4)
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+        twin = _twin(store, tmp_path)
+        _relocate_one_update_for_each_move(twin, moves)
+        before = _dump(store)
+        steps_run = []
+
+        def stop_after_the_first(real):
+            def step(*args):
+                if steps_run:
+                    raise KeyboardInterrupt
+                steps_run.append(real)
+                return real(*args)
+
+            return step
+
+        steps = ("_rekey_tables_unlocked", "_replace_moved_source_rows_unlocked")
+        stopped = {name: stop_after_the_first(getattr(type(store), name)) for name in steps}
+        with mock.patch.multiple(type(store), **stopped), pytest.raises(KeyboardInterrupt):
+            store.relocate_sources(moves)
+        assert len(steps_run) == 1
+        assert _dump(store) != before
+        store.relocate_sources(moves)
+
+        assert _dump(store) == _dump(twin)
+
     def test_a_name_the_source_table_holds_twice_moves_with_both_rows(self, store, tmp_path):
         _seed_source(store, "twice.md", title="twice")
         store.open_table(SOURCES_TABLE).add(store.open_table(SOURCES_TABLE).to_arrow())
