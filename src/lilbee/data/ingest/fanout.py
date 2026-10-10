@@ -34,7 +34,6 @@ from lilbee.runtime.lock import (
     LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
-    source_keys_in_use,
     syncs_held_off,
 )
 from lilbee.runtime.progress import (
@@ -91,6 +90,9 @@ WORKER_LOG_NAME = "sync.log"
 # Where each worker of an earlier lilbee kept a store of its own, under the shards directory.
 _PRIVATE_STORE_GLOB = "w*/data"
 _BYTES_PER_MB = 1024 * 1024
+# How long a sync waits for the sync lock before it reads a holder as a running sync.
+# A reset, or another sync that deletes the same stores, lets go well inside it.
+_STORE_LOCK_WAIT_S = 5.0
 _EARLIER_SYNC_RUNNING = (
     "Another sync, possibly of an earlier lilbee, is running on this library. "
     "Run the sync again when it has finished."
@@ -214,30 +216,25 @@ def remove_private_stores(data_root: Path) -> None:
 
     Raises ``SyncRunningError`` when the stores exist and another sync holds the
     data root's sync mark: an earlier lilbee's fan-out sync writes and merges
-    them under that mark. The caller holds no sync mark of its own.
+    them under that mark. The caller holds no sync mark of its own. A data root
+    that cannot be locked keeps its stores for a later sync.
     """
-    try:
-        _delete_private_stores(data_root)
-    except SyncRunningError:
-        # A reset, an add that moves keys, or a sync that deletes these stores ends soon.
-        with source_keys_in_use(data_root):
-            pass
-        _delete_private_stores(data_root)
-
-
-def _delete_private_stores(data_root: Path) -> None:
-    """Delete the private stores with syncs held off; a busy sync lock raises ``SyncRunningError``.
-
-    A data root that cannot be locked keeps its stores for a later sync.
-    """
-    stores = sorted((data_root / SHARDS_DIRNAME).glob(_PRIVATE_STORE_GLOB))
-    if not stores:
+    if not _private_stores(data_root):
         return
     try:
-        with syncs_held_off(data_root, _EARLIER_SYNC_RUNNING):
-            _delete_stores(stores, data_root)
+        with syncs_held_off(data_root, _EARLIER_SYNC_RUNNING, _STORE_LOCK_WAIT_S):
+            _delete_stores(_private_stores(data_root), data_root)
+    except SyncRunningError:
+        # Another sync of this lilbee deleted them and now holds its own mark.
+        if _private_stores(data_root):
+            raise
     except (ResetRefusedError, LockingUnsupportedError) as exc:
         log.debug("Left the worker stores of an earlier lilbee under %s: %s", data_root, exc)
+
+
+def _private_stores(data_root: Path) -> list[Path]:
+    """Each store a worker of an earlier lilbee kept under *data_root*, in name order."""
+    return sorted((data_root / SHARDS_DIRNAME).glob(_PRIVATE_STORE_GLOB))
 
 
 def _delete_stores(stores: list[Path], data_root: Path) -> None:

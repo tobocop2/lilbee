@@ -134,6 +134,7 @@ class TestWhereTheWorkIs:
         names = library.write_notes("note", 12)
         old_store = library.root / "shards" / "w0" / "data"
         (old_store / "lancedb").mkdir(parents=True)
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
         planned, started = [], []
         real_plan, real_workers = pipeline_mod.plan_fanout, pipeline_mod.run_workers
         monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: planned.append(1) or real_plan())

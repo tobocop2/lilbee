@@ -1141,12 +1141,16 @@ EARLIER_SYNC_RUNNING = (
 
 
 @pytest.fixture
-def earlier_sync_running():
+def earlier_sync_running(monkeypatch: pytest.MonkeyPatch):
     """What a running fan-out sync of an earlier lilbee shows: a worker store and the sync mark.
 
-    Yields the store. Request it after the fixture that sets ``cfg.data_root``.
+    Yields the store. The code under test waits a few milliseconds for the mark
+    instead of seconds. Request it after the fixture that sets ``cfg.data_root``.
     """
+    from lilbee.data.ingest import fanout
     from lilbee.runtime.lock import source_keys_in_use
+
+    monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
 
     store = cfg.data_root / "shards" / "w0" / "data"
     (store / "lancedb").mkdir(parents=True)
