@@ -45,14 +45,6 @@ def _never_called(*args, **kwargs):
     raise AssertionError("a data root with no worker store takes no lock")
 
 
-def _wait_for(condition) -> bool:
-    """Poll *condition* on a thread until it holds or the bound passes."""
-    deadline = time.monotonic() + _CANCEL_BOUND_S
-    while not condition() and time.monotonic() < deadline:
-        time.sleep(0.005)
-    return bool(condition())
-
-
 async def _until(condition) -> None:
     """Yield to the loop until *condition* holds; fail instead of hanging."""
     deadline = time.monotonic() + _CANCEL_BOUND_S
@@ -349,7 +341,10 @@ class TestRemovePrivateStores:
             "freeing 0.0 MB"
         ]
 
-    def test_stores_with_a_sync_on_the_data_root_refuse_the_sync_and_stay(self, tmp_path, caplog):
+    def test_stores_with_a_sync_on_the_data_root_refuse_the_sync_and_stay(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
         store = self._store(tmp_path, "w0", 10)
         with caplog.at_level("WARNING", logger=fanout.log.name):
             with (
@@ -370,70 +365,53 @@ class TestRemovePrivateStores:
     def test_no_store_with_a_sync_on_the_data_root_takes_no_lock(self, tmp_path, monkeypatch):
         (tmp_path / "shards" / "w0").mkdir(parents=True)
         monkeypatch.setattr(fanout, "syncs_held_off", _never_called)
-        monkeypatch.setattr(fanout, "source_keys_in_use", _never_called)
         with source_keys_in_use(tmp_path):
             fanout.remove_private_stores(tmp_path)
 
-    def test_stores_another_sync_is_deleting_are_waited_for_and_the_sync_runs(
-        self, tmp_path, caplog
+    @pytest.mark.parametrize(
+        ("deletes", "then_marks"),
+        [(False, False), (True, False), (True, True)],
+        ids=["a-reset", "a-sync-that-deletes", "a-sync-that-deletes-then-runs"],
+    )
+    def test_a_holder_that_lets_go_inside_the_wait_does_not_refuse_the_sync(
+        self, tmp_path, caplog, monkeypatch, deletes, then_marks
     ):
-        """Two current syncs start on an upgraded data root: one deletes, the other waits."""
+        """A reset, or another sync of this lilbee on an upgraded data root, is no earlier sync."""
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.5 if then_marks else _CANCEL_BOUND_S)
         store = self._store(tmp_path, "w0", 10)
-        deleting, waited = threading.Event(), []
+        holding, waiting, returned = threading.Event(), threading.Event(), threading.Event()
 
-        def _the_other_sync_deletes():
-            with syncs_held_off(tmp_path, "unused"):
-                deleting.set()
-                # Held until this sync has found the lock busy and waits for it.
-                assert _wait_for(lambda: bool(waited))
-                fanout.shutil.rmtree(store)
-
-        real_wait = fanout.source_keys_in_use
-
-        def _wait(data_root):
-            waited.append(data_root)
-            return real_wait(data_root)
-
-        other = threading.Thread(target=_the_other_sync_deletes)
-        other.start()
-        try:
-            assert deleting.wait(_CANCEL_BOUND_S)
-            with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(fanout, "source_keys_in_use", _wait)
-                fanout.remove_private_stores(tmp_path)
-        finally:
-            waited.append(tmp_path)
-            other.join(_CANCEL_BOUND_S)
-        assert waited[0] == tmp_path
-        assert not store.exists()
-
-    def test_stores_held_off_by_a_reset_are_deleted_once_it_ends(self, tmp_path):
-        """A reset or an add that moves keys holds syncs off for a moment; that is no sync."""
-        store = self._store(tmp_path, "w0", 10)
-        holding, waited = threading.Event(), []
-
-        def _a_reset():
+        def _the_other_holder():
             with syncs_held_off(tmp_path, "unused"):
                 holding.set()
-                assert _wait_for(lambda: bool(waited))
+                assert waiting.wait(_CANCEL_BOUND_S)
+                if deletes:
+                    fanout.shutil.rmtree(store)
+            if then_marks:
+                with source_keys_in_use(tmp_path):
+                    assert returned.wait(_CANCEL_BOUND_S)
 
-        real_wait = fanout.source_keys_in_use
+        def _held_off(data_root, running, wait):
+            waiting.set()
+            return syncs_held_off(data_root, running, wait)
 
-        def _wait(data_root):
-            waited.append(data_root)
-            return real_wait(data_root)
-
-        reset = threading.Thread(target=_a_reset)
-        reset.start()
+        monkeypatch.setattr(fanout, "syncs_held_off", _held_off)
+        other = threading.Thread(target=_the_other_holder)
+        other.start()
         try:
             assert holding.wait(_CANCEL_BOUND_S)
-            with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(fanout, "source_keys_in_use", _wait)
+            with caplog.at_level("WARNING", logger=fanout.log.name):
                 fanout.remove_private_stores(tmp_path)
         finally:
-            waited.append(tmp_path)
-            reset.join(_CANCEL_BOUND_S)
+            waiting.set()
+            returned.set()
+            other.join(_CANCEL_BOUND_S)
         assert not store.exists()
+        # The stores are listed again under the lock, so one that went is not reported stuck.
+        assert [
+            record.getMessage() for record in caplog.records if "Could not" in record.getMessage()
+        ] == []
+        assert len(caplog.records) == (0 if deletes else 1)
 
     @pytest.mark.parametrize(
         "refusal",

@@ -443,10 +443,11 @@ holds the sync mark for as long as it writes and merges those stores.
 When the directories exist and another sync holds the mark, the sync does not run: it
 raises `SyncRunningError` before it reads or writes anything. Every surface reports that
 as it reports any sync that could not start, and the next sync after the other one ends
-deletes the directories and runs. A sync first waits out a holder of the write side (a
-reset, an add that moves keys, another sync that is deleting the same directories), so
-two syncs of this lilbee that start together on an upgraded data root both run. A store
-that cannot be deleted for another reason is named in a warning and the sync runs.
+deletes the directories and runs. The sync waits up to 5 seconds for the lock before it
+reads a holder as a running sync, and it runs when the directories are gone by then. So
+a reset does not stop it, and two syncs of this lilbee that start together on an
+upgraded data root both run. A store that cannot be deleted for another reason is named
+in a warning and the sync runs.
 
 Two limits remain. A lilbee older than 0.6.90b448 holds no sync mark, so do not run its
 fan-out sync at the same time as a newer lilbee on one data directory. An earlier lilbee
