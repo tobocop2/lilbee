@@ -398,7 +398,7 @@ fraction of 0.93.
 
 **One record of what is indexed.** The index's source table and the skip records are
 the only durable statement of what is indexed. A worker reads the source rows of its own
-slice to decide what is unchanged, and it writes each batch under the store's write lock:
+slice once to decide what is unchanged, and it writes each batch under the store's write lock:
 the old rows of its documents go first and their source rows land last, as in a
 one-process sync. So `lilbee remove`, a rename, an archive, a stop and a change of the
 worker count leave the index a one-process sync leaves. Workers used to keep a store
