@@ -1135,8 +1135,8 @@ def held_records_lock(monkeypatch: pytest.MonkeyPatch):
 
 # What a sync says when it stops beside a possible fan-out sync of an earlier lilbee.
 EARLIER_SYNC_RUNNING = (
-    "Another sync, possibly of an earlier lilbee, is running on this library. "
-    "Run the sync again when it has finished."
+    "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, is running on "
+    "this library. Run the sync again when it has finished."
 )
 
 

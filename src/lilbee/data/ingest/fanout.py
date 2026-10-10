@@ -94,8 +94,8 @@ _BYTES_PER_MB = 1024 * 1024
 # A reset, or another sync that deletes the same stores, lets go well inside it.
 _STORE_LOCK_WAIT_S = 5.0
 _EARLIER_SYNC_RUNNING = (
-    "Another sync, possibly of an earlier lilbee, is running on this library. "
-    "Run the sync again when it has finished."
+    "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, is running on "
+    "this library. Run the sync again when it has finished."
 )
 
 
@@ -214,9 +214,10 @@ def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -
 def remove_private_stores(data_root: Path) -> None:
     """Delete the store each worker of an earlier lilbee kept under *data_root*.
 
-    Raises ``SyncRunningError`` when the stores exist and another sync holds the
-    data root's sync mark: an earlier lilbee's fan-out sync writes and merges
-    them under that mark. The caller holds no sync mark of its own. A data root
+    Raises ``SyncRunningError`` when the stores exist and the data root's sync
+    mark is held: an earlier lilbee's fan-out sync writes and merges them under
+    that mark, and a sync, an import, an add or a wiki build of this lilbee
+    holds the same mark. The caller holds no sync mark of its own. A data root
     that cannot be locked keeps its stores for a later sync.
     """
     if not _private_stores(data_root):

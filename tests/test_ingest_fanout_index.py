@@ -22,7 +22,7 @@ from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.store import Store
 from lilbee.data.types import ShardId, SyncResult
-from lilbee.runtime.lock import SyncRunningError, sync_running
+from lilbee.runtime.lock import SyncRunningError, source_keys_in_use, sync_running
 from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.stubs import load_stub_index
 from tests._fanout_library import Library, services_for
@@ -153,8 +153,8 @@ class TestWhereTheWorkIs:
                     await library.sync()
                 assert _files_under(library.root) == before
             assert str(refused.value) == (
-                "Another sync, possibly of an earlier lilbee, is running on this library. "
-                "Run the sync again when it has finished."
+                "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, "
+                "is running on this library. Run the sync again when it has finished."
             )
             assert (planned, started) == ([], [])
             assert old_store.exists()
@@ -166,6 +166,25 @@ class TestWhereTheWorkIs:
         assert planned, "the sync that ran never reached the gate, so the refusal proves nothing"
         assert len(started) == (1 if processes > 1 else 0)
         assert caplog.text.count("Deleted 1 unused worker store(s)") == 1
+
+    async def test_the_refusal_names_every_holder_of_the_mark(self, tmp_path, monkeypatch):
+        """A wiki build or an import of this lilbee holds the mark as a sync does."""
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 3)
+        old_store = library.root / "shards" / "w0" / "data"
+        (old_store / "lancedb").mkdir(parents=True)
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
+
+        with source_keys_in_use(library.root), pytest.raises(SyncRunningError) as refused:
+            await library.sync()
+
+        assert old_store.exists()
+        assert [
+            holder
+            for holder in ("sync", "import", "add", "wiki build")
+            if holder in str(refused.value)
+        ] == ["sync", "import", "add", "wiki build"]
+        assert str(refused.value).endswith("Run the sync again when it has finished.")
 
     async def test_a_sync_beside_the_mark_of_another_sync_runs_when_no_store_exists(self, tmp_path):
         library = Library(tmp_path / "lib", 2)
