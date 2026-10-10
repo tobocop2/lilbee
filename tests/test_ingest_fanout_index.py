@@ -414,6 +414,45 @@ class TestEqualToOneProcess:
         rekeys = [call for call in updates.call_args_list if "bulk/" in str(call.kwargs)]
         assert 1 <= len(rekeys) <= len(_RELOCATABLE_TABLES)
 
+    async def test_files_moved_to_unrelated_names_share_updates_and_nothing_is_embedded_again(
+        self, tmp_path
+    ):
+        from lancedb.table import LanceTable
+
+        from lilbee.data.store.core import _RELOCATABLE_TABLES
+
+        counts, results = [], []
+        olds = [f"bulk/ledger_{number}.txt" for number in range(14)]
+        news = [
+            f"shelf{number % 5}/{number * 7} study of topic {number}.txt" for number in range(14)
+        ]
+
+        async def history(library):
+            for number, old in enumerate(olds):
+                library.write(old, f"Entry {number} of the ledger.")
+            library.write_notes("note", 6)
+            await library.sync()
+            for old, new in zip(olds, news, strict=True):
+                (library.documents / new).parent.mkdir(exist_ok=True)
+                (library.documents / old).rename(library.documents / new)
+            real = LanceTable.update
+            with mock.patch.object(
+                LanceTable, "update", autospec=True, side_effect=real
+            ) as updates:
+                results.append(await library.sync())
+            counts.append(sum("ledger_" in str(call.kwargs) for call in updates.call_args_list))
+            await library.sync()
+
+        fanned, single = await _play(tmp_path, history)
+        for result in results:
+            assert sorted(result.relocated) == sorted(news)
+            assert result.added == []
+        # One process: one update of each table. Two workers: one each, at most.
+        assert 1 <= counts[1] <= len(_RELOCATABLE_TABLES)
+        assert 1 <= counts[0] <= 2 * len(_RELOCATABLE_TABLES)
+        assert [name for name in fanned.sources() if name.startswith("bulk/")] == []
+        _assert_equal_to_one_process(fanned, single)
+
     async def test_a_copy_of_an_indexed_file_in_the_other_slice_is_indexed_beside_it(
         self, tmp_path
     ):
