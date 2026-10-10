@@ -241,12 +241,55 @@ class TestWhereTheWorkIs:
             return rows
 
         monkeypatch.setattr(Store, "get_sources_where", _where)
+        asked = []
+        real_missing = Store.missing_sources
+        monkeypatch.setattr(
+            Store,
+            "missing_sources",
+            lambda self, names: real_missing(self, asked.append(sorted(names)) or asked[-1]),
+        )
         await library.sync()
-        # Each worker reads its slice for the plan and again for the reconciliation.
-        assert len(sliced) == 4
-        assert sorted(name for part in sliced for name in part) == sorted([*names, *names])
+        # Each worker reads its slice once, for the plan, and asks for names alone at the end.
+        assert len(sliced) == 2
+        assert sorted(name for part in sliced for name in part) == sorted(names)
         assert max(len(part) for part in sliced) < len(names)
+        assert sorted(asked) == sorted(sliced)
         assert whole == []
+
+    async def test_a_worker_names_a_file_of_its_slice_that_ended_with_no_source_row(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A file that failed is accounted for and is not named."""
+        library = Library(tmp_path / "lib", 2)
+        library.write_notes("note", 12)
+        real_rows = Store._batch_source_rows
+        monkeypatch.setattr(
+            Store,
+            "_batch_source_rows",
+            lambda store, items: [
+                row for row in real_rows(store, items) if row["filename"] != "note3.txt"
+            ],
+        )
+        real_ingest = pipeline_mod.ingest_document
+
+        async def _one_fails(path, name, *args, **kwargs):
+            if name == "note5.txt":
+                raise OSError("unreadable")
+            return await real_ingest(path, name, *args, **kwargs)
+
+        monkeypatch.setattr(pipeline_mod, "ingest_document", _one_fails)
+
+        with caplog.at_level(logging.WARNING, logger=pipeline_mod.log.name):
+            result = await library.sync()
+
+        assert result.failed == ["note5.txt"]
+        assert "note3.txt" not in library.sources()
+        dropped = [
+            r.getMessage() for r in caplog.records if "Sync reconciliation" in r.getMessage()
+        ]
+        assert len(dropped) == 1
+        assert dropped[0].startswith("Sync reconciliation: 1 document file(s) on disk are absent")
+        assert dropped[0].endswith("(possible silent drop): note3.txt")
 
 
 class TestEqualToOneProcess:

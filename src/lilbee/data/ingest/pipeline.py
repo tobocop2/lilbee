@@ -1117,6 +1117,25 @@ def _reconcile_missing(
     return sorted(name for name in disk_files if name not in accounted)
 
 
+def _missing_from_index(
+    store: Store,
+    shard: ShardId | None,
+    disk_files: dict[str, Path],
+    failed: Iterable[str],
+    skipped: Iterable[str],
+    held: Iterable[str],
+) -> list[str]:
+    """The files of this sync's scope that :func:`_reconcile_missing` names.
+
+    A worker asks the index for names alone, in one pass over the name column:
+    it does not read the source rows of its slice a second time.
+    """
+    if shard is None:
+        return _reconcile_missing(disk_files, store.get_sources(), failed, skipped, held)
+    waived = {*failed, *skipped, *held}
+    return sorted(store.missing_sources(name for name in disk_files if name not in waived))
+
+
 def _ignored_sources(sources: list[SourceRecord], rules: IgnoreRules) -> list[str]:
     """Indexed sources a ``.lilbeeignore`` now excludes.
 
@@ -1571,9 +1590,7 @@ async def sync(
     # Reconciliation guard against silent data loss: any on-disk document file that
     # ended up in neither the index nor an accounting set was dropped without a
     # signal. Surface it loudly instead of letting a whole dataset vanish quietly.
-    if missing := _reconcile_missing(
-        disk_files, _sources_in_scope(_store, shard), failed, skipped, state.held_out
-    ):
+    if missing := _missing_from_index(_store, shard, disk_files, failed, skipped, state.held_out):
         log.warning(
             "Sync reconciliation: %d document file(s) on disk are absent from the index "
             "with no failure reported (possible silent drop): %s",
