@@ -3013,6 +3013,15 @@ class TestRemovableSources:
         disk_files = {"present.md": Path("present.md")}
         assert _absent_sources(sources, disk_files) == ["gone.md"]
 
+    def test_an_archive_member_is_absent_only_when_its_archive_is(self):
+        from lilbee.data.ingest.pipeline import _absent_sources
+
+        names = ["here.zip", "here.zip/a.txt", "here.zip/deep/b.txt", "gone.zip", "gone.zip/a.txt"]
+        sources = [{"filename": name, "source_type": "document"} for name in names]
+        disk_files = {"here.zip": Path("/docs/here.zip")}
+
+        assert _absent_sources(sources, disk_files) == ["gone.zip", "gone.zip/a.txt"]
+
 
 class TestDiscoverFiles:
     def test_nonexistent_dir_returns_empty(self, isolated_env, tmp_path):
