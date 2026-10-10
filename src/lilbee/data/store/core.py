@@ -514,7 +514,7 @@ def _plan_hold(
             if sizes[pattern] < _SWAP_MIN_SOURCES:
                 pattern = _RekeyPattern(None, None, pattern.title)
             stored = rows[old]
-            olds = hold.update_for(pattern, max(1, stored[0].get("chunk_count") or 1))
+            olds = hold.update_for(pattern, max(1, stored[0]["chunk_count"]))
             if olds is None:
                 break
             olds.append(old)
