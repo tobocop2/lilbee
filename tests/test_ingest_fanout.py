@@ -368,18 +368,14 @@ class TestRemovePrivateStores:
         with source_keys_in_use(tmp_path):
             fanout.remove_private_stores(tmp_path)
 
-    @pytest.mark.parametrize(
-        ("deletes", "then_marks"),
-        [(False, False), (True, False), (True, True)],
-        ids=["a-reset", "a-sync-that-deletes", "a-sync-that-deletes-then-runs"],
-    )
+    @pytest.mark.parametrize("deletes", [False, True], ids=["a-reset", "a-sync-that-deletes"])
     def test_a_holder_that_lets_go_inside_the_wait_does_not_refuse_the_sync(
-        self, tmp_path, caplog, monkeypatch, deletes, then_marks
+        self, tmp_path, caplog, monkeypatch, deletes
     ):
         """A reset, or another sync of this lilbee on an upgraded data root, is no earlier sync."""
-        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.5 if then_marks else _CANCEL_BOUND_S)
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", _CANCEL_BOUND_S)
         store = self._store(tmp_path, "w0", 10)
-        holding, waiting, returned = threading.Event(), threading.Event(), threading.Event()
+        holding, waiting = threading.Event(), threading.Event()
 
         def _the_other_holder():
             with syncs_held_off(tmp_path, "unused"):
@@ -387,11 +383,8 @@ class TestRemovePrivateStores:
                 assert waiting.wait(_CANCEL_BOUND_S)
                 if deletes:
                     fanout.shutil.rmtree(store)
-            if then_marks:
-                with source_keys_in_use(tmp_path):
-                    assert returned.wait(_CANCEL_BOUND_S)
 
-        def _held_off(data_root, running, wait):
+        def _held_off(data_root, running, wait=0.0):
             waiting.set()
             return syncs_held_off(data_root, running, wait)
 
@@ -404,7 +397,6 @@ class TestRemovePrivateStores:
                 fanout.remove_private_stores(tmp_path)
         finally:
             waiting.set()
-            returned.set()
             other.join(_CANCEL_BOUND_S)
         assert not store.exists()
         # The stores are listed again under the lock, so one that went is not reported stuck.
@@ -412,6 +404,26 @@ class TestRemovePrivateStores:
             record.getMessage() for record in caplog.records if "Could not" in record.getMessage()
         ] == []
         assert len(caplog.records) == (0 if deletes else 1)
+
+    def test_stores_another_sync_deleted_and_then_marked_do_not_refuse_the_sync(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """The wait ends busy on the mark of a sync that already deleted the stores."""
+        monkeypatch.setattr(fanout, "_STORE_LOCK_WAIT_S", 0.05)
+        store = self._store(tmp_path, "w0", 10)
+        asked = []
+
+        def _held_off(data_root, running, wait=0.0):
+            # The other sync's delete lands after this one listed the stores.
+            fanout.shutil.rmtree(store)
+            asked.append(wait)
+            return syncs_held_off(data_root, running, wait)
+
+        monkeypatch.setattr(fanout, "syncs_held_off", _held_off)
+        with caplog.at_level("WARNING", logger=fanout.log.name), source_keys_in_use(tmp_path):
+            fanout.remove_private_stores(tmp_path)
+        assert asked == [0.05]
+        assert caplog.records == []
 
     @pytest.mark.parametrize(
         "refusal",
