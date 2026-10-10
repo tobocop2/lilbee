@@ -409,8 +409,8 @@ that design was the two records disagreeing.
 by name. A BTREE index on the name column of the chunk, page text and source tables keeps
 that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
 sit past it. The delete reads the index and scans the rows past it, so its cost follows
-those rows and not the table: 0.04 s for 2,000 keys with 2,000 rows past the index and
-0.09 s with 62,000.
+those rows and not the table: 0.06 s for 2,000 keys with 2,000 rows past the index and
+0.16 s with 62,000, in a table of 100,000 rows on the Linux machine below.
 
 With one index a flush holds the lock for about 0.24 s at every size measured on Linux.
 The layout it replaces, a store for each worker, held it for 0.15 s at 100,000 rows,
@@ -441,13 +441,28 @@ So no two workers take one old name. A file is an add only when every old name o
 content is taken, so no old name stays while a file of its content is added.
 
 **A renamed folder.** Files that swap the same leading text of their name, as every file
-of a renamed folder does, take one update of each table together, and their source rows
-change in one merge. The vectors are not read or embedded again. Files that also take a
-new title, because their own names changed, share an update for each 32 of them. One hold
-of the write lock re-keys at most 2,000 files with at most 16 updates of the chunk table,
-and the sync pauses for 0.1 s between two holds, so a flush of another worker gets the
-lock. A sync that stops between two
+of a renamed folder does, take one update of each table together. So a renamed folder is
+one pass over each table. The source rows change in one merge. The vectors are not read
+or embedded again.
+
+**Other renames cost more.** Files that each take a new file name also take a new title,
+and they share an update for each 32 files. Files moved to unrelated names share no
+leading text, so each file costs one update of each table.
+
+**One hold of the write lock** re-keys at most 2,000 files with at most 16 updates of the
+chunk table. So files moved to unrelated names go in holds of 16 files. The sync pauses
+for 0.1 s between two holds, so other writers get a turn. A sync that stops between two
 holds leaves the remaining files under their old names, and the next sync moves them.
+
+A hold has a bound in files and in updates, not in time. The time of one update follows
+the size of the index. Holds for 512 renamed files, 1024-dimension vectors, one chunk a
+file, on the same Linux machine while other tenants loaded it:
+
+| 512 renamed files | 100,000 rows in the index | 250,000 rows in the index |
+|---|---|---|
+| A renamed folder | 1 hold of 0.57 s, and 0.67 s in a second run | 1 hold of 1.25 s, and 1.61 s in a second run |
+| A new file name for each file | 2 holds, the longest 3.48 s | 2 holds, the longest 15.21 s |
+| Unrelated names | 32 holds, the longest 16.09 s, 363 s in all | 32 holds, the longest 19.82 s, 505 s in all |
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
