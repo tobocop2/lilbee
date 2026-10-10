@@ -9,6 +9,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import rich.progress
@@ -294,6 +295,38 @@ class TestRemovePrivateStores:
             # A sync that deletes nothing says so, and claims no deletion.
             fanout.remove_private_stores(tmp_path)
             assert [record.getMessage() for record in caplog.records] == [could_not]
+
+    def test_a_file_that_vanishes_while_it_is_measured_does_not_stop_the_delete(
+        self, tmp_path, caplog, monkeypatch
+    ):
+        """A sync must not fail on a store another process is still changing."""
+        megabyte = 1024 * 1024
+        store = self._store(tmp_path, "w0", megabyte)
+        gone = store / "lancedb" / "vectors.lance"
+        real_stat, real_lstat, looked = Path.stat, Path.lstat, []
+
+        def _stat(path, **kwargs):
+            # The file is there for a first look and gone for the next one.
+            if path == gone:
+                looked.append(path)
+                if len(looked) > 1:
+                    raise FileNotFoundError(str(path))
+            return real_stat(path, **kwargs)
+
+        def _lstat(path):
+            if path == gone:
+                raise FileNotFoundError(str(path))
+            return real_lstat(path)
+
+        monkeypatch.setattr(Path, "stat", _stat)
+        monkeypatch.setattr(Path, "lstat", _lstat)
+        with caplog.at_level("WARNING", logger=fanout.log.name):
+            fanout.remove_private_stores(tmp_path)
+        assert not store.exists()
+        assert [record.getMessage() for record in caplog.records] == [
+            f"Deleted 1 unused worker store(s) of an earlier lilbee under {tmp_path / 'shards'}, "
+            "freeing 0.0 MB"
+        ]
 
     def test_a_data_root_with_a_sync_on_it_keeps_its_stores_and_says_nothing(
         self, tmp_path, caplog
