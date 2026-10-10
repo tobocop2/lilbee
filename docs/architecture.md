@@ -448,9 +448,11 @@ it starts, and logs the space that frees. It does so only while it holds every o
 sync off the data root, with the lock a reset uses: an earlier lilbee's fan-out sync
 holds the sync mark for as long as it writes and merges those stores.
 
-When the directories exist and another sync holds the mark, the sync does not run: it
-raises `SyncRunningError` before it reads or writes anything. Every surface reports that
-as it reports any sync that could not start, and the next sync after the other one ends
+When the directories exist and the mark is held, the sync does not run: it raises
+`SyncRunningError` before it reads or writes anything. A sync, an import, an add and a
+wiki build of this lilbee hold the same mark, so each of them stops the sync as an
+earlier lilbee's sync does, for as long as it runs, and the message names all four. Every surface reports that
+as it reports any sync that could not start, and the next sync after the holder ends
 deletes the directories and runs. The sync waits up to 5 seconds for the lock before it
 reads a holder as a running sync, and it runs when the directories are gone by then. So
 a reset does not stop it, and two syncs of this lilbee that start together on an

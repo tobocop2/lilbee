@@ -38,7 +38,7 @@ _CANCEL_BOUND_S = 5.0
 
 
 # What a sync says when it stops beside a possible fan-out sync of an earlier lilbee.
-_REFUSAL = "Another sync, possibly of an earlier lilbee, is running on this library"
+_REFUSAL = "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, is running"
 
 
 def _never_called(*args, **kwargs):
@@ -353,8 +353,8 @@ class TestRemovePrivateStores:
             ):
                 fanout.remove_private_stores(tmp_path)
             assert str(refused.value) == (
-                "Another sync, possibly of an earlier lilbee, is running on this library. "
-                "Run the sync again when it has finished."
+                "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, "
+                "is running on this library. Run the sync again when it has finished."
             )
             assert store.exists()
             assert caplog.records == []
