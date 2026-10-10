@@ -5077,6 +5077,44 @@ class TestRelocateInOnePass:
             ("new.md", "hash of the moved file")
         ]
 
+    def test_a_source_table_from_before_titles_and_stats_keeps_its_columns(self, store):
+        """An index a much earlier lilbee wrote: the move changes the key and nothing else."""
+        import pyarrow as pa
+
+        from lilbee.data.store import ensure_table
+        from lilbee.data.store.types import SourceStat
+
+        early_schema = pa.schema(
+            [
+                pa.field("filename", pa.utf8()),
+                pa.field("file_hash", pa.utf8()),
+                pa.field("ingested_at", pa.utf8()),
+                pa.field("chunk_count", pa.int32()),
+                pa.field("source_type", pa.utf8()),
+            ]
+        )
+        row = {
+            "filename": "old_report.md",
+            "file_hash": "h",
+            "ingested_at": "",
+            "chunk_count": 1,
+            "source_type": "document",
+        }
+        ensure_table(store.get_db(), SOURCES_TABLE, early_schema).add([row])
+        store.add_chunks(_titled_records("old_report.md", 1, title="old report"))
+
+        step = store.relocate_sources(
+            [SourceMove(("old_report.md",), "annual_summary.md", SourceStat(1, 2, 3))]
+        )
+
+        assert step == SourceRelocation({"annual_summary.md": "old_report.md"}, settled=1)
+        assert store.open_table(SOURCES_TABLE).to_arrow().to_pylist() == [
+            {**row, "filename": "annual_summary.md"}
+        ]
+        chunks = store.open_table(CHUNKS_TABLE).to_arrow()
+        assert chunks.column("source").to_pylist() == ["annual_summary.md"]
+        assert chunks.column("title").to_pylist() == ["old report"]
+
     def test_files_of_one_content_share_one_pass_over_their_old_names(self):
         from lilbee.data.store.core import _claimed_names
 
