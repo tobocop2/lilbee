@@ -474,8 +474,11 @@ as it reports any sync that could not start, and the next sync after the holder 
 deletes the directories and runs. The sync waits up to 5 seconds for the lock before it
 reads a holder as a running sync, and it runs when the directories are gone by then. So
 a reset does not stop it, and two syncs of this lilbee that start together on an
-upgraded data root both run. A store that cannot be deleted for another reason is named
-in a warning and the sync runs.
+upgraded data root both run, with two exceptions. When the first sync needs more than 5
+seconds to delete the directories, the second sync does not run. When a directory cannot
+be deleted, the second sync does not run while the first one runs. In both cases the
+next sync after the first one ends runs. A sync with no other sync beside it names a
+store that cannot be deleted in a warning, and runs.
 
 Two limits remain. A lilbee older than 0.6.90b448 holds no sync mark, so do not run its
 fan-out sync at the same time as a newer lilbee on one data directory. An earlier lilbee
