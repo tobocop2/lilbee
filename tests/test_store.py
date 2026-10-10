@@ -5444,6 +5444,13 @@ class TestSourcesIngestedSince:
         assert store.sources_ingested_since(between) == ["late.md"]
         assert sorted(store.sources_ingested_since("")) == ["early.md", "late.md"]
 
+    def test_a_source_written_at_the_very_time_is_one_of_them(self, store):
+        """The mark takes its time before the first write, so a row at that time came after it."""
+        store.upsert_source("same.md", "h", 1)
+        [row] = store.get_sources()
+
+        assert store.sources_ingested_since(row["ingested_at"]) == ["same.md"]
+
 
 class TestRekeyReplacesAndSkips:
     def test_a_table_with_no_row_to_move_gets_no_new_version(self, store):
