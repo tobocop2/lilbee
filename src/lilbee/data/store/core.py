@@ -282,6 +282,9 @@ _MAP_CELLS = 500_000
 
 _NULL_TEXT_SQL = "CAST(NULL AS STRING)"
 
+# Beside the tables: says every source row of this index was checked for its chunks.
+_SOURCES_CHECKED_NAME = ".sources_checked"
+
 # Rows per Arrow batch when a filtered read walks the whole source table.
 _SOURCE_SCAN_BATCH_ROWS = 20_000
 
@@ -2062,6 +2065,45 @@ class Store:
             missing.difference_update(batch.column("filename").to_pylist())
         return missing
 
+    def forget_sources_without_chunks(self) -> list[str]:
+        """Delete, once for each index, each document source row that counts chunks and has none.
+
+        The file behind such a row reads as unchanged for ever; with the row gone
+        a plan reads it as a new file. Returns the names. The pass is recorded
+        beside the tables and does not run again on this index.
+        """
+        checked = self._config.lancedb_dir / _SOURCES_CHECKED_NAME
+        if checked.exists():
+            return []
+        with self._write_lock():
+            emptied = self._forget_sources_without_chunks_unlocked()
+            checked.touch()
+        self._invalidate_source_cache()
+        return emptied
+
+    def _forget_sources_without_chunks_unlocked(self) -> list[str]:
+        """Delete the document source rows no chunk row names. Caller holds ``write_lock()``."""
+        sources = self.open_table(SOURCES_TABLE)
+        if sources is None:
+            return []
+        counted = f"chunk_count > 0 AND source_type = '{escape_sql_string(SourceType.DOCUMENT)}'"
+        scan = sources.search().where(counted).select(["filename"]).limit(None)
+        names: set[str] = set()
+        for batch in scan.to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            names.update(batch.column("filename").to_pylist())
+        chunks = self.open_table(CHUNKS_TABLE)
+        if chunks is not None and names:
+            key = INGEST_SOURCE_COLUMNS[CHUNKS_TABLE]
+            for batch in (
+                chunks.search().select([key]).limit(None).to_batches(_TERM_SCAN_BATCH_ROWS)
+            ):
+                names.difference_update(batch.column(key).unique().to_pylist())
+        emptied = sorted(names)
+        for start in range(0, len(emptied), _SOURCE_STAT_BATCH_ROWS):
+            part = emptied[start : start + _SOURCE_STAT_BATCH_ROWS]
+            sources.delete(f"filename IN ({_in_list(part)})")
+        return emptied
+
     def sources_version(self) -> int | None:
         """The version of the source table now, or None when there is no table."""
         table = self.open_table(SOURCES_TABLE)
@@ -2866,8 +2908,8 @@ class Store:
             self._title_fts_ready = False
             self._scalar_ready = False
             db = self.get_db()
-            for name in table_names(db):
-                if name == MEMORIES_TABLE:
-                    continue
+            dropped = [name for name in table_names(db) if name != MEMORIES_TABLE]
+            # The source rows go first: a drop that stops part way leaves no file unchanged.
+            for name in sorted(dropped, key=lambda name: name != SOURCES_TABLE):
                 db.drop_table(name)
         self._invalidate_source_cache()

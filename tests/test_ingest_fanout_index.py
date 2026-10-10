@@ -524,6 +524,90 @@ class TestEqualToOneProcess:
         _assert_equal_to_one_process(fanned, single)
 
 
+class TestASourceRowWithNoChunks:
+    """What an earlier lilbee could leave: the file reads as unchanged and nothing finds it."""
+
+    def _lose_chunks(self, library, *names) -> None:
+        library.use()
+        quoted = ", ".join(f"'{name}'" for name in names)
+        Store(cfg).open_table("chunks").delete(f"source IN ({quoted})")
+        # An index this lilbee has not checked yet.
+        (cfg.lancedb_dir / ".sources_checked").unlink(missing_ok=True)
+
+    async def test_the_next_sync_indexes_the_file_again(self, tmp_path, caplog):
+        results = []
+
+        async def history(library):
+            library.write_notes("note", 12)
+            await library.sync()
+            self._lose_chunks(library, "note3.txt", "note7.txt")
+            with caplog.at_level(logging.WARNING, logger=pipeline_mod.log.name):
+                results.append(await library.sync())
+            results.append(await library.sync())
+
+        fanned, single = await _play(tmp_path, history)
+        for repaired, after in (results[:2], results[2:]):
+            assert sorted(repaired.added) == ["note3.txt", "note7.txt"]
+            assert repaired.unchanged == 10
+            assert (after.added, after.unchanged) == ([], 12)
+        assert caplog.text.count("2 file(s) had an index entry and no chunks") == 2
+        assert len(fanned.chunk_sources()) == len(set(fanned.chunk_sources())) == 12
+        _assert_equal_to_one_process(fanned, single)
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_an_index_is_checked_once_and_never_by_a_worker(
+        self, tmp_path, monkeypatch, processes
+    ):
+        asked, checks = [], []
+        real_ask = Store.forget_sources_without_chunks
+        real_check = Store._forget_sources_without_chunks_unlocked
+        monkeypatch.setattr(
+            Store,
+            "forget_sources_without_chunks",
+            lambda store: asked.append(active_config().data_root.name) or real_ask(store),
+        )
+        monkeypatch.setattr(
+            Store,
+            "_forget_sources_without_chunks_unlocked",
+            lambda store: checks.append(1) or real_check(store),
+        )
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 12)
+
+        for _ in range(3):
+            await library.sync()
+
+        # Each sync asks from the library's own root, never from a worker's; the first one checks.
+        assert asked == ["lib", "lib", "lib"]
+        assert checks == [1]
+
+    async def test_a_rebuild_that_stops_after_its_first_drop_indexes_every_file_again(
+        self, tmp_path
+    ):
+        library = Library(tmp_path / "lib", 1)
+        names = library.write_notes("note", 6)
+        await library.sync()
+        database = Store(cfg).get_db()
+        real, dropped = type(database).drop_table, []
+
+        def _stops_after_one(db, name, *args, **kwargs):
+            if dropped:
+                raise KeyboardInterrupt
+            dropped.append(name)
+            return real(db, name, *args, **kwargs)
+
+        with (
+            mock.patch.object(type(database), "drop_table", _stops_after_one),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            await library.sync(force_rebuild=True)
+        result = await library.sync()
+
+        assert len(dropped) == 1
+        assert sorted(result.added) == sorted(names)
+        assert len(library.chunk_sources()) == len(set(library.chunk_sources())) == 6
+
+
 _STOPS = ("before_the_start", "first_report", "every_report", "in_a_write")
 
 

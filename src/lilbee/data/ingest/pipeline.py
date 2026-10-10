@@ -1040,6 +1040,31 @@ def _force_rebuild_store(store: Any) -> None:
         store.rebuild_memory_embeddings(lambda texts: embedder.embed_batch(texts))
 
 
+def _reindex_sources_without_chunks(store: Store) -> None:
+    """Drop the source rows whose chunks are gone, so this sync indexes their files again.
+
+    The store checks each index once, before the plan reads the source rows.
+    """
+    emptied = _retry_after_lock_timeout(store.forget_sources_without_chunks)
+    if emptied:
+        log.warning(
+            "%d file(s) had an index entry and no chunks, and are indexed again: %s",
+            len(emptied),
+            ", ".join(emptied[:20]),
+        )
+
+
+async def _prepare_store(store: Store, shard: ShardId | None, *, force_rebuild: bool) -> None:
+    """Rebuild the store when asked and check its source rows, both off the event loop.
+
+    A worker leaves the check to its parent.
+    """
+    if force_rebuild:
+        await to_ingest_thread(_force_rebuild_store, store)
+    if shard is None:
+        await to_ingest_thread(_reindex_sources_without_chunks, store)
+
+
 def _reconcile_missing(
     disk_files: dict[str, Path],
     sources: list[SourceRecord],
@@ -1358,10 +1383,7 @@ async def sync(
     config = await to_ingest_thread(_config_with_persisted_roots, shard)
     _store = get_services().store
 
-    if force_rebuild:
-        # drop_all + memory re-embedding are heavy blocking store work; run them
-        # off the event loop so a rebuild doesn't stall other admitted requests.
-        await to_ingest_thread(_force_rebuild_store, _store)
+    await _prepare_store(_store, shard, force_rebuild=force_rebuild)
 
     config.documents_dir.mkdir(parents=True, exist_ok=True)
     index_mismatch = _report_index_mismatch(_store)
