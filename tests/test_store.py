@@ -4980,11 +4980,13 @@ class TestRelocateInOnePass:
             {row["filename"] for row in store.get_sources()} & {move.new for move in moves}
         )
 
-    def test_a_renamed_folder_takes_one_update_of_each_table(self, store):
+    def test_a_renamed_folder_takes_one_update_of_each_table(self, store, monkeypatch):
+        """No title changes, so the six files do not count against the titles of one update."""
         from lancedb.table import LanceTable
 
         from lilbee.data.store.core import _RELOCATABLE_TABLES
 
+        monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", 2)
         seeds, moves = _folder(6)
         for key, title in seeds:
             _seed_source(store, key, title=title)
@@ -5125,7 +5127,11 @@ class TestRelocateInOnePass:
         ]
 
     def test_a_source_table_from_before_titles_and_stats_keeps_its_columns(self, store):
-        """An index a much earlier lilbee wrote: the move changes the key and nothing else."""
+        """An index a much earlier lilbee wrote: the move changes the key and nothing else.
+
+        The old name gives no title and the new one does, so a missing title
+        column read as an empty title would put a title on the chunk.
+        """
         import pyarrow as pa
 
         from lilbee.data.store import ensure_table
@@ -5141,26 +5147,26 @@ class TestRelocateInOnePass:
             ]
         )
         row = {
-            "filename": "old_report.md",
+            "filename": "IMG_1234.md",
             "file_hash": "h",
             "ingested_at": "",
             "chunk_count": 1,
             "source_type": "document",
         }
         ensure_table(store.get_db(), SOURCES_TABLE, early_schema).add([row])
-        store.add_chunks(_titled_records("old_report.md", 1, title="old report"))
+        store.add_chunks(_titled_records("IMG_1234.md", 1, title=None))
 
         step = store.relocate_sources(
-            [SourceMove(("old_report.md",), "annual_summary.md", SourceStat(1, 2, 3))]
+            [SourceMove(("IMG_1234.md",), "annual_summary.md", SourceStat(1, 2, 3))]
         )
 
-        assert step == SourceRelocation({"annual_summary.md": "old_report.md"}, settled=1)
+        assert step == SourceRelocation({"annual_summary.md": "IMG_1234.md"}, settled=1)
         assert store.open_table(SOURCES_TABLE).to_arrow().to_pylist() == [
             {**row, "filename": "annual_summary.md"}
         ]
         chunks = store.open_table(CHUNKS_TABLE).to_arrow()
         assert chunks.column("source").to_pylist() == ["annual_summary.md"]
-        assert chunks.column("title").to_pylist() == ["old report"]
+        assert chunks.column("title").to_pylist() == [None]
 
     def test_files_of_one_content_share_one_pass_over_their_old_names(self):
         from lilbee.data.store.core import _claimed_names
