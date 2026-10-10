@@ -1231,17 +1231,37 @@ def _require_embedding_model() -> None:
         raise RuntimeError(f"Ingest needs an embedding model. {detail}")
 
 
-async def _sources_owed_to_wiki(store: Store, since: str | None) -> set[str]:
+async def _sources_written_since(store: Store, since: str | None) -> set[str]:
     """The sources a sync that stopped wrote and never gave to the wiki's page index.
 
-    *since* is the time its mark holds, None with no mark. Such a sync can have
-    re-keyed sources as well: the page index drops each name that left the
-    source table, and the names it lists in their place are owed too.
+    *since* is the time its mark holds, None with no mark.
     """
     if since is None:
         return set()
-    rekeyed = await to_ingest_thread(_forget_missing_in_wiki)
-    return rekeyed | set(await to_ingest_thread(store.sources_ingested_since, since))
+    return set(await to_ingest_thread(store.sources_ingested_since, since))
+
+
+async def _sources_rekeyed_by_stopped_sync(since: str | None) -> set[str]:
+    """The sources a one-process sync finds re-keyed by a sync that stopped; none with no mark.
+
+    *since* is the time the mark holds. This sync names what it removes and
+    re-keys itself, so it reads the page index against the source table only then.
+    """
+    if since is None:
+        return set()
+    return await to_ingest_thread(_forget_missing_in_wiki)
+
+
+async def _forget_removed_by_stopped_workers() -> None:
+    """Drop from the wiki's browse index what the workers of a fan-out that stopped removed.
+
+    With a mark the index stays as it is: the names it lists that left the source
+    table are how the sync that runs the owed wiki pass finds the re-keyed sources.
+    With no mark no worker re-keyed a source, and no later sync is owed the read.
+    """
+    config = active_config()
+    if config.wiki and await to_ingest_thread(wiki_pass_owed_since, config.data_root) is None:
+        await to_ingest_thread(_forget_missing_in_wiki)
 
 
 async def _run_post_ingest_passes(
@@ -1259,11 +1279,10 @@ async def _run_post_ingest_passes(
 
     The index pass only runs when this sync indexed something, and the wiki
     pass when it did or when *wiki_owed* says an earlier sync stopped before
-    its own. The
-    concept clusters are recomputed only when a source was added, updated or
-    removed: a relocation changes no co-occurrence. The entity lifecycle runs
-    every sync (a cheap no-op when off or already current) so turning the
-    setting on takes effect without a separate operation.
+    its own. The concept clusters are recomputed only when a source was added,
+    updated or removed: a relocation changes no co-occurrence. The entity
+    lifecycle runs every sync (a cheap no-op when off or already current) so
+    turning the setting on takes effect without a separate operation.
     """
     if indexed_anything:
         store.ensure_fts_index()
@@ -1297,14 +1316,16 @@ async def _update_wiki(changed_sources: set[str], config: Config) -> None:
     # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
     # post-ingest hook stays function-local at this boundary.
     from lilbee.wiki.ingest import incremental_update
-    from lilbee.wiki.stubs import refresh_stub_index
+    from lilbee.wiki.stubs import index_extractor_available, refresh_stub_index
 
     try:
         await to_ingest_thread(
             refresh_stub_index, get_services().store, config, sources=changed_sources
         )
-        # The index has every source written so far; a refresh that failed keeps the mark.
-        await to_ingest_thread(clear_wiki_pass_owed, config.data_root)
+        # The index has every source written so far. A refresh that failed keeps the
+        # mark, and so does one with no extractor, which left the index as it was.
+        if await to_ingest_thread(index_extractor_available, config):
+            await to_ingest_thread(clear_wiki_pass_owed, config.data_root)
     except Exception:
         log.warning("Wiki index refresh failed after sync", exc_info=True)
 
@@ -1346,14 +1367,13 @@ async def _sync_across_workers(
         verdicts = await run_workers(
             specs, options=options, quiet=quiet, on_progress=on_progress, cancel=cancel
         )
-    finally:
-        # No worker tells the wiki index what it removed or re-keyed, and a stopped one
-        # reports nothing, so the index is read against the source table instead.
-        await to_ingest_thread(_forget_missing_in_wiki)
-    if cancel is not None and cancel.is_set():
-        raise asyncio.CancelledError
-    if failures := [verdict for verdict in verdicts if verdict.error is not None]:
-        raise RuntimeError(_worker_failure_message(failures, specs))
+        if cancel is not None and cancel.is_set():
+            raise asyncio.CancelledError
+        if failures := [verdict for verdict in verdicts if verdict.error is not None]:
+            raise RuntimeError(_worker_failure_message(failures, specs))
+    except BaseException:
+        await _forget_removed_by_stopped_workers()
+        raise
     result = aggregate_results(verdicts)
     touched = set(result.added) | set(result.updated) | set(result.relocated)
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
@@ -1362,13 +1382,16 @@ async def _sync_across_workers(
             _forget_ignored, store.get_sources(), IgnoreRules.for_corpus(active_config().data_root)
         )
         result.removed = [*ignored, *result.removed]
+    # No worker tells the wiki index what it removed or re-keyed, so the index is read
+    # against the source table, once: the wiki pass takes the re-keyed sources it finds.
+    rekeyed = await to_ingest_thread(_forget_missing_in_wiki)
     await _run_post_ingest_passes(
         store,
         indexed_anything=bool(touched),
         cluster_added=result.added,
         cluster_updated=result.updated,
         cluster_removed=result.removed,
-        touched=touched | await _sources_owed_to_wiki(store, wiki_owed_since),
+        touched=touched | rekeyed | await _sources_written_since(store, wiki_owed_since),
         wiki_owed=wiki_owed_since is not None,
         cancel=cancel,
     )
@@ -1582,7 +1605,8 @@ async def sync(
             | set(updated)
             | set(relocated)
             | set(state.relocated_from)
-            | await _sources_owed_to_wiki(_store, wiki_owed_since),
+            | await _sources_rekeyed_by_stopped_sync(wiki_owed_since)
+            | await _sources_written_since(_store, wiki_owed_since),
             wiki_owed=wiki_owed_since is not None,
             cancel=cancel,
         )

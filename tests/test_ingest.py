@@ -5750,6 +5750,7 @@ class TestForgetMissingFromWikiIndex:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr("lilbee.wiki.stubs.index_extractor_available", lambda config: True)
         monkeypatch.setattr(
             "lilbee.wiki.stubs.load_stub_index",
             mock.MagicMock(side_effect=RuntimeError("index unreadable")),
@@ -5765,6 +5766,7 @@ class TestForgetMissingFromWikiIndex:
         from lilbee.core.config import cfg
 
         monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr("lilbee.wiki.stubs.index_extractor_available", lambda config: True)
         mock_svc.store.missing_sources.return_value = set()
         read = mock.MagicMock(return_value={})
         dropped = mock.MagicMock()
@@ -5774,6 +5776,18 @@ class TestForgetMissingFromWikiIndex:
         assert ingest_mod.forget_missing_from_wiki_index() == set()
         assert read.call_count == 1
         dropped.assert_not_called()
+
+    def test_with_no_extractor_the_index_is_not_read(self, isolated_env, monkeypatch):
+        """No refresh could take the re-keyed sources a read would find."""
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.core.config import cfg
+
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr("lilbee.wiki.stubs.index_extractor_available", lambda config: False)
+        read = mock.MagicMock()
+        monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
+        assert ingest_mod.forget_missing_from_wiki_index() == set()
+        read.assert_not_called()
 
     def test_with_the_wiki_off_the_index_is_not_read(self, isolated_env, monkeypatch):
         from lilbee.app import ingest as ingest_mod

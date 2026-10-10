@@ -298,6 +298,27 @@ def _write_source_mentions(
     return affected
 
 
+def listed_sources(config: Config) -> set[str]:
+    """Every source the index lists under a subject."""
+    return {source for stub in load_stub_index(config).values() for source in stub.sources}
+
+
+def _index_extractor(config: Config) -> EntityExtractor:
+    """The extractor the index is built with.
+
+    Its floor is one: the store keeps every mention so the corpus-wide floor is
+    judged over the aggregate rather than one sync's slice, where
+    _stubs_from_mention_rows applies it.
+    """
+    pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
+    return get_entity_extractor(config.wiki_entity_mode, get_services().provider, pass_config)
+
+
+def index_extractor_available(config: Config) -> bool:
+    """Whether a refresh can extract; one that cannot leaves the index as it is."""
+    return _index_extractor(config).available()
+
+
 def refresh_stub_index(
     store: Store,
     config: Config | None = None,
@@ -320,13 +341,7 @@ def refresh_stub_index(
         config = cfg
     cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
-        # Floor forced to one for extraction: the store keeps every mention so
-        # the corpus-wide floor can be judged over the aggregate rather than one
-        # sync's slice. _stubs_from_mention_rows applies the real floor.
-        pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
-        extractor = get_entity_extractor(
-            config.wiki_entity_mode, get_services().provider, pass_config
-        )
+        extractor = _index_extractor(config)
         if not extractor.available():
             # An unavailable backend extracts nothing, which is indistinguishable
             # from a corpus that names nothing. Rebuilding on that would drop the
@@ -413,7 +428,7 @@ def refresh_sources_under(keys: Iterable[str], config: Config) -> None:
     key, and the index takes it from them.
     """
     prefixes = list(keys)
-    listed = {source for stub in load_stub_index(config).values() for source in stub.sources}
+    listed = listed_sources(config)
     moved = {source for source in listed if any(is_under(source, prefix) for prefix in prefixes)}
     drop_sources_from_index(moved, config)
 

@@ -584,7 +584,7 @@ class TestEqualToOneProcess:
         )
         monkeypatch.setattr(
             "lilbee.app.ingest.forget_missing_from_wiki_index",
-            lambda: reconciled.append(active_config().data_root.name),
+            lambda: reconciled.append(active_config().data_root.name) or set(),
         )
 
         async def history(library):
@@ -1149,6 +1149,75 @@ class TestTheWikiIndex:
         assert "about-old.txt" not in subjects
         assert "old.txt" not in self._listed(library)
 
+    @pytest.mark.parametrize("parent", ["stops_with_its_workers", "is_killed"])
+    async def test_a_fan_out_that_stops_after_a_rename_leaves_the_index_under_the_new_name(
+        self, tmp_path, monkeypatch, parent
+    ):
+        """The oracle is a one-process library whose sync of the rename never stops."""
+        subjects = []
+
+        async def _stopped_sync(library) -> None:
+            cancel = threading.Event()
+            real = Store.relocate_sources
+            with monkeypatch.context() as patch:
+                patch.setattr(
+                    Store,
+                    "relocate_sources",
+                    lambda store, moves: cancel.set() or real(store, moves),
+                )
+                if parent == "is_killed":
+                    # A killed parent runs nothing after its workers: it never reads the index.
+                    patch.setattr("lilbee.app.ingest.forget_missing_from_wiki_index", set)
+                with pytest.raises(asyncio.CancelledError):
+                    await library.sync(cancel=cancel)
+            assert "renamed.txt" in library.sources()
+            assert (library.root / WIKI_OWED_FILENAME).is_file()
+
+        async def history(library):
+            library.write_notes("note", 4)
+            library.write("old.txt", "The one file that is renamed.")
+            await library.sync()
+            (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+            if library.processes > 1:
+                await _stopped_sync(library)
+            await library.sync()
+            subjects.append(self._subjects(library))
+            assert not (library.root / WIKI_OWED_FILENAME).exists()
+
+        fanned, single = await _play(tmp_path, history)
+        fan_out, one_process = subjects
+        assert one_process["about-renamed.txt"] == ("renamed.txt",)
+        assert "about-old.txt" not in one_process
+        assert fan_out == one_process
+        _assert_equal_to_one_process(fanned, single)
+
+    async def test_a_refresh_with_no_extractor_keeps_the_mark_for_the_next_sync(self, tmp_path):
+        from lilbee.wiki import stubs
+
+        extractor = stubs.get_entity_extractor()
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        reports = library.write_notes("report", 2)
+        extractor.available.return_value = False
+        await library.sync()
+        assert "old.txt" in self._listed(library)
+        assert (library.root / WIKI_OWED_FILENAME).is_file()
+        await library.sync()
+        assert "old.txt" in self._listed(library)
+        assert (library.root / WIKI_OWED_FILENAME).is_file()
+
+        extractor.available.return_value = True
+        await library.sync()
+
+        subjects = self._subjects(library)
+        assert subjects["about-renamed.txt"] == ("renamed.txt",)
+        assert "about-old.txt" not in subjects
+        assert set(reports) <= set(self._listed(library))
+        assert not (library.root / WIKI_OWED_FILENAME).exists()
+
     async def test_a_refresh_that_fails_keeps_the_mark_for_the_next_sync(
         self, tmp_path, monkeypatch
     ):
@@ -1215,8 +1284,12 @@ class TestTheWikiIndex:
         library.write_notes("note", 8)
         await library.sync()
         assert not (library.root / WIKI_OWED_FILENAME).exists()
-        owed_reads, refreshes, mark_reads = [], [], []
+        owed_reads, refreshes, mark_reads, index_reads = [], [], [], []
         monkeypatch.setattr(Store, "sources_ingested_since", lambda *args: owed_reads.append(args))
+        monkeypatch.setattr(
+            "lilbee.app.ingest.forget_missing_from_wiki_index",
+            lambda: index_reads.append(1) or set(),
+        )
         monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refreshes.append)
         real_read = pipeline_mod.wiki_pass_owed_since
         monkeypatch.setattr(
@@ -1231,6 +1304,8 @@ class TestTheWikiIndex:
         assert (owed_reads, refreshes) == ([], [])
         # The parent reads the mark; no worker does.
         assert mark_reads == ["lib"]
+        # One process names what it removes; the parent of a fan-out reads the index, once.
+        assert len(index_reads) == processes - 1
 
     async def test_a_sync_sets_the_mark_once_however_many_batches_it_plans(
         self, tmp_path, monkeypatch
