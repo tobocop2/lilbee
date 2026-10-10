@@ -445,24 +445,29 @@ of a renamed folder does, take one update of each table together. So a renamed f
 one pass over each table. The source rows change in one merge. The vectors are not read
 or embedded again.
 
-**Other renames cost more.** Files that each take a new file name also take a new title,
-and they share an update for each 32 files. Files moved to unrelated names share no
-leading text, so each file costs one update of each table.
+**Other renames.** Fewer than 256 files that swap one leading text, and files moved to
+unrelated names, share updates too: one update maps each old name to its new one. The
+store library builds that map once for each row it updates, so an update takes files
+only while the names in its maps times the chunk rows it re-keys stay under 500,000:
+about 700 files of one chunk, or about 220 files of ten chunks. Files that also take a
+new title, because the title came from the old file name, count three times, and at most
+256 of them share an update.
 
 **One hold of the write lock** re-keys at most 2,000 files with at most 16 updates of the
-chunk table. So files moved to unrelated names go in holds of 16 files. The sync pauses
-for 0.1 s between two holds, so other writers get a turn. A sync that stops between two
-holds leaves the remaining files under their old names, and the next sync moves them.
+chunk table. The sync pauses for 0.1 s between two holds, so other writers get a turn. A
+sync that stops between two holds leaves the remaining files under their old names, and
+the next sync moves them.
 
 A hold has a bound in files and in updates, not in time. The time of one update follows
-the size of the index. Holds for 512 renamed files, 1024-dimension vectors, one chunk a
-file, on the same Linux machine while other tenants loaded it:
+the size of the index. Holds for renamed files, 1024-dimension vectors, one chunk a file,
+two runs each, on a rented 16-core Linux machine while other tenants loaded it:
 
-| 512 renamed files | 100,000 rows in the index | 250,000 rows in the index |
+| Renamed files | 100,000 rows in the index | 250,000 rows in the index |
 |---|---|---|
-| A renamed folder | 1 hold of 0.57 s, and 0.67 s in a second run | 1 hold of 1.25 s, and 1.61 s in a second run |
-| A new file name for each file | 2 holds, the longest 3.48 s | 2 holds, the longest 15.21 s |
-| Unrelated names | 32 holds, the longest 16.09 s, 363 s in all | 32 holds, the longest 19.82 s, 505 s in all |
+| A renamed folder, 512 files | 1 hold of 0.28 s and 0.30 s | 1 hold of 0.49 s and 0.47 s |
+| A new file name for each of 512 files | 1 hold of 0.54 s and 0.60 s | 1 hold of 1.18 s and 1.07 s |
+| Unrelated names, 512 files | 1 hold of 0.50 s and 0.52 s | 1 hold of 0.86 s and 0.83 s |
+| Unrelated names, 1,500 files | 1 hold of 1.39 s and 1.34 s | 1 hold of 2.57 s and 2.63 s |
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.

@@ -4944,6 +4944,22 @@ _RELOCATE_HISTORIES = {
         [(key, "Shared Title") for key in _SHARED],
         [SourceMove(_SHARED, "kept/x.md", None), SourceMove(_SHARED, "kept/y.md", None)],
     ),
+    "unrelated-names": (
+        [
+            ("ledger/q1.md", "First Quarter"),
+            ("ledger/q2.md", "q2"),
+            ("it's a draft.md", "it's a draft"),
+            ("IMG_1234.md", None),
+            ("scans/日本.md", "Frankenstein Analysis"),
+        ],
+        [
+            SourceMove(("ledger/q1.md",), "shelf3/7 study of topic one.md", None),
+            SourceMove(("ledger/q2.md",), "attic/second quarter's.txt", None),
+            SourceMove(("it's a draft.md",), "final/IMG_0001.md", None),
+            SourceMove(("IMG_1234.md",), "x/found 100%_title.md", None),
+            SourceMove(("scans/日本.md",), "höhe/ü.md", None),
+        ],
+    ),
     "quotes-and-letters-wider-than-a-byte": (
         [("it's 100%_höhe/ü ber.md", "ü ber"), ("it's 100%_höhe/日本.md", "日本")],
         [
@@ -4956,13 +4972,28 @@ _RELOCATE_HISTORIES = {
 
 class TestRelocateInOnePass:
     @pytest.mark.parametrize("history", sorted(_RELOCATE_HISTORIES))
-    @pytest.mark.parametrize("bounds", [(2000, 16, 32), (2, 16, 32), (2000, 1, 2)], ids=str)
+    @pytest.mark.parametrize(
+        "bounds",
+        [
+            (2000, 16, 32, 256, 500_000),
+            (2, 16, 32, 256, 500_000),
+            (2000, 1, 2, 256, 500_000),
+            # Every source swaps its own leading text; and a key map of two sources.
+            (2000, 16, 32, 1, 500_000),
+            (2000, 16, 32, 256, 4),
+            (2000, 1, 32, 3, 4),
+            (2000, 16, 256, 256, 500_000),
+        ],
+        ids=str,
+    )
     def test_a_batch_leaves_each_table_as_one_update_for_each_move_does(
         self, store, tmp_path, monkeypatch, history, bounds
     ):
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_MOVES", bounds[0])
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", bounds[1])
         monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", bounds[2])
+        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", bounds[3])
+        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", bounds[4])
         seeds, moves = _RELOCATE_HISTORIES[history]
         for key, title in seeds:
             _seed_source(store, key, title=title)
@@ -5013,6 +5044,7 @@ class TestRelocateInOnePass:
         from lilbee.data.store.core import _RELOCATABLE_TABLES
 
         monkeypatch.setattr("lilbee.data.store.core._TITLE_MAP_KEYS", map_keys)
+        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", 1)
         seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
         for key, title in seeds:
             _seed_source(store, key, title=title)
@@ -5056,8 +5088,124 @@ class TestRelocateInOnePass:
         assert left == [m.candidates[0] for m in moves[2:]]
         assert _relocate_in_holds(store, moves[2:])[1] == 2
 
+    def _unrelated(self, store, count, chunks=1):
+        """Seed *count* files with titles from the documents; moves of them to unrelated names."""
+        moves = []
+        for number in range(count):
+            old = f"ledger/entry_{number}.md"
+            _seed_source(store, old, title="Annual Ledger")
+            if chunks > 1:
+                dim = store._config.embedding_dim
+                more = _titled_records(old, chunks, title="Annual Ledger", dim=dim)
+                store.add_chunks(more[1:])
+                store.upsert_source(old, "h", chunks, meta=SourceMeta(title="Annual Ledger"))
+            moves.append(SourceMove((old,), f"shelf{number}/{number * 7} study {number}.txt", None))
+        return moves
+
+    def _chunk_updates(self, store, moves):
+        """Relocate *moves* in one call; the step and the SQL of each update of the chunk table."""
+        from lancedb.table import LanceTable
+
+        real = LanceTable.update
+        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
+            step = store.relocate_sources(moves)
+        chunk_updates = [
+            call.kwargs["values_sql"]["source"]
+            for call in updates.call_args_list
+            if call.args[0].name == CHUNKS_TABLE
+        ]
+        return step, chunk_updates
+
+    def test_files_moved_to_unrelated_names_share_one_update_of_each_table(self, store, tmp_path):
+        from lancedb.table import LanceTable
+
+        from lilbee.data.store.core import _RELOCATABLE_TABLES
+
+        moves = self._unrelated(store, 6)
+        twin = _twin(store, tmp_path)
+        _relocate_one_update_for_each_move(twin, moves)
+        vectors = _vector_bytes(store)
+        real = LanceTable.update
+        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
+            step = store.relocate_sources(moves)
+
+        assert step.settled == 6
+        assert updates.call_count == len(_RELOCATABLE_TABLES)
+        assert _dump(store) == _dump(twin)
+        assert _vector_bytes(store) == vectors
+        assert sorted(row["filename"] for row in store.get_sources()) == sorted(
+            m.new for m in moves
+        )
+
+    def test_titles_of_their_own_count_twice_against_the_bound_of_the_maps(
+        self, store, monkeypatch
+    ):
+        """One chunk a file and a bound of 12: two files with keys and titles are 3 x 2 x 2."""
+        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 12)
+        seeds, moves = _RELOCATE_HISTORIES["new-file-names-in-one-folder"]
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+
+        step, chunk_updates = self._chunk_updates(store, moves)
+
+        assert step.settled == 5
+        assert [sql.count("bulk/ledger_") for sql in chunk_updates] == [2, 2, 1]
+        titles = store.open_table(CHUNKS_TABLE).to_arrow().column("title").to_pylist()
+        assert sorted(titles) == [f"paper's {number}" for number in range(5)]
+
+    def test_a_key_map_stops_at_its_bound_on_keys_times_chunk_rows(self, store, monkeypatch):
+        """Two chunks a file and a bound of 16: two files are 2 x 4, three would be 3 x 6."""
+        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 16)
+        moves = self._unrelated(store, 5, chunks=2)
+
+        step, chunk_updates = self._chunk_updates(store, moves)
+
+        assert step.settled == 5
+        assert [sql.count("ledger/entry_") for sql in chunk_updates] == [2, 2, 1]
+        assert sorted(
+            set(store.open_table(CHUNKS_TABLE).to_arrow().column("source").to_pylist())
+        ) == (sorted(move.new for move in moves))
+
+    def test_one_file_past_the_bound_of_a_key_map_still_moves(self, store, monkeypatch):
+        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 1)
+        moves = self._unrelated(store, 2, chunks=3)
+
+        step, chunk_updates = self._chunk_updates(store, moves)
+
+        assert step.settled == 2
+        assert len(chunk_updates) == 2
+
+    def test_a_hold_counts_the_updates_that_key_maps_add(self, store, monkeypatch):
+        """One file a map and two updates a hold: the third file waits for the next hold."""
+        monkeypatch.setattr("lilbee.data.store.core._MAP_CELLS", 1)
+        monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
+        moves = self._unrelated(store, 3)
+
+        first = store.relocate_sources(moves)
+
+        assert first.settled == 2
+        assert _holders(store, moves[2].candidates[0]) != set()
+        assert store.relocate_sources(moves[2:]).settled == 1
+        assert _holders(store, moves[2].candidates[0]) == set()
+
+    @pytest.mark.parametrize(("files", "by"), [(3, "concat("), (2, "map_extract(")])
+    def test_enough_files_that_swap_one_leading_text_take_an_update_of_their_own(
+        self, store, monkeypatch, files, by
+    ):
+        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", 3)
+        seeds, moves = _folder(files)
+        for key, title in seeds:
+            _seed_source(store, key, title=title)
+
+        step, chunk_updates = self._chunk_updates(store, moves)
+
+        assert step.settled == files
+        assert len(chunk_updates) == 1
+        assert chunk_updates[0].startswith(by)
+
     def test_a_hold_stops_before_the_update_past_its_bound(self, store, monkeypatch):
         """Each of these files swaps a leading text of its own, so each is one update."""
+        monkeypatch.setattr("lilbee.data.store.core._SWAP_MIN_SOURCES", 1)
         monkeypatch.setattr("lilbee.data.store.core._RELOCATE_HOLD_UPDATES", 2)
         names = ["alpha_plan", "beta_plan", "gamma_plan"]
         for name in names:
