@@ -33,7 +33,6 @@ _REQUEST_TOKEN_KEY = "req"  # noqa: S105  # JSON key name, not a secret
 class OcrRequestContext:
     """Per-extraction state the backend needs but xberg won't carry for it."""
 
-    on_page: Callable[[], None] | None = None
     timeout: float = 0.0
     cancel: CancelSignal | None = None
 
@@ -67,14 +66,10 @@ ocr_requests = _OcrRequestRegistry()
 
 @contextmanager
 def ocr_request(
-    *,
-    on_page: Callable[[], None] | None = None,
-    timeout: float = 0.0,
-    cancel: CancelSignal | None = None,
+    *, timeout: float = 0.0, cancel: CancelSignal | None = None
 ) -> Generator[str, None, None]:
     """Register a per-extraction context and yield its token for OcrConfig.backend_options."""
-    context = OcrRequestContext(on_page=on_page, timeout=timeout, cancel=cancel)
-    token = ocr_requests.register(context)
+    token = ocr_requests.register(OcrRequestContext(timeout=timeout, cancel=cancel))
     try:
         yield token
     finally:
@@ -184,8 +179,6 @@ class VisionOcrBackend:
             raise TaskCancelledError
         timeout = ctx.timeout if ctx is not None else 0.0
         text = self._ocr_fn(image_bytes, model, prompt, timeout=timeout, cancel=cancel)
-        if ctx is not None and ctx.on_page is not None:
-            ctx.on_page()
         return ExtractedDocument(content=text, mime_type=MARKDOWN_MIME)
 
     def process_image_file(self, path: str, config: OcrConfig) -> ExtractedDocument:

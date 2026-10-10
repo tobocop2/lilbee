@@ -7,7 +7,7 @@ import asyncio
 import contextvars
 import logging
 import time
-from collections.abc import AsyncGenerator, Generator, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -55,6 +55,7 @@ if TYPE_CHECKING:
         OcrStrategy,
         PdfConfig,
     )
+    from xberg.progress import ProgressEvent as OcrPageEvent
 
     from .batch import ExtractBatcher
 
@@ -229,7 +230,7 @@ def ocr_backend() -> OcrBackendUsed:
 def _ocr_config(ocr_token: str | None) -> OcrConfig | None:
     """xberg's OcrConfig for the backend ``ocr_backend`` picks, or None when OCR is off.
 
-    xberg OCRs the pages without usable text, and every page of a PDF with almost no text.
+    xberg OCRs each page without usable text; a page with usable text keeps it.
     """
     from xberg import OcrConfig
 
@@ -325,9 +326,7 @@ def extraction_config(mode: ExtractMode, *, ocr_token: str | None = None) -> Ext
     # pages internally, and cross-file concurrency is the pipeline's semaphore.
     chunking = build_chunking_config()
     ocr = _ocr_config(ocr_token)
-    # OCR off sends no OCR block (xberg 1.2.7 OCRs page images under any block, even
-    # disabled; 1.2.9 fixes that) and sets disable_ocr (without it, xberg auto-OCRs a
-    # PDF that has no text layer).
+    # OCR off sends no OCR block and sets disable_ocr; xberg auto-OCRs a textless PDF otherwise.
     disable_ocr = ocr is None
     # ocr = all defeats xberg's text-layer short-circuit for either engine; xberg
     # rejects force_ocr together with disable_ocr.
@@ -534,10 +533,10 @@ async def ingest_document(
     """Extract, chunk, and embed a document in a single xberg pass, with its metadata.
 
     xberg extracts native text and, where a page has none, OCRs it through the
-    registered backend (lilbee's vision model, or tesseract). Vision OCR progress
-    is streamed per page via ``ocr_request``; Tesseract reports no pages, so a
-    scanned file gets one OCR_START event before its extraction. ``quiet`` is
-    accepted for pipeline call compatibility. The returned metadata carries the document's
+    registered backend (lilbee's vision model, or tesseract). xberg reports each
+    OCR'd page of a PDF or image as it completes, and a scanned file under Tesseract
+    also gets one OCR_START event before its extraction. ``quiet`` is accepted for
+    pipeline call compatibility. The returned metadata carries the document's
     extraction title/authors/date and is derived even when extraction yields nothing;
     the OCR report says which backend the extraction ran and how many pages it OCR'd.
     """
@@ -626,8 +625,7 @@ def _page_count_config() -> ExtractionConfig:
     """A metadata-only ExtractionConfig: OCR and page bodies off, structure kept."""
     from xberg import ExtractionConfig, PageConfig
 
-    # No OCR block at all: xberg 1.2.7 OCRs a PDF's page images whenever one is present,
-    # even disabled (fixed in 1.2.9).
+    # The pass is metadata-only: no OCR block, disable_ocr set, no page bodies.
     return ExtractionConfig(
         pages=PageConfig(extract_pages=False, insert_page_markers=False),
         disable_ocr=True,
@@ -662,17 +660,53 @@ async def _probe_pages(data: bytes, filename: str) -> _PageProbe:
     try:
         doc = await aextract_document(data, filename=filename, config=_page_count_config())
     except Exception:
-        log.debug("Page-count probe failed for %s; OCR progress total stays unknown", filename)
+        log.debug("Page-count probe failed for %s; its OCR start is not announced", filename)
         return _PageProbe()
     return _PageProbe(pages=doc.counts.pages, has_scanned_pages=bool(_scanned_pages(doc)))
 
 
-def _announce_tesseract_ocr(
-    probe: _PageProbe, source_name: str, on_progress: DetailedProgressCallback
+async def _announce_tesseract_ocr(
+    data: bytes,
+    filename: str,
+    source_name: str,
+    content_type: str,
+    on_progress: DetailedProgressCallback,
 ) -> None:
-    """Emit OCR_START when Tesseract will OCR this file; it reports no per-page progress."""
-    if probe.has_scanned_pages and ocr_backend() is OcrBackendUsed.TESSERACT:
+    """Emit OCR_START when Tesseract will OCR a scanned page of this PDF."""
+    if ocr_backend() is not OcrBackendUsed.TESSERACT or not _has_own_pages(content_type):
+        return
+    probe = await _probe_pages(data, filename)
+    if probe.has_scanned_pages:
         on_progress(EventType.OCR_START, OcrStartEvent(file=source_name, total_pages=probe.pages))
+
+
+def _has_own_pages(content_type: str) -> bool:
+    """Whether the file is itself paginated (a PDF or an image), which an archive is not."""
+    # The content type, not the extraction mode: ingest_archive always requests PAGINATED.
+    return content_type_to_mode(content_type) is ExtractMode.PAGINATED
+
+
+def _ocr_page_reporter(
+    source_name: str, backend: OcrBackendUsed, on_progress: DetailedProgressCallback
+) -> Callable[[OcrPageEvent], None]:
+    """An xberg progress callback that reports each OCR'd page as an EXTRACT event.
+
+    ``completed`` counts distinct pages, so a page xberg sends to the backend
+    more than once still counts once. xberg calls this from a worker thread.
+    """
+
+    def _report(event: OcrPageEvent) -> None:
+        on_progress(
+            EventType.EXTRACT,
+            ExtractEvent(
+                file=source_name,
+                page=event.completed,
+                total_pages=event.total,
+                ocr_backend=backend,
+            ),
+        )
+
+    return _report
 
 
 async def _extract_document(
@@ -692,40 +726,27 @@ async def _extract_document(
     from .xberg import aextract_document
 
     data = path.read_bytes()
-    probe = _PageProbe()
-    # content_type_to_mode(content_type), not the *mode* argument: ingest_archive
-    # always requests PAGINATED regardless of the archive's own content_type, and
-    # an archive has no single page count to probe for.
-    if content_type_to_mode(content_type) is ExtractMode.PAGINATED:
-        probe = await _probe_pages(data, path.name)
-    _announce_tesseract_ocr(probe, source_name, on_progress)
-
-    page_seen = 0
-
-    def _tick() -> None:
-        nonlocal page_seen
-        page_seen += 1
-        on_progress(
-            EventType.EXTRACT,
-            ExtractEvent(
-                file=source_name,
-                page=page_seen,
-                total_pages=probe.pages,
-                ocr_backend=OcrBackendUsed.VISION,
-            ),
-        )
+    await _announce_tesseract_ocr(data, path.name, source_name, content_type, on_progress)
+    backend = ocr_backend()
+    # An archive gets no reporter: xberg counts its pages across members, each total per member.
+    on_page = (
+        _ocr_page_reporter(source_name, backend, on_progress)
+        if _has_own_pages(content_type)
+        else None
+    )
 
     trace_log.debug("extract-start source=%r type=%s", source_name, content_type)
-    backend = ocr_backend()
     started = time.perf_counter()
-    with ocr_request(on_page=_tick, timeout=_effective_ocr_timeout(), cancel=cancel) as token:
+    with ocr_request(timeout=_effective_ocr_timeout(), cancel=cancel) as token:
         batcher = active_extract_batcher()
         if batcher is not None:
-            doc = await batcher.submit(mode, data, path.name, token)
+            doc = await batcher.submit(mode, data, path.name, token, on_page)
         else:
             config = extraction_config(mode, ocr_token=token)
             # xberg's extract is async; awaiting it keeps the OCR page loop off this thread.
-            doc = await aextract_document(data, filename=path.name, config=config)
+            doc = await aextract_document(
+                data, filename=path.name, config=config, on_progress=on_page
+            )
     if cancel is not None and cancel.is_set():
         raise asyncio.CancelledError
     elapsed = time.perf_counter() - started

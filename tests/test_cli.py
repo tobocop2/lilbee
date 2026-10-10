@@ -3511,8 +3511,8 @@ class TestOcrFlags:
         assert result.exit_code == 0
         normalized = _plain_help_text(result.output)
         assert (
-            "auto reads each page without usable text, and every page of a file with almost"
-            " no text in all; all reads every page of every file; off skips them"
+            "auto reads each page without usable text and keeps the text of every other"
+            " page; all reads every page of every file; off skips them"
         ) in normalized
         assert "Leave it out to use the ocr setting" in normalized
 

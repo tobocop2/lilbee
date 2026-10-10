@@ -2640,12 +2640,19 @@ def test_ocr_help_names_every_mode_and_the_engine_rule() -> None:
     assert info.choices == ("auto", "all", "off")
     assert info.group == "Ingest"
     assert (
-        "auto reads each page without usable text, and every page of a file with almost no"
-        " text in all"
+        "auto reads each page without usable text and keeps the text of every other page;"
     ) in info.help_text
     assert "all reads every page of every file on every future ingest" in info.help_text
     assert "; off skips them." in info.help_text
     assert "vision_model picks the engine" in info.help_text
+
+
+def test_ocr_strategy_help_says_which_pages_auto_reads() -> None:
+    from lilbee.app.settings import get_setting
+
+    help_text = get_setting("ocr_strategy").help_text
+    assert "auto (each page without usable text: its text layer is missing, garbled" in help_text
+    assert "or under 32 non-blank characters) or scanned_pages" in help_text
 
 
 def test_vision_model_help_says_it_picks_the_engine_only() -> None:
