@@ -3,6 +3,7 @@
 import asyncio
 import errno
 import logging
+import os
 import sqlite3
 import sys
 import threading
@@ -248,6 +249,7 @@ class TestScopeLock:
 
 
 _SQLITE_HEADER = b"SQLite format 3\x00"
+_NO_HARD_LINKS = "its filesystem does not support hard links; move it to a disk formatted as APFS"
 
 
 _RESET_IN_ANOTHER_PROCESS = """
@@ -537,6 +539,67 @@ class TestSyncMark:
             "(disk I/O error)."
         )
         assert _lock_warnings(caplog) == 1
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="only macOS opens the lock by hard link")
+    async def test_a_macos_disk_without_hard_links_runs_a_sync_and_refuses_a_reset(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        def _no_link(src: str, dst: str, **_kwargs: object) -> None:
+            raise OSError(errno.ENOTSUP, "Operation not supported", str(src), None, str(dst))
+
+        ran = []
+        with (
+            mock.patch.object(os, "link", _no_link),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+                ran.append("reset")
+
+        assert ran == ["sync"]
+        assert str(caught.value) == (
+            f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
+            f"({_NO_HARD_LINKS})."
+        )
+        assert [r.getMessage() for r in caplog.records if r.name == "lilbee.runtime.lock"] == [
+            f"Cannot lock {tmp_path} ({_NO_HARD_LINKS}); a reset refuses until it can."
+        ]
+        assert [path.name for path in tmp_path.iterdir()] == [cfg.lancedb_dir.name]
+
+    @pytest.mark.parametrize(
+        ("refusal", "reported"),
+        [
+            (OSError(errno.ENOTSUP, "Operation not supported"), _NO_HARD_LINKS),
+            (OSError(errno.EROFS, "Read-only file system"), "[Errno 30] Read-only file system"),
+        ],
+    )
+    async def test_a_probe_that_cannot_be_opened_is_deleted_and_reported(
+        self, tmp_path: Path, caplog, refusal: OSError, reported: str
+    ) -> None:
+        def _created_then_refused(path: Path, *_args, **_kwargs) -> ReadWriteLock:
+            Path(path).touch()
+            raise refusal
+
+        ran = []
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", _created_then_refused),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+                ran.append("reset")
+
+        assert ran == ["sync"]
+        assert str(caught.value) == (
+            f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
+            f"({reported})."
+        )
+        assert [r.getMessage() for r in caplog.records if r.name == "lilbee.runtime.lock"] == [
+            f"Cannot lock {tmp_path} ({reported}); a reset refuses until it can."
+        ]
+        assert [path.name for path in tmp_path.iterdir()] == [cfg.lancedb_dir.name]
 
     def test_a_busy_probe_is_probed_again_on_the_next_reset(self, tmp_path: Path) -> None:
         real_acquire_write = ReadWriteLock.acquire_write

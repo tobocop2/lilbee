@@ -18,7 +18,7 @@ import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,6 +66,7 @@ _DATA_ROOT_UNLOCKABLE = (
 _NO_LOCKING = (
     "{path} is on a filesystem that does not support file locking. Move it to a local disk."
 )
+_NO_HARD_LINKS = "its filesystem does not support hard links; move it to a disk formatted as APFS"
 _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
@@ -197,13 +198,17 @@ def _require_locking(data_root: Path) -> None:
     """Raise ``LockingUnsupportedError`` when a lock nobody else holds still reports busy."""
     # Unique per call: a probe shared with another thread or host would read its hold as busy.
     probe_path = data_root / f"{_SYNC_PROBE_PREFIX}{uuid.uuid4().hex}"
-    probe = ReadWriteLock(probe_path, is_singleton=False)
     try:
-        probe.acquire_write(timeout=_PROBE_WAIT_S)
+        with closing(ReadWriteLock(probe_path, is_singleton=False)) as probe:
+            probe.acquire_write(timeout=_PROBE_WAIT_S)
     except FileLockTimeout:
         raise LockingUnsupportedError(_NO_LOCKING.format(path=data_root)) from None
+    except OSError as exc:
+        # link(2) on macOS, where the lock opens its file by hard link.
+        if exc.errno != errno.ENOTSUP:
+            raise
+        raise OSError(_NO_HARD_LINKS) from exc
     finally:
-        probe.close()
         _remove_probe(probe_path)
 
 
