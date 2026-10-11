@@ -61,6 +61,9 @@ def workers_as_threads(monkeypatch):
 
 _SHARED_TEXT = "Text that every copy of this file shares."
 
+# How long one thread of a test waits for a step of another before the test fails.
+_STEP_WAIT_S = 60.0
+
 
 def slice_of(name: str, count: int) -> int:
     """The slice of *count* that owns *name*."""
@@ -1204,41 +1207,109 @@ class TestTheWikiIndex:
         assert self._subjects(stopped) == self._subjects(clean)
         assert stopped.dump() == clean.dump()
 
+    async def _stop_in_a_write(self, library, monkeypatch) -> None:
+        """A sync of *library* that is cancelled where it writes its first files."""
+        cancel = threading.Event()
+        with monkeypatch.context() as patch:
+            TestAStoppedSync()._stop_at("in_a_write", cancel, patch)
+            with pytest.raises(asyncio.CancelledError):
+                await library.sync(cancel=cancel)
+
     async def test_files_written_after_the_wiki_pass_of_another_sync_reach_the_index(
         self, tmp_path, monkeypatch
     ):
-        """The other sync is its wiki pass, which ends while this sync waits to write its files."""
+        """The other sync wrote files of its own, and its wiki pass gives them to the index.
+
+        This sync writes its files after that pass wrote the index and before it
+        records its checkpoint, and then stops.
+        """
         library = Library(tmp_path / "lib", 1)
         library.write_notes("note", 4)
         await library.sync()
+        covered = self._record(library)
+        others = library.write_notes("other", 2)
+        await self._stop_in_a_write(library, monkeypatch)
+        assert set(others) <= set(library.sources())
         library.write_notes("report", 4)
         cancel = threading.Event()
-        real_write = Store.write_chunks_batch
-        other_passes = []
+        real_write, real_save = Store.write_chunks_batch, stubs_mod.save_stub_index
+        index_written, files_written = threading.Event(), threading.Event()
 
-        def _write_after_the_other_pass(store, items):
-            if not other_passes:
+        def _save_then_wait_for_the_write(stubs, config):
+            real_save(stubs, config)
+            index_written.set()
+            assert files_written.wait(_STEP_WAIT_S)
+
+        def _write_inside_the_other_pass(store, items):
+            if not files_written.is_set():
                 with ThreadPoolExecutor(max_workers=1) as other_sync:
-                    other_sync.submit(asyncio.run, pipeline_mod._update_wiki(set(), cfg)).result()
-                other_passes.append(1)
+                    other_pass = other_sync.submit(
+                        asyncio.run, pipeline_mod._update_wiki(set(others), cfg)
+                    )
+                    assert index_written.wait(_STEP_WAIT_S)
+                    written = real_write(store, items)
+                    files_written.set()
+                    other_pass.result()
                 cancel.set()
+                return written
             return real_write(store, items)
 
         with monkeypatch.context() as patch:
-            patch.setattr(Store, "write_chunks_batch", _write_after_the_other_pass)
+            patch.setattr(Store, "write_chunks_batch", _write_inside_the_other_pass)
+            patch.setattr(stubs_mod, "save_stub_index", _save_then_wait_for_the_write)
             with pytest.raises(asyncio.CancelledError):
                 await library.sync(cancel=cancel)
         written = [name for name in library.sources() if name.startswith("report")]
-        assert other_passes == [1]
-        assert written, "the stopped sync wrote nothing after the other pass"
+        assert written, "the stopped sync wrote nothing inside the other pass"
+        assert set(others) <= set(self._listed(library))
         assert not set(written) & set(self._listed(library))
+        assert self._record(library) not in (None, covered)
 
         await library.sync()
 
         clean = await self._clean(
             tmp_path,
             lambda clean: clean.write_notes("note", 4),
+            lambda clean: clean.write_notes("other", 2),
             lambda clean: clean.write_notes("report", 4),
+        )
+        self._assert_equal_to(library, clean)
+
+    async def test_a_file_written_inside_the_wiki_pass_of_another_sync_reaches_the_index(
+        self, tmp_path, monkeypatch
+    ):
+        """Another sync writes a file after this pass read what it owes, and then stops."""
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        await library.sync()
+        library.write_notes("report", 4)
+        real_owed = stubs_mod._owed_sources
+        written_inside = []
+
+        def _the_other_sync_writes_after_the_read(store, config, since):
+            owed = real_owed(store, config, since)
+            if not written_inside:
+                written_inside.append(library.write("late.txt", "A late file.").name)
+                with ThreadPoolExecutor(max_workers=1) as other_sync:
+                    stopped = self._stop_in_a_write(library, monkeypatch)
+                    other_sync.submit(asyncio.run, stopped).result()
+            return owed
+
+        with monkeypatch.context() as patch:
+            patch.setattr(stubs_mod, "_owed_sources", _the_other_sync_writes_after_the_read)
+            await library.sync()
+        assert written_inside == ["late.txt"]
+        assert "late.txt" in library.sources()
+        assert "late.txt" not in self._listed(library)
+
+        result = await library.sync()
+
+        assert result.unchanged == 9
+        clean = await self._clean(
+            tmp_path,
+            lambda clean: clean.write_notes("note", 4),
+            lambda clean: clean.write_notes("report", 4),
+            lambda clean: clean.write("late.txt", "A late file."),
         )
         self._assert_equal_to(library, clean)
 
