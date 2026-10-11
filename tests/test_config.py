@@ -2132,6 +2132,32 @@ class TestABadValueInConfigTomlKeepsTheRest:
             "config.toml: ocr = 'OFF' is not one of auto, all, off; LILBEE_OCR sets ocr",
         )
 
+    def test_a_retired_enable_ocr_line_is_ignored_without_a_warning(self, tmp_path):
+        default, _ = _build_with(tmp_path, "")
+        for stored in ("enable_ocr = false", "enable_ocr = true", 'enable_ocr = "off"'):
+            built, warnings = _build_with(tmp_path, f"{stored}\ntop_k = 7\n")
+            assert built.ocr is default.ocr
+            assert built.ocr is OcrMode.AUTO
+            assert built.top_k == 7
+            assert warnings == ()
+
+    def test_a_retired_enable_ocr_line_does_not_outrank_ocr(self, tmp_path):
+        built, warnings = _build_with(tmp_path, 'enable_ocr = true\nocr = "all"\n')
+        assert built.ocr is OcrMode.ALL
+        assert warnings == ()
+
+    @pytest.mark.parametrize("variable", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
+    @pytest.mark.parametrize("value", ["0", "1", "bogus"])
+    def test_a_retired_ocr_variable_neither_stops_the_load_nor_sets_ocr(
+        self, tmp_path, variable, value
+    ):
+        built, warnings = _build_with(tmp_path, "top_k = 7\n", **{variable: value})
+        with mock.patch.dict(os.environ, {**clean_env(tmp_path), variable: value}, clear=True):
+            refuse_environment()
+        assert built.ocr is OcrMode.AUTO
+        assert built.top_k == 7
+        assert warnings == ()
+
     def test_a_bad_value_in_both_sources_stops_on_the_variable(self, tmp_path):
         (tmp_path / "config.toml").write_text('ocr = "nope"\ntop_k = 7\n', encoding="utf-8")
         line = "LILBEE_OCR = 'bogus' is not one of auto, all, off"

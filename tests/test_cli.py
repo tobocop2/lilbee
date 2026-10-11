@@ -1371,8 +1371,8 @@ class TestDefaultRequiresTerminal:
         assert called == [{}]
 
 
-class TestEveryCommandRefusesTheEnvironment:
-    """Every command refuses a variable its setting refuses, and still prints its help."""
+class TestEveryCommandBuiltToRefuseKeepsItsHelp:
+    """Every command is the refusing class, and its help prints under a refused variable."""
 
     @staticmethod
     def _command_paths() -> list[tuple[list[str], object]]:
@@ -1411,6 +1411,20 @@ class TestEveryCommandRefusesTheEnvironment:
         assert len(leaves) > 50
         not_refusing = [" ".join(path) for path, c in leaves if not isinstance(c, RefusingCommand)]
         assert not_refusing == []
+
+
+class TestARetiredOcrVariableIsNotRefused:
+    """LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE are plain unknown variables."""
+
+    @pytest.mark.parametrize("variable", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
+    @pytest.mark.parametrize("value", ["0", "1", "bogus"])
+    def test_a_command_runs_and_ocr_stays_at_its_default(self, tmp_path, variable, value):
+        result = runner.invoke(
+            app, ["--json", "status", "-d", str(tmp_path)], env={variable: value}
+        )
+        assert result.exit_code == 0, result.output
+        assert "error" not in json.loads(result.stdout)
+        assert cfg.ocr is OcrMode.AUTO
 
 
 @pytest.mark.parametrize(
