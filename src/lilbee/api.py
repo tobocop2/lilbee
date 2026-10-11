@@ -80,7 +80,7 @@ class Lilbee:
 
         Pass documents_dir or config, not both. If neither is given, uses
         ``Config()`` (same defaults as the CLI). Raises RefusedVariableError when the
-        environment sets a retired OCR variable or a value its setting refuses.
+        environment sets a value its setting refuses.
         """
         refuse_environment()
         if documents_dir is not None and config is not None:

@@ -23,7 +23,6 @@ from weakref import WeakKeyDictionary
 
 import anyio
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.types import CallToolResult, InputRequiredResult
 from mcp.types import Tool as MCPTool
 
 from lilbee.app.memory import (
@@ -56,7 +55,6 @@ from lilbee.app.settings import (
 from lilbee.catalog.types import ModelSource
 from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
-from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
@@ -1444,13 +1442,6 @@ _NO_WIKI_SCOPE_HINT = ' No wiki layer here: use scope "raw" or "both".'
 
 class LilbeeMCP(MCPServer):
     """MCP server that trims its tools wire and keeps it current with config."""
-
-    async def call_tool(
-        self, name: str, arguments: dict[str, Any], context: Context | None = None
-    ) -> CallToolResult | InputRequiredResult:
-        """Refuse a retired OCR argument by name instead of ignoring it, then call the tool."""
-        refuse_retired_ocr_keys(arguments)
-        return await super().call_tool(name, arguments, context)
 
     async def list_tools(self) -> list[MCPTool]:
         """The registered tools with schema noise stripped and flat descriptions.

@@ -442,12 +442,10 @@ class TestAddEndpoint:
         ("route", "body", "detail"),
         [
             ("/api/add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
-            ("/api/add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is replaced by ocr"),
             ("/api/sync", {"ocr": "some"}, "'auto', 'all' or 'off'"),
-            ("/api/sync", {"enable_ocr": False}, "enable_ocr is replaced by ocr"),
         ],
     )
-    async def test_a_bad_or_retired_ocr_field_is_a_400(
+    async def test_a_bad_ocr_field_is_a_400(
         self, mock_extract_file, isolated_env, route, body, detail
     ):
         from lilbee.server.app import create_app
@@ -602,13 +600,9 @@ class TestIngestStreamTerminalEvent:
         ("params", "detail"),
         [
             ({"ocr": "some"}, "ocr must be one of auto, all, off; got 'some'"),
-            (
-                {"enable_ocr": "false"},
-                "enable_ocr is replaced by ocr; set ocr to one of auto, all, off",
-            ),
         ],
     )
-    async def test_upload_refuses_a_bad_or_retired_ocr_query(
+    async def test_upload_refuses_a_bad_ocr_query(
         self, mock_extract_file, isolated_env, params, detail
     ):
         from lilbee.server.app import create_app

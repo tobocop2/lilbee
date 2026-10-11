@@ -22,7 +22,6 @@ from lilbee.core.config.keys import (
     PROVIDER_SWITCHING_KEYS,
 )
 from lilbee.core.config.model import written_value
-from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.config.schema import field_type_name
 from lilbee.providers.roles import MODEL_FIELD_TO_ROLE, ROLE_GATE_FIELD_TO_ROLE
 from lilbee.runtime.progress import OcrBackendUsed
@@ -191,8 +190,7 @@ def _is_settable(key: str) -> bool:
 
 
 def _refuse_unsettable(key: str) -> None:
-    """Raise ValueError for a key no writer accepts, naming ``ocr`` for a retired OCR key."""
-    refuse_retired_ocr_keys([key])
+    """Raise ValueError for a key no writer accepts."""
     if not _is_settable(key):
         raise ValueError(f"Unknown or read-only setting: {key}")
 

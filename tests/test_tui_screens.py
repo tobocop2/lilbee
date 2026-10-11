@@ -3444,16 +3444,6 @@ async def test_chat_slash_set_valid():
         assert cfg.top_k == 10
 
 
-async def test_chat_slash_set_names_ocr_for_the_retired_key():
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        with patch.object(app.screen, "notify") as mock_notify:
-            app.screen._cmd_set("enable_ocr false")
-        assert mock_notify.call_args.args == (
-            "enable_ocr is replaced by ocr; set ocr to one of auto, all, off",
-        )
-
-
 async def test_chat_slash_set_bool():
     app = ChatTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:

@@ -7,14 +7,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 from lilbee.app.agent_configs.document import AgentClient, AgentSurface, ConfigFormat
 from lilbee.app.models import ModelEntry
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog.types import KeyStatus, ModelCompat, ModelSource, ModelTask
 from lilbee.core.config.enums import CrawlRenderMode, KvCacheType, OcrMode
-from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.core.health_warnings import HealthWarning
 from lilbee.data.store import ChunkType, IndexMismatch, MemoryKind, scope_to_chunk_type
 from lilbee.data.types import SkippedSource
@@ -86,13 +85,6 @@ class _OcrRequest(BaseModel):
 
     ocr: OcrMode | None = None
     ocr_timeout: float | None = None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _refuse_retired_ocr_keys(cls, data: Any) -> Any:
-        if isinstance(data, dict):
-            refuse_retired_ocr_keys(data)
-        return data
 
 
 class SyncRequest(_OcrRequest):

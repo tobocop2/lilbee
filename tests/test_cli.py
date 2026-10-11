@@ -1371,18 +1371,8 @@ class TestDefaultRequiresTerminal:
         assert called == [{}]
 
 
-class TestRetiredOcrEnvVarsAreRefused:
-    """LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE stop every entry with one line naming LILBEE_OCR."""
-
-    _REFUSAL = "replaced by LILBEE_OCR; set LILBEE_OCR to one of auto, all, off"
-
-    @pytest.mark.parametrize("env_var", ["LILBEE_ENABLE_OCR", "LILBEE_OCR_FORCE"])
-    def test_a_command_is_refused(self, tmp_path, env_var):
-        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
-            result = runner.invoke(app, ["status", "-d", str(tmp_path)], env={env_var: "false"})
-        assert result.exit_code == 1
-        assert f"Error: {env_var} is {self._REFUSAL}" in result.output
-        status.assert_not_called()
+class TestEveryCommandRefusesTheEnvironment:
+    """Every command refuses a variable its setting refuses, and still prints its help."""
 
     @staticmethod
     def _command_paths() -> list[tuple[list[str], object]]:
@@ -1403,7 +1393,7 @@ class TestRetiredOcrEnvVarsAreRefused:
     def test_help_and_version_work_for_every_command(self, tmp_path):
         paths = self._command_paths()
         assert len(paths) > 60
-        env = {"LILBEE_ENABLE_OCR": "false", "LILBEE_DATA": str(tmp_path)}
+        env = {"LILBEE_TOP_K": "many", "LILBEE_DATA": str(tmp_path)}
         failed = {}
         for path, _command in paths:
             result = runner.invoke(app, [*path, "--help"], env=env)
@@ -1421,80 +1411,6 @@ class TestRetiredOcrEnvVarsAreRefused:
         assert len(leaves) > 50
         not_refusing = [" ".join(path) for path, c in leaves if not isinstance(c, RefusingCommand)]
         assert not_refusing == []
-
-    def test_a_nested_command_is_refused(self, tmp_path):
-        with mock.patch("lilbee.cli.model.list_models_data") as listed:
-            result = runner.invoke(
-                app, ["model", "list", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
-            )
-        assert result.exit_code == 1
-        assert f"Error: LILBEE_OCR_FORCE is {self._REFUSAL}" in result.output
-        listed.assert_not_called()
-
-    def test_json_mode_refuses_with_a_json_error(self, tmp_path):
-        result = runner.invoke(
-            app, ["--json", "status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": "1"}
-        )
-        assert result.exit_code == 1
-        assert json.loads(result.stdout) == {"error": f"LILBEE_OCR_FORCE is {self._REFUSAL}"}
-
-    def test_both_are_named_in_one_line(self, tmp_path):
-        env = {"LILBEE_ENABLE_OCR": "false", "LILBEE_OCR_FORCE": "1"}
-        result = runner.invoke(app, ["status", "-d", str(tmp_path)], env=env)
-        assert result.exit_code == 1
-        assert f"LILBEE_ENABLE_OCR and LILBEE_OCR_FORCE are {self._REFUSAL}" in result.output
-
-    @pytest.mark.parametrize("value", ["", "   "])
-    def test_a_blank_value_is_unset(self, tmp_path, value):
-        with mock.patch("lilbee.cli.commands.meta.render_status") as status:
-            result = runner.invoke(
-                app, ["status", "-d", str(tmp_path)], env={"LILBEE_OCR_FORCE": value}
-            )
-        assert result.exit_code == 0
-        status.assert_called_once()
-
-    def test_serve_is_refused_before_the_server_starts(self, tmp_path):
-        """The lock stand-in stops a serve that got past the refusal, so it fails here at once."""
-        with (
-            mock.patch("lilbee.cli.commands.servers.setup_server_logging") as server_logging,
-            mock.patch(
-                "lilbee.cli.commands.servers.acquire_server_lock", return_value=None
-            ) as server_lock,
-        ):
-            result = runner.invoke(
-                app, ["serve", "-d", str(tmp_path)], env={"LILBEE_ENABLE_OCR": "false"}
-            )
-        assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in result.output
-        assert result.exit_code == 1
-        server_logging.assert_not_called()
-        server_lock.assert_not_called()
-
-    def test_the_tui_is_refused_before_it_starts(self, monkeypatch, capsys):
-        from lilbee.cli.app import _default
-
-        monkeypatch.setenv("LILBEE_ENABLE_OCR", "false")
-        ctx = mock.MagicMock()
-        ctx.invoked_subcommand = None
-        with (
-            mock.patch("lilbee.cli.tui.run_tui") as run_tui,
-            mock.patch("sys.stdin") as stdin,
-            mock.patch("sys.stdout") as stdout,
-            pytest.raises(SystemExit) as exited,
-        ):
-            stdin.isatty.return_value = True
-            stdout.isatty.return_value = True
-            _default(
-                ctx,
-                data_dir=None,
-                model=None,
-                json_output=False,
-                use_global=False,
-                log_level=None,
-                show_version=False,
-            )
-        assert exited.value.code == 1
-        assert f"LILBEE_ENABLE_OCR is {self._REFUSAL}" in capsys.readouterr().err
-        run_tui.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -1523,7 +1439,7 @@ class TestRetiredOcrEnvVarsAreRefused:
     ],
 )
 class TestARefusedVariableStopsEveryEntry:
-    """A LILBEE_* value its setting refuses stops every entry where a retired OCR variable does."""
+    """A LILBEE_* value its setting refuses stops every entry."""
 
     def test_a_command_stops_over_a_valid_stored_value(
         self, tmp_path, overlay_reads_config_toml, variable, value, stored, line
@@ -2805,7 +2721,6 @@ class TestStatusJson:
         result = runner.invoke(app, ["--json", "status"])
         data = json.loads(result.output.strip())
         assert data["config"]["ocr"] == "off"
-        assert "enable_ocr" not in data["config"]
         assert data["ocr_note"] == "skipped (ocr = off)"
 
 
@@ -3497,11 +3412,10 @@ class TestOcrFlags:
     @pytest.mark.parametrize(
         ("flag", "refusal"),
         [
-            ("--no-ocr", "No such option: --no-ocr"),
             ("--ocr=some", "Invalid value for '--ocr': 'some' is not one of 'auto', 'all', 'off'."),
         ],
     )
-    def test_the_retired_and_unknown_flags_are_refused(self, flag, refusal):
+    def test_a_bad_ocr_flag_value_is_refused(self, flag, refusal):
         result = runner.invoke(app, ["sync", flag])
         assert result.exit_code == 2
         assert refusal in _plain_help_text(result.output)

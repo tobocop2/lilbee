@@ -485,7 +485,6 @@ class TestStatus:
         payload = (await handlers.status()).model_dump()
         assert payload["ocr_note"] == "skipped (ocr = off)"
         assert payload["config"]["ocr"] == "off"
-        assert "enable_ocr" not in payload["config"]
 
     async def test_exposes_all_four_model_roles(self):
         """/api/status config payload surfaces vision and reranker slots."""
@@ -4154,12 +4153,6 @@ class TestUpdateConfig:
         result = await handlers.update_config({"ocr": "off"})
         assert result.model_dump() == {"updated": ["ocr"], "reindex_required": False}
         assert cfg.ocr is OcrMode.OFF
-
-    async def test_update_config_refuses_the_retired_ocr_key(self, tmp_path):
-        with pytest.raises(
-            ValueError, match=r"^enable_ocr is replaced by ocr; set ocr to one of auto, all, off$"
-        ):
-            await handlers.update_config({"enable_ocr": False})
 
     async def test_update_config_reindex(self, tmp_path):
         result = await handlers.update_config({"chunk_size": 1024})
