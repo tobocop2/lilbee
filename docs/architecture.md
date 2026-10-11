@@ -521,12 +521,21 @@ cancelled drops each source the browse index lists that holds no source row. If 
 of those sources was renamed, it drops nothing and leaves the browse index to the
 next pass.
 
-Three limits remain. The times are those of the system clock: if the clock is set
-back, a row written after a pass can carry a time before it, and no pass takes that
-row until its file changes. Two passes that run at once both write the browse index
-file, and the later write keeps only its own subjects until the files of the other
-pass change. A renamed file that the browse index does not list under its old name
-keeps the mention rows of that name after a sync that stopped.
+Three limits remain:
+
+- **The system clock.** The times are those of the system clock. If the clock is set
+  back, a row written after a pass can carry a time before it, and no pass takes that
+  row until its file changes.
+- **Two passes at once.** Two passes that run at once both write the browse index
+  file, and the later write keeps only its own subjects until the files of the other
+  pass change.
+- **A rename the browse index cannot show.** A rename moves the mention rows of the
+  file to its new name and keeps the time of its source row. When the sync stops
+  before its pass, the next pass finds the file only through the old name in the
+  browse index. The browse index lists a source only under a subject that reaches
+  `wiki_entity_min_mentions`. If it lists the old name under no subject, the next
+  pass does not extract the file again: the file keeps the mention rows that the
+  rename moved, as the extraction under the old name wrote them.
 
 **When something breaks.** A worker that fails names itself and its log, and the sync
 fails. A cancelled sync stops the workers. In both cases the files the workers finished
