@@ -1316,16 +1316,14 @@ async def _update_wiki(changed_sources: set[str], config: Config) -> None:
     # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
     # post-ingest hook stays function-local at this boundary.
     from lilbee.wiki.ingest import incremental_update
-    from lilbee.wiki.stubs import index_extractor_available, refresh_stub_index
+    from lilbee.wiki.stubs import refresh_stub_index
 
     try:
         await to_ingest_thread(
             refresh_stub_index, get_services().store, config, sources=changed_sources
         )
-        # The index has every source written so far. A refresh that failed keeps the
-        # mark, and so does one with no extractor, which left the index as it was.
-        if await to_ingest_thread(index_extractor_available, config):
-            await to_ingest_thread(clear_wiki_pass_owed, config.data_root)
+        # The index has every source written so far; a refresh that failed keeps the mark.
+        await to_ingest_thread(clear_wiki_pass_owed, config.data_root)
     except Exception:
         log.warning("Wiki index refresh failed after sync", exc_info=True)
 

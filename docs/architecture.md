@@ -488,19 +488,21 @@ With the wiki on, the first write of a sync leaves the file `wiki_pass_owed` in 
 root, with the time, and the wiki pass at the end of the sync deletes it. A sync that
 stops between the two leaves the file. The next sync, in one process or with workers,
 gives the browse index every source written since that time and every source the
-stopped sync renamed, then deletes the file. A wiki pass with no extractor leaves the
-browse index as it is and keeps the file. A sync that finds no such file reads no source
-row for the wiki, and with the wiki off no sync reads or writes the file.
+stopped sync renamed, then deletes the file. A sync that finds no such file reads no
+source row for the wiki, other than the names the parent of a fan-out checks the browse
+index against. With the wiki off no sync reads or writes the file.
 
 A fan-out sync that fails or is cancelled leaves the browse index to that next sync
 when the file is there: the old names the index still lists are how the next sync finds
 the renamed files. With no file, no worker renamed anything, and the parent drops what
 the workers removed before it reports the failure.
 
-Two limits remain. A sync that runs beside another one can delete the file while the
+Three limits remain. A sync that runs beside another one can delete the file while the
 other still writes, and a stop of that other sync then leaves its files out of the
 browse index. A wiki pass that stops between its read of the browse index and its
-write leaves a renamed file listed with the subjects of its old name.
+write leaves a renamed file listed with the subjects of its old name. A wiki pass with
+no extractor adds nothing to the browse index and still deletes the file, so no later
+sync is owed the sources of that sync.
 
 **When something breaks.** A worker that fails names itself and its log, and the sync
 fails. A cancelled sync stops the workers. In both cases the files the workers finished
