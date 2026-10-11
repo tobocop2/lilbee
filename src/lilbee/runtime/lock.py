@@ -9,7 +9,6 @@ data dir.
 
 import asyncio
 import errno
-import functools
 import json
 import logging
 import sqlite3
@@ -17,12 +16,12 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, overload
 
-from filelock import FileLock, ReadWriteLock
+from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
@@ -165,8 +164,12 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
         return None
 
 
-def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
-    """Hold the data root's sync lock; None lets a sync run unmarked when locking raises."""
+@overload
+def _open_sync_lock(data_root: Path, *, write: Literal[True]) -> ReadWriteLock: ...
+@overload
+def _open_sync_lock(data_root: Path, *, write: Literal[False]) -> AsyncReadWriteLock | None: ...
+def _open_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | AsyncReadWriteLock | None:
+    """Open the data root's sync lock; None lets a sync run unmarked when opening raises."""
     try:
         data_root.mkdir(parents=True, exist_ok=True)
         _require_locking(data_root)
@@ -175,23 +178,10 @@ def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
         return None
     path = data_root / _SYNC_LOCK_NAME
     try:
-        lock = ReadWriteLock(path, is_singleton=False)
+        return (ReadWriteLock if write else AsyncReadWriteLock)(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, write=write)
         return None
-    try:
-        if write:
-            lock.acquire_write(blocking=False)
-        else:
-            lock.acquire_read()
-    except FileLockTimeout:
-        lock.close()
-        raise ResetRefusedError(_SYNC_RUNNING) from None
-    except _SYNC_LOCK_ERRORS as exc:
-        lock.close()
-        _sync_lock_unavailable(path, exc, write=write)
-        return None
-    return lock
 
 
 def _require_locking(data_root: Path) -> None:
@@ -240,44 +230,42 @@ def _sync_lock_unavailable(
     log.warning(_SYNC_LOCK_REFUSED, path, error)
 
 
-def _release_sync_lock(lock: ReadWriteLock | None) -> None:
-    if lock is not None:
-        lock.release()
-        lock.close()
-
-
 @asynccontextmanager
 async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
-    The wait for a reset to finish runs off the event loop. One dedicated worker thread
-    takes and releases the lock, because filelock refuses a release from another thread.
+    The wait for a reset to finish runs off the event loop.
     """
-    loop = asyncio.get_running_loop()
-    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sync-lock")
+    # Opening the lock reads and writes files, so it runs off the event loop too.
+    lock = await asyncio.to_thread(_open_sync_lock, data_root, write=False)
+    if lock is None:
+        yield
+        return
     try:
-        lock = await loop.run_in_executor(
-            worker, functools.partial(_acquire_sync_lock, data_root, write=False)
-        )
         try:
-            yield
-        finally:
-            await loop.run_in_executor(worker, _release_sync_lock, lock)
+            await lock.acquire_read()
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, write=False)
+        yield
     finally:
-        worker.shutdown(wait=False)
+        await lock.close()
 
 
 @contextmanager
 def no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
     try:
-        lock = _acquire_sync_lock(data_root, write=True)
+        lock = _open_sync_lock(data_root, write=True)
     except LockingUnsupportedError as exc:
         raise ResetRefusedError(str(exc)) from exc
-    try:
+    with closing(lock):
+        try:
+            lock.acquire_write(blocking=False)
+        except FileLockTimeout:
+            raise ResetRefusedError(_SYNC_RUNNING) from None
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, write=True)
         yield
-    finally:
-        _release_sync_lock(lock)
 
 
 @contextmanager

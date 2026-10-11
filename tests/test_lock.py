@@ -298,6 +298,15 @@ def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
 
+def _threads_left_since(before: set[threading.Thread]) -> list[str]:
+    """Names of the threads started since *before*, without the event loop's own pool."""
+    return [
+        thread.name
+        for thread in set(threading.enumerate()) - before
+        if not thread.name.startswith("asyncio_")
+    ]
+
+
 class TestSyncMark:
     """Syncs share the data root's mark; a reset needs it free, in any process."""
 
@@ -308,27 +317,98 @@ class TestSyncMark:
         with no_sync_running(tmp_path):
             pass
 
-    async def test_the_mark_is_released_on_the_thread_that_took_it(self, tmp_path: Path) -> None:
-        seen: dict[str, int] = {}
+    async def test_a_sync_cancelled_while_it_waits_returns_with_its_take_undone(
+        self, tmp_path: Path
+    ) -> None:
+        takes: list[str] = []
         real_acquire = ReadWriteLock.acquire_read
-        real_release = ReadWriteLock.release
 
-        def _acquire(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
-            seen["acquire"] = threading.get_ident()
-            return real_acquire(lock, *args, **kwargs)  # type: ignore[arg-type]
+        def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+            takes.append("started")
+            real_acquire(lock, *args, **kwargs)
+            takes.append("ended")
 
-        def _release(lock: ReadWriteLock, *args: object, **kwargs: object) -> None:
-            seen["release"] = threading.get_ident()
-            real_release(lock, *args, **kwargs)  # type: ignore[arg-type]
+        held = threading.Event()
+        release = threading.Event()
 
-        with (
-            mock.patch.object(ReadWriteLock, "acquire_read", _acquire),
-            mock.patch.object(ReadWriteLock, "release", _release),
-        ):
+        def _reset() -> None:
+            with no_sync_running(tmp_path):
+                held.set()
+                release.wait(5)
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
+                takes.append("entered")
+
+        async def _take_started() -> None:
+            while not takes:
+                await asyncio.sleep(0.01)
+
+        resetter = threading.Thread(target=_reset)
+        resetter.start()
+        assert held.wait(5)
+        with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+            sync_task = asyncio.create_task(_sync())
+            await asyncio.wait_for(_take_started(), 5)
+            sync_task.cancel()
+            asyncio.get_running_loop().call_later(0.2, release.set)
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(sync_task, 5)
+            takes_when_the_sync_returned = list(takes)
+        resetter.join(timeout=5)
+
+        assert takes_when_the_sync_returned == ["started", "ended"]
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_sync_leaves_no_thread_behind(self, tmp_path: Path) -> None:
+        before = set(threading.enumerate())
+        async with sync_running(tmp_path):
+            pass
+
+        assert _threads_left_since(before) == []
+
+    @pytest.mark.parametrize("side", ["acquire_read", "acquire_write"])
+    async def test_the_mark_is_free_at_the_end_of_the_block_not_at_garbage_collection(
+        self, tmp_path: Path, side: str
+    ) -> None:
+        still_referenced: list[ReadWriteLock] = []
+        real_acquire = {
+            "acquire_read": ReadWriteLock.acquire_read,
+            "acquire_write": ReadWriteLock.acquire_write,
+        }[side]
+
+        def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+            if Path(lock.lock_file).name == "sync.lock":
+                still_referenced.append(lock)
+            real_acquire(lock, *args, **kwargs)
+
+        with mock.patch.object(ReadWriteLock, side, _acquire):
+            if side == "acquire_read":
+                async with sync_running(tmp_path):
+                    pass
+            else:
+                with no_sync_running(tmp_path):
+                    pass
+
+        assert len(still_referenced) == 1
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_sync_probes_the_data_root_off_the_event_loop(self, tmp_path: Path) -> None:
+        probed_on: list[int] = []
+        real_acquire_write = ReadWriteLock.acquire_write
+
+        def _acquire_write(lock: ReadWriteLock, *args, **kwargs) -> None:
+            probed_on.append(threading.get_ident())
+            real_acquire_write(lock, *args, **kwargs)
+
+        with mock.patch.object(ReadWriteLock, "acquire_write", _acquire_write):
             async with sync_running(tmp_path):
                 pass
-        assert seen["acquire"] == seen["release"]
-        assert seen["release"] != threading.get_ident()
+
+        assert len(probed_on) == 1
+        assert threading.get_ident() not in probed_on
 
     async def test_a_reset_in_another_process_is_refused_while_a_sync_runs(
         self, tmp_path: Path
@@ -406,29 +486,20 @@ class TestSyncMark:
             ran.append("reset")
         assert ran == ["sync", "reset"]
 
-    @pytest.mark.parametrize("fails_at", ["open", "acquire"])
-    async def test_a_filesystem_that_refuses_the_lock_runs_a_sync_and_refuses_a_reset(
-        self, tmp_path: Path, caplog, fails_at
+    async def test_a_lock_file_that_cannot_be_opened_runs_a_sync_and_refuses_a_reset(
+        self, tmp_path: Path, caplog
     ) -> None:
-        import logging
-        import sqlite3
-        from unittest import mock
-
         refused = sqlite3.OperationalError("disk I/O error")
-        lock = mock.MagicMock()
-        lock.acquire_read.side_effect = refused
-        lock.acquire_write.side_effect = refused
 
-        def factory(path: Path, *args, **kwargs) -> ReadWriteLock:
+        def _probe_only(path: Path, *args, **kwargs) -> ReadWriteLock:
             if Path(path).name.startswith("sync.probe."):
                 return ReadWriteLock(path, *args, **kwargs)
-            if fails_at == "open":
-                raise refused
-            return lock
+            raise refused
 
         ran = []
         with (
-            mock.patch("lilbee.runtime.lock.ReadWriteLock", factory),
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", _probe_only),
+            mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
             async with sync_running(tmp_path):
@@ -440,10 +511,43 @@ class TestSyncMark:
                 ran.append("reset")
 
         assert ran == ["sync"]
-        assert str(tmp_path / "sync.lock") in str(caught.value)
+        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
+        assert caught.value.__cause__ is refused
         assert _lock_warnings(caplog) == 1
-        assert lock.close.call_count == 2 * (fails_at == "acquire")
-        lock.release.assert_not_called()
+
+    async def test_a_lock_that_cannot_be_taken_runs_a_sync_and_refuses_a_reset(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        real_acquire_write = ReadWriteLock.acquire_write
+
+        def _refused(lock: ReadWriteLock, *args, **kwargs) -> None:
+            if Path(lock.lock_file).name.startswith("sync.probe."):
+                real_acquire_write(lock, *args, **kwargs)
+                return
+            raise sqlite3.OperationalError("disk I/O error")
+
+        before = set(threading.enumerate())
+        ran = []
+        with (
+            mock.patch.object(ReadWriteLock, "acquire_read", _refused),
+            mock.patch.object(ReadWriteLock, "acquire_write", _refused),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with (
+                pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
+                no_sync_running(tmp_path),
+            ):
+                ran.append("reset")
+
+        assert ran == ["sync"]
+        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
+        assert _lock_warnings(caplog) == 1
+        assert _threads_left_since(before) == []
+        with no_sync_running(tmp_path):
+            ran.append("reset")
+        assert ran == ["sync", "reset"]
 
     async def test_an_error_outside_the_filesystem_class_propagates(self, tmp_path: Path) -> None:
         from unittest import mock
