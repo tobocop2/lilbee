@@ -5471,6 +5471,24 @@ class TestSourcesIngestedSince:
         assert store.sources_ingested_since(row["ingested_at"]) == ["same.md"]
 
 
+def _watch_write_lock(store, monkeypatch) -> list[int]:
+    """Wrap the write lock of *store*; the list it returns is non-empty while the lock is held."""
+    held: list[int] = []
+    real_lock = store._write_lock
+
+    @contextmanager
+    def _lock(*args, **kwargs):
+        with real_lock(*args, **kwargs):
+            held.append(1)
+            try:
+                yield
+            finally:
+                held.pop()
+
+    monkeypatch.setattr(store, "_write_lock", _lock)
+    return held
+
+
 class TestSourcesCheckpoint:
     def test_a_row_written_after_a_checkpoint_is_at_or_after_its_time_and_off_its_version(
         self, store
@@ -5489,23 +5507,13 @@ class TestSourcesCheckpoint:
 
     def test_a_checkpoint_is_read_under_the_write_lock(self, store, monkeypatch):
         """Read beside a flush, its time could pass the stamp of a row not yet committed."""
-        held, read_under_lock = [], []
-        real_lock, real_version = store._write_lock, store.sources_version
-
-        @contextmanager
-        def _lock(*args, **kwargs):
-            with real_lock(*args, **kwargs):
-                held.append(1)
-                try:
-                    yield
-                finally:
-                    held.pop()
+        held, read_under_lock = _watch_write_lock(store, monkeypatch), []
+        real_version = store.sources_version
 
         def _version():
             read_under_lock.append(bool(held))
             return real_version()
 
-        monkeypatch.setattr(store, "_write_lock", _lock)
         monkeypatch.setattr(store, "sources_version", _version)
         store.upsert_source("a.md", "h", 1)
 
@@ -5517,23 +5525,13 @@ class TestSourcesCheckpoint:
     @pytest.mark.parametrize("write", ["upsert_source", "write_chunks_batch"])
     def test_a_source_row_is_stamped_under_the_write_lock(self, store, monkeypatch, write):
         """A stamp taken before the lock could be older than a checkpoint its row commits after."""
-        held, stamped_under_lock = [], []
-        real_lock, real_row = store._write_lock, store._source_row
-
-        @contextmanager
-        def _lock(*args, **kwargs):
-            with real_lock(*args, **kwargs):
-                held.append(1)
-                try:
-                    yield
-                finally:
-                    held.pop()
+        held, stamped_under_lock = _watch_write_lock(store, monkeypatch), []
+        real_row = store._source_row
 
         def _row(*args, **kwargs):
             stamped_under_lock.append(bool(held))
             return real_row(*args, **kwargs)
 
-        monkeypatch.setattr(store, "_write_lock", _lock)
         monkeypatch.setattr(store, "_source_row", _row)
 
         if write == "upsert_source":
