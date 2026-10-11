@@ -9,7 +9,13 @@ from lilbee.core.config import active_config
 from lilbee.data.types import EmbeddingBackendName, TokenizerBackendName
 
 if TYPE_CHECKING:
-    from xberg import Chunk, ChunkingConfig, ChunkSizing, EmbeddingConfig, TableChunkingMode
+    from xberg import (
+        ChunkingConfig,
+        ChunkSizing,
+        EmbeddingConfig,
+        HeadingContext,
+        TableChunkingMode,
+    )
 
 # Char->token ratio for English.
 CHARS_PER_TOKEN = 4
@@ -173,23 +179,22 @@ def chunk_text(
     if not doc.chunks:
         return []
     if heading_context:
-        return [_with_heading_breadcrumb(c) for c in doc.chunks]
+        return [_with_heading_breadcrumb(c.content, c.metadata.heading_context) for c in doc.chunks]
     return [c.content for c in doc.chunks]
 
 
-def _with_heading_breadcrumb(chunk: Chunk) -> str:
+def _with_heading_breadcrumb(content: str, context: HeadingContext | None) -> str:
     """Prefix a markdown chunk with its heading path, e.g. ``# Setup > ## Install``.
 
     xberg's ``render_heading_breadcrumb`` is Rust-only; the Python binding exposes
-    the headings as ``metadata.heading_context``.
+    the headings as the chunk's ``metadata.heading_context``.
     """
-    context = chunk.metadata.heading_context
     if context is None or not context.headings:
-        return chunk.content
+        return content
     breadcrumb = _BREADCRUMB_SEPARATOR.join(
         f"{_HEADING_MARK * h.level} {h.text}" for h in context.headings
     )
-    return f"{breadcrumb}\n\n{chunk.content}"
+    return f"{breadcrumb}\n\n{content}"
 
 
 class ChunkLimitError(Exception):

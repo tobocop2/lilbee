@@ -54,9 +54,8 @@ _ocr_option = typer.Option(
     None,
     "--ocr",
     help=(
-        "Scanned pages for this run: auto reads each page without usable text, and every "
-        "page of a file with almost no text in all; all reads every page of every file; "
-        "off skips them. "
+        "Scanned pages for this run: auto reads each page without usable text and keeps "
+        "the text of every other page; all reads every page of every file; off skips them. "
         "Leave it out to use the ocr setting."
     ),
 )

@@ -128,6 +128,23 @@ async def test_different_modes_flush_as_separate_batches():
 
 
 @pytest.mark.asyncio
+async def test_each_item_carries_its_own_submitters_progress_callback():
+    """A file's progress callback rides on that file's batch item, or None when it has none."""
+    calls = []
+
+    async def batch_fn(items, config):
+        calls.append(items)
+        return [object() for _ in items]
+
+    def on_a(_event): ...
+
+    b = _batcher(2, batch_fn)
+    await asyncio.gather(b.submit(MODE, b"a", "a", "t0", on_a), b.submit(MODE, b"b", "b", "t1"))
+    [items] = calls
+    assert [item.on_progress for item in items] == [on_a, None]
+
+
+@pytest.mark.asyncio
 async def test_close_flushes_buffered_requests():
     """close() drains a partial batch even when the timer has not fired."""
     calls = []

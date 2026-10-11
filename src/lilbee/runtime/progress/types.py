@@ -123,12 +123,12 @@ _EXTRACT_STEP_NAMES: dict[OcrBackendUsed, str] = {
 class ExtractEvent(BaseModel):
     """Emitted with page-level extraction progress.
 
-    Vision OCR fires one event per page as xberg processes it, as a running
-    count against the page total known before extraction for a PDF or image
-    source, or ``0`` when that count could not be read. Extraction then fires
-    once per file with ``page == total_pages`` so subscribers see "extracted N
-    pages" before the embed phase ticks. ``ocr_backend`` is the OCR backend
-    that produced the pages, or ``none`` when no page was OCR'd.
+    OCR on a PDF or image fires one event per page as xberg finishes it, with
+    ``page`` the distinct pages xberg has OCR'd so far and ``total_pages`` the
+    total xberg reports for the file. An archive's members fire none. Extraction
+    then fires once per file with ``page == total_pages`` so subscribers see
+    "extracted N pages" before the embed phase ticks. ``ocr_backend`` is the OCR
+    backend that produced the pages, or ``none`` when no page was OCR'd.
     """
 
     file: str
@@ -143,7 +143,7 @@ class ExtractEvent(BaseModel):
 
 
 class OcrStartEvent(BaseModel):
-    """Emitted once when Tesseract starts OCR on a file, which reports no per-page progress.
+    """Emitted once when Tesseract starts OCR on a file, before its first page completes.
 
     ``total_pages`` is the file's page count, read before extraction.
     """

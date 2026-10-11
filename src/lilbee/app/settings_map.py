@@ -111,9 +111,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.INGEST,
         help_text=(
-            "Scanned pages: auto reads each page without usable text, and every page of a "
-            "file with almost no text in all; all reads every page of every file on every "
-            "future ingest; off skips them. vision_model picks the engine"
+            "Scanned pages: auto reads each page without usable text and keeps the text of "
+            "every other page; all reads every page of every file on every future ingest; "
+            "off skips them. vision_model picks the engine"
         ),
     ),
     "ocr_timeout": SettingDef(
@@ -985,8 +985,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.OCR_TUNING,
         help_text=(
-            "PDF pages to OCR: auto (pages whose text layer is missing or garbled, and"
-            " every page of a PDF with almost no text in all) or scanned_pages (also every"
+            "PDF pages to OCR: auto (each page without usable text: its text layer is"
+            " missing, garbled or under 32 non-blank characters) or scanned_pages (also every"
             " page that looks like a scan, e.g. a scanned page with a hidden text layer)"
         ),
     ),

@@ -1525,7 +1525,7 @@ pages are read, and `vision_model` decides which engine reads them.
 
 | `ocr` | TUI label | Effect |
 |---|---|---|
-| `auto` (default) | Read | Reads each page that has no usable text. If the file has almost no text in all, fewer than 64 non-blank characters across its pages, it reads every page. A PDF with enough text on every page is not read. |
+| `auto` (default) | Read | Reads each page that has no usable text, and keeps the text of every other page. A PDF with usable text on every page is not read. See [Which PDF pages get OCR](#which-pdf-pages-get-ocr). |
 | `all` | Read every page | Reads every page, text layers included, in every file lilbee extracts. To re-read files that are already indexed, run `lilbee rebuild --ocr all`. |
 | `off` | Skip | Reads no page. A scanned PDF or image is skipped, and a PDF with some scanned pages is indexed without them, with a warning that names those pages. |
 
@@ -1580,11 +1580,19 @@ running text. Use a vision model for tables, forms and multi-column layouts.
 
 ### Which PDF pages get OCR
 
-By default (`ocr_strategy = "auto"`), lilbee OCRs only the PDF pages whose
-text layer is missing or garbled. If the PDF has almost no text in all, fewer
-than 64 non-blank characters across its pages, xberg OCRs every page. Some
-scans carry a hidden text layer of poor quality, and that layer can pass the
-check. To OCR those pages too, set `ocr_strategy` to `scanned_pages`. xberg
+By default (`ocr_strategy = "auto"`), lilbee OCRs only the PDF pages that have
+no usable text. A page has no usable text when its text layer is missing,
+garbled, or holds fewer than 32 non-blank characters. xberg decides each page
+alone. A page with usable text keeps that text, also when other pages of the
+PDF are scans.
+
+On a page that gets OCR, the OCR text replaces the text layer. So a page whose
+only text is a page number or a short caption is read with OCR. A page that
+has usable text and also an image of text keeps its text, and the image is
+not read.
+
+Some scans carry a hidden text layer of poor quality, and that layer can pass
+the check. To OCR those pages too, set `ocr_strategy` to `scanned_pages`. xberg
 then also OCRs every page that it grades as a scan.
 
 `ocr_scan_confidence` sets how sure xberg must be that a page is a scan. It

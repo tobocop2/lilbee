@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from xberg import ExtractedDocument, ExtractionConfig, OcrConfig
+    from xberg.progress import ProgressCallback
 
     from lilbee.data.types import ExtractMode
 
@@ -35,6 +36,7 @@ class _Pending:
     data: bytes
     filename: str
     ocr_token: str
+    on_progress: ProgressCallback | None
     future: asyncio.Future[ExtractedDocument]
 
 
@@ -62,13 +64,21 @@ class ExtractBatcher:
         self._running: set[asyncio.Task[None]] = set()
 
     async def submit(
-        self, mode: ExtractMode, data: bytes, filename: str, ocr_token: str
+        self,
+        mode: ExtractMode,
+        data: bytes,
+        filename: str,
+        ocr_token: str,
+        on_progress: ProgressCallback | None = None,
     ) -> ExtractedDocument:
-        """Enqueue one extraction; resolves when its batch completes."""
+        """Enqueue one extraction; resolves when its batch completes.
+
+        *on_progress* receives this file's OCR page events only.
+        """
         loop = asyncio.get_running_loop()
         future: asyncio.Future[ExtractedDocument] = loop.create_future()
         group = self._groups.setdefault(mode, [])
-        group.append(_Pending(data, filename, ocr_token, future))
+        group.append(_Pending(data, filename, ocr_token, on_progress, future))
         if len(group) >= self._size:
             self._flush(mode)
         elif mode not in self._timers:
@@ -85,7 +95,10 @@ class ExtractBatcher:
         config = self._config_fn(mode)
         # mime=None: xberg detects the format from the filename, matching the
         # single-file path. Passing lilbee's bare content_type here is rejected.
-        items = [BatchItem(p.data, None, p.filename, self._ocr_fn(p.ocr_token)) for p in pending]
+        items = [
+            BatchItem(p.data, None, p.filename, self._ocr_fn(p.ocr_token), p.on_progress)
+            for p in pending
+        ]
         task = asyncio.ensure_future(self._run(items, config, pending))
         self._running.add(task)
         task.add_done_callback(self._running.discard)

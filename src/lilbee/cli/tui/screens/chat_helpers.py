@@ -179,7 +179,7 @@ def _throttled_embed_tick(reporter: ProgressReporter) -> Callable[[EmbedEvent], 
 
 
 def _show_tesseract_ocr(reporter: ProgressReporter, data: OcrStartEvent) -> None:
-    """Show that Tesseract is OCRing a file; it reports no page count while it runs."""
+    """Show that Tesseract is OCRing a file, until its first page completes."""
     reporter.update(
         0,
         msg.SYNC_TESSERACT_OCR.format(total=data.total_pages, file=data.file),
