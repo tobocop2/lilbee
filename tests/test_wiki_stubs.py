@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
@@ -782,9 +782,18 @@ class TestRefreshOwedSources:
         assert given == set()
         assert store.record == SourcesCheckpoint("time-1", 1)
         assert store.reads == []
-        extractor.available.assert_called_once_with(quiet=not named)
+        assert extractor.available.call_args_list == [call() if named else call(quiet=True)]
         warned = [r.getMessage() for r in caplog.records if "extractor unavailable" in r.message]
         assert len(warned) == (1 if named else 0)
+
+    def test_with_nothing_named_it_asks_quietly_and_then_as_a_caller_with_work(self):
+        store, entities = self._refreshed_once()
+        store.version, store.written = 2, ["a.md"]
+
+        given, extractor = self._refresh(store, entities)
+
+        assert given == {"a.md"}
+        assert extractor.available.call_args_list == [call(quiet=True), call()]
 
     def test_a_refresh_that_fails_at_its_write_records_nothing(self):
         store, entities = self._refreshed_once()

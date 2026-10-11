@@ -23,6 +23,7 @@ from lilbee.core.config import cfg
 from lilbee.data.types import is_under
 
 from .entity_extractor import EntityKind, get_entity_extractor
+from .entity_extractor.factory import effective_entity_mode
 from .generation import _corpus_chunks
 from .shared import (
     WIKI_BUILD_LOCK,
@@ -310,16 +311,24 @@ def listed_sources(config: Config) -> set[str]:
     return _sources_of(load_stub_index(config))
 
 
-def _available_extractor(config: Config, *, quiet: bool = False) -> EntityExtractor | None:
+def _extractor_can_run(config: Config) -> bool:
+    """Whether the backend of the extractor *config* names can run. Logs nothing.
+
+    It asks for the mode that runs, so the factory has no other mode to report.
+    """
+    mode = effective_entity_mode(config.wiki_entity_mode)
+    return get_entity_extractor(mode, get_services().provider, config).available(quiet=True)
+
+
+def _available_extractor(config: Config) -> EntityExtractor | None:
     """The extractor *config* names, or None when its backend cannot run.
 
     It extracts at a floor of one: the store keeps every mention, and
     _stubs_from_mention_rows judges the real floor over the corpus-wide aggregate.
-    With *quiet* a backend that cannot run logs nothing.
     """
     pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
     extractor = get_entity_extractor(config.wiki_entity_mode, get_services().provider, pass_config)
-    return extractor if extractor.available(quiet=quiet) else None
+    return extractor if extractor.available() else None
 
 
 def _rebuild(
@@ -417,10 +426,13 @@ def refresh_owed_sources(store: Store, config: Config, named: set[str]) -> set[s
     if covered is not None and covered.version == store.sources_version():
         return set()
     with WIKI_BUILD_LOCK:
-        # With no file of its own to give, a sync asks quietly whether there is an extractor.
-        extractor = _available_extractor(config, quiet=not named)
+        # With no file of its own to give, a sync first asks whether an extractor can run.
+        if not named and not _extractor_can_run(config):
+            log.debug(_NO_EXTRACTOR)
+            return set()
+        extractor = _available_extractor(config)
         if extractor is None:
-            log.log(logging.WARNING if named else logging.DEBUG, _NO_EXTRACTOR)
+            log.warning(_NO_EXTRACTOR)
             return set()
         # Before the read of the owed rows: a row committed after it is owed to the next refresh.
         checkpoint = store.sources_checkpoint()

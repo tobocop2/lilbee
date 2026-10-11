@@ -508,12 +508,15 @@ With no record every source is owed, and the pass reads the whole corpus once. T
 is the case for a new index, after a rebuild, which deletes the record with the
 tables, after a wipe of the wiki, which deletes the record before the browse index,
 and for an index of a lilbee that kept no record. A record that cannot be read
-counts as no record, and the read logs a warning. A pass with no extractor
-records nothing, so its files stay owed. Each later sync then asks once whether an
-extractor is available, and reads no source row until one is. A sync with no file of
-its own for the wiki asks quietly: it logs no warning when there is no extractor. A
-sync that has files for the wiki and no extractor logs the reason at warning level,
-once for each process. With the wiki off no sync reads or writes the file.
+counts as no record. The read logs one warning and deletes the record, so the next
+sync logs nothing. A pass with no extractor records nothing, so its files stay
+owed. Each later sync then asks once whether an extractor can run, and reads no
+source row until one can. A sync with no file of its own for the wiki asks without
+a line at warning level, in every entity mode: it names no missing model and no
+mode that another one stands in for. When an extractor can run, the pass builds it
+as a sync with files does, and logs the same lines. A sync that has files for the
+wiki and no extractor logs the reason at warning level, once for each process.
+With the wiki off no sync reads or writes the file.
 
 A fan-out sync that finishes drops from the browse index the sources its workers
 report as removed, and this needs no extractor. A fan-out sync that fails or is

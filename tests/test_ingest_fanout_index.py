@@ -15,6 +15,8 @@ import threading
 import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+from typing import NamedTuple
 from unittest import mock
 from unittest.mock import MagicMock
 
@@ -22,15 +24,17 @@ import pytest
 
 from lilbee.app.services import get_services
 from lilbee.core.config import active_config, cfg
+from lilbee.core.config.model import Config
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.store import Store
-from lilbee.data.store.core import _WIKI_REFRESHED_NAME
+from lilbee.data.store.core import _WIKI_REFRESHED_NAME, _WIKI_REFRESHED_UNREADABLE
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.lock import SyncRunningError, source_keys_in_use, sync_running
 from lilbee.wiki import stubs as stubs_mod
 from lilbee.wiki.entity_extractor import get_entity_extractor, ner_concepts
 from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
+from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 from lilbee.wiki.stubs import load_stub_index
 from lilbee.wiki.wipe import wipe_wiki
 from tests._fanout_library import Library, services_for
@@ -1043,6 +1047,50 @@ _NO_EXTRACTOR_LINES = [
 ]
 
 
+# Every value the config accepts for the mode, read from the field's own type.
+_ENTITY_MODES = list(Config.model_fields["wiki_entity_mode"].annotation)
+
+
+def _stand_in_lines(mode) -> list[str]:
+    """What the factory logs when it builds the extractor of a mode that another stands in for."""
+    stand_in = effective_entity_mode(mode)
+    if stand_in is mode:
+        return []
+    return [
+        f"Entity-extraction mode {mode.value!r} is not yet implemented; "
+        f"falling back to {stand_in.value!r}"
+    ]
+
+
+class _Install(NamedTuple):
+    """What a sync finds on the machine it runs on."""
+
+    wiki: bool
+    spacy_model: bool
+    record_unreadable: bool
+
+
+_INSTALLS = {
+    "no-spacy-model": _Install(wiki=True, spacy_model=False, record_unreadable=False),
+    "spacy-model": _Install(wiki=True, spacy_model=True, record_unreadable=False),
+    "no-spacy-model-record-unreadable": _Install(True, spacy_model=False, record_unreadable=True),
+    "spacy-model-record-unreadable": _Install(True, spacy_model=True, record_unreadable=True),
+    "wiki-off-record-unreadable": _Install(False, spacy_model=False, record_unreadable=True),
+}
+
+
+class _NoNames:
+    """A spaCy pipeline that finds no entity in any text."""
+
+    def pipe(self, texts):
+        return [SimpleNamespace(ents=()) for _ in texts]
+
+
+def _warnings_of_every_logger(caplog) -> list[str]:
+    """Each line any logger sent to the root logger at warning level or above."""
+    return [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+
+
 def _forget_the_loaded_pipeline() -> None:
     """Forget what the extractor module keeps for the life of a process, as a new process does."""
     kept = [value for value in vars(ner_concepts).values() if hasattr(value, "cache_clear")]
@@ -1612,6 +1660,68 @@ class TestTheWikiIndex:
             await library.sync()
             assert self._warnings(caplog) == _NO_EXTRACTOR_LINES
         assert self._listed(library) == []
+
+    async def _sync_as_a_new_process(self, library, caplog) -> list[str]:
+        """Sync with nothing changed in a new process; returns what every logger warned of."""
+        _forget_the_loaded_pipeline()
+        caplog.clear()
+        result = await library.sync()
+        assert result.unchanged == 4
+        return _warnings_of_every_logger(caplog)
+
+    def test_the_config_accepts_more_than_one_entity_mode(self):
+        assert len(_ENTITY_MODES) > 1
+        assert [mode for mode in _ENTITY_MODES if _stand_in_lines(mode)]
+        assert [mode for mode in _ENTITY_MODES if not _stand_in_lines(mode)]
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    @pytest.mark.parametrize("install", _INSTALLS.values(), ids=_INSTALLS.keys())
+    @pytest.mark.parametrize("mode", _ENTITY_MODES)
+    async def test_a_sync_with_nothing_changed_logs_no_warning_of_its_own(
+        self, tmp_path, caplog, monkeypatch, mode, install, processes
+    ):
+        """The first sync says what stands between its files and the wiki; the next ones do not.
+
+        Every logger is heard. A fan-out says at each sync that it starts its
+        workers. A record that cannot be read is reported by the one sync that
+        finds it.
+        """
+        monkeypatch.setattr(stubs_mod, "get_entity_extractor", get_entity_extractor)
+        loaded = mock.Mock(return_value=_NoNames())
+        if not install.spacy_model:
+            loaded.side_effect = ImportError("no model")
+        monkeypatch.setattr("lilbee.retrieval.concepts.load_spacy_pipeline", loaded)
+        cfg.wiki, cfg.wiki_entity_mode = install.wiki, mode
+        stand_in = _stand_in_lines(mode)
+        fanned = [f"Ingesting across {processes} worker processes, one per GPU"][: processes - 1]
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        record = cfg.lancedb_dir / _WIKI_REFRESHED_NAME
+        cannot_read = _WIKI_REFRESHED_UNREADABLE.split("(")[0] % record
+        _forget_the_loaded_pipeline()
+        try:
+            with caplog.at_level(logging.WARNING):
+                await library.sync()
+
+                wiki = stand_in if install.spacy_model else [*stand_in, *_NO_EXTRACTOR_LINES]
+                assert _warnings_of_every_logger(caplog) == fanned + (wiki if install.wiki else [])
+                assert record.exists() is (install.wiki and install.spacy_model)
+
+                if install.record_unreadable:
+                    record.write_text("{", encoding="utf-8")
+                    found = await self._sync_as_a_new_process(library, caplog)
+                    reported = [line for line in found if line.startswith(cannot_read)]
+                    assert len(reported) == (1 if install.wiki else 0)
+                    # With an extractor the sync reads every source again, and says who extracts.
+                    said = stand_in if install.wiki and install.spacy_model else []
+                    assert found == [*fanned, *reported, *said]
+                    # The wiki pass writes a new record; with no extractor none is left.
+                    assert record.exists() is (install.spacy_model or not install.wiki)
+
+                assert await self._sync_as_a_new_process(library, caplog) == fanned
+                assert await self._sync_as_a_new_process(library, caplog) == fanned
+        finally:
+            _forget_the_loaded_pipeline()
 
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
     async def test_with_the_wiki_off_a_sync_reads_and_writes_nothing_for_the_wiki(
