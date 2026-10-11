@@ -13,7 +13,6 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.ingest.discovery import corpus_has_at_least, discover_files
-from lilbee.data.ingest.wiki_owed import note_wiki_pass_owed
 from lilbee.data.store import SourceType
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import ShardId, SyncResult
@@ -279,16 +278,16 @@ class TestSyncAcrossWorkers:
         assert EventType.SYNC_DONE in events
 
     @pytest.mark.parametrize("ending", ["clean", "a_worker_failed", "cancelled", "run_raised"])
-    async def test_the_parent_reconciles_the_wiki_index_however_the_workers_ended(
+    async def test_the_parent_drops_from_the_wiki_index_what_its_workers_removed(
         self, specs, monkeypatch, ending
     ):
-        """A worker has no wiki index of its own, and one that stops reports no removal."""
-        reconciled = []
+        """Workers that finish name what they removed; workers that stop report nothing."""
+        reconciled, named = [], []
         monkeypatch.setattr(cfg, "wiki", True)
         monkeypatch.setattr(
-            "lilbee.app.ingest.forget_missing_from_wiki_index",
-            lambda: reconciled.append(ending) or set(),
+            "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: reconciled.append(ending)
         )
+        monkeypatch.setattr("lilbee.app.ingest.forget_removed_from_wiki_index", named.append)
         if ending == "clean":
             result, _ = await self._run(
                 specs, monkeypatch, self._one_verdict(SyncResult(removed=["old.gz"]))
@@ -317,35 +316,10 @@ class TestSyncAcrossWorkers:
                     on_progress=lambda kind, data: None,
                     cancel=None,
                 )
-        assert reconciled == [ending]
-
-    async def test_workers_that_stop_beside_a_mark_leave_the_wiki_index_to_the_owed_pass(
-        self, specs, monkeypatch
-    ):
-        """The names the index lists that left the source table are how that pass finds a re-key."""
-        reconciled = []
-        monkeypatch.setattr(cfg, "wiki", True)
-        monkeypatch.setattr(
-            "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: reconciled.append(1)
-        )
-        cfg.data_root.mkdir(parents=True, exist_ok=True)
-        note_wiki_pass_owed(cfg.data_root)
-
-        with pytest.raises(RuntimeError, match="1 ingest worker"):
-            await self._run(specs, monkeypatch, self._verdicts(None, "OSError: disk"))
-
-        assert reconciled == []
-
-    async def test_a_clean_run_gives_the_passes_the_sources_the_index_lists_re_keyed(
-        self, specs, monkeypatch
-    ):
-        passes = []
-        monkeypatch.setattr(
-            "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: {"renamed.txt"}
-        )
-        await self._run(specs, monkeypatch, self._verdicts(None, None), passes=passes)
-        [kwargs] = passes
-        assert kwargs["touched"] == {"f0.txt", "f1.txt", "renamed.txt"}
+        if ending == "clean":
+            assert (reconciled, named) == ([], [["old.gz"]])
+        else:
+            assert (reconciled, named) == ([ending], [])
 
     async def test_a_removal_only_run_rebuilds_the_clusters(self, specs, monkeypatch):
         """A removed source leaves stale concept nodes behind unless Leiden runs again."""

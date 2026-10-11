@@ -479,30 +479,50 @@ two runs each, on a rented 16-core Linux machine while other tenants loaded it:
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
 
-**The wiki's browse index.** No worker writes it. When the workers finish, the parent
-drops each source the browse index lists that holds no source row, and the wiki pass
-takes each source the index then lists in its place, which is a renamed file. So a file
-a worker removed or renamed leaves the browse index under its old name.
+**The wiki's browse index.** No worker writes it, and no sync keeps a list of what it
+owes the browse index. What is owed is read from the index itself, by the wiki pass
+at the end of each sync, in one process or in the parent of a fan-out.
 
-With the wiki on, the first write of a sync leaves the file `wiki_pass_owed` in the data
-root, with the time, and the wiki pass at the end of the sync deletes it. A sync that
-stops between the two leaves the file. The next sync, in one process or with workers,
-gives the browse index every source written since that time and every source the
-stopped sync renamed, then deletes the file. A sync that finds no such file reads no
-source row for the wiki, other than the names the parent of a fan-out checks the browse
-index against. With the wiki off no sync reads or writes the file.
+The pass takes a checkpoint of the source table before it reads: the time and the
+version of the table, both read under the write lock of the store. A flush stamps
+its source rows under the same lock, so no row with an earlier time is committed
+after the checkpoint. When the pass has written the browse index, it records the
+checkpoint in the file `.wiki_refreshed` beside the tables.
 
-A fan-out sync that fails or is cancelled leaves the browse index to that next sync
-when the file is there: the old names the index still lists are how the next sync finds
-the renamed files. With no file, no worker renamed anything, and the parent drops what
-the workers removed before it reports the failure.
+The next pass, of any sync, compares the recorded version with the version of the
+source table. If they are equal, no sync wrote a source row since, and the pass
+reads nothing more: a sync with nothing changed costs one read of that file and one
+read of the table version. If they differ, the pass takes every source row stamped
+at or after the recorded time, every source the browse index lists that holds no
+source row, and every source whose mention rows a rename moved to a new name. It
+gives them to the browse index in one write and records its own checkpoint.
 
-Three limits remain. A sync that runs beside another one can delete the file while the
-other still writes, and a stop of that other sync then leaves its files out of the
-browse index. A wiki pass that stops between its read of the browse index and its
-write leaves a renamed file listed with the subjects of its old name. A wiki pass with
-no extractor adds nothing to the browse index and still deletes the file, so no later
-sync is owed the sources of that sync.
+So a file is owed from the moment its row is written until a pass that started
+later has finished, whichever sync wrote it and however that sync ended. A sync
+that is killed, a flush that fails after its write, and a sync that writes while
+the pass of another sync runs all leave rows that the next pass takes. A pass that
+stops before its write leaves the old names in the browse index, and the next pass
+finds the renamed files from them again.
+
+With no record every source is owed, and the pass reads the whole corpus once. This
+is the case for a new index, after a rebuild, which deletes the record with the
+tables, and for an index of a lilbee that kept no record. A pass with no extractor
+records nothing, so its files stay owed. Each later sync then asks once whether an
+extractor is available, and reads no source row until one is. With the wiki off no
+sync reads or writes the file.
+
+A fan-out sync that finishes drops from the browse index the sources its workers
+report as removed, and this needs no extractor. A fan-out sync that fails or is
+cancelled drops each source the browse index lists that holds no source row. If one
+of those sources was renamed, it drops nothing and leaves the browse index to the
+next pass.
+
+Three limits remain. The times are those of the system clock: if the clock is set
+back, a row written after a pass can carry a time before it, and no pass takes that
+row until its file changes. Two passes that run at once both write the browse index
+file, and the later write keeps only its own subjects until the files of the other
+pass change. A renamed file that the browse index does not list under its old name
+keeps the mention rows of that name after a sync that stopped.
 
 **When something breaks.** A worker that fails names itself and its log, and the sync
 fails. A cancelled sync stops the workers. In both cases the files the workers finished

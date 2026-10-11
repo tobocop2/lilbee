@@ -373,11 +373,11 @@ class TestSync:
         monkeypatch.setattr(cfg, "wiki", True)
         seen: list[set] = []
 
-        def fake_refresh(store, config=None, *, sources=None):
-            seen.append(sources or set())
-            return {}
+        def fake_refresh(store, config, named):
+            seen.append(named)
+            return set()
 
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_owed_sources", fake_refresh)
         (isolated_env / "sub").mkdir()
         shutil.move(str(isolated_env / "a.txt"), str(isolated_env / "sub" / "a.txt"))
 
@@ -600,16 +600,16 @@ class TestSync:
         # accepts an arity the real function rejects.
         calls: list[tuple] = []
 
-        def fake_refresh(store, config=None, *, sources=None):
-            calls.append((store, config, sources))
-            return {}
+        def fake_refresh(store, config, named):
+            calls.append((store, config, named))
+            return set()
 
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_owed_sources", fake_refresh)
 
         await sync(quiet=True)
 
         assert len(calls) == 1
-        assert calls[0][2] is not None
+        assert calls[0][2] == {"indexed.txt"}
 
     async def test_index_refresh_is_skipped_when_the_wiki_is_off(
         self, mock_extract_file, isolated_env, monkeypatch
@@ -621,11 +621,11 @@ class TestSync:
         monkeypatch.setattr(cfg, "wiki", False)
         calls: list[tuple] = []
 
-        def fake_refresh(store, config=None, *, sources=None):
-            calls.append((store, config, sources))
-            return {}
+        def fake_refresh(store, config, named):
+            calls.append((store, config, named))
+            return set()
 
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", fake_refresh)
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_owed_sources", fake_refresh)
 
         await sync(quiet=True)
 
@@ -642,7 +642,7 @@ class TestSync:
         monkeypatch.setattr(cfg, "wiki", True)
         monkeypatch.setattr(cfg, "wiki_auto_update", False)
         monkeypatch.setattr(
-            "lilbee.wiki.stubs.refresh_stub_index",
+            "lilbee.wiki.stubs.refresh_owed_sources",
             mock.MagicMock(side_effect=RuntimeError("spacy exploded")),
         )
 
@@ -671,8 +671,8 @@ class TestSync:
         scoped.wiki_auto_update = True
         hook = mock.AsyncMock()
         monkeypatch.setattr("lilbee.wiki.ingest.incremental_update", hook)
-        refresh = mock.MagicMock(return_value={})
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refresh)
+        refresh = mock.MagicMock(return_value=set())
+        monkeypatch.setattr("lilbee.wiki.stubs.refresh_owed_sources", refresh)
 
         with config_scope(scoped):
             await sync(quiet=True)
@@ -5755,7 +5755,7 @@ class TestForgetMissingFromWikiIndex:
             mock.MagicMock(side_effect=RuntimeError("index unreadable")),
         )
         with caplog.at_level("WARNING", logger=ingest_mod.log.name):
-            assert ingest_mod.forget_missing_from_wiki_index() == set()
+            ingest_mod.forget_missing_from_wiki_index()
         assert "Failed to drop missing documents from the wiki index" in caplog.text
 
     def test_with_no_source_missing_the_index_is_read_once_and_not_written(
@@ -5771,7 +5771,8 @@ class TestForgetMissingFromWikiIndex:
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
         monkeypatch.setattr("lilbee.wiki.stubs.drop_sources_from_index", dropped)
 
-        assert ingest_mod.forget_missing_from_wiki_index() == set()
+        ingest_mod.forget_missing_from_wiki_index()
+
         assert read.call_count == 1
         dropped.assert_not_called()
 
@@ -5783,13 +5784,15 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.missing_sources.return_value = {"gone.txt"}
+        mock_svc.store.wiki_mention_rows.return_value = []
         asked = mock.MagicMock()
         dropped = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.get_entity_extractor", asked)
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", mock.MagicMock(return_value={}))
         monkeypatch.setattr("lilbee.wiki.stubs.drop_sources_from_index", dropped)
 
-        assert ingest_mod.forget_missing_from_wiki_index() == set()
+        ingest_mod.forget_missing_from_wiki_index()
+
         assert [call.args[0] for call in dropped.call_args_list] == [{"gone.txt"}]
         asked.assert_not_called()
 
@@ -5800,7 +5803,7 @@ class TestForgetMissingFromWikiIndex:
         monkeypatch.setattr(cfg, "wiki", False)
         read = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
-        assert ingest_mod.forget_missing_from_wiki_index() == set()
+        ingest_mod.forget_missing_from_wiki_index()
         read.assert_not_called()
 
 

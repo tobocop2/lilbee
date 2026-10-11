@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
@@ -85,6 +86,7 @@ from .types import (
     SourceMove,
     SourceRecord,
     SourceRelocation,
+    SourcesCheckpoint,
     SourceStat,
     SourceStatBackfill,
     SourceType,
@@ -284,6 +286,9 @@ _NULL_TEXT_SQL = "CAST(NULL AS STRING)"
 
 # Beside the tables: says every source row of this index was checked for its chunks.
 _SOURCES_CHECKED_NAME = ".sources_checked"
+
+# Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
+_WIKI_REFRESHED_NAME = ".wiki_refreshed"
 
 # Rows per Arrow batch when a filtered read walks the whole source table.
 _SOURCE_SCAN_BATCH_ROWS = 20_000
@@ -2127,6 +2132,35 @@ class Store:
                 found.setdefault(row["file_hash"], []).append(row["filename"])
         return found
 
+    def sources_checkpoint(self) -> SourcesCheckpoint:
+        """The time and the version of the source table, read under the write lock.
+
+        A source row is stamped under that lock, so no row stamped before the
+        time is committed later.
+        """
+        with self._write_lock():
+            return SourcesCheckpoint(datetime.now(UTC).isoformat(), self.sources_version())
+
+    def wiki_refreshed(self) -> SourcesCheckpoint | None:
+        """The checkpoint up to which the wiki's page index covers the source rows.
+
+        None with no record or an unreadable one: every source row is owed.
+        """
+        try:
+            text = (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).read_text(encoding="utf-8")
+            record = json.loads(text)
+            version = record["version"]
+            return SourcesCheckpoint(str(record["time"]), None if version is None else int(version))
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    def record_wiki_refreshed(self, checkpoint: SourcesCheckpoint) -> None:
+        """Record that the wiki's page index covers the source rows up to *checkpoint*."""
+        record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
+        scratch = record.with_name(f"{record.name}.{os.getpid()}")
+        scratch.write_text(json.dumps(checkpoint._asdict()), encoding="utf-8")
+        os.replace(scratch, record)
+
     def sources_ingested_since(self, since: str) -> list[str]:
         """The filename of each source row written at or after *since*, an ISO time in UTC."""
         table = self.open_table(SOURCES_TABLE)
@@ -2162,6 +2196,7 @@ class Store:
         return {
             "filename": filename,
             "file_hash": file_hash,
+            # Stamped under the write lock that commits the row: sources_checkpoint relies on it.
             "ingested_at": datetime.now(UTC).isoformat(),
             "chunk_count": chunk_count,
             "source_type": source_type,
@@ -2208,8 +2243,8 @@ class Store:
         meta: SourceMeta | None = None,
     ) -> None:
         """Add or update a source tracking record."""
-        row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
         with self._write_lock():
+            row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
             self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
 
@@ -2954,6 +2989,8 @@ class Store:
             self._title_fts_ready = False
             self._scalar_ready = False
             db = self.get_db()
+            # Before the tables: a record that outlives them would describe the next ones.
+            (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).unlink(missing_ok=True)
             dropped = [name for name in table_names(db) if name != MEMORIES_TABLE]
             # The source rows go first: a drop that stops part way leaves no file unchanged.
             for name in sorted(dropped, key=lambda name: name != SOURCES_TABLE):

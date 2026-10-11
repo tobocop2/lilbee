@@ -627,29 +627,21 @@ def forget_removed_from_wiki_index(removed: list[str]) -> None:
         log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
 
 
-def forget_missing_from_wiki_index() -> set[str]:
+def forget_missing_from_wiki_index() -> None:
     """Drop from the wiki's browse index each source it lists that holds no source row.
 
-    For a writer that cannot name what left the index: the workers of a fan-out
-    sync remove and re-key sources, and one that stops reports nothing. Returns
-    the sources the index lists in their place, which are re-keyed ones and which
-    the caller owes a refresh. Best effort, as the removal already succeeded.
+    For the parent of a fan-out that stopped: its workers remove sources and
+    report nothing. Best effort, as the removal already succeeded.
     """
     config = active_config()
     if not config.wiki:
-        return set()
-    from lilbee.wiki.stubs import drop_sources_from_index, listed_sources
+        return
+    from lilbee.wiki.stubs import drop_removed_sources
 
     try:
-        listed = listed_sources(config)
-        missing = get_services().store.missing_sources(listed)
-        if not missing:
-            return set()
-        drop_sources_from_index(missing, config)
-        return listed_sources(config) - listed
+        drop_removed_sources(get_services().store, config)
     except Exception:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
-        return set()
 
 
 @contextmanager

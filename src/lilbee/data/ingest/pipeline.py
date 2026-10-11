@@ -87,11 +87,6 @@ from lilbee.data.ingest.skip_marker import (
     load_skip_markers,
     update_skip_records,
 )
-from lilbee.data.ingest.wiki_owed import (
-    clear_wiki_pass_owed,
-    note_wiki_pass_owed,
-    wiki_pass_owed_since,
-)
 from lilbee.data.offload import (
     embed_inflight_target,
     ingest_thread_future,
@@ -821,8 +816,6 @@ class _StreamedPlan:
     # plan's own running totals grow as batches land and cannot say how much of
     # the corpus is left. Summed across a fan-out's workers it is the corpus.
     corpus_total: int = 0
-    # The data root whose wiki mark the first batch with files sets; None once set or with no wiki.
-    wiki_mark_root: Path | None = None
 
     @property
     def resolved(self) -> int:
@@ -852,10 +845,6 @@ async def _absorb_plan_batch(
     state.added.update(plan.added)
     state.updated.update(plan.updated)
 
-    if entries and state.wiki_mark_root is not None:
-        # Before the first write, so a sync that stops after one leaves the mark behind.
-        await to_ingest_thread(note_wiki_pass_owed, state.wiki_mark_root)
-        state.wiki_mark_root = None
     if new_hashes := [e.file_hash for e in entries if e.name in plan.added]:
         await to_ingest_thread(moves.load, new_hashes)
     detected = _detect_moves(entries, plan.added, moves)
@@ -1196,15 +1185,12 @@ def _forget_in_wiki(removed: list[str]) -> None:
     forget_removed_from_wiki_index(removed)
 
 
-def _forget_missing_in_wiki() -> set[str]:
-    """Drop from the wiki's browse index each source that left the source table.
-
-    Returns the re-keyed sources the index lists in their place.
-    """
+def _forget_missing_in_wiki() -> None:
+    """Drop from the wiki's browse index what the workers of a fan-out that stopped removed."""
     # circular: lilbee.app.ingest imports this module for sync
     from lilbee.app.ingest import forget_missing_from_wiki_index
 
-    return forget_missing_from_wiki_index()
+    forget_missing_from_wiki_index()
 
 
 def _sources_in_scope(store: Store, shard: ShardId | None) -> list[SourceRecord]:
@@ -1231,39 +1217,6 @@ def _require_embedding_model() -> None:
         raise RuntimeError(f"Ingest needs an embedding model. {detail}")
 
 
-async def _sources_written_since(store: Store, since: str | None) -> set[str]:
-    """The sources a sync that stopped wrote and never gave to the wiki's page index.
-
-    *since* is the time its mark holds, None with no mark.
-    """
-    if since is None:
-        return set()
-    return set(await to_ingest_thread(store.sources_ingested_since, since))
-
-
-async def _sources_rekeyed_by_stopped_sync(since: str | None) -> set[str]:
-    """The sources a one-process sync finds re-keyed by a sync that stopped; none with no mark.
-
-    *since* is the time the mark holds. This sync names what it removes and
-    re-keys itself, so it reads the page index against the source table only then.
-    """
-    if since is None:
-        return set()
-    return await to_ingest_thread(_forget_missing_in_wiki)
-
-
-async def _forget_removed_by_stopped_workers() -> None:
-    """Drop from the wiki's browse index what the workers of a fan-out that stopped removed.
-
-    With a mark the index stays as it is: the names it lists that left the source
-    table are how the sync that runs the owed wiki pass finds the re-keyed sources.
-    With no mark no worker re-keyed a source, and no later sync is owed the read.
-    """
-    config = active_config()
-    if config.wiki and await to_ingest_thread(wiki_pass_owed_since, config.data_root) is None:
-        await to_ingest_thread(_forget_missing_in_wiki)
-
-
 async def _run_post_ingest_passes(
     store: Any,
     *,
@@ -1272,17 +1225,16 @@ async def _run_post_ingest_passes(
     cluster_updated: Collection[str],
     cluster_removed: Collection[str],
     touched: set[str],
-    wiki_owed: bool,
     cancel: CancelSignal | None,
 ) -> None:
     """Index maintenance, concept clusters, the wiki hook, and the entity lifecycle.
 
-    The index pass only runs when this sync indexed something, and the wiki
-    pass when it did or when *wiki_owed* says an earlier sync stopped before
-    its own. The concept clusters are recomputed only when a source was added,
-    updated or removed: a relocation changes no co-occurrence. The entity
-    lifecycle runs every sync (a cheap no-op when off or already current) so
-    turning the setting on takes effect without a separate operation.
+    The index pass only runs when this sync indexed something. The concept
+    clusters are recomputed only when a source was added, updated or removed: a
+    relocation changes no co-occurrence. The wiki hook and the entity lifecycle
+    run every sync (a cheap no-op when off or already current): the wiki index
+    takes what any sync wrote and no refresh read, and turning the entity
+    setting on takes effect without a separate operation.
     """
     if indexed_anything:
         store.ensure_fts_index()
@@ -1291,21 +1243,21 @@ async def _run_post_ingest_passes(
         store.optimize_sources()
     if cluster_added or cluster_updated or cluster_removed:
         await _rebuild_concept_clusters(cluster_added, cluster_updated, cluster_removed)
-    if indexed_anything or wiki_owed:
-        await _update_wiki(touched, active_config())
+    await _update_wiki(touched, active_config())
 
     from lilbee.retrieval.entities.lifecycle import ensure_entities
 
     await to_ingest_thread(ensure_entities, cancel)
 
 
-async def _update_wiki(changed_sources: set[str], config: Config) -> None:
+async def _update_wiki(named: set[str], config: Config) -> None:
     """Refresh the wiki index, and regenerate pages when auto-update is on.
 
     The index refresh runs whenever the wiki is enabled, because it spends no
     LLM call and it is what lets the browse tree list a page the moment its
-    document lands. Regeneration is the expensive half and stays behind
-    wiki_auto_update.
+    document lands. It takes *named* and every source the store holds that no
+    refresh has read, whichever sync wrote it. Regeneration is the expensive
+    half and stays behind wiki_auto_update.
 
     Best effort: the ingest itself already succeeded and `lilbee wiki update`
     re-runs the regeneration, so a wiki failure must not skip the post-ingest
@@ -1316,21 +1268,20 @@ async def _update_wiki(changed_sources: set[str], config: Config) -> None:
     # circular: lilbee.wiki imports lilbee.data.ingest.file_hash, so the
     # post-ingest hook stays function-local at this boundary.
     from lilbee.wiki.ingest import incremental_update
-    from lilbee.wiki.stubs import refresh_stub_index
+    from lilbee.wiki.stubs import refresh_owed_sources
 
+    changed = named
     try:
-        await to_ingest_thread(
-            refresh_stub_index, get_services().store, config, sources=changed_sources
+        changed = named | await to_ingest_thread(
+            refresh_owed_sources, get_services().store, config, named
         )
-        # The index has every source written so far; a refresh that failed keeps the mark.
-        await to_ingest_thread(clear_wiki_pass_owed, config.data_root)
     except Exception:
         log.warning("Wiki index refresh failed after sync", exc_info=True)
 
-    if not config.wiki_auto_update:
+    if not config.wiki_auto_update or not changed:
         return
     try:
-        await incremental_update(changed_sources, config)
+        await incremental_update(changed, config)
     except Exception:
         log.warning("Wiki auto-update failed after sync", exc_info=True)
 
@@ -1354,7 +1305,6 @@ async def _sync_across_workers(
     store: Store,
     *,
     prune_ignored: bool = False,
-    wiki_owed_since: str | None = None,
     options: ShardOptions,
     quiet: bool,
     on_progress: DetailedProgressCallback,
@@ -1370,27 +1320,25 @@ async def _sync_across_workers(
         if failures := [verdict for verdict in verdicts if verdict.error is not None]:
             raise RuntimeError(_worker_failure_message(failures, specs))
     except BaseException:
-        await _forget_removed_by_stopped_workers()
+        await to_ingest_thread(_forget_missing_in_wiki)
         raise
     result = aggregate_results(verdicts)
     touched = set(result.added) | set(result.updated) | set(result.relocated)
+    # No worker tells the wiki index what it removed, and a pass with no extractor drops nothing.
+    await to_ingest_thread(_forget_in_wiki, result.removed)
     # No worker sees the whole corpus, so each one leaves this pass to the parent.
     if prune_ignored:
         ignored = await to_ingest_thread(
             _forget_ignored, store.get_sources(), IgnoreRules.for_corpus(active_config().data_root)
         )
         result.removed = [*ignored, *result.removed]
-    # No worker tells the wiki index what it removed or re-keyed, so the index is read
-    # against the source table, once: the wiki pass takes the re-keyed sources it finds.
-    rekeyed = await to_ingest_thread(_forget_missing_in_wiki)
     await _run_post_ingest_passes(
         store,
         indexed_anything=bool(touched),
         cluster_added=result.added,
         cluster_updated=result.updated,
         cluster_removed=result.removed,
-        touched=touched | rekeyed | await _sources_written_since(store, wiki_owed_since),
-        wiki_owed=wiki_owed_since is not None,
+        touched=touched,
         cancel=cancel,
     )
     on_progress(
@@ -1483,19 +1431,11 @@ async def sync(
     records_root = _prepare_skip_records(
         shard, force_rebuild=force_rebuild, retry_skipped=retry_skipped
     )
-    # Read before this sync writes: the mark of a sync that stopped, never this one's own.
-    wiki_owed_since = (
-        await to_ingest_thread(wiki_pass_owed_since, records_root)
-        if config.wiki and shard is None
-        else None
-    )
-
     if shard is None and (specs := plan_fanout()):
         merged = await _sync_across_workers(
             specs,
             _store,
             prune_ignored=prune_ignored,
-            wiki_owed_since=wiki_owed_since,
             options=ShardOptions(parent_pid=os.getpid()),
             quiet=quiet,
             on_progress=on_progress,
@@ -1536,9 +1476,7 @@ async def sync(
     # batch off the event loop and overlapped with ingest. A brand-new file whose
     # content hash matches an absent source is folded in per batch as a move, not an
     # add: repointed in place so its chunks and embeddings are reused, not rebuilt.
-    state = _StreamedPlan(
-        corpus_total=len(disk_files), wiki_mark_root=records_root if config.wiki else None
-    )
+    state = _StreamedPlan(corpus_total=len(disk_files))
     added, updated, pending_hashes = state.added, state.updated, state.pending_hashes
     plan_batches = _plan_batches(disk_files, existing_sources, skip_markers, moves, state, cancel)
 
@@ -1599,13 +1537,7 @@ async def sync(
             cluster_removed=[*ignored, *refused],
             # The old names of relocated sources ride along so the wiki index
             # subtracts them in the same pass that merges their new ones.
-            touched=set(added)
-            | set(updated)
-            | set(relocated)
-            | set(state.relocated_from)
-            | await _sources_rekeyed_by_stopped_sync(wiki_owed_since)
-            | await _sources_written_since(_store, wiki_owed_since),
-            wiki_owed=wiki_owed_since is not None,
+            touched=set(added) | set(updated) | set(relocated) | set(state.relocated_from),
             cancel=cancel,
         )
 

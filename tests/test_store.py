@@ -15,12 +15,14 @@ import pytest
 from lilbee.core.config import CHUNKS_TABLE, META_TABLE, PAGE_TEXTS_TABLE, SOURCES_TABLE, cfg
 from lilbee.data.store import (
     ChunkType,
+    ChunkWrite,
     CitationRecord,
     SearchChunk,
     SearchScope,
     SourceMeta,
     SourceMove,
     SourceRelocation,
+    SourcesCheckpoint,
     SourceType,
     Store,
     cosine_sim,
@@ -5462,11 +5464,96 @@ class TestSourcesIngestedSince:
         assert sorted(store.sources_ingested_since("")) == ["early.md", "late.md"]
 
     def test_a_source_written_at_the_very_time_is_one_of_them(self, store):
-        """The mark takes its time before the first write, so a row at that time came after it."""
+        """A checkpoint and a row can carry one time, and the row may be the later of the two."""
         store.upsert_source("same.md", "h", 1)
         [row] = store.get_sources()
 
         assert store.sources_ingested_since(row["ingested_at"]) == ["same.md"]
+
+
+class TestSourcesCheckpoint:
+    def test_a_row_written_after_a_checkpoint_is_at_or_after_its_time_and_off_its_version(
+        self, store
+    ):
+        store.upsert_source("early.md", "h", 1)
+
+        checkpoint = store.sources_checkpoint()
+        store.upsert_source("late.md", "h", 1)
+
+        assert checkpoint.version is not None
+        assert store.sources_version() > checkpoint.version
+        assert store.sources_ingested_since(checkpoint.time) == ["late.md"]
+
+    def test_with_no_source_table_the_version_is_none(self, store):
+        assert store.sources_checkpoint().version is None
+
+    @pytest.mark.parametrize("write", ["upsert_source", "write_chunks_batch"])
+    def test_a_source_row_is_stamped_under_the_write_lock(self, store, monkeypatch, write):
+        """A stamp taken before the lock could be older than a checkpoint its row commits after."""
+        held, stamped_under_lock = [], []
+        real_lock, real_row = store._write_lock, store._source_row
+
+        @contextmanager
+        def _lock(*args, **kwargs):
+            with real_lock(*args, **kwargs):
+                held.append(1)
+                try:
+                    yield
+                finally:
+                    held.pop()
+
+        def _row(*args, **kwargs):
+            stamped_under_lock.append(bool(held))
+            return real_row(*args, **kwargs)
+
+        monkeypatch.setattr(store, "_write_lock", _lock)
+        monkeypatch.setattr(store, "_source_row", _row)
+
+        if write == "upsert_source":
+            store.upsert_source("a.md", "h", 1)
+        else:
+            item = ChunkWrite(source="a.md", file_hash="h", records=[], needs_cleanup=False)
+            store.write_chunks_batch([item])
+
+        assert stamped_under_lock == [True]
+        assert [row["filename"] for row in store.get_sources()] == ["a.md"]
+
+
+class TestWikiRefreshed:
+    def test_no_record_reads_as_none(self, store):
+        assert store.wiki_refreshed() is None
+
+    @pytest.mark.parametrize("version", [7, None])
+    def test_a_recorded_checkpoint_is_read_back(self, store, version):
+        beside_the_tables = store._config.lancedb_dir
+        beside_the_tables.mkdir(parents=True, exist_ok=True)
+        checkpoint = SourcesCheckpoint("2026-01-01T00:00:00+00:00", version)
+
+        store.record_wiki_refreshed(checkpoint)
+
+        assert store.wiki_refreshed() == checkpoint
+        assert [path.name for path in beside_the_tables.glob(".wiki_refreshed*")] == [
+            ".wiki_refreshed"
+        ]
+
+    @pytest.mark.parametrize(
+        "text", ["", "{", "[]", '"text"', '{"time": "t"}', '{"time": "t", "version": "x"}']
+    )
+    def test_an_unreadable_record_reads_as_none(self, store, text):
+        store._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
+        (store._config.lancedb_dir / ".wiki_refreshed").write_text(text, encoding="utf-8")
+
+        assert store.wiki_refreshed() is None
+
+    def test_a_rebuild_drops_the_record_with_the_tables(self, store):
+        store.upsert_source("a.md", "h", 1)
+        store.record_wiki_refreshed(store.sources_checkpoint())
+        assert store.wiki_refreshed() is not None
+
+        store.drop_all()
+
+        assert store.wiki_refreshed() is None
+        assert store.sources_version() is None
 
 
 class TestRekeyReplacesAndSkips:

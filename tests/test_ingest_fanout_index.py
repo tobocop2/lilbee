@@ -13,22 +13,22 @@ import os
 import shutil
 import threading
 import zipfile
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
 
+from lilbee.app.services import get_services
 from lilbee.core.config import active_config, cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
-from lilbee.data.ingest.wiki_owed import (
-    WIKI_OWED_FILENAME,
-    note_wiki_pass_owed,
-    wiki_pass_owed_since,
-)
 from lilbee.data.store import Store
+from lilbee.data.store.core import _WIKI_REFRESHED_NAME
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.lock import SyncRunningError, source_keys_in_use, sync_running
+from lilbee.wiki import stubs as stubs_mod
 from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.stubs import load_stub_index
 from tests._fanout_library import Library, services_for
@@ -1124,6 +1124,37 @@ class TestTheWikiIndex:
         library.use()
         return {slug: stub.sources for slug, stub in load_stub_index(cfg).items()}
 
+    def _record(self, library):
+        """The checkpoint the store records for the last wiki pass that completed."""
+        library.use()
+        return Store(cfg).wiki_refreshed()
+
+    def _counted(self, monkeypatch, *names) -> Counter:
+        """Count the calls of each *names* method of the store, which still run."""
+        calls: Counter = Counter()
+        for name in names:
+            real = vars(Store)[name]
+
+            def _call(store, *args, _name=name, _real=real, **kwargs):
+                calls[_name] += 1
+                return _real(store, *args, **kwargs)
+
+            monkeypatch.setattr(Store, name, _call)
+        return calls
+
+    async def _clean(self, tmp_path, *steps) -> Library:
+        """The oracle: one process plays *steps*, a sync after each, and never stops."""
+        clean = Library(tmp_path / "clean", 1)
+        for step in steps:
+            step(clean)
+            await clean.sync()
+        return clean
+
+    def _assert_equal_to(self, library: Library, clean: Library) -> None:
+        assert self._subjects(library) == self._subjects(clean)
+        assert library.dump() == clean.dump()
+        assert self._subjects(clean), "the oracle lists nothing, so the comparison proves nothing"
+
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
     async def test_the_sync_after_a_stopped_one_lists_what_the_stopped_one_indexed(
         self, tmp_path, monkeypatch, processes
@@ -1139,6 +1170,8 @@ class TestTheWikiIndex:
         stopped = Library(tmp_path / "stopped", processes)
         stopped.write_notes("note", 4)
         await stopped.sync()
+        covered = self._record(stopped)
+        assert covered is not None
         reports = stopped.write_notes("report", 8)
         cancel = threading.Event()
         with monkeypatch.context() as patch:
@@ -1148,13 +1181,13 @@ class TestTheWikiIndex:
         indexed = [name for name in stopped.sources() if name.startswith("report")]
         assert indexed, "the stopped sync indexed nothing, so the next one owes nothing"
         assert not set(indexed) & set(self._listed(stopped))
-        assert (stopped.root / WIKI_OWED_FILENAME).is_file()
+        assert self._record(stopped) == covered
         assert owed_reads == []
 
         after = await stopped.sync()
         assert sorted([*indexed, *after.added]) == sorted(reports)
-        assert len(owed_reads) == 1
-        assert not (stopped.root / WIKI_OWED_FILENAME).exists()
+        assert owed_reads == [covered.time]
+        assert self._record(stopped) != covered
         await stopped.sync()
         assert len(owed_reads) == 1
 
@@ -1167,14 +1200,118 @@ class TestTheWikiIndex:
         assert self._subjects(stopped) == self._subjects(clean)
         assert stopped.dump() == clean.dump()
 
-    async def test_a_sync_that_stops_after_a_rename_leaves_the_index_under_the_new_name(
+    async def test_files_written_after_the_wiki_pass_of_another_sync_reach_the_index(
         self, tmp_path, monkeypatch
     ):
+        """The other sync is its wiki pass, which ends while this sync waits to write its files."""
         library = Library(tmp_path / "lib", 1)
         library.write_notes("note", 4)
-        library.write("old.txt", "The one file that is renamed.")
         await library.sync()
-        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        library.write_notes("report", 4)
+        cancel = threading.Event()
+        real_write = Store.write_chunks_batch
+        other_passes = []
+
+        def _write_after_the_other_pass(store, items):
+            if not other_passes:
+                with ThreadPoolExecutor(max_workers=1) as other_sync:
+                    other_sync.submit(asyncio.run, pipeline_mod._update_wiki(set(), cfg)).result()
+                other_passes.append(1)
+                cancel.set()
+            return real_write(store, items)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Store, "write_chunks_batch", _write_after_the_other_pass)
+            with pytest.raises(asyncio.CancelledError):
+                await library.sync(cancel=cancel)
+        written = [name for name in library.sources() if name.startswith("report")]
+        assert other_passes == [1]
+        assert written, "the stopped sync wrote nothing after the other pass"
+        assert not set(written) & set(self._listed(library))
+
+        await library.sync()
+
+        clean = await self._clean(
+            tmp_path,
+            lambda clean: clean.write_notes("note", 4),
+            lambda clean: clean.write_notes("report", 4),
+        )
+        self._assert_equal_to(library, clean)
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_files_of_a_flush_that_fails_after_its_write_reach_the_index(
+        self, tmp_path, monkeypatch, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        await library.sync()
+        library.write_notes("report", 4)
+        real_flush = pipeline_mod._flush_concept_records
+        first, failed_names = threading.Lock(), []
+
+        def _fails_once_after_the_write(buffer):
+            with first:
+                fails = not failed_names
+                if fails:
+                    failed_names.extend(result.name for result in buffer)
+            if fails:
+                raise OSError("the flush failed after its rows were written")
+            real_flush(buffer)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(pipeline_mod, "_flush_concept_records", _fails_once_after_the_write)
+            result = await library.sync()
+        assert failed_names
+        assert set(failed_names) <= set(result.failed)
+        assert set(failed_names) <= set(library.sources())
+
+        await library.sync()
+
+        clean = await self._clean(
+            tmp_path,
+            lambda clean: clean.write_notes("note", 4),
+            lambda clean: clean.write_notes("report", 4),
+        )
+        self._assert_equal_to(library, clean)
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_files_synced_with_no_extractor_reach_the_index_once_there_is_one(
+        self, tmp_path, wiki_on, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        notes = library.write_notes("note", 4)
+        await library.sync()
+        library.write_notes("report", 4)
+        wiki_on.available.return_value = False
+        await library.sync()
+        assert self._listed(library) == sorted(notes)
+        wiki_on.available.return_value = True
+
+        result = await library.sync()
+
+        assert result.unchanged == 8
+        clean = await self._clean(
+            tmp_path,
+            lambda clean: clean.write_notes("note", 4),
+            lambda clean: clean.write_notes("report", 4),
+        )
+        self._assert_equal_to(library, clean)
+
+    async def test_a_sync_with_no_extractor_records_nothing(self, tmp_path, wiki_on):
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        await library.sync()
+        covered = self._record(library)
+        assert covered is not None
+        library.write_notes("report", 2)
+        wiki_on.available.return_value = False
+
+        await library.sync()
+
+        assert self._record(library) == covered
+        assert Store(cfg).sources_version() != covered.version
+
+    async def _stop_at_the_rename(self, library, monkeypatch) -> None:
         cancel = threading.Event()
         real = Store.relocate_sources
         with monkeypatch.context() as patch:
@@ -1184,6 +1321,16 @@ class TestTheWikiIndex:
             with pytest.raises(asyncio.CancelledError):
                 await library.sync(cancel=cancel)
         assert "renamed.txt" in library.sources()
+
+    async def test_a_sync_that_stops_after_a_rename_leaves_the_index_under_the_new_name(
+        self, tmp_path, monkeypatch
+    ):
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
+        await library.sync()
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        await self._stop_at_the_rename(library, monkeypatch)
         assert "old.txt" in self._listed(library)
 
         await library.sync()
@@ -1200,33 +1347,22 @@ class TestTheWikiIndex:
         """The oracle is a one-process library whose sync of the rename never stops."""
         subjects = []
 
-        async def _stopped_sync(library) -> None:
-            cancel = threading.Event()
-            real = Store.relocate_sources
-            with monkeypatch.context() as patch:
-                patch.setattr(
-                    Store,
-                    "relocate_sources",
-                    lambda store, moves: cancel.set() or real(store, moves),
-                )
-                if parent == "is_killed":
-                    # A killed parent runs nothing after its workers: it never reads the index.
-                    patch.setattr("lilbee.app.ingest.forget_missing_from_wiki_index", set)
-                with pytest.raises(asyncio.CancelledError):
-                    await library.sync(cancel=cancel)
-            assert "renamed.txt" in library.sources()
-            assert (library.root / WIKI_OWED_FILENAME).is_file()
-
         async def history(library):
             library.write_notes("note", 4)
             library.write("old.txt", "The one file that is renamed.")
             await library.sync()
             (library.documents / "old.txt").rename(library.documents / "renamed.txt")
             if library.processes > 1:
-                await _stopped_sync(library)
+                with monkeypatch.context() as patch:
+                    if parent == "is_killed":
+                        # A killed parent runs nothing after its workers: it never reads the index.
+                        patch.setattr(
+                            "lilbee.app.ingest.forget_missing_from_wiki_index", lambda: None
+                        )
+                    await self._stop_at_the_rename(library, patch)
+                assert "old.txt" in self._listed(library)
             await library.sync()
             subjects.append(self._subjects(library))
-            assert not (library.root / WIKI_OWED_FILENAME).exists()
 
         fanned, single = await _play(tmp_path, history)
         fan_out, one_process = subjects
@@ -1235,19 +1371,35 @@ class TestTheWikiIndex:
         assert fan_out == one_process
         _assert_equal_to_one_process(fanned, single)
 
-    async def test_a_refresh_with_no_extractor_adds_nothing_and_deletes_the_mark(
-        self, tmp_path, wiki_on
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_wiki_pass_that_stops_before_its_write_still_owes_the_renamed_file(
+        self, tmp_path, monkeypatch, processes
     ):
-        library = Library(tmp_path / "lib", 1)
-        notes = library.write_notes("note", 4)
+        """The pass of the second sync fails where it writes, after every read of the index."""
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        library.write("old.txt", "The one file that is renamed.")
         await library.sync()
-        library.write_notes("report", 2)
-        wiki_on.available.return_value = False
+        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
+        await self._stop_at_the_rename(library, monkeypatch)
+        stopped_writes = mock.Mock(side_effect=OSError("stopped at its write"))
+        with monkeypatch.context() as patch:
+            patch.setattr("lilbee.wiki.stubs._write_source_mentions", stopped_writes)
+            await library.sync()
+        assert stopped_writes.call_count == 1
 
         await library.sync()
 
-        assert self._listed(library) == sorted(notes)
-        assert not (library.root / WIKI_OWED_FILENAME).exists()
+        def _renamed(clean):
+            (clean.documents / "old.txt").rename(clean.documents / "renamed.txt")
+
+        def _written(clean):
+            clean.write_notes("note", 4)
+            clean.write("old.txt", "The one file that is renamed.")
+
+        clean = await self._clean(tmp_path, _written, _renamed)
+        assert self._subjects(clean)["about-renamed.txt"] == ("renamed.txt",)
+        self._assert_equal_to(library, clean)
 
     async def test_with_no_extractor_a_removed_file_leaves_the_index(
         self, tmp_path, monkeypatch, wiki_on
@@ -1275,18 +1427,24 @@ class TestTheWikiIndex:
 
     @pytest.mark.parametrize("available", [True, False], ids=["extractor", "no-extractor"])
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
-    async def test_a_sync_with_nothing_changed_asks_no_extractor_and_reads_no_owed_source(
+    async def test_a_sync_with_nothing_changed_reads_one_record_and_no_source_row_for_the_wiki(
         self, tmp_path, monkeypatch, caplog, wiki_on, processes, available
     ):
         wiki_on.available.return_value = available
         library = Library(tmp_path / "lib", processes)
         library.write_notes("note", 8)
-        owed_reads = []
-        real_read = Store.sources_ingested_since
-        monkeypatch.setattr(
-            Store,
+        calls = self._counted(
+            monkeypatch,
+            "wiki_refreshed",
+            "sources_checkpoint",
             "sources_ingested_since",
-            lambda store, since: owed_reads.append(since) or real_read(store, since),
+            "record_wiki_refreshed",
+            "wiki_mention_rows",
+        )
+        rebuilds = []
+        real_rebuild = stubs_mod._rebuild
+        monkeypatch.setattr(
+            stubs_mod, "_rebuild", lambda *args: rebuilds.append(1) or real_rebuild(*args)
         )
         with caplog.at_level(logging.WARNING):
             await library.sync()
@@ -1294,59 +1452,48 @@ class TestTheWikiIndex:
             assert ("extractor unavailable" in caplog.text) is not available
             wiki_on.available.reset_mock()
             caplog.clear()
+            calls.clear()
+            rebuilds.clear()
 
             result = await library.sync()
 
         assert result.unchanged == 8
-        assert wiki_on.available.call_count == 0
-        assert owed_reads == []
+        # The parent reads the record; no worker does. With no extractor the files stay
+        # owed, and the one question a sync asks about them is whether there is one now.
+        assert calls == {"wiki_refreshed": 1}
+        assert rebuilds == []
+        assert wiki_on.available.call_count == (0 if available else 1)
         assert "extractor unavailable" not in caplog.text
 
-    async def test_a_refresh_that_fails_keeps_the_mark_for_the_next_sync(
-        self, tmp_path, monkeypatch
-    ):
-        library = Library(tmp_path / "lib", 1)
-        library.write_notes("note", 4)
-        with monkeypatch.context() as patch:
-            patch.setattr("lilbee.wiki.stubs.refresh_stub_index", mock.Mock(side_effect=OSError))
-            await library.sync()
-        assert self._listed(library) == []
-        assert (library.root / WIKI_OWED_FILENAME).is_file()
-
+        # The control: the same counters see the pass of a sync with one new file.
+        library.write("one-more.txt", "One more file.")
         await library.sync()
-
-        assert self._listed(library) == [f"note{n}.txt" for n in range(4)]
-        assert not (library.root / WIKI_OWED_FILENAME).exists()
-
-    async def test_a_mark_with_no_time_owes_every_source(self, tmp_path):
-        library = Library(tmp_path / "lib", 1)
-        names = library.write_notes("note", 4)
-        await library.sync()
-        Store(cfg).clear_wiki_mentions()
-        (library.root / WIKI_OWED_FILENAME).write_text("", encoding="utf-8")
-
-        await library.sync()
-
-        mentioned = {row["source"] for row in Store(cfg).wiki_mention_rows()}
-        assert mentioned == set(names)
-
-    async def test_an_earlier_mark_keeps_its_time(self, tmp_path):
-        library = Library(tmp_path / "lib", 1)
-        mark = library.root / WIKI_OWED_FILENAME
-        mark.write_text("2020-01-01T00:00:00+00:00", encoding="utf-8")
-
-        note_wiki_pass_owed(library.root)
-
-        assert wiki_pass_owed_since(library.root) == "2020-01-01T00:00:00+00:00"
+        seen = {name: calls[name] for name in calls if name != "wiki_mention_rows"}
+        if available:
+            assert seen == {
+                "wiki_refreshed": 2,
+                "sources_checkpoint": 1,
+                "sources_ingested_since": 1,
+                "record_wiki_refreshed": 1,
+            }
+            assert calls["wiki_mention_rows"] > 0
+        else:
+            assert seen == {"wiki_refreshed": 2}
+        assert bool(rebuilds) is available
 
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
-    async def test_with_the_wiki_off_a_sync_reads_and_leaves_no_mark(
+    async def test_with_the_wiki_off_a_sync_reads_and_writes_nothing_for_the_wiki(
         self, tmp_path, monkeypatch, processes
     ):
         cfg.wiki = False
-        reads, notes = [], []
-        monkeypatch.setattr(pipeline_mod, "wiki_pass_owed_since", reads.append)
-        monkeypatch.setattr(pipeline_mod, "note_wiki_pass_owed", notes.append)
+        calls = self._counted(
+            monkeypatch,
+            "wiki_refreshed",
+            "sources_checkpoint",
+            "sources_ingested_since",
+            "record_wiki_refreshed",
+            "wiki_mention_rows",
+        )
         library = Library(tmp_path / "lib", processes)
         library.write_notes("note", 8)
         cancel = threading.Event()
@@ -1355,55 +1502,69 @@ class TestTheWikiIndex:
             with pytest.raises(asyncio.CancelledError):
                 await library.sync(cancel=cancel)
         await library.sync()
+        await library.sync()
 
         assert library.sources() != []
-        assert (reads, notes) == ([], [])
-        assert not (library.root / WIKI_OWED_FILENAME).exists()
+        assert calls == {}
+        assert not (cfg.lancedb_dir / _WIKI_REFRESHED_NAME).exists()
 
-    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
-    async def test_a_sync_with_nothing_owed_reads_the_mark_and_no_source_row(
-        self, tmp_path, monkeypatch, processes
-    ):
-        library = Library(tmp_path / "lib", processes)
-        library.write_notes("note", 8)
+        # The control: with the wiki on, the same counters and the same paths see the pass.
+        cfg.wiki = True
         await library.sync()
-        assert not (library.root / WIKI_OWED_FILENAME).exists()
-        owed_reads, refreshes, mark_reads, index_reads = [], [], [], []
-        monkeypatch.setattr(Store, "sources_ingested_since", lambda *args: owed_reads.append(args))
-        monkeypatch.setattr(
-            "lilbee.app.ingest.forget_missing_from_wiki_index",
-            lambda: index_reads.append(1) or set(),
-        )
-        monkeypatch.setattr("lilbee.wiki.stubs.refresh_stub_index", refreshes.append)
-        real_read = pipeline_mod.wiki_pass_owed_since
-        monkeypatch.setattr(
-            pipeline_mod,
-            "wiki_pass_owed_since",
-            lambda root: mark_reads.append(root.name) or real_read(root),
-        )
+        assert calls["wiki_refreshed"] == 1 and calls["record_wiki_refreshed"] == 1
+        assert (cfg.lancedb_dir / _WIKI_REFRESHED_NAME).is_file()
+
+    async def test_a_refresh_that_fails_records_nothing_and_the_next_sync_owes_it(
+        self, tmp_path, monkeypatch
+    ):
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 4)
+        with monkeypatch.context() as patch:
+            patch.setattr(stubs_mod, "_rebuild", mock.Mock(side_effect=OSError))
+            await library.sync()
+        assert self._listed(library) == []
+        assert self._record(library) is None
+
+        await library.sync()
+
+        assert self._listed(library) == [f"note{n}.txt" for n in range(4)]
+        assert self._record(library) is not None
+
+    @pytest.mark.parametrize("left_by_the_writer", ["no_record", "an_unreadable_record", "a_mark"])
+    async def test_an_index_with_no_record_owes_every_source_and_embeds_none_again(
+        self, tmp_path, left_by_the_writer
+    ):
+        """An index of a lilbee that recorded no checkpoint; one of them left a mark file."""
+        library = Library(tmp_path / "lib", 1)
+        names = library.write_notes("note", 4)
+        await library.sync()
+        assert get_services().embedder.embed_batch.called
+        clean_subjects, clean_tables = self._subjects(library), library.dump()
+        Store(cfg).clear_wiki_mentions()
+        record = cfg.lancedb_dir / _WIKI_REFRESHED_NAME
+        record.unlink()
+        if left_by_the_writer == "an_unreadable_record":
+            record.write_text("2020-01-01T00:00:00+00:00", encoding="utf-8")
+        elif left_by_the_writer == "a_mark":
+            mark = library.root / "wiki_pass_owed"
+            mark.write_text("2020-01-01T00:00:00+00:00", encoding="utf-8")
 
         result = await library.sync()
 
-        assert result.unchanged == 8
-        assert (owed_reads, refreshes) == ([], [])
-        # The parent reads the mark; no worker does.
-        assert mark_reads == ["lib"]
-        # One process names what it removes; the parent of a fan-out reads the index, once.
-        assert len(index_reads) == processes - 1
+        assert result.unchanged == 4
+        assert not get_services().embedder.embed_batch.called
+        assert {row["source"] for row in Store(cfg).wiki_mention_rows()} == set(names)
+        assert self._subjects(library) == clean_subjects
+        assert library.dump() == clean_tables
+        assert self._record(library) is not None
 
-    async def test_a_sync_sets_the_mark_once_however_many_batches_it_plans(
-        self, tmp_path, monkeypatch
-    ):
-        monkeypatch.setattr(pipeline_mod, "_PLAN_SHARD_MIN_FILES", 2)
-        notes = []
-        real_note = pipeline_mod.note_wiki_pass_owed
-        monkeypatch.setattr(
-            pipeline_mod, "note_wiki_pass_owed", lambda root: notes.append(1) or real_note(root)
-        )
+    async def test_a_record_that_stands_keeps_a_sync_from_reading_the_corpus_again(self, tmp_path):
+        """The control of the test above: with its record, the same sync owes nothing."""
         library = Library(tmp_path / "lib", 1)
-        names = library.write_notes("note", 12)
+        library.write_notes("note", 4)
+        await library.sync()
+        Store(cfg).clear_wiki_mentions()
 
         await library.sync()
 
-        assert notes == [1]
-        assert self._listed(library) == sorted(names)
+        assert Store(cfg).wiki_mention_rows() == []
