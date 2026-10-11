@@ -310,15 +310,16 @@ def listed_sources(config: Config) -> set[str]:
     return _sources_of(load_stub_index(config))
 
 
-def _available_extractor(config: Config) -> EntityExtractor | None:
+def _available_extractor(config: Config, *, quiet: bool = False) -> EntityExtractor | None:
     """The extractor *config* names, or None when its backend cannot run.
 
     It extracts at a floor of one: the store keeps every mention, and
     _stubs_from_mention_rows judges the real floor over the corpus-wide aggregate.
+    With *quiet* a backend that cannot run logs nothing.
     """
     pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
     extractor = get_entity_extractor(config.wiki_entity_mode, get_services().provider, pass_config)
-    return extractor if extractor.available() else None
+    return extractor if extractor.available(quiet=quiet) else None
 
 
 def _rebuild(
@@ -416,7 +417,8 @@ def refresh_owed_sources(store: Store, config: Config, named: set[str]) -> set[s
     if covered is not None and covered.version == store.sources_version():
         return set()
     with WIKI_BUILD_LOCK:
-        extractor = _available_extractor(config)
+        # With no file of its own to give, a sync asks quietly whether there is an extractor.
+        extractor = _available_extractor(config, quiet=not named)
         if extractor is None:
             log.log(logging.WARNING if named else logging.DEBUG, _NO_EXTRACTOR)
             return set()

@@ -23,7 +23,7 @@ class LlmTaggedExtractor:
         self._provider = provider
         self._config = config
 
-    def available(self) -> bool:
+    def available(self, *, quiet: bool = False) -> bool:
         return True
 
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:

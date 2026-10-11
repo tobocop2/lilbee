@@ -96,15 +96,17 @@ class TestEmptyAndMissingCases:
 class TestLoadSpacyFallbacks:
     @pytest.fixture(autouse=True)
     def _reset_load_spacy_cache(self):
-        """``_load_spacy`` is ``@functools.cache``d; clear it so each fallback
-        test actually executes the function body instead of returning whatever
-        the first test in this worker happened to cache.
+        """The load and its warning are ``@functools.cache``d; clear them so each
+        fallback test actually executes the function body instead of returning
+        whatever the first test in this worker happened to cache.
         """
         from lilbee.wiki.entity_extractor import ner_concepts
 
-        ner_concepts._load_spacy.cache_clear()
+        ner_concepts._shared_spacy.cache_clear()
+        ner_concepts._warn_disabled.cache_clear()
         yield
-        ner_concepts._load_spacy.cache_clear()
+        ner_concepts._shared_spacy.cache_clear()
+        ner_concepts._warn_disabled.cache_clear()
 
     def test_concepts_module_import_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import builtins
@@ -129,6 +131,59 @@ class TestLoadSpacyFallbacks:
             side_effect=ImportError("model missing"),
         ):
             assert ner_concepts._load_spacy() is None
+
+    def _warnings(self, caplog: pytest.LogCaptureFixture) -> list[str]:
+        return [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+
+    def test_a_missing_model_is_loaded_and_warned_of_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        missing = ImportError("model missing")
+        with (
+            caplog.at_level("WARNING"),
+            patch("lilbee.retrieval.concepts.load_spacy_pipeline", side_effect=missing) as load,
+        ):
+            assert extractor.available() is False
+            assert extractor.extract([_chunk("a.txt", 0, "anything")]) == []
+            assert extractor.available() is False
+        assert load.call_count == 1
+        assert self._warnings(caplog) == ["Entity extraction disabled: spaCy model unavailable"]
+
+    def test_a_missing_concepts_module_is_named_in_the_warning(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        import builtins
+
+        real_import = builtins.__import__
+
+        def boom(name: str, *args: Any, **kwargs: Any) -> Any:
+            if name == "lilbee.retrieval.concepts":
+                raise ImportError("concepts module missing")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", boom)
+        with caplog.at_level("WARNING"):
+            assert NerConceptsExtractor(MagicMock(), cfg).available() is False
+        assert self._warnings(caplog) == ["Entity extraction disabled: lilbee.concepts unavailable"]
+
+    def test_a_quiet_question_logs_nothing_and_leaves_the_warning_to_a_caller_with_work(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        extractor = NerConceptsExtractor(MagicMock(), cfg)
+        missing = ImportError("model missing")
+        with (
+            caplog.at_level("DEBUG"),
+            patch("lilbee.retrieval.concepts.load_spacy_pipeline", side_effect=missing),
+        ):
+            assert extractor.available(quiet=True) is False
+            assert caplog.records == []
+            assert extractor.available() is False
+        assert self._warnings(caplog) == ["Entity extraction disabled: spaCy model unavailable"]
+
+    def test_a_quiet_question_finds_a_model_that_loads(self) -> None:
+        with patch("lilbee.retrieval.concepts.load_spacy_pipeline", return_value=object()):
+            assert NerConceptsExtractor(MagicMock(), cfg).available(quiet=True) is True
 
 
 class TestNerExtraction:
@@ -209,7 +264,7 @@ class TestAvailability:
         )
 
         assert LlmTaggedExtractor(MagicMock(), cfg).available() is True
-        assert NerConceptsPlusLlmTypesExtractor(MagicMock(), cfg).available() is True
+        assert NerConceptsPlusLlmTypesExtractor(MagicMock(), cfg).available(quiet=True) is True
 
 
 class TestDedupAndAggregation:

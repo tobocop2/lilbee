@@ -29,6 +29,7 @@ from lilbee.data.store.core import _WIKI_REFRESHED_NAME
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.lock import SyncRunningError, source_keys_in_use, sync_running
 from lilbee.wiki import stubs as stubs_mod
+from lilbee.wiki.entity_extractor import get_entity_extractor, ner_concepts
 from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.stubs import load_stub_index
 from tests._fanout_library import Library, services_for
@@ -1035,6 +1036,20 @@ def _subjects_of(chunks):
     return [shared, *own]
 
 
+_NO_EXTRACTOR_LINES = [
+    "Entity extraction disabled: spaCy model unavailable",
+    "Wiki entity extractor unavailable; leaving the stub index unchanged",
+]
+
+
+def _forget_the_loaded_pipeline() -> None:
+    """Forget what the extractor module keeps for the life of a process, as a new process does."""
+    kept = [value for value in vars(ner_concepts).values() if hasattr(value, "cache_clear")]
+    assert kept, "the extractor module caches nothing, so nothing was forgotten"
+    for function in kept:
+        function.cache_clear()
+
+
 class TestTheWikiIndex:
     """The browse index of the wiki after a fan-out sync lists what a one-process sync lists."""
 
@@ -1555,6 +1570,51 @@ class TestTheWikiIndex:
         else:
             assert seen == {"wiki_refreshed": 2}
         assert bool(rebuilds) is available
+
+    @pytest.fixture
+    def no_spacy_model(self, monkeypatch):
+        """The extractor factory of the product on an install with no spaCy model."""
+        monkeypatch.setattr(stubs_mod, "get_entity_extractor", get_entity_extractor)
+        monkeypatch.setattr(
+            "lilbee.retrieval.concepts.load_spacy_pipeline",
+            mock.Mock(side_effect=ImportError("no model")),
+        )
+        _forget_the_loaded_pipeline()
+        yield
+        _forget_the_loaded_pipeline()
+
+    def _warnings(self, caplog) -> list[str]:
+        """Each line the wiki logged at warning level or above."""
+        return [
+            record.getMessage()
+            for record in caplog.records
+            if record.levelno >= logging.WARNING and record.name.startswith("lilbee.wiki")
+        ]
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_with_no_spacy_model_only_a_sync_with_files_for_the_wiki_warns(
+        self, tmp_path, caplog, no_spacy_model, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        with caplog.at_level(logging.WARNING):
+            await library.sync()
+            assert self._warnings(caplog) == _NO_EXTRACTOR_LINES
+            assert self._listed(library) == []
+            # Each sync of the command line is a new process.
+            _forget_the_loaded_pipeline()
+            caplog.clear()
+
+            result = await library.sync()
+
+            assert result.unchanged == 4
+            assert self._warnings(caplog) == []
+
+            # The same process then syncs a new file: it has not said so yet.
+            library.write("one-more.txt", "One more file.")
+            await library.sync()
+            assert self._warnings(caplog) == _NO_EXTRACTOR_LINES
+        assert self._listed(library) == []
 
     @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
     async def test_with_the_wiki_off_a_sync_reads_and_writes_nothing_for_the_wiki(

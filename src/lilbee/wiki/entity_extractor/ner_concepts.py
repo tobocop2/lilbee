@@ -11,7 +11,7 @@ import functools
 import logging
 import re
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from lilbee.core.text import collapse_whitespace, is_valid_label, make_slug, strip_possessive
 from lilbee.wiki.entity_extractor.base import (
@@ -70,9 +70,9 @@ class NerConceptsExtractor:
         self._provider = provider
         self._config = config
 
-    def available(self) -> bool:
+    def available(self, *, quiet: bool = False) -> bool:
         """True when the spaCy pipeline is loadable. Cached, so this is cheap."""
-        return _load_spacy() is not None
+        return (_shared_spacy().pipeline if quiet else _load_spacy()) is not None
 
     def extract(self, chunks: list[SearchChunk]) -> list[ExtractedEntity]:
         if not chunks:
@@ -220,21 +220,39 @@ A spaCy Language is not safe for concurrent processing; every extract() call
 runs ``nlp.pipe`` on the same cached instance, so the daemon serializes them."""
 
 
-@functools.cache
-def _load_spacy() -> Any | None:
-    """Load the shared spaCy pipeline, or return None if unavailable.
+class _Spacy(NamedTuple):
+    """The shared spaCy pipeline, or the name of what its load could not import."""
 
-    Cached so the "spaCy unavailable" warning fires at most once per process.
-    Without the cache, every chunk-extract call repeats the warning; on a
-    corpus with 1 000 chunks the user got 1 000 identical lines.
-    """
+    pipeline: Any | None
+    missing: str = ""
+
+
+@functools.cache
+def _shared_spacy() -> _Spacy:
+    """Load the shared spaCy pipeline once for the process. Logs nothing."""
     try:
         from lilbee.retrieval.concepts import load_spacy_pipeline
     except ImportError:
-        log.warning("Entity extraction disabled: lilbee.concepts unavailable")
-        return None
+        return _Spacy(None, "lilbee.concepts")
     try:
-        return load_spacy_pipeline()
+        return _Spacy(load_spacy_pipeline())
     except ImportError:
-        log.warning("Entity extraction disabled: spaCy model unavailable")
-        return None
+        return _Spacy(None, "spaCy model")
+
+
+@functools.cache
+def _warn_disabled(missing: str) -> None:
+    """Warn that extraction is disabled for want of *missing*, once for each process.
+
+    Without the cache every chunk-extract call repeats the warning: 1 000
+    identical lines on a corpus of 1 000 chunks.
+    """
+    log.warning("Entity extraction disabled: %s unavailable", missing)
+
+
+def _load_spacy() -> Any | None:
+    """The shared spaCy pipeline, or None with the warning when it is unavailable."""
+    loaded = _shared_spacy()
+    if loaded.pipeline is None:
+        _warn_disabled(loaded.missing)
+    return loaded.pipeline
