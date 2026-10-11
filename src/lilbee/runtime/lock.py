@@ -12,6 +12,7 @@ import errno
 import json
 import logging
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -65,7 +66,10 @@ _DATA_ROOT_UNLOCKABLE = (
 _NO_LOCKING = (
     "{path} is on a filesystem that does not support file locking. Move it to a local disk."
 )
-_NO_HARD_LINKS = "its filesystem does not support hard links; move it to a disk formatted as APFS"
+_NO_HARD_LINKS = "its filesystem does not support hard links; move it to {disk}"
+_LOCAL_DISK = "a local disk"
+# The disk to move to, by sys.platform; every other platform gets _LOCAL_DISK.
+_HARD_LINK_DISKS = {"darwin": "a disk formatted as APFS"}
 _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
@@ -194,12 +198,18 @@ def _require_locking(data_root: Path) -> None:
     except FileLockTimeout:
         raise LockingUnsupportedError(_NO_LOCKING.format(path=data_root)) from None
     except OSError as exc:
-        # link(2) on macOS, where the lock opens its file by hard link.
-        if exc.errno != errno.ENOTSUP:
+        if not _hard_link_refused(exc):
             raise
-        raise OSError(_NO_HARD_LINKS) from exc
+        disk = _HARD_LINK_DISKS.get(sys.platform, _LOCAL_DISK)
+        raise OSError(_NO_HARD_LINKS.format(disk=disk)) from exc
     finally:
         _remove_probe(probe_path)
+
+
+def _hard_link_refused(error: OSError) -> bool:
+    """True when *error* is the lock's hard link, refused by a filesystem that has none."""
+    # Only a call on two paths sets filename2, and the link is the lock's only such call.
+    return error.errno == errno.ENOTSUP and error.filename2 is not None
 
 
 @contextmanager

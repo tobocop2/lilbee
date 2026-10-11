@@ -249,7 +249,12 @@ class TestScopeLock:
 
 
 _SQLITE_HEADER = b"SQLite format 3\x00"
-_NO_HARD_LINKS = "its filesystem does not support hard links; move it to a disk formatted as APFS"
+_NO_HARD_LINKS = "its filesystem does not support hard links"
+_APFS_ADVICE = f"{_NO_HARD_LINKS}; move it to a disk formatted as APFS"
+_LOCAL_DISK_ADVICE = f"{_NO_HARD_LINKS}; move it to a local disk"
+_LINK_REFUSED = OSError(errno.ENOTSUP, "Operation not supported", "sync.probe", None, "lock.db")
+_OPEN_REFUSED = OSError(errno.ENOTSUP, "Operation not supported", "sync.probe")
+_READ_ONLY = OSError(errno.EROFS, "Read-only file system")
 
 
 _RESET_IN_ANOTHER_PROCESS = """
@@ -644,7 +649,7 @@ class TestSyncMark:
         )
         assert _lock_warnings(caplog) == 1
 
-    @pytest.mark.skipif(sys.platform != "darwin", reason="only macOS opens the lock by hard link")
+    @pytest.mark.skipif(sys.platform != "darwin", reason="a failed hard link stops only macOS")
     async def test_a_macos_disk_without_hard_links_runs_a_sync_and_refuses_a_reset(
         self, tmp_path: Path, caplog
     ) -> None:
@@ -664,23 +669,27 @@ class TestSyncMark:
         assert ran == ["sync"]
         assert str(caught.value) == (
             f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
-            f"({_NO_HARD_LINKS})."
+            f"({_APFS_ADVICE})."
         )
         assert [r.getMessage() for r in caplog.records if r.name == "lilbee.runtime.lock"] == [
-            f"Cannot lock {tmp_path} ({_NO_HARD_LINKS}); a reset refuses until it can."
+            f"Cannot lock {tmp_path} ({_APFS_ADVICE}); a reset refuses until it can."
         ]
         assert [path.name for path in tmp_path.iterdir()] == [cfg.lancedb_dir.name]
 
     @pytest.mark.parametrize(
-        ("refusal", "reported"),
+        ("refusal", "platform", "reported"),
         [
-            (OSError(errno.ENOTSUP, "Operation not supported"), _NO_HARD_LINKS),
-            (OSError(errno.EROFS, "Read-only file system"), "[Errno 30] Read-only file system"),
+            pytest.param(_LINK_REFUSED, "darwin", _APFS_ADVICE, id="link-on-macos"),
+            pytest.param(_LINK_REFUSED, "linux", _LOCAL_DISK_ADVICE, id="link-on-linux"),
+            pytest.param(_OPEN_REFUSED, "darwin", str(_OPEN_REFUSED), id="open-not-supported"),
+            pytest.param(_READ_ONLY, "darwin", "[Errno 30] Read-only file system", id="read-only"),
         ],
     )
     async def test_a_probe_that_cannot_be_opened_is_deleted_and_reported(
-        self, tmp_path: Path, caplog, refusal: OSError, reported: str
+        self, tmp_path: Path, caplog, monkeypatch, refusal: OSError, platform: str, reported: str
     ) -> None:
+        monkeypatch.setattr(sys, "platform", platform)
+
         def _created_then_refused(path: Path, *_args, **_kwargs) -> ReadWriteLock:
             Path(path).touch()
             raise refusal
