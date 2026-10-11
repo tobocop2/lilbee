@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
+from unittest import mock
 
 import pytest
+from filelock import ReadWriteLock
 
 from lilbee.runtime import asyncio_loop
+from lilbee.runtime.lock import ResetRefusedError, no_sync_running, sync_running
+from tests.conftest import reset_held_on_a_thread
 
 
 @pytest.fixture(autouse=True)
@@ -129,6 +134,35 @@ def test_shutdown_cancels_pending_tasks() -> None:
 
     asyncio_loop.shutdown()
     assert was_cancelled.is_set()
+
+
+def test_shutdown_does_not_wait_for_the_reset_a_sync_waits_for(tmp_path: Path) -> None:
+    waiting = threading.Event()
+    real_acquire = ReadWriteLock.acquire_read
+
+    def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+        waiting.set()
+        real_acquire(lock, *args, **kwargs)
+
+    async def _sync() -> None:
+        async with sync_running(tmp_path):
+            pass
+
+    with (
+        reset_held_on_a_thread(tmp_path),
+        mock.patch.object(ReadWriteLock, "acquire_read", _acquire),
+    ):
+        sync = asyncio.run_coroutine_threadsafe(_sync(), asyncio_loop.get_loop())
+        assert waiting.wait(5)
+        asyncio_loop.shutdown(drain_budget_s=2.0)
+        sync_ended = sync.cancelled()
+        with (
+            pytest.raises(ResetRefusedError, match="is running on this library"),
+            no_sync_running(tmp_path),
+        ):
+            pass
+
+    assert sync_ended, "the shutdown gave up on a sync that waited for the reset"
 
 
 def test_run_from_multiple_threads() -> None:

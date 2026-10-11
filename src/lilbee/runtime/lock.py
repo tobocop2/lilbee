@@ -49,6 +49,8 @@ _SYNC_LOCK_NAME = "sync.lock"
 _SYNC_PROBE_PREFIX = "sync.probe."
 # How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
 _PROBE_WAIT_S = 0.3
+# Longest single wait for a reset to finish; a cancelled sync returns within it.
+_SYNC_TAKE_SLICE_S = 0.1
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
 # database, or a mount that refuses its locks). A busy lock arrives as filelock's
@@ -240,6 +242,22 @@ def _sync_lock_unavailable(
     log.warning(_SYNC_LOCK_REFUSED, path, error)
 
 
+async def _take_sync_lock(lock: AsyncReadWriteLock) -> None:
+    """Take the read side of *lock*, waiting for a reset in slices a cancel can end."""
+    while True:
+        try:
+            await lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
+        except _SYNC_LOCK_ERRORS as exc:
+            # filelock raises a failed take in place of the cancel that interrupted it.
+            if isinstance(exc.__context__, asyncio.CancelledError):
+                raise exc.__context__ from None
+            # Only a busy lock is waited out.
+            if not isinstance(exc, FileLockTimeout):
+                raise
+        else:
+            return
+
+
 @asynccontextmanager
 async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
@@ -253,7 +271,7 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
         return
     try:
         try:
-            await lock.acquire_read()
+            await _take_sync_lock(lock)
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, write=False)
         yield

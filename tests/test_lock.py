@@ -5,10 +5,14 @@ import errno
 import logging
 import os
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
+from collections.abc import Generator
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -29,6 +33,7 @@ from lilbee.runtime.lock import (
     sync_running,
     write_lock,
 )
+from tests.conftest import reset_held_on_a_thread
 
 
 @pytest.fixture(autouse=True)
@@ -267,6 +272,17 @@ try:
 except ResetRefusedError:
     sys.exit(3)
 """
+_RESET_HOLDS = "reset holds"
+_HELD_RESET_IN_ANOTHER_PROCESS = f"""
+import sys
+from pathlib import Path
+from lilbee.runtime.lock import no_sync_running
+with no_sync_running(Path(sys.argv[1])):
+    print("{_RESET_HOLDS}", flush=True)
+    sys.stdin.read()
+"""
+# A cancelled sync returns within this many seconds, however long the reset lasts.
+_CANCEL_BOUND_S = 0.5
 
 
 @pytest.fixture
@@ -299,6 +315,24 @@ def no_lock_daemon_for_file_locks():
         yield
 
 
+@contextmanager
+def _reset_held_in_another_process(data_root: Path) -> Generator[None, None, None]:
+    """Hold a reset on *data_root* in a child process until the block ends."""
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HELD_RESET_IN_ANOTHER_PROCESS, str(data_root)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+    try:
+        assert holder.stdout is not None
+        assert any(_RESET_HOLDS in line for line in holder.stdout)
+        yield
+    finally:
+        holder.communicate(timeout=30)
+
+
 def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
@@ -322,49 +356,112 @@ class TestSyncMark:
         with no_sync_running(tmp_path):
             pass
 
-    async def test_a_sync_cancelled_while_it_waits_returns_with_its_take_undone(
-        self, tmp_path: Path
+    @pytest.mark.parametrize("reset_held", [reset_held_on_a_thread, _reset_held_in_another_process])
+    async def test_a_sync_cancelled_while_it_waits_returns_while_the_reset_still_holds(
+        self, tmp_path: Path, reset_held
     ) -> None:
-        takes: list[str] = []
+        waits: list[float] = []
         real_acquire = ReadWriteLock.acquire_read
 
-        def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
-            takes.append("started")
-            real_acquire(lock, *args, **kwargs)
-            takes.append("ended")
+        def _acquire(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> None:
+            waits.append(timeout)
+            real_acquire(lock, timeout, blocking=blocking)
 
-        held = threading.Event()
-        release = threading.Event()
-
-        def _reset() -> None:
-            with no_sync_running(tmp_path):
-                held.set()
-                release.wait(5)
+        entered = []
 
         async def _sync() -> None:
             async with sync_running(tmp_path):
-                takes.append("entered")
+                entered.append("sync")
 
         async def _take_started() -> None:
-            while not takes:
+            while not waits:
                 await asyncio.sleep(0.01)
 
-        resetter = threading.Thread(target=_reset)
-        resetter.start()
-        assert held.wait(5)
-        with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+        before = set(threading.enumerate())
+        with reset_held(tmp_path), mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
             sync_task = asyncio.create_task(_sync())
             await asyncio.wait_for(_take_started(), 5)
             sync_task.cancel()
-            asyncio.get_running_loop().call_later(0.2, release.set)
-            with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(sync_task, 5)
-            takes_when_the_sync_returned = list(takes)
-        resetter.join(timeout=5)
+            await asyncio.wait({sync_task}, timeout=2)
+            returned = sync_task.done()
+            with (
+                pytest.raises(ResetRefusedError, match="is running on this library"),
+                no_sync_running(tmp_path),
+            ):
+                pass
 
-        assert takes_when_the_sync_returned == ["started", "ended"]
+        assert returned, "one cancel did not end the wait for the reset"
+        assert sync_task.cancelled()
+        assert entered == []
+        assert waits
+        assert all(0 < wait <= _CANCEL_BOUND_S / 2 for wait in waits), waits
+        assert _threads_left_since(before) == []
         with no_sync_running(tmp_path):
             pass
+
+    async def test_a_sync_cancelled_as_its_take_succeeds_frees_the_mark(
+        self, tmp_path: Path
+    ) -> None:
+        still_referenced: list[ReadWriteLock] = []
+        taken = threading.Event()
+        proceed = threading.Event()
+        real_acquire = ReadWriteLock.acquire_read
+
+        def _acquire(lock: ReadWriteLock, *args, **kwargs) -> None:
+            still_referenced.append(lock)
+            real_acquire(lock, *args, **kwargs)
+            taken.set()
+            proceed.wait(5)
+
+        entered = []
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
+                entered.append("sync")
+
+        with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+            sync_task = asyncio.create_task(_sync())
+            assert await asyncio.to_thread(taken.wait, 5)
+            sync_task.cancel()
+            asyncio.get_running_loop().call_later(0.05, proceed.set)
+            await asyncio.wait({sync_task}, timeout=5)
+
+        assert sync_task.cancelled()
+        assert entered == []
+        assert len(still_referenced) == 1
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_sync_cancelled_as_its_take_fails_does_not_run(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        taking = threading.Event()
+        proceed = threading.Event()
+
+        def _refused(lock: ReadWriteLock, *args, **kwargs) -> None:
+            taking.set()
+            proceed.wait(5)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        entered = []
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
+                entered.append("sync")
+
+        with (
+            mock.patch.object(ReadWriteLock, "acquire_read", _refused),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            sync_task = asyncio.create_task(_sync())
+            assert await asyncio.to_thread(taking.wait, 5)
+            sync_task.cancel()
+            asyncio.get_running_loop().call_later(0.05, proceed.set)
+            await asyncio.wait({sync_task}, timeout=5)
+
+        assert sync_task.cancelled()
+        assert entered == []
+        assert _lock_warnings(caplog) == 0
 
     async def test_a_sync_leaves_no_thread_behind(self, tmp_path: Path) -> None:
         before = set(threading.enumerate())
@@ -688,7 +785,7 @@ class TestSyncMark:
     async def test_a_probe_that_cannot_be_opened_is_deleted_and_reported(
         self, tmp_path: Path, caplog, monkeypatch, refusal: OSError, platform: str, reported: str
     ) -> None:
-        monkeypatch.setattr(sys, "platform", platform)
+        monkeypatch.setattr("lilbee.runtime.lock.sys", SimpleNamespace(platform=platform))
 
         def _created_then_refused(path: Path, *_args, **_kwargs) -> ReadWriteLock:
             Path(path).touch()
