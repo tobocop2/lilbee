@@ -23,6 +23,7 @@ from lilbee.core.config import cfg
 from lilbee.data.types import is_under
 
 from .entity_extractor import EntityKind, get_entity_extractor
+from .entity_extractor.factory import effective_entity_mode
 from .generation import _corpus_chunks
 from .shared import (
     WIKI_BUILD_LOCK,
@@ -55,6 +56,8 @@ STUB_INDEX_FILENAME = "stubs.json"
 # an older file reads as absent so the first refresh rebuilds in full and seeds
 # the table.
 _INDEX_VERSION = 3
+
+_NO_EXTRACTOR = "Wiki entity extractor unavailable; leaving the stub index unchanged"
 
 
 @dataclass(frozen=True)
@@ -298,9 +301,63 @@ def _write_source_mentions(
     return affected
 
 
+def _sources_of(stubs: dict[str, WikiStub]) -> set[str]:
+    """Every source *stubs* list under a subject."""
+    return {source for stub in stubs.values() for source in stub.sources}
+
+
 def listed_sources(config: Config) -> set[str]:
     """Every source the index lists under a subject."""
-    return {source for stub in load_stub_index(config).values() for source in stub.sources}
+    return _sources_of(load_stub_index(config))
+
+
+def _extractor_can_run(config: Config) -> bool:
+    """Whether the backend of the extractor *config* names can run. Logs nothing.
+
+    It asks for the mode that runs, so the factory has no other mode to report.
+    """
+    mode = effective_entity_mode(config.wiki_entity_mode)
+    return get_entity_extractor(mode, get_services().provider, config).available(quiet=True)
+
+
+def _available_extractor(config: Config) -> EntityExtractor | None:
+    """The extractor *config* names, or None when its backend cannot run.
+
+    It extracts at a floor of one: the store keeps every mention, and
+    _stubs_from_mention_rows judges the real floor over the corpus-wide aggregate.
+    """
+    pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
+    extractor = get_entity_extractor(config.wiki_entity_mode, get_services().provider, pass_config)
+    return extractor if extractor.available() else None
+
+
+def _rebuild(
+    store: Store, config: Config, extractor: EntityExtractor, sources: set[str] | None
+) -> dict[str, WikiStub]:
+    """Extract *sources*, or the whole corpus for None, and persist the index.
+
+    Caller holds ``WIKI_BUILD_LOCK``.
+    """
+    cap = config.wiki_stub_max_chunk_refs
+    # A cold or file-only-migrated store has no rows to aggregate, so an
+    # incremental pass would derive an empty index. Rebuild in full to seed
+    # the table; incremental passes maintain it from there.
+    if sources is None or not store.has_wiki_mentions():
+        store.clear_wiki_mentions()
+        all_sources = {record["filename"] for record in store.get_sources()}
+        _write_source_mentions(store, extractor, _corpus_chunks(store), all_sources, cap)
+        stubs = _stubs_from_mention_rows(store.wiki_mention_rows(), config, cap)
+    else:
+        previous = load_stub_index(config)
+        chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
+        affected = _write_source_mentions(store, extractor, chunks, sources, cap)
+        affected |= {slug for slug, stub in previous.items() if set(stub.sources) & sources}
+        recomputed = _stubs_from_mention_rows(store.wiki_mention_rows(slugs=affected), config, cap)
+        stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}
+        stubs.update(recomputed)
+    save_stub_index(stubs, config)
+    log.info("Wiki stub index: %d entities across the corpus", len(stubs))
+    return stubs
 
 
 def refresh_stub_index(
@@ -323,43 +380,89 @@ def refresh_stub_index(
     """
     if config is None:
         config = cfg
-    cap = config.wiki_stub_max_chunk_refs
     with WIKI_BUILD_LOCK:
-        # Floor forced to one for extraction: the store keeps every mention so
-        # the corpus-wide floor can be judged over the aggregate rather than one
-        # sync's slice. _stubs_from_mention_rows applies the real floor.
-        pass_config = config.model_copy(update={"wiki_entity_min_mentions": 1})
-        extractor = get_entity_extractor(
-            config.wiki_entity_mode, get_services().provider, pass_config
-        )
-        if not extractor.available():
+        extractor = _available_extractor(config)
+        if extractor is None:
             # An unavailable backend extracts nothing, which is indistinguishable
             # from a corpus that names nothing. Rebuilding on that would drop the
             # whole index; leave both the store and the file untouched.
-            log.warning("Wiki entity extractor unavailable; leaving the stub index unchanged")
+            log.warning(_NO_EXTRACTOR)
             return load_stub_index(config)
+        return _rebuild(store, config, extractor, sources)
 
-        # A cold or file-only-migrated store has no rows to aggregate, so an
-        # incremental pass would derive an empty index. Rebuild in full to seed
-        # the table; incremental passes maintain it from there.
-        if sources is None or not store.has_wiki_mentions():
-            store.clear_wiki_mentions()
-            all_sources = {record["filename"] for record in store.get_sources()}
-            _write_source_mentions(store, extractor, _corpus_chunks(store), all_sources, cap)
-            stubs = _stubs_from_mention_rows(store.wiki_mention_rows(), config, cap)
-        else:
-            previous = load_stub_index(config)
-            chunks = [c for name in sorted(sources) for c in store.get_chunks_by_source(name)]
-            affected = _write_source_mentions(store, extractor, chunks, sources, cap)
-            affected |= {slug for slug, stub in previous.items() if set(stub.sources) & sources}
-            recomputed = _stubs_from_mention_rows(
-                store.wiki_mention_rows(slugs=affected), config, cap
-            )
-            stubs = {slug: stub for slug, stub in previous.items() if slug not in affected}
-            stubs.update(recomputed)
-        save_stub_index(stubs, config)
-    log.info("Wiki stub index: %d entities across the corpus", len(stubs))
-    return stubs
+
+def _rekeyed_from(store: Store, stubs: dict[str, WikiStub], missing: set[str]) -> set[str]:
+    """The sources a re-key put in the place of *missing* names *stubs* list.
+
+    A re-key moves the mention rows to the new key, so they name a source that
+    the subjects of the old key do not list.
+    """
+    slugs = {slug for slug, stub in stubs.items() if set(stub.sources) & missing}
+    return {row["source"] for row in store.wiki_mention_rows(slugs=slugs)} - _sources_of(stubs)
+
+
+def _owed_sources(store: Store, config: Config, since: str) -> set[str]:
+    """What a refresh owes the index beside the sources its caller names.
+
+    Each source written at or after *since*, each source the index lists that
+    left the store, and each source a re-key put in the place of one of those.
+    """
+    stubs = load_stub_index(config)
+    missing = store.missing_sources(_sources_of(stubs))
+    written = set(store.sources_ingested_since(since))
+    return written | missing | _rekeyed_from(store, stubs, missing)
+
+
+def _extractor_for_the_pass(config: Config, named: set[str]) -> EntityExtractor | None:
+    """The extractor of a pass with something to give, or None with a line only for *named*."""
+    # With no file of its own to give, a sync first asks whether an extractor can run.
+    if not named and not _extractor_can_run(config):
+        log.debug(_NO_EXTRACTOR)
+        return None
+    extractor = _available_extractor(config)
+    if extractor is None:
+        log.warning(_NO_EXTRACTOR)
+    return extractor
+
+
+def _refresh_corpus(store: Store, config: Config, named: set[str]) -> None:
+    """Give the index the whole corpus: no record covers any source row."""
+    extractor = _extractor_for_the_pass(config, named)
+    if extractor is None:
+        return
+    checkpoint = store.sources_checkpoint()
+    _rebuild(store, config, extractor, None)
+    store.record_wiki_refreshed(checkpoint)
+
+
+def refresh_owed_sources(store: Store, config: Config, named: set[str]) -> set[str]:
+    """Give the index *named* and every source the store holds that no refresh has read.
+
+    The store records the checkpoint of the last refresh that completed. With
+    the source table at that version nothing is owed and nothing is read. With
+    the version moved and no row stamped since, nothing is given and no
+    extractor is built or asked: the refresh records the new version. With no
+    record the whole corpus is owed. A refresh with no extractor records
+    nothing, so the sources stay owed. Returns the sources it gave the index,
+    none for the whole corpus.
+    """
+    covered = store.wiki_refreshed()
+    if covered is not None and covered.version == store.sources_version():
+        return set()
+    with WIKI_BUILD_LOCK:
+        if covered is None:
+            _refresh_corpus(store, config, named)
+            return set()
+        # Before the read of the owed rows: a row committed after it is owed to the next refresh.
+        checkpoint = store.sources_checkpoint()
+        owed = _owed_sources(store, config, covered.time) | named
+        if owed:
+            extractor = _extractor_for_the_pass(config, named)
+            if extractor is None:
+                return set()
+            _rebuild(store, config, extractor, owed)
+        store.record_wiki_refreshed(checkpoint)
+    return owed
 
 
 def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
@@ -409,6 +512,19 @@ def drop_sources_from_index(names: set[str], config: Config | None = None) -> No
         stubs.update(recomputed)
         if stubs != previous:
             save_stub_index(stubs, config)
+
+
+def drop_removed_sources(store: Store, config: Config) -> None:
+    """Drop each source the index lists that left the store, unless one of them was re-keyed.
+
+    The old key the index lists is how a refresh finds a re-keyed source, so
+    with one the index stays as it is for that refresh.
+    """
+    with WIKI_BUILD_LOCK:
+        stubs = load_stub_index(config)
+        missing = store.missing_sources(_sources_of(stubs))
+        if missing and not _rekeyed_from(store, stubs, missing):
+            drop_sources_from_index(missing, config)
 
 
 def refresh_sources_under(keys: Iterable[str], config: Config) -> None:

@@ -3,19 +3,25 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from lilbee.core.config import cfg
+from lilbee.data.store import SourcesCheckpoint
 from lilbee.wiki.entity_extractor import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.shared import WikiSubdir
 from lilbee.wiki.stubs import (
     WikiStub,
+    _owed_sources,
     _recut_refs,
+    _rekeyed_from,
+    drop_removed_sources,
     drop_sources_from_index,
     load_stub_index,
+    refresh_owed_sources,
     refresh_stub_index,
     save_stub_index,
     stub_index_path,
@@ -592,3 +598,256 @@ class TestUngeneratedStubs:
         published.write_text("# Ford\n", encoding="utf-8")
         stubs = {"ford": _stub("ford"), "gm": _stub("gm")}
         assert [s.slug for s in ungenerated_stubs(stubs, wiki_root)] == ["gm"]
+
+
+class _SourceTableStore(_FakeStore):
+    """A _FakeStore with what a refresh reads of the source table, and a log of those reads."""
+
+    def __init__(self, chunks_by_source: dict[str, list], *, version: int = 1):
+        super().__init__(chunks_by_source)
+        self.version = version
+        self.written: list[str] = []
+        self.record: SourcesCheckpoint | None = None
+        self.reads: list[str] = []
+
+    def wiki_refreshed(self):
+        return self.record
+
+    def record_wiki_refreshed(self, checkpoint):
+        self.record = checkpoint
+
+    def sources_version(self):
+        return self.version
+
+    def get_sources(self):
+        self.reads.append("corpus")
+        return super().get_sources()
+
+    def sources_checkpoint(self):
+        self.reads.append("checkpoint")
+        return SourcesCheckpoint(f"time-{self.version}", self.version)
+
+    def sources_ingested_since(self, since):
+        self.reads.append(f"rows since {since}")
+        return list(self.written)
+
+    def missing_sources(self, names):
+        return {name for name in names if name not in self._chunks}
+
+
+def _mention(slug: str, source: str) -> dict:
+    """One mention row of the store: *source* names *slug* once."""
+    return {
+        "slug": slug,
+        "label": slug,
+        "kind": EntityKind.ENTITY.value,
+        "type_hint": "ORG",
+        "source": source,
+        "mention_count": 1,
+        "chunk_indices": [0],
+    }
+
+
+def _renamed_library() -> tuple[_SourceTableStore, dict[str, WikiStub]]:
+    """An index that lists old.md, which left the store, beside a store that holds new.md.
+
+    The mention rows of old.md moved to new.md. The index lists kept.md under
+    both subjects, and elsewhere.md under none.
+    """
+    stubs = {
+        "acme": _stub("acme", sources=("kept.md", "old.md")),
+        "globex": _stub("globex", sources=("kept.md",)),
+    }
+    save_stub_index(stubs)
+    store = _SourceTableStore({"kept.md": [], "new.md": [], "elsewhere.md": [], "fresh.md": []})
+    store._mentions = {
+        "kept.md": [_mention("acme", "kept.md"), _mention("globex", "kept.md")],
+        "new.md": [_mention("acme", "new.md")],
+        "elsewhere.md": [_mention("globex", "elsewhere.md")],
+    }
+    return store, stubs
+
+
+class TestRekeyedFrom:
+    def test_it_names_the_source_that_holds_the_mention_rows_of_a_missing_one(self):
+        """Not kept.md, which the index lists, and not elsewhere.md, whose subject lost nothing."""
+        store, stubs = _renamed_library()
+        assert _rekeyed_from(store, stubs, {"old.md"}) == {"new.md"}
+
+    def test_with_no_missing_source_it_names_none(self):
+        store, stubs = _renamed_library()
+        assert _rekeyed_from(store, stubs, set()) == set()
+
+
+class TestOwedSources:
+    def test_it_owes_what_was_written_what_left_the_store_and_what_took_its_place(self):
+        store, _stubs = _renamed_library()
+        store.written = ["fresh.md"]
+
+        assert _owed_sources(store, cfg, "time-1") == {"fresh.md", "old.md", "new.md"}
+        assert store.reads == ["rows since time-1"]
+
+    def test_with_every_listed_source_in_the_store_it_owes_the_written_rows_alone(self):
+        save_stub_index({"acme": _stub("acme", sources=("kept.md",))})
+        store = _SourceTableStore({"kept.md": [], "fresh.md": []})
+        store._mentions = {"kept.md": [_mention("acme", "kept.md")]}
+        store.written = ["fresh.md"]
+
+        assert _owed_sources(store, cfg, "time-1") == {"fresh.md"}
+
+
+class TestRefreshOwedSources:
+    @pytest.fixture(autouse=True)
+    def floor_of_one(self):
+        cfg.wiki_entity_min_mentions = 1
+
+    def _refresh(self, store, entities, named=(), *, available: bool = True):
+        """Run the refresh over *entities*; returns what it gave the index and the extractor."""
+
+        def _extract(chunks):
+            served = {chunk.source for chunk in chunks}
+            return [e for e in entities if any(r.source in served for r in e.chunk_refs)]
+
+        extractor = MagicMock()
+        extractor.available.return_value = available
+        extractor.extract.side_effect = _extract
+        for entity in entities:
+            for ref in entity.chunk_refs:
+                store._chunks.setdefault(ref.source, [MagicMock(source=ref.source)])
+        with (
+            patch("lilbee.wiki.stubs.get_entity_extractor", return_value=extractor),
+            patch("lilbee.wiki.stubs.get_services"),
+        ):
+            return refresh_owed_sources(store, cfg, set(named)), extractor
+
+    def _refreshed_once(self) -> tuple[_SourceTableStore, list[ExtractedEntity]]:
+        """A store at version 1 whose one source the index lists, with the record of that."""
+        store = _SourceTableStore({}, version=1)
+        entities = [_entity("ford", [("a.md", 0)])]
+        self._refresh(store, entities)
+        store.reads.clear()
+        return store, entities
+
+    def test_with_no_record_it_gives_the_whole_corpus_and_records_its_checkpoint(self):
+        store = _SourceTableStore({}, version=4)
+        entities = [_entity("ford", [("a.md", 0)]), _entity("gm", [("b.md", 0)])]
+
+        given, _extractor = self._refresh(store, entities, named={"a.md"})
+
+        assert given == set()
+        assert sorted(load_stub_index()) == ["ford", "gm"]
+        assert store.record == SourcesCheckpoint("time-4", 4)
+        # The checkpoint first: a row written during the read is then owed to the next refresh.
+        assert store.reads[0] == "checkpoint"
+        assert set(store.reads[1:]) == {"corpus"}
+
+    def test_at_the_recorded_version_it_reads_nothing_and_asks_for_no_extractor(self):
+        store, entities = self._refreshed_once()
+        store.written = ["b.md"]
+
+        given, extractor = self._refresh(store, [*entities, _entity("gm", [("b.md", 0)])])
+
+        assert given == set()
+        assert store.reads == []
+        extractor.available.assert_not_called()
+        assert sorted(load_stub_index()) == ["ford"]
+
+    def test_past_the_recorded_version_it_gives_the_rows_written_since_and_the_named(self):
+        store, entities = self._refreshed_once()
+        entities += [_entity("gm", [("b.md", 0)]), _entity("tesla", [("c.md", 0)])]
+        store.version, store.written = 2, ["b.md"]
+
+        given, _extractor = self._refresh(store, entities, named={"c.md"})
+
+        assert given == {"b.md", "c.md"}
+        assert sorted(load_stub_index()) == ["ford", "gm", "tesla"]
+        assert store.record == SourcesCheckpoint("time-2", 2)
+        # The checkpoint first: a row written after the read is then owed to the next refresh.
+        assert store.reads == ["checkpoint", "rows since time-1"]
+
+    @pytest.mark.parametrize("available", [True, False], ids=["extractor", "no-extractor"])
+    def test_with_nothing_owed_it_asks_no_extractor_and_records_the_new_version(self, available):
+        """A moved version with no row stamped since: a rewritten row of an unchanged file."""
+        store, entities = self._refreshed_once()
+        store.version = 2
+
+        given, extractor = self._refresh(store, entities, available=available)
+
+        assert given == set()
+        extractor.available.assert_not_called()
+        extractor.extract.assert_not_called()
+        assert store.record == SourcesCheckpoint("time-2", 2)
+        assert store.reads == ["checkpoint", "rows since time-1"]
+
+    @pytest.mark.parametrize("named", [set(), {"b.md"}], ids=["nothing-named", "a-file-named"])
+    def test_with_no_extractor_it_records_nothing_and_warns_only_for_a_named_file(
+        self, caplog, named
+    ):
+        store, entities = self._refreshed_once()
+        store.version, store.written = 2, ["b.md"]
+
+        with caplog.at_level(logging.WARNING):
+            given, extractor = self._refresh(store, entities, named=named, available=False)
+
+        assert given == set()
+        assert store.record == SourcesCheckpoint("time-1", 1)
+        # The rows owed are read first; the question is asked only with something to give.
+        assert store.reads == ["checkpoint", "rows since time-1"]
+        assert extractor.available.call_args_list == [call() if named else call(quiet=True)]
+        warned = [r.getMessage() for r in caplog.records if "extractor unavailable" in r.message]
+        assert len(warned) == (1 if named else 0)
+
+    def test_with_nothing_named_it_asks_quietly_and_then_as_a_caller_with_work(self):
+        store, entities = self._refreshed_once()
+        store.version, store.written = 2, ["a.md"]
+
+        given, extractor = self._refresh(store, entities)
+
+        assert given == {"a.md"}
+        assert extractor.available.call_args_list == [call(quiet=True), call()]
+
+    def test_a_refresh_that_fails_at_its_write_records_nothing(self):
+        store, entities = self._refreshed_once()
+        store.version, store.written = 2, ["a.md"]
+
+        with (
+            patch("lilbee.wiki.stubs.save_stub_index", side_effect=OSError("no space")),
+            pytest.raises(OSError, match="no space"),
+        ):
+            self._refresh(store, entities)
+
+        assert store.record == SourcesCheckpoint("time-1", 1)
+
+
+class TestDropRemovedSources:
+    @pytest.fixture(autouse=True)
+    def floor_of_one(self):
+        cfg.wiki_entity_min_mentions = 1
+
+    def _drop(self, store) -> None:
+        with patch("lilbee.wiki.stubs.get_services", return_value=MagicMock(store=store)):
+            drop_removed_sources(store, cfg)
+
+    def test_it_drops_a_listed_source_that_left_the_store(self):
+        save_stub_index(
+            {
+                "acme": _stub("acme", sources=("gone.md", "kept.md")),
+                "solo": _stub("solo", sources=("gone.md",)),
+            }
+        )
+        store = _SourceTableStore({"kept.md": []})
+        store._mentions = {"kept.md": [_mention("acme", "kept.md")]}
+
+        self._drop(store)
+
+        assert {slug: stub.sources for slug, stub in load_stub_index().items()} == {
+            "acme": ("kept.md",)
+        }
+
+    def test_it_leaves_the_index_when_a_missing_source_was_re_keyed(self):
+        """The old key the index lists is how the next refresh finds new.md."""
+        store, stubs = _renamed_library()
+
+        self._drop(store)
+
+        assert load_stub_index() == stubs

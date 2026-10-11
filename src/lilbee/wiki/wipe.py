@@ -48,12 +48,15 @@ def wipe_wiki(store: Store, config: Config | None = None) -> WipeReport:
     Pages go first. A crash in between then leaves rows whose page is gone,
     which the next prune reconciles away; the reverse order would leave pages
     on disk that no check ever retries, because an uncited page reads as
-    nothing to do.
+    nothing to do. The page index goes with the pages, so the wiki pass of the
+    next sync owes every source.
     """
     if config is None:
         config = cfg
     wiki_root = config.data_root / config.wiki_dir
     with WIKI_BUILD_LOCK:
+        # Before the page index: a record that outlives it covers rows the index no longer lists.
+        store.forget_wiki_refreshed()
         sources = store.wiki_chunk_sources() | store.wiki_citation_sources()
         pages_removed = count_pages_in(wiki_root, _PAGE_SUBDIRS)
         if wiki_root.is_dir():

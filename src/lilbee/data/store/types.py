@@ -284,6 +284,17 @@ class SourceRelocation(NamedTuple):
     settled: int
 
 
+class SourcesCheckpoint(NamedTuple):
+    """A point in the life of the source table.
+
+    Every source row stamped before ``time`` is committed, and every later
+    commit moves the table off ``version``, which is None with no table.
+    """
+
+    time: str
+    version: int | None
+
+
 class PageTextRecord(TypedDict):
     """One row of the per-page text dataset, matching ``_page_texts``.
 
