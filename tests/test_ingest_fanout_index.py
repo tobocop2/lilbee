@@ -12,6 +12,7 @@ import logging
 import os
 import shutil
 import threading
+import time
 import zipfile
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -1086,6 +1087,14 @@ class _NoNames:
         return [SimpleNamespace(ents=()) for _ in texts]
 
 
+class _OneName:
+    """A spaCy pipeline that finds the same person in every text."""
+
+    def pipe(self, texts):
+        found = SimpleNamespace(text="Henry Ford", label_="PERSON")
+        return [SimpleNamespace(ents=(found,)) for _ in texts]
+
+
 def _warnings_of_every_logger(caplog) -> list[str]:
     """Each line any logger sent to the root logger at warning level or above."""
     return [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
@@ -1720,6 +1729,93 @@ class TestTheWikiIndex:
 
                 assert await self._sync_as_a_new_process(library, caplog) == fanned
                 assert await self._sync_as_a_new_process(library, caplog) == fanned
+        finally:
+            _forget_the_loaded_pipeline()
+
+    def _counting_factory(self, monkeypatch) -> list[mock.Mock]:
+        """The product's factory; each extractor it builds is wrapped so its calls are counted."""
+        built: list[mock.Mock] = []
+
+        def _build(*args):
+            built.append(mock.Mock(wraps=get_entity_extractor(*args)))
+            return built[-1]
+
+        monkeypatch.setattr(stubs_mod, "get_entity_extractor", _build)
+        return built
+
+    @staticmethod
+    def _asked(built: list[mock.Mock]) -> Counter:
+        """How many extractors the factory built, and how often one was asked anything."""
+        return Counter(
+            built=len(built),
+            available=sum(extractor.available.call_count for extractor in built),
+            extract=sum(extractor.extract.call_count for extractor in built),
+        )
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    @pytest.mark.parametrize("mode", _ENTITY_MODES)
+    async def test_a_sync_with_every_file_unchanged_builds_no_extractor(
+        self, tmp_path, caplog, monkeypatch, mode, processes
+    ):
+        """A sync that rewrites the source row of an unchanged file builds and asks nothing.
+
+        The spaCy model is a stand-in pipeline that names one person. A file whose
+        time changed with the same content is rewritten once; a file dated ahead
+        of the clock at every sync. Each rewrite moves the version of the source
+        table, and the pass finds no row stamped since its record.
+        """
+        built = self._counting_factory(monkeypatch)
+        monkeypatch.setattr("lilbee.retrieval.concepts.load_spacy_pipeline", lambda: _OneName())
+        cfg.wiki_entity_mode = mode
+        fanned = [f"Ingesting across {processes} worker processes, one per GPU"][: processes - 1]
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        unchanged = library.documents / "note0.txt"
+        text = unchanged.read_text(encoding="utf-8")
+        now = time.time()
+        steps = [
+            ("time 100 s earlier", lambda: os.utime(unchanged, (now - 100, now - 100))),
+            ("the same text written again", lambda: library.write("note0.txt", text)),
+            ("time 10 s ahead", lambda: os.utime(unchanged, (now + 10, now + 10))),
+            ("time one day ahead", lambda: os.utime(unchanged, (now + 86400, now + 86400))),
+            *[("nothing", lambda: None) for _ in range(3)],
+        ]
+        _forget_the_loaded_pipeline()
+        try:
+            with caplog.at_level(logging.WARNING):
+                await library.sync()
+                assert _warnings_of_every_logger(caplog) == fanned + _stand_in_lines(mode)
+                assert self._asked(built)["extract"] > 0
+
+                for step, change in steps:
+                    change()
+                    version, asked = Store(cfg).sources_version(), self._asked(built)
+                    caplog.clear()
+                    _forget_the_loaded_pipeline()
+                    result = await library.sync()
+                    assert not (result.added or result.updated or result.removed), step
+                    assert result.unchanged == 4, step
+                    # The row was rewritten, so the pass read the rows stamped since its record.
+                    assert Store(cfg).sources_version() != version, step
+                    assert self._record(library).version == Store(cfg).sources_version(), step
+                    assert _warnings_of_every_logger(caplog) == fanned, step
+                    assert self._asked(built) == asked, step
+
+                # The control: a sync with one file changed gives exactly that file.
+                library.write("note1.txt", "note 1 now records the result of experiment 9.")
+                asked = self._asked(built)
+                caplog.clear()
+                _forget_the_loaded_pipeline()
+                result = await library.sync()
+                assert result.updated == ["note1.txt"]
+                assert _warnings_of_every_logger(caplog) == fanned + _stand_in_lines(mode)
+                assert self._asked(built[: asked["built"]]) == asked
+                given = [
+                    {chunk.source for chunk in call.args[0]}
+                    for extractor in built[asked["built"] :]
+                    for call in extractor.extract.call_args_list
+                ]
+                assert given == [{"note1.txt"}]
         finally:
             _forget_the_loaded_pipeline()
 

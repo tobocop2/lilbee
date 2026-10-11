@@ -759,15 +759,19 @@ class TestRefreshOwedSources:
         # The checkpoint first: a row written after the read is then owed to the next refresh.
         assert store.reads == ["checkpoint", "rows since time-1"]
 
-    def test_with_nothing_owed_it_extracts_nothing_and_records_the_new_version(self):
+    @pytest.mark.parametrize("available", [True, False], ids=["extractor", "no-extractor"])
+    def test_with_nothing_owed_it_asks_no_extractor_and_records_the_new_version(self, available):
+        """A moved version with no row stamped since: a rewritten row of an unchanged file."""
         store, entities = self._refreshed_once()
         store.version = 2
 
-        given, extractor = self._refresh(store, entities)
+        given, extractor = self._refresh(store, entities, available=available)
 
         assert given == set()
+        extractor.available.assert_not_called()
         extractor.extract.assert_not_called()
         assert store.record == SourcesCheckpoint("time-2", 2)
+        assert store.reads == ["checkpoint", "rows since time-1"]
 
     @pytest.mark.parametrize("named", [set(), {"b.md"}], ids=["nothing-named", "a-file-named"])
     def test_with_no_extractor_it_records_nothing_and_warns_only_for_a_named_file(
@@ -781,7 +785,8 @@ class TestRefreshOwedSources:
 
         assert given == set()
         assert store.record == SourcesCheckpoint("time-1", 1)
-        assert store.reads == []
+        # The rows owed are read first; the question is asked only with something to give.
+        assert store.reads == ["checkpoint", "rows since time-1"]
         assert extractor.available.call_args_list == [call() if named else call(quiet=True)]
         warned = [r.getMessage() for r in caplog.records if "extractor unavailable" in r.message]
         assert len(warned) == (1 if named else 0)

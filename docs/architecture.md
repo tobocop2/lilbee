@@ -491,11 +491,20 @@ checkpoint in the file `.wiki_refreshed` beside the tables.
 
 The next pass, of any sync, compares the recorded version with the version of the
 source table. If they are equal, no sync wrote a source row since, and the pass
-reads nothing more: a sync with nothing changed costs one read of that file and one
-read of the table version. If they differ, the pass takes every source row stamped
-at or after the recorded time, every source the browse index lists that holds no
-source row, and every source whose mention rows a rename moved to a new name. It
-gives them to the browse index in one write and records its own checkpoint.
+reads nothing more: a sync with nothing changed and no row rewritten costs one read
+of that file and one read of the table version. If they differ, the pass takes
+every source row stamped at or after the recorded time, every source the browse
+index lists that holds no source row, and every source whose mention rows a rename
+moved to a new name. It gives them to the browse index in one write and records
+its own checkpoint.
+
+The version also moves when a sync rewrites the source row of a file it reports
+unchanged: once for a file whose time changed with the same content, and at every
+sync for a file dated ahead of the clock. The pass then finds no row stamped since
+its record, builds no extractor, logs nothing and records the new version. That
+costs one read of the browse index file and two passes over the source table, one
+over the name column and one over the time column, which has no index, so it grows
+with the number of sources; a file dated ahead of the clock makes every sync pay it.
 
 So a file is owed from the moment its row is written until a pass that started
 later has finished, whichever sync wrote it and however that sync ended. A sync
@@ -510,11 +519,12 @@ tables, after a wipe of the wiki, which deletes the record before the browse ind
 and for an index of a lilbee that kept no record. A record that cannot be read
 counts as no record. The read logs one warning and deletes the record, so the next
 sync logs nothing. A pass with no extractor records nothing, so its files stay
-owed. Each later sync then asks once whether an extractor can run, and reads no
-source row until one can. A sync with no file of its own for the wiki asks without
-a line at warning level, in every entity mode: it names no missing model and no
-mode that another one stands in for. When an extractor can run, the pass builds it
-as a sync with files does, and logs the same lines. A sync that has files for the
+owed. With no record, each later sync asks once whether an extractor can run, and
+reads no source row until one can. With a record, each later sync reads what is
+owed first, and asks only when something is. A sync with no file of its own for
+the wiki asks without a line at warning level, in every entity mode: it names no
+missing model and no mode that another one stands in for. When an extractor can
+run, the pass builds it as a sync with files does, and logs the same lines. A sync that has files for the
 wiki and no extractor logs the reason at warning level, once for each process.
 With the wiki off no sync reads or writes the file.
 

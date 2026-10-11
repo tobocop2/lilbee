@@ -413,12 +413,36 @@ def _owed_sources(store: Store, config: Config, since: str) -> set[str]:
     return written | missing | _rekeyed_from(store, stubs, missing)
 
 
+def _extractor_for_the_pass(config: Config, named: set[str]) -> EntityExtractor | None:
+    """The extractor of a pass with something to give, or None with a line only for *named*."""
+    # With no file of its own to give, a sync first asks whether an extractor can run.
+    if not named and not _extractor_can_run(config):
+        log.debug(_NO_EXTRACTOR)
+        return None
+    extractor = _available_extractor(config)
+    if extractor is None:
+        log.warning(_NO_EXTRACTOR)
+    return extractor
+
+
+def _refresh_corpus(store: Store, config: Config, named: set[str]) -> None:
+    """Give the index the whole corpus: no record covers any source row."""
+    extractor = _extractor_for_the_pass(config, named)
+    if extractor is None:
+        return
+    checkpoint = store.sources_checkpoint()
+    _rebuild(store, config, extractor, None)
+    store.record_wiki_refreshed(checkpoint)
+
+
 def refresh_owed_sources(store: Store, config: Config, named: set[str]) -> set[str]:
     """Give the index *named* and every source the store holds that no refresh has read.
 
     The store records the checkpoint of the last refresh that completed. With
     the source table at that version nothing is owed and nothing is read. With
-    no record the whole corpus is owed. A refresh with no extractor records
+    the version moved and no row stamped since, nothing is given and no
+    extractor is built or asked: the refresh records the new version. With no
+    record the whole corpus is owed. A refresh with no extractor records
     nothing, so the sources stay owed. Returns the sources it gave the index,
     none for the whole corpus.
     """
@@ -426,21 +450,19 @@ def refresh_owed_sources(store: Store, config: Config, named: set[str]) -> set[s
     if covered is not None and covered.version == store.sources_version():
         return set()
     with WIKI_BUILD_LOCK:
-        # With no file of its own to give, a sync first asks whether an extractor can run.
-        if not named and not _extractor_can_run(config):
-            log.debug(_NO_EXTRACTOR)
-            return set()
-        extractor = _available_extractor(config)
-        if extractor is None:
-            log.warning(_NO_EXTRACTOR)
+        if covered is None:
+            _refresh_corpus(store, config, named)
             return set()
         # Before the read of the owed rows: a row committed after it is owed to the next refresh.
         checkpoint = store.sources_checkpoint()
-        owed = None if covered is None else _owed_sources(store, config, covered.time) | named
-        if owed is None or owed:
+        owed = _owed_sources(store, config, covered.time) | named
+        if owed:
+            extractor = _extractor_for_the_pass(config, named)
+            if extractor is None:
+                return set()
             _rebuild(store, config, extractor, owed)
         store.record_wiki_refreshed(checkpoint)
-    return owed or set()
+    return owed
 
 
 def _page_exists(stub: WikiStub, wiki_root: Path) -> bool:
