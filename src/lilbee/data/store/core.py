@@ -31,6 +31,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.core.health_warnings import HealthWarning, WarningCode
+from lilbee.core.security import write_private_text
 from lilbee.core.vectors import Vector
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.lock import (
@@ -289,6 +290,7 @@ _SOURCES_CHECKED_NAME = ".sources_checked"
 
 # Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
 _WIKI_REFRESHED_NAME = ".wiki_refreshed"
+_WIKI_REFRESHED_UNREADABLE = "Cannot read %s (%s): the wiki index reads every source again"
 
 # Rows per Arrow batch when a filtered read walks the whole source table.
 _SOURCE_SCAN_BATCH_ROWS = 20_000
@@ -2146,20 +2148,24 @@ class Store:
 
         None with no record or an unreadable one: every source row is owed.
         """
+        record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
         try:
-            text = (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).read_text(encoding="utf-8")
-            record = json.loads(text)
-            version = record["version"]
-            return SourcesCheckpoint(str(record["time"]), None if version is None else int(version))
-        except (OSError, ValueError, KeyError, TypeError):
+            fields = json.loads(record.read_text(encoding="utf-8"))
+            version = fields["version"]
+            return SourcesCheckpoint(str(fields["time"]), None if version is None else int(version))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning(_WIKI_REFRESHED_UNREADABLE, record, exc)
             return None
 
     def record_wiki_refreshed(self, checkpoint: SourcesCheckpoint) -> None:
-        """Record that the wiki's page index covers the source rows up to *checkpoint*."""
+        """Record that the wiki's page index covers the source rows up to *checkpoint*.
+
+        A write that fails leaves the record as it was.
+        """
         record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
-        scratch = record.with_name(f"{record.name}.{os.getpid()}")
-        scratch.write_text(json.dumps(checkpoint._asdict()), encoding="utf-8")
-        os.replace(scratch, record)
+        write_private_text(record, json.dumps(checkpoint._asdict()))
 
     def forget_wiki_refreshed(self) -> None:
         """Delete the record: the wiki's page index covers no source row."""

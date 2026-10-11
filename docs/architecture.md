@@ -507,7 +507,8 @@ finds the renamed files from them again.
 With no record every source is owed, and the pass reads the whole corpus once. This
 is the case for a new index, after a rebuild, which deletes the record with the
 tables, after a wipe of the wiki, which deletes the record before the browse index,
-and for an index of a lilbee that kept no record. A pass with no extractor
+and for an index of a lilbee that kept no record. A record that cannot be read
+counts as no record, and the read logs a warning. A pass with no extractor
 records nothing, so its files stay owed. Each later sync then asks once whether an
 extractor is available, and reads no source row until one is. A sync with no file of
 its own for the wiki asks quietly: it logs no warning when there is no extractor. A

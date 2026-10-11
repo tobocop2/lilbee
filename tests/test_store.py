@@ -2,6 +2,7 @@
 
 import errno
 import logging
+import os
 import re
 import sys
 import threading
@@ -5545,8 +5546,25 @@ class TestSourcesCheckpoint:
 
 
 class TestWikiRefreshed:
-    def test_no_record_reads_as_none(self, store):
-        assert store.wiki_refreshed() is None
+    def test_no_record_reads_as_none_and_logs_nothing(self, store, caplog):
+        with caplog.at_level(logging.DEBUG):
+            assert store.wiki_refreshed() is None
+        assert caplog.records == []
+
+    def test_a_write_that_fails_leaves_the_old_record_and_no_other_file(self, store, monkeypatch):
+        beside_the_tables = store._config.lancedb_dir
+        beside_the_tables.mkdir(parents=True, exist_ok=True)
+        old = SourcesCheckpoint("2026-01-01T00:00:00+00:00", 7)
+        store.record_wiki_refreshed(old)
+        before = sorted(path.name for path in beside_the_tables.iterdir())
+        assert ".wiki_refreshed" in before
+        monkeypatch.setattr(os, "replace", mock.Mock(side_effect=OSError("the disk is full")))
+
+        with pytest.raises(OSError, match="the disk is full"):
+            store.record_wiki_refreshed(SourcesCheckpoint("2026-02-02T00:00:00+00:00", 9))
+
+        assert sorted(path.name for path in beside_the_tables.iterdir()) == before
+        assert store.wiki_refreshed() == old
 
     @pytest.mark.parametrize("version", [7, None])
     def test_a_recorded_checkpoint_is_read_back(self, store, version):
@@ -5564,11 +5582,26 @@ class TestWikiRefreshed:
     @pytest.mark.parametrize(
         "text", ["", "{", "[]", '"text"', '{"time": "t"}', '{"time": "t", "version": "x"}']
     )
-    def test_an_unreadable_record_reads_as_none(self, store, text):
+    def test_an_unreadable_record_reads_as_none_with_one_warning(self, store, text, caplog):
         store._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
-        (store._config.lancedb_dir / ".wiki_refreshed").write_text(text, encoding="utf-8")
+        record = store._config.lancedb_dir / ".wiki_refreshed"
+        record.write_text(text, encoding="utf-8")
 
-        assert store.wiki_refreshed() is None
+        with caplog.at_level(logging.WARNING):
+            assert store.wiki_refreshed() is None
+
+        assert [(r.levelname, str(record) in r.getMessage()) for r in caplog.records] == [
+            ("WARNING", True)
+        ]
+
+    def test_a_record_that_cannot_be_opened_reads_as_none_with_one_warning(self, store, caplog):
+        record = store._config.lancedb_dir / ".wiki_refreshed"
+        record.mkdir(parents=True)
+
+        with caplog.at_level(logging.WARNING):
+            assert store.wiki_refreshed() is None
+
+        assert [r.levelname for r in caplog.records] == ["WARNING"]
 
     def test_a_forgotten_record_reads_as_none_and_forgetting_none_is_no_error(self, store):
         store.upsert_source("a.md", "h", 1)
