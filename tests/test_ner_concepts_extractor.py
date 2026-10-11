@@ -15,9 +15,13 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
 from lilbee.wiki.entity_extractor import EntityKind, ExtractedEntity
+from lilbee.wiki.entity_extractor.llm_tagged import LlmTaggedExtractor
 from lilbee.wiki.entity_extractor.ner_concepts import (
     NerConceptsExtractor,
     pre_clean_for_ner,
+)
+from lilbee.wiki.entity_extractor.ner_concepts_plus_llm_types import (
+    NerConceptsPlusLlmTypesExtractor,
 )
 
 
@@ -255,16 +259,16 @@ class TestAvailability:
         ):
             assert extractor.available() is False
 
-    def test_llm_backed_extractors_report_available(self) -> None:
+    @pytest.mark.parametrize("quiet", [False, True], ids=["with-work", "quiet"])
+    @pytest.mark.parametrize("extractor", [LlmTaggedExtractor, NerConceptsPlusLlmTypesExtractor])
+    def test_llm_backed_extractors_report_available(
+        self, extractor: type, quiet: bool, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """The LLM-schema extractors have no loadable backend to miss, so they
         report available; their extract raises NotImplementedError on use."""
-        from lilbee.wiki.entity_extractor.llm_tagged import LlmTaggedExtractor
-        from lilbee.wiki.entity_extractor.ner_concepts_plus_llm_types import (
-            NerConceptsPlusLlmTypesExtractor,
-        )
-
-        assert LlmTaggedExtractor(MagicMock(), cfg).available() is True
-        assert NerConceptsPlusLlmTypesExtractor(MagicMock(), cfg).available(quiet=True) is True
+        with caplog.at_level("DEBUG"):
+            assert extractor(MagicMock(), cfg).available(quiet=quiet) is True
+        assert caplog.records == []
 
 
 class TestDedupAndAggregation:
