@@ -282,7 +282,6 @@ class TestStatus:
         cfg.ocr = OcrMode.ALL
         result = status()
         assert result["config"]["ocr"] == "all"
-        assert "enable_ocr" not in result["config"]
 
     def test_status_carries_the_scanned_pages_line(self, mock_svc):
         cfg.ocr = OcrMode.AUTO
@@ -921,16 +920,12 @@ class TestAdd:
     @pytest.mark.parametrize(
         ("tool", "arguments", "detail"),
         [
-            ("add", {"paths": ["x"], "enable_ocr": False}, "enable_ocr is replaced by ocr"),
-            ("sync", {"enable_ocr": False}, "enable_ocr is replaced by ocr"),
             ("add", {"paths": ["x"], "ocr": "some"}, "'auto', 'all' or 'off'"),
         ],
     )
     @mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP)
-    async def test_a_bad_or_retired_ocr_argument_is_an_error(
-        self, mock_sync, tool, arguments, detail
-    ):
-        """Over the wire, a retired OCR argument is refused by name, never ignored."""
+    async def test_a_bad_ocr_argument_is_an_error(self, mock_sync, tool, arguments, detail):
+        """Over the wire, an ocr value outside the modes is an error."""
         async with mcp_client() as (session, _init, _drop):
             result = await session.call_tool(tool, arguments)
 
@@ -2056,12 +2051,6 @@ class TestSettingsMcp:
             "warnings": [],
         }
         assert cfg.ocr is OcrMode.OFF
-
-    def test_settings_set_and_reset_name_ocr_for_the_retired_key(self, isolated_env):
-        cfg.data_root = isolated_env
-        replaced = "enable_ocr is replaced by ocr; set ocr to one of auto, all, off"
-        assert settings_set({"enable_ocr": False}) == {"error": replaced}
-        assert settings_reset(["enable_ocr"]) == {"error": replaced}
 
     def test_settings_set_treats_force_ocr_as_an_unknown_key(self, isolated_env):
         cfg.data_root = isolated_env

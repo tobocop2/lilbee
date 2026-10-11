@@ -13,7 +13,6 @@ import tomli_w
 from lilbee.config_meta import MODEL_ROLE_FIELDS, WRITABLE_CONFIG_FIELDS
 from lilbee.core.config import CONFIG_FILE_NAME, cfg
 from lilbee.core.config.model import env_value, toml_values
-from lilbee.core.config.parsing import migrate_ocr_keys, without_refused_ocr
 from lilbee.core.security import file_lock_or_warn, harden_private_file, write_private_text
 
 _settings_lock = threading.Lock()
@@ -50,24 +49,13 @@ def load(data_root: Path) -> dict[str, Any]:
     Values keep the types TOML gave them. Stringifying here used to turn a
     ``true`` into ``"True"`` in memory, which the next save then wrote back
     quoted, so the file drifted away from valid types for its own fields.
-    A stored ``enable_ocr`` comes back as ``ocr``, so the next write saves the
-    replacement; an ``ocr`` value the setting refuses gives way to it.
     """
     path = _config_path(data_root)
     if not path.exists():
         return {}
     harden_private_file(path)
     with path.open("rb") as f:
-        persisted = dict(tomllib.load(f))
-    return migrate_ocr_keys(without_refused_ocr(persisted), _vision_model_for(persisted))
-
-
-def _vision_model_for(persisted: dict[str, Any]) -> str:
-    """The vision model a root resolves to: LILBEE_VISION_MODEL, else config.toml, else none."""
-    env = env_value("vision_model")
-    if env is not None:
-        return env
-    return str(persisted.get("vision_model") or "")
+        return dict(tomllib.load(f))
 
 
 def save(data_root: Path, settings: dict[str, Any]) -> None:
@@ -163,8 +151,7 @@ def overlay_persisted_settings(root: Path) -> None:
     if os.environ.get("LILBEE_SKIP_TOML_CONFIG") == "1" or not path.exists():
         return
     harden_private_file(path)
-    accepted = toml_values(path)
-    stored = migrate_ocr_keys(accepted, _vision_model_for(accepted))
+    stored = toml_values(path)
     overlayable = set(WRITABLE_CONFIG_FIELDS) | set(MODEL_ROLE_FIELDS)
     for key, value in stored.items():
         if key in overlayable and env_value(key) is None:

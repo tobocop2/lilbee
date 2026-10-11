@@ -42,13 +42,7 @@ from .enums import (
     WikiEntityMode,
 )
 from .load_warnings import collecting, refuse_variable, warn_on_load
-from .parsing import (
-    migrate_ocr_keys,
-    parse_bool,
-    refuse_retired_ocr_env,
-    refused_value_fallback,
-    warn_retired_ocr_keys,
-)
+from .parsing import parse_bool
 from .validators import ConfigField
 
 log = logging.getLogger(__name__)
@@ -1407,15 +1401,6 @@ class Config(BaseSettings):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_retired_ocr_keys(cls, data: Any) -> Any:
-        """Replace a stored enable_ocr value with the ocr mode it stands for."""
-        if not isinstance(data, dict):
-            return data
-        warn_retired_ocr_keys(data)
-        return migrate_ocr_keys(data, str(data.get("vision_model") or ""))
-
-    @model_validator(mode="before")
-    @classmethod
     def _resolve_defaults(cls, data: Any) -> Any:
         from lilbee.core.system import (
             canonical_data_root,
@@ -1650,7 +1635,7 @@ class _TomlSource:
     ) -> str:
         """The warning for one *refused* key and reason, as a read under *label* words it."""
         key, reason = refused
-        fallback = refused_value_fallback(key, values, otherwise)
+        fallback = f"{key} {otherwise}"
         if env_value(key) is not None:
             fallback = f"{_variable(self._settings_cls, key)} sets {key}"
         return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
@@ -1706,8 +1691,7 @@ def toml_values(path: Path) -> dict[str, Any]:
 
 
 def refuse_environment() -> None:
-    """Raise RefusedVariableError for a retired OCR variable or a value its setting refuses."""
-    refuse_retired_ocr_env(os.environ)
+    """Raise RefusedVariableError for a variable that holds a value its setting refuses."""
     _PlainEnvSource(Config).refuse()
 
 

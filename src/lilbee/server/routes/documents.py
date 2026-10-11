@@ -17,7 +17,6 @@ from litestar.response import Stream
 from pydantic import BaseModel, Field
 
 from lilbee.core.config import validate_ocr_timeout
-from lilbee.core.config.parsing import refuse_retired_ocr_keys
 from lilbee.server import handlers
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
@@ -84,7 +83,6 @@ async def add_route(data: AddRequest) -> Stream:
 
 @post("/api/add/upload", media_type=SSE_MEDIA_TYPE)
 async def add_upload_route(
-    request: Request,
     data: MultipartBody[list[UploadFile]],
     ocr: FromQuery[str | None] = None,
     ocr_timeout: FromQuery[float | None] = None,
@@ -102,7 +100,6 @@ async def add_upload_route(
     # full in-memory copy of a payload that was going to be rejected anyway.
     try:
         names = handlers.validate_upload_names([upload.filename for upload in data])
-        refuse_retired_ocr_keys(request.query_params.keys())
         ocr_mode = handlers.parse_ocr_mode(ocr)
         validate_ocr_timeout(ocr_timeout)
     except ValueError as exc:

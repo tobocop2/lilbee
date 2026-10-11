@@ -52,63 +52,6 @@ class TestLoad:
         assert settings.load(tmp_path) == {"chat_model": "llama3"}
 
 
-class TestRetiredOcrKeysOnDisk:
-    """A config.toml enable_ocr from before the ocr setting reads as ocr and a write replaces it."""
-
-    _VISION = "org/Test-Vision-GGUF/test-vision-Q4_K_M.gguf"
-
-    @pytest.mark.parametrize(
-        ("toml", "expected"),
-        [
-            ("enable_ocr = false\n", "off"),
-            (f'enable_ocr = false\nvision_model = "{_VISION}"\n', "auto"),
-            ("enable_ocr = true\n", "auto"),
-        ],
-    )
-    def test_load_reads_them_as_ocr(self, tmp_path, monkeypatch, toml, expected):
-        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
-        (tmp_path / "config.toml").write_text(toml, encoding="utf-8")
-        loaded = settings.load(tmp_path)
-        assert loaded["ocr"] == expected
-        assert "enable_ocr" not in loaded
-
-    def test_the_vision_model_env_var_decides_over_config_toml(self, tmp_path, monkeypatch):
-        (tmp_path / "config.toml").write_text(
-            f'enable_ocr = false\nvision_model = "{self._VISION}"\n', encoding="utf-8"
-        )
-        monkeypatch.setenv("LILBEE_VISION_MODEL", "")
-        assert settings.load(tmp_path)["ocr"] == "off"
-        monkeypatch.delenv("LILBEE_VISION_MODEL")
-        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
-        monkeypatch.setenv("LILBEE_VISION_MODEL", self._VISION)
-        assert settings.load(tmp_path)["ocr"] == "auto"
-
-    def test_the_first_settings_write_replaces_them(self, tmp_path, monkeypatch):
-        from lilbee.app import settings as appset
-
-        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
-        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
-        monkeypatch.setattr(appset.cfg, "top_k", 5)
-        (tmp_path / "config.toml").write_text("enable_ocr = false\ntop_k = 5\n", encoding="utf-8")
-        appset.apply_settings_update({"top_k": 7})
-        written = (tmp_path / "config.toml").read_text(encoding="utf-8")
-        assert 'ocr = "off"' in written
-        assert "enable_ocr" not in written
-        assert "top_k = 7" in written
-
-    def test_the_data_dir_overlay_applies_the_mode(self, tmp_path, monkeypatch):
-        from lilbee.core.config import cfg
-        from lilbee.core.config.enums import OcrMode
-
-        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
-        monkeypatch.delenv("LILBEE_VISION_MODEL", raising=False)
-        monkeypatch.delenv("LILBEE_OCR", raising=False)
-        monkeypatch.setattr(cfg, "ocr", OcrMode.AUTO)
-        (tmp_path / "config.toml").write_text("enable_ocr = false\n", encoding="utf-8")
-        settings.overlay_persisted_settings(tmp_path)
-        assert cfg.ocr is OcrMode.OFF
-
-
 class TestSave:
     def test_save_creates_file(self, tmp_path):
         settings.save(tmp_path, {"chat_model": "llama3"})
