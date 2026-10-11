@@ -8,8 +8,6 @@ import logging
 import multiprocessing
 import os
 import queue
-import shutil
-import stat
 import sys
 import time
 from dataclasses import dataclass
@@ -30,12 +28,6 @@ from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.engine_lock import ENGINE_DIR_ENV
-from lilbee.runtime.lock import (
-    LockingUnsupportedError,
-    ResetRefusedError,
-    SyncRunningError,
-    syncs_held_off,
-)
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -86,17 +78,6 @@ _EXIT_POLL_S = 0.01
 
 # Where a worker's console output lands, under its own data root.
 WORKER_LOG_NAME = "sync.log"
-
-# Where each worker of an earlier lilbee kept a store of its own, under the shards directory.
-_PRIVATE_STORE_GLOB = "w*/data"
-_BYTES_PER_MB = 1024 * 1024
-# How long a sync waits for the sync lock before it reads a holder as a running sync.
-# A reset, or another sync that deletes the same stores, lets go well inside it.
-_STORE_LOCK_WAIT_S = 5.0
-_EARLIER_SYNC_RUNNING = (
-    "A sync, an import, an add or a wiki build, possibly of an earlier lilbee, is running on "
-    "this library. Run the sync again when it has finished."
-)
 
 
 @dataclass(frozen=True)
@@ -209,67 +190,6 @@ def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -
             "extraction_threads": max(1, threads // processes) if threads else 0,
         }
     )
-
-
-def remove_private_stores(data_root: Path) -> None:
-    """Delete the store each worker of an earlier lilbee kept under *data_root*.
-
-    Raises ``SyncRunningError`` when the stores exist and the data root's sync
-    mark is held: an earlier lilbee's fan-out sync writes and merges them under
-    that mark, and a sync, an import, an add or a wiki build of this lilbee
-    holds the same mark. The caller holds no sync mark of its own. A data root
-    that cannot be locked keeps its stores for a later sync.
-    """
-    if not _private_stores(data_root):
-        return
-    try:
-        with syncs_held_off(data_root, _EARLIER_SYNC_RUNNING, _STORE_LOCK_WAIT_S):
-            _delete_stores(_private_stores(data_root), data_root)
-    except SyncRunningError:
-        # Another sync of this lilbee deleted them and now holds its own mark.
-        if _private_stores(data_root):
-            raise
-    except (ResetRefusedError, LockingUnsupportedError) as exc:
-        log.debug("Left the worker stores of an earlier lilbee under %s: %s", data_root, exc)
-
-
-def _private_stores(data_root: Path) -> list[Path]:
-    """Each store a worker of an earlier lilbee kept under *data_root*, in name order."""
-    return sorted((data_root / SHARDS_DIRNAME).glob(_PRIVATE_STORE_GLOB))
-
-
-def _delete_stores(stores: list[Path], data_root: Path) -> None:
-    """Delete *stores*, which nothing reads, and log the stores that went and the space freed."""
-    before = sum(_reclaimable_bytes(store) for store in stores)
-    for store in stores:
-        try:
-            shutil.rmtree(store)
-        except OSError as exc:
-            log.warning("Could not delete the unused worker store %s: %s", store, exc)
-    deleted = [store for store in stores if not store.exists()]
-    if deleted:
-        log.warning(
-            "Deleted %d unused worker store(s) of an earlier lilbee under %s, freeing %.1f MB",
-            len(deleted),
-            data_root / SHARDS_DIRNAME,
-            (before - sum(_reclaimable_bytes(store) for store in stores)) / _BYTES_PER_MB,
-        )
-
-
-def _reclaimable_bytes(store: Path) -> int:
-    """The bytes deleting *store* frees: a file with a second hard link frees none.
-
-    A file that cannot be read ends the count, which then states less than was freed.
-    """
-    total = 0
-    try:
-        for entry in store.rglob("*"):
-            status = entry.lstat()
-            if stat.S_ISREG(status.st_mode) and status.st_nlink == 1:
-                total += status.st_size
-    except OSError as exc:
-        log.debug("Stopped measuring the worker store %s: %s", store, exc)
-    return total
 
 
 def _apply_shard_env(spec: ShardSpec) -> None:

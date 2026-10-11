@@ -407,10 +407,7 @@ that design was the two records disagreeing.
 
 **A source row with no chunks.** Each write of a sync puts the chunks of a file before
 its source row, and a rebuild drops the source table first, so a write that stops part
-way leaves no file that reads as unchanged with nothing to search. An earlier lilbee
-could leave such a row. The first sync on an index checks every source row against the
-chunk table once, deletes the rows that count chunks and have none, and indexes those
-files again. It records the check in `.sources_checked` beside the tables.
+way leaves no file that reads as unchanged with nothing to search.
 
 **The write lock is the one serial stage.** Each flush deletes its documents' old rows
 by name. A BTREE index on the name column of the chunk, page text and source tables keeps
@@ -554,30 +551,6 @@ Three limits remain:
 fails. A cancelled sync stops the workers. In both cases the files the workers finished
 are in the index and searchable, and the next sync continues from there. The search
 indexes cover them after the next sync that indexes something.
-
-**Stores from an earlier lilbee.** A sync deletes each `shards/w*/data` directory before
-it starts, and logs the space that frees. It does so only while it holds every other
-sync off the data root, with the lock a reset uses: an earlier lilbee's fan-out sync
-holds the sync mark for as long as it writes and merges those stores.
-
-When the directories exist and the mark is held, the sync does not run: it raises
-`SyncRunningError` before it reads or writes anything. A sync, an import, an add and a
-wiki build of this lilbee hold the same mark, so each of them stops the sync as an
-earlier lilbee's sync does, for as long as it runs, and the message names all four. Every surface reports that
-as it reports any sync that could not start, and the next sync after the holder ends
-deletes the directories and runs. The sync waits up to 5 seconds for the lock before it
-reads a holder as a running sync, and it runs when the directories are gone by then. So
-a reset does not stop it, and two syncs of this lilbee that start together on an
-upgraded data root both run, with two exceptions. When the first sync needs more than 5
-seconds to delete the directories, the second sync does not run. When a directory cannot
-be deleted, the second sync does not run while the first one runs. In both cases the
-next sync after the first one ends runs. A sync with no other sync beside it names a
-store that cannot be deleted in a warning, and runs.
-
-Two limits remain. A lilbee older than 0.6.90b448 holds no sync mark, so do not run its
-fan-out sync at the same time as a newer lilbee on one data directory. An earlier lilbee
-that starts a fan-out sync after the newer one began can hold names twice. A rebuild
-repairs both.
 
 ---
 
