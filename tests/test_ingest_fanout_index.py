@@ -64,7 +64,7 @@ def workers_as_threads(monkeypatch):
 _SHARED_TEXT = "Text that every copy of this file shares."
 
 # How long one thread of a test waits for a step of another before the test fails.
-_STEP_WAIT_S = 60.0
+_STEP_WAIT_S = 20.0
 
 
 def slice_of(name: str, count: int) -> int:
