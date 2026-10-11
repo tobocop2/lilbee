@@ -8,7 +8,7 @@ import math
 import os
 from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from contextlib import AbstractContextManager
+from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
@@ -2147,6 +2147,7 @@ class Store:
         """The checkpoint up to which the wiki's page index covers the source rows.
 
         None with no record or an unreadable one: every source row is owed.
+        An unreadable record is reported and deleted, so the next read is silent.
         """
         record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
         try:
@@ -2157,6 +2158,9 @@ class Store:
             return None
         except (OSError, ValueError, KeyError, TypeError) as exc:
             log.warning(_WIKI_REFRESHED_UNREADABLE, record, exc)
+            # A record that cannot be deleted stays, and the next read reports it again.
+            with suppress(OSError):
+                self.forget_wiki_refreshed()
             return None
 
     def record_wiki_refreshed(self, checkpoint: SourcesCheckpoint) -> None:

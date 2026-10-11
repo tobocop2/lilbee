@@ -5582,26 +5582,30 @@ class TestWikiRefreshed:
     @pytest.mark.parametrize(
         "text", ["", "{", "[]", '"text"', '{"time": "t"}', '{"time": "t", "version": "x"}']
     )
-    def test_an_unreadable_record_reads_as_none_with_one_warning(self, store, text, caplog):
+    def test_an_unreadable_record_is_reported_once_and_deleted(self, store, text, caplog):
         store._config.lancedb_dir.mkdir(parents=True, exist_ok=True)
         record = store._config.lancedb_dir / ".wiki_refreshed"
         record.write_text(text, encoding="utf-8")
 
         with caplog.at_level(logging.WARNING):
             assert store.wiki_refreshed() is None
+            assert not record.exists()
+            assert store.wiki_refreshed() is None
 
         assert [(r.levelname, str(record) in r.getMessage()) for r in caplog.records] == [
             ("WARNING", True)
         ]
 
-    def test_a_record_that_cannot_be_opened_reads_as_none_with_one_warning(self, store, caplog):
+    def test_a_record_that_cannot_be_deleted_is_reported_at_each_read(self, store, caplog):
         record = store._config.lancedb_dir / ".wiki_refreshed"
         record.mkdir(parents=True)
 
         with caplog.at_level(logging.WARNING):
             assert store.wiki_refreshed() is None
+            assert store.wiki_refreshed() is None
 
-        assert [r.levelname for r in caplog.records] == ["WARNING"]
+        assert record.is_dir()
+        assert [r.levelname for r in caplog.records] == ["WARNING", "WARNING"]
 
     def test_a_forgotten_record_reads_as_none_and_forgetting_none_is_no_error(self, store):
         store.upsert_source("a.md", "h", 1)
