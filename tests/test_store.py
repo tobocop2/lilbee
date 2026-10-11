@@ -5487,6 +5487,33 @@ class TestSourcesCheckpoint:
     def test_with_no_source_table_the_version_is_none(self, store):
         assert store.sources_checkpoint().version is None
 
+    def test_a_checkpoint_is_read_under_the_write_lock(self, store, monkeypatch):
+        """Read beside a flush, its time could pass the stamp of a row not yet committed."""
+        held, read_under_lock = [], []
+        real_lock, real_version = store._write_lock, store.sources_version
+
+        @contextmanager
+        def _lock(*args, **kwargs):
+            with real_lock(*args, **kwargs):
+                held.append(1)
+                try:
+                    yield
+                finally:
+                    held.pop()
+
+        def _version():
+            read_under_lock.append(bool(held))
+            return real_version()
+
+        monkeypatch.setattr(store, "_write_lock", _lock)
+        monkeypatch.setattr(store, "sources_version", _version)
+        store.upsert_source("a.md", "h", 1)
+
+        checkpoint = store.sources_checkpoint()
+
+        assert read_under_lock == [True]
+        assert checkpoint.version == real_version()
+
     @pytest.mark.parametrize("write", ["upsert_source", "write_chunks_batch"])
     def test_a_source_row_is_stamped_under_the_write_lock(self, store, monkeypatch, write):
         """A stamp taken before the lock could be older than a checkpoint its row commits after."""
