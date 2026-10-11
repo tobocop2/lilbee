@@ -9,6 +9,7 @@ data dir.
 
 import asyncio
 import errno
+import functools
 import json
 import logging
 import sqlite3
@@ -16,6 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -243,13 +245,21 @@ def _release_sync_lock(lock: ReadWriteLock | None) -> None:
 async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
-    The wait for a reset to finish runs in a worker thread, off the event loop.
+    The wait for a reset to finish runs off the event loop. One dedicated worker thread
+    takes and releases the lock, because filelock refuses a release from another thread.
     """
-    lock = await asyncio.to_thread(_acquire_sync_lock, data_root, write=False)
+    loop = asyncio.get_running_loop()
+    worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sync-lock")
     try:
-        yield
+        lock = await loop.run_in_executor(
+            worker, functools.partial(_acquire_sync_lock, data_root, write=False)
+        )
+        try:
+            yield
+        finally:
+            await loop.run_in_executor(worker, _release_sync_lock, lock)
     finally:
-        _release_sync_lock(lock)
+        worker.shutdown(wait=False)
 
 
 @contextmanager

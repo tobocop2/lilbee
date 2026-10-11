@@ -306,6 +306,28 @@ class TestSyncMark:
         with no_sync_running(tmp_path):
             pass
 
+    async def test_the_mark_is_released_on_the_thread_that_took_it(self, tmp_path: Path) -> None:
+        seen: dict[str, int] = {}
+        real_acquire = ReadWriteLock.acquire_read
+        real_release = ReadWriteLock.release
+
+        def _acquire(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+            seen["acquire"] = threading.get_ident()
+            return real_acquire(lock, *args, **kwargs)  # type: ignore[arg-type]
+
+        def _release(lock: ReadWriteLock, *args: object, **kwargs: object) -> None:
+            seen["release"] = threading.get_ident()
+            real_release(lock, *args, **kwargs)  # type: ignore[arg-type]
+
+        with (
+            mock.patch.object(ReadWriteLock, "acquire_read", _acquire),
+            mock.patch.object(ReadWriteLock, "release", _release),
+        ):
+            async with sync_running(tmp_path):
+                pass
+        assert seen["acquire"] == seen["release"]
+        assert seen["release"] != threading.get_ident()
+
     async def test_a_reset_in_another_process_is_refused_while_a_sync_runs(
         self, tmp_path: Path
     ) -> None:
