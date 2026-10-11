@@ -627,7 +627,7 @@ class TestEqualToOneProcess:
         )
         monkeypatch.setattr(
             "lilbee.app.ingest.forget_missing_from_wiki_index",
-            lambda: reconciled.append(active_config().data_root.name) or set(),
+            lambda: reconciled.append(active_config().data_root.name),
         )
 
         async def history(library):
@@ -642,9 +642,13 @@ class TestEqualToOneProcess:
         assert removed == [["legacy.rst"], ["legacy.rst"]]
         assert len(fanned.sources()) == 12
         # The wiki index is the library's: no worker forgets the file under a root of its own.
-        # The parent of each fan-out sync reconciles it; one process names the file.
-        assert [call for call in forgotten if call[1]] == [("single", ["legacy.rst"])]
-        assert reconciled == ["fanned", "fanned"]
+        # The parent of the fan-out names the file its workers report, as one process does,
+        # and a fan-out that finishes does not read the index against the source table.
+        assert [call for call in forgotten if call[1]] == [
+            ("fanned", ["legacy.rst"]),
+            ("single", ["legacy.rst"]),
+        ]
+        assert reconciled == []
         _assert_equal_to_one_process(fanned, single)
 
 
