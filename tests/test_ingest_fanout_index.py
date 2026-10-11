@@ -32,6 +32,7 @@ from lilbee.wiki import stubs as stubs_mod
 from lilbee.wiki.entity_extractor import get_entity_extractor, ner_concepts
 from lilbee.wiki.entity_extractor.base import ChunkRef, EntityKind, ExtractedEntity
 from lilbee.wiki.stubs import load_stub_index
+from lilbee.wiki.wipe import wipe_wiki
 from tests._fanout_library import Library, services_for
 from tests.test_ingest_fanout import FakeContext
 
@@ -1692,6 +1693,24 @@ class TestTheWikiIndex:
         assert self._subjects(library) == clean_subjects
         assert library.dump() == clean_tables
         assert self._record(library) is not None
+
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_the_sync_after_a_wipe_of_the_wiki_lists_every_source_again(
+        self, tmp_path, processes
+    ):
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 4)
+        await library.sync()
+        subjects, tables = self._subjects(library), library.dump()
+        assert subjects
+        assert wipe_wiki(Store(cfg), cfg).rows_deleted
+        assert self._listed(library) == []
+
+        result = await library.sync()
+
+        assert result.unchanged == 4
+        assert self._subjects(library) == subjects
+        assert library.dump() == tables
 
     async def test_a_record_that_stands_keeps_a_sync_from_reading_the_corpus_again(self, tmp_path):
         """The control of the test above: with its record, the same sync owes nothing."""

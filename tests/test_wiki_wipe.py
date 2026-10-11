@@ -45,6 +45,19 @@ class TestWipeWiki:
         assert report.pages_removed == 1
         assert not (isolated_env / cfg.wiki_dir).exists()
 
+    def test_forgets_the_refresh_record_before_it_deletes_the_page_index(self, isolated_env: Path):
+        """A wipe that stops between the two leaves no record beside an index it emptied."""
+        write_wiki_page(isolated_env, str(WikiSubdir.CONCEPTS), "topic", "# Topic\n")
+        store = _store()
+        wiki_root = isolated_env / cfg.wiki_dir
+        index_there = []
+        store.forget_wiki_refreshed.side_effect = lambda: index_there.append(wiki_root.exists())
+
+        wipe_wiki(store)
+
+        assert index_there == [True]
+        assert not wiki_root.exists()
+
     def test_deletes_the_store_rows(self, isolated_env: Path):
         """The count spans both row kinds. A page whose citation rows landed
         while its chunk rows did not appears in one set and not the other, and

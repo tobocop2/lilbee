@@ -2161,6 +2161,10 @@ class Store:
         scratch.write_text(json.dumps(checkpoint._asdict()), encoding="utf-8")
         os.replace(scratch, record)
 
+    def forget_wiki_refreshed(self) -> None:
+        """Delete the record: the wiki's page index covers no source row."""
+        (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).unlink(missing_ok=True)
+
     def sources_ingested_since(self, since: str) -> list[str]:
         """The filename of each source row written at or after *since*, an ISO time in UTC."""
         table = self.open_table(SOURCES_TABLE)
@@ -2990,7 +2994,7 @@ class Store:
             self._scalar_ready = False
             db = self.get_db()
             # Before the tables: a record that outlives them would describe the next ones.
-            (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).unlink(missing_ok=True)
+            self.forget_wiki_refreshed()
             dropped = [name for name in table_names(db) if name != MEMORIES_TABLE]
             # The source rows go first: a drop that stops part way leaves no file unchanged.
             for name in sorted(dropped, key=lambda name: name != SOURCES_TABLE):

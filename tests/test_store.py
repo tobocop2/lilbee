@@ -5570,6 +5570,16 @@ class TestWikiRefreshed:
 
         assert store.wiki_refreshed() is None
 
+    def test_a_forgotten_record_reads_as_none_and_forgetting_none_is_no_error(self, store):
+        store.upsert_source("a.md", "h", 1)
+        store.record_wiki_refreshed(store.sources_checkpoint())
+
+        store.forget_wiki_refreshed()
+        store.forget_wiki_refreshed()
+
+        assert store.wiki_refreshed() is None
+        assert store.sources_version() is not None
+
     def test_a_rebuild_drops_the_record_with_the_tables(self, store):
         store.upsert_source("a.md", "h", 1)
         store.record_wiki_refreshed(store.sources_checkpoint())
