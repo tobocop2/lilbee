@@ -1039,6 +1039,7 @@ class TestTheWikiIndex:
         monkeypatch.setattr("lilbee.wiki.stubs.get_entity_extractor", lambda *args: extractor)
         cfg.wiki = True
         cfg.wiki_entity_min_mentions = 1
+        return extractor
 
     def _listed(self, library) -> list[str]:
         """Every source the browse index lists under a subject."""
@@ -1234,32 +1235,72 @@ class TestTheWikiIndex:
         assert fan_out == one_process
         _assert_equal_to_one_process(fanned, single)
 
-    async def test_a_refresh_with_no_extractor_keeps_the_mark_for_the_next_sync(self, tmp_path):
-        from lilbee.wiki import stubs
-
-        extractor = stubs.get_entity_extractor()
+    async def test_a_refresh_with_no_extractor_adds_nothing_and_deletes_the_mark(
+        self, tmp_path, wiki_on
+    ):
         library = Library(tmp_path / "lib", 1)
-        library.write_notes("note", 4)
-        library.write("old.txt", "The one file that is renamed.")
+        notes = library.write_notes("note", 4)
         await library.sync()
-        (library.documents / "old.txt").rename(library.documents / "renamed.txt")
-        reports = library.write_notes("report", 2)
-        extractor.available.return_value = False
-        await library.sync()
-        assert "old.txt" in self._listed(library)
-        assert (library.root / WIKI_OWED_FILENAME).is_file()
-        await library.sync()
-        assert "old.txt" in self._listed(library)
-        assert (library.root / WIKI_OWED_FILENAME).is_file()
+        library.write_notes("report", 2)
+        wiki_on.available.return_value = False
 
-        extractor.available.return_value = True
         await library.sync()
 
-        subjects = self._subjects(library)
-        assert subjects["about-renamed.txt"] == ("renamed.txt",)
-        assert "about-old.txt" not in subjects
-        assert set(reports) <= set(self._listed(library))
+        assert self._listed(library) == sorted(notes)
         assert not (library.root / WIKI_OWED_FILENAME).exists()
+
+    async def test_with_no_extractor_a_removed_file_leaves_the_index(
+        self, tmp_path, monkeypatch, wiki_on
+    ):
+        """The oracle is a one-process sync, which names the file it removes."""
+        listed = []
+
+        async def history(library):
+            wiki_on.available.return_value = True
+            notes = library.write_notes("note", 8)
+            library.write("legacy.rst", "A file whose format is refused later.")
+            await library.sync()
+            assert self._listed(library) == sorted([*notes, "legacy.rst"])
+            wiki_on.available.return_value = False
+            with monkeypatch.context() as patch:
+                self._refuse_rst(patch)
+                assert (await library.sync()).removed == ["legacy.rst"]
+            listed.append(self._listed(library))
+
+        fanned, single = await _play(tmp_path, history)
+        fan_out, one_process = listed
+        assert one_process == sorted(f"note{n}.txt" for n in range(8))
+        assert fan_out == one_process
+        _assert_equal_to_one_process(fanned, single)
+
+    @pytest.mark.parametrize("available", [True, False], ids=["extractor", "no-extractor"])
+    @pytest.mark.parametrize("processes", [1, 2], ids=["one-process", "fan-out"])
+    async def test_a_sync_with_nothing_changed_asks_no_extractor_and_reads_no_owed_source(
+        self, tmp_path, monkeypatch, caplog, wiki_on, processes, available
+    ):
+        wiki_on.available.return_value = available
+        library = Library(tmp_path / "lib", processes)
+        library.write_notes("note", 8)
+        owed_reads = []
+        real_read = Store.sources_ingested_since
+        monkeypatch.setattr(
+            Store,
+            "sources_ingested_since",
+            lambda store, since: owed_reads.append(since) or real_read(store, since),
+        )
+        with caplog.at_level(logging.WARNING):
+            await library.sync()
+            assert wiki_on.available.called
+            assert ("extractor unavailable" in caplog.text) is not available
+            wiki_on.available.reset_mock()
+            caplog.clear()
+
+            result = await library.sync()
+
+        assert result.unchanged == 8
+        assert wiki_on.available.call_count == 0
+        assert owed_reads == []
+        assert "extractor unavailable" not in caplog.text
 
     async def test_a_refresh_that_fails_keeps_the_mark_for_the_next_sync(
         self, tmp_path, monkeypatch
