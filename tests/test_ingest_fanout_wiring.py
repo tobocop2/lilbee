@@ -422,3 +422,58 @@ class TestMergeScope:
 
         pipeline_mod._merge_worker_shards(FullStore(), [], {"a.txt"})
         assert scopes == [{"a.txt"}]
+
+
+class TestFanOutPartlyRead:
+    async def test_the_parent_tells_its_workers_to_retry(self, corpus, monkeypatch, services):
+        taken = {}
+
+        async def fake_fanout(specs, store, *, options, **_kw):
+            taken["options"] = options
+            return SyncResult()
+
+        monkeypatch.setattr(pipeline_mod, "plan_fanout", lambda: ["spec"])
+        monkeypatch.setattr(pipeline_mod, "_sync_across_workers", fake_fanout)
+
+        await pipeline_mod.sync(quiet=True, retry_skipped=True)
+        assert taken["options"].retry_skipped is True
+
+        await pipeline_mod.sync(quiet=True)
+        assert taken["options"].retry_skipped is False
+
+    async def test_the_fan_out_sync_done_counts_partly_read_files(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        worker_result = SyncResult(
+            added=["scan.pdf"],
+            partial=[
+                PartialFile("scan.pdf", [FailedPage(page=3, error="timed out", recovered=False)])
+            ],
+        )
+        verdicts = [fanout.ShardDone(kind="done", index=0, result=worker_result, error=None)]
+
+        async def fake_run_workers(*args, **kwargs):
+            return verdicts
+
+        async def fake_passes(store, **kwargs):
+            return None
+
+        monkeypatch.setattr(pipeline_mod, "run_workers", fake_run_workers)
+        monkeypatch.setattr(pipeline_mod, "_merge_worker_shards", lambda *args: None)
+        monkeypatch.setattr(pipeline_mod, "_run_post_ingest_passes", fake_passes)
+        events = {}
+
+        result = await pipeline_mod._sync_across_workers(
+            [],
+            store=MagicMock(),
+            options=fanout.ShardOptions(parent_pid=1),
+            quiet=True,
+            on_progress=events.__setitem__,
+            cancel=None,
+        )
+
+        assert [partial.name for partial in result.partial] == ["scan.pdf"]
+        assert events[EventType.SYNC_DONE].partial == 1

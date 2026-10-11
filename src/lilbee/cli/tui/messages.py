@@ -12,8 +12,15 @@ from functools import lru_cache
 from importlib.util import find_spec
 from pathlib import Path
 
+from lilbee.cli.tui.task_queue import TaskReport
 from lilbee.core.config import cfg
-from lilbee.data.types import SyncResult
+from lilbee.data.types import (
+    PARTLY_READ_FILE_COLUMN,
+    PARTLY_READ_PAGES_COLUMN,
+    PARTLY_READ_TITLE,
+    SyncResult,
+    failed_page_line,
+)
 from lilbee.providers.fleet.gpu_backends import IntelHintKind, IntelUtilHint
 from lilbee.runtime.progress import OcrBackendUsed
 from lilbee.wiki.shared import WIKI_TYPE_HEADINGS as _WIKI_TYPE_HEADINGS
@@ -89,8 +96,62 @@ SYNC_HELD_OUT = (
 STATUS_HELD_OUT_TITLE = "Held out of the index"
 STATUS_HELD_OUT_EMPTY = "No files are held out."
 STATUS_HELD_OUT_MORE = "{count} more held out"
-CMD_RETRY_SKIPPED_NONE = "No failed files to retry; running a normal sync."
-CMD_RETRY_SKIPPED_SOME = "Retrying {count} failed file(s); removed sources stay removed."
+STATUS_PARTLY_READ_TITLE = PARTLY_READ_TITLE
+STATUS_PARTLY_READ_EMPTY = "Every indexed file was read in full."
+STATUS_PARTLY_READ_FILE = PARTLY_READ_FILE_COLUMN
+STATUS_PARTLY_READ_PAGES = PARTLY_READ_PAGES_COLUMN
+SYNC_PARTLY_READ = "OCR failed on pages of {count} file(s). Open Tasks and press i for the details."
+TASK_REPORT_PARTIAL = "{count} partly read"
+TASK_REPORT_FAILED = "{count} failed"
+TASK_REPORT_SKIPPED = "{count} skipped"
+TASK_REPORT_HINT = "i for details"
+TASK_DETAIL_HINT = "Esc / i / q to close"
+TASK_DETAIL_CLOSE = "Close"
+TASK_DETAIL_NONE = "This task has no file details."
+TASK_DETAIL_FAILED_TITLE = "Failed"
+TASK_DETAIL_SKIPPED_TITLE = "Skipped"
+TASK_DETAIL_NO_REASON = "no reason recorded"
+
+
+def task_report_summary(report: TaskReport) -> str:
+    """The Task Center detail line counting what an ingest task did not fully index."""
+    counts = {
+        TASK_REPORT_PARTIAL: len(report.partial),
+        TASK_REPORT_FAILED: len(report.failed),
+        TASK_REPORT_SKIPPED: len(report.skipped),
+    }
+    parts = [label.format(count=count) for label, count in counts.items() if count]
+    return "  ·  ".join([*parts, TASK_REPORT_HINT])
+
+
+def _reason_section(title: str, reasons: dict[str, str]) -> list[str]:
+    """One detail section listing each file with its reason; empty when *reasons* is."""
+    if not reasons:
+        return []
+    lines = [title]
+    lines += [f"  {name}: {reason or TASK_DETAIL_NO_REASON}" for name, reason in reasons.items()]
+    return [*lines, ""]
+
+
+def task_report_text(report: TaskReport) -> str:
+    """The detail view body: partly read files with failed pages, then failed and skipped files."""
+    lines: list[str] = []
+    if report.partial:
+        lines.append(PARTLY_READ_TITLE)
+        for partial in report.partial:
+            lines.append(f"  {partial.name}")
+            lines += [f"    {failed_page_line(page)}" for page in partial.pages]
+        lines.append("")
+    lines += _reason_section(TASK_DETAIL_FAILED_TITLE, report.failed)
+    lines += _reason_section(TASK_DETAIL_SKIPPED_TITLE, report.skipped)
+    return "\n".join(lines).rstrip()
+
+
+CMD_RETRY_SKIPPED_NONE = "No failed files to retry; reading partly read files again."
+CMD_RETRY_SKIPPED_SOME = (
+    "Retrying {count} failed file(s) and reading partly read files again; "
+    "removed sources stay removed."
+)
 CMD_PRUNE_IGNORED_NONE = "Nothing indexed matches your ignore patterns."
 CMD_PRUNE_IGNORED_SOME = "Dropped {count} document(s) your ignore patterns exclude."
 
@@ -731,14 +792,20 @@ TASKBAR_WARM_LOADING = "loading into VRAM"
 
 TASK_CENTER_TITLE = "Background Tasks"
 TASK_CENTER_COUNTS = "{active} running  ·  {queued} queued  ·  {done} done"
-TASK_CENTER_HINT = "r refresh   c cancel   C clear done   q back   j/k navigate"
+TASK_CENTER_HINT = "r refresh   c cancel   i details   C clear done   q back   j/k navigate"
 TASK_CENTER_EMPTY_HEADLINE = "✓ all caught up"
 TASK_CENTER_EMPTY_DETAIL = "no background tasks"
+TASK_CENTER_DETAILS = "Details"
+TASK_CENTER_HELP = (
+    "Background task monitor.\n\n"
+    "Press r to refresh, c to cancel the focused task, i for its file details."
+)
 TASKBAR_SINGLE = "{name}  [b]{pct:.1f}%[/b]"
 TASKBAR_MULTIPLE = "[b]{count} tasks running[/b]"
 TASKBAR_ONE = "[b]1 task running[/b]"
 TASKBAR_QUEUED_COUNT = "{count} queued"
 TASKBAR_ALL_DONE = "[b]Done[/b]"
+TASKBAR_PARTIAL = "[b]Done, some files not fully read[/b]"
 TASKBAR_FAILED = "[b]{count} task failed[/b]"
 TASKBAR_FAILED_PLURAL = "[b]{count} tasks failed[/b]"
 TASKBAR_SYNC_PENDING_ONE = "[b]1 doc to sync[/b] · S to sync"

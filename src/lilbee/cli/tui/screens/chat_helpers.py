@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 from urllib.request import url2pathname
 
 from lilbee.cli.tui import messages as msg
+from lilbee.cli.tui.task_queue import TaskReport
 from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
 from lilbee.providers.base import ClosableIterator
 from lilbee.runtime.progress import (
@@ -147,6 +148,25 @@ def unregister_added_roots(labels: list[str]) -> None:
 
     if labels:
         forget_roots(labels)
+
+
+def ingest_report(result: SyncResult) -> TaskReport:
+    """What *result* did not fully index, for the task row and its detail view."""
+    return TaskReport(
+        partial=tuple(result.partial),
+        failed={name: result.reasons.get(name, "") for name in result.failed},
+        skipped={name: result.reasons.get(name, "") for name in result.skipped},
+        indexed=len(result.added) + len(result.updated) + len(result.relocated),
+    )
+
+
+def report_ingest(reporter: ProgressReporter, result: SyncResult) -> TaskReport:
+    """Attach *result*'s report to the task and show its counts on the row."""
+    report = ingest_report(result)
+    if report.has_problems:
+        reporter.set_report(report)
+        reporter.update(100, msg.task_report_summary(report), indeterminate=False)
+    return report
 
 
 def add_indexed_anything(registered: list[str], result: SyncResult) -> bool:

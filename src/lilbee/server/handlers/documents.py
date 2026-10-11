@@ -14,6 +14,7 @@ from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
     DocumentRemoveResponse,
+    FailedPageInfo,
     SourceContentResponse,
 )
 
@@ -104,6 +105,9 @@ async def list_documents(
                 filename=s["filename"],
                 chunk_count=s.get("chunk_count", 0),
                 ingested_at=s.get("ingested_at", ""),
+                ocr_page_failures=[
+                    FailedPageInfo(**row) for row in s.get("ocr_page_failures") or []
+                ],
             )
             for s in page
         ],

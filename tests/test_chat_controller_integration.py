@@ -501,7 +501,15 @@ def test_do_sync_reports_file_and_embed_progress() -> None:
 
     from lilbee.data.ingest import SyncResult
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=2),
@@ -538,7 +546,15 @@ def test_do_sync_done_event_reports_completion() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         on_progress(
             EventType.SYNC_DONE,
             SyncDoneEvent(added=3, updated=1, removed=0, failed=0),
@@ -583,7 +599,15 @@ def test_do_sync_reports_what_pruning_dropped() -> None:
     reporter = MagicMock(spec=ProgressReporter)
     notes: list[str] = []
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         assert prune_ignored is True
         return SyncResult(removed=["vendor/lib.min.js"])
 
@@ -622,7 +646,15 @@ def test_do_sync_raises_on_sync_failed() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         return SyncResult(failed=["broken.pdf"])
 
     captured: list[Exception] = []
@@ -653,7 +685,15 @@ def test_do_sync_reports_a_cancel_with_the_resume_hint() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         import asyncio as _asyncio
 
         raise _asyncio.CancelledError
@@ -686,7 +726,15 @@ def test_do_sync_hands_the_task_reporter_to_sync_as_its_cancel() -> None:
     reporter = MagicMock(spec=ProgressReporter)
     received: list[object] = []
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         received.append(cancel)
         return SyncResult()
 
@@ -714,7 +762,15 @@ def test_do_add_hands_the_task_reporter_to_sync_as_its_cancel(tmp_path: Path) ->
     reporter = MagicMock(spec=ProgressReporter)
     received: list[object] = []
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         received.append(cancel)
         return SyncResult(added=[src.name])
 
@@ -1072,7 +1128,15 @@ def test_do_add_on_progress_updates_reporter_on_file_start(tmp_path: Path) -> No
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         on_progress(
             EventType.FILE_START,
             FileStartEvent(file="a.pdf", current_file=1, total_files=1),
@@ -1122,7 +1186,15 @@ def test_do_add_on_progress_surfaces_per_page_progress(tmp_path: Path) -> None:
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         # Per-page rasterization progress fires while the file is being
         # processed (FILE_START has already named it via the relative source
         # name); the BATCH_PROGRESS event itself is emitted by the OCR
@@ -1192,7 +1264,15 @@ def test_do_add_progress_label_pins_to_oldest_in_flight_file(tmp_path: Path) -> 
 
     reg_result = RegisterResult(registered=[src.name])
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         # Three files start concurrently. The pipeline emits FILE_START for each.
         on_progress(
             EventType.FILE_START, FileStartEvent(file="a.pdf", current_file=1, total_files=3)
@@ -1696,7 +1776,15 @@ def test_do_sync_throttles_rapid_embed_events() -> None:
     screen = ChatScreen.__new__(ChatScreen)
     reporter = MagicMock(spec=ProgressReporter)
 
-    async def fake_sync(*, quiet, on_progress, cancel, force_rebuild=False, prune_ignored=False):
+    async def fake_sync(
+        *,
+        quiet,
+        on_progress,
+        cancel,
+        force_rebuild=False,
+        prune_ignored=False,
+        retry_skipped=False,
+    ):
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=1, total_chunks=10))
         on_progress(EventType.EMBED, EmbedEvent(file="a.pdf", chunk=2, total_chunks=10))
 

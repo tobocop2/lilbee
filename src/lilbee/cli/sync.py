@@ -29,7 +29,13 @@ if TYPE_CHECKING:
 
 
 def _format_sync_summary(
-    added: int, updated: int, removed: int, failed: int, skipped: int = 0, relocated: int = 0
+    added: int,
+    updated: int,
+    removed: int,
+    failed: int,
+    skipped: int = 0,
+    relocated: int = 0,
+    partial: int = 0,
 ) -> str | None:
     """Format sync counts into a human-readable summary, or None if nothing changed."""
     counts = {
@@ -37,6 +43,7 @@ def _format_sync_summary(
         "updated": updated,
         "removed": removed,
         "relocated": relocated,
+        "partly read": partial,
         "skipped": skipped,
         "failed": failed,
     }
@@ -60,7 +67,13 @@ def _print_done(con: PlainConsole, data: ProgressEvent) -> None:
     if not isinstance(data, SyncDoneEvent):
         raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
     summary = _format_sync_summary(
-        data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
+        data.added,
+        data.updated,
+        data.removed,
+        data.failed,
+        data.skipped,
+        data.relocated,
+        data.partial,
     )
     if summary:
         con.print(f"Synced: {summary}", style=theme.MUTED)
@@ -176,7 +189,13 @@ def _chat_sync_callback(status: SyncStatus) -> DetailedProgressCallback:
             if not isinstance(data, SyncDoneEvent):
                 raise TypeError(f"Expected SyncDoneEvent, got {type(data).__name__}")
             summary = _format_sync_summary(
-                data.added, data.updated, data.removed, data.failed, data.skipped, data.relocated
+                data.added,
+                data.updated,
+                data.removed,
+                data.failed,
+                data.skipped,
+                data.relocated,
+                data.partial,
             )
             if summary:
                 print(f"✓ Synced: {summary}")

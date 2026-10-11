@@ -15,7 +15,14 @@ from textual.app import App
 
 from lilbee.catalog.formatting import download_task_name
 from lilbee.cli.tui import messages as msg
-from lilbee.cli.tui.task_queue import CancelOrigin, Task, TaskQueue, TaskStatus, TaskType
+from lilbee.cli.tui.task_queue import (
+    CancelOrigin,
+    Task,
+    TaskQueue,
+    TaskReport,
+    TaskStatus,
+    TaskType,
+)
 from lilbee.cli.tui.thread_safe import call_from_thread
 from lilbee.crawler import bootstrap_chromium, chromium_installed
 from lilbee.runtime import asyncio_loop
@@ -39,8 +46,16 @@ class TaskOutcome(StrEnum):
     """How a task terminated. Passed from worker thread to finalizer."""
 
     DONE = "done"
+    PARTIAL = "partial"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+# The queue status a task takes when its worker returned normally.
+_COMPLETED_STATUS: dict[TaskOutcome, TaskStatus] = {
+    TaskOutcome.DONE: TaskStatus.DONE,
+    TaskOutcome.PARTIAL: TaskStatus.PARTIAL,
+}
 
 
 class ProgressReporter:
@@ -87,6 +102,10 @@ class ProgressReporter:
         self._controller.queue.update_task(
             self._task_id, progress, detail, indeterminate=indeterminate
         )
+
+    def set_report(self, report: TaskReport) -> None:
+        """Attach the files this task did not fully index to its row."""
+        self._controller.queue.set_report(self._task_id, report)
 
 
 TaskTarget = Callable[[ProgressReporter], None]
@@ -338,9 +357,10 @@ class TaskBarController:
         It should periodically call ``reporter.update(percent, detail)`` and
         may call ``reporter.check_cancelled()`` to cooperatively abort.
 
-        On success (target returns normally) the queue marks the task DONE
-        and ``on_success`` (if provided) runs after on the same worker
-        thread. On ``TaskCancelledError`` the task is marked CANCELLED. On any
+        On success (target returns normally) the queue marks the task DONE,
+        or PARTIAL when the target reported files it did not fully index, and
+        ``on_success`` (if provided) runs after on the same worker thread. On
+        ``TaskCancelledError`` the task is marked CANCELLED. On any
         other exception the task is marked FAILED with ``str(exc)`` as
         detail. Rows linger in the Task Center under their final status
         until the user presses capital ``C`` to clear; the bottom bar
@@ -447,7 +467,7 @@ class TaskBarController:
             log.warning("Task %s failed: %s", task_id, exc)
             self._post_finalize(task_id, TaskOutcome.FAILED, str(exc), task_type)
         else:
-            self._post_finalize(task_id, TaskOutcome.DONE, "", task_type)
+            self._post_finalize(task_id, self._success_outcome(task_id), "", task_type)
             if on_success is not None:
                 try:
                     on_success()
@@ -457,6 +477,13 @@ class TaskBarController:
             self._task_targets.pop(task_id, None)
             with self._lock:
                 self._workers.pop(task_id, None)
+
+    def _success_outcome(self, task_id: str) -> TaskOutcome:
+        """``PARTIAL`` when the worker reported files it did not fully index, else ``DONE``."""
+        task = self.queue.get_task(task_id)
+        report = task.report if task is not None else None
+        partial = report is not None and report.is_partial
+        return TaskOutcome.PARTIAL if partial else TaskOutcome.DONE
 
     def _post_finalize(
         self, task_id: str, outcome: TaskOutcome, detail: str, task_type: str | None
@@ -480,8 +507,9 @@ class TaskBarController:
         history; the bottom bar flash expires on its own. Users clear
         finished rows from the Task Center manually.
         """
-        if outcome is TaskOutcome.DONE:
-            self.queue.complete_task(task_id)
+        completed = _COMPLETED_STATUS.get(outcome)
+        if completed is not None:
+            self.queue.complete_task(task_id, completed)
             self._after_done_hooks(task_type)
         elif outcome is TaskOutcome.FAILED:
             self.queue.fail_task(task_id, detail)

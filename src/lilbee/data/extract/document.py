@@ -45,6 +45,7 @@ from .backends.vision_ocr import backend_options_for, ocr_request
 from .batch import active_extract_batcher
 from .chunk import ChunkLimitError, build_chunking_config, chunk_text, enforce_chunk_limit
 from .trace import ExtractionTrace, trace_extraction, trace_log
+from .xberg import failed_ocr_pages
 
 if TYPE_CHECKING:
     from xberg import (
@@ -538,7 +539,8 @@ async def ingest_document(
     also gets one OCR_START event before its extraction. ``quiet`` is accepted for
     pipeline call compatibility. The returned metadata carries the document's
     extraction title/authors/date and is derived even when extraction yields nothing;
-    the OCR report says which backend the extraction ran and how many pages it OCR'd.
+    the OCR report says which backend the extraction ran and how many pages it OCR'd,
+    and the failed pages are the ones whose OCR failed.
     """
     del quiet
     doc, ocr = await _extract_document(
@@ -552,7 +554,7 @@ async def ingest_document(
         page_texts_out=page_texts_out,
         ocr_backend=ocr.backend,
     )
-    return DocumentRecords(records, meta, ocr)
+    return DocumentRecords(records, meta, ocr, failed_ocr_pages(doc))
 
 
 async def ingest_archive(
@@ -611,7 +613,8 @@ async def _collect_members(
             )
         except ChunkLimitError as exc:
             raise ChunkLimitError(exc.count, exc.limit, member=name) from None
-        members.append(MemberRecords(name, content_type, records, page_texts, meta))
+        failed = failed_ocr_pages(entry.result)
+        members.append(MemberRecords(name, content_type, records, page_texts, meta, failed))
     if unsupported:
         log.info(
             "Skipped %d member(s) of %s, unsupported format: %s",

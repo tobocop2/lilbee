@@ -3,6 +3,7 @@
 import errno
 import sys
 from contextlib import contextmanager
+from typing import ClassVar
 from unittest import mock
 
 import numpy as np
@@ -12,6 +13,7 @@ from lilbee.core.config import CHUNKS_TABLE, META_TABLE, cfg
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
+    FailedPage,
     SearchChunk,
     SearchScope,
     SourceMeta,
@@ -19,6 +21,7 @@ from lilbee.data.store import (
     Store,
     cosine_sim,
     escape_sql_string,
+    failed_pages,
     mmr_rerank,
     scope_to_chunk_type,
 )
@@ -4152,3 +4155,69 @@ class TestRelocateTitles:
         store.upsert_source("real.md", "h1", 1, SourceType.DOCUMENT)
         table = store.open_table("_sources")
         assert store._relocated_title(table, "absent.md", "b.md", derive_title) is _KEEP_TITLE
+
+
+class TestSourceFailedPages:
+    """The ``_sources`` column of pages whose OCR failed."""
+
+    _PAGE_3 = FailedPage(page=3, error="timed out", recovered=False)
+    _PAGE_4 = FailedPage(page=4, error="no text", recovered=True)
+    _PAGE_3_ROW: ClassVar[dict] = {"page": 3, "error": "timed out", "recovered": False}
+    _PAGE_4_ROW: ClassVar[dict] = {"page": 4, "error": "no text", "recovered": True}
+
+    def _write(self, store, name, pages):
+        from lilbee.data.store import ChunkWrite
+
+        store.write_chunks_batch(
+            [ChunkWrite(name, "h1", _make_records(1), needs_cleanup=True, ocr_page_failures=pages)]
+        )
+
+    def test_a_batched_write_stores_the_pages_and_a_clean_rewrite_clears_them(self, store):
+        self._write(store, "scan.pdf", [self._PAGE_3, self._PAGE_4])
+        [row] = store.get_sources()
+        assert row["ocr_page_failures"] == [self._PAGE_3_ROW, self._PAGE_4_ROW]
+        assert failed_pages(row) == [self._PAGE_3, self._PAGE_4]
+
+        self._write(store, "scan.pdf", [])
+        [row] = store.get_sources()
+        assert row["ocr_page_failures"] is None
+        assert failed_pages(row) == []
+
+    def test_a_long_list_of_failed_pages_is_stored_whole(self, store):
+        pages = [FailedPage(page=number, error="boom", recovered=False) for number in range(1, 201)]
+        self._write(store, "scan.pdf", pages)
+        assert failed_pages(store.get_sources()[0]) == pages
+
+    def test_an_upsert_without_failed_pages_stores_null(self, store):
+        store.upsert_source("notes.md", "h1", 2)
+        assert store.get_sources()[0]["ocr_page_failures"] is None
+
+    def test_failed_pages_of_a_record_without_the_column_is_empty(self):
+        record = {"filename": "old.pdf", "file_hash": "h", "ingested_at": "", "chunk_count": 1}
+        assert failed_pages(record) == []
+
+    def test_a_sources_table_without_the_column_gains_it_on_the_next_write(self, store):
+        import pyarrow as pa
+
+        from lilbee.core.config import SOURCES_TABLE
+        from lilbee.data.store.schema import _sources_schema
+
+        old_schema = pa.schema([f for f in _sources_schema() if f.name != "ocr_page_failures"])
+        table = store.get_db().create_table(SOURCES_TABLE, schema=old_schema)
+        table.add([{"filename": "old.pdf", "file_hash": "h0", "chunk_count": 1}])
+
+        self._write(store, "scan.pdf", [self._PAGE_3])
+
+        rows = {row["filename"]: row["ocr_page_failures"] for row in store.get_sources()}
+        assert rows == {"old.pdf": None, "scan.pdf": [self._PAGE_3_ROW]}
+
+    def test_a_stat_backfill_keeps_the_stored_pages(self, store):
+        from lilbee.data.store import SourceStat, SourceStatBackfill
+
+        self._write(store, "scan.pdf", [self._PAGE_3])
+        [row] = store.get_sources()
+
+        store.update_source_stats([SourceStatBackfill(row, SourceStat(10, 20, 30))])
+
+        [after] = store.get_sources()
+        assert (after["size_bytes"], after["ocr_page_failures"]) == (10, [self._PAGE_3_ROW])

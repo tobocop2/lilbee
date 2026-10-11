@@ -13,6 +13,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from lilbee.core.config import active_config
+from lilbee.data.store import FailedPage
 from lilbee.runtime.cpu import cpu_quota
 
 if TYPE_CHECKING:
@@ -38,6 +39,14 @@ class BatchItem:
     filename: str | None
     ocr: OcrConfig | None
     on_progress: ProgressCallback | None = None
+
+
+def failed_ocr_pages(doc: ExtractedDocument) -> tuple[FailedPage, ...]:
+    """The pages of *doc* whose OCR failed, as xberg lists them; empty when none did."""
+    return tuple(
+        FailedPage(page=failure.page, error=failure.error, recovered=failure.recovered)
+        for failure in doc.ocr_page_failures or []
+    )
 
 
 def _input(data: bytes, mime_type: str | None, filename: str | None) -> ExtractInput:

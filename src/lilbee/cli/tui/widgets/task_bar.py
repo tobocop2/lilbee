@@ -30,6 +30,18 @@ _DONE_FLASH_SECONDS = 2.0
 _POLL_INTERVAL_ACTIVE_S = 0.1
 _POLL_INTERVAL_IDLE_S = 1.0
 
+# Flash outcome when several tasks finish together: the highest one wins.
+_FLASH_PRIORITY: dict[TaskStatus, int] = {
+    TaskStatus.DONE: 0,
+    TaskStatus.PARTIAL: 1,
+    TaskStatus.FAILED: 2,
+}
+# Dot colour and copy of the flash outcomes that name no count.
+_FLASH_STEADY: dict[TaskStatus, tuple[str, str]] = {
+    TaskStatus.DONE: ("$success", msg.TASKBAR_ALL_DONE),
+    TaskStatus.PARTIAL: ("$warning", msg.TASKBAR_PARTIAL),
+}
+
 # Pulsing-dot cadence: on/off flip at half of this tick count.
 # 10 Hz poll x 5 = 500 ms per half cycle, which is a 1 Hz dot pulse,
 # matching the active-row rail pulse in the Task Center.
@@ -207,8 +219,9 @@ class TaskBar(Static):
         Visual language:
         - Leading ``●`` pulses ``$primary`` <-> ``$primary-lighten-2`` at 1 Hz
           when anything is active. Dim ``$text-muted`` when only queued tasks
-          remain, ``$success`` during a completion flash, ``$error`` during
-          a failure flash.
+          remain, ``$success`` during a completion flash, ``$warning`` when a
+          finished task left files partly read or unread, ``$error`` during a
+          failure flash.
         - The text either reads ``{name} {pct}`` (one active, zero queued),
           ``{N} tasks running`` (plural), ``{N} queued`` (throttle mode),
           or the flash copy.
@@ -238,8 +251,7 @@ class TaskBar(Static):
                 new_done = [
                     t
                     for t in history
-                    if t.task_id not in self._flashed_ids
-                    and t.status in (TaskStatus.DONE, TaskStatus.FAILED)
+                    if t.task_id not in self._flashed_ids and t.status in _FLASH_PRIORITY
                 ]
                 if new_done:
                     for t in new_done:
@@ -250,8 +262,8 @@ class TaskBar(Static):
                     self._flash_failed_count = sum(
                         1 for t in new_done if t.status == TaskStatus.FAILED
                     )
-                    self._flash_outcome = (
-                        TaskStatus.FAILED if self._flash_failed_count else TaskStatus.DONE
+                    self._flash_outcome = max(
+                        (t.status for t in new_done), key=_FLASH_PRIORITY.__getitem__
                     )
 
         idle = not active and not queued and not in_flash and self._flash_outcome is None
@@ -390,8 +402,10 @@ class TaskBar(Static):
         # Pulsing even/odd cadence, shared with TaskRow's rail pulse.
         on_beat = (self._tick_count // _DOT_PULSE_HALF_TICKS) % 2 == 0
 
-        if self._flash_outcome == TaskStatus.DONE:
-            return "$success", Content.from_markup(msg.TASKBAR_ALL_DONE)
+        outcome = self._flash_outcome
+        if outcome is not None and outcome in _FLASH_STEADY:
+            color, text = _FLASH_STEADY[outcome]
+            return color, Content.from_markup(text)
         if self._flash_outcome == TaskStatus.FAILED:
             count = self._flash_failed_count
             key = msg.TASKBAR_FAILED if count == 1 else msg.TASKBAR_FAILED_PLURAL

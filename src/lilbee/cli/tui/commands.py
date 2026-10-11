@@ -148,7 +148,7 @@ class LilbeeCommandProvider(Provider):
         self._app.action_run_sync()
 
     def _action_retry_skipped(self) -> None:
-        """Clear the failed-file markers and start a sync, like ``lilbee sync --retry-skipped``."""
+        """Start a sync that retries failed and partly read files, like ``sync --retry-skipped``."""
         self._app.run_worker(self._retry_skipped, thread=True, exit_on_error=False)
 
     def _retry_skipped(self) -> None:
@@ -160,7 +160,7 @@ class LilbeeCommandProvider(Provider):
             call_from_thread(app, app.notify, str(exc), severity="error")
             return
         call_from_thread(app, app.notify, msg.retry_skipped_message(len(cleared)))
-        call_from_thread(app, app.action_run_sync)
+        call_from_thread(app, app.action_run_sync, True)
 
     def _action_prune_ignored(self) -> None:
         """Sync with pruning on, the TUI equivalent of ``lilbee sync --prune-ignored``."""

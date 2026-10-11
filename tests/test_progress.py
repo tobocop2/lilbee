@@ -138,3 +138,23 @@ class TestEventModels:
         assert dumped == {"file": "f.txt", "chunk": 1, "total_chunks": 10}
         restored = EmbedEvent(**dumped)
         assert restored == ev
+
+
+class TestPartialStatuses:
+    def test_file_done_status_decodes_a_wire_value_into_the_enum(self):
+        from lilbee.runtime.progress import FileStatus
+
+        event = FileDoneEvent(file="scan.pdf", status="partial", chunks=4)
+        assert event.status is FileStatus.PARTIAL
+        assert event.model_dump()["status"] == "partial"
+
+    def test_file_done_rejects_a_status_outside_the_set(self):
+        import pydantic
+
+        with pytest.raises(pydantic.ValidationError):
+            FileDoneEvent(file="scan.pdf", status="half", chunks=4)
+
+    def test_sync_done_partial_count_defaults_to_zero(self):
+        from lilbee.runtime.progress import SyncDoneEvent
+
+        assert SyncDoneEvent(added=1, updated=0, removed=0, failed=0).partial == 0

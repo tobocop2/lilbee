@@ -734,3 +734,68 @@ class TestDrain:
             messages.put(fanout.ShardDone(kind="done", index=index, result=None, error="x"))
         assert len(fanout._drain(messages)) == 3
         assert fanout._drain(messages) == []
+
+
+class TestPartlyReadFanOut:
+    def test_partly_read_files_and_reasons_from_every_worker_reach_the_one_result(self):
+        from lilbee.data.store import FailedPage
+        from lilbee.data.types import PartialFile
+
+        verdicts = [
+            fanout.ShardDone(
+                kind="done",
+                index=0,
+                result=SyncResult(
+                    added=["a.pdf"],
+                    partial=[
+                        PartialFile(
+                            "a.pdf", [FailedPage(page=3, error="timed out", recovered=False)]
+                        )
+                    ],
+                    failed=["x.pdf"],
+                    reasons={"x.pdf": "the file is encrypted"},
+                ),
+                error=None,
+            ),
+            fanout.ShardDone(
+                kind="done",
+                index=1,
+                result=SyncResult(
+                    updated=["b.pdf"],
+                    partial=[
+                        PartialFile(
+                            "b.pdf", [FailedPage(page=1, error="timed out", recovered=False)]
+                        )
+                    ],
+                    skipped=["y.pdf"],
+                    reasons={"y.pdf": "no text extracted (0 chunks)"},
+                ),
+                error=None,
+            ),
+        ]
+
+        result = fanout.aggregate_results(verdicts)
+
+        assert [partial.name for partial in result.partial] == ["a.pdf", "b.pdf"]
+        assert result.reasons == {
+            "x.pdf": "the file is encrypted",
+            "y.pdf": "no text extracted (0 chunks)",
+        }
+
+    def test_a_worker_is_told_to_retry_when_the_run_retries_skipped(self, monkeypatch):
+        seen = {}
+
+        async def fake_sync(**kwargs):
+            seen.update(kwargs)
+            return SyncResult()
+
+        monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
+        monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
+        fanout.run_shard(
+            _spec(0),
+            fanout.ShardOptions(parent_pid=os.getppid(), retry_skipped=True),
+            queue_mod.Queue(),
+            threading.Event(),
+        )
+
+        assert seen["retry_skipped"] is True

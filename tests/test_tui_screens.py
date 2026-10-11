@@ -2129,7 +2129,7 @@ async def test_status_screen_has_collapsible_sections(mock_svc):
         from textual.widgets import Collapsible
 
         sections = app.screen.query(Collapsible)
-        assert len(sections) == 5
+        assert len(sections) == 6
 
 
 async def test_status_screen_sections_start_expanded(mock_svc):
@@ -2140,9 +2140,10 @@ async def test_status_screen_sections_start_expanded(mock_svc):
 
         await pilot.pause()
         sections = list(app.screen.query(Collapsible))
-        assert len(sections) == 5
-        # The held-out section opens only when the store holds something out.
-        assert all(section.collapsed is (section.id == "held-out-section") for section in sections)
+        assert len(sections) == 6
+        # The held-out and partly read sections open only when they have a file to show.
+        closed = {"held-out-section", "partly-read-section"}
+        assert all(section.collapsed is (section.id in closed) for section in sections)
 
 
 async def test_status_screen_config_shows_models(mock_svc):
@@ -2259,6 +2260,57 @@ async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
         table = app.screen.query_one("#held-out-table", DataTable)
         await _wait_for_row_count(pilot, table, 2)
         assert app.screen.query_one("#held-out-section", Collapsible).collapsed is False
+
+
+async def test_status_screen_lists_partly_read_files_with_a_line_for_each_page(
+    mock_svc, monkeypatch
+):
+    """A source with failed OCR pages shows one line for each page, in an open section."""
+    from textual.widgets import Collapsible, DataTable
+
+    from lilbee.cli.tui.screens import status as status_screen
+
+    mock_svc.store.get_sources.return_value = [
+        {"filename": "fine.md", "chunk_count": 2},
+        {
+            "filename": "scan[1].pdf",
+            "chunk_count": 4,
+            "ocr_page_failures": [
+                {"page": number, "error": "[timeout]", "recovered": number == 2}
+                for number in range(1, 8)
+            ],
+        },
+    ]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#partly-read-table", DataTable)
+        await _wait_for_row_count(pilot, table, 1)
+        filename, pages = table.get_row_at(0)
+        assert filename.plain == "scan[1].pdf"
+        assert pages.plain.splitlines() == [
+            "page 1: [timeout]",
+            "page 2: [timeout] (other text kept)",
+            *(f"page {number}: [timeout]" for number in range(3, 6)),
+            "and 2 more",
+        ]
+        assert app.screen.query_one("#partly-read-section", Collapsible).collapsed is False
+
+
+async def test_status_screen_keeps_the_partly_read_section_closed_when_empty(mock_svc, monkeypatch):
+    from textual.widgets import Collapsible, DataTable
+
+    from lilbee.cli.tui import messages as msg
+    from lilbee.cli.tui.screens import status as status_screen
+
+    mock_svc.store.get_sources.return_value = [{"filename": "fine.md", "chunk_count": 2}]
+    monkeypatch.setattr(status_screen, "held_out_sources", lambda: ([], 0))
+    app = StatusTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        table = app.screen.query_one("#partly-read-table", DataTable)
+        await _wait_for_row_count(pilot, table, 1)
+        assert table.get_row_at(0) == [msg.STATUS_PARTLY_READ_EMPTY, ""]
+        assert app.screen.query_one("#partly-read-section", Collapsible).collapsed is True
 
 
 async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written(
@@ -5072,7 +5124,8 @@ async def test_command_provider_retry_skipped_action(tmp_path):
             provider._action_retry_skipped()
             await app.workers.wait_for_complete()
             await _pilot.pause()
-            mock_sync.assert_called_once()
+            # True asks the sync to also read partly read files again.
+            mock_sync.assert_called_once_with(True)
         notify.assert_called_once_with(retry_skipped_message(1))
         assert load_skip_markers(tmp_path) == {"gone.txt": "cafef00d"}
         assert cleared_on and cleared_on[0] is not threading.main_thread()
@@ -15666,6 +15719,8 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     screen._load_documents = loaded_docs.append
     screen._load_storage = loaded_storage.append
     screen._load_held_out = lambda _docs: None
+    loaded_partly_read: list[_DocsResult] = []
+    screen._load_partly_read = loaded_partly_read.append
     screen._load_arch = loaded_arch.append
 
     docs_result = _DocsResult(sources=[{"a": 1}, {"b": 2}], load_failed=False)
@@ -15679,6 +15734,7 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     )()
     screen.on_worker_state_changed(sources_event)
     assert loaded_docs == [docs_result]
+    assert loaded_partly_read == [docs_result]
     assert loaded_storage == [2]
 
     arch_payload = ModelArchInfo()

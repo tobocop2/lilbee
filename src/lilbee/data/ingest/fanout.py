@@ -98,6 +98,7 @@ class ShardOptions:
 
     parent_pid: int
     force_rebuild: bool = False
+    retry_skipped: bool = False
 
 
 @dataclass(frozen=True)
@@ -430,6 +431,8 @@ def aggregate_results(verdicts: list[ShardDone]) -> SyncResult:
         relocated=[name for r in results for name in r.relocated],
         failed=[name for r in results for name in r.failed],
         skipped=[name for r in results for name in r.skipped],
+        partial=[partial for r in results for partial in r.partial],
+        reasons={name: reason for r in results for name, reason in r.reasons.items()},
         skipped_ocr={name: ocr for r in results for name, ocr in r.skipped_ocr.items()},
         removed=[name for r in results for name in r.removed],
         held_out=[held for r in results for held in r.held_out],
@@ -459,6 +462,7 @@ def run_shard(
             result = asyncio.run(
                 sync(
                     force_rebuild=options.force_rebuild,
+                    retry_skipped=options.retry_skipped,
                     quiet=True,
                     on_progress=reporter,
                     cancel=stop,

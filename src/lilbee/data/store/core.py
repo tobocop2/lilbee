@@ -7,6 +7,7 @@ import math
 import os
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, cast
@@ -60,6 +61,7 @@ from .schema import (
     _entity_schema_state_schema,
     _meta_schema,
     _page_texts_schema,
+    _sources_failed_pages_field,
     _sources_schema,
     _wiki_mentions_schema,
 )
@@ -74,6 +76,7 @@ from .types import (
     CitationRecord,
     EmbeddingModelMismatchError,
     EntitySchemaState,
+    FailedPage,
     MemoryKind,
     MemoryRow,
     PageTextRecord,
@@ -1080,6 +1083,8 @@ class Store:
             self._ensure_embedding_compat()
             self._fts_ready = False
             self._scalar_ready = False
+            if name == SOURCES_TABLE:
+                self._sources_table()
             ensure_table(self.get_db(), name, rows.schema).add(rows)
             self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
             return int(rows.num_rows)
@@ -1841,11 +1846,12 @@ class Store:
         source_type: str,
         stat: SourceStat | None,
         meta: SourceMeta | None = None,
+        ocr_page_failures: list[FailedPage] | None = None,
     ) -> dict:
         """Build one ``_sources`` row, defaulting absent stat to the unknown sentinel.
 
-        Absent extraction metadata persists as NULL, matching rows written
-        before the metadata columns existed.
+        Absent extraction metadata and an empty list of failed pages persist as
+        NULL, matching rows written before those columns existed.
         """
         meta = meta or SourceMeta()
         return {
@@ -1860,16 +1866,20 @@ class Store:
             "title": meta.title or None,
             "authors": meta.authors or None,
             "created_at": meta.created_at or None,
+            "ocr_page_failures": [asdict(page) for page in ocr_page_failures or []] or None,
         }
 
     def _sources_table(self) -> LanceTable:
-        """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
+        """Open/create ``_sources``, adding the stat, metadata and failed-page columns if absent."""
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
         defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
         defaults |= {name: "CAST(NULL AS STRING)" for name in _SOURCE_META_COLUMNS}
         missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
         if missing:
             table.add_columns(missing)
+        failed_pages = _sources_failed_pages_field()
+        if failed_pages.name not in table.schema.names:
+            table.add_columns(failed_pages)
         return table
 
     def _replace_source_rows_unlocked(self, rows: list[dict]) -> None:
@@ -1990,7 +2000,13 @@ class Store:
         """One ``_sources`` row per batched document."""
         return [
             self._source_row(
-                it.source, it.file_hash, len(it.records), it.source_type, it.stat, it.meta
+                it.source,
+                it.file_hash,
+                len(it.records),
+                it.source_type,
+                it.stat,
+                it.meta,
+                it.ocr_page_failures,
             )
             for it in items
         ]

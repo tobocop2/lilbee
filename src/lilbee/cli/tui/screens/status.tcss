@@ -41,3 +41,8 @@ Collapsible > Contents *:hover {
     height: auto;
     max-height: 20;
 }
+
+#partly-read-table {
+    height: auto;
+    max-height: 20;
+}
