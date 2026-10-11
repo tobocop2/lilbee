@@ -1039,7 +1039,7 @@ def _subjects_of(chunks):
 
 _NO_EXTRACTOR_LINES = [
     "Entity extraction disabled: spaCy model unavailable",
-    "Wiki entity extractor unavailable; leaving the stub index unchanged",
+    stubs_mod._NO_EXTRACTOR,
 ]
 
 
@@ -1196,11 +1196,7 @@ class TestTheWikiIndex:
         covered = self._record(stopped)
         assert covered is not None
         reports = stopped.write_notes("report", 8)
-        cancel = threading.Event()
-        with monkeypatch.context() as patch:
-            TestAStoppedSync()._stop_at("in_a_write", cancel, patch)
-            with pytest.raises(asyncio.CancelledError):
-                await stopped.sync(cancel=cancel)
+        await self._stop_in_a_write(stopped, monkeypatch)
         indexed = [name for name in stopped.sources() if name.startswith("report")]
         assert indexed, "the stopped sync indexed nothing, so the next one owes nothing"
         assert not set(indexed) & set(self._listed(stopped))
@@ -1632,11 +1628,7 @@ class TestTheWikiIndex:
         )
         library = Library(tmp_path / "lib", processes)
         library.write_notes("note", 8)
-        cancel = threading.Event()
-        with monkeypatch.context() as patch:
-            TestAStoppedSync()._stop_at("in_a_write", cancel, patch)
-            with pytest.raises(asyncio.CancelledError):
-                await library.sync(cancel=cancel)
+        await self._stop_in_a_write(library, monkeypatch)
         await library.sync()
         await library.sync()
 
