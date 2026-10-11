@@ -619,6 +619,10 @@ class _SourceTableStore(_FakeStore):
     def sources_version(self):
         return self.version
 
+    def get_sources(self):
+        self.reads.append("corpus")
+        return super().get_sources()
+
     def sources_checkpoint(self):
         self.reads.append("checkpoint")
         return SourcesCheckpoint(f"time-{self.version}", self.version)
@@ -733,7 +737,9 @@ class TestRefreshOwedSources:
         assert given == set()
         assert sorted(load_stub_index()) == ["ford", "gm"]
         assert store.record == SourcesCheckpoint("time-4", 4)
-        assert store.reads == ["checkpoint"]
+        # The checkpoint first: a row written during the read is then owed to the next refresh.
+        assert store.reads[0] == "checkpoint"
+        assert set(store.reads[1:]) == {"corpus"}
 
     def test_at_the_recorded_version_it_reads_nothing_and_asks_for_no_extractor(self):
         store, entities = self._refreshed_once()
