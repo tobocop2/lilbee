@@ -12,15 +12,17 @@ import errno
 import json
 import logging
 import sqlite3
+import sys
 import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal, overload
 
-from filelock import FileLock, ReadWriteLock
+from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
@@ -47,6 +49,8 @@ _SYNC_LOCK_NAME = "sync.lock"
 _SYNC_PROBE_PREFIX = "sync.probe."
 # How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
 _PROBE_WAIT_S = 0.3
+# Longest single wait for a reset to finish; a cancelled sync returns within it.
+_SYNC_TAKE_SLICE_S = 0.1
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
 # database, or a mount that refuses its locks). A busy lock arrives as filelock's
@@ -64,6 +68,10 @@ _DATA_ROOT_UNLOCKABLE = (
 _NO_LOCKING = (
     "{path} is on a filesystem that does not support file locking. Move it to a local disk."
 )
+_NO_HARD_LINKS = "its filesystem does not support hard links; move it to {disk}"
+_LOCAL_DISK = "a local disk"
+# The disk to move to, by sys.platform; every other platform gets _LOCAL_DISK.
+_HARD_LINK_DISKS = {"darwin": "a disk formatted as APFS"}
 _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
@@ -162,8 +170,12 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
         return None
 
 
-def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
-    """Hold the data root's sync lock; None lets a sync run unmarked when locking raises."""
+@overload
+def _open_sync_lock(data_root: Path, *, write: Literal[True]) -> ReadWriteLock: ...
+@overload
+def _open_sync_lock(data_root: Path, *, write: Literal[False]) -> AsyncReadWriteLock | None: ...
+def _open_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | AsyncReadWriteLock | None:
+    """Open the data root's sync lock; None lets a sync run unmarked when opening raises."""
     try:
         data_root.mkdir(parents=True, exist_ok=True)
         _require_locking(data_root)
@@ -172,37 +184,34 @@ def _acquire_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | None:
         return None
     path = data_root / _SYNC_LOCK_NAME
     try:
-        lock = ReadWriteLock(path, is_singleton=False)
+        return (ReadWriteLock if write else AsyncReadWriteLock)(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, write=write)
         return None
-    try:
-        if write:
-            lock.acquire_write(blocking=False)
-        else:
-            lock.acquire_read()
-    except FileLockTimeout:
-        lock.close()
-        raise ResetRefusedError(_SYNC_RUNNING) from None
-    except _SYNC_LOCK_ERRORS as exc:
-        lock.close()
-        _sync_lock_unavailable(path, exc, write=write)
-        return None
-    return lock
 
 
 def _require_locking(data_root: Path) -> None:
     """Raise ``LockingUnsupportedError`` when a lock nobody else holds still reports busy."""
     # Unique per call: a probe shared with another thread or host would read its hold as busy.
     probe_path = data_root / f"{_SYNC_PROBE_PREFIX}{uuid.uuid4().hex}"
-    probe = ReadWriteLock(probe_path, is_singleton=False)
     try:
-        probe.acquire_write(timeout=_PROBE_WAIT_S)
+        with closing(ReadWriteLock(probe_path, is_singleton=False)) as probe:
+            probe.acquire_write(timeout=_PROBE_WAIT_S)
     except FileLockTimeout:
         raise LockingUnsupportedError(_NO_LOCKING.format(path=data_root)) from None
+    except OSError as exc:
+        if not _hard_link_refused(exc):
+            raise
+        disk = _HARD_LINK_DISKS.get(sys.platform, _LOCAL_DISK)
+        raise OSError(_NO_HARD_LINKS.format(disk=disk)) from exc
     finally:
-        probe.close()
         _remove_probe(probe_path)
+
+
+def _hard_link_refused(error: OSError) -> bool:
+    """True when *error* is the lock's hard link, refused by a filesystem that has none."""
+    # Only a call on two paths sets filename2, and the link is the lock's only such call.
+    return error.errno == errno.ENOTSUP and error.filename2 is not None
 
 
 @contextmanager
@@ -233,36 +242,58 @@ def _sync_lock_unavailable(
     log.warning(_SYNC_LOCK_REFUSED, path, error)
 
 
-def _release_sync_lock(lock: ReadWriteLock | None) -> None:
-    if lock is not None:
-        lock.release()
-        lock.close()
+async def _take_sync_lock(lock: AsyncReadWriteLock) -> None:
+    """Take the read side of *lock*, waiting for a reset in slices a cancel can end."""
+    while True:
+        try:
+            await lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
+        except _SYNC_LOCK_ERRORS as exc:
+            # filelock raises a failed take in place of the cancel that interrupted it.
+            if isinstance(exc.__context__, asyncio.CancelledError):
+                raise exc.__context__ from None
+            # Only a busy lock is waited out.
+            if not isinstance(exc, FileLockTimeout):
+                raise
+        else:
+            return
 
 
 @asynccontextmanager
 async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
-    The wait for a reset to finish runs in a worker thread, off the event loop.
+    The wait for a reset to finish runs off the event loop.
     """
-    lock = await asyncio.to_thread(_acquire_sync_lock, data_root, write=False)
+    # Opening the lock reads and writes files, so it runs off the event loop too.
+    lock = await asyncio.to_thread(_open_sync_lock, data_root, write=False)
+    if lock is None:
+        yield
+        return
     try:
+        try:
+            await _take_sync_lock(lock)
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, write=False)
         yield
     finally:
-        _release_sync_lock(lock)
+        await lock.close()
 
 
 @contextmanager
 def no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
     try:
-        lock = _acquire_sync_lock(data_root, write=True)
+        lock = _open_sync_lock(data_root, write=True)
     except LockingUnsupportedError as exc:
         raise ResetRefusedError(str(exc)) from exc
-    try:
+    with closing(lock):
+        try:
+            lock.acquire_write(blocking=False)
+        except FileLockTimeout:
+            raise ResetRefusedError(_SYNC_RUNNING) from None
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, write=True)
         yield
-    finally:
-        _release_sync_lock(lock)
 
 
 @contextmanager

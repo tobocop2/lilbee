@@ -7,6 +7,8 @@ import shutil
 import sys
 import threading
 import warnings
+from collections.abc import Generator
+from contextlib import contextmanager
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -45,6 +47,7 @@ from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
+from lilbee.runtime.lock import no_sync_running
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
@@ -735,6 +738,29 @@ def _default_clusterer_mock():
     clusterer.available.return_value = False
     clusterer.get_clusters.return_value = []
     return clusterer
+
+
+@contextmanager
+def reset_held_on_a_thread(
+    data_root: Path, ends_after_s: float = 30.0
+) -> Generator[threading.Thread, None, None]:
+    """Hold a reset on *data_root* on a thread until the block ends, *ends_after_s* at most."""
+    held = threading.Event()
+    release = threading.Event()
+
+    def _reset() -> None:
+        with no_sync_running(data_root):
+            held.set()
+            release.wait(ends_after_s)
+
+    resetter = threading.Thread(target=_reset)
+    resetter.start()
+    try:
+        assert held.wait(5)
+        yield resetter
+    finally:
+        release.set()
+        resetter.join(timeout=5)
 
 
 def make_mock_services(**overrides):
