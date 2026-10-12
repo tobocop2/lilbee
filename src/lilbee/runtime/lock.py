@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, closing, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, overload
@@ -227,6 +227,14 @@ def _open_sync_lock(
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, refused_writer)
         return None
+
+
+def refuse_where_locking_is_unsupported(data_root: Path) -> None:
+    """Raise ``LockingUnsupportedError`` when *data_root* cannot lock files; write nothing."""
+    # A sync runs unmarked after any other failure of the probe, so the caller goes on.
+    with suppress(*_SYNC_LOCK_ERRORS):
+        data_root.mkdir(parents=True, exist_ok=True)
+        _require_locking(data_root)
 
 
 def _require_locking(data_root: Path) -> None:

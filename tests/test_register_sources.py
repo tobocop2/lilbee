@@ -115,7 +115,7 @@ class TestADataRootThatCannotLockFiles:
     def test_a_probe_that_fails_another_way_does_not_refuse_the_add(self, library, notes):
         """A sync runs unmarked on such a data root, so the add before it registers."""
         failure = OSError(5, "Input/output error")
-        with mock.patch("lilbee.app.ingest._require_locking", side_effect=failure) as probe:
+        with mock.patch("lilbee.runtime.lock._require_locking", side_effect=failure) as probe:
             result = register_sources([notes])
 
         probe.assert_called_once_with(cfg.data_root)
@@ -123,7 +123,7 @@ class TestADataRootThatCannotLockFiles:
         assert sorted(_registry()) == ["notes"]
 
     def test_an_add_of_no_path_probes_nothing(self, library):
-        with mock.patch("lilbee.app.ingest._require_locking") as probe:
+        with mock.patch("lilbee.runtime.lock._require_locking") as probe:
             assert register_sources([]).registered == []
 
         probe.assert_not_called()
