@@ -1,4 +1,4 @@
-"""Per-GPU ingest fan-out: sharding, worker specs, supervision, and the merge hand-off."""
+"""Per-GPU ingest fan-out: slices, worker specs, supervision, and the one result."""
 
 from __future__ import annotations
 
@@ -69,6 +69,13 @@ class FakeProcess:
     def kill(self):
         self.killed.set()
 
+    def wait_terminated(self, bound: float = _CANCEL_BOUND_S) -> bool:
+        """Block until the product terminates this worker; False when *bound* passes first."""
+        deadline = time.monotonic() + bound
+        while not self.terminated and time.monotonic() < deadline:
+            time.sleep(0.01)
+        return self.terminated
+
 
 class FakeContext:
     """A multiprocessing context whose workers are threads and whose queue is local."""
@@ -115,6 +122,19 @@ def _spec(index: int, count: int = 2, device: int = 0) -> fanout.ShardSpec:
         cpu_share=4,
         visible_devices={"CUDA_VISIBLE_DEVICES": str(device)},
     )
+
+
+class TestFakeProcess:
+    def test_a_worker_nobody_terminates_stops_waiting_at_the_bound(self):
+        worker = FakeProcess(target=lambda: None, args=(), name="never-terminated")
+        started = time.monotonic()
+        assert worker.wait_terminated(bound=0.05) is False
+        assert time.monotonic() - started < _CANCEL_BOUND_S
+
+    def test_a_terminated_worker_stops_waiting_at_once(self):
+        worker = FakeProcess(target=lambda: None, args=(), name="terminated")
+        worker.terminate()
+        assert worker.wait_terminated() is True
 
 
 class TestShardId:
@@ -206,13 +226,12 @@ class TestPlanFanout:
 
 
 class TestShardSpecs:
-    def test_each_worker_gets_a_private_store_and_the_shared_corpus(self):
+    def test_each_worker_gets_the_one_index_and_the_shared_corpus(self):
         specs = fanout.shard_specs(cfg, processes=2, devices=2)
         roots = [spec.config.data_root for spec in specs]
         assert roots == [cfg.data_root / "shards" / "w0", cfg.data_root / "shards" / "w1"]
-        assert [spec.config.lancedb_dir for spec in specs] == [
-            root / "data" / "lancedb" for root in roots
-        ]
+        # Every worker writes the index itself: none has a store of its own.
+        assert [spec.config.lancedb_dir for spec in specs] == [cfg.lancedb_dir, cfg.lancedb_dir]
         # The corpus is read in place: no worker gets its own copy of it.
         assert {spec.config.documents_dir for spec in specs} == {cfg.documents_dir}
         # So are its skip records.
@@ -392,7 +411,7 @@ class TestRunShard:
         spec = _spec(1)
         fanout.run_shard(
             spec,
-            fanout.ShardOptions(parent_pid=os.getppid(), force_rebuild=True),
+            fanout.ShardOptions(parent_pid=os.getppid()),
             messages,
             threading.Event(),
         )
@@ -400,7 +419,8 @@ class TestRunShard:
         assert (verdict.index, verdict.error) == (1, None)
         assert verdict.result.added == ["a.txt"]
         assert seen["shard"] == spec.shard
-        assert seen["force_rebuild"] is True
+        # A rebuild drops the index, which every worker shares: only the parent may.
+        assert "force_rebuild" not in seen
         assert seen["quiet"] is True
 
     def test_a_worker_that_raises_reports_the_failure_instead_of_dying_silently(self, monkeypatch):
@@ -510,9 +530,7 @@ class TestRunWorkers:
         def silent_shard(spec, options, messages, stop):
             stops.append(stop)
             cancel.set()
-            worker = fake_context.processes[spec.shard.index]
-            while not worker.terminated:
-                time.sleep(0.01)
+            fake_context.processes[spec.shard.index].wait_terminated()
 
         monkeypatch.setattr(fanout, "run_shard", silent_shard)
         if moment == "before_the_start":

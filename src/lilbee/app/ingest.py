@@ -672,6 +672,23 @@ def forget_removed_from_wiki_index(removed: list[str]) -> None:
         log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
 
 
+def forget_missing_from_wiki_index() -> None:
+    """Drop from the wiki's browse index each source it lists that holds no source row.
+
+    For the parent of a fan-out that stopped: its workers remove sources and
+    report nothing. Best effort, as the removal already succeeded.
+    """
+    config = active_config()
+    if not config.wiki:
+        return
+    from lilbee.wiki.stubs import drop_removed_sources
+
+    try:
+        drop_removed_sources(get_services().store, config)
+    except Exception:
+        log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
+
+
 @contextmanager
 def temporary_ocr_config(
     ocr: OcrMode | None = None,

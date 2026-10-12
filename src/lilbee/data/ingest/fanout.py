@@ -1,4 +1,4 @@
-"""One ingest worker process per GPU, each over its own slice of the corpus."""
+"""One ingest worker process per GPU, each writing its slice of the corpus to the one index."""
 
 from __future__ import annotations
 
@@ -48,14 +48,14 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# Per-worker state (store, engine slots, log) under the parent data root; the
-# skip records stay the corpus's, at the parent data root itself.
+# Per-worker state (engine slots, log) under the parent data root. The index
+# and the skip records are the corpus's, at the parent data root itself.
 SHARDS_DIRNAME = "shards"
 _DATA_ROOT_ENV = "LILBEE_DATA"
 _CPU_QUOTA_ENV = "LILBEE_CPU_QUOTA"
 
 # Below this many files on disk a fan-out costs more than it saves: every worker
-# pays a fresh interpreter, its own engine and a store of its own.
+# pays a fresh interpreter and its own engine.
 _MIN_FILES_FOR_FANOUT = 2000
 
 # Under two workers there is nothing to fan out to.
@@ -82,7 +82,7 @@ WORKER_LOG_NAME = "sync.log"
 
 @dataclass(frozen=True)
 class ShardSpec:
-    """One worker's slice, its card, and the private state it owns."""
+    """One worker's slice, its card, and the state it owns."""
 
     shard: ShardId
     device: int
@@ -97,7 +97,6 @@ class ShardOptions:
     """What every worker of one fan-out is told about the run it belongs to."""
 
     parent_pid: int
-    force_rebuild: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,7 +113,7 @@ class ShardProgress:
 
 @dataclass(frozen=True)
 class ShardDone:
-    """A worker's verdict; *error* set means it produced no usable shard."""
+    """A worker's verdict; *error* set means it did not finish its slice."""
 
     kind: Literal["done"]
     index: int
@@ -180,14 +179,13 @@ def shard_specs(config: Config, processes: int, devices: int) -> list[ShardSpec]
 def _shard_config(config: Config, root: Path, plan_share: int, processes: int) -> Config:
     """*config* with a private data root and this worker's share of the CPU pools.
 
-    ``documents_dir`` and ``linked_roots`` are inherited: every worker reads the
-    one shared corpus and only its own state is private.
+    ``documents_dir``, ``linked_roots`` and ``lancedb_dir`` are inherited: every
+    worker reads the one corpus and writes the one index.
     """
     threads = config.extraction_threads
     return config.model_copy(
         update={
             "data_root": root,
-            "lancedb_dir": root / "data" / "lancedb",
             "ingest_workers": plan_share,
             "extraction_threads": max(1, threads // processes) if threads else 0,
         }
@@ -344,8 +342,7 @@ def _final_verdicts(
     """Verdicts still in flight once every worker has exited, plus one per silent death.
 
     A worker the kernel killed (out of memory is the usual reason) reports
-    nothing, so its shard is recorded as failed rather than silently missing from
-    the merge.
+    nothing, so it is recorded as failed and the sync does not end as a success.
     """
     time.sleep(_FINAL_DRAIN_S)
     late = {m.index: m for m in _drain(messages) if m.kind == "done"}
@@ -458,7 +455,6 @@ def run_shard(
         with config_scope(spec.config), services_scope(build_services(spec.config)):
             result = asyncio.run(
                 sync(
-                    force_rebuild=options.force_rebuild,
                     quiet=True,
                     on_progress=reporter,
                     cancel=stop,

@@ -45,8 +45,11 @@ class ExtractedEntity:
 class EntityExtractor(Protocol):
     """Strategy that turns a chunk corpus into ``ExtractedEntity`` records."""
 
-    def available(self) -> bool:
+    def available(self, *, quiet: bool = False) -> bool:
         """Whether the backend can run.
+
+        A backend that cannot run says why at warning level, unless *quiet*:
+        a caller with no work for the backend asks quietly.
 
         ``extract`` returns an empty list both when the corpus names nothing
         and when the backend (e.g. the spaCy model) is not installed. A writer

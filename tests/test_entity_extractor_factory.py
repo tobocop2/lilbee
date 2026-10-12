@@ -20,6 +20,7 @@ from lilbee.wiki.entity_extractor import (
     ExtractedEntity,
     get_entity_extractor,
 )
+from lilbee.wiki.entity_extractor.factory import effective_entity_mode
 from lilbee.wiki.entity_extractor.llm_tagged import LlmTaggedExtractor
 from lilbee.wiki.entity_extractor.ner_concepts import NerConceptsExtractor
 from lilbee.wiki.entity_extractor.ner_concepts_plus_llm_types import (
@@ -82,6 +83,15 @@ class TestUnimplementedModesFallBack:
             extractor = get_entity_extractor(mode, provider, cfg)
         assert isinstance(extractor, NerConceptsExtractor)
         assert any("not yet implemented" in r.message for r in caplog.records)
+
+    @pytest.mark.parametrize("mode", list(WikiEntityMode))
+    def test_the_mode_that_runs_is_built_with_no_log_line(
+        self, mode: WikiEntityMode, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        with caplog.at_level("DEBUG"):
+            extractor = get_entity_extractor(effective_entity_mode(mode), MagicMock(), cfg)
+        assert isinstance(extractor, NerConceptsExtractor)
+        assert caplog.records == []
 
     @pytest.mark.parametrize(
         "cls",

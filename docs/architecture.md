@@ -358,7 +358,8 @@ across four, so the eighth card made the run slower.
 
 **The shape.** A sync large enough to pay for them fans out into one worker process per
 visible card. Each worker is an ordinary `lilbee sync` over a deterministic slice of the
-corpus, with its own store; the parent supervises and folds the shards into one index.
+corpus, and it writes that slice to the one index itself. The parent supervises, then
+builds the indexes once over the whole corpus.
 
 ```mermaid
 flowchart LR
@@ -367,10 +368,9 @@ flowchart LR
     S -->|yes| W0["worker 0<br/>slice 0 · GPU 0"]
     S --> W1["worker 1<br/>slice 1 · GPU 1"]
     S --> W2["worker N<br/>slice N · GPU N"]
-    W0 --> M[merge]
-    W1 --> M
-    W2 --> M
-    M --> I[("one index<br/>indexes built once, corpus-wide")]
+    W0 --> I[("one index<br/>indexes built once, corpus-wide")]
+    W1 --> I
+    W2 --> I
 ```
 
 **What each worker owns.**
@@ -379,9 +379,9 @@ flowchart LR
 |---|---|
 | One card, masked at the process | Sizing and placement read the mask, so a worker plans against its own card, not the box. |
 | An engine slot, keyed by card | Without one, every worker scans the machine-wide slot, finds worker 0's fleet and adopts it: one card at 95% and seven at 0%, run completes, index correct, no error. Workers sharing a card share its slot deliberately. |
-| A data root and store | No shared write drain, which is what capped the previous mechanism. |
+| A data root for its log | The index is not here: every worker opens the one index. |
 | Its share of the CPU pools | Eight workers each sizing to a 160-core box put 4208 threads on it, load average 254, GPUs idle. |
-| A slice of the corpus | Hashed with blake2b, not `hash()`, so a resume deals the corpus the same way and re-embeds nothing. |
+| A slice of the corpus | Hashed with blake2b, not `hash()`, so every worker of one sync agrees on who takes a file. The hash only divides the work. It names no store, so a change of the worker count re-embeds nothing. |
 | Its own log | The parent shows one progress bar instead of N log files. |
 
 **The setting.** `ingest_processes` counts worker processes. `0` (the default) is one per
@@ -396,17 +396,161 @@ off by default and measured 1.00x. Per-card workers remove the drain instead of 
 it: eight pinned workers on the same 8xH100 box measured 415 docs/sec at a GPU busy
 fraction of 0.93.
 
-**Where the work is skipped.** Workers build no indexes and run no corpus-wide passes:
-the merge rebuilds ANN and BM25 over the whole corpus anyway, and per-shard builds
-measured a third of an 800k run's wall clock before being thrown away.
+**One record of what is indexed.** The index's source table and the skip records are
+the only durable statement of what is indexed. A worker reads the source rows of its own
+slice once to decide what is unchanged, and it writes each batch under the store's write lock:
+the old rows of its documents go first and their source rows land last, as in a
+one-process sync. So `lilbee remove`, a rename, an archive, a stop and a change of the
+worker count leave the index a one-process sync leaves. Workers used to keep a store
+each and the parent merged them. No command reached those stores, and each defect of
+that design was the two records disagreeing.
 
-**Two costs.** The merge copies rows rather than committing metadata, so a first full
-ingest writes the corpus twice; and the shard stores are kept as the resume state, so
-vectors live on disk twice until the merge becomes a metadata-only Lance commit.
+**A source row with no chunks.** Each write of a sync puts the chunks of a file before
+its source row, and a rebuild drops the source table first, so a write that stops part
+way leaves no file that reads as unchanged with nothing to search.
 
-**When something breaks.** A worker that fails leaves its shard in place, stops the merge
-and names itself and its log, rather than producing an index that is silently short of
-rows. A cancelled sync stops before the merge in the same way.
+**The write lock is the one serial stage.** Each flush deletes its documents' old rows
+by name. A BTREE index on the name column of the chunk, page text and source tables keeps
+that delete from scanning the table. The flush rebuilds the index once 32 flushes of rows
+sit past it. The delete reads the index and scans the rows past it, so its cost follows
+those rows and not the table: 0.06 s for 2,000 keys with 2,000 rows past the index and
+0.16 s with 62,000, in a table of 100,000 rows on the Linux machine below.
+
+With one index a flush holds the lock for about 0.24 s at every size measured on Linux.
+The layout it replaces, a store for each worker, held it for 0.15 s at 100,000 rows,
+rising to 0.23 s at 500,000, because each store scanned its own rows. So on Linux a
+flush holds the lock longer than before at 100,000 and 250,000 rows, and as long at
+500,000. On a laptop the order is the reverse. Median hold of 24 flushes, in seconds, 8
+writers, 1024-dimension vectors, 2,000 one-chunk documents a flush:
+
+| Rows in the index | Linux, one index | Linux, a store for each worker | Laptop, one index | Laptop, a store for each worker |
+|---|---|---|---|---|
+| 100,000 | 0.240 | 0.149 | 0.09 | 0.14 |
+| 250,000 | 0.237 | 0.176 | 0.08 | 0.14 |
+| 500,000 | 0.228 | 0.237 | not measured | not measured |
+
+The Linux machine is a rented 8-core host that other tenants load; two runs of one
+layout differ by up to 0.014 s. At 100,000 rows there the parts of a flush are, one index
+against a store for each worker: the delete of old rows 0.071 s against 0.034 s, the
+source rows 0.085 s against 0.049 s, the chunk append 0.052 s against 0.038 s, and the
+index check 0.008 s. A one-process flush holds the lock for 0.21 s at 100,000 rows and
+0.27 s at 250,000 on Linux, against 0.35 s and 0.63 s before the flush kept the index;
+on the laptop 0.08 s and 0.09 s against 0.11 s and 0.20 s.
+
+**A renamed file.** The old name can belong to another worker's slice. A worker looks up
+the content hash of each new file in the source table as the sync found it. That gives
+the old names the file can take, in name order. Under the write lock the store gives the
+file the first of them that still holds a source row, and re-keys it in the same hold.
+So no two workers take one old name. A file is an add only when every old name of its
+content is taken, so no old name stays while a file of its content is added.
+
+**A renamed folder.** Files that swap the same leading text of their name, as every file
+of a renamed folder does, take one update of each table together. So a renamed folder is
+one pass over each table. The source rows change in one merge. The vectors are not read
+or embedded again.
+
+**Other renames.** Fewer than 256 files that swap one leading text, and files moved to
+unrelated names, share updates too: one update maps each old name to its new one. The
+store library builds that map once for each row it updates, so an update takes files
+only while the names in its maps times the chunk rows it re-keys stay under 500,000:
+about 700 files of one chunk, or about 220 files of ten chunks. Files that also take a
+new title, because the title came from the old file name, count three times, and at most
+256 of them share an update.
+
+**One hold of the write lock** re-keys at most 2,000 files with at most 16 updates of the
+chunk table. The sync pauses for 0.1 s between two holds, so other writers get a turn. A
+sync that stops between two holds leaves the remaining files under their old names, and
+the next sync moves them.
+
+A hold has a bound in files and in updates, not in time. The time of one update follows
+the size of the index. Holds for renamed files, 1024-dimension vectors, one chunk a file,
+two runs each, on a rented 16-core Linux machine while other tenants loaded it:
+
+| Renamed files | 100,000 rows in the index | 250,000 rows in the index |
+|---|---|---|
+| A renamed folder, 512 files | 1 hold of 0.28 s and 0.30 s | 1 hold of 0.49 s and 0.47 s |
+| A new file name for each of 512 files | 1 hold of 0.54 s and 0.60 s | 1 hold of 1.18 s and 1.07 s |
+| Unrelated names, 512 files | 1 hold of 0.50 s and 0.52 s | 1 hold of 0.86 s and 0.83 s |
+| Unrelated names, 1,500 files | 1 hold of 1.39 s and 1.34 s | 1 hold of 2.57 s and 2.63 s |
+
+**Where the work is skipped.** Workers build no search indexes and run no corpus-wide
+passes. The parent builds ANN and BM25 once, after the last worker.
+
+**The wiki's browse index.** No worker writes it, and no sync keeps a list of what it
+owes the browse index. What is owed is read from the index itself, by the wiki pass
+at the end of each sync, in one process or in the parent of a fan-out.
+
+The pass takes a checkpoint of the source table before it reads: the time and the
+version of the table, both read under the write lock of the store. A flush stamps
+its source rows under the same lock, so no row with an earlier time is committed
+after the checkpoint. When the pass has written the browse index, it records the
+checkpoint in the file `.wiki_refreshed` beside the tables.
+
+The next pass, of any sync, compares the recorded version with the version of the
+source table. If they are equal, no sync wrote a source row since, and the pass
+reads nothing more: a sync with nothing changed and no row rewritten costs one read
+of that file and one read of the table version. If they differ, the pass takes
+every source row stamped at or after the recorded time, every source the browse
+index lists that holds no source row, and every source whose mention rows a rename
+moved to a new name. It gives them to the browse index in one write and records
+its own checkpoint.
+
+The version also moves when a sync rewrites the source row of a file it reports
+unchanged: once for a file whose time changed with the same content, and at every
+sync for a file dated ahead of the clock. The pass then finds no row stamped since
+its record, builds no extractor, logs nothing and records the new version. That
+costs one read of the browse index file and two passes over the source table, one
+over the name column and one over the time column, which has no index, so it grows
+with the number of sources; a file dated ahead of the clock makes every sync pay it.
+
+So a file is owed from the moment its row is written until a pass that started
+later has finished, whichever sync wrote it and however that sync ended. A sync
+that is killed, a flush that fails after its write, and a sync that writes while
+the pass of another sync runs all leave rows that the next pass takes. A pass that
+stops before its write leaves the old names in the browse index, and the next pass
+finds the renamed files from them again.
+
+With no record every source is owed, and the pass reads the whole corpus once. This
+is the case for a new index, after a rebuild, which deletes the record with the
+tables, after a wipe of the wiki, which deletes the record before the browse index,
+and for an index of a lilbee that kept no record. A record that cannot be read
+counts as no record. The read logs one warning and deletes the record, so the next
+sync logs nothing. A pass with no extractor records nothing, so its files stay
+owed. With no record, each later sync asks once whether an extractor can run, and
+reads no source row until one can. With a record, each later sync reads what is
+owed first, and asks only when something is. A sync with no file of its own for
+the wiki asks without a line at warning level, in every entity mode: it names no
+missing model and no mode that another one stands in for. When an extractor can
+run, the pass builds it as a sync with files does, and logs the same lines. A sync that has files for the
+wiki and no extractor logs the reason at warning level, once for each process.
+With the wiki off no sync reads or writes the file.
+
+A fan-out sync that finishes drops from the browse index the sources its workers
+report as removed, and this needs no extractor. A fan-out sync that fails or is
+cancelled drops each source the browse index lists that holds no source row. If one
+of those sources was renamed, it drops nothing and leaves the browse index to the
+next pass.
+
+Three limits remain:
+
+- **The system clock.** The times are those of the system clock. If the clock is set
+  back, a row written after a pass can carry a time before it, and no pass takes that
+  row until its file changes.
+- **Two passes at once.** Two passes that run at once both write the browse index
+  file, and the later write keeps only its own subjects until the files of the other
+  pass change.
+- **A rename the browse index cannot show.** A rename moves the mention rows of the
+  file to its new name and keeps the time of its source row. When the sync stops
+  before its pass, the next pass finds the file only through the old name in the
+  browse index. The browse index lists a source only under a subject that reaches
+  `wiki_entity_min_mentions`. If it lists the old name under no subject, the next
+  pass does not extract the file again: the file keeps the mention rows that the
+  rename moved, as the extraction under the old name wrote them.
+
+**When something breaks.** A worker that fails names itself and its log, and the sync
+fails. A cancelled sync stops the workers. In both cases the files the workers finished
+are in the index and searchable, and the next sync continues from there. The search
+indexes cover them after the next sync that indexes something.
 
 ---
 

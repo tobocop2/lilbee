@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import os
-from collections.abc import Callable, Iterable, Sequence
-from contextlib import AbstractContextManager
+from collections import Counter
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import AbstractContextManager, suppress
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Any, Final, Literal, cast
+from pathlib import PurePosixPath
+from typing import TYPE_CHECKING, Any, Final, Literal, NamedTuple, cast
 
 import pyarrow as pa
 
@@ -28,6 +31,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.core.health_warnings import HealthWarning, WarningCode
+from lilbee.core.security import write_private_text
 from lilbee.core.vectors import Vector
 from lilbee.retrieval.embedding_profiles import resolve_embedding_profile
 from lilbee.runtime.lock import (
@@ -80,7 +84,10 @@ from .types import (
     RemoveResult,
     SearchChunk,
     SourceMeta,
+    SourceMove,
     SourceRecord,
+    SourceRelocation,
+    SourcesCheckpoint,
     SourceStat,
     SourceStatBackfill,
     SourceType,
@@ -88,7 +95,6 @@ from .types import (
 )
 
 if TYPE_CHECKING:
-    import lance
     from lancedb.db import LanceDBConnection
     from lancedb.index import FTS, IndexConfig
     from lancedb.query import LanceFtsQueryBuilder
@@ -246,11 +252,45 @@ _NUL = "\x00"
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
+# Sentinel: each source of a re-key pattern takes a title of its own.
+_OWN_TITLE = "\x00own"
+
+# The key column a batched flush deletes by in each table it appends to.
+_FLUSH_KEY_COLUMNS = tuple(
+    (name, INGEST_SOURCE_COLUMNS[name]) for name in (CHUNKS_TABLE, PAGE_TEXTS_TABLE, SOURCES_TABLE)
+)
+
+# A filtered delete scans every row its key index does not cover. The index is
+# rebuilt once this many flushes of rows sit past it.
+_KEY_INDEX_STALE_FLUSHES = 32
 
 # Stat backfills replace this many source rows per locked write: the first
 # sync after a stat-column upgrade backfills every source, and an unchunked
 # replace would join millions of filenames into one delete predicate.
 _SOURCE_STAT_BATCH_ROWS = 2000
+
+# One hold of the write lock re-keys at most this many moved sources, with at
+# most this many updates of each table, so a writer that waits is not kept out
+# for the length of a whole plan batch.
+_RELOCATE_HOLD_MOVES = 2000
+_RELOCATE_HOLD_UPDATES = 16
+# One update gives at most this many sources a title of their own.
+_TITLE_MAP_KEYS = 256
+# Sources that swap the same leading text of their key take an update of their
+# own from this many on; fewer share an update that maps each old key to its new one.
+_SWAP_MIN_SOURCES = 256
+# One update keeps the keys of its maps times the chunk rows it re-keys under
+# this: the store library builds each map once for each row it updates.
+_MAP_CELLS = 500_000
+
+_NULL_TEXT_SQL = "CAST(NULL AS STRING)"
+
+# Beside the tables: the checkpoint up to which the wiki's page index covers the source rows.
+_WIKI_REFRESHED_NAME = ".wiki_refreshed"
+_WIKI_REFRESHED_UNREADABLE = "Cannot read %s (%s): the wiki index reads every source again"
+
+# Rows per Arrow batch when a filtered read walks the whole source table.
+_SOURCE_SCAN_BATCH_ROWS = 20_000
 
 # Rows per Arrow batch when the aggregate scan walks the whole chunks table;
 # bounds the decoded-text working set while the scan stays columnar.
@@ -302,8 +342,249 @@ def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
     """
     old_literal = escape_sql_string(old)
     where = f"{column} = '{old_literal}' OR starts_with({column}, '{old_literal}/')"
-    value = f"concat('{escape_sql_string(new)}', substr({column}, {len(old) + 1}))"
-    return where, value
+    return where, _swap_head_sql(column, old, new)
+
+
+def _swap_head_sql(column: str, old_head: str, new_head: str) -> str:
+    """The SQL value of *column* with *new_head* in place of the characters of *old_head*."""
+    return f"concat('{escape_sql_string(new_head)}', substr({column}, {len(old_head) + 1}))"
+
+
+def _in_list(names: Iterable[str]) -> str:
+    """The body of a SQL ``IN`` list that holds *names*."""
+    return ", ".join(f"'{escape_sql_string(name)}'" for name in names)
+
+
+def _lookup_sql(column: str, texts: Mapping[str, str]) -> str:
+    """The SQL value that gives each key of *texts* in *column* its text.
+
+    An update of the key and the title can read either key for the title: the
+    store library computes the two columns in an order that varies between
+    updates. A caller that sets titles lists each source under both its keys.
+    """
+    keys, values = _in_list(texts), _in_list(texts.values())
+    return f"map_extract(map(make_array({keys}), make_array({values})), {column})[1]"
+
+
+def _swapped_heads(old: str, new: str) -> tuple[str, str]:
+    """*old* and *new* without the end they share."""
+    shared = len(os.path.commonprefix((old[::-1], new[::-1])))
+    return old[: len(old) - shared], new[: len(new) - shared]
+
+
+class _RekeyPattern(NamedTuple):
+    """Sources that swap *old_head* for *new_head*, or that a map re-keys when both are None.
+
+    *title* is one text, or a sentinel.
+    """
+
+    old_head: str | None
+    new_head: str | None
+    title: str | None
+
+    def key_sql(self, column: str, new: Mapping[str, str]) -> str:
+        """The SQL value of *column* for sources of this pattern; *new* maps their keys."""
+        if self.old_head is None or self.new_head is None:
+            return _lookup_sql(column, new)
+        return _swap_head_sql(column, self.old_head, self.new_head)
+
+    def takes(self, sources: int, chunk_rows: int) -> bool:
+        """Whether one update stays in the bounds of its maps at *sources* and their *chunk_rows*.
+
+        A map of keys lists each source once, a map of titles under both its keys.
+        """
+        own = self.title is _OWN_TITLE
+        if own and sources > _TITLE_MAP_KEYS:
+            return False
+        maps = (self.old_head is None) + 2 * own
+        return maps * sources * chunk_rows <= _MAP_CELLS
+
+
+@dataclass
+class _RelocationHold:
+    """What one hold re-keys: old names by update, the source rows renamed, the names taken.
+
+    A pattern's old names are split where an update with a map would pass its bound.
+    """
+
+    patterns: dict[_RekeyPattern, list[list[str]]] = field(default_factory=dict)
+    chunk_rows: dict[_RekeyPattern, int] = field(default_factory=dict)
+    titles: dict[str, str] = field(default_factory=dict)
+    rows: list[dict[str, Any]] = field(default_factory=list)
+    taken: dict[str, str] = field(default_factory=dict)
+    updates: int = 0
+    settled: int = 0
+
+    def update_for(self, pattern: _RekeyPattern, chunk_rows: int) -> list[str] | None:
+        """The old names of the update that takes one more source of *pattern*; None when full."""
+        parts = self.patterns.get(pattern)
+        held = self.chunk_rows.get(pattern, 0) + chunk_rows
+        if parts is not None and pattern.takes(len(parts[-1]) + 1, held):
+            self.chunk_rows[pattern] = held
+            return parts[-1]
+        if self.updates == _RELOCATE_HOLD_UPDATES:
+            return None
+        self.updates += 1
+        self.chunk_rows[pattern] = chunk_rows
+        olds: list[str] = []
+        self.patterns.setdefault(pattern, []).append(olds)
+        return olds
+
+
+def _claimed_names(moves: Sequence[SourceMove], unclaimed: set[str]) -> list[str | None]:
+    """The old name each of *moves* takes out of *unclaimed*: its first candidate still there.
+
+    Moves that share one candidates tuple share one cursor into it, so files
+    of one content cost one pass over their old names and not one for each file.
+    """
+    cursors: dict[int, int] = {}
+    claimed: list[str | None] = []
+    for move in moves:
+        pool = move.candidates
+        at = cursors.get(id(pool), 0)
+        while at < len(pool) and pool[at] not in unclaimed:
+            at += 1
+        cursors[id(pool)] = at
+        if at == len(pool):
+            claimed.append(None)
+            continue
+        unclaimed.discard(pool[at])
+        claimed.append(pool[at])
+    return claimed
+
+
+def _title_after_move(
+    row: Mapping[str, Any], old: str, new: str, derive: Callable[[str], str]
+) -> str | None:
+    """The title the source *row* takes when *old* becomes *new*, or ``_KEEP_TITLE``.
+
+    A title that came from the old name follows the new one; any other title stays.
+    """
+    if _TITLE_COLUMN not in row:
+        return _KEEP_TITLE
+    stored = row[_TITLE_COLUMN] or ""
+    if stored != (derive(old) or ""):
+        return _KEEP_TITLE
+    return derive(new) or None
+
+
+def _moved_source_row(row: dict[str, Any], move: SourceMove, title: str | None) -> dict[str, Any]:
+    """The source *row* under *move*'s new name, with *title* and the stat of the file."""
+    moved = {**row, "filename": move.new}
+    if title is not _KEEP_TITLE:
+        moved[_TITLE_COLUMN] = title
+    if move.stat is not None:
+        moved["size_bytes"] = move.stat.size_bytes
+        moved["mtime_ns"] = move.stat.mtime_ns
+        moved["stat_captured_ns"] = move.stat.captured_ns
+    return moved
+
+
+def _pattern_title(title: str | None, stored: object) -> str | None:
+    """What a re-key pattern does to titles: keep them, clear them, or give each source its own."""
+    if title is _KEEP_TITLE or title == stored:
+        return _KEEP_TITLE
+    return None if title is None else _OWN_TITLE
+
+
+def _plan_hold(
+    moves: Sequence[SourceMove],
+    claimed: list[str | None],
+    rows: Mapping[str, list[dict[str, Any]]],
+    derive: Callable[[str], str],
+) -> _RelocationHold:
+    """Group the claimed *moves* by the update that re-keys them, up to the hold's bound.
+
+    ``_SWAP_MIN_SOURCES`` sources or more that swap the same leading text of
+    their key share an update of their own. The others share updates that map
+    each old key to its new one. Either kind is split by what it does to
+    titles. An update with a map takes sources up to ``_MAP_CELLS``, and up to
+    ``_TITLE_MAP_KEYS`` of them when each takes a title of its own. The plan
+    stops before the move that would need one update more than a hold runs.
+    """
+    hold = _RelocationHold()
+    shapes: list[tuple[_RekeyPattern, str | None] | None] = []
+    for move, old in zip(moves, claimed, strict=True):
+        if old is None:
+            shapes.append(None)
+            continue
+        title = _title_after_move(rows[old][0], old, move.new, derive)
+        shared = _pattern_title(title, rows[old][0].get(_TITLE_COLUMN))
+        shapes.append((_RekeyPattern(*_swapped_heads(old, move.new), shared), title))
+    sizes = Counter(shape[0] for shape in shapes if shape is not None)
+    for move, old, shape in zip(moves, claimed, shapes, strict=True):
+        if old is not None and shape is not None:
+            pattern, title = shape
+            if sizes[pattern] < _SWAP_MIN_SOURCES:
+                pattern = _RekeyPattern(None, None, pattern.title)
+            stored = rows[old]
+            olds = hold.update_for(pattern, max(1, stored[0]["chunk_count"]))
+            if olds is None:
+                break
+            olds.append(old)
+            if title is not None and pattern.title is _OWN_TITLE:
+                hold.titles[old] = title
+            hold.rows.extend(_moved_source_row(row, move, title) for row in stored)
+            hold.taken[move.new] = old
+        hold.settled += 1
+    return hold
+
+
+def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[str, list[str]]:
+    """The *filenames* under ``name/`` for each of *names*, in one pass over *filenames*."""
+    wanted = set(names)
+    members: dict[str, list[str]] = {}
+    for filename in filenames:
+        cut = filename.find("/")
+        while cut != -1:
+            if filename[:cut] in wanted:
+                members.setdefault(filename[:cut], []).append(filename)
+            cut = filename.find("/", cut + 1)
+    return members
+
+
+def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
+    """The *names* that hold a row in the source table."""
+    wanted = sorted(names)
+    held: set[str] = set()
+    for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
+        quoted = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
+        query = sources.search().where(f"filename IN ({quoted})").select(["filename"])
+        held.update(row["filename"] for row in query.limit(None).to_list())
+    return held
+
+
+def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, list[dict[str, Any]]]:
+    """The rows the source table holds for *names*, by filename."""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    if names:
+        query = sources.search().where(f"filename IN ({_in_list(names)})").limit(None)
+        for row in query.to_list():
+            rows.setdefault(row["filename"], []).append(row)
+    return rows
+
+
+def _refresh_key_index_unlocked(table: LanceTable, column: str, flush_rows: int) -> None:
+    """Rebuild the BTREE index on *column* once enough appended rows sit past it.
+
+    Caller holds ``write_lock()``. A delete filtered on *column* probes the index
+    and scans only the rows past it, so its cost follows the flush size and not
+    the table size.
+    """
+    from lancedb.index import BTree
+
+    stats = table.index_stats(f"{column}_idx")
+    unindexed = table.count_rows() if stats is None else stats.num_unindexed_rows
+    if unindexed >= _KEY_INDEX_STALE_FLUSHES * flush_rows:
+        table.create_index(column, config=BTree(), replace=True)
+
+
+def _holds_rows(table: LanceTable) -> bool:
+    """Whether *table* holds a row; a table that cannot be counted is taken to hold one."""
+    try:
+        return bool(table.count_rows())
+    except Exception:
+        return True
 
 
 def _sql_equals(column: str, value: object) -> str:
@@ -342,6 +623,8 @@ class Store:
         # Scalar indexes (source/chunk_type) are built at ingest; a serve-only
         # store builds them lazily from the search path.
         self._scalar_ready: bool = False
+        # Tables whose failed key index refresh was already warned about.
+        self._key_index_warned: set[str] = set()
         self._db: LanceDBConnection | None = None
         # Cache of {filename: ingested_at} rebuilt only when sources
         # mutate; callers (temporal filter) hit it per-query.
@@ -407,7 +690,7 @@ class Store:
         """Open/create the chunks table, adding the title column to pre-title tables."""
         table = ensure_table(self.get_db(), CHUNKS_TABLE, self._chunks_schema())
         if _TITLE_COLUMN not in table.schema.names:
-            table.add_columns({_TITLE_COLUMN: "CAST(NULL AS STRING)"})
+            table.add_columns({_TITLE_COLUMN: _NULL_TEXT_SQL})
             self._backfill_stem_titles_unlocked(table)
         return table
 
@@ -1116,123 +1399,6 @@ class Store:
             table.delete(predicate)
             return self._add_chunks_unlocked(records)
 
-    def _stamp_meta_unlocked(self, embedding_model: str, embedding_dim: int) -> None:
-        """Write the embedder identity on the first write to a fresh store."""
-        if self.get_meta() is None:
-            self._write_meta_unlocked(embedding_model=embedding_model, embedding_dim=embedding_dim)
-
-    def absorb_rows(self, name: str, rows: pa.Table) -> int:
-        """Append an ingest shard's *rows* to table *name*, creating it if absent.
-
-        The rows already carry their embeddings, so this is the merge path for a
-        multi-GPU sync: the per-worker stores are folded in whole and the indexes
-        are rebuilt corpus-wide afterwards.
-        """
-        with self._write_lock():
-            self._ensure_embedding_compat()
-            self._fts_ready = False
-            self._scalar_ready = False
-            ensure_table(self.get_db(), name, rows.schema).add(rows)
-            self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
-            return int(rows.num_rows)
-
-    def _assert_schemas_match(
-        self,
-        name: str,
-        target: Path,
-        shard_tables: list[Path],
-        sources: Sequence[lance.LanceDataset],
-    ) -> None:
-        """Refuse shards whose schema differs from the table's.
-
-        A mismatched vector width is the realistic case: two workers built with
-        different embedding models. Adoption commits fragment metadata and never
-        passes the rows through a writer, so nothing else would notice.
-        """
-        import lance
-
-        expected = lance.dataset(str(target)).schema
-        for shard_table, source in zip(shard_tables, sources, strict=True):
-            if not source.schema.equals(expected):
-                raise ValueError(
-                    f"Cannot adopt {shard_table} into {name}: its schema does not match "
-                    f"the index. A shard built with a different embedding model cannot be "
-                    f"folded in; re-ingest it with the model this index was built on."
-                )
-
-    def adopt_fragments(self, name: str, shard_tables: list[Path]) -> int:
-        """Take over *shard_tables*' data files for table *name* without copying rows.
-
-        Every fragment's data file is hard-linked into this table's directory and
-        the whole set committed as one metadata-only append, so the rows are never
-        read or rewritten and the bytes exist once on disk with two names. That is
-        the difference between a merge that costs the corpus and one that costs its
-        fragment count: the copy path rewrites every vector, and because the shard
-        stores are kept as resume state the corpus would then be on disk twice.
-
-        Whole-fragment only, so this serves the first full merge. A re-sync merges
-        named sources, where a fragment holds both touched and untouched rows and
-        the scoped row copy is both correct and already cheap.
-
-        Returns the rows adopted. Raises ValueError when a shard's schema differs
-        from the table's, and OSError when a shard is on another filesystem (hard
-        links cannot cross one) or a data file name collides. The parent is left
-        as it was in every failure: schemas are checked before anything is linked,
-        links made before a failure are removed, and the commit happens once at
-        the end.
-        """
-        import lance
-
-        with self._write_lock():
-            self._ensure_embedding_compat()
-            target = self._config.lancedb_dir / f"{name}.lance"
-            sources = [lance.dataset(str(shard_table)) for shard_table in shard_tables]
-            if not sources:
-                return 0
-            if name not in table_names(self.get_db()):
-                ensure_table(self.get_db(), name, sources[0].schema)
-            # Before anything is linked. Committing a fragment whose schema does
-            # not match writes an index that reads back as a panic inside Arrow
-            # rather than an error: the row copy is rejected by the writer, and
-            # adoption has no writer to reject it.
-            self._assert_schemas_match(name, target, shard_tables, sources)
-            # A table created empty has no data directory yet: nothing has been
-            # written into it, and the links below need somewhere to go.
-            (target / "data").mkdir(parents=True, exist_ok=True)
-            adopted: list[lance.FragmentMetadata] = []
-            linked: list[Path] = []
-            rows = 0
-            try:
-                for shard_table, source in zip(shard_tables, sources, strict=True):
-                    for fragment in source.get_fragments():
-                        meta = fragment.metadata
-                        for data_file in meta.files:
-                            filename = Path(data_file.path).name
-                            link = target / "data" / filename
-                            os.link(shard_table / "data" / filename, link)
-                            linked.append(link)
-                        adopted.append(meta)
-                    rows += source.count_rows()
-            except OSError:
-                # A link made before the failure is a file the manifest never
-                # names, so nothing would ever remove it. The caller falls back
-                # to copying rows.
-                for link in linked:
-                    link.unlink(missing_ok=True)
-                raise
-            if not adopted:
-                return 0
-            self._fts_ready = False
-            self._scalar_ready = False
-            existing = lance.dataset(str(target))
-            lance.LanceDataset.commit(
-                str(target),
-                lance.LanceOperation.Append(adopted),
-                read_version=existing.version,
-            )
-            self._stamp_meta_unlocked(self._config.embedding_model, self._config.embedding_dim)
-            return rows
-
     def bm25_probe(
         self, query_text: str, top_k: int = 5, chunk_type: ChunkType | None = None
     ) -> list[SearchChunk]:
@@ -1823,8 +1989,7 @@ class Store:
         if pc.count_distinct(arrow.column("source")).as_py() == arrow.num_rows:
             return arrow
         # One row per source, so a caller joining on it cannot fan out. A doubled
-        # row (a source re-merged from a shard) would otherwise multiply every page
-        # it owns. Last wins, matching the dict this replaced; single-threaded
+        # row would otherwise multiply every page it owns. Last wins; single-threaded
         # because that is the only execution mode with an ordered aggregate.
         grouped = arrow.group_by("source", use_threads=False).aggregate(
             [(name, "last") for name in SourceMeta._fields]
@@ -1876,6 +2041,106 @@ class Store:
         query = query.limit(limit)
         return cast("list[SourceRecord]", query.to_list())
 
+    def get_sources_where(self, keep: Callable[[str], bool]) -> list[SourceRecord]:
+        """Source records whose filename *keep* accepts, read in batches.
+
+        A row *keep* refuses never becomes a Python object, so a caller that wants
+        one slice of a large table holds only that slice.
+        """
+        import pyarrow as pa
+
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        kept: list[SourceRecord] = []
+        for batch in table.search().limit(None).to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            mask = pa.array([keep(name) for name in batch.column("filename").to_pylist()])
+            kept.extend(cast("list[SourceRecord]", batch.filter(mask).to_pylist()))
+        return kept
+
+    def missing_sources(self, names: Iterable[str]) -> set[str]:
+        """The *names* that hold no source row, from one pass over the name column."""
+        missing = set(names)
+        table = self.open_table(SOURCES_TABLE)
+        if table is None or not missing:
+            return missing
+        scan = table.search().select(["filename"]).limit(None)
+        for batch in scan.to_batches(_SOURCE_SCAN_BATCH_ROWS):
+            missing.difference_update(batch.column("filename").to_pylist())
+        return missing
+
+    def sources_version(self) -> int | None:
+        """The version of the source table now, or None when there is no table."""
+        table = self.open_table(SOURCES_TABLE)
+        return None if table is None else int(table.version)
+
+    def sources_by_hash(self, hashes: Sequence[str], *, version: int) -> dict[str, list[str]]:
+        """Document sources at *version* of the source table, by content hash, for *hashes*."""
+        found: dict[str, list[str]] = {}
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return found
+        table.checkout(version)
+        documents = f"source_type != '{escape_sql_string(SourceType.IMPORTED)}'"
+        for start in range(0, len(hashes), _SOURCE_STAT_BATCH_ROWS):
+            quoted = ", ".join(
+                f"'{escape_sql_string(digest)}'"
+                for digest in hashes[start : start + _SOURCE_STAT_BATCH_ROWS]
+            )
+            query = table.search().where(f"file_hash IN ({quoted}) AND {documents}")
+            for row in query.select(["filename", "file_hash"]).limit(None).to_list():
+                found.setdefault(row["file_hash"], []).append(row["filename"])
+        return found
+
+    def sources_checkpoint(self) -> SourcesCheckpoint:
+        """The time and the version of the source table, read under the write lock.
+
+        A source row is stamped under that lock, so no row stamped before the
+        time is committed later.
+        """
+        with self._write_lock():
+            return SourcesCheckpoint(datetime.now(UTC).isoformat(), self.sources_version())
+
+    def wiki_refreshed(self) -> SourcesCheckpoint | None:
+        """The checkpoint up to which the wiki's page index covers the source rows.
+
+        None with no record or an unreadable one: every source row is owed.
+        An unreadable record is reported and deleted, so the next read is silent.
+        """
+        record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
+        try:
+            fields = json.loads(record.read_text(encoding="utf-8"))
+            version = fields["version"]
+            return SourcesCheckpoint(str(fields["time"]), None if version is None else int(version))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            log.warning(_WIKI_REFRESHED_UNREADABLE, record, exc)
+            # A record that cannot be deleted stays, and the next read reports it again.
+            with suppress(OSError):
+                self.forget_wiki_refreshed()
+            return None
+
+    def record_wiki_refreshed(self, checkpoint: SourcesCheckpoint) -> None:
+        """Record that the wiki's page index covers the source rows up to *checkpoint*.
+
+        A write that fails leaves the record as it was.
+        """
+        record = self._config.lancedb_dir / _WIKI_REFRESHED_NAME
+        write_private_text(record, json.dumps(checkpoint._asdict()))
+
+    def forget_wiki_refreshed(self) -> None:
+        """Delete the record: the wiki's page index covers no source row."""
+        (self._config.lancedb_dir / _WIKI_REFRESHED_NAME).unlink(missing_ok=True)
+
+    def sources_ingested_since(self, since: str) -> list[str]:
+        """The filename of each source row written at or after *since*, an ISO time in UTC."""
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        query = table.search().where(f"ingested_at >= '{escape_sql_string(since)}'")
+        return [row["filename"] for row in query.select(["filename"]).limit(None).to_list()]
+
     def count_sources(self, *, search: str | None = None) -> int:
         """Count tracked sources matching *search* without materializing rows."""
         table = self.open_table(SOURCES_TABLE)
@@ -1903,6 +2168,7 @@ class Store:
         return {
             "filename": filename,
             "file_hash": file_hash,
+            # Stamped under the write lock that commits the row: sources_checkpoint relies on it.
             "ingested_at": datetime.now(UTC).isoformat(),
             "chunk_count": chunk_count,
             "source_type": source_type,
@@ -1918,7 +2184,7 @@ class Store:
         """Open/create ``_sources``, adding the stat and metadata columns to older tables."""
         table = ensure_table(self.get_db(), SOURCES_TABLE, _sources_schema())
         defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
-        defaults |= {name: "CAST(NULL AS STRING)" for name in _SOURCE_META_COLUMNS}
+        defaults |= {name: _NULL_TEXT_SQL for name in _SOURCE_META_COLUMNS}
         missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
         if missing:
             table.add_columns(missing)
@@ -1949,8 +2215,8 @@ class Store:
         meta: SourceMeta | None = None,
     ) -> None:
         """Add or update a source tracking record."""
-        row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
         with self._write_lock():
+            row = self._source_row(filename, file_hash, chunk_count, source_type, stat, meta)
             self._replace_source_rows_unlocked([row])
         self._invalidate_source_cache()
 
@@ -2006,12 +2272,46 @@ class Store:
             all_records = [rec for it in items for rec in it.records]
             _check_vector_dims(all_records, embedding_dim)
             db = self.get_db()
+            self._refresh_key_indexes_unlocked(items, len(all_records))
             self._cleanup_batch_unlocked(items)
             self._add_page_texts_unlocked(db, items)
             self._add_chunk_records_unlocked(all_records, embedding_model, embedding_dim)
             self._replace_source_rows_unlocked(self._batch_source_rows(items))
         self._invalidate_source_cache()
         return len(all_records)
+
+    def _refresh_key_indexes_unlocked(self, items: list[ChunkWrite], chunk_rows: int) -> None:
+        """Keep the key index of each table this flush appends to current. Caller holds the lock."""
+        flush_rows = {
+            CHUNKS_TABLE: chunk_rows,
+            PAGE_TEXTS_TABLE: sum(len(it.page_texts or []) for it in items),
+            SOURCES_TABLE: len(items),
+        }
+        for name, column in _FLUSH_KEY_COLUMNS:
+            table = self.open_table(name)
+            if table is None or not flush_rows[name]:
+                continue
+            try:
+                _refresh_key_index_unlocked(table, column, flush_rows[name])
+            except Exception:
+                self._report_key_index_failure(table, name, column)
+
+    def _report_key_index_failure(self, table: LanceTable, name: str, column: str) -> None:
+        """Warn once for a populated table whose key index cannot be refreshed, then at debug.
+
+        The delete stays correct and scans the table, so every flush costs more
+        as the table grows.
+        """
+        first = name not in self._key_index_warned and _holds_rows(table)
+        if first:
+            self._key_index_warned.add(name)
+        log.log(
+            logging.WARNING if first else logging.DEBUG,
+            "Key index refresh failed on '%s.%s'; each write scans the table until it succeeds",
+            name,
+            column,
+            exc_info=True,
+        )
 
     def _cleanup_batch_unlocked(self, items: list[ChunkWrite]) -> None:
         """One ``IN`` delete per table for the flagged documents. Caller holds ``write_lock()``."""
@@ -2072,49 +2372,81 @@ class Store:
         if table is not None:
             _safe_delete_unlocked(table, f"filename IN ({quoted})")
 
-    def relocate_sources(self, moves: list[tuple[str, str, SourceStat | None]]) -> None:
-        """Re-key moved sources from old filename to new, preserving their chunks.
+    def relocate_sources(self, moves: Sequence[SourceMove]) -> SourceRelocation:
+        """Re-key the first of *moves* to their new names in one hold of the write lock.
 
-        A source whose file moved (same content hash, new path) keeps its chunks
-        and embeddings; only its filename key and disk stat change. Each per-source
-        table's source column, the citation source_filename, and the sources row are
-        updated in place under one write lock, so a move costs no re-extraction or
-        re-embedding. ``moves`` is ``(old_name, new_name, new_stat)`` tuples.
+        Returns the old name each new name took and how many of *moves* the hold
+        settled; the caller passes the rest again. A move takes the first of its
+        candidates that holds a source row and that no earlier move took; a move
+        with none left is settled and absent from the names taken. The choice and
+        the re-key share the lock, so no two writers take one old name.
 
-        Each table is opened once; the re-key is then a targeted per-move update.
-        A single-statement batch would need a ``CASE`` expression, which LanceDB's
-        update SQL does not support, and a delete+re-add across the vector tables is
-        not worth its risk for what is a rare mass relabel.
+        A moved source keeps its chunks and vectors: only its key, a title that
+        came from the old name, and its disk stat change. Many sources that swap
+        the same leading text of their key take one update of each table
+        together, the others share updates that map each old key to its new
+        one, and either takes one update for at most ``_TITLE_MAP_KEYS``
+        sources when each takes a title of its own. The source table takes the new rows
+        and loses the old ones in one merge. A hold settles at most
+        ``_RELOCATE_HOLD_MOVES`` moves and runs at most
+        ``_RELOCATE_HOLD_UPDATES`` updates of each table. Chunk tables
+        change before the source table, so a hold that dies between them leaves
+        the old names for the next sync to move again.
         """
         if not moves:
-            return
+            return SourceRelocation({}, 0)
+        with self._write_lock():
+            step = self._relocate_hold_unlocked(moves[:_RELOCATE_HOLD_MOVES])
+        self._invalidate_source_cache()
+        return step
+
+    def _relocate_hold_unlocked(self, moves: Sequence[SourceMove]) -> SourceRelocation:
+        """Claim and re-key *moves* up to the hold's bound. Caller holds ``write_lock()``."""
         from lilbee.data.title import derive_title  # circular at module scope
 
-        with self._write_lock():
-            tables = [(self.open_table(name), column) for name, column in _RELOCATABLE_TABLES]
-            sources = self.open_table(SOURCES_TABLE)
-            for old, new, stat in moves:
-                where_old = f"= '{escape_sql_string(old)}'"
-                new_title = self._relocated_title(sources, old, new, derive_title)
-                for table, column in tables:
-                    if table is None:
-                        continue
-                    values: dict[str, object] = {column: new}
-                    # Stem titles track the filename; re-derive them on the same
-                    # handle and statement as the re-key.
-                    if new_title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
-                        values[_TITLE_COLUMN] = new_title
-                    table.update(where=f"{column} {where_old}", values=values)
-                if sources is not None:
-                    row_values: dict[str, object] = {"filename": new}
-                    if new_title is not _KEEP_TITLE:
-                        row_values["title"] = new_title
-                    if stat is not None:
-                        row_values["size_bytes"] = stat.size_bytes
-                        row_values["mtime_ns"] = stat.mtime_ns
-                        row_values["stat_captured_ns"] = stat.captured_ns
-                    sources.update(where=f"filename {where_old}", values=row_values)
-        self._invalidate_source_cache()
+        sources = self.open_table(SOURCES_TABLE)
+        if sources is None:
+            return SourceRelocation({}, len(moves))
+        pools = {id(move.candidates): move.candidates for move in moves}.values()
+        unclaimed = _held_sources(sources, {name for pool in pools for name in pool})
+        claimed = _claimed_names(moves, unclaimed)
+        rows = _source_rows(sources, [old for old in claimed if old is not None])
+        hold = _plan_hold(moves, claimed, rows, derive_title)
+        if hold.taken:
+            self._rekey_tables_unlocked(hold)
+            self._replace_moved_source_rows_unlocked(sources, hold)
+        return SourceRelocation(hold.taken, hold.settled)
+
+    def _rekey_tables_unlocked(self, hold: _RelocationHold) -> None:
+        """Re-key *hold*'s sources in each per-source table. Caller holds ``write_lock()``."""
+        for name, column in _RELOCATABLE_TABLES:
+            table = self.open_table(name)
+            if table is None:
+                continue
+            titled = _TITLE_COLUMN in table.schema.names
+            new = {old: taken for taken, old in hold.taken.items()}
+            for pattern, parts in hold.patterns.items():
+                own = titled and pattern.title is _OWN_TITLE
+                # Only an update with a map has a bound on its sources.
+                mapped = own or pattern.old_head is None
+                for olds in parts if mapped else [[old for part in parts for old in part]]:
+                    values = {column: pattern.key_sql(column, {old: new[old] for old in olds})}
+                    if own:
+                        titles = {key: hold.titles[old] for old in olds for key in (old, new[old])}
+                        values[_TITLE_COLUMN] = _lookup_sql(column, titles)
+                    elif titled and pattern.title is None:
+                        values[_TITLE_COLUMN] = _NULL_TEXT_SQL
+                    table.update(where=f"{column} IN ({_in_list(olds)})", values_sql=values)
+
+    def _replace_moved_source_rows_unlocked(
+        self, sources: LanceTable, hold: _RelocationHold
+    ) -> None:
+        """Put *hold*'s source rows in place of the old ones in one commit. Lock held."""
+        moved = pa.Table.from_pylist(hold.rows, schema=sources.schema)
+        merge = sources.merge_insert("filename").when_matched_update_all()
+        merge = merge.when_not_matched_insert_all()
+        old_rows = f"filename IN ({_in_list(hold.taken.values())})"
+        merge.when_not_matched_by_source_delete(old_rows).execute(moved)
 
     def _relocated_title(
         self,
@@ -2141,12 +2473,9 @@ class Store:
             )
         except Exception:
             return _KEEP_TITLE
-        if not rows or "title" not in rows[0]:
+        if not rows:
             return _KEEP_TITLE
-        stored = rows[0]["title"] or ""
-        if stored != (derive(old) or ""):
-            return _KEEP_TITLE
-        return derive(new) or None
+        return _title_after_move(rows[0], old, new, derive)
 
     def rekey_sources_under(self, old: str, new: str) -> None:
         """Re-key the source *old* and every source below it to *new*, keeping chunks and vectors.
@@ -2210,8 +2539,12 @@ class Store:
 
     def member_sources(self, name: str) -> list[str]:
         """Sources ingested out of the archive *name*: every filename under ``name/``."""
-        prefix = f"{name}/"
-        return [s["filename"] for s in self.get_sources() if s["filename"].startswith(prefix)]
+        table = self.open_table(SOURCES_TABLE)
+        if table is None:
+            return []
+        under = f"starts_with(filename, '{escape_sql_string(name)}/')"
+        rows = table.search().where(under).select(["filename"]).limit(None).to_list()
+        return [row["filename"] for row in rows]
 
     def remove_documents(self, names: list[str]) -> RemoveResult:
         """Remove documents from the knowledge base by source name.
@@ -2223,8 +2556,10 @@ class Store:
 
         Returns a RemoveResult with removed and not_found lists.
         """
-        known = {s["filename"] for s in self.get_sources()}
-        targets = [*names, *(m for name in names for m in self.member_sources(name))]
+        filenames = [s["filename"] for s in self.get_sources()]
+        known = set(filenames)
+        members = _members_by_archive(names, filenames)
+        targets = [*names, *(m for name in names for m in members.get(name, []))]
         removed = [name for name in targets if name in known]
         not_found = [name for name in names if name not in known]
 
@@ -2588,8 +2923,10 @@ class Store:
             self._title_fts_ready = False
             self._scalar_ready = False
             db = self.get_db()
-            for name in table_names(db):
-                if name == MEMORIES_TABLE:
-                    continue
+            # Before the tables: a record that outlives them would describe the next ones.
+            self.forget_wiki_refreshed()
+            dropped = [name for name in table_names(db) if name != MEMORIES_TABLE]
+            # The source rows go first: a drop that stops part way leaves no file unchanged.
+            for name in sorted(dropped, key=lambda name: name != SOURCES_TABLE):
                 db.drop_table(name)
         self._invalidate_source_cache()
