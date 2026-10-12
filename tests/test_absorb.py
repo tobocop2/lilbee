@@ -1880,7 +1880,9 @@ class TestAnMcpSyncThatCannotFinishAnAdd:
 
         assert list(result) == ["error"] and text in result["error"]
         assert _keys(library) == []
-        assert sorted(_registry()) == ["other"]
+        # A filesystem without locking refuses the add at its registration.
+        registered = [] if cause is UnfinishedAdd.NO_LOCKING else ["other"]
+        assert sorted(_registry()) == registered
 
 
 @contextlib.contextmanager
@@ -1989,7 +1991,7 @@ class TestAnAddThatTakesASourceInOnADataRootItCannotLock:
 
 
 class TestAnMcpToolOnAFilesystemWithoutLocking:
-    """A sync, alone or after a plain add, returns the tool's error in place of raising."""
+    """A sync or a plain add returns the tool's error in place of raising."""
 
     async def test_the_sync_tool_returns_an_error(self, library):
         from lilbee.mcp_server import sync as mcp_sync
@@ -2000,7 +2002,7 @@ class TestAnMcpToolOnAFilesystemWithoutLocking:
         assert list(result) == ["error"]
         assert "does not support file locking" in result["error"]
 
-    async def test_the_sync_inside_an_add_returns_an_error(self, library, tmp_path):
+    async def test_an_add_returns_an_error_and_registers_nothing(self, library, tmp_path):
         from lilbee.mcp_server import add
 
         other = tmp_path / "src" / "other"
@@ -2011,6 +2013,7 @@ class TestAnMcpToolOnAFilesystemWithoutLocking:
         assert list(result) == ["error"]
         assert "does not support file locking" in result["error"]
         assert _keys(library) == []
+        assert _registry() == {}
 
 
 async def _one_child(parent: Path) -> None:

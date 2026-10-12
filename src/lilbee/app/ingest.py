@@ -7,7 +7,7 @@ import fnmatch
 import logging
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,9 +41,11 @@ from lilbee.data.types import is_under
 from lilbee.runtime.absorb_journal import AbsorbJournal, AbsorbJournalError, absorb_pending
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import (
+    _SYNC_LOCK_ERRORS,
     LibraryUnlockableError,
     LockingUnsupportedError,
     SyncRunningError,
+    _require_locking,
 )
 
 _ADD_CANCELLED = "Add cancelled."
@@ -257,6 +259,14 @@ def source_label_taken(name: str, target: Path | None = None) -> bool:
     return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
 
+def _refuse_where_a_sync_refuses(data_root: Path) -> None:
+    """Raise ``LockingUnsupportedError`` when *data_root* cannot lock files; write nothing."""
+    # A sync runs unmarked after any other failure of the probe, so the add goes on.
+    with suppress(*_SYNC_LOCK_ERRORS):
+        data_root.mkdir(parents=True, exist_ok=True)
+        _require_locking(data_root)
+
+
 def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResult:
     """Register each path as a root lilbee indexes where it already lives.
 
@@ -275,8 +285,12 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     ``SyncRunningError`` and a removal in progress raises ``SkipRecordsLockError``,
     with nothing changed. A data root that cannot be locked raises
     ``LibraryUnlockableError`` or ``LockingUnsupportedError``, with nothing changed.
+    A data root whose filesystem cannot lock files raises ``LockingUnsupportedError``
+    for every add, because the sync after the add refuses there.
     """
     config = active_config()
+    if paths:
+        _refuse_where_a_sync_refuses(config.data_root)
     documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
     docs_resolved = documents_dir.resolve()
