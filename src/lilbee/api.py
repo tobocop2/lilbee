@@ -165,7 +165,12 @@ class Lilbee:
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:
-        """Remove a document from the index by source name (source bytes are kept)."""
+        """Remove a document from the index by source name (source bytes are kept).
+
+        Raises ``SkipRecordsLockError``, ``SyncRunningError`` or ``AbsorbJournalError``
+        with nothing removed when another lilbee process, or an add that did not
+        finish, holds the library.
+        """
         with config_scope(self._config), services_scope(self._services):
             remove_documents_durably([name])
 

@@ -37,6 +37,7 @@ from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.ingest import (
+    LIBRARY_REFUSALS,
     RegisterResult,
     forget_unfinished_on_cancel,
     removable_names,
@@ -87,7 +88,6 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -1211,7 +1211,7 @@ class ChatScreen(Screen[None]):
 
         try:
             remove_documents_durably([name])
-        except SkipRecordsLockError as exc:
+        except LIBRARY_REFUSALS as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             return
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))

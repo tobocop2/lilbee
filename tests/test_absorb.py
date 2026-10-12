@@ -58,7 +58,12 @@ from lilbee.runtime.lock import (
     source_keys_in_use,
     sync_running,
 )
-from tests.conftest import make_mock_services
+from tests.conftest import (
+    UnfinishedAdd,
+    leave_unfinished_add,
+    make_mock_services,
+    unfinished_add_refused,
+)
 from tests.test_skip_marker import record_file_reads
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 from tests.test_wiki_shared import leave_temp_of_a_dead_writer
@@ -1693,6 +1698,154 @@ class TestEveryEntryPoint:
         assert result == {
             "error": "A sync or a wiki build is running. Add notes again when it ends."
         }
+
+
+_UNFINISHED_ADD_ERRORS = {
+    UnfinishedAdd.HELD: SyncRunningError,
+    UnfinishedAdd.UNREADABLE: AbsorbJournalError,
+}
+_SEEDED_KEYS = ["work/budget.md", "work/plan.md", "workshop/x.md"]
+
+
+def _add_that_died(store: Store, parent: Path) -> None:
+    """Leave the journal of an add of *parent* that died before it moved a key."""
+    _seeded_child(store, parent)
+    with (
+        mock.patch.object(Store, "rekey_sources_under", side_effect=_Killed),
+        pytest.raises(_Killed),
+    ):
+        register_sources([parent])
+    assert absorb_pending(cfg.data_root)
+
+
+@pytest.mark.parametrize("cause", list(UnfinishedAdd))
+class TestARemoveThatCannotFinishAnAdd:
+    """Each surface a remove comes through refuses in its own shape and removes nothing."""
+
+    async def test_the_library_call_raises_the_refusal(self, library, notes, cause):
+        from lilbee import Lilbee
+
+        bee = Lilbee(config=cfg, provider=MagicMock())
+        _add_that_died(library.store, notes)
+        async with unfinished_add_refused(cfg.data_root, cause) as text:
+            with pytest.raises(_UNFINISHED_ADD_ERRORS[cause], match=text):
+                bee.remove("work/plan.md")
+
+        assert _keys(library) == _SEEDED_KEYS
+
+    async def test_the_cli_prints_one_error_line(self, library, notes, cause):
+        from typer.testing import CliRunner
+
+        from lilbee.cli.app import app
+
+        _add_that_died(library.store, notes)
+        command = ["remove", "--data-dir", str(cfg.data_root), "work/plan.md"]
+        async with unfinished_add_refused(cfg.data_root, cause) as text:
+            outcome = CliRunner().invoke(app, command)
+
+        assert outcome.exit_code == 1 and isinstance(outcome.exception, SystemExit)
+        printed = " ".join(outcome.output.split())
+        assert printed.startswith("Error: ") and printed.count("Error: ") == 1
+        assert text in printed and "Traceback" not in printed
+        assert _keys(library) == _SEEDED_KEYS
+
+    async def test_the_cli_in_json_mode_prints_one_error_object(self, library, notes, cause):
+        from typer.testing import CliRunner
+
+        from lilbee.cli.app import app
+
+        _add_that_died(library.store, notes)
+        command = ["--json", "remove", "--data-dir", str(cfg.data_root), "work/plan.md"]
+        async with unfinished_add_refused(cfg.data_root, cause) as text:
+            outcome = CliRunner().invoke(app, command)
+
+        assert outcome.exit_code == 1 and isinstance(outcome.exception, SystemExit)
+        payload = json.loads(outcome.output.strip().splitlines()[-1])
+        assert list(payload) == ["error"] and text in payload["error"]
+        assert _keys(library) == _SEEDED_KEYS
+
+    async def test_the_mcp_tool_returns_an_error(self, library, notes, cause):
+        from lilbee.mcp_server import remove
+
+        _add_that_died(library.store, notes)
+        async with unfinished_add_refused(cfg.data_root, cause) as text:
+            result = remove(["work/plan.md"])
+
+        assert list(result) == ["error"] and text in result["error"]
+        assert _keys(library) == _SEEDED_KEYS
+
+    async def test_the_http_route_answers_409_with_the_refusal(self, library, notes, cause):
+        from litestar.exceptions import ClientException
+
+        from lilbee.server.handlers.documents import delete_documents
+
+        _add_that_died(library.store, notes)
+        async with unfinished_add_refused(cfg.data_root, cause) as text:
+            with pytest.raises(ClientException) as refused:
+                await delete_documents(["work/plan.md"])
+
+        assert refused.value.status_code == 409 and text in refused.value.detail
+        assert _keys(library) == _SEEDED_KEYS
+
+
+class TestARemoveAfterTheLibraryIsFree:
+    async def test_the_mcp_tool_finishes_the_add_and_removes_at_the_new_key(self, library, notes):
+        from lilbee.mcp_server import remove
+
+        _add_that_died(library.store, notes)
+        async with unfinished_add_refused(cfg.data_root, UnfinishedAdd.HELD):
+            refused = remove(["work/plan.md"])
+
+        result = remove(["notes/work/plan.md"])
+
+        assert list(refused) == ["error"]
+        assert result["removed"] == ["notes/work/plan.md"]
+        assert _keys(library) == ["notes/work/budget.md", "workshop/x.md"]
+
+
+@pytest.mark.parametrize("cause", list(UnfinishedAdd))
+class TestAnMcpSyncThatCannotFinishAnAdd:
+    async def test_the_sync_tool_returns_an_error(self, library, notes, cause):
+        from lilbee.mcp_server import sync as mcp_sync
+
+        _add_that_died(library.store, notes)
+        async with unfinished_add_refused(cfg.data_root, cause) as text:
+            result = await mcp_sync()
+
+        assert list(result) == ["error"] and text in result["error"]
+        assert _keys(library) == _SEEDED_KEYS
+
+    async def test_an_add_refused_at_its_registration_returns_an_error(self, library, notes, cause):
+        from lilbee.mcp_server import add
+
+        _add_that_died(library.store, notes)
+        async with unfinished_add_refused(cfg.data_root, cause):
+            result = await add([str(notes / "loose.md")])
+
+        assert list(result) == ["error"]
+        assert sorted(_registry()) == ["work"]
+
+    async def test_the_sync_inside_an_add_returns_an_error(self, library, tmp_path, cause):
+        """Another process's add dies between this add's registration and its sync."""
+        from lilbee.app import ingest as ingest_mod
+        from lilbee.mcp_server import add
+
+        other = tmp_path / "src" / "other"
+        _write(other / "page.md", "# Page\n\nA page about the ferry.\n")
+        real_register = ingest_mod.register_sources
+
+        def _then_another_add_dies(paths, **kwargs):
+            registered = real_register(paths, **kwargs)
+            leave_unfinished_add(cfg.data_root, cause)
+            return registered
+
+        async with unfinished_add_refused(cfg.data_root, cause, journal=False) as text:
+            with mock.patch.object(ingest_mod, "register_sources", _then_another_add_dies):
+                result = await add([str(other)])
+
+        assert list(result) == ["error"] and text in result["error"]
+        assert _keys(library) == []
+        assert sorted(_registry()) == ["other"]
 
 
 async def _one_child(parent: Path) -> None:

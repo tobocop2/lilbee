@@ -7,10 +7,12 @@ import shutil
 import sys
 import threading
 import warnings
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, contextmanager
+from enum import StrEnum
 from importlib.metadata import PackageNotFoundError
 from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -47,7 +49,8 @@ from lilbee.data.store import CitationRecord
 from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
-from lilbee.runtime.lock import no_sync_running
+from lilbee.runtime.absorb_journal import AbsorbJournal, absorb_pending, journal_path, write_journal
+from lilbee.runtime.lock import no_sync_running, sync_running
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
@@ -761,6 +764,57 @@ def reset_held_on_a_thread(
     finally:
         release.set()
         resetter.join(timeout=5)
+
+
+class UnfinishedAdd(StrEnum):
+    """Why this process cannot finish an add that another process left part way."""
+
+    HELD = "held"
+    """A running sync holds the library for longer than the finish waits."""
+    UNREADABLE = "unreadable"
+    """The journal of the add cannot be read."""
+
+
+UNFINISHED_ADD_REFUSALS = {
+    UnfinishedAdd.HELD: (
+        "An interrupted add is not finished and another lilbee process holds this library. "
+        "Try again when it ends."
+    ),
+    UnfinishedAdd.UNREADABLE: "An add was interrupted while it moved a source into its parent",
+}
+
+
+def leave_unfinished_add(data_root: Path, cause: UnfinishedAdd) -> None:
+    """Leave on *data_root* the journal of an add that died, unless a test already left one."""
+    if not absorb_pending(data_root):
+        journal = AbsorbJournal(
+            id="0a1b2c3d",
+            moves={"work": "notes/work"},
+            add={"notes": str(data_root / "notes")},
+            drop=["work"],
+        )
+        write_journal(data_root, journal)
+    if cause is UnfinishedAdd.UNREADABLE:
+        journal_path(data_root).write_text("{", encoding="utf-8")
+
+
+@asynccontextmanager
+async def unfinished_add_refused(
+    data_root: Path, cause: UnfinishedAdd, *, journal: bool = True
+) -> AsyncGenerator[str, None]:
+    """Keep this process from finishing an interrupted add on *data_root* for the block.
+
+    Yields the text of the refusal. With *journal* false the test leaves the
+    journal itself, at the moment it needs it.
+    """
+    if journal:
+        leave_unfinished_add(data_root, cause)
+    if cause is UnfinishedAdd.UNREADABLE:
+        yield UNFINISHED_ADD_REFUSALS[cause]
+        return
+    with mock.patch("lilbee.app.absorb.LOCK_TIMEOUT", 0.05):
+        async with sync_running(data_root):
+            yield UNFINISHED_ADD_REFUSALS[cause]
 
 
 def make_mock_services(**overrides):

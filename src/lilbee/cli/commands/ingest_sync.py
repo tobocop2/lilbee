@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     from lilbee.runtime.progress import DetailedProgressCallback
 
 from lilbee.app.ingest import (
+    LIBRARY_REFUSALS,
     AddRollback,
     RegisterResult,
     expand_remove_targets,
@@ -44,7 +45,6 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
-from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
@@ -744,7 +744,7 @@ def remove(
 
     try:
         result = remove_documents_durably(names, targets=targets)
-    except SkipRecordsLockError as exc:
+    except LIBRARY_REFUSALS as exc:
         if cfg.json_mode:
             json_output({"error": str(exc)})
         else:

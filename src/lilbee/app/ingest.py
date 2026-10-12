@@ -30,6 +30,7 @@ from lilbee.data.ingest.discovery import (
 from lilbee.data.ingest.ignore import IgnoreRules
 from lilbee.data.ingest.skip_marker import (
     SkipRecords,
+    SkipRecordsLockError,
     held_out_names,
     mark_removed,
     skip_records_lock,
@@ -37,14 +38,18 @@ from lilbee.data.ingest.skip_marker import (
 )
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
-from lilbee.runtime.absorb_journal import AbsorbJournal, absorb_pending
+from lilbee.runtime.absorb_journal import AbsorbJournal, AbsorbJournalError, absorb_pending
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.lock import SyncRunningError
 
 _ADD_CANCELLED = "Add cancelled."
 _ADD_CANCELLED_ONE = "Add cancelled. {name} was not added."
 _ADD_CANCELLED_MANY = "Add cancelled. {names} were not added."
 _ALSO_HIT_ERROR = " It also hit an error: {error}."
 _CANCEL_ERRORS = (asyncio.CancelledError, TaskCancelledError, KeyboardInterrupt)
+# What an add, a remove or a sync raises when another lilbee process, or an add it
+# cannot finish, keeps it from starting.
+LIBRARY_REFUSALS = (SkipRecordsLockError, SyncRunningError, AbsorbJournalError)
 
 
 @dataclass
@@ -452,7 +457,8 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
 
     An interrupted absorb is finished first, under the lock an absorb holds from
     start to end, so no removal runs on keys that are part way through a move.
-    The names are then expanded at the keys the library holds.
+    The names are then expanded at the keys the library holds. Raises one of
+    ``LIBRARY_REFUSALS`` with nothing removed when it cannot start.
     """
     data_root = active_config().data_root
     # Taken before the index changes, so a held lock refuses the removal with nothing done.
