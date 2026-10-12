@@ -266,9 +266,34 @@ def _data_root_locks(
     return True
 
 
-def refuse_where_locking_is_unsupported(data_root: Path) -> None:
-    """Raise the error a sync raises when *data_root* cannot lock files; write nothing."""
-    _data_root_locks(data_root, LibraryUnlockableError, unmarked_reader=True)
+def refuse_where_a_sync_cannot_lock(data_root: Path) -> None:
+    """Raise the error a sync raises when it cannot open or take the sync lock of *data_root*.
+
+    The lock is not held on return, and a busy lock is not waited for.
+    """
+    lock = _open_sync_lock(
+        data_root, write=False, on_caller_thread=True, refused=LibraryUnlockableError
+    )
+    if lock is None:
+        return
+    try:
+        # SQLite reads the lock file at the take, so a file that is not a lock fails here.
+        lock.acquire_read(blocking=False)
+    except FileLockTimeout:
+        # A reset holds the lock, so the lock works; the sync waits for the reset.
+        pass
+    except _SYNC_LOCK_ERRORS as exc:
+        _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
+    finally:
+        _close_sync_lock(lock)
+
+
+def _close_sync_lock(lock: ReadWriteLock) -> None:
+    """Close *lock*; a close that fails only warns, so the caller keeps its own result."""
+    try:
+        lock.close()
+    except _SYNC_LOCK_ERRORS as exc:
+        log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
 
 
 def _require_locking(data_root: Path) -> None:
@@ -433,11 +458,7 @@ def source_keys_in_use(
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
         yield
     finally:
-        try:
-            lock.close()
-        except _SYNC_LOCK_ERRORS as exc:
-            # Logged only: the block keeps its own result, error or cancel.
-            log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
+        _close_sync_lock(lock)
 
 
 @contextmanager

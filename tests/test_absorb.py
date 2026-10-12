@@ -883,7 +883,9 @@ class TestTheCommonAddPaysNothing:
         journal.assert_not_called()
         rekey.assert_not_called()
         rules.assert_not_called()
-        assert not (cfg.data_root / "sync.lock").exists()
+        # The add opened the sync lock to check it and left it free.
+        with no_sync_running(cfg.data_root):
+            pass
         assert library.store.get_sources() == []
 
     async def test_an_add_without_records_reads_no_record_file(self, library, notes, tmp_path):
@@ -1880,8 +1882,9 @@ class TestAnMcpSyncThatCannotFinishAnAdd:
 
         assert list(result) == ["error"] and text in result["error"]
         assert _keys(library) == []
-        # A filesystem without locking refuses the add at its registration.
-        registered = [] if cause is UnfinishedAdd.NO_LOCKING else ["other"]
+        # A data root that cannot lock refuses the add at its registration.
+        refused_first = (UnfinishedAdd.NO_LOCKING, UnfinishedAdd.UNLOCKABLE)
+        registered = [] if cause in refused_first else ["other"]
         assert sorted(_registry()) == registered
 
 
@@ -2538,22 +2541,32 @@ def _sync_lock_take_refused():
         yield
 
 
+def _cannot_change(data_root: Path) -> str:
+    """What a sync or a wiki write says when a disk error stops it at the sync lock."""
+    return (
+        f"Cannot change the library: {data_root / 'sync.lock'} cannot be locked "
+        "(disk I/O error). Fix that problem, then try again."
+    )
+
+
 class TestSourceKeysInUse:
-    def test_a_lock_that_cannot_be_taken_runs_the_block_unmarked(self, tmp_path, caplog):
+    def test_a_lock_that_cannot_be_taken_refuses_the_block(self, tmp_path, caplog):
         ran = []
         with (
             _sync_lock_take_refused(),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            pytest.raises(LibraryUnlockableError) as refused,
             source_keys_in_use(tmp_path),
         ):
             ran.append("block")
 
-        assert ran == ["block"]
-        assert caplog.text.count("disk I/O error") == 1
+        assert ran == []
+        assert str(refused.value) == _cannot_change(tmp_path)
+        assert caplog.text == ""
         with no_sync_running(tmp_path):
             pass
 
-    def test_a_lock_file_that_cannot_be_opened_runs_the_block_unmarked(self, tmp_path, caplog):
+    def test_a_lock_file_that_cannot_be_opened_refuses_the_block(self, tmp_path, caplog):
         def _probe_only(path, *args, **kwargs):
             if Path(path).name.startswith("sync.probe."):
                 return ReadWriteLock(path, *args, **kwargs)
@@ -2563,12 +2576,14 @@ class TestSourceKeysInUse:
         with (
             mock.patch("lilbee.runtime.lock.ReadWriteLock", _probe_only),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            pytest.raises(LibraryUnlockableError) as refused,
             source_keys_in_use(tmp_path),
         ):
             ran.append("block")
 
-        assert ran == ["block"]
-        assert caplog.text.count("disk I/O error") == 1
+        assert ran == []
+        assert str(refused.value) == _cannot_change(tmp_path)
+        assert caplog.text == ""
 
 
 def _record_of(key: str) -> tuple[str | None, SkipKind | None, str | None]:
@@ -3006,14 +3021,19 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         with no_sync_running(tmp_path):
             pass
 
-    def test_a_take_error_without_a_cancel_runs_the_block_unmarked(self, library, tmp_path):
+    def test_a_take_error_without_a_cancel_refuses_the_block(self, library, tmp_path):
         import threading
 
         ran = []
-        with _sync_lock_take_refused(), source_keys_in_use(tmp_path, threading.Event()):
+        with (
+            _sync_lock_take_refused(),
+            pytest.raises(LibraryUnlockableError) as refused,
+            source_keys_in_use(tmp_path, threading.Event()),
+        ):
             ran.append("block")
 
-        assert ran == ["block"]
+        assert ran == []
+        assert str(refused.value) == _cannot_change(tmp_path)
 
 
 class TestAWikiBuildAndAnAbsorb:

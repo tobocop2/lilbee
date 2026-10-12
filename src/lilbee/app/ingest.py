@@ -45,7 +45,7 @@ from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
     SyncRunningError,
-    refuse_where_locking_is_unsupported,
+    refuse_where_a_sync_cannot_lock,
 )
 
 _ADD_CANCELLED = "Add cancelled."
@@ -283,11 +283,12 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     with nothing changed. A data root that cannot be locked raises
     ``LibraryUnlockableError`` or ``LockingUnsupportedError``, with nothing changed.
     A data root whose filesystem cannot lock files raises ``LockingUnsupportedError``
-    for every add, because the sync after the add refuses there.
+    for every add, and a sync lock that cannot be opened raises
+    ``LibraryUnlockableError``, because the sync after the add refuses there.
     """
     config = active_config()
     if paths:
-        refuse_where_locking_is_unsupported(config.data_root)
+        refuse_where_a_sync_cannot_lock(config.data_root)
     documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
     docs_resolved = disk_path(documents_dir)
