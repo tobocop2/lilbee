@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import suppress
 from pathlib import Path
 from typing import TypedDict
 
@@ -24,7 +25,7 @@ from lilbee.core.config import Config, cfg
 from lilbee.data.store import SearchChunk, Store
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.clustering import SourceClusterer
-from lilbee.runtime.lock import source_keys_in_use
+from lilbee.runtime.lock import SyncMarkWaitCancelledError, source_keys_in_use
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -396,12 +397,19 @@ def run_full_build(
     before the mutex, so an add that moves source keys is refused or waited for.
     Setting *cancel* stops the run at the next source boundary and releases the
     mutex; without it a client that disconnects mid-stream leaves a build
-    holding the mutex until it finishes the whole corpus.
+    holding the mutex until it finishes the whole corpus. Setting it during the
+    wait for the sync mark ends the run with nothing read and no page built.
     """
     if config is None:
         config = cfg
     stats = BuildStats()
-    with source_keys_in_use(config.data_root), WIKI_BUILD_LOCK:
+    entities: list[ExtractedEntity] = []
+    pages: list[Path] = []
+    with (
+        suppress(SyncMarkWaitCancelledError),
+        source_keys_in_use(config.data_root, cancel),
+        WIKI_BUILD_LOCK,
+    ):
         svc = get_services()
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
         extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
@@ -453,7 +461,12 @@ def run_full_synthesize(
         config = cfg
     stats = BuildStats()
     svc = get_services()
-    with source_keys_in_use(config.data_root), WIKI_BUILD_LOCK:
+    paths: list[Path] = []
+    with (
+        suppress(SyncMarkWaitCancelledError),
+        source_keys_in_use(config.data_root, cancel),
+        WIKI_BUILD_LOCK,
+    ):
         paths = generate_synthesis_pages(
             svc.provider, svc.store, svc.clusterer, config, on_progress, stats, cancel
         )

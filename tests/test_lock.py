@@ -10,7 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -333,6 +333,20 @@ def _reset_held_in_another_process(data_root: Path) -> Generator[None, None, Non
         holder.communicate(timeout=30)
 
 
+@contextmanager
+def _sync_lock_close_refused() -> Generator[None, None, None]:
+    """Close each sync lock, then raise from the close as a disk that fails at that moment does."""
+    real_close = ReadWriteLock.close
+
+    def _close(lock: ReadWriteLock) -> None:
+        real_close(lock)
+        if Path(lock.lock_file).name == "sync.lock":
+            raise sqlite3.OperationalError("disk I/O error")
+
+    with mock.patch.object(ReadWriteLock, "close", _close):
+        yield
+
+
 def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
@@ -396,6 +410,49 @@ class TestSyncMark:
         assert waits
         assert all(0 < wait <= _CANCEL_BOUND_S / 2 for wait in waits), waits
         assert _threads_left_since(before) == []
+        with no_sync_running(tmp_path):
+            pass
+
+    @pytest.mark.parametrize("cancelled_in", ["the wait", "the block"])
+    async def test_a_close_error_does_not_replace_the_cancel_of_a_sync(
+        self, tmp_path: Path, caplog, cancelled_in: str
+    ) -> None:
+        entered = asyncio.Event()
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path):
+                entered.set()
+                await asyncio.sleep(30)
+
+        before = set(threading.enumerate())
+        waits = cancelled_in == "the wait"
+        with (
+            reset_held_on_a_thread(tmp_path) if waits else nullcontext(),
+            _sync_lock_close_refused(),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            sync_task = asyncio.create_task(_sync())
+            if waits:
+                await asyncio.sleep(_CANCEL_BOUND_S / 2)
+            else:
+                await asyncio.wait_for(entered.wait(), 5)
+            sync_task.cancel()
+            await asyncio.wait({sync_task}, timeout=_CANCEL_BOUND_S)
+
+        assert sync_task.cancelled()
+        assert entered.is_set() != waits
+        assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
+        assert _threads_left_since(before) == []
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_close_error_after_a_sync_that_ran_is_raised(self, tmp_path: Path) -> None:
+        ran = []
+        with _sync_lock_close_refused(), pytest.raises(sqlite3.OperationalError, match="disk I/O"):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+
+        assert ran == ["sync"]
         with no_sync_running(tmp_path):
             pass
 

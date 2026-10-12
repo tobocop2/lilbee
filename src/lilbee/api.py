@@ -169,7 +169,9 @@ class Lilbee:
 
         Raises ``SkipRecordsLockError``, ``SyncRunningError`` or ``AbsorbJournalError``
         with nothing removed when another lilbee process, or an add that did not
-        finish, holds the library.
+        finish, holds the library. Raises ``LibraryUnlockableError`` or
+        ``LockingUnsupportedError`` when it must finish such an add on a data
+        root that cannot be locked.
         """
         with config_scope(self._config), services_scope(self._services):
             remove_documents_durably([name])

@@ -17,7 +17,8 @@ from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
-from filelock import FileLock
+from filelock import FileLock, ReadWriteLock
+from filelock import Timeout as FileLockTimeout
 from PIL import Image, ImageDraw
 
 # Opt tests out of the per-role catalog-task validator at import time so
@@ -773,6 +774,10 @@ class UnfinishedAdd(StrEnum):
     """A running sync holds the library for longer than the finish waits."""
     UNREADABLE = "unreadable"
     """The journal of the add cannot be read."""
+    UNLOCKABLE = "unlockable"
+    """The sync lock of the data root is not a lock file."""
+    NO_LOCKING = "no-locking"
+    """The filesystem of the data root cannot lock files."""
 
 
 UNFINISHED_ADD_REFUSALS = {
@@ -781,7 +786,35 @@ UNFINISHED_ADD_REFUSALS = {
         "Try again when it ends."
     ),
     UnfinishedAdd.UNREADABLE: "An add was interrupted while it moved a source into its parent",
+    UnfinishedAdd.UNLOCKABLE: "Stop every lilbee process, delete",
+    UnfinishedAdd.NO_LOCKING: "is on a filesystem that does not support file locking",
 }
+
+
+@contextmanager
+def sync_lock_not_a_lock_file(data_root: Path) -> Generator[None, None, None]:
+    """Put bytes that are not a lock file where *data_root* keeps its sync lock, for the block."""
+    lock_file = data_root / "sync.lock"
+    data_root.mkdir(parents=True, exist_ok=True)
+    lock_file.write_bytes(b"this is not a database\n" * 400)
+    try:
+        yield
+    finally:
+        lock_file.unlink()
+
+
+@contextmanager
+def filesystem_without_locking() -> Generator[None, None, None]:
+    """Report every lock probe busy for the block, as a filesystem that cannot lock files does."""
+    real = ReadWriteLock.acquire_write
+
+    def _probe_busy(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+        if Path(lock.lock_file).name.startswith("sync.probe."):
+            raise FileLockTimeout(lock.lock_file)
+        return real(lock, *args, **kwargs)
+
+    with mock.patch.object(ReadWriteLock, "acquire_write", _probe_busy):
+        yield
 
 
 def leave_unfinished_add(data_root: Path, cause: UnfinishedAdd) -> None:
@@ -811,6 +844,14 @@ async def unfinished_add_refused(
         leave_unfinished_add(data_root, cause)
     if cause is UnfinishedAdd.UNREADABLE:
         yield UNFINISHED_ADD_REFUSALS[cause]
+        return
+    if cause is UnfinishedAdd.UNLOCKABLE:
+        with sync_lock_not_a_lock_file(data_root):
+            yield UNFINISHED_ADD_REFUSALS[cause]
+        return
+    if cause is UnfinishedAdd.NO_LOCKING:
+        with filesystem_without_locking():
+            yield UNFINISHED_ADD_REFUSALS[cause]
         return
     with mock.patch("lilbee.app.absorb.LOCK_TIMEOUT", 0.05):
         async with sync_running(data_root):

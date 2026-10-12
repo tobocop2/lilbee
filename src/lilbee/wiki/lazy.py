@@ -11,12 +11,13 @@ from __future__ import annotations
 
 import functools
 import logging
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.text import clean_label_for_display
-from lilbee.runtime.lock import source_keys_in_use
+from lilbee.runtime.lock import SyncMarkWaitCancelledError, source_keys_in_use
 from lilbee.runtime.progress import (
     DetailedProgressCallback,
     EventType,
@@ -121,11 +122,16 @@ def generate_stub_page(
     so a page generated from the browse tree cannot interleave with a build,
     and the sync mark, so no source key moves while the page is written.
     Emits the same wiki_phase/wiki_page events a build does; a *cancel* set
-    before the model call skips it.
+    before the model call skips it, and one set during the wait for the sync
+    mark ends the wait.
     """
     if config is None:
         config = cfg
-    with source_keys_in_use(config.data_root), WIKI_BUILD_LOCK:
+    with (
+        suppress(SyncMarkWaitCancelledError),
+        source_keys_in_use(config.data_root, cancel),
+        WIKI_BUILD_LOCK,
+    ):
         stubs = load_stub_index(config)
         stub = _resolve(slug, stubs)
         if stub is None:
@@ -186,3 +192,5 @@ def generate_stub_page(
                 WikiPageEvent(label=stub.label, pages=1, current=1, total=1),
             )
         return path
+    log.info("Generation of %s cancelled during the wait for the sync mark", slug)
+    return None

@@ -52,6 +52,8 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.lock import (
+    LibraryUnlockableError,
+    LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
     no_sync_running,
@@ -59,11 +61,16 @@ from lilbee.runtime.lock import (
     sync_running,
 )
 from tests.conftest import (
+    UNFINISHED_ADD_REFUSALS,
     UnfinishedAdd,
+    filesystem_without_locking,
     leave_unfinished_add,
     make_mock_services,
+    reset_held_on_a_thread,
+    sync_lock_not_a_lock_file,
     unfinished_add_refused,
 )
+from tests.test_lock import _reset_held_in_another_process
 from tests.test_skip_marker import record_file_reads
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 from tests.test_wiki_shared import leave_temp_of_a_dead_writer
@@ -1728,6 +1735,8 @@ class TestEveryEntryPoint:
 _UNFINISHED_ADD_ERRORS = {
     UnfinishedAdd.HELD: SyncRunningError,
     UnfinishedAdd.UNREADABLE: AbsorbJournalError,
+    UnfinishedAdd.UNLOCKABLE: LibraryUnlockableError,
+    UnfinishedAdd.NO_LOCKING: LockingUnsupportedError,
 }
 _SEEDED_KEYS = ["work/budget.md", "work/plan.md", "workshop/x.md"]
 
@@ -1871,6 +1880,136 @@ class TestAnMcpSyncThatCannotFinishAnAdd:
         assert list(result) == ["error"] and text in result["error"]
         assert _keys(library) == []
         assert sorted(_registry()) == ["other"]
+
+
+@contextlib.contextmanager
+def _data_root_that_cannot_be_locked(cause: UnfinishedAdd):
+    with (
+        sync_lock_not_a_lock_file(cfg.data_root)
+        if cause is UnfinishedAdd.UNLOCKABLE
+        else filesystem_without_locking()
+    ):
+        yield
+
+
+_CANNOT_BE_LOCKED = [UnfinishedAdd.UNLOCKABLE, UnfinishedAdd.NO_LOCKING]
+
+
+@pytest.mark.parametrize("cause", _CANNOT_BE_LOCKED)
+class TestAnAddThatTakesASourceInOnADataRootItCannotLock:
+    """Each surface refuses in its own shape, with a text about the add, and moves nothing."""
+
+    @staticmethod
+    def _assert_about_the_add(text: str, cause: UnfinishedAdd) -> None:
+        assert UNFINISHED_ADD_REFUSALS[cause] in text
+        assert "reset" not in text.lower() and "Traceback" not in text
+
+    @staticmethod
+    def _assert_nothing_moved(library) -> None:
+        assert _keys(library) == _SEEDED_KEYS
+        assert sorted(_registry()) == ["work"] and not absorb_pending(cfg.data_root)
+
+    def test_the_library_call_raises_the_refusal(self, library, notes, cause):
+        from lilbee import Lilbee
+
+        bee = Lilbee(config=cfg, provider=MagicMock())
+        bee._services = library
+        _seeded_child(library.store, notes)
+        with (
+            _data_root_that_cannot_be_locked(cause),
+            pytest.raises(_UNFINISHED_ADD_ERRORS[cause]) as refused,
+        ):
+            bee.add([notes])
+
+        self._assert_about_the_add(str(refused.value), cause)
+        self._assert_nothing_moved(library)
+
+    @pytest.mark.parametrize("json_mode", [False, True])
+    def test_the_cli_prints_one_error(self, library, notes, cause, json_mode):
+        from typer.testing import CliRunner
+
+        from lilbee.cli.app import app
+
+        _seeded_child(library.store, notes)
+        command = ["add", "--data-dir", str(cfg.data_root), str(notes)]
+        with _data_root_that_cannot_be_locked(cause):
+            outcome = CliRunner().invoke(app, ["--json", *command] if json_mode else command)
+
+        assert outcome.exit_code == 1 and isinstance(outcome.exception, SystemExit)
+        if json_mode:
+            payload = json.loads(outcome.output)
+            assert list(payload) == ["error"]
+            printed = payload["error"]
+        else:
+            printed = " ".join(outcome.output.split())
+            assert printed.startswith("Error: ") and printed.count("Error: ") == 1
+        self._assert_about_the_add(printed, cause)
+        self._assert_nothing_moved(library)
+
+    async def test_the_http_stream_ends_in_an_error(self, library, notes, cause):
+        from lilbee.server.handlers import add_files_stream
+
+        _seeded_child(library.store, notes)
+        with _data_root_that_cannot_be_locked(cause):
+            text = "".join([frame async for frame in add_files_stream([str(notes)])])
+
+        assert "event: error" in text and "event: done" not in text
+        self._assert_about_the_add(text, cause)
+        self._assert_nothing_moved(library)
+
+    async def test_the_mcp_tool_returns_an_error(self, library, notes, cause):
+        from lilbee.mcp_server import add
+
+        _seeded_child(library.store, notes)
+        with _data_root_that_cannot_be_locked(cause):
+            result = await add([str(notes)])
+
+        assert list(result) == ["error"]
+        self._assert_about_the_add(result["error"], cause)
+        self._assert_nothing_moved(library)
+
+    def test_the_tui_task_fails_with_the_refusal(self, library, notes, cause):
+        from lilbee.cli.tui.screens.chat import ChatScreen
+        from lilbee.cli.tui.widgets.task_bar_controller import ProgressReporter
+
+        _seeded_child(library.store, notes)
+        screen = ChatScreen.__new__(ChatScreen)
+        with (
+            mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"),
+            mock.patch("lilbee.runtime.asyncio_loop.run") as run,
+            _data_root_that_cannot_be_locked(cause),
+            pytest.raises(_UNFINISHED_ADD_ERRORS[cause]) as refused,
+        ):
+            screen._do_add([notes], MagicMock(spec=ProgressReporter))
+
+        run.assert_not_called()
+        self._assert_about_the_add(str(refused.value), cause)
+        self._assert_nothing_moved(library)
+
+
+class TestAnMcpToolOnAFilesystemWithoutLocking:
+    """A sync, alone or after a plain add, returns the tool's error in place of raising."""
+
+    async def test_the_sync_tool_returns_an_error(self, library):
+        from lilbee.mcp_server import sync as mcp_sync
+
+        with filesystem_without_locking():
+            result = await mcp_sync()
+
+        assert list(result) == ["error"]
+        assert "does not support file locking" in result["error"]
+
+    async def test_the_sync_inside_an_add_returns_an_error(self, library, tmp_path):
+        from lilbee.mcp_server import add
+
+        other = tmp_path / "src" / "other"
+        _write(other / "page.md", "# Page\n\nA page about the ferry.\n")
+        with filesystem_without_locking():
+            result = await add([str(other)])
+
+        assert list(result) == ["error"]
+        assert "does not support file locking" in result["error"]
+        assert _keys(library) == []
 
 
 async def _one_child(parent: Path) -> None:
@@ -2343,12 +2482,13 @@ class TestSyncsHeldOff:
 
         with (
             _sync_lock_take_refused(),
-            pytest.raises(ResetRefusedError, match="disk I/O error") as refused,
+            pytest.raises(LibraryUnlockableError, match="disk I/O error") as refused,
             syncs_held_off(tmp_path, "busy"),
         ):
             pytest.fail("entered without the lock")
 
-        assert f"delete {tmp_path / 'sync.lock'}" in str(refused.value)
+        assert f"delete {tmp_path / 'sync.lock'}, and try again." in str(refused.value)
+        assert "reset" not in str(refused.value)
         with syncs_held_off(tmp_path, "busy"):
             pass
 
@@ -2635,6 +2775,198 @@ class TestWrittenBetweenThePhases:
         )
 
 
+@contextlib.contextmanager
+def _add_held_on_a_thread(data_root: Path):
+    """Hold syncs off *data_root* on a thread, as an add that moves keys does, for the block."""
+    import threading
+
+    from lilbee.runtime.lock import syncs_held_off
+
+    held, release = threading.Event(), threading.Event()
+
+    def _an_add() -> None:
+        with syncs_held_off(data_root, "held by an add"):
+            held.set()
+            release.wait(30)
+
+    adder = threading.Thread(target=_an_add)
+    adder.start()
+    try:
+        assert held.wait(5)
+        yield
+    finally:
+        release.set()
+        adder.join(timeout=5)
+
+
+_HOLDERS = {
+    "an add": _add_held_on_a_thread,
+    "a reset": reset_held_on_a_thread,
+    "another process": _reset_held_in_another_process,
+}
+# A cancelled wiki writer returns within this many seconds, however long the holder lasts.
+_WIKI_CANCEL_BOUND_S = 0.5
+
+
+class TestAWikiWriterCancelledWhileItWaitsForTheMark:
+    """One cancel ends the wait for an add, a reset or another process; nothing is read."""
+
+    @staticmethod
+    def _writers(body: MagicMock) -> dict[str, tuple[Callable[..., object], object]]:
+        """Each writer with its body replaced by *body*, and what it returns for a cancel."""
+        from lilbee.wiki import generation, lazy
+
+        empty_stats = generation.BuildStats().as_dict()
+
+        def _build(cancel) -> object:
+            with mock.patch.object(generation, "get_entity_extractor", body):
+                return generation.run_full_build(cfg, cancel=cancel)
+
+        def _synthesis(cancel) -> object:
+            with mock.patch.object(generation, "generate_synthesis_pages", body):
+                return generation.run_full_synthesize(cfg, cancel=cancel)
+
+        def _page(cancel) -> object:
+            with mock.patch.object(lazy, "load_stub_index", body):
+                return lazy.generate_stub_page("boeing", MagicMock(), cfg, cancel=cancel)
+
+        return {
+            "build": (_build, {"paths": [], "entities": 0, "count": 0, "stats": empty_stats}),
+            "synthesis": (_synthesis, {"paths": [], "count": 0, "stats": empty_stats}),
+            "page": (_page, None),
+        }
+
+    def _cancel_while_held(self, writer: str, *, close_fails: bool = False):
+        """Start *writer* against a held mark, cancel it once, and time its return."""
+        import threading
+        import time
+
+        body = MagicMock()
+        run, cancelled_result = self._writers(body)[writer]
+        cancel = threading.Event()
+        outcome: list[object] = []
+        takes: list[int] = []
+        closes: list[int] = []
+        real_take, real_close = ReadWriteLock.acquire_read, ReadWriteLock.close
+
+        def _take(lock: ReadWriteLock, *args, **kwargs):
+            if threading.current_thread() is thread and Path(lock.lock_file).name == "sync.lock":
+                takes.append(threading.get_ident())
+            return real_take(lock, *args, **kwargs)
+
+        def _close(lock: ReadWriteLock) -> None:
+            real_close(lock)
+            if threading.current_thread() is thread and Path(lock.lock_file).name == "sync.lock":
+                closes.append(threading.get_ident())
+                if close_fails:
+                    raise sqlite3.OperationalError("disk I/O error")
+
+        def _run() -> None:
+            try:
+                outcome.append(run(cancel))
+            except BaseException as exc:
+                outcome.append(exc)
+
+        thread = threading.Thread(target=_run)
+        with (
+            mock.patch.object(ReadWriteLock, "acquire_read", _take),
+            mock.patch.object(ReadWriteLock, "close", _close),
+        ):
+            thread.start()
+            time.sleep(0.3)
+            still_waiting = thread.is_alive()
+            cancel.set()
+            cancelled_at = time.monotonic()
+            thread.join(5)
+            took = time.monotonic() - cancelled_at
+        assert still_waiting, "the writer did not wait for the holder"
+        assert not thread.is_alive()
+        assert outcome == [cancelled_result]
+        body.assert_not_called()
+        assert len(takes) > 1 and set(takes) == set(closes) == {thread.ident}
+        return took
+
+    @pytest.mark.parametrize("holder", list(_HOLDERS))
+    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
+    def test_it_returns_within_the_bound_and_leaves_no_lock(self, library, writer, holder):
+        import threading
+
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = set(threading.enumerate())
+        with _HOLDERS[holder](cfg.data_root):
+            took = self._cancel_while_held(writer)
+            print(f"WIKI-CANCEL {writer} held by {holder}: {took:.3f} s")
+
+        assert took <= _WIKI_CANCEL_BOUND_S, took
+        assert set(threading.enumerate()) - before == set()
+        with no_sync_running(cfg.data_root):
+            pass
+
+    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
+    def test_a_close_error_does_not_replace_the_cancel(self, library, writer, caplog):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            reset_held_on_a_thread(cfg.data_root),
+        ):
+            took = self._cancel_while_held(writer, close_fails=True)
+
+        assert took <= _WIKI_CANCEL_BOUND_S, took
+        assert f"Could not close {cfg.data_root / 'sync.lock'} (disk I/O error)." in caplog.text
+        with no_sync_running(cfg.data_root):
+            pass
+
+    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
+    def test_a_take_that_fails_as_the_cancel_arrives_does_not_run_the_writer(self, library, writer):
+        import threading
+
+        cancel = threading.Event()
+        body = MagicMock()
+        run, cancelled_result = self._writers(body)[writer]
+        real_take = ReadWriteLock.acquire_read
+
+        def _take(lock: ReadWriteLock, *args, **kwargs):
+            if Path(lock.lock_file).name != "sync.lock":
+                return real_take(lock, *args, **kwargs)
+            cancel.set()
+            raise sqlite3.OperationalError("disk I/O error")
+
+        with mock.patch.object(ReadWriteLock, "acquire_read", _take):
+            assert run(cancel) == cancelled_result
+
+        body.assert_not_called()
+        with no_sync_running(cfg.data_root):
+            pass
+
+    def test_a_close_error_without_a_cancel_is_raised(self, library, tmp_path):
+        def _close(lock: ReadWriteLock) -> None:
+            real_close(lock)
+            if Path(lock.lock_file).name == "sync.lock":
+                raise sqlite3.OperationalError("disk I/O error")
+
+        real_close = ReadWriteLock.close
+        ran = []
+        with (
+            mock.patch.object(ReadWriteLock, "close", _close),
+            pytest.raises(sqlite3.OperationalError, match="disk I/O error"),
+            source_keys_in_use(tmp_path),
+        ):
+            ran.append("block")
+
+        assert ran == ["block"]
+        with no_sync_running(tmp_path):
+            pass
+
+    def test_a_take_error_without_a_cancel_runs_the_block_unmarked(self, library, tmp_path):
+        import threading
+
+        ran = []
+        with _sync_lock_take_refused(), source_keys_in_use(tmp_path, threading.Event()):
+            ran.append("block")
+
+        assert ran == ["block"]
+
+
 class TestAWikiBuildAndAnAbsorb:
     """A wiki writer holds the sync mark from its first read of a source key to its last page."""
 
@@ -2727,11 +3059,11 @@ class TestAWikiBuildAndAnAbsorb:
                 WIKI_BUILD_LOCK.release()
 
         @contextmanager
-        def _marked(data_root: Path):
+        def _marked(data_root: Path, cancel: object = None):
             other = threading.Thread(target=_try)
             other.start()
             other.join()
-            with real(data_root):
+            with real(data_root, cancel):
                 yield
 
         with (

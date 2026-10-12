@@ -40,16 +40,26 @@ from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
 from lilbee.runtime.absorb_journal import AbsorbJournal, AbsorbJournalError, absorb_pending
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
-from lilbee.runtime.lock import SyncRunningError
+from lilbee.runtime.lock import (
+    LibraryUnlockableError,
+    LockingUnsupportedError,
+    SyncRunningError,
+)
 
 _ADD_CANCELLED = "Add cancelled."
 _ADD_CANCELLED_ONE = "Add cancelled. {name} was not added."
 _ADD_CANCELLED_MANY = "Add cancelled. {names} were not added."
 _ALSO_HIT_ERROR = " It also hit an error: {error}."
 _CANCEL_ERRORS = (asyncio.CancelledError, TaskCancelledError, KeyboardInterrupt)
-# What an add, a remove or a sync raises when another lilbee process, or an add it
-# cannot finish, keeps it from starting.
-LIBRARY_REFUSALS = (SkipRecordsLockError, SyncRunningError, AbsorbJournalError)
+# What an add, a remove or a sync raises when another lilbee process, an add it
+# cannot finish, or a data root it cannot lock keeps it from starting.
+LIBRARY_REFUSALS = (
+    SkipRecordsLockError,
+    SyncRunningError,
+    AbsorbJournalError,
+    LibraryUnlockableError,
+    LockingUnsupportedError,
+)
 
 
 @dataclass
@@ -263,7 +273,8 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     citations move below the new label, with nothing extracted or embedded again.
     That needs every sync and wiki write stopped; a running one raises
     ``SyncRunningError`` and a removal in progress raises ``SkipRecordsLockError``,
-    with nothing changed.
+    with nothing changed. A data root that cannot be locked raises
+    ``LibraryUnlockableError`` or ``LockingUnsupportedError``, with nothing changed.
     """
     config = active_config()
     documents_dir = config.documents_dir
