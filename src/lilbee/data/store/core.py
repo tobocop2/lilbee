@@ -2153,11 +2153,7 @@ class Store:
 
         A key matches when it is *old* or starts with ``old/``, so ``work`` never
         matches ``workshop/x``. Each table with a row to move takes one update. A
-        row that moves replaces what its table holds at the key it takes, in
-        every per-file table when one of them holds such a row: a row can only
-        be at the old key of a table that moved before if something wrote it
-        since. A second run re-keys again when *new* starts with *old*, and
-        nothing is replaced when one key lies below the other.
+        second run re-keys again when *new* starts with *old*.
         When *new* ends in another name than
         *old*, the source at exactly *old* takes the title of the new name if its
         title came from the old one; every other title stays as stored. An empty
@@ -2168,7 +2164,6 @@ class Store:
         _refuse_malformed_key(new)
         with self._write_lock():
             title = self._title_after_rekey(old, new)
-            self._clear_rekey_targets(old, new)
             for name, column in _REKEY_TABLES:
                 table = self.open_table(name)
                 where, value = _rekey_sql(column, old, new)
@@ -2179,33 +2174,6 @@ class Store:
                     table.update(where=at_old, values={_TITLE_COLUMN: title})
                 table.update(where=where, values_sql={column: value})
         self._invalidate_source_cache()
-
-    def _taken_by_rekey(self, name: str, column: str, old: str, new: str) -> set[str]:
-        """The keys below *new* that table *name* holds and its rows below *old* take."""
-        table = self.open_table(name)
-        at_new, _ = _rekey_sql(column, new, new)
-        if table is None or table.count_rows(at_new) == 0:
-            return set()
-        at_old, _ = _rekey_sql(column, old, new)
-
-        def _keys(where: str) -> set[str]:
-            rows = table.search().where(where).select([column]).limit(None).to_list()
-            return {row[column] for row in rows}
-
-        return {new + key[len(old) :] for key in _keys(at_old)} & _keys(at_new)
-
-    def _clear_rekey_targets(self, old: str, new: str) -> None:
-        """Delete the rows a re-key from *old* to *new* replaces. Caller holds ``write_lock()``."""
-        if f"{new}/".startswith(f"{old}/") or f"{old}/".startswith(f"{new}/"):
-            return
-        per_file: set[str] = set()
-        for name, column in _PER_SOURCE_TABLES:
-            per_file |= self._taken_by_rekey(name, column, old, new)
-        if per_file:
-            self._delete_by_sources_unlocked(sorted(per_file))
-        sources_column = INGEST_SOURCE_COLUMNS[SOURCES_TABLE]
-        for filename in sorted(self._taken_by_rekey(SOURCES_TABLE, sources_column, old, new)):
-            self._delete_source_unlocked(filename)
 
     def drop_citations_repeated_under(self, repeat: str, kept: str) -> None:
         """Delete each citation at or below *repeat* that one at the same place below *kept* holds.
@@ -2269,12 +2237,6 @@ class Store:
             self._invalidate_source_cache()
 
         return RemoveResult(removed=removed, not_found=not_found)
-
-    def remove_rows_of(self, names: list[str]) -> None:
-        """Delete what every per-document table holds for *names*, source record or none."""
-        with self._write_lock():
-            self._remove_many_unlocked(names)
-        self._invalidate_source_cache()
 
     def clear_table(self, name: str, predicate: str) -> bool:
         """Delete rows matching *predicate* from *name*. Acquires write lock.

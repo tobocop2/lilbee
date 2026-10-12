@@ -139,71 +139,22 @@ def _lift(config: Config, store: Store, journal: AbsorbJournal) -> None:
 def _land(config: Config, store: Store, journal: AbsorbJournal) -> None:
     """Move each absorbed source from its temporary key to its key below the parent.
 
-    No temporary key is a final key, so the moves run in any order. A file two
-    sources indexed must be single before the first of them lands.
+    No temporary key is a final key, so the moves run in any order.
     """
-    for old, new in journal.moves.items():
-        if not is_under(new, old):
-            # A lilbee without the absorb that synced since the lift wrote below the old key.
-            _rekey(config, store, old, journal.lifted(old))
-    _drop_shadows(store, journal)
     for old, new in journal.moves.items():
         _rekey(config, store, journal.lifted(old), new)
 
 
-def _written_since(journal: AbsorbJournal, records: SkipRecords) -> dict[str, HeldOut]:
-    """The record *records* holds of each file below an absorbed source, by the key it takes.
-
-    A lilbee without the absorb that ran since the journal was written holds a
-    file out at the key it saw: the old one, the temporary one or the final one.
-    A source that keeps its label below its parent is left out, because its old
-    keys cannot be told from its final ones.
-    """
-    moves = {old: new for old, new in journal.moves.items() if not is_under(new, old)}
-    return {
-        **_records_after(records, {new: new for new in moves.values()}),
-        **_records_after(records, {journal.lifted(old): new for old, new in moves.items()}),
-        **_records_after(records, moves),
-    }
-
-
-def _held_out(config: Config, journal: AbsorbJournal) -> dict[str, HeldOut]:
-    """What the absorbed sources hold out: the journal's records, then any written since."""
-    return {**journal.records, **_written_since(journal, load_skip_records(config.data_root))}
-
-
-def _drop_removed_again(store: Store, journal: AbsorbJournal, held: dict[str, HeldOut]) -> None:
-    """Remove each file *held* names as removed that is indexed at the removed hash.
-
-    A lilbee without the absorb that synced before the journal ended can index
-    it again. Another hash is an edit since the removal, which every sync indexes.
-    A removal written since the journal can leave rows in the tables that had
-    already moved, so its file goes unless the index holds it at another hash.
-    """
-    removed = {key: record.hash for key, record in held.items() if record.removed}
-    if not removed:
-        return
-    indexed = {source["filename"]: source["file_hash"] for source in store.get_sources()}
-    again = [
-        key
-        for key, removed_hash in removed.items()
-        if indexed.get(key) == removed_hash or (key not in indexed and key not in journal.records)
-    ]
-    if again:
-        store.remove_rows_of(again)
-
-
-def _write_records(config: Config, journal: AbsorbJournal, held: dict[str, HeldOut]) -> None:
-    """Give the skip record files *held*, in place of any at an old, temporary or new key."""
-    lifted = [journal.lifted(old) for old in journal.moves]
-    prefixes = [*journal.moves, *lifted, *journal.moves.values()]
+def _write_records(config: Config, journal: AbsorbJournal) -> None:
+    """Give the skip record files the journal's records, in place of any at an old or new key."""
+    prefixes = [*journal.moves, *journal.moves.values()]
 
     def _replace(records: SkipRecords) -> None:
         for name in list(records.markers):
             if any(is_under(name, prefix) for prefix in prefixes):
                 records.markers.pop(name)
                 records.reasons.pop(name, None)
-        for key, record in held.items():
+        for key, record in journal.records.items():
             records.markers[key] = record.hash
             if record.reason is not None:
                 records.reasons[key] = record.reason
@@ -215,8 +166,8 @@ def _write_records(config: Config, journal: AbsorbJournal, held: dict[str, HeldO
 def _refresh_wiki_index(config: Config, journal: AbsorbJournal) -> None:
     """Give the wiki's subject index the new keys of the absorbed sources.
 
-    A subject can list a key of the lift: an older lilbee that removes a file
-    between the phases aggregates the index from the rows as they are then.
+    A subject can list a key of the lift: a wiki build in a process that was
+    running when the add died aggregates the index from the rows as they are then.
     """
     from lilbee.wiki.stubs import refresh_sources_under  # heavy: the wiki package loads spaCy
 
@@ -255,9 +206,7 @@ def _roll_forward(config: Config, store: Store, journal: AbsorbJournal) -> None:
         journal = journal.at(AbsorbPhase.LAND)
         write_journal(config.data_root, journal)
     _land(config, store, journal)
-    held = _held_out(config, journal)
-    _drop_removed_again(store, journal, held)
-    _write_records(config, journal, held)
+    _write_records(config, journal)
     _refresh_wiki_index(config, journal)
     _write_registry(config, journal)
     delete_journal(config.data_root)

@@ -939,7 +939,6 @@ class TestInterruptedAbsorb:
         "land-start",
         "land-third-table",
         "land-wiki-pages",
-        "removed-again",
         "skip-records",
         "wiki-index",
         "registry",
@@ -974,7 +973,6 @@ class TestInterruptedAbsorb:
             "phase-write": lambda: self._nth_call(absorb_mod, "write_journal", 2),
             "land-start": lambda: self._nth_call(absorb_mod, "_land", 1),
             "land-third-table": lambda: self._nth_call(LanceTable, "update", tables + 4),
-            "removed-again": lambda: self._nth_call(absorb_mod, "_drop_removed_again", 1),
             "skip-records": lambda: self._nth_call(absorb_mod, "_write_records", 1),
             "land-wiki-pages": lambda: self._nth_call(wiki_rekey_mod, "rekey_wiki_pages", 2),
             "wiki-index": lambda: self._nth_call(absorb_mod, "_refresh_wiki_index", 1),
@@ -1032,17 +1030,17 @@ class TestInterruptedAbsorb:
     }
     # One source moves three times (lift, the lift again, land) and two sources six.
     _SHAPE_POINTS = (
-        *(("renamed", "rekey", nth) for nth in (1, 2, 3)),
+        *(("renamed", "rekey", nth) for nth in (1, 2)),
         ("renamed", "records", 1),
         ("renamed", "table", 4),
         ("renamed", "table", _TABLES + 6),
-        *(("nested", "rekey", nth) for nth in range(1, 7)),
+        *(("nested", "rekey", nth) for nth in range(1, 5)),
         ("nested", "records", 1),
         ("nested", "table", 4),
         ("nested", "table", _TABLES + 4),
         ("nested", "table", 2 * _TABLES + 4),
-        *(("nested", "clear", nth) for nth in (1, 2, 3)),
-        *(("nested", "citations", nth) for nth in (1, 2)),
+        *(("nested", "clear", nth) for nth in (1, 2)),
+        ("nested", "citations", 1),
         *((shape, step, 1) for shape in _SHAPES for step in ("wiki-index", "registry", "delete")),
         *((shape, "phase", 2) for shape in _SHAPES),
     )
@@ -1090,27 +1088,6 @@ class TestInterruptedAbsorb:
         keys = _keys(library)
         assert len(keys) == len(set(keys)) and "notes/work/plan.md" in keys
         assert cfg.linked_roots == {"notes": str(notes.resolve())}
-
-    async def test_an_older_build_that_syncs_nested_sources_between_the_phases_is_rolled_forward(
-        self, library, notes
-    ):
-        """The older build moves both sources back and indexes the inner one's files twice again."""
-        store = library.store
-        _seeded_nested_children(store, notes)
-        with self._kill_at("land-start"), pytest.raises(_Killed):
-            register_sources([notes])
-        journal = read_journal(cfg.data_root)
-        assert journal is not None and journal.phase is AbsorbPhase.LAND
-        store.rekey_sources_under(journal.lifted("work"), "work")
-        store.rekey_sources_under(journal.lifted("deep"), "deep")
-        _seed(store, "work/deep/a.md")
-        assert _keys(library).count("work/deep/a.md") == 1
-
-        finish_pending_absorb()
-
-        assert _keys(library) == _NESTED_KEYS
-        rows = {source["filename"]: source["file_hash"] for source in store.get_sources()}
-        assert rows["notes/work/deep/a.md"] == "hash of deep/a.md"
 
     @pytest.mark.parametrize("point", _KILL_POINTS)
     def test_parent_and_child_with_one_label_are_rekeyed_once(self, library, tmp_path, point):
@@ -1335,23 +1312,6 @@ class TestInterruptedAbsorb:
             finish_pending_absorb()
 
         roll_forward.assert_not_called()
-
-    async def test_an_older_build_that_syncs_between_the_phases_is_rolled_forward(
-        self, library, notes
-    ):
-        """An older build ignores the journal and its sync moves the lifted keys back."""
-        await _add(notes / "work")
-        with self._kill_at("land-start"), pytest.raises(_Killed):
-            register_sources([notes])
-        journal = read_journal(cfg.data_root)
-        assert journal is not None and journal.phase is AbsorbPhase.LAND
-        library.store.rekey_sources_under(journal.lifted("work"), "work")
-        assert _keys(library) == ["work/budget.md", "work/plan.md"]
-
-        synced = await sync(quiet=True)
-
-        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
-        assert synced.unchanged == 2
 
     async def test_a_stale_process_sync_does_not_move_keys_back(self, library, notes):
         await _add(notes / "work")
@@ -2453,7 +2413,7 @@ class TestRecordsChangeTogether:
         assert _record_of("notes/work/bare.md") == ("h", SkipKind.FAILED, None)
 
     def test_the_records_stay_at_the_old_keys_until_the_keys_have_moved(self, library, notes):
-        """A lilbee without the absorb that syncs in between still finds the removal."""
+        """The journal holds them from its first write; the files change after the keys."""
         _seeded_child(library.store, notes)
 
         with (
@@ -2542,152 +2502,72 @@ class TestTheAddThatFinishesAnAbsorb:
         assert load_skip_markers(cfg.data_root) == {}
 
 
-class TestAnOlderBuildSyncedInBetween:
-    """Recovery after a lilbee without the absorb wrote below the old keys."""
-
-    def _killed_at(self, library, notes, step: str) -> AbsorbJournal:
+class TestWrittenBetweenThePhases:
+    def _killed_before_the_land(self, library, notes) -> AbsorbJournal:
         _seeded_child(library.store, notes)
-        with mock.patch.object(absorb_mod, step, side_effect=_Killed), pytest.raises(_Killed):
+        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
             register_sources([notes])
         journal = read_journal(cfg.data_root)
         assert journal is not None
-        cfg.linked_roots = {"work": str((notes / "work").resolve())}
         return journal
 
-    @pytest.mark.parametrize("step", ["_land", "_drop_removed_again", "_write_registry"])
-    def test_a_file_it_indexed_again_and_one_it_added_as_new_end_single(
-        self, library, notes, tmp_path, step
-    ):
-        from lilbee.data.store import SourceType
-
-        store = library.store
-        journal = self._killed_at(library, notes, step)
-        held = "notes/work" if step != "_land" else journal.lifted("work")
-        store.rekey_sources_under(f"{held}/plan.md", "work/plan.md")  # moved back by its hash
-        _seed(store, "work/budget.md")  # the edited file, added as new
-        store.upsert_source("work/budget.md", "hash after the edit", 1, SourceType.DOCUMENT)
-        _seed(store, "work/gone.md")  # the removed file, indexed at the hash it was removed at
+    def test_the_journals_records_alone_reach_the_record_files(self, library, notes):
+        self._killed_before_the_land(library, notes)
+        _hold_out("work/since.md", SkipKind.REMOVED)
 
         finish_pending_absorb()
-
-        clean = TestInterruptedAbsorb()._clean_absorb(tmp_path)
-        finished = _everything(store)
-        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md", "workshop/x.md"]
-        hashes = {row["filename"]: row["file_hash"] for row in store.get_sources()}
-        assert hashes["notes/work/budget.md"] == "hash after the edit"
-        assert len(store.get_chunks_by_source("notes/work/budget.md")) == 1
-        assert len(store.get_page_texts("notes/work/budget.md")) == 1
-        for part in ("markers", "reasons", "kinds", "registry", "journal", "wiki"):
-            assert finished[part] == clean[part], part
-        assert _holders(store, "notes/work/gone.md") == {("_citations", "source_filename")}
-
-    @pytest.mark.parametrize(
-        ("step", "seen"),
-        [("_lift", "work"), ("_land", None), ("_write_registry", "notes/work")],
-        ids=["old-key", "temporary-key", "final-key"],
-    )
-    async def test_a_file_it_removed_stays_removed_under_the_key_it_takes(
-        self, library, notes, step, seen
-    ):
-        """It holds the file out at the key it saw; the journal has no record of that file."""
-        store = library.store
-        journal = self._killed_at(library, notes, step)
-        key = f"{seen or journal.lifted('work')}/plan.md"
-        assert store.remove_documents([key]).removed == [key]
-        _hold_out(key, SkipKind.REMOVED)
-
-        assert finish_pending_absorb() == ["notes/work"]
 
         assert load_skip_markers(cfg.data_root) == {
             "notes/work/broken.md": "hash of work/broken.md",
             "notes/work/gone.md": "hash of work/gone.md",
-            "notes/work/plan.md": f"hash of {key}",
-        }
-        kinds = load_skip_kinds(cfg.data_root)
-        assert kinds["notes/work/plan.md"] is SkipKind.REMOVED
-        assert kinds["notes/work/broken.md"] is SkipKind.FAILED
-        assert _keys(library) == ["notes/work/budget.md", "workshop/x.md"]
-
-    def test_a_removal_during_a_half_done_lift_leaves_no_row_of_the_file(self, library, notes):
-        """Its remove finds the rows of the tables that had not moved; the others land."""
-        store = library.store
-        journal = self._killed_at(library, notes, "_land")
-        lifted = f"{journal.lifted('work')}/plan.md"
-        store.rekey_sources_under(lifted, "work/plan.md")
-        store.add_page_texts(
-            [{"source": lifted, "page": 1, "text": "moved before it", "content_type": "text"}]
-        )
-        assert store.remove_documents(["work/plan.md"]).removed == ["work/plan.md"]
-        _hold_out("work/plan.md", SkipKind.REMOVED)
-
-        finish_pending_absorb()
-
-        assert _holders(store, "notes/work/plan.md") == {("_citations", "source_filename")}
-        assert _holders(store, "notes/work/budget.md") > {("_page_texts", "source")}
-        assert load_skip_kinds(cfg.data_root)["notes/work/plan.md"] is SkipKind.REMOVED
-
-    def test_a_subject_it_listed_under_a_key_of_the_lift_takes_the_final_key(self, library, notes):
-        """Its remove aggregates the subject index again from rows the lift had moved."""
-        from lilbee.wiki.stubs import load_stub_index
-
-        store = library.store
-        journal = self._killed_at(library, notes, "_land")
-        lifted = journal.lifted("work")
-        _save_stub_index(store)
-        assert f"{lifted}/plan.md" in load_stub_index(cfg)["boeing"].sources
-        assert store.remove_documents([f"{lifted}/plan.md"]).removed == [f"{lifted}/plan.md"]
-        _hold_out(f"{lifted}/plan.md", SkipKind.REMOVED)
-
-        finish_pending_absorb()
-
-        assert load_stub_index(cfg)["boeing"].sources == ("notes/work/budget.md", "workshop/x.md")
-
-    def test_a_source_that_keeps_its_label_takes_the_journals_records_alone(
-        self, library, tmp_path
-    ):
-        """Its old keys read as final keys, so nothing on disk is carried for it."""
-        project = tmp_path / "src" / "project"
-        _write(project / "project" / "plan.md", "# Plan\n\nThe plan.\n")
-        assert register_sources([project / "project"]).registered == ["project"]
-        _seed(library.store, "project/plan.md")
-        _hold_out("project/gone.md", SkipKind.REMOVED)
-        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
-            register_sources([project])
-        _hold_out("project/since.md", SkipKind.REMOVED)
-
-        finish_pending_absorb()
-
-        assert load_skip_markers(cfg.data_root) == {
-            "project/project/gone.md": "hash of project/gone.md"
         }
 
-    def test_an_edit_since_the_removal_stays_indexed(self, library, notes):
+    def test_a_row_written_below_the_old_key_is_left_there(self, library, notes):
+        store = library.store
+        self._killed_before_the_land(library, notes)
+        _seed(store, "work/since.md")
+
+        finish_pending_absorb()
+
+        assert _holders(store, "work/since.md") == _KEY_COLUMNS
+        assert _holders(store, "notes/work/since.md") == set()
+
+    def test_a_removed_file_that_is_indexed_again_stays_indexed(self, library, notes):
         from lilbee.data.store import SourceType
 
         store = library.store
-        self._killed_at(library, notes, "_land")
-        store.upsert_source("work/gone.md", "hash after an edit", 1, SourceType.DOCUMENT)
+        journal = self._killed_before_the_land(library, notes)
+        again = f"{journal.lifted('work')}/gone.md"
+        store.upsert_source(again, "hash of work/gone.md", 1, SourceType.DOCUMENT)
 
         finish_pending_absorb()
 
         assert "notes/work/gone.md" in _keys(library)
 
-    def test_an_update_during_a_half_done_lift_leaves_one_set_of_rows(self, library, notes):
-        from lancedb.table import LanceTable
-
+    def test_a_rekey_replaces_no_row_at_the_key_it_takes(self, library):
         store = library.store
-        _seeded_child(store, notes)
-        with TestInterruptedAbsorb._nth_call(LanceTable, "update", 4), pytest.raises(_Killed):
-            register_sources([notes])
-        cfg.linked_roots = {"work": str((notes / "work").resolve())}
-        from tests.test_store import _titled_records
+        _seed(store, "old/x.md")
+        _seed(store, "new/x.md")
 
-        store.add_chunks(_titled_records("work/budget.md", 2, title=None, dim=cfg.embedding_dim))
+        store.rekey_sources_under("old", "new")
+
+        assert len(store.get_chunks_by_source("new/x.md")) == 2
+
+    def test_a_subject_listed_under_a_key_of_the_lift_takes_the_final_key(self, library, notes):
+        """A wiki build of a process that was running aggregates the index from the lifted rows."""
+        from lilbee.wiki.stubs import load_stub_index
+
+        journal = self._killed_before_the_land(library, notes)
+        _save_stub_index(library.store)
+        assert f"{journal.lifted('work')}/plan.md" in load_stub_index(cfg)["boeing"].sources
 
         finish_pending_absorb()
 
-        assert len(store.get_chunks_by_source("notes/work/budget.md")) == 2
-        assert store.get_page_texts("notes/work/budget.md") == []
+        assert load_stub_index(cfg)["boeing"].sources == (
+            "notes/work/budget.md",
+            "notes/work/plan.md",
+            "workshop/x.md",
+        )
 
 
 class TestAWikiBuildAndAnAbsorb:

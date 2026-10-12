@@ -4552,23 +4552,6 @@ class TestRekeySourcesUnder:
         ]
 
 
-class TestRemoveRowsOf:
-    def test_the_rows_of_a_key_go_with_or_without_its_source_record(self, store):
-        _seed_source(store, "work/a.md")
-        _seed_source(store, "work/b.md")
-        _seed_source(store, "work/kept.md")
-        store.delete_source("work/a.md")
-        assert store.remove_documents(["work/a.md"]).not_found == ["work/a.md"]
-        assert _holders(store, "work/a.md") == _KEY_COLUMNS - {("_sources", "filename")}
-
-        store.remove_rows_of(["work/a.md", "work/b.md"])
-
-        assert _holders(store, "work/a.md") == {("_citations", "source_filename")}
-        assert _holders(store, "work/b.md") == {("_citations", "source_filename")}
-        assert _holders(store, "work/kept.md") == _KEY_COLUMNS
-        assert [source["filename"] for source in store.get_sources()] == ["work/kept.md"]
-
-
 class TestRekeyReplacesAndSkips:
     def test_a_table_with_no_row_to_move_gets_no_new_version(self, store):
         _seed_source(store, "work/a.md")
@@ -4579,31 +4562,6 @@ class TestRekeyReplacesAndSkips:
         assert {name: store.open_table(name).version for name, _ in _KEY_COLUMNS} == versions
         store.rekey_sources_under("work", "notes/work")
         assert store.open_table("_sources").version > versions["_sources"]
-
-    def test_a_moving_row_replaces_what_holds_its_key_in_every_per_file_table(self, store):
-        _seed_source(store, "notes/work/a.md")
-        _seed_source(store, "notes/work/kept.md")
-        store.upsert_source("work/a.md", "the newer hash", 1, SourceType.DOCUMENT)
-        dim = store._config.embedding_dim
-        store.add_chunks(_titled_records("work/a.md", 2, title=None, dim=dim))
-
-        store.rekey_sources_under("work", "notes/work")
-
-        rows = [s for s in store.get_sources() if s["filename"] == "notes/work/a.md"]
-        assert [row["file_hash"] for row in rows] == ["the newer hash"]
-        assert len(store.get_chunks_by_source("notes/work/a.md")) == 2
-        assert store.get_page_texts("notes/work/a.md") == []
-        assert _holders(store, "notes/work/kept.md") == _KEY_COLUMNS
-        assert len(store.get_citations_for_source("notes/work/a.md")) == 1
-
-    def test_nothing_is_replaced_when_one_key_lies_below_the_other(self, store):
-        _seed_source(store, "project/a.md")
-        _seed_source(store, "project/project/a.md")
-
-        store.rekey_sources_under("project", "project/project")
-
-        names = sorted(s["filename"] for s in store.get_sources())
-        assert names == ["project/project/a.md", "project/project/project/a.md"]
 
 
 def _citation(source, key="src1", **changes):

@@ -885,18 +885,11 @@ or a wiki write it prints
 `A sync or a wiki build is running. Add notes again when it ends.` Run the add
 again when the other work ends. A
 source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
-a source of its own. An older lilbee that was started before the add still
-holds the old list of sources, and its next sync moves the documents back to
-their old names and indexes files you removed from `work`. Update every
-installation that shares a library, and restart each one after the add.
+a source of its own.
 
-If the add is interrupted, finish it before an older lilbee touches the
-library. To finish it, start lilbee with the same or a newer version, or run
-`lilbee status` or `lilbee sync`. If an older lilbee already synced, removed a
-file or ran `lilbee reset` before the add finished, update it and finish the
-add. Then remove again any file you had removed, because the older lilbee can
-index it again and record it as a failure, or can miss a removal that a crash
-cut short. If you reset the library, run `lilbee reset` again.
+If the add is interrupted, lilbee finishes it the next time it starts, and
+before the next sync, add or remove. A `lilbee reset` drops it with the
+library.
 
 ### Manage documents
 
