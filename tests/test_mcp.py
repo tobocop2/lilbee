@@ -1950,6 +1950,34 @@ class TestWikiRuntimeGate:
         cfg.data_root = isolated_env
         assert handler(*args) == {"error": WIKI_DISABLED_ERROR}
 
+    @pytest.mark.parametrize(
+        ("handler", "args"),
+        [
+            (wiki_build, ()),
+            (wiki_update, ()),
+            (wiki_synthesize, ()),
+            (wiki_generate, ("some-page",)),
+        ],
+    )
+    def test_a_write_that_cannot_take_the_sync_lock_returns_an_error(
+        self, mock_svc, isolated_env, handler, args
+    ):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        lock = isolated_env / "sync.lock"
+        lock.write_bytes(b"not a lock database")
+        before = sorted(isolated_env.rglob("*"))
+
+        result = handler(*args)
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+                f"Stop every lilbee process, delete {lock}, and try again."
+            )
+        }
+        assert sorted(isolated_env.rglob("*")) == before
+
     def test_status_still_answers_while_disabled(self, mock_svc, isolated_env):
         """Matches the HTTP status route: report the disabled state, don't lint."""
         cfg.wiki = False

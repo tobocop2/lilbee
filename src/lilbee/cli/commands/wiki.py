@@ -18,7 +18,7 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output, sigint_cancel
+from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
@@ -107,6 +107,21 @@ def _wiki_progress() -> Iterator[DetailedProgressCallback]:
                 progress.update(task, description=line)
 
         yield on_progress
+
+
+@contextmanager
+def _library_refusal_exits() -> Iterator[None]:
+    """Exit 1 with the refusal as the error when a wiki write cannot lock the library."""
+    from lilbee.app.ingest import LIBRARY_REFUSALS
+
+    try:
+        yield
+    except LIBRARY_REFUSALS as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
 
 
 def _fail_wiki_disabled() -> NoReturn:
@@ -409,7 +424,7 @@ def wiki_synthesize(
         _fail_wiki_disabled()
     from lilbee.wiki import run_full_synthesize
 
-    with _wiki_progress() as on_progress, sigint_cancel() as cancel:
+    with _library_refusal_exits(), _wiki_progress() as on_progress, sigint_cancel() as cancel:
         result = run_full_synthesize(cfg, on_progress, cancel)
 
     if cfg.json_mode:
@@ -504,7 +519,7 @@ def wiki_generate(
     from lilbee.wiki.lazy import UnknownStubError, generate_stub_page
 
     try:
-        with _wiki_progress():
+        with _library_refusal_exits(), _wiki_progress():
             path = generate_stub_page(slug, get_services().store)
     except UnknownStubError as exc:
         if cfg.json_mode:
@@ -602,7 +617,7 @@ def _run_wiki_build(command_name: str) -> None:
     """Run the full build and render its result under *command_name*."""
     from lilbee.wiki import run_full_build
 
-    with _wiki_progress() as on_progress, sigint_cancel() as cancel:
+    with _library_refusal_exits(), _wiki_progress() as on_progress, sigint_cancel() as cancel:
         result = run_full_build(cfg, on_progress, cancel)
 
     if cfg.json_mode:

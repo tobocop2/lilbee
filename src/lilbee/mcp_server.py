@@ -234,13 +234,19 @@ def _wiki_tool(fn: _F) -> _F:
 
     A live server keeps the tool surface it was built with, so every handler
     re-reads ``cfg.wiki`` and refuses once the setting is turned off at runtime.
+    A write that cannot lock the library returns the refusal as its error.
     """
 
     @functools.wraps(fn)
     def guarded(*args: Any, **kwargs: Any) -> Any:
+        from lilbee.app.ingest import LIBRARY_REFUSALS
+
         if not cfg.wiki:
             return _error(WIKI_DISABLED_ERROR)
-        return fn(*args, **kwargs)
+        try:
+            return fn(*args, **kwargs)
+        except LIBRARY_REFUSALS as exc:
+            return _error(str(exc))
 
     checked = cast("_F", guarded)
     _tool_if(_wiki_enabled)(checked)

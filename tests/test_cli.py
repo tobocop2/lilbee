@@ -4199,6 +4199,53 @@ class TestWikiLint:
         assert "total" in data
 
 
+_WIKI_WRITES = [
+    ["wiki", "build"],
+    ["wiki", "update"],
+    ["wiki", "synthesize"],
+    ["wiki", "generate", "some-page"],
+]
+
+
+@pytest.mark.usefixtures("wiki_enabled")
+class TestWikiWriteWithoutItsSyncLock:
+    """A wiki write that cannot take the sync lock exits 1 with one error and writes nothing."""
+
+    @staticmethod
+    def _refusal() -> str:
+        lock = cfg.data_root / "sync.lock"
+        return (
+            f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+            f"Stop every lilbee process, delete {lock}, and try again."
+        )
+
+    @pytest.mark.parametrize("command", _WIKI_WRITES, ids=" ".join)
+    def test_the_command_exits_1_with_the_refusal(self, mock_svc, isolated_env, command):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "sync.lock").write_bytes(b"not a lock database")
+        before = _tree(cfg.data_root)
+
+        result = runner.invoke(app, command)
+
+        assert result.exit_code == 1
+        assert f"Error: {self._refusal()}" in " ".join(result.output.split())
+        assert "Traceback" not in result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert _tree(cfg.data_root) == before
+
+    @pytest.mark.parametrize("command", _WIKI_WRITES, ids=" ".join)
+    def test_the_command_reports_the_refusal_as_json(self, mock_svc, isolated_env, command):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "sync.lock").write_bytes(b"not a lock database")
+        before = _tree(cfg.data_root)
+
+        result = runner.invoke(app, ["--json", *command])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"error": self._refusal()}
+        assert _tree(cfg.data_root) == before
+
+
 @pytest.mark.usefixtures("wiki_enabled")
 class TestWikiSynthesize:
     def test_no_pages_prints_message(self, mock_svc, isolated_env, monkeypatch):
