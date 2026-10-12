@@ -21,15 +21,18 @@ from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
+    _SYNC_TAKE_SLICE_S,
     LockingUnsupportedError,
     LockTimeoutError,
     ResetRefusedError,
+    SyncMarkWaitCancelledError,
     _lock_path,
     acquire_scope_lock,
     acquire_server_lock,
     no_sync_running,
     read_scope_owner,
     server_lock_path,
+    source_keys_in_use,
     sync_running,
     write_lock,
 )
@@ -285,8 +288,6 @@ with no_sync_running(Path(sys.argv[1])):
     print("{_RESET_HOLDS}", flush=True)
     sys.stdin.read()
 """
-# A cancelled sync returns within this many seconds, however long the reset lasts.
-_CANCEL_BOUND_S = 0.5
 # How long a test waits for a step that must happen; reaching it fails the test.
 _FAILURE_TIMEOUT_S = 20.0
 
@@ -393,6 +394,20 @@ def _sync_lock_close_held_then_refused() -> Generator[
             finish.set()
 
 
+@contextmanager
+def _recorded_read_takes() -> Generator[list[float], None, None]:
+    """Record the timeout of each take of a read lock while the block runs."""
+    waits: list[float] = []
+    real_acquire = ReadWriteLock.acquire_read
+
+    def _acquire(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> None:
+        waits.append(timeout)
+        real_acquire(lock, timeout, blocking=blocking)
+
+    with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+        yield waits
+
+
 def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
@@ -420,13 +435,6 @@ class TestSyncMark:
     async def test_a_sync_cancelled_while_it_waits_returns_while_the_reset_still_holds(
         self, tmp_path: Path, reset_held
     ) -> None:
-        waits: list[float] = []
-        real_acquire = ReadWriteLock.acquire_read
-
-        def _acquire(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> None:
-            waits.append(timeout)
-            real_acquire(lock, timeout, blocking=blocking)
-
         entered = []
 
         async def _sync() -> None:
@@ -438,7 +446,7 @@ class TestSyncMark:
                 await asyncio.sleep(0.01)
 
         before = set(threading.enumerate())
-        with reset_held(tmp_path), mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
+        with reset_held(tmp_path), _recorded_read_takes() as waits:
             sync_task = asyncio.create_task(_sync())
             await asyncio.wait_for(_take_started(), 5)
             sync_task.cancel()
@@ -454,8 +462,39 @@ class TestSyncMark:
         assert sync_task.cancelled()
         assert entered == []
         assert waits
-        assert all(0 < wait <= _CANCEL_BOUND_S / 2 for wait in waits), waits
+        assert all(0 < wait <= _SYNC_TAKE_SLICE_S for wait in waits), waits
         assert _threads_left_since(before) == []
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_wiki_writer_cancelled_while_it_waits_takes_the_mark_in_short_slices(
+        self, tmp_path: Path
+    ) -> None:
+        cancel = threading.Event()
+        outcome: list[BaseException] = []
+
+        def _writer() -> None:
+            try:
+                with source_keys_in_use(tmp_path, cancel):
+                    outcome.append(AssertionError("the block ran while the reset held"))
+            except SyncMarkWaitCancelledError as exc:
+                outcome.append(exc)
+
+        with reset_held_on_a_thread(tmp_path), _recorded_read_takes() as waits:
+            writer = threading.Thread(target=_writer)
+            writer.start()
+            try:
+                while not waits:
+                    await asyncio.sleep(0.01)
+            finally:
+                cancel.set()
+                await asyncio.to_thread(writer.join, 5)
+            ended = not writer.is_alive()
+
+        assert ended, "one cancel did not end the wait for the reset"
+        assert [type(exc) for exc in outcome] == [SyncMarkWaitCancelledError]
+        assert waits
+        assert all(0 < wait <= _SYNC_TAKE_SLICE_S for wait in waits), waits
         with no_sync_running(tmp_path):
             pass
 
