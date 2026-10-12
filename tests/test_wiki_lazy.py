@@ -278,10 +278,27 @@ class TestGenerateStubPage:
         save_stub_index({"ford": _stub("ford", (("a.md", 0),))})
         store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
         cancelled = threading.Event()
-        cancelled.set()
+        events: list[EventType] = []
+
+        def _cancel_at_the_generate_phase(event: EventType, _data: object) -> None:
+            events.append(event)
+            cancelled.set()
+
         with patch("lilbee.wiki.lazy.generate_page") as gen:
-            assert generate_stub_page("ford", store, cfg, cancel=cancelled) is None
+            page = generate_stub_page(
+                "ford", store, cfg, cancel=cancelled, on_progress=_cancel_at_the_generate_phase
+            )
+        assert page is None
+        # The page held the sync mark and reached its last step before the model.
+        assert events == [EventType.WIKI_PHASE]
         gen.assert_not_called()
+
+    def test_cancel_before_the_start_reads_no_index(self):
+        cancelled = threading.Event()
+        cancelled.set()
+        with patch("lilbee.wiki.lazy.load_stub_index") as index:
+            assert generate_stub_page("ford", _store_with({}), cfg, cancel=cancelled) is None
+        index.assert_not_called()
 
 
 class TestResolveStub:
