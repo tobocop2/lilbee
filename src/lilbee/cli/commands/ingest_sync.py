@@ -14,6 +14,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+    from lilbee.data.store.types import RemoveResult
     from lilbee.runtime.progress import DetailedProgressCallback
 
 from lilbee.app.ingest import (
@@ -731,6 +732,22 @@ _remove_yes_option = typer.Option(
 )
 
 
+def _remove_under_ctrl_c(names: list[str], targets: list[str]) -> RemoveResult:
+    """Remove *targets*; Ctrl+C during the wait for the records lock exits 130, nothing removed."""
+    cancel_event = threading.Event()
+    try:
+        with _ctrl_c_sets(cancel_event):
+            return remove_documents_durably(names, targets=targets, cancel=cancel_event)
+    except SkipRecordsWaitCancelledError:
+        _exit_cancelled(AddRollback(), _REMOVE_CANCELLED_MESSAGE)
+    except LIBRARY_REFUSALS as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
+
+
 def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
@@ -756,18 +773,7 @@ def remove(
         removable = sum(1 for t in targets if t in set(known))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
-    cancel_event = threading.Event()
-    try:
-        with _ctrl_c_sets(cancel_event):
-            result = remove_documents_durably(names, targets=targets, cancel=cancel_event)
-    except SkipRecordsWaitCancelledError:
-        _exit_cancelled(AddRollback(), _REMOVE_CANCELLED_MESSAGE)
-    except LIBRARY_REFUSALS as exc:
-        if cfg.json_mode:
-            json_output({"error": str(exc)})
-        else:
-            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
-        raise SystemExit(1) from None
+    result = _remove_under_ctrl_c(names, targets)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}
