@@ -352,8 +352,8 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
             await lock.close()
         except _SYNC_LOCK_ERRORS as exc:
             log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
-            # filelock keeps the worker thread of a lock whose close raised.
-            lock.executor.shutdown(wait=False)
+            # filelock keeps the worker thread of a lock whose close raised; wait until it ends.
+            await asyncio.to_thread(lock.executor.shutdown)
             _raise_cancel_behind(exc)
             # An error from the close does not replace a cancel.
             if not cancelled:

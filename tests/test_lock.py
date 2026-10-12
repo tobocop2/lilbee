@@ -10,7 +10,8 @@ import sys
 import threading
 import time
 from collections.abc import Generator
-from contextlib import contextmanager, nullcontext
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext, suppress
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -347,6 +348,39 @@ def _sync_lock_close_refused() -> Generator[None, None, None]:
         yield
 
 
+@contextmanager
+def _sync_take_that_ends_busy() -> Generator[threading.Event, None, None]:
+    """Yield an event that is set when a take of the read side of a sync lock ends busy."""
+    ended_busy = threading.Event()
+    real_take = ReadWriteLock.acquire_read
+
+    def _take(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+        try:
+            return real_take(lock, *args, **kwargs)
+        except FileLockTimeout:
+            if Path(lock.lock_file).name == "sync.lock":
+                ended_busy.set()
+            raise
+
+    with mock.patch.object(ReadWriteLock, "acquire_read", _take):
+        yield ended_busy
+
+
+@contextmanager
+def _pool_workers_slow_to_stop() -> Generator[None, None, None]:
+    """Keep each pool worker busy for a moment after its pool is told to stop, for the block."""
+    real_shutdown = ThreadPoolExecutor.shutdown
+
+    def _shutdown(pool: ThreadPoolExecutor, *args: object, **kwargs: object) -> None:
+        # A pool that already stopped takes no work.
+        with suppress(RuntimeError):
+            pool.submit(time.sleep, 0.05)
+        real_shutdown(pool, *args, **kwargs)
+
+    with mock.patch.object(ThreadPoolExecutor, "shutdown", _shutdown):
+        yield
+
+
 def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
@@ -429,11 +463,13 @@ class TestSyncMark:
         with (
             reset_held_on_a_thread(tmp_path) if waits else nullcontext(),
             _sync_lock_close_refused(),
+            _pool_workers_slow_to_stop(),
+            _sync_take_that_ends_busy() as found_the_mark_held,
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
             sync_task = asyncio.create_task(_sync())
             if waits:
-                await asyncio.sleep(_CANCEL_BOUND_S / 2)
+                assert await asyncio.to_thread(found_the_mark_held.wait, 5)
             else:
                 await asyncio.wait_for(entered.wait(), 5)
             sync_task.cancel()
