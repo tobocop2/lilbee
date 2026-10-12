@@ -2264,7 +2264,9 @@ class TestFanoutReadsTheCorpusSkipRecords:
         cleared = []
         real_clear = pipeline.clear_skip_markers
         monkeypatch.setattr(
-            pipeline, "clear_skip_markers", lambda root: cleared.append(root) or real_clear(root)
+            pipeline,
+            "clear_skip_markers",
+            lambda root, cancel: cleared.append(root) or real_clear(root, cancel),
         )
         gone = isolated_env / "gone.txt"
         gone.write_text("removed, then restored by the rebuild", encoding="utf-8")

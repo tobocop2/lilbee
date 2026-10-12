@@ -26,6 +26,7 @@ from lilbee.runtime.absorb_journal import (
     read_journal,
     write_journal,
 )
+from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.lock import LOCK_TIMEOUT, syncs_held_off
 
 log = logging.getLogger(__name__)
@@ -225,12 +226,22 @@ def absorb(journal: AbsorbJournal, names: list[str]) -> None:
         _roll_forward(config, get_services().store, journal)
 
 
-def _finish(config: Config, store: Store, running: str, wait: float) -> list[str]:
+def _finish(
+    config: Config,
+    store: Store,
+    running: str,
+    wait: float,
+    cancel: CancelSignal | None = None,
+) -> list[str]:
     """Roll the journal of *config*'s data root forward under the locks an absorb holds.
 
     Returns the keys the absorbed sources took, empty when no journal was left.
+    Setting *cancel* ends the wait for the records lock, with nothing moved.
     """
-    with syncs_held_off(config.data_root, running, wait), skip_records_lock(config.data_root):
+    with (
+        syncs_held_off(config.data_root, running, wait),
+        skip_records_lock(config.data_root, cancel),
+    ):
         journal = read_journal(config.data_root)
         if journal is None:  # another process finished it while this one waited
             return []
@@ -252,20 +263,24 @@ def keys_of_pending_absorb() -> list[str]:
     return [] if journal is None else list(journal.moves.values())
 
 
-def finish_pending_absorb(names: list[str] | None = None) -> list[str]:
+def finish_pending_absorb(
+    names: list[str] | None = None, cancel: CancelSignal | None = None
+) -> list[str]:
     """Finish an absorb that started on the active data root and did not end.
 
     Costs one existence check without one. With *names*, a running sync raises
     ``SyncRunningError`` at once and asks for them again; without, it waits.
     Returns the keys the absorbed sources took, empty when it finished none.
+    Setting *cancel* ends the wait for the records lock with
+    ``SkipRecordsWaitCancelledError``, with nothing moved.
     """
     config = active_config()
     if not absorb_pending(config.data_root):
         return []
     if names is None:
-        return _finish(config, get_services().store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT)
+        return _finish(config, get_services().store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
     running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    return _finish(config, get_services().store, running, 0.0)
+    return _finish(config, get_services().store, running, 0.0, cancel)
 
 
 def finish_pending_absorb_at_start(config: Config, store: Store) -> None:

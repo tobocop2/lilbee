@@ -80,6 +80,7 @@ from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
     SkipRecordsLockError,
+    SkipRecordsWaitCancelledError,
     clear_failed_markers,
     clear_skip_markers,
     describe_failures,
@@ -965,7 +966,22 @@ def _log_excluded(excluded: dict[str, ExclusionReason]) -> None:
         log.warning("Skipped %d file(s), %s: %s%s", len(names), why.value, ", ".join(shown), more)
 
 
-def _clear_skip_records(records_root: Path, *, force_rebuild: bool, retry_skipped: bool) -> None:
+@contextlib.contextmanager
+def _records_wait_ends_the_sync() -> Iterator[None]:
+    """Turn a cancelled wait for the records lock into the cancel a sync raises."""
+    try:
+        yield
+    except SkipRecordsWaitCancelledError as error:
+        raise asyncio.CancelledError from error
+
+
+def _clear_skip_records(
+    records_root: Path,
+    *,
+    force_rebuild: bool,
+    retry_skipped: bool,
+    cancel: CancelSignal | None = None,
+) -> None:
     """Clear every skip record for a rebuild, or only the failed ones for a retry.
 
     Entries are otherwise kept whether or not a pass discovers the file. A
@@ -975,14 +991,19 @@ def _clear_skip_records(records_root: Path, *, force_rebuild: bool, retry_skippe
     re-offer the file the moment it comes back. A marker is dropped when the
     file ingests cleanly, by ``rebuild``, or for a failure by ``retry-skipped``.
     """
-    if force_rebuild:
-        clear_skip_markers(records_root)
-    elif retry_skipped:
-        clear_failed_markers(records_root)
+    with _records_wait_ends_the_sync():
+        if force_rebuild:
+            clear_skip_markers(records_root, cancel)
+        elif retry_skipped:
+            clear_failed_markers(records_root, cancel)
 
 
 def _prepare_skip_records(
-    shard: ShardId | None, *, force_rebuild: bool, retry_skipped: bool
+    shard: ShardId | None,
+    *,
+    force_rebuild: bool,
+    retry_skipped: bool,
+    cancel: CancelSignal | None = None,
 ) -> Path:
     """The data root whose skip records and ``.lilbeeignore`` this sync uses.
 
@@ -992,7 +1013,9 @@ def _prepare_skip_records(
     if shard is not None:
         return shard.records_root
     records_root = active_config().data_root
-    _clear_skip_records(records_root, force_rebuild=force_rebuild, retry_skipped=retry_skipped)
+    _clear_skip_records(
+        records_root, force_rebuild=force_rebuild, retry_skipped=retry_skipped, cancel=cancel
+    )
     return records_root
 
 
@@ -1003,6 +1026,7 @@ def _persist_skip_records(
     *,
     succeeded: Iterable[str],
     failed: Iterable[str],
+    cancel: CancelSignal | None = None,
 ) -> str | None:
     """Merge this sync's verdicts into the skip records as they are on disk now.
 
@@ -1011,6 +1035,7 @@ def _persist_skip_records(
     FAILED kind. Records written or cleared since the sync started (a reset, a
     removal, a rolled back add) keep their reason and kind. Returns the error
     when the records lock cannot be taken, in which case nothing is written.
+    Setting *cancel* ends the wait for that lock with ``asyncio.CancelledError``.
     """
     dropped = list(succeeded)
     held = list(failed)
@@ -1024,7 +1049,8 @@ def _persist_skip_records(
         records.kinds.update(dict.fromkeys(marked, SkipKind.FAILED))
 
     try:
-        update_skip_records(records_root, _merge)
+        with _records_wait_ends_the_sync():
+            update_skip_records(records_root, _merge, cancel)
     except SkipRecordsLockError as error:
         log.error("%s", error)
         return str(error)
@@ -1337,12 +1363,13 @@ def _config_with_persisted_roots(shard: ShardId | None) -> Config:
     return config
 
 
-def _finish_pending_absorb() -> None:
+def _finish_pending_absorb(cancel: CancelSignal | None = None) -> None:
     """Finish an interrupted absorb, which needs every sync stopped."""
     # circular: lilbee.app.absorb imports lilbee.data.ingest for the skip records
     from lilbee.app.absorb import finish_pending_absorb
 
-    finish_pending_absorb()
+    with _records_wait_ends_the_sync():
+        finish_pending_absorb(cancel=cancel)
 
 
 _SyncParams = ParamSpec("_SyncParams")
@@ -1361,7 +1388,9 @@ def _marks_sync_running(
                 # An absorb writes its journal with every sync stopped, so none appears in here.
                 if not absorb_pending(data_root):
                     return await run(*args, **kwargs)
-            await to_ingest_thread(_finish_pending_absorb)
+            # ``cancel`` is keyword-only on a sync, so it is never in *args*.
+            cancel = cast("CancelSignal | None", kwargs.get("cancel"))
+            await to_ingest_thread(_finish_pending_absorb, cancel)
 
     return _marked
 
@@ -1402,7 +1431,7 @@ async def sync(
     config.documents_dir.mkdir(parents=True, exist_ok=True)
     index_mismatch = _report_index_mismatch(_store)
     records_root = _prepare_skip_records(
-        shard, force_rebuild=force_rebuild, retry_skipped=retry_skipped
+        shard, force_rebuild=force_rebuild, retry_skipped=retry_skipped, cancel=cancel
     )
     if shard is None and (specs := plan_fanout()):
         merged = await _sync_across_workers(
@@ -1497,7 +1526,12 @@ async def sync(
     # file: leaving it unmarked re-plans it next sync instead of skipping it.
     marker_failed = [name for name in (*failed, *skipped) if name not in flush_failed]
     skip_records_error = _persist_skip_records(
-        records_root, pending_hashes, reasons, succeeded=[*added, *updated], failed=marker_failed
+        records_root,
+        pending_hashes,
+        reasons,
+        succeeded=[*added, *updated],
+        failed=marker_failed,
+        cancel=cancel,
     )
 
     if shard is None:
