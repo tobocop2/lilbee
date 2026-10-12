@@ -16,6 +16,7 @@ from lilbee.app.ingest import names_outside_corpus, register_sources, source_lab
 from lilbee.cli.app import app
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.core.system import DiskSpelling
 from lilbee.data.ingest.discovery import discover_files
 from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
 from lilbee.data.store import Store
@@ -271,8 +272,8 @@ class TestOnePathInAnotherLetterCase:
         asked: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
         if _one_entry(notes, typed):
             # This disk cannot hold both, so it answers as one that can.
-            asked = mock.patch(
-                "lilbee.app.ingest.disk_path", side_effect=lambda path: Path(os.path.abspath(path))
+            asked = mock.patch.object(
+                DiskSpelling, "of", lambda _self, path: Path(os.path.abspath(path))
             )
         else:
             _write(typed / "loose.md")
@@ -408,3 +409,25 @@ class TestOnePathInAnotherLetterCase:
 
         assert outcome.exit_code == 0
         assert sorted(_registry()) == (["notes"] if one_entry else ["notes", "work"])
+
+    def test_an_add_reads_a_folder_as_often_with_many_sources_as_with_one(self, library, tmp_path):
+        shelf = Path(os.path.realpath(tmp_path)) / "shelf"
+        folders = [_write(shelf / f"source{n}" / "page.md").parent for n in range(9)]
+        read: list[str] = []
+        listdir = os.listdir
+
+        def _listing(folder: str) -> list[str]:
+            read.append(folder)
+            return listdir(folder)
+
+        register_sources(folders[:1])
+        with mock.patch.object(os, "listdir", _listing):
+            register_sources(folders[1:2])
+            with_one_source = read.count(str(shelf))
+            register_sources(folders[2:8])
+            read.clear()
+            register_sources(folders[8:])
+
+        assert sorted(_registry()) == [f"source{n}" for n in range(9)]
+        assert with_one_source > 0
+        assert read.count(str(shelf)) == with_one_source

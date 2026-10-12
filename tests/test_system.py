@@ -11,7 +11,8 @@ import pytest
 
 from lilbee.core import system as system_mod
 from lilbee.core.system import (
-    _listed_name,
+    DiskSpelling,
+    _Folder,
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
     default_cache_dir,
@@ -585,18 +586,18 @@ class TestDiskPath:
 
     def test_on_a_disk_that_ignores_case_the_listed_name_wins(self, shelf):
         with mock.patch.object(os, "lstat", _lstat_ignoring_case):
-            assert _listed_name(str(shelf), "NOTES") == "Notes"
+            assert _Folder(str(shelf)).listed_name("NOTES") == "Notes"
             assert disk_path(shelf / "NOTES" / "PLAN.MD") == shelf / "Notes" / "plan.md"
 
     def test_a_name_that_is_not_ascii_takes_the_listed_spelling(self, shelf):
         (shelf / "Ärger Übung").mkdir()
         with mock.patch.object(os, "lstat", _lstat_ignoring_case):
-            assert _listed_name(str(shelf), "ärger übung") == "Ärger Übung"
+            assert _Folder(str(shelf)).listed_name("ärger übung") == "Ärger Übung"
 
     def test_two_listed_names_that_differ_by_case_stay_two(self, shelf):
         with mock.patch.object(os, "listdir", return_value=["Notes", "NOTES"]):
-            assert _listed_name(str(shelf), "NOTES") == "NOTES"
-            assert _listed_name(str(shelf), "Notes") == "Notes"
+            assert _Folder(str(shelf)).listed_name("NOTES") == "NOTES"
+            assert _Folder(str(shelf)).listed_name("Notes") == "Notes"
 
     def test_a_link_beside_the_folder_is_not_taken_for_it(self, shelf):
         (shelf / "alias").symlink_to(shelf / "Notes", target_is_directory=True)
@@ -604,7 +605,7 @@ class TestDiskPath:
             mock.patch.object(os, "listdir", return_value=["alias", "Notes"]),
             mock.patch.object(os, "lstat", _lstat_ignoring_case),
         ):
-            assert _listed_name(str(shelf), "NOTES") == "Notes"
+            assert _Folder(str(shelf)).listed_name("NOTES") == "Notes"
 
     def test_a_link_gives_the_path_it_points_to(self, shelf, tmp_path):
         link = tmp_path / "link"
@@ -618,7 +619,47 @@ class TestDiskPath:
 
     def test_a_folder_that_cannot_be_listed_keeps_the_typed_name(self, shelf):
         with mock.patch.object(os, "listdir", side_effect=PermissionError(13, "denied")):
-            assert _listed_name(str(shelf), "NOTES") == "NOTES"
+            assert _Folder(str(shelf)).listed_name("NOTES") == "NOTES"
 
     def test_the_anchor_alone_is_the_anchor(self, shelf):
         assert disk_path(Path(shelf.anchor)) == Path(shelf.anchor)
+
+    def test_one_spelling_reads_a_folder_one_time_for_many_paths(self, shelf):
+        (shelf / "Drafts").mkdir()
+        read: list[str] = []
+        listdir = os.listdir
+
+        def _listing(folder: str) -> list[str]:
+            read.append(folder)
+            return listdir(folder)
+
+        spelling = DiskSpelling()
+        with mock.patch.object(os, "listdir", _listing):
+            spelled = [spelling.of(shelf / name) for name in ("Notes", "Drafts", "Notes", "New")]
+
+        assert spelled == [shelf / "Notes", shelf / "Drafts", shelf / "Notes", shelf / "New"]
+        assert read.count(str(shelf)) == 1
+
+    def test_one_spelling_asks_about_each_listed_entry_one_time(self, shelf):
+        (shelf / "Drafts").mkdir()
+        asked: list[str] = []
+
+        def _lstat(path: str) -> os.stat_result:
+            asked.append(path)
+            return _lstat_ignoring_case(path)
+
+        spelling = DiskSpelling()
+        with mock.patch.object(os, "lstat", _lstat):
+            spelled = [spelling.of(shelf / name) for name in ("NOTES", "DRAFTS")]
+
+        assert spelled == [shelf / "Notes", shelf / "Drafts"]
+        assert asked.count(str(shelf / "Notes")) == 1
+        assert asked.count(str(shelf / "Drafts")) == 1
+
+    def test_two_names_of_one_file_give_the_name_listed_first(self, shelf):
+        os.link(shelf / "Notes" / "plan.md", shelf / "Notes" / "copy.md")
+        with (
+            mock.patch.object(os, "listdir", return_value=["plan.md", "copy.md"]),
+            mock.patch.object(os, "lstat", _lstat_ignoring_case),
+        ):
+            assert _Folder(str(shelf / "Notes")).listed_name("COPY.MD") == "plan.md"
