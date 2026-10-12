@@ -1137,6 +1137,53 @@ class TestInterruptedAbsorb:
         assert "project/project/plan.md" in text and "project/project/project" not in text
         assert _registry() == {"project": str(parent.resolve())}
 
+    def test_a_remove_finishes_an_interrupted_absorb_before_it_removes(self, library, tmp_path):
+        """A process that was running when another one's add died removes on the moved keys."""
+        store = library.store
+        parent = tmp_path / "src" / "project"
+        _write(parent / "project" / "budget.md", "# Budget\n\nThe budget.\n")
+        _seeded_child(store, parent, "project")
+        with self._kill_at("journal-written"), pytest.raises(_Killed):
+            register_sources([parent])
+
+        stale = remove_documents_durably(["project/budget.md"])
+
+        assert not absorb_pending(cfg.data_root)
+        assert stale.removed == [] and stale.not_found == ["project/budget.md"]
+        assert _keys(library) == [
+            "project/project/budget.md",
+            "project/project/plan.md",
+            "workshop/x.md",
+        ]
+
+        moved = remove_documents_durably(["project/project/budget.md"])
+
+        assert moved.removed == ["project/project/budget.md"]
+        assert _keys(library) == ["project/project/plan.md", "workshop/x.md"]
+        assert load_skip_kinds(cfg.data_root)["project/project/budget.md"] is SkipKind.REMOVED
+
+    def test_a_remove_expands_its_names_again_after_it_finished_an_absorb(self, library, notes):
+        store = library.store
+        _seeded_child(store, notes)
+        with self._kill_at("land-start"), pytest.raises(_Killed):
+            register_sources([notes])
+
+        result = remove_documents_durably(["work"], targets=["work/plan.md", "work/budget.md"])
+
+        assert result.removed == [] and result.not_found == ["work"]
+        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md", "workshop/x.md"]
+        assert _registry() == {"notes": str(notes.resolve())}
+
+    def test_a_remove_without_a_journal_uses_the_names_it_was_given(self, library, notes):
+        store = library.store
+        _seeded_child(store, notes)
+
+        with mock.patch("lilbee.app.ingest.finish_pending_absorb") as finish:
+            result = remove_documents_durably(["anything"], targets=["work/plan.md"])
+
+        assert result.removed == ["work/plan.md"]
+        finish.assert_not_called()
+
     def test_a_single_phase_rekey_would_double_the_prefix(self, library):
         """The control for the test above: the store method alone, run twice, doubles it."""
         store = library.store

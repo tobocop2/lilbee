@@ -37,7 +37,7 @@ from lilbee.data.ingest.skip_marker import (
 )
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
-from lilbee.runtime.absorb_journal import AbsorbJournal
+from lilbee.runtime.absorb_journal import AbsorbJournal, absorb_pending
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 _ADD_CANCELLED = "Add cancelled."
@@ -449,11 +449,19 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     ``rebuild`` or adding the path again restores it; ``retry-skipped`` does not.
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
+
+    An interrupted absorb is finished first, under the lock an absorb holds from
+    start to end, so no removal runs on keys that are part way through a move.
+    The names are then expanded at the keys the library holds.
     """
-    if targets is None:
-        targets = expand_remove_targets(names)
+    data_root = active_config().data_root
     # Taken before the index changes, so a held lock refuses the removal with nothing done.
-    with skip_records_lock(active_config().data_root):
+    with skip_records_lock(data_root):
+        moved = absorb_pending(data_root)
+        if moved:
+            finish_pending_absorb()
+        if moved or targets is None:
+            targets = expand_remove_targets(names)
         result = get_services().store.remove_documents(targets)
         failed = set(held_out_names(active_config().data_root))
         held = [name for name in result.not_found if name in failed]
