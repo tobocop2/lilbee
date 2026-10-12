@@ -2947,22 +2947,33 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         with no_sync_running(cfg.data_root):
             pass
 
-    def test_a_close_error_without_a_cancel_is_raised(self, library, tmp_path):
+    @pytest.mark.parametrize("block_error", [None, ValueError("the block failed")])
+    def test_a_close_error_is_logged_and_keeps_the_outcome_of_the_block(
+        self, library, tmp_path, caplog, block_error
+    ):
         def _close(lock: ReadWriteLock) -> None:
             real_close(lock)
             if Path(lock.lock_file).name == "sync.lock":
                 raise sqlite3.OperationalError("disk I/O error")
 
+        def _block() -> str:
+            with source_keys_in_use(tmp_path):
+                if block_error is not None:
+                    raise block_error
+                return "finished"
+
         real_close = ReadWriteLock.close
-        ran = []
         with (
             mock.patch.object(ReadWriteLock, "close", _close),
-            pytest.raises(sqlite3.OperationalError, match="disk I/O error"),
-            source_keys_in_use(tmp_path),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
-            ran.append("block")
+            if block_error is None:
+                assert _block() == "finished"
+            else:
+                with pytest.raises(ValueError, match="the block failed"):
+                    _block()
 
-        assert ran == ["block"]
+        assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
         with no_sync_running(tmp_path):
             pass
 

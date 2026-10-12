@@ -337,27 +337,21 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
     if lock is None:
         yield
         return
-    cancelled = False
     try:
         try:
             await _take_sync_lock(lock)
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, None)
         yield
-    except asyncio.CancelledError:
-        cancelled = True
-        raise
     finally:
         try:
             await lock.close()
         except _SYNC_LOCK_ERRORS as exc:
+            # Logged only: the block keeps its own result, error or cancel.
             log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
             # filelock keeps the worker thread of a lock whose close raised; wait until it ends.
             await asyncio.to_thread(lock.executor.shutdown)
             _raise_cancel_behind(exc)
-            # An error from the close does not replace a cancel.
-            if not cancelled:
-                raise
 
 
 @contextmanager
@@ -385,10 +379,8 @@ def source_keys_in_use(
         try:
             lock.close()
         except _SYNC_LOCK_ERRORS as exc:
+            # Logged only: the block keeps its own result, error or cancel.
             log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
-            # An error from the close does not replace a cancel.
-            if not _is_set(cancel):
-                raise
 
 
 @contextmanager

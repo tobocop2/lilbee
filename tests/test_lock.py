@@ -486,13 +486,29 @@ class TestSyncMark:
         with no_sync_running(tmp_path):
             pass
 
-    async def test_a_close_error_after_a_sync_that_ran_is_raised(self, tmp_path: Path) -> None:
-        ran = []
-        with _sync_lock_close_refused(), pytest.raises(sqlite3.OperationalError, match="disk I/O"):
+    @pytest.mark.parametrize("sync_error", [None, ValueError("the sync failed")])
+    async def test_a_close_error_is_logged_and_keeps_the_outcome_of_the_sync(
+        self, tmp_path: Path, caplog, sync_error: Exception | None
+    ) -> None:
+        async def _sync() -> str:
             async with sync_running(tmp_path):
-                ran.append("sync")
+                if sync_error is not None:
+                    raise sync_error
+                return "finished"
 
-        assert ran == ["sync"]
+        before = set(threading.enumerate())
+        with (
+            _sync_lock_close_refused(),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            if sync_error is None:
+                assert await _sync() == "finished"
+            else:
+                with pytest.raises(ValueError, match="the sync failed"):
+                    await _sync()
+
+        assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
+        assert _threads_left_since(before) == []
         with no_sync_running(tmp_path):
             pass
 
