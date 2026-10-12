@@ -261,6 +261,10 @@ _LOCAL_DISK_ADVICE = f"{_NO_HARD_LINKS}; move it to a local disk"
 _LINK_REFUSED = OSError(errno.ENOTSUP, "Operation not supported", "sync.probe", None, "lock.db")
 _OPEN_REFUSED = OSError(errno.ENOTSUP, "Operation not supported", "sync.probe")
 _READ_ONLY = OSError(errno.EROFS, "Read-only file system")
+# A hard link that fails on a filesystem that has hard links.
+_LINK_DENIED = OSError(errno.EACCES, "Permission denied", "sync.probe", None, "lock.db")
+_LINK_DISK_FULL = OSError(errno.ENOSPC, "No space left on device", "sync.probe", None, "lock.db")
+_LINK_TOO_MANY = OSError(errno.EMLINK, "Too many links", "sync.probe", None, "lock.db")
 
 
 _RESET_IN_ANOTHER_PROCESS = """
@@ -873,6 +877,9 @@ class TestSyncMark:
             pytest.param(_LINK_REFUSED, "linux", _LOCAL_DISK_ADVICE, id="link-on-linux"),
             pytest.param(_OPEN_REFUSED, "darwin", str(_OPEN_REFUSED), id="open-not-supported"),
             pytest.param(_READ_ONLY, "darwin", "[Errno 30] Read-only file system", id="read-only"),
+            pytest.param(_LINK_DENIED, "darwin", str(_LINK_DENIED), id="link-denied"),
+            pytest.param(_LINK_DISK_FULL, "darwin", str(_LINK_DISK_FULL), id="link-disk-full"),
+            pytest.param(_LINK_TOO_MANY, "linux", str(_LINK_TOO_MANY), id="link-too-many"),
         ],
     )
     async def test_a_probe_that_cannot_be_opened_is_deleted_and_reported(
