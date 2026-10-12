@@ -22,6 +22,7 @@ from lilbee.data.export import (
     serialize_dataset,
     write_dataset,
 )
+from lilbee.data.offload import owns_ingest_pool
 from lilbee.data.store import EmbeddingModelMismatchError, PageTextRecord
 from lilbee.runtime.lock import sync_running
 from lilbee.runtime.progress import DetailedProgressCallback, noop_callback
@@ -123,10 +124,14 @@ def export_to_bytes(fmt_value: str, source: str | None) -> ExportPayload:
     )
 
 
+@owns_ingest_pool
 async def _run_import(
     rows: list[PageTextRecord], on_progress: DetailedProgressCallback
 ) -> ImportSummary:
-    """Re-embed *rows* into the store under the sync mark, so a reset refuses meanwhile."""
+    """Re-embed *rows* into the store under the sync mark, so a reset refuses meanwhile.
+
+    The import has its own ingest pool, shut down when it ends.
+    """
     if not rows:
         raise DatasetError("Dataset has no pages to import.")
     store = get_services().store

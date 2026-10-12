@@ -37,6 +37,7 @@ from textual.worker import NoActiveWorker
 from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.ingest import (
+    LIBRARY_REFUSALS,
     RegisterResult,
     forget_unfinished_on_cancel,
     removable_names,
@@ -87,7 +88,6 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
-from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -111,7 +111,7 @@ from lilbee.retrieval.query.history_window import estimate_tokens
 from lilbee.retrieval.reasoning import RetrievalNotice
 from lilbee.runtime import asyncio_loop
 from lilbee.runtime.cancellation import TaskCancelledError
-from lilbee.runtime.lock import ResetRefusedError
+from lilbee.runtime.lock import ResetRefusedError, SyncRunningError
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
@@ -866,20 +866,25 @@ class ChatScreen(Screen[None]):
 
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
         reporter.update(0, f"Adding {label}...", indeterminate=True)
-        reg_result = register_sources(paths, force=force)
-        registered = reg_result.registered
+        try:
+            reg_result = register_sources(paths, force=force)
+        except SyncRunningError as exc:
+            call_from_thread(self, self.notify, str(exc), severity="warning")
+            return
         self._notify_registration(reg_result)
         if not reg_result.reached_corpus:
             return
+        # A source that took in another one stays: un-registering it orphans what it took.
+        revocable = reg_result.revocable
         try:
             with forget_unfinished_on_cancel(
-                paths, registered, reporter, reporter.cancelled_by_user
+                paths, revocable, reporter, reporter.cancelled_by_user
             ) as rollback:
-                self._sync_added(registered, reporter)
+                self._sync_added(reg_result.registered, reporter)
         except asyncio.CancelledError as exc:
             raise TaskCancelledError(rollback.message(msg.SYNC_CANCELLED_RESUME)) from exc
         except BaseException:
-            unregister_added_roots(registered)
+            unregister_added_roots(revocable)
             raise
 
     def _notify_registration(self, reg_result: RegisterResult) -> None:
@@ -896,6 +901,9 @@ class ChatScreen(Screen[None]):
         if reg_result.containing:
             names = ", ".join(reg_result.containing)
             call_from_thread(self, self.notify, msg.CMD_ADD_CONTAINING.format(names=names))
+        for parent, children in reg_result.absorbed_into.items():
+            text = msg.CMD_ADD_ABSORBED.format(parent=parent, children=", ".join(children))
+            call_from_thread(self, self.notify, text)
         if not reg_result.reached_corpus:
             call_from_thread(self, self.notify, msg.CMD_ADD_NOTHING, severity="warning")
 
@@ -1203,7 +1211,7 @@ class ChatScreen(Screen[None]):
 
         try:
             remove_documents_durably([name])
-        except SkipRecordsLockError as exc:
+        except LIBRARY_REFUSALS as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             return
         call_from_thread(self, self.notify, msg.CMD_DELETE_SUCCESS.format(name=name))

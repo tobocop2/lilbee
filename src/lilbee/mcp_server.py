@@ -59,7 +59,6 @@ from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
-from lilbee.data.ingest.skip_marker import SkipRecordsLockError
 from lilbee.data.store import (
     EmbeddingModelMismatchError,
     MemoryKind,
@@ -333,7 +332,7 @@ async def sync(
     ``force_rebuild`` re-ingests everything. ``retry_skipped`` retries failed
     files. ``prune_ignored`` drops sources ``.lilbeeignore`` excludes.
     """
-    from lilbee.app.ingest import temporary_ocr_config
+    from lilbee.app.ingest import LIBRARY_REFUSALS, temporary_ocr_config
     from lilbee.data.ingest import sync as run_sync
 
     try:
@@ -349,7 +348,7 @@ async def sync(
                 prune_ignored=prune_ignored,
                 cancel=cancel,
             )
-        except SkipRecordsLockError as exc:
+        except LIBRARY_REFUSALS as exc:
             return _error(str(exc))
     return result.model_dump()
 
@@ -401,7 +400,7 @@ async def add(
     Paths are absolute and resolve on the machine running lilbee, which is not
     the caller's machine when the server is remote. URLs are fetched as single
     pages; use ``crawl`` for sites."""
-    from lilbee.app.ingest import register_sources
+    from lilbee.app.ingest import LIBRARY_REFUSALS, register_sources
 
     try:
         validate_ocr_timeout(ocr_timeout)
@@ -444,16 +443,17 @@ async def add(
         reg_result = await anyio.to_thread.run_sync(
             functools.partial(register_sources, valid, force=force)
         )
-    except SkipRecordsLockError as exc:
+        errors.extend(reg_result.refused)
+        reached = reg_result.reached_corpus or bool(crawled_count)
+        sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
+    except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
-    errors.extend(reg_result.refused)
-    reached = reg_result.reached_corpus or bool(crawled_count)
-    sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
     result: dict[str, Any] = {
         "command": "add",
         "copied": reg_result.registered,
         "name_taken": reg_result.name_taken,
         "overlapping": reg_result.overlapping,
+        "absorbed": reg_result.absorbed,
         "tracked": reg_result.tracked,
         "crawled": crawled_count,
         "errors": errors,
@@ -581,11 +581,11 @@ def remove(names: list[str]) -> dict[str, Any]:
 
     Source files are never deleted. A folder name removes every document indexed
     beneath it; a glob (``*``/``?``/``[]``) removes every matching source."""
-    from lilbee.app.ingest import remove_documents_durably
+    from lilbee.app.ingest import LIBRARY_REFUSALS, remove_documents_durably
 
     try:
         result = remove_documents_durably(names)
-    except SkipRecordsLockError as exc:
+    except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
 

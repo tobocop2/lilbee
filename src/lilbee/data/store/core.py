@@ -8,8 +8,8 @@ import os
 from collections.abc import Callable, Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast
+from pathlib import Path, PurePosixPath
+from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import pyarrow as pa
 
@@ -221,6 +221,29 @@ _RELOCATABLE_TABLES = (
     (CITATIONS_TABLE, INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]),
 )
 
+# (table, key column) pairs a re-key of a source and everything below it updates,
+# the sources table last.
+_REKEY_TABLES = (*_RELOCATABLE_TABLES, (SOURCES_TABLE, INGEST_SOURCE_COLUMNS[SOURCES_TABLE]))
+
+# The columns two citation rows share when they are one citation under two source keys.
+_CITATION_SAME_COLUMNS = (
+    "wiki_source",
+    "wiki_chunk_index",
+    "citation_key",
+    "claim_type",
+    "source_hash",
+    "page_start",
+    "page_end",
+    "line_start",
+    "line_end",
+    "excerpt",
+)
+
+# What stands between two slashes of a source key that is not a file or folder name.
+_NOT_A_KEY_SEGMENT = frozenset({"", ".", ".."})
+# No file name holds it, so no key discovery writes does.
+_NUL = "\x00"
+
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
 
@@ -261,6 +284,35 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
 def _citations_for_wiki_predicate(wiki_source: str) -> str:
     """SQL predicate selecting every citation row belonging to *wiki_source*."""
     return f"wiki_source = '{escape_sql_string(wiki_source)}'"
+
+
+def _refuse_malformed_key(key: str) -> None:
+    """Raise ValueError unless each slash-separated segment of *key* is a file or folder name."""
+    if _NOT_A_KEY_SEGMENT.intersection(key.split("/")):
+        raise ValueError(f"A re-key takes a source key with a name in each segment, not {key!r}")
+    if _NUL in key:
+        raise ValueError(f"A re-key takes a source key without a NUL character, not {key!r}")
+
+
+def _rekey_sql(column: str, old: str, new: str) -> tuple[str, str]:
+    """The filter for *old* and each key below it, and the SQL value that puts *new* in its place.
+
+    ``starts_with`` and ``substr`` take the key literally and count characters,
+    so no character in a key is a wildcard.
+    """
+    old_literal = escape_sql_string(old)
+    where = f"{column} = '{old_literal}' OR starts_with({column}, '{old_literal}/')"
+    value = f"concat('{escape_sql_string(new)}', substr({column}, {len(old) + 1}))"
+    return where, value
+
+
+def _sql_equals(column: str, value: object) -> str:
+    """A predicate for *column* holding *value*, a string, an integer or NULL."""
+    if value is None:
+        return f"{column} IS NULL"
+    if isinstance(value, str):  # a citation column is text or an integer
+        return f"{column} = '{escape_sql_string(value)}'"
+    return f"{column} = {value}"
 
 
 def _get_distance(chunk: SearchChunk) -> float:
@@ -2095,6 +2147,66 @@ class Store:
         if stored != (derive(old) or ""):
             return _KEEP_TITLE
         return derive(new) or None
+
+    def rekey_sources_under(self, old: str, new: str) -> None:
+        """Re-key the source *old* and every source below it to *new*, keeping chunks and vectors.
+
+        A key matches when it is *old* or starts with ``old/``, so ``work`` never
+        matches ``workshop/x``. Each table with a row to move takes one update. A
+        second run re-keys again when *new* starts with *old*.
+        When *new* ends in another name than
+        *old*, the source at exactly *old* takes the title of the new name if its
+        title came from the old one; every other title stays as stored. An empty
+        key, one with an empty, ``.`` or ``..`` segment, or one with a NUL raises
+        ValueError before any table changes.
+        """
+        _refuse_malformed_key(old)
+        _refuse_malformed_key(new)
+        with self._write_lock():
+            title = self._title_after_rekey(old, new)
+            for name, column in _REKEY_TABLES:
+                table = self.open_table(name)
+                where, value = _rekey_sql(column, old, new)
+                if table is None or table.count_rows(where) == 0:
+                    continue
+                if title is not _KEEP_TITLE and _TITLE_COLUMN in table.schema.names:
+                    at_old = f"{column} = '{escape_sql_string(old)}'"
+                    table.update(where=at_old, values={_TITLE_COLUMN: title})
+                table.update(where=where, values_sql={column: value})
+        self._invalidate_source_cache()
+
+    def drop_citations_repeated_under(self, repeat: str, kept: str) -> None:
+        """Delete each citation at or below *repeat* that one at the same place below *kept* holds.
+
+        Two rows are one citation when only their source key and creation time differ.
+        """
+        column = INGEST_SOURCE_COLUMNS[CITATIONS_TABLE]
+        with self._write_lock():
+            table = self.open_table(CITATIONS_TABLE)
+            if table is None:
+                return
+
+            def _rows(prefix: str) -> list[dict[str, Any]]:
+                where, _ = _rekey_sql(column, prefix, prefix)
+                rows = table.search().where(where).limit(None).to_list()
+                return cast("list[dict[str, Any]]", rows)
+
+            def _same(row: dict[str, Any], prefix: str) -> tuple[object, ...]:
+                return (row[column][len(prefix) :], *(row[name] for name in _CITATION_SAME_COLUMNS))
+
+            held = {_same(row, kept) for row in _rows(kept)}
+            for row in _rows(repeat):
+                if _same(row, repeat) in held:
+                    names = (column, *_CITATION_SAME_COLUMNS)
+                    table.delete(" AND ".join(_sql_equals(name, row[name]) for name in names))
+
+    def _title_after_rekey(self, old: str, new: str) -> str | None:
+        """The title the source at exactly *old* takes at *new*, or ``_KEEP_TITLE``."""
+        if PurePosixPath(old).name == PurePosixPath(new).name:
+            return _KEEP_TITLE
+        from lilbee.data.title import derive_title  # circular at module scope
+
+        return self._relocated_title(self.open_table(SOURCES_TABLE), old, new, derive_title)
 
     def member_sources(self, name: str) -> list[str]:
         """Sources ingested out of the archive *name*: every filename under ``name/``."""

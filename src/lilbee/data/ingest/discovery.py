@@ -6,7 +6,7 @@ import hashlib
 import logging
 import os
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
@@ -306,10 +306,13 @@ def _walk_root(
     ignore_dirs: frozenset[str],
     progress: _ScanProgress,
     rules: IgnoreRules,
+    claimed: frozenset[Path] = frozenset(),
 ) -> Iterator[ScannedFile]:
     """Yield the files under *base* lilbee knows, keyed relative to it (prefixed by *label*).
 
     A refused format is yielded with its reason; an unknown format is left out.
+    A path in *claimed* is another registered root: its own entry walks it, so
+    no file has two keys.
 
     Symlinks are not followed (``followlinks=False``): each root is walked as the
     real tree it names, so there is no traversal loop and no path can escape the
@@ -325,12 +328,15 @@ def _walk_root(
             d
             for d in dirs
             if not is_ignored_dir(d, ignore_dirs)
+            and not (claimed and here / d in claimed)
             and not rules.excludes_entry(here / d, base=base, is_dir=True)
         ]
         for fname in filenames:
             if fname.startswith("."):
                 continue
             path = here / fname
+            if claimed and path in claimed:
+                continue
             if rules.excludes_entry(path, base=base, is_dir=False):
                 progress.tick(matched=False)
                 continue
@@ -343,22 +349,55 @@ def _walk_root(
                 yield entry
 
 
+def walk_reaches(base: Path, target: Path, rules: IgnoreRules) -> bool:
+    """Whether the walk of *base* reaches *target*, a file or a directory below it.
+
+    Applies the checks ``_walk_root`` makes on the way down: a pruned directory
+    name, a dot-file, and what ``.lilbeeignore`` excludes. A path that does not
+    exist is read as a directory.
+    """
+    ignore_dirs = active_config().ignore_dirs
+    is_file = target.is_file()
+    parts = target.relative_to(base).parts
+    current = base
+    for index, part in enumerate(parts, start=1):
+        current = current / part
+        is_dir = not (is_file and index == len(parts))
+        hidden = is_ignored_dir(part, ignore_dirs) if is_dir else part.startswith(".")
+        if hidden or rules.excludes_entry(current, base=base, is_dir=is_dir):
+            return False
+    return True
+
+
+def _roots_below(base: Path, roots: Iterable[str]) -> frozenset[Path]:
+    """Each of *roots* that lies below *base*, as the path the walk of *base* meets it at."""
+    resolved = base.resolve()
+    return frozenset(
+        base / path.relative_to(resolved)
+        for path in (Path(root).resolve() for root in roots)
+        if path != resolved and path.is_relative_to(resolved)
+    )
+
+
 def _walk_corpus(rules: IgnoreRules | None = None) -> Iterator[ScannedFile]:
     """Yield every file lilbee knows in the owned tree and in each registered root.
 
     A single-file root is the file the user named at ``add`` time, so no ignore
     pattern is consulted for it: naming a file is a stronger statement than a
-    pattern that would have swept it up.
+    pattern that would have swept it up. A root below another root is walked by
+    its own entry alone.
     """
     config = active_config()
     progress = _ScanProgress()
     rules = rules if rules is not None else IgnoreRules.for_corpus(config.data_root)
+    targets = list(config.linked_roots.values())
     if config.documents_dir.exists():
         yield from _walk_root(config.documents_dir, None, config.ignore_dirs, progress, rules)
     for label, root in config.linked_roots.items():
         root_path = Path(root)
         if root_path.is_dir():
-            yield from _walk_root(root_path, label, config.ignore_dirs, progress, rules)
+            claimed = _roots_below(root_path, targets)
+            yield from _walk_root(root_path, label, config.ignore_dirs, progress, rules, claimed)
         elif root_path.is_file() and (entry := _scan_entry(root_path, label)) is not None:
             yield entry
 

@@ -15,9 +15,12 @@ from lilbee.app import services as svc_mod
 from lilbee.cli import app
 from lilbee.core.config import active_config, cfg
 from lilbee.data.store import Store
+from lilbee.runtime.lock import ResetRefusedError, no_sync_running
 from tests.conftest import make_mock_services, reset_held_on_a_thread
 
 runner = CliRunner()
+# How long a held reset lasts when a test hangs; no test waits for it.
+_HANG_LIMIT_S = 30.0
 
 
 class _StubEmbedder:
@@ -25,6 +28,18 @@ class _StubEmbedder:
 
     def embed_batch(self, texts, **_kwargs):
         return [[0.1] * cfg.embedding_dim for _ in texts]
+
+
+@pytest.fixture(autouse=True)
+def data_root(tmp_path, monkeypatch):
+    """A data root of this test alone; a command takes its locks there.
+
+    Each command resolves the data root from LILBEE_DATA, which CI sets one time
+    for every test worker.
+    """
+    root = tmp_path / "library"
+    monkeypatch.setenv("LILBEE_DATA", str(root))
+    return root
 
 
 @pytest.fixture()
@@ -130,7 +145,7 @@ class TestExportCommand:
 
 
 class TestImportCommand:
-    def test_round_trip(self, store, tmp_path):
+    def test_round_trip(self, store, tmp_path, data_root):
         _seed(store)
         out = tmp_path / "pages.parquet"
         assert runner.invoke(app, ["export", str(out)]).exit_code == 0
@@ -147,6 +162,8 @@ class TestImportCommand:
         assert payload["pages"] == 2
         assert payload["chunks"] > 0
         assert {r["page"] for r in target.get_page_texts("doc.pdf")} == {1, 2}
+        # The import marked its sync on the data root of this test.
+        assert (data_root / "sync.lock").exists()
 
     def test_round_trip_human_output(self, store, tmp_path):
         _seed(store)
@@ -160,14 +177,14 @@ class TestImportCommand:
         assert result.exit_code == 0, result.output
         assert "Imported 1 source(s)" in result.output
 
-    def test_one_ctrl_c_ends_an_import_that_waits_for_a_reset(self, store, tmp_path):
+    def test_one_ctrl_c_ends_an_import_that_waits_for_a_reset(self, store, tmp_path, data_root):
         _seed(store)
         out = tmp_path / "pages.jsonl"
         assert runner.invoke(app, ["export", str(out)]).exit_code == 0
         target = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb2"}))
         svc_mod.set_services(make_mock_services(store=target, embedder=_StubEmbedder()))
         assert threading.current_thread() is threading.main_thread()
-        data_root = active_config().data_root
+        assert active_config().data_root == data_root
         interrupts: list[str] = []
         real_acquire = ReadWriteLock.acquire_read
 
@@ -177,17 +194,25 @@ class TestImportCommand:
                 _thread.interrupt_main()
             real_acquire(lock, *args, **kwargs)
 
+        # The reset holds until this block ends; its own limit only ends a test that hangs.
         with (
-            reset_held_on_a_thread(data_root, ends_after_s=4) as resetter,
+            reset_held_on_a_thread(data_root, ends_after_s=_HANG_LIMIT_S) as resetter,
             mock.patch.object(ReadWriteLock, "acquire_read", _ctrl_c_once),
         ):
             result = runner.invoke(app, ["import", str(out)])
             reset_still_held = resetter.is_alive()
+            with (
+                pytest.raises(ResetRefusedError, match="is running on this library"),
+                no_sync_running(data_root),
+            ):
+                pytest.fail("the reset ended before the import did")
 
         assert interrupts == ["ctrl-c"]
         assert reset_still_held, "the import ended only when the reset did"
         assert result.exit_code != 0, result.output
         assert target.get_page_texts("doc.pdf") == []
+        with no_sync_running(data_root):
+            pass
 
     def test_import_embedder_mismatch_fails(self, store, tmp_path):
         out = tmp_path / "pages.jsonl"

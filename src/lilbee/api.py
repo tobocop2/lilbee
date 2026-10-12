@@ -149,7 +149,10 @@ class Lilbee:
 
     def add(self, paths: list[str | Path]) -> SyncResult:
         """Add files to the knowledge base and sync.
-        Registers each path as a source root (indexed in place), then syncs.
+        Registers each path as a source root (indexed in place), then syncs. A
+        folder that contains registered sources takes them in, which raises
+        ``SyncRunningError`` while a sync runs on the same data. The result is
+        the sync's: it names no source that was registered or taken in.
         """
         # heavy: data.ingest transitively imports spaCy via wiki
         from lilbee.data.ingest import SyncResult
@@ -162,7 +165,14 @@ class Lilbee:
             return asyncio.run(_sync(quiet=True))
 
     def remove(self, name: str) -> None:
-        """Remove a document from the index by source name (source bytes are kept)."""
+        """Remove a document from the index by source name (source bytes are kept).
+
+        Raises ``SkipRecordsLockError``, ``SyncRunningError`` or ``AbsorbJournalError``
+        with nothing removed when another lilbee process, or an add that did not
+        finish, holds the library. Raises ``LibraryUnlockableError`` or
+        ``LockingUnsupportedError`` when it must finish such an add on a data
+        root that cannot be locked.
+        """
         with config_scope(self._config), services_scope(self._services):
             remove_documents_durably([name])
 

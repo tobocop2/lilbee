@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from unittest.mock import patch
 
 import pytest
@@ -23,6 +24,9 @@ from lilbee.core.config import cfg
 from lilbee.data.export import DatasetFormat, ImportResult
 from lilbee.data.store import Store
 from tests.conftest import make_mock_services
+
+# The name every ingest pool gives its threads.
+_POOL = "lilbee-ingest"
 
 
 class _StubEmbedder:
@@ -160,6 +164,25 @@ class TestImportFromPath:
             await import_from_path(dataset, "")
 
 
+class TestImportLeavesNoIngestThread:
+    """An import shuts down the ingest pool its work ran on."""
+
+    async def test_no_ingest_thread_is_alive_after_an_import(self, store, tmp_path):
+        _seed(store)
+        out = tmp_path / "pages.jsonl"
+        export_to_path(out, "", None)
+        before = set(threading.enumerate())
+
+        summary = await import_from_path(out, "")
+
+        started = [t for t in set(threading.enumerate()) - before if t.name.startswith(_POOL)]
+        for thread in started:
+            await asyncio.to_thread(thread.join, 5)
+        assert summary.chunks > 0
+        assert started, "the import ran on no ingest thread of its own"
+        assert [t.name for t in started if t.is_alive()] == []
+
+
 class TestImportFromBytes:
     async def test_round_trip(self, store):
         _seed(store)
@@ -251,7 +274,9 @@ class TestImportHoldsTheSyncMark:
             summary = await asyncio.wait_for(importing, 5)
 
         assert refused.returncode == 1, refused.stderr
-        assert "A sync or import is running on this library" in refused.stdout
+        assert (
+            "A sync, an import, an add or a wiki build is running on this library" in refused.stdout
+        )
         assert kept.exists()
         assert summary.pages == 2
         after = await asyncio.to_thread(_cli_reset, cfg.data_root)

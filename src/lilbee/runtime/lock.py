@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, closing, contextmanager
+from contextlib import asynccontextmanager, closing, contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, overload
@@ -26,6 +26,7 @@ from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import cfg
+from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -57,11 +58,13 @@ _SYNC_TAKE_SLICE_S = 0.1
 # Timeout instead, which is itself an OSError, so it is caught first.
 _SYNC_LOCK_ERRORS = (OSError, sqlite3.Error)
 _SYNC_LOCK_REFUSED = "Cannot lock %s (%s); a reset refuses until it can."
-_SYNC_RUNNING = "A sync or import is running on this library. Reset again when it finishes."
+_SYNC_RUNNING = "A sync, an import, an add or a wiki build is running on this library."
+_RESET_WHEN_DONE = "Reset again when it finishes."
 _SYNC_LOCK_UNKNOWN = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error}). "
-    "Stop every lilbee process, delete {path}, and reset again."
+    "Stop every lilbee process, delete {path}, and {again}."
 )
+_SYNC_LOCK_NOT_CLOSED = "Could not close %s (%s)."
 _DATA_ROOT_UNLOCKABLE = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error})."
 )
@@ -88,6 +91,22 @@ class LockingUnsupportedError(RuntimeError):
 
 class ResetRefusedError(RuntimeError):
     """Raised when a reset cannot safely run on the data root; nothing was deleted."""
+
+
+class SyncRunningError(RuntimeError):
+    """Raised when syncs must stay off the data root and one is running; nothing was changed."""
+
+
+class LibraryUnlockableError(RuntimeError):
+    """Raised when a change that keeps syncs off cannot lock the data root; nothing was changed."""
+
+
+class SyncMarkWaitCancelledError(Exception):
+    """Raised when a cancel ends the wait for the sync mark; the block did not run."""
+
+
+# How each error that refuses a writer tells the user to run the command again.
+_AGAIN = {ResetRefusedError: "reset again", LibraryUnlockableError: "try again"}
 
 
 # In-process write mutex: serializes writers within the same process
@@ -174,20 +193,48 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
 def _open_sync_lock(data_root: Path, *, write: Literal[True]) -> ReadWriteLock: ...
 @overload
 def _open_sync_lock(data_root: Path, *, write: Literal[False]) -> AsyncReadWriteLock | None: ...
-def _open_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | AsyncReadWriteLock | None:
-    """Open the data root's sync lock; None lets a sync run unmarked when opening raises."""
+@overload
+def _open_sync_lock(
+    data_root: Path, *, write: Literal[False], on_caller_thread: Literal[True]
+) -> ReadWriteLock | None: ...
+@overload
+def _open_sync_lock(
+    data_root: Path, *, write: Literal[True], refused: type[RuntimeError]
+) -> ReadWriteLock: ...
+def _open_sync_lock(
+    data_root: Path,
+    *,
+    write: bool,
+    on_caller_thread: bool = False,
+    refused: type[RuntimeError] = ResetRefusedError,
+) -> ReadWriteLock | AsyncReadWriteLock | None:
+    """Open the data root's sync lock; None lets a sync run unmarked when opening raises.
+
+    The read side is taken on an event loop unless *on_caller_thread* is set.
+    A writer that cannot open it raises *refused*.
+    """
+    refused_writer = refused if write else None
     try:
         data_root.mkdir(parents=True, exist_ok=True)
         _require_locking(data_root)
     except _SYNC_LOCK_ERRORS as exc:
-        _sync_lock_unavailable(data_root, exc, write=write, refusal=_DATA_ROOT_UNLOCKABLE)
+        _sync_lock_unavailable(data_root, exc, refused_writer, refusal=_DATA_ROOT_UNLOCKABLE)
         return None
     path = data_root / _SYNC_LOCK_NAME
     try:
-        return (ReadWriteLock if write else AsyncReadWriteLock)(path, is_singleton=False)
+        kind = ReadWriteLock if write or on_caller_thread else AsyncReadWriteLock
+        return kind(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
-        _sync_lock_unavailable(path, exc, write=write)
+        _sync_lock_unavailable(path, exc, refused_writer)
         return None
+
+
+def refuse_where_locking_is_unsupported(data_root: Path) -> None:
+    """Raise ``LockingUnsupportedError`` when *data_root* cannot lock files; write nothing."""
+    # A sync runs unmarked after any other failure of the probe, so the caller goes on.
+    with suppress(*_SYNC_LOCK_ERRORS):
+        data_root.mkdir(parents=True, exist_ok=True)
+        _require_locking(data_root)
 
 
 def _require_locking(data_root: Path) -> None:
@@ -234,12 +281,24 @@ def _remove_probe(probe_path: Path) -> None:
 
 
 def _sync_lock_unavailable(
-    path: Path, error: Exception, *, write: bool, refusal: str = _SYNC_LOCK_UNKNOWN
+    path: Path,
+    error: Exception,
+    refused: type[RuntimeError] | None,
+    *,
+    refusal: str = _SYNC_LOCK_UNKNOWN,
 ) -> None:
-    """Refuse a reset that cannot take the lock; warn once and let a sync run unmarked."""
-    if write:
-        raise ResetRefusedError(refusal.format(path=path, error=error)) from error
+    """Raise *refused* for a writer that cannot take the lock; warn and let a reader run on."""
+    if refused is not None:
+        text = refusal.format(path=path, error=error, again=_AGAIN[refused])
+        raise refused(text) from error
     log.warning(_SYNC_LOCK_REFUSED, path, error)
+
+
+def _raise_cancel_behind(error: Exception) -> None:
+    """Raise the cancel that *error* replaced, when it replaced one."""
+    # filelock raises a failed take or close in place of the cancel that interrupted it.
+    if isinstance(error.__context__, asyncio.CancelledError):
+        raise error.__context__ from None
 
 
 async def _take_sync_lock(lock: AsyncReadWriteLock) -> None:
@@ -248,14 +307,31 @@ async def _take_sync_lock(lock: AsyncReadWriteLock) -> None:
         try:
             await lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
         except _SYNC_LOCK_ERRORS as exc:
-            # filelock raises a failed take in place of the cancel that interrupted it.
-            if isinstance(exc.__context__, asyncio.CancelledError):
-                raise exc.__context__ from None
+            _raise_cancel_behind(exc)
             # Only a busy lock is waited out.
             if not isinstance(exc, FileLockTimeout):
                 raise
         else:
             return
+
+
+def _take_sync_lock_on_thread(lock: ReadWriteLock, cancel: CancelSignal | None) -> None:
+    """Take the read side of *lock* on this thread, in the slices ``_take_sync_lock`` waits in.
+
+    Raises ``SyncMarkWaitCancelledError`` when *cancel* is set before the lock is free.
+    """
+    while True:
+        if _is_set(cancel):
+            raise SyncMarkWaitCancelledError
+        try:
+            lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
+        except FileLockTimeout:
+            continue
+        return
+
+
+def _is_set(cancel: CancelSignal | None) -> bool:
+    return cancel is not None and cancel.is_set()
 
 
 @asynccontextmanager
@@ -273,10 +349,46 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
         try:
             await _take_sync_lock(lock)
         except _SYNC_LOCK_ERRORS as exc:
-            _sync_lock_unavailable(Path(lock.lock_file), exc, write=False)
+            _sync_lock_unavailable(Path(lock.lock_file), exc, None)
         yield
     finally:
-        await lock.close()
+        try:
+            await lock.close()
+        except _SYNC_LOCK_ERRORS as exc:
+            # Logged only: the block keeps its own result, error or cancel.
+            log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
+            # filelock keeps the worker thread of a lock whose close raised; wait until it ends.
+            await asyncio.to_thread(lock.executor.shutdown)
+            _raise_cancel_behind(exc)
+
+
+@contextmanager
+def source_keys_in_use(
+    data_root: Path, cancel: CancelSignal | None = None
+) -> Generator[None, None, None]:
+    """Hold the sync mark of *data_root* for a block that reads and writes source keys.
+
+    Waits while a reset or an add that moves keys holds syncs off. Setting *cancel*
+    ends the wait with ``SyncMarkWaitCancelledError``, and the block does not run.
+    """
+    lock = _open_sync_lock(data_root, write=False, on_caller_thread=True)
+    if lock is None:
+        yield
+        return
+    try:
+        try:
+            _take_sync_lock_on_thread(lock, cancel)
+        except _SYNC_LOCK_ERRORS as exc:
+            if _is_set(cancel):
+                raise SyncMarkWaitCancelledError from None
+            _sync_lock_unavailable(Path(lock.lock_file), exc, None)
+        yield
+    finally:
+        try:
+            lock.close()
+        except _SYNC_LOCK_ERRORS as exc:
+            # Logged only: the block keeps its own result, error or cancel.
+            log.warning(_SYNC_LOCK_NOT_CLOSED, lock.lock_file, exc)
 
 
 @contextmanager
@@ -290,9 +402,27 @@ def no_sync_running(data_root: Path) -> Generator[None, None, None]:
         try:
             lock.acquire_write(blocking=False)
         except FileLockTimeout:
-            raise ResetRefusedError(_SYNC_RUNNING) from None
+            raise ResetRefusedError(f"{_SYNC_RUNNING} {_RESET_WHEN_DONE}") from None
         except _SYNC_LOCK_ERRORS as exc:
-            _sync_lock_unavailable(Path(lock.lock_file), exc, write=True)
+            _sync_lock_unavailable(Path(lock.lock_file), exc, ResetRefusedError)
+        yield
+
+
+@contextmanager
+def syncs_held_off(data_root: Path, running: str, wait: float = 0.0) -> Generator[None, None, None]:
+    """Keep syncs off *data_root* for the block; a sync that outlasts *wait* raises *running*.
+
+    Raises ``SyncRunningError`` with the text *running*. A data root that cannot
+    be locked raises ``LibraryUnlockableError`` or ``LockingUnsupportedError``.
+    """
+    lock = _open_sync_lock(data_root, write=True, refused=LibraryUnlockableError)
+    with closing(lock):
+        try:
+            lock.acquire_write(timeout=wait, blocking=wait > 0)
+        except FileLockTimeout:
+            raise SyncRunningError(running) from None
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError)
         yield
 
 

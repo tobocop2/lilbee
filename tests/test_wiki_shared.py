@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
+from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
@@ -306,6 +308,117 @@ class TestAtomicWriteText:
 
         assert path.read_text() == "original"
         assert list(tmp_path.iterdir()) == [path]
+
+
+def dead_pid() -> int:
+    """The id of a process that has ended."""
+    import subprocess
+    import sys
+
+    ended = subprocess.Popen([sys.executable, "-c", ""])
+    ended.wait()
+    return ended.pid
+
+
+def temp_name_of_this_process() -> str:
+    """The name the writer gives a temp file, taken from a write it makes."""
+    import os
+    import tempfile
+
+    from lilbee.wiki.shared import atomic_write_text
+
+    seen: list[str] = []
+    real_replace = os.replace
+
+    def _replace(src, dst):
+        seen.append(Path(src).name)
+        real_replace(src, dst)
+
+    with tempfile.TemporaryDirectory() as scratch, mock.patch.object(os, "replace", _replace):
+        atomic_write_text(Path(scratch) / "probe.md", "probe")
+    (name,) = seen
+    return name
+
+
+def leave_temp_of_a_dead_writer(directory: Path) -> Path:
+    """Write what the writer leaves in *directory* when its process dies before the rename."""
+    import os
+
+    name = temp_name_of_this_process().replace(str(os.getpid()), str(dead_pid()), 1)
+    directory.mkdir(parents=True, exist_ok=True)
+    left = directory / name
+    left.write_text("half a page", encoding="utf-8")
+    return left
+
+
+class TestDeadTempFiles:
+    def test_the_temp_file_names_the_process_that_writes_it(self):
+        import os
+
+        name = temp_name_of_this_process()
+
+        assert name.startswith(f".lilbee-{os.getpid()}-") and name.endswith(".tmp")
+
+    def test_a_dead_writers_temp_files_go_and_every_other_file_stays(self, tmp_path):
+        import os
+
+        from lilbee.wiki.shared import remove_dead_temp_files
+
+        root = tmp_path / "wiki"
+        entities = root / "entities"
+        dead = [
+            leave_temp_of_a_dead_writer(root),
+            leave_temp_of_a_dead_writer(entities),
+            leave_temp_of_a_dead_writer(root / "archive" / "concepts"),
+        ]
+        gone_pid = dead[0].name.split("-")[1]
+        outside = leave_temp_of_a_dead_writer(tmp_path / "documents")
+        kept = [
+            entities / temp_name_of_this_process(),  # its writer is alive
+            entities / "boeing.md",
+            entities / "boeing.md.tmp",
+            entities / "tmpab12cd34.tmp",  # what Python's mkstemp names a file for any tool
+            entities / ".syncthing.boeing.md.tmp",
+            entities / ".lilbee-writer-ab12cd34.tmp",
+            entities / f".lilbee-{gone_pid}-ab12cd34.tmp.bak",
+            entities / f"x.lilbee-{gone_pid}-ab12cd34.tmp",
+            entities / f".lilbee-{gone_pid}.tmp",
+            root / "stubs.json",
+            outside,
+        ]
+        for path in kept:
+            path.write_text("kept", encoding="utf-8")
+        assert kept[0].name.split("-")[1] == str(os.getpid())
+
+        remove_dead_temp_files(root)
+
+        assert [path for path in dead if path.exists()] == []
+        assert [path for path in kept if not path.exists()] == []
+
+    def test_a_temp_file_that_cannot_be_deleted_is_reported_and_the_rest_go(self, tmp_path, caplog):
+        from lilbee.wiki.shared import remove_dead_temp_files
+
+        stuck = leave_temp_of_a_dead_writer(tmp_path / "wiki" / "drafts")
+        other = leave_temp_of_a_dead_writer(tmp_path / "wiki" / "entities")
+        real_unlink = Path.unlink
+
+        def _unlink(path, **kwargs):
+            if path == stuck:
+                raise PermissionError("in use")
+            real_unlink(path, **kwargs)
+
+        with mock.patch.object(Path, "unlink", _unlink), caplog.at_level("WARNING"):
+            remove_dead_temp_files(tmp_path / "wiki")
+
+        assert stuck.exists() and not other.exists()
+        assert f"Could not delete the leftover temp file {stuck}: in use" in caplog.text
+
+    def test_a_wiki_that_does_not_exist_is_left_alone(self, tmp_path):
+        from lilbee.wiki.shared import remove_dead_temp_files
+
+        remove_dead_temp_files(tmp_path / "wiki")
+
+        assert not (tmp_path / "wiki").exists()
 
 
 def _wiki_lock_held() -> bool:

@@ -38,6 +38,7 @@ CMD_ADD_NAME_TAKEN = "The name {name} is taken by another source (use --force to
 CMD_ADD_TRACKED = "Already tracked: {names}. Syncing."
 CMD_ADD_OVERLAPPING = "Overlaps a registered source: {names}. Syncing."
 CMD_ADD_CONTAINING = "Not added, it contains a source lilbee already indexes: {names}."
+CMD_ADD_ABSORBED = "{parent} now includes the source {children}."
 CMD_ADD_NOTHING = "Nothing to add: no path reached the knowledge base."
 CMD_ADD_ERROR = "Error: {error}"
 CMD_CRAWL_USAGE = "Usage: /crawl <url> [--depth N] [--max-pages N]"
