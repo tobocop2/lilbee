@@ -179,8 +179,17 @@ def read_scope_owner(scope_dir: Path) -> ScopeOwner | None:
 def _open_sync_lock(data_root: Path, *, write: Literal[True]) -> ReadWriteLock: ...
 @overload
 def _open_sync_lock(data_root: Path, *, write: Literal[False]) -> AsyncReadWriteLock | None: ...
-def _open_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | AsyncReadWriteLock | None:
-    """Open the data root's sync lock; None lets a sync run unmarked when opening raises."""
+@overload
+def _open_sync_lock(
+    data_root: Path, *, write: Literal[False], on_caller_thread: Literal[True]
+) -> ReadWriteLock | None: ...
+def _open_sync_lock(
+    data_root: Path, *, write: bool, on_caller_thread: bool = False
+) -> ReadWriteLock | AsyncReadWriteLock | None:
+    """Open the data root's sync lock; None lets a sync run unmarked when opening raises.
+
+    The read side is taken on an event loop unless *on_caller_thread* is set.
+    """
     try:
         data_root.mkdir(parents=True, exist_ok=True)
         _require_locking(data_root)
@@ -189,7 +198,8 @@ def _open_sync_lock(data_root: Path, *, write: bool) -> ReadWriteLock | AsyncRea
         return None
     path = data_root / _SYNC_LOCK_NAME
     try:
-        return (ReadWriteLock if write else AsyncReadWriteLock)(path, is_singleton=False)
+        kind = ReadWriteLock if write or on_caller_thread else AsyncReadWriteLock
+        return kind(path, is_singleton=False)
     except _SYNC_LOCK_ERRORS as exc:
         _sync_lock_unavailable(path, exc, write=write)
         return None
@@ -290,11 +300,16 @@ def source_keys_in_use(data_root: Path) -> Generator[None, None, None]:
 
     Waits while a reset or an add that moves keys holds syncs off.
     """
-    lock = _acquire_sync_lock(data_root, write=False)
-    try:
+    lock = _open_sync_lock(data_root, write=False, on_caller_thread=True)
+    if lock is None:
         yield
-    finally:
-        _release_sync_lock(lock)
+        return
+    with closing(lock):
+        try:
+            lock.acquire_read()
+        except _SYNC_LOCK_ERRORS as exc:
+            _sync_lock_unavailable(Path(lock.lock_file), exc, write=False)
+        yield
 
 
 @contextmanager

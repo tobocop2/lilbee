@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import logging
 import shutil
+import sqlite3
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -12,6 +15,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
+from filelock import ReadWriteLock
 
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
@@ -50,6 +54,7 @@ from lilbee.runtime.absorb_journal import (
 from lilbee.runtime.lock import (
     ResetRefusedError,
     SyncRunningError,
+    no_sync_running,
     source_keys_in_use,
     sync_running,
 )
@@ -891,17 +896,14 @@ class TestASyncIsRunning:
         """A thread that takes the mark a sync takes gets it only when the absorb has ended."""
         import threading
 
-        from lilbee.runtime.lock import _acquire_sync_lock, _release_sync_lock
-
         await _add(notes / "work")
         waiting = threading.Event()
         states: list[bool] = []
 
         def _second_sync() -> None:
             waiting.set()
-            lock = _acquire_sync_lock(cfg.data_root, write=False)
-            states.append(absorb_pending(cfg.data_root))
-            _release_sync_lock(lock)
+            with source_keys_in_use(cfg.data_root):
+                states.append(absorb_pending(cfg.data_root))
 
         real_land = absorb_mod._land
 
@@ -2135,16 +2137,15 @@ class TestSyncsHeldOff:
     def test_with_a_wait_it_takes_the_lock_when_the_sync_ends(self, tmp_path):
         import threading
 
-        from lilbee.runtime.lock import _acquire_sync_lock, _release_sync_lock, syncs_held_off
+        from lilbee.runtime.lock import syncs_held_off
 
         held = threading.Event()
         release = threading.Event()
 
         def _a_sync() -> None:
-            lock = _acquire_sync_lock(tmp_path, write=False)
-            held.set()
-            release.wait(10)
-            _release_sync_lock(lock)
+            with source_keys_in_use(tmp_path):
+                held.set()
+                release.wait(10)
 
         thread = threading.Thread(target=_a_sync)
         thread.start()
@@ -2158,6 +2159,76 @@ class TestSyncsHeldOff:
         with syncs_held_off(tmp_path, "busy", wait=10):
             assert release.is_set()
         thread.join(10)
+
+    def test_a_lock_that_cannot_be_taken_refuses_the_block(self, tmp_path):
+        from lilbee.runtime.lock import syncs_held_off
+
+        with (
+            _sync_lock_take_refused(),
+            pytest.raises(ResetRefusedError, match="disk I/O error") as refused,
+            syncs_held_off(tmp_path, "busy"),
+        ):
+            pytest.fail("entered without the lock")
+
+        assert f"delete {tmp_path / 'sync.lock'}" in str(refused.value)
+        with syncs_held_off(tmp_path, "busy"):
+            pass
+
+
+@contextlib.contextmanager
+def _sync_lock_take_refused():
+    """Fail every take of a sync lock as a disk that refuses SQLite does; a probe works."""
+    real = {
+        "acquire_read": ReadWriteLock.acquire_read,
+        "acquire_write": ReadWriteLock.acquire_write,
+    }
+
+    def _refusing(name: str):
+        def _take(lock: ReadWriteLock, *args, **kwargs):
+            if Path(lock.lock_file).name.startswith("sync.probe."):
+                return real[name](lock, *args, **kwargs)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        return _take
+
+    with (
+        mock.patch.object(ReadWriteLock, "acquire_read", _refusing("acquire_read")),
+        mock.patch.object(ReadWriteLock, "acquire_write", _refusing("acquire_write")),
+    ):
+        yield
+
+
+class TestSourceKeysInUse:
+    def test_a_lock_that_cannot_be_taken_runs_the_block_unmarked(self, tmp_path, caplog):
+        ran = []
+        with (
+            _sync_lock_take_refused(),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            source_keys_in_use(tmp_path),
+        ):
+            ran.append("block")
+
+        assert ran == ["block"]
+        assert caplog.text.count("disk I/O error") == 1
+        with no_sync_running(tmp_path):
+            pass
+
+    def test_a_lock_file_that_cannot_be_opened_runs_the_block_unmarked(self, tmp_path, caplog):
+        def _probe_only(path, *args, **kwargs):
+            if Path(path).name.startswith("sync.probe."):
+                return ReadWriteLock(path, *args, **kwargs)
+            raise sqlite3.OperationalError("disk I/O error")
+
+        ran = []
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", _probe_only),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            source_keys_in_use(tmp_path),
+        ):
+            ran.append("block")
+
+        assert ran == ["block"]
+        assert caplog.text.count("disk I/O error") == 1
 
 
 def _record_of(key: str) -> tuple[str | None, SkipKind | None, str | None]:
