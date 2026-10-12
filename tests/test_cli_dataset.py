@@ -27,6 +27,18 @@ class _StubEmbedder:
         return [[0.1] * cfg.embedding_dim for _ in texts]
 
 
+@pytest.fixture(autouse=True)
+def data_root(tmp_path, monkeypatch):
+    """A data root of this test alone; a command takes its locks there.
+
+    Each command resolves the data root from LILBEE_DATA, which CI sets one time
+    for every test worker.
+    """
+    root = tmp_path / "library"
+    monkeypatch.setenv("LILBEE_DATA", str(root))
+    return root
+
+
 @pytest.fixture()
 def store(tmp_path):
     real = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb"}))
@@ -130,7 +142,7 @@ class TestExportCommand:
 
 
 class TestImportCommand:
-    def test_round_trip(self, store, tmp_path):
+    def test_round_trip(self, store, tmp_path, data_root):
         _seed(store)
         out = tmp_path / "pages.parquet"
         assert runner.invoke(app, ["export", str(out)]).exit_code == 0
@@ -147,6 +159,8 @@ class TestImportCommand:
         assert payload["pages"] == 2
         assert payload["chunks"] > 0
         assert {r["page"] for r in target.get_page_texts("doc.pdf")} == {1, 2}
+        # The import marked its sync on the data root of this test.
+        assert (data_root / "sync.lock").exists()
 
     def test_round_trip_human_output(self, store, tmp_path):
         _seed(store)
@@ -160,17 +174,14 @@ class TestImportCommand:
         assert result.exit_code == 0, result.output
         assert "Imported 1 source(s)" in result.output
 
-    def test_one_ctrl_c_ends_an_import_that_waits_for_a_reset(self, store, tmp_path, monkeypatch):
-        # Each command resolves the data root from LILBEE_DATA, which every test shares.
-        monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "library"))
+    def test_one_ctrl_c_ends_an_import_that_waits_for_a_reset(self, store, tmp_path, data_root):
         _seed(store)
         out = tmp_path / "pages.jsonl"
         assert runner.invoke(app, ["export", str(out)]).exit_code == 0
         target = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "lancedb2"}))
         svc_mod.set_services(make_mock_services(store=target, embedder=_StubEmbedder()))
         assert threading.current_thread() is threading.main_thread()
-        data_root = active_config().data_root
-        assert data_root == tmp_path / "library"
+        assert active_config().data_root == data_root
         interrupts: list[str] = []
         real_acquire = ReadWriteLock.acquire_read
 
