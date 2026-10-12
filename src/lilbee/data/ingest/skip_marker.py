@@ -17,7 +17,6 @@ so the three files change together.
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import logging
 import os
@@ -79,12 +78,10 @@ class SkipRecords:
 
 @dataclass(frozen=True)
 class _PendingWrite:
-    """A write of the three sidecars that has started: what each becomes and what it replaces."""
+    """A write of the three sidecars that has started: what each becomes."""
 
     after: dict[str, str]
     """The text each sidecar gets, by file name."""
-    before: dict[str, str | None]
-    """The digest of the bytes each sidecar held, None for a file that was absent."""
 
 
 def _json_map(text: str, name: str) -> dict[str, object]:
@@ -110,24 +107,19 @@ def _read_text(path: Path) -> str | None:
         return None
 
 
-def _digest(text: str | None) -> str | None:
-    """A digest of *text*, None for a file that is absent."""
-    return None if text is None else hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
 def _pending_write(data_root: Path) -> _PendingWrite | None:
     """The write a pending file records, or None without one that can be read."""
     text = _read_text(data_root / SKIP_PENDING_FILENAME)
     if text is None:
         return None
     raw = _json_map(text, SKIP_PENDING_FILENAME)
-    after, before = raw.get("after"), raw.get("before")
+    after = raw.get("after")
     # the pending file is untyped JSON
-    if not isinstance(after, dict) or not isinstance(before, dict):
+    if not isinstance(after, dict):
         return None
     if not all(isinstance(after.get(name), str) for name in _RECORD_FILENAMES):
         return None
-    return _PendingWrite(after, {name: before.get(name) for name in _RECORD_FILENAMES})
+    return _PendingWrite(after)
 
 
 def _record_texts(
@@ -145,19 +137,13 @@ def _record_texts(
 
 
 def _texts_through_pending_write(data_root: Path) -> dict[str, str | None]:
-    """The text of every sidecar while a pending file is there.
+    """The text of every sidecar while a pending file is there: what its write gives each.
 
-    A pending write stands while each sidecar holds what the write replaces or
-    what it writes. Another text means a lilbee without this file wrote since,
-    and the sidecars are then the newer state.
+    A pending file that cannot be read leaves the sidecars as they are.
     """
-    on_disk = {name: _read_text(data_root / name) for name in _RECORD_FILENAMES}
     pending = _pending_write(data_root)
     if pending is None:
-        return on_disk
-    for name, text in on_disk.items():
-        if _digest(text) not in (pending.before[name], _digest(pending.after[name])):
-            return on_disk
+        return {name: _read_text(data_root / name) for name in _RECORD_FILENAMES}
     return dict(pending.after)
 
 
@@ -261,9 +247,8 @@ def write_skip_records(data_root: Path, records: SkipRecords) -> None:
         name: json.dumps(data, sort_keys=True)
         for name, data in zip(_RECORD_FILENAMES, maps, strict=True)
     }
-    before = {name: _digest(_read_text(data_root / name)) for name in _RECORD_FILENAMES}
     pending = data_root / SKIP_PENDING_FILENAME
-    _replace_text(pending, json.dumps(asdict(_PendingWrite(after, before)), sort_keys=True))
+    _replace_text(pending, json.dumps(asdict(_PendingWrite(after)), sort_keys=True))
     _apply(data_root, after)
 
 
@@ -279,10 +264,10 @@ def _settle(data_root: Path) -> None:
     if not (data_root / SKIP_PENDING_FILENAME).exists():
         return
     pending = _pending_write(data_root)
-    if pending is not None and _record_texts(data_root) == pending.after:
-        _apply(data_root, pending.after)
-    else:
+    if pending is None:
         _unlink(data_root / SKIP_PENDING_FILENAME)
+    else:
+        _apply(data_root, pending.after)
 
 
 def load_skip_records(data_root: Path) -> SkipRecords:

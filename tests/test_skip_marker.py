@@ -645,17 +645,16 @@ def test_the_next_change_finishes_a_stopped_write(tmp_path: Path) -> None:
     assert json.loads(_record_files(tmp_path)[SKIP_KIND_FILENAME])["bad.pdf"]["kind"] == "failed"
 
 
-def test_a_stopped_write_an_older_lilbee_wrote_past_is_dropped(tmp_path: Path) -> None:
+def test_a_stopped_write_stands_whatever_the_record_files_hold(tmp_path: Path) -> None:
     write_skip_records(tmp_path, _REMOVAL)
     _write_stopped_before(tmp_path, _FAILURE, SKIP_REASON_FILENAME)
-    _older_write(tmp_path, {"later.md": "h3"}, {"later.md": REMOVED_SKIP_REASON})
+    (tmp_path / SKIP_MARKER_FILENAME).write_text(json.dumps({"later.md": "h3"}), encoding="utf-8")
 
-    newer = {"bad.pdf": SkipKind.FAILED, "later.md": SkipKind.REMOVED}
-    assert load_skip_kinds(tmp_path) == newer
+    assert load_skip_kinds(tmp_path) == {"bad.pdf": SkipKind.FAILED}
     update_skip_records(tmp_path, lambda records: None)
 
     assert not (tmp_path / SKIP_PENDING_FILENAME).exists()
-    assert load_skip_kinds(tmp_path) == newer
+    assert load_skip_kinds(tmp_path) == {"bad.pdf": SkipKind.FAILED}
 
 
 def test_clearing_ends_a_stopped_write(tmp_path: Path) -> None:
@@ -673,8 +672,8 @@ def test_clearing_ends_a_stopped_write(tmp_path: Path) -> None:
     [
         "{not json",
         "[]",
-        json.dumps({"after": [], "before": {}}),
-        json.dumps({"after": {SKIP_MARKER_FILENAME: "{}"}, "before": {}}),
+        json.dumps({"after": []}),
+        json.dumps({"after": {SKIP_MARKER_FILENAME: "{}"}}),
     ],
     ids=["not-json", "a-list", "after-not-a-table", "a-file-missing"],
 )
