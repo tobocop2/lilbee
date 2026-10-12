@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from filelock import ReadWriteLock
+from filelock import Timeout as FileLockTimeout
 
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
@@ -2847,12 +2848,21 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         outcome: list[object] = []
         takes: list[int] = []
         closes: list[int] = []
+        found_the_mark_held = threading.Event()
         real_take, real_close = ReadWriteLock.acquire_read, ReadWriteLock.close
 
         def _take(lock: ReadWriteLock, *args, **kwargs):
-            if threading.current_thread() is thread and Path(lock.lock_file).name == "sync.lock":
+            watched = (
+                threading.current_thread() is thread and Path(lock.lock_file).name == "sync.lock"
+            )
+            if watched:
                 takes.append(threading.get_ident())
-            return real_take(lock, *args, **kwargs)
+            try:
+                return real_take(lock, *args, **kwargs)
+            except FileLockTimeout:
+                if watched:
+                    found_the_mark_held.set()
+                raise
 
         def _close(lock: ReadWriteLock) -> None:
             real_close(lock)
@@ -2873,17 +2883,16 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             mock.patch.object(ReadWriteLock, "close", _close),
         ):
             thread.start()
-            time.sleep(0.3)
-            still_waiting = thread.is_alive()
+            waited = found_the_mark_held.wait(5)
             cancel.set()
             cancelled_at = time.monotonic()
             thread.join(5)
             took = time.monotonic() - cancelled_at
-        assert still_waiting, "the writer did not wait for the holder"
+        assert waited, "the writer did not wait for the holder"
         assert not thread.is_alive()
         assert outcome == [cancelled_result]
         body.assert_not_called()
-        assert len(takes) > 1 and set(takes) == set(closes) == {thread.ident}
+        assert set(takes) == set(closes) == {thread.ident}
         return took
 
     @pytest.mark.parametrize("holder", list(_HOLDERS))
