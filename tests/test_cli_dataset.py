@@ -160,7 +160,9 @@ class TestImportCommand:
         assert result.exit_code == 0, result.output
         assert "Imported 1 source(s)" in result.output
 
-    def test_one_ctrl_c_ends_an_import_that_waits_for_a_reset(self, store, tmp_path):
+    def test_one_ctrl_c_ends_an_import_that_waits_for_a_reset(self, store, tmp_path, monkeypatch):
+        # Each command resolves the data root from LILBEE_DATA, which every test shares.
+        monkeypatch.setenv("LILBEE_DATA", str(tmp_path / "library"))
         _seed(store)
         out = tmp_path / "pages.jsonl"
         assert runner.invoke(app, ["export", str(out)]).exit_code == 0
@@ -168,6 +170,7 @@ class TestImportCommand:
         svc_mod.set_services(make_mock_services(store=target, embedder=_StubEmbedder()))
         assert threading.current_thread() is threading.main_thread()
         data_root = active_config().data_root
+        assert data_root == tmp_path / "library"
         interrupts: list[str] = []
         real_acquire = ReadWriteLock.acquire_read
 
