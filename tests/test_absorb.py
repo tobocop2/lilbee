@@ -885,10 +885,10 @@ class TestASyncIsRunning:
         assert result.registered == ["notes"] and result.absorbed == []
         assert _registry() == {"notes": str(notes.resolve())}
 
-    async def test_a_sync_waits_for_the_absorb_and_then_walks_the_new_registry(
+    async def test_a_sync_mark_taken_during_the_absorb_waits_until_the_journal_is_gone(
         self, library, notes
     ):
-        """A second process that syncs during the absorb cannot start until it ends."""
+        """A thread that takes the mark a sync takes gets it only when the absorb has ended."""
         import threading
 
         from lilbee.runtime.lock import _acquire_sync_lock, _release_sync_lock
