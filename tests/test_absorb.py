@@ -260,7 +260,7 @@ def _seeded_child(store: Store, parent: Path, child: str = "work") -> Path:
 
 
 def _register_as(roots: dict[str, Path]) -> None:
-    """Write *roots* as the registry, label to path, as a hand edit or an older build left it."""
+    """Write *roots* as the registry, label to path, as a hand edit leaves it."""
     stored = {label: str(path.resolve()) for label, path in roots.items()}
     settings.set_value(cfg.data_root, "linked_roots", stored)
     cfg.linked_roots = dict(stored)
@@ -634,6 +634,71 @@ class TestTheParentTakesTheChild:
         real_drop(store, journals[0])
 
         assert "notes/work/deep/gone.md" in _keys(library)
+
+
+async def _moved_folder_with_a_source_inside(tmp_path: Path) -> Path:
+    """Leave ``work`` holding a row for ``deep/a.md`` that the source ``deep`` also indexes.
+
+    ``work`` is indexed, then its folder moves and ``deep/a.md`` changes. ``deep``
+    is added at the new place, and ``work`` again while a pattern hides ``deep``.
+    Returns the new place of ``work``.
+    """
+    before = tmp_path / "before" / "work"
+    _write(before / "plan.md", "# Plan\n\nThe plan for the spring release.\n")
+    _write(before / "deep" / "a.md", "# A\n\nThe first text of the deep page.\n")
+    await _add(before)
+    after = tmp_path / "after" / "work"
+    after.parent.mkdir()
+    before.rename(after)
+    _write(after / "deep" / "a.md", "# A\n\nThe second text of the deep page.\n")
+    await _add(after / "deep")
+    ignore = _write(after / ".lilbeeignore", "deep/\n")
+    await _add(after)
+    ignore.unlink()
+    await sync(quiet=True)
+    return after
+
+
+class TestAMovedFolderWithASourceInside:
+    async def test_the_adds_leave_the_file_of_the_inner_source_at_two_keys(self, library, tmp_path):
+        after = await _moved_folder_with_a_source_inside(tmp_path)
+
+        assert sorted(_registry()) == ["deep", "work"]
+        assert _registry()["work"] == str(after.resolve())
+        assert _keys(library) == ["deep/a.md", "work/deep/a.md", "work/plan.md"]
+
+    async def test_the_entry_of_the_inner_source_lands(self, library, tmp_path):
+        after = await _moved_folder_with_a_source_inside(tmp_path)
+        store = library.store
+        inner = {row["filename"]: row["file_hash"] for row in store.get_sources()}["deep/a.md"]
+
+        result, synced = await _add(after.parent)
+
+        assert result.absorbed_into == {"after": ["deep", "work"]}
+        assert _keys(library) == ["after/work/deep/a.md", "after/work/plan.md"]
+        landed = {row["filename"]: row["file_hash"] for row in store.get_sources()}
+        assert landed["after/work/deep/a.md"] == inner
+        assert len(store.get_chunks_by_source("after/work/deep/a.md")) == 1
+        assert synced.added == [] and synced.updated == []
+
+    async def test_without_the_drop_the_outer_entry_lands_beside_it(self, library, tmp_path):
+        """The control for the test above."""
+        after = await _moved_folder_with_a_source_inside(tmp_path)
+
+        with mock.patch.object(absorb_mod, "_drop_shadows"):
+            register_sources([after.parent])
+
+        assert _keys(library).count("after/work/deep/a.md") == 2
+
+    async def test_a_removal_of_the_outer_entry_does_not_hold_the_file_out(self, library, tmp_path):
+        after = await _moved_folder_with_a_source_inside(tmp_path)
+        remove_documents_durably(["work/deep/a.md"])
+        assert sorted(load_skip_markers(cfg.data_root)) == ["work/deep/a.md"]
+
+        await _add(after.parent)
+
+        assert load_skip_markers(cfg.data_root) == {}
+        assert _keys(library) == ["after/work/deep/a.md", "after/work/plan.md"]
 
 
 class TestWhatIsNotAbsorbed:

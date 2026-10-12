@@ -100,8 +100,9 @@ def _clear_targets(store: Store, targets: list[str]) -> None:
 def _shadows(journal: AbsorbJournal) -> dict[str, str]:
     """Each temporary key of an absorbed source at which a source inside it lands, with its own.
 
-    Two registered sources that lie inside each other indexed the files of the
-    inner one twice. The inner source's entries are the ones that land.
+    The outer source can hold entries for the files of the inner one, from a
+    walk before the inner source was registered: a folder that moves keeps its
+    entries. The inner source's entries are the ones that land.
     """
     inner_old = {new: old for old, new in journal.moves.items()}
     return {
