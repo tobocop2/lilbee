@@ -351,8 +351,16 @@ def _sync_lock_unavailable(
     text = _SYNC_REFUSED if reader else refusal
     advice = _sync_advice(path, error)
     raise refused(
-        text.format(path=path, error=error, again=_AGAIN[refused], advice=advice)
+        text.format(path=path, error=_cause_text(error), again=_AGAIN[refused], advice=advice)
     ) from error
+
+
+def _cause_text(error: Exception) -> str:
+    """The operating system's words for *error*, without the file that it names."""
+    # The file can be the lock probe, whose name means nothing to the user.
+    if isinstance(error, OSError) and error.strerror is not None:
+        return f"[Errno {error.errno}] {error.strerror}"
+    return str(error)
 
 
 def _sync_advice(path: Path, error: Exception) -> str:

@@ -1109,7 +1109,11 @@ class TestSyncMark:
         ("refusal", "platform", "reported", "advice"),
         [
             pytest.param(
-                _OPEN_REFUSED, "darwin", str(_OPEN_REFUSED), _FIX_ADVICE, id="open-not-supported"
+                _OPEN_REFUSED,
+                "darwin",
+                f"[Errno {errno.ENOTSUP}] Operation not supported",
+                _FIX_ADVICE,
+                id="open-not-supported",
             ),
             pytest.param(
                 _READ_ONLY,
@@ -1119,17 +1123,25 @@ class TestSyncMark:
                 id="read-only",
             ),
             pytest.param(
-                _LINK_DENIED, "darwin", str(_LINK_DENIED), _WRITABLE_ADVICE, id="link-denied"
+                _LINK_DENIED,
+                "darwin",
+                "[Errno 13] Permission denied",
+                _WRITABLE_ADVICE,
+                id="link-denied",
             ),
             pytest.param(
                 _LINK_DISK_FULL,
                 "darwin",
-                str(_LINK_DISK_FULL),
+                "[Errno 28] No space left on device",
                 "Free some disk space, then try again.",
                 id="link-disk-full",
             ),
             pytest.param(
-                _LINK_TOO_MANY, "linux", str(_LINK_TOO_MANY), _FIX_ADVICE, id="link-too-many"
+                _LINK_TOO_MANY,
+                "linux",
+                "[Errno 31] Too many links",
+                _FIX_ADVICE,
+                id="link-too-many",
             ),
         ],
     )
