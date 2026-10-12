@@ -29,6 +29,7 @@ from typing import TypedDict
 from filelock import FileLock
 
 from lilbee.data.types import SkippedSource
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 
 log = logging.getLogger(__name__)
 
@@ -50,6 +51,10 @@ _RECORDS_LOCKED = (
 
 class SkipRecordsLockError(RuntimeError):
     """Raised when the records lock cannot be taken; nothing was read or written."""
+
+
+class SkipRecordsWaitCancelledError(TaskCancelledError):
+    """Raised when a cancel ends the wait for the records lock; nothing was read or written."""
 
 
 class SkipKind(StrEnum):
@@ -281,16 +286,24 @@ def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
 
 
 @contextlib.contextmanager
-def skip_records_lock(data_root: Path) -> Iterator[None]:
+def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> Iterator[None]:
     """Hold the cross-process lock on the records, or raise without entering.
 
     Re-entrant within a thread, so an operation can take it before its first
-    change and still call the record helpers inside.
+    change and still call the record helpers inside. Setting *cancel* ends a
+    wait for a held lock with ``SkipRecordsWaitCancelledError``; a free lock is
+    taken whether or not *cancel* is set.
     """
     lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
     try:
-        lock.acquire(timeout=_RECORDS_LOCK_TIMEOUT_S)
+        lock.acquire(
+            timeout=_RECORDS_LOCK_TIMEOUT_S,
+            cancel_check=None if cancel is None else cancel.is_set,
+        )
     except OSError as error:  # filelock's Timeout is an OSError too
+        if cancel is not None and cancel.is_set():
+            # No cause: a cancel that carries an error is reported as that error.
+            raise SkipRecordsWaitCancelledError from None
         raise SkipRecordsLockError(_RECORDS_LOCKED.format(path=lock.lock_file)) from error
     try:
         yield
@@ -298,12 +311,17 @@ def skip_records_lock(data_root: Path) -> Iterator[None]:
         lock.release()
 
 
-def update_skip_records(data_root: Path, change: Callable[[SkipRecords], None]) -> None:
+def update_skip_records(
+    data_root: Path,
+    change: Callable[[SkipRecords], None],
+    cancel: CancelSignal | None = None,
+) -> None:
     """Apply *change* to the records as they are on disk, under a cross-process lock.
 
     Reasons and kinds whose marker is gone are dropped in the same write.
+    Setting *cancel* ends the wait for the lock, with nothing written.
     """
-    with skip_records_lock(data_root):
+    with skip_records_lock(data_root, cancel):
         _settle(data_root)
         records = _load_records(data_root)
         before = SkipRecords(dict(records.markers), dict(records.reasons), dict(records.kinds))
@@ -339,7 +357,7 @@ def mark_removed(
     update_skip_records(data_root, _hold)
 
 
-def clear_failed_markers(data_root: Path) -> list[str]:
+def clear_failed_markers(data_root: Path, cancel: CancelSignal | None = None) -> list[str]:
     """Drop the record of every file an ingestion failure holds out; removals stay. Returns them."""
     dropped: list[str] = []
 
@@ -348,7 +366,7 @@ def clear_failed_markers(data_root: Path) -> list[str]:
         for name in dropped:
             records.markers.pop(name)
 
-    update_skip_records(data_root, _drop)
+    update_skip_records(data_root, _drop, cancel)
     return dropped
 
 
@@ -371,9 +389,9 @@ def describe_failures(data_root: Path, names: Iterable[str]) -> list[SkippedSour
     ]
 
 
-def clear_skip_markers(data_root: Path) -> None:
+def clear_skip_markers(data_root: Path, cancel: CancelSignal | None = None) -> None:
     """Delete the marker file and both sidecars. No-op if absent."""
-    with skip_records_lock(data_root):
+    with skip_records_lock(data_root, cancel):
         _settle(data_root)
         _unlink(data_root / SKIP_MARKER_FILENAME)
         _unlink(data_root / SKIP_REASON_FILENAME)
