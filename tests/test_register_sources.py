@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 from pathlib import Path
 from unittest import mock
 
@@ -272,6 +273,11 @@ class TestOnePathInAnotherLetterCase:
 
         assert result.tracked == ["notes"] and result.registered == []
 
+    @pytest.mark.skipif(
+        sys.platform == "win32",
+        reason="a Windows path compares without letter case, so a disk that keeps case apart "
+        "cannot be faked",
+    )
     def test_two_folders_the_disk_keeps_apart_are_two_sources(self, library, notes):
         typed = _other_case(notes)
         asked: contextlib.AbstractContextManager[object] = contextlib.nullcontext()

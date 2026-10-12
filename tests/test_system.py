@@ -663,8 +663,15 @@ class TestDiskPath:
             asked.append(path)
             return _lstat_ignoring_case(path)
 
+        def _keeps_typed_case(path: Path) -> str:
+            """Resolve as a POSIX disk does; Windows would spell the parts as listed."""
+            return os.path.abspath(path)
+
         spelling = DiskSpelling()
-        with mock.patch.object(os, "lstat", _lstat):
+        with (
+            mock.patch.object(os.path, "realpath", _keeps_typed_case),
+            mock.patch.object(os, "lstat", _lstat),
+        ):
             spelled = [spelling.of(shelf / name) for name in ("NOTES", "DRAFTS")]
 
         assert spelled == [shelf / "Notes", shelf / "Drafts"]
