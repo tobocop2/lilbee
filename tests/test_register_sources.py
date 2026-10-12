@@ -307,9 +307,11 @@ class TestOnePathInAnotherLetterCase:
         result = register_sources([typed])
 
         if one_entry:
-            assert result.tracked == ["owned"] and result.registered == []
+            assert result.tracked == ["owned"] and result.name_taken == []
         else:
-            assert result.tracked == [] and result.registered == ["owned"]
+            # A second folder: its name is the name of an entry the documents folder holds.
+            assert result.tracked == [] and result.name_taken == ["owned"]
+        assert result.registered == [] and _registry() == {}
 
     def test_a_documents_folder_configured_in_another_case_is_that_folder(self, library):
         owned = _write(cfg.documents_dir / "owned" / "page.md").parent
