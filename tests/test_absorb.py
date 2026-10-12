@@ -1806,7 +1806,7 @@ class TestARemoveThatCannotFinishAnAdd:
 
         _add_that_died(library.store, notes)
         async with unfinished_add_refused(cfg.data_root, cause) as text:
-            result = remove(["work/plan.md"])
+            result = await remove(["work/plan.md"])
 
         assert list(result) == ["error"] and text in result["error"]
         assert _keys(library) == _SEEDED_KEYS
@@ -1831,9 +1831,9 @@ class TestARemoveAfterTheLibraryIsFree:
 
         _add_that_died(library.store, notes)
         async with unfinished_add_refused(cfg.data_root, UnfinishedAdd.HELD):
-            refused = remove(["work/plan.md"])
+            refused = await remove(["work/plan.md"])
 
-        result = remove(["notes/work/plan.md"])
+        result = await remove(["notes/work/plan.md"])
 
         assert list(refused) == ["error"]
         assert result["removed"] == ["notes/work/plan.md"]

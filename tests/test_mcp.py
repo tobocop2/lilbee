@@ -350,8 +350,8 @@ class TestStatus:
 class TestSkipRecordsLockHeld:
     """A held skip-records lock comes back as a structured error with nothing changed."""
 
-    def test_remove_is_refused_before_the_index_changes(self, mock_svc, held_records_lock):
-        result = remove(["a.md"])
+    async def test_remove_is_refused_before_the_index_changes(self, mock_svc, held_records_lock):
+        result = await remove(["a.md"])
 
         assert "Could not lock" in result["error"]
         mock_svc.store.remove_documents.assert_not_called()
@@ -494,7 +494,7 @@ class TestSync:
 
 
 class TestRemove:
-    def test_holds_a_failed_file_out_as_a_removal(self, mock_svc):
+    async def test_holds_a_failed_file_out_as_a_removal(self, mock_svc):
         from lilbee.data.ingest.skip_marker import (
             SkipKind,
             load_skip_kinds,
@@ -510,30 +510,30 @@ class TestRemove:
             removed=[], not_found=list(names)
         )
 
-        result = remove(["scan.pdf"])
+        result = await remove(["scan.pdf"])
 
         assert result["removed"] == ["scan.pdf"]
         assert result["not_found"] == []
         assert load_skip_kinds(cfg.data_root) == {"scan.pdf": SkipKind.REMOVED}
 
-    def test_removes_known_file(self, mock_svc):
+    async def test_removes_known_file(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
-        result = remove(["a.md"])
+        result = await remove(["a.md"])
         assert result["removed"] == ["a.md"]
         assert result["not_found"] == []
 
-    def test_not_found(self, mock_svc):
+    async def test_not_found(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["missing.md"]
         )
-        result = remove(["missing.md"])
+        result = await remove(["missing.md"])
         assert result["not_found"] == ["missing.md"]
 
-    def test_folder_name_expands_to_members(self, mock_svc):
+    async def test_folder_name_expands_to_members(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
         mock_svc.store.get_sources.return_value = [
@@ -548,11 +548,11 @@ class TestRemove:
             return RemoveResult(removed=list(names), not_found=[])
 
         mock_svc.store.remove_documents.side_effect = _remove
-        result = remove(["docs"])
+        result = await remove(["docs"])
         assert set(captured["names"]) == {"docs/a.md", "docs/b.md"}
         assert set(result["removed"]) == {"docs/a.md", "docs/b.md"}
 
-    def test_glob_pattern_expands_to_matches(self, mock_svc):
+    async def test_glob_pattern_expands_to_matches(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
         mock_svc.store.get_sources.return_value = [
@@ -567,7 +567,7 @@ class TestRemove:
             return RemoveResult(removed=list(names), not_found=[])
 
         mock_svc.store.remove_documents.side_effect = _remove
-        result = remove(["*.log"])
+        result = await remove(["*.log"])
         assert set(result["removed"]) == {"a.log", "b.log"}
 
 
@@ -3039,3 +3039,71 @@ class TestImportDataset:
         )
         result = await import_dataset(str(out))
         assert "error" not in result
+
+
+class TestACancelledCallAtTheRecordsLock:
+    """A tool call cancelled while it waits for the records lock ends the wait, nothing changed."""
+
+    @staticmethod
+    async def _cancel_at_the_wait(tool: str, arguments: dict, target: str) -> BaseException | None:
+        """Cancel *tool* once it waits for a held records lock; returns what *target* raised."""
+        import threading
+
+        from lilbee.app import ingest
+        from tests._records_wait import files_under, records_lock_held_elsewhere
+
+        waiting, ended = anyio.Event(), threading.Event()
+        raised: list[BaseException | None] = []
+        real = getattr(ingest, target)
+
+        def _recorded(*args, **kwargs):
+            try:
+                result = real(*args, **kwargs)
+            except BaseException as exc:
+                raised.append(exc)
+                raise
+            else:
+                raised.append(None)
+                return result
+            finally:
+                ended.set()
+
+        def _report_the_wait() -> None:
+            anyio.from_thread.run_sync(waiting.set)
+
+        with (
+            records_lock_held_elsewhere(cfg.data_root, _report_the_wait),
+            mock.patch.object(ingest, target, _recorded),
+        ):
+            before = files_under(cfg.data_root)
+            async with mcp_client() as (session, _init, drop):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(session.call_tool, tool, arguments)
+                    await waiting.wait()
+                    tg.cancel_scope.cancel()
+                await anyio.to_thread.run_sync(ended.wait)
+                await drop()
+            assert files_under(cfg.data_root) == before
+        return raised[0]
+
+    async def test_an_add_stops_at_the_wait(self, tmp_path):
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        src = tmp_path / "source" / "scan.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+
+        raised = await self._cancel_at_the_wait("add", {"paths": [str(src)]}, "register_sources")
+
+        assert isinstance(raised, SkipRecordsWaitCancelledError)
+        assert cfg.linked_roots == {}
+
+    async def test_a_remove_stops_at_the_wait(self, mock_svc):
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        raised = await self._cancel_at_the_wait(
+            "remove", {"names": ["a.md"]}, "remove_documents_durably"
+        )
+
+        assert isinstance(raised, SkipRecordsWaitCancelledError)
+        mock_svc.store.remove_documents.assert_not_called()

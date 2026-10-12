@@ -16,6 +16,15 @@ _WAIT_WITHOUT_A_CANCEL_S = 2.0
 """A take that gets no cancel fails after this wait, not after the product's."""
 
 
+def files_under(root: Path) -> dict[str, bytes]:
+    """Every file under *root* with its bytes, the held lock file aside."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix != ".lock"
+    }
+
+
 @contextlib.contextmanager
 def records_lock_held_elsewhere(data_root: Path, on_wait: Callable[[], None]) -> Iterator[None]:
     """Hold the records lock the way another process does; a take that fails calls *on_wait* once.

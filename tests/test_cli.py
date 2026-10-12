@@ -7748,15 +7748,6 @@ class TestSyncCancelledExit:
         mock_svc.searcher.ask_raw.assert_not_called()
 
 
-def _files_under(root: Path) -> dict[str, bytes]:
-    """Every file under *root* with its bytes, the held lock file aside."""
-    return {
-        path.relative_to(root).as_posix(): path.read_bytes()
-        for path in sorted(root.rglob("*"))
-        if path.is_file() and path.suffix != ".lock"
-    }
-
-
 class TestCtrlCAtTheRecordsLock:
     """Ctrl+C while a command waits for the records lock ends it as a cancel, nothing changed."""
 
@@ -7768,12 +7759,12 @@ class TestCtrlCAtTheRecordsLock:
 
     def _run_until_ctrl_c(self, args: list[str]):
         """Run *args* against a held records lock; the Ctrl+C lands once the command waits."""
-        from tests._records_wait import records_lock_held_elsewhere
+        from tests._records_wait import files_under, records_lock_held_elsewhere
 
         with records_lock_held_elsewhere(cfg.data_root, self._ctrl_c):
-            before = _files_under(cfg.data_root)
+            before = files_under(cfg.data_root)
             result = runner.invoke(app, args)
-            assert _files_under(cfg.data_root) == before
+            assert files_under(cfg.data_root) == before
         return result
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])

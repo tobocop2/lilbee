@@ -444,11 +444,14 @@ async def add(
         errors.extend(url_errors)
 
     # Registration touches config.toml (a locked read-modify-write); keep the
-    # blocking disk I/O off the event loop.
+    # blocking disk I/O off the event loop. A cancelled call ends its wait for
+    # the records lock.
     try:
-        reg_result = await anyio.to_thread.run_sync(
-            functools.partial(register_sources, valid, force=force)
-        )
+        with _cancel_token() as cancel:
+            reg_result = await anyio.to_thread.run_sync(
+                functools.partial(register_sources, valid, force=force, cancel=cancel),
+                abandon_on_cancel=True,
+            )
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
         sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
@@ -582,7 +585,7 @@ def init(path: str = "") -> dict[str, Any]:
 
 
 @_tool
-def remove(names: list[str]) -> dict[str, Any]:
+async def remove(names: list[str]) -> dict[str, Any]:
     """Remove documents from the index by source name, folder, or glob pattern.
 
     Source files are never deleted. A folder name removes every document indexed
@@ -590,7 +593,11 @@ def remove(names: list[str]) -> dict[str, Any]:
     from lilbee.app.ingest import LIBRARY_REFUSALS, remove_documents_durably
 
     try:
-        result = remove_documents_durably(names)
+        with _cancel_token() as cancel:
+            result = await anyio.to_thread.run_sync(
+                functools.partial(remove_documents_durably, names, cancel=cancel),
+                abandon_on_cancel=True,
+            )
     except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
