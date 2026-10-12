@@ -769,6 +769,7 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
     Replaces existing copies; imported sources are detached so sync won't delete them.
     """
     from lilbee.app.dataset import DatasetError, import_from_path
+    from lilbee.app.ingest import LIBRARY_REFUSALS
     from lilbee.runtime.progress import EmbedEvent, EventType, ProgressEvent
 
     loop = asyncio.get_running_loop()
@@ -795,7 +796,7 @@ async def import_dataset(dataset: str, fmt: str = "", ctx: Context | None = None
 
         try:
             summary = await import_from_path(Path(dataset), fmt, on_progress=on_progress)
-        except DatasetError as exc:
+        except (DatasetError, *LIBRARY_REFUSALS) as exc:
             return _error(str(exc))
     return summary.model_dump()
 

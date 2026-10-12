@@ -2958,6 +2958,28 @@ class TestImportDataset:
         result = await import_dataset(str(tmp_path / "nope.parquet"))
         assert "Dataset not found" in result["error"]
 
+    async def test_an_import_that_cannot_open_its_sync_lock_returns_an_error(
+        self, dataset_store, tmp_path
+    ):
+        from lilbee.core.config import active_config
+
+        out = tmp_path / "pages.jsonl"
+        out.write_text(
+            '{"source":"new.pdf","page":1,"text":"body","content_type":"pdf"}\n', encoding="utf-8"
+        )
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = await import_dataset(str(out))
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {active_config().data_root / 'sync.lock'} "
+                "cannot be locked ([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert dataset_store.get_page_texts("new.pdf") == []
+
     async def test_reports_embed_progress_with_ctx(self, dataset_store, tmp_path):
         from tests.conftest import make_mock_services
 

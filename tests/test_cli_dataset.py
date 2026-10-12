@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import _thread
+import errno
 import json
 import threading
 from unittest import mock
@@ -21,6 +22,7 @@ from tests.conftest import make_mock_services, reset_held_on_a_thread
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
 _HANG_LIMIT_S = 30.0
+_ONE_PAGE = '{"source":"doc.pdf","page":1,"text":"body","content_type":"pdf"}\n'
 
 
 class _StubEmbedder:
@@ -250,3 +252,40 @@ class TestImportCommand:
         result = runner.invoke(app, ["--json", "import", str(empty)])
         assert result.exit_code == 1
         assert "no pages" in json.loads(result.output)["error"]
+
+    def test_an_import_that_cannot_open_its_sync_lock_exits_1_and_imports_nothing(
+        self, store, tmp_path, data_root
+    ):
+        out = tmp_path / "pages.jsonl"
+        out.write_text(_ONE_PAGE, encoding="utf-8")
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, ["import", str(out)])
+
+        assert result.exit_code == 1
+        assert isinstance(result.exception, SystemExit)
+        output = " ".join(result.output.split())
+        assert output.startswith("Error: Cannot change the library:")
+        assert "cannot be locked ([Errno 24] Too many open files)." in output
+        assert "Close some programs or raise the limit of open files, then try again." in output
+        assert "Traceback" not in result.output
+        assert store.get_page_texts("doc.pdf") == []
+
+    def test_an_import_that_cannot_open_its_sync_lock_reports_it_as_json(
+        self, store, tmp_path, data_root
+    ):
+        out = tmp_path / "pages.jsonl"
+        out.write_text(_ONE_PAGE, encoding="utf-8")
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, ["--json", "import", str(out)])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "error": (
+                f"Cannot change the library: {data_root / 'sync.lock'} cannot be locked "
+                "([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert store.get_page_texts("doc.pdf") == []
