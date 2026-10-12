@@ -1,6 +1,7 @@
 """Tests for the CLI interface using typer's test runner."""
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -276,6 +277,68 @@ class TestSync:
         assert result.exit_code == 1
         assert "Error:" in result.output
         assert "does not support file locking" in result.output
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_sync_that_cannot_open_its_sync_lock_exits_1_and_changes_nothing(
+        self, isolated_env, command
+    ):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _tree(cfg.data_root)
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, [command])
+
+        assert result.exit_code == 1
+        output = " ".join(result.output.split())
+        assert "Error: Cannot change the library:" in output
+        assert "cannot be locked ([Errno 24] Too many open files)." in output
+        assert "Close some programs or raise the limit of open files, then try again." in output
+        assert "Traceback" not in result.output
+        assert _tree(cfg.data_root) == before
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_sync_that_cannot_open_its_sync_lock_reports_it_as_json(self, isolated_env, command):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _tree(cfg.data_root)
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, ["--json", command])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "error": (
+                f"Cannot change the library: {cfg.data_root / 'sync.lock'} cannot be locked "
+                "([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert _tree(cfg.data_root) == before
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_an_add_on_a_data_directory_that_cannot_be_locked_adds_nothing(
+        self, isolated_env, tmp_path, flags
+    ):
+        src = tmp_path / "outside" / "note.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _tree(cfg.data_root)
+        refused = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, [*flags, "add", str(src)])
+
+        assert result.exit_code == 1
+        output = " ".join(result.output.split())
+        assert "Cannot change the library:" in output
+        assert "cannot be locked ([Errno 13] Permission denied)." in output
+        assert "writable, then try again." in output
+        assert _tree(cfg.data_root) == before
+        assert cfg.linked_roots == {}
+
+
+def _tree(root: Path) -> list[str]:
+    """Every path below *root*, to show that a refused command changed nothing."""
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
 
 
 class TestRebuild:

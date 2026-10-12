@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import errno
 import os
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -382,6 +383,41 @@ class TestSkipRecordsLockHeld:
             result = await sync(retry_skipped=True)
 
         assert result == {"error": "Could not lock records.lock"}
+
+    async def test_sync_that_cannot_open_its_sync_lock_returns_an_error(self):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = sorted(cfg.data_root.rglob("*"))
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = await sync()
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {cfg.data_root / 'sync.lock'} cannot be locked "
+                "([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert sorted(cfg.data_root.rglob("*")) == before
+
+    async def test_add_on_a_data_root_that_cannot_be_locked_adds_nothing(self, tmp_path):
+        src = tmp_path / "outside" / "note.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = sorted(cfg.data_root.rglob("*"))
+        refused = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=refused):
+            result = await add([str(src)])
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {cfg.data_root} cannot be locked "
+                f"([Errno 13] Permission denied). Make {cfg.data_root} writable, then try again."
+            )
+        }
+        assert sorted(cfg.data_root.rglob("*")) == before
+        assert cfg.linked_roots == {}
 
 
 class TestSync:
