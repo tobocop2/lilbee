@@ -795,6 +795,7 @@ class ChatScreen(Screen[None]):
 
     def _cmd_add(self, args: str) -> None:
         from lilbee.app.ingest import source_label_taken
+        from lilbee.core.system import disk_path
 
         if not args:
             return
@@ -817,7 +818,7 @@ class ChatScreen(Screen[None]):
         # (a live root elsewhere, or an owned file of that name); re-adding the
         # same path is idempotent, and a directory is left to register_sources'
         # own skipped notices rather than a duplicate-file prompt.
-        duplicates = [p for p in paths if p.is_file() and source_label_taken(p.name, p)]
+        duplicates = [p for p in paths if p.is_file() and source_label_taken(disk_path(p).name, p)]
         if duplicates:
             self._prompt_overwrite(paths, duplicates)
             return
