@@ -20,6 +20,7 @@ from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import validate_path_within
 from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.ingest_lock import IngestLockRegistry
+from lilbee.runtime.lock import refuse_where_a_sync_cannot_lock
 from lilbee.runtime.progress import SseEvent
 from lilbee.server.handlers.sse import SseStream, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
@@ -339,12 +340,14 @@ async def _run_upload(
     documents dir and the same ingest pipeline runs. This is what lets an
     external-mode client (a remote lilbee / GPU box) ingest files that live only
     on the client. Unchanged content is a no-op re-embed inside ``sync`` (it
-    hashes each source), so there is no separate force flag.
+    hashes each source), so there is no separate force flag. A data root that
+    the sync cannot lock refuses the upload before any file is written.
     """
     from lilbee.app.ingest import temporary_ocr_config
     from lilbee.data.ingest import sync
 
     try:
+        await asyncio.to_thread(refuse_where_a_sync_cannot_lock, cfg.data_root)
         cfg.documents_dir.mkdir(parents=True, exist_ok=True)
         written: list[str] = []
         for name, content in files:

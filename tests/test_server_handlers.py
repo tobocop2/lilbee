@@ -6327,3 +6327,24 @@ class TestASyncLockThatCannotBeOpened:
         assert [e for e in events if e.startswith("event: done")] == []
         assert _data_root_tree() == before
         assert cfg.linked_roots == {}
+
+    async def test_the_upload_stream_ends_with_the_refusal_and_keeps_no_upload(self):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        lock_file = cfg.data_root / "sync.lock"
+        lock_file.write_bytes(b"not a lock database " * 8)
+        before = _data_root_tree()
+
+        events = [e async for e in handlers.add_uploads_stream([("note.md", b"# A note\n")])]
+
+        assert _error_frames(events) == [
+            {
+                "message": (
+                    f"Cannot change the library: {lock_file} cannot be locked "
+                    f"(file is not a database). "
+                    f"Stop every lilbee process, delete {lock_file}, and try again."
+                )
+            }
+        ]
+        assert [e for e in events if e.startswith("event: done")] == []
+        assert _data_root_tree() == before
+        assert not (cfg.documents_dir / "note.md").exists()
