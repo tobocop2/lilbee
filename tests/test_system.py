@@ -2,6 +2,7 @@
 
 import os
 import sys
+import unicodedata
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -10,11 +11,13 @@ import pytest
 
 from lilbee.core import system as system_mod
 from lilbee.core.system import (
+    _listed_name,
     _mount_fstype,
     chat_ctx_target_for_total_bytes,
     default_cache_dir,
     default_data_dir,
     default_state_dir,
+    disk_path,
     executable_search_path,
     find_executable,
     find_local_root,
@@ -532,3 +535,90 @@ class TestExecutableDiscovery:
         monkeypatch.setattr(system_mod, "_UNIX_BIN_DIRS", (str(extra),))
         monkeypatch.setattr(sys, "platform", "darwin")
         assert find_executable("othercli.exe") == str(binary)
+
+
+_LSTAT = os.lstat
+
+
+def _lstat_ignoring_case(path: str) -> os.stat_result:
+    """``os.lstat`` as a disk that ignores letter case answers it."""
+    try:
+        return _LSTAT(path)
+    except OSError:
+        folder, name = os.path.split(path)
+        listed = next((n for n in os.listdir(folder) if n.casefold() == name.casefold()), name)
+        return _LSTAT(os.path.join(folder, listed))
+
+
+class TestDiskPath:
+    """The spelling of a path comes from the listing of each folder, never from folding it."""
+
+    @pytest.fixture
+    def shelf(self, tmp_path) -> Path:
+        """The real path of a folder that holds ``Notes/plan.md``."""
+        real = Path(os.path.realpath(tmp_path)) / "shelf"
+        (real / "Notes").mkdir(parents=True)
+        (real / "Notes" / "plan.md").write_text("# Plan\n", encoding="utf-8")
+        return real
+
+    def test_a_path_spelled_as_listed_comes_back_unchanged(self, shelf):
+        assert disk_path(shelf / "Notes" / "plan.md") == shelf / "Notes" / "plan.md"
+
+    def test_the_spelling_agrees_with_what_this_disk_says(self, shelf):
+        typed = shelf / "NOTES" / "plan.md"
+        one_entry = typed.exists()
+
+        spelled = disk_path(typed)
+
+        assert spelled == (shelf / "Notes" / "plan.md" if one_entry else typed)
+
+    def test_another_unicode_form_agrees_with_what_this_disk_says(self, shelf):
+        listed = unicodedata.normalize("NFC", "Ärger")
+        (shelf / listed).mkdir()
+        typed = shelf / unicodedata.normalize("NFD", listed)
+        one_entry = typed.exists()
+
+        spelled = disk_path(typed)
+
+        assert spelled == (shelf / listed if one_entry else typed)
+        assert spelled.name == (listed if one_entry else typed.name)
+
+    def test_on_a_disk_that_ignores_case_the_listed_name_wins(self, shelf):
+        with mock.patch.object(os, "lstat", _lstat_ignoring_case):
+            assert _listed_name(str(shelf), "NOTES") == "Notes"
+            assert disk_path(shelf / "NOTES" / "PLAN.MD") == shelf / "Notes" / "plan.md"
+
+    def test_a_name_that_is_not_ascii_takes_the_listed_spelling(self, shelf):
+        (shelf / "Ärger Übung").mkdir()
+        with mock.patch.object(os, "lstat", _lstat_ignoring_case):
+            assert _listed_name(str(shelf), "ärger übung") == "Ärger Übung"
+
+    def test_two_listed_names_that_differ_by_case_stay_two(self, shelf):
+        with mock.patch.object(os, "listdir", return_value=["Notes", "NOTES"]):
+            assert _listed_name(str(shelf), "NOTES") == "NOTES"
+            assert _listed_name(str(shelf), "Notes") == "Notes"
+
+    def test_a_link_beside_the_folder_is_not_taken_for_it(self, shelf):
+        (shelf / "alias").symlink_to(shelf / "Notes", target_is_directory=True)
+        with (
+            mock.patch.object(os, "listdir", return_value=["alias", "Notes"]),
+            mock.patch.object(os, "lstat", _lstat_ignoring_case),
+        ):
+            assert _listed_name(str(shelf), "NOTES") == "Notes"
+
+    def test_a_link_gives_the_path_it_points_to(self, shelf, tmp_path):
+        link = tmp_path / "link"
+        link.symlink_to(shelf / "Notes", target_is_directory=True)
+        assert disk_path(link / "plan.md") == shelf / "Notes" / "plan.md"
+
+    def test_a_part_that_does_not_exist_keeps_its_spelling(self, shelf):
+        assert disk_path(shelf / "Notes" / "Missing" / "New.md") == (
+            shelf / "Notes" / "Missing" / "New.md"
+        )
+
+    def test_a_folder_that_cannot_be_listed_keeps_the_typed_name(self, shelf):
+        with mock.patch.object(os, "listdir", side_effect=PermissionError(13, "denied")):
+            assert _listed_name(str(shelf), "NOTES") == "NOTES"
+
+    def test_the_anchor_alone_is_the_anchor(self, shelf):
+        assert disk_path(Path(shelf.anchor)) == Path(shelf.anchor)

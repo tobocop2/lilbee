@@ -138,6 +138,33 @@ def canonical_data_root(root: Path | str) -> Path:
     return Path(os.path.realpath(os.path.expanduser(os.fspath(root))))
 
 
+def _listed_name(folder: str, name: str) -> str:
+    """The name the listing of *folder* gives the entry that *name* opens, else *name*."""
+    try:
+        names = os.listdir(folder)
+        if name in names:
+            return name
+        opened = os.lstat(os.path.join(folder, name))
+        same = (n for n in names if os.path.samestat(os.lstat(os.path.join(folder, n)), opened))
+        return next(same, name)
+    except OSError:
+        return name
+
+
+def disk_path(path: Path) -> Path:
+    """*path* with symlinks resolved and each part that exists spelled as its folder lists it.
+
+    Two spellings of one entry give one path, on a disk that ignores letter case
+    or Unicode form as on one that does not. A part that does not exist, or whose
+    folder cannot be listed, keeps the spelling it came with.
+    """
+    anchor, *parts = Path(os.path.realpath(path)).parts
+    spelled = anchor
+    for part in parts:
+        spelled = os.path.join(spelled, _listed_name(spelled, part))
+    return Path(spelled)
+
+
 def canonical_models_dir() -> Path:
     """Return the shared models directory (always in the platform default, never per-project).
     Multiple lilbee instances share this directory so models are downloaded once.

@@ -1,8 +1,10 @@
-"""What an add writes when the data root refuses it."""
+"""What an add writes, and which folder it takes for a source that is registered."""
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -10,10 +12,11 @@ import pytest
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
-from lilbee.app.ingest import register_sources
+from lilbee.app.ingest import names_outside_corpus, register_sources, source_label_taken
 from lilbee.cli.app import app
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.data.ingest.discovery import discover_files
 from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
 from lilbee.data.store import Store
 from lilbee.runtime.lock import LockingUnsupportedError
@@ -69,6 +72,16 @@ def _files(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file()
     }
+
+
+def _other_case(path: Path) -> Path:
+    """*path* with the letter case of its last part changed."""
+    return path.with_name(path.name.swapcase())
+
+
+def _one_entry(first: Path, second: Path) -> bool:
+    """Whether this disk holds *first* and *second* as one entry."""
+    return second.exists() and os.path.samefile(first, second)
 
 
 class TestADataRootThatCannotLockFiles:
@@ -139,3 +152,257 @@ class TestADataRootThatCannotLockFiles:
         if flags:
             assert set(json.loads(outcome.output)) == {"error"}
         assert _registry() == {}
+
+
+class TestOnePathInAnotherLetterCase:
+    """The disk decides whether two paths are one entry; their spelling does not.
+
+    Each test asks this disk first, so it asserts one source where the disk
+    ignores letter case and two where it does not.
+    """
+
+    def test_a_folder_inside_a_source_is_not_a_second_source(self, library, notes):
+        register_sources([notes])
+        typed = _other_case(notes) / "work"
+        one_entry = _one_entry(notes / "work", typed)
+        if not one_entry:
+            _write(typed / "plan.md")
+
+        result = register_sources([typed])
+
+        if one_entry:
+            assert result.registered == [] and result.overlapping == ["work"]
+            assert _registry() == {"notes": str(notes.resolve())}
+            assert sorted(discover_files()) == ["notes/loose.md", "notes/work/plan.md"]
+        else:
+            assert result.registered == ["work"] and result.overlapping == []
+            assert sorted(_registry()) == ["notes", "work"]
+
+    def test_the_folder_of_a_source_is_that_source(self, library, notes):
+        register_sources([notes])
+        typed = _other_case(notes)
+        one_entry = _one_entry(notes, typed)
+        if not one_entry:
+            _write(typed / "loose.md")
+
+        result = register_sources([typed])
+
+        if one_entry:
+            assert result.tracked == ["notes"] and result.registered == []
+            assert _registry() == {"notes": str(notes.resolve())}
+        else:
+            assert result.registered == [typed.name]
+
+    def test_a_new_source_is_stored_as_the_disk_spells_it(self, library, notes):
+        typed = _other_case(notes)
+        one_entry = _one_entry(notes, typed)
+        if not one_entry:
+            _write(typed / "loose.md")
+
+        result = register_sources([typed])
+
+        stored = notes if one_entry else typed
+        assert result.registered == [stored.name]
+        assert _registry() == {stored.name: str(stored.resolve())}
+
+    def test_a_parent_takes_in_the_source_below_it(self, library, notes):
+        register_sources([notes / "work"])
+        typed = _other_case(notes.parent) / "notes"
+        one_entry = _one_entry(notes, typed)
+        if not one_entry:
+            _write(typed / "loose.md")
+
+        result = register_sources([typed])
+
+        assert result.registered == ["notes"]
+        if one_entry:
+            assert result.absorbed_into == {"notes": ["work"]}
+            assert _registry() == {"notes": str(notes.resolve())}
+        else:
+            assert result.absorbed_into == {}
+            assert sorted(_registry()) == ["notes", "work"]
+
+    def test_a_name_that_is_not_ascii_is_one_source(self, library, tmp_path):
+        folder = _write(tmp_path / "src" / "Ärger Übung" / "page.md").parent
+        register_sources([folder])
+        typed = _other_case(folder)
+        one_entry = _one_entry(folder, typed)
+        if not one_entry:
+            _write(typed / "page.md")
+
+        result = register_sources([typed])
+
+        if one_entry:
+            assert result.tracked == [folder.name] and result.registered == []
+        else:
+            assert result.registered == [typed.name]
+
+    def test_a_path_that_does_not_exist_below_a_source_overlaps_it(self, library, notes):
+        register_sources([notes])
+        typed = _other_case(notes) / "missing"
+        one_entry = _one_entry(notes, typed.parent)
+
+        result = register_sources([typed])
+
+        if one_entry:
+            assert result.overlapping == ["missing"] and result.registered == []
+        else:
+            assert result.registered == ["missing"]
+
+    def test_a_link_to_a_source_is_that_source(self, library, notes, tmp_path):
+        register_sources([notes])
+        link = tmp_path / "LINK"
+        link.symlink_to(notes, target_is_directory=True)
+
+        result = register_sources([link])
+
+        assert result.tracked == ["notes"] and result.registered == []
+        assert _registry() == {"notes": str(notes.resolve())}
+
+    def test_a_trailing_separator_names_the_same_source(self, library, notes):
+        register_sources([notes])
+
+        result = register_sources([Path(f"{notes}{os.sep}")])
+
+        assert result.tracked == ["notes"] and result.registered == []
+
+    def test_two_folders_the_disk_keeps_apart_are_two_sources(self, library, notes):
+        typed = _other_case(notes)
+        asked: contextlib.AbstractContextManager[object] = contextlib.nullcontext()
+        if _one_entry(notes, typed):
+            # This disk cannot hold both, so it answers as one that can.
+            asked = mock.patch(
+                "lilbee.app.ingest.disk_path", side_effect=lambda path: Path(os.path.abspath(path))
+            )
+        else:
+            _write(typed / "loose.md")
+
+        with asked:
+            register_sources([notes])
+            result = register_sources([typed])
+
+        assert result.registered == [typed.name] and result.tracked == []
+        assert _registry() == {"notes": str(notes), typed.name: str(typed)}
+
+    def test_a_folder_around_the_documents_folder_is_refused(self, library):
+        typed = _other_case(library)
+        one_entry = _one_entry(library, typed)
+        if not one_entry:
+            _write(typed / "page.md")
+
+        result = register_sources([typed])
+
+        if one_entry:
+            assert result.containing == [typed.name] and result.registered == []
+        else:
+            assert result.containing == [] and result.registered == [typed.name]
+
+    def test_a_folder_inside_the_documents_folder_is_tracked(self, library):
+        owned = _write(cfg.documents_dir / "owned" / "page.md").parent
+        typed = _other_case(library) / "documents" / "owned"
+        one_entry = _one_entry(owned, typed)
+        if not one_entry:
+            _write(typed / "page.md")
+
+        result = register_sources([typed])
+
+        if one_entry:
+            assert result.tracked == ["owned"] and result.registered == []
+        else:
+            assert result.tracked == [] and result.registered == ["owned"]
+
+    def test_a_documents_folder_configured_in_another_case_is_that_folder(self, library):
+        owned = _write(cfg.documents_dir / "owned" / "page.md").parent
+        typed = _other_case(library) / "documents"
+        one_entry = _one_entry(cfg.documents_dir, typed)
+        cfg.documents_dir = typed
+
+        outside = names_outside_corpus([owned])
+        result = register_sources([owned])
+
+        if one_entry:
+            assert outside == []
+            assert result.tracked == ["owned"] and result.registered == []
+        else:
+            assert outside == ["owned"]
+            assert result.tracked == [] and result.registered == ["owned"]
+
+    def test_a_parent_takes_in_a_source_stored_in_another_case(self, library, notes):
+        typed = _other_case(notes) / "work"
+        one_entry = _one_entry(notes / "work", typed)
+        if not one_entry:
+            _write(typed / "plan.md")
+        settings.set_value(cfg.data_root, "linked_roots", {"work": str(typed)})
+
+        result = register_sources([notes, notes / "work"])
+
+        assert result.registered == ["notes"]
+        assert result.overlapping == ["work"] and result.tracked == []
+        if one_entry:
+            assert result.absorbed_into == {"notes": ["work"]}
+            assert _registry() == {"notes": str(notes.resolve())}
+        else:
+            assert result.absorbed_into == {}
+            assert _registry() == {"notes": str(notes.resolve()), "work": str(typed)}
+
+    def test_a_source_stored_in_another_case_is_still_that_source(self, library, notes):
+        typed = _other_case(notes)
+        one_entry = _one_entry(notes, typed)
+        if not one_entry:
+            _write(typed / "loose.md")
+        settings.set_value(cfg.data_root, "linked_roots", {"notes": str(typed)})
+
+        inside = register_sources([notes / "work"])
+        same = register_sources([notes])
+
+        if one_entry:
+            assert inside.overlapping == ["work"] and inside.registered == []
+            assert same.tracked == ["notes"] and same.registered == []
+            assert _registry() == {"notes": str(typed)}
+        else:
+            assert inside.registered == ["work"]
+            assert same.name_taken == ["notes"]
+
+    @pytest.mark.parametrize(
+        "stored_as_typed", [False, True], ids=["stored-as-listed", "stored-as-typed"]
+    )
+    def test_naming_the_folder_brings_back_a_file_removed_from_it(
+        self, library, notes, stored_as_typed
+    ):
+        typed = _other_case(notes)
+        one_entry = _one_entry(notes, typed)
+        if not one_entry:
+            _write(typed / "loose.md")
+        stored, named = (typed, notes) if stored_as_typed else (notes, typed)
+        settings.set_value(cfg.data_root, "linked_roots", {"notes": str(stored)})
+        cfg.linked_roots = {"notes": str(stored)}
+        mark_removed(cfg.data_root, {"notes/loose.md": "0" * 64})
+
+        register_sources([named])
+
+        held = {} if one_entry else {"notes/loose.md": SkipKind.REMOVED}
+        assert load_skip_kinds(cfg.data_root) == held
+
+    def test_the_overwrite_question_is_not_asked_for_the_same_folder(self, library, notes):
+        register_sources([notes])
+        typed = _other_case(notes.parent) / "notes"
+        one_entry = _one_entry(notes, typed)
+        if not one_entry:
+            _write(typed / "loose.md")
+
+        assert source_label_taken("notes", typed) is not one_entry
+        assert source_label_taken("notes", notes) is False
+        assert source_label_taken("notes", notes.parent / "elsewhere" / "notes") is True
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])
+    def test_the_command_adds_no_second_source(self, library, notes, flags):
+        register_sources([notes])
+        typed = _other_case(notes) / "work"
+        one_entry = _one_entry(notes / "work", typed)
+        if not one_entry:
+            _write(typed / "plan.md")
+
+        outcome = CliRunner().invoke(app, [*flags, "add", str(typed)])
+
+        assert outcome.exit_code == 0
+        assert sorted(_registry()) == (["notes"] if one_entry else ["notes", "work"])

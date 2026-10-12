@@ -21,6 +21,7 @@ from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
 from lilbee.core.config.enums import OcrMode
+from lilbee.core.system import disk_path
 from lilbee.data.ingest.discovery import (
     excluded_extension_reasons,
     file_hash,
@@ -139,8 +140,8 @@ def _resolve_label(
 
 
 def _live_roots(roots: dict[str, str]) -> list[Path]:
-    """The resolved path of each registered root that exists; a vanished one overlaps nothing."""
-    return [Path(target).resolve() for target in roots.values() if Path(target).exists()]
+    """The disk path of each registered root that exists; a vanished one overlaps nothing."""
+    return [disk_path(Path(target)) for target in roots.values() if Path(target).exists()]
 
 
 def _inside_a_root(src: Path, live_roots: list[Path]) -> bool:
@@ -153,7 +154,7 @@ def _reached_below(src: Path, roots: dict[str, str]) -> dict[str, Path]:
 
     A root whose folder is gone counts by its stored path.
     """
-    resolved = {label: Path(target).resolve() for label, target in roots.items()}
+    resolved = {label: disk_path(Path(target)) for label, target in roots.items()}
     below = {
         label: path for label, path in resolved.items() if path != src and path.is_relative_to(src)
     }
@@ -186,11 +187,11 @@ def _classify(
     result = RegisterResult()
     sources = frozenset(roots)
     moves: dict[str, str] = {}
-    by_target = {target: label for label, target in roots.items()}
+    by_target = {disk_path(Path(target)): label for label, target in roots.items()}
     refused = excluded_extension_reasons()
     outside: dict[Path, str] = {}
     for p in paths:
-        src = p.resolve()
+        src = disk_path(p)
         reason = refused.get(src.suffix.lower()) if src.is_file() else None
         if reason is not None:
             result.refused.append(f"{p.name}: {reason}")
@@ -199,7 +200,7 @@ def _classify(
         if src == docs_resolved or docs_resolved in src.parents:
             result.tracked.append(p.name)  # already owned by the knowledge base
             continue
-        already = by_target.get(str(src))
+        already = by_target.get(src)
         if already is not None:
             result.tracked.append(already)  # this exact source is already registered
             continue
@@ -220,11 +221,11 @@ def _classify(
             outside.setdefault(src, src.name)
             continue
         for child in reached:
-            by_target.pop(roots.pop(child), None)
+            by_target.pop(disk_path(Path(roots.pop(child))), None)
         taken = _keys_below(label, src, reached, sources)
         moves.update(taken)
         roots[label] = str(src)
-        by_target[str(src)] = label
+        by_target[src] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
             result.absorbed_into[label] = sorted(taken)
@@ -238,7 +239,7 @@ def names_outside_corpus(paths: list[Path]) -> list[str]:
         return []  # a stopped sync has no paths, and reads no registry to say so
     config = active_config()
     roots = dict(settings.load(config.data_root).get("linked_roots") or {})
-    plan, _moves = _classify(paths, roots, config.documents_dir.resolve(), force=False)
+    plan, _moves = _classify(paths, roots, disk_path(config.documents_dir), force=False)
     return [*plan.outside_corpus, *plan.registered]
 
 
@@ -253,7 +254,8 @@ def source_label_taken(name: str, target: Path | None = None) -> bool:
     """
     config = active_config()
     roots = dict(config.linked_roots)
-    if target is not None and roots.get(name) == str(target.resolve()):
+    held = roots.get(name)
+    if target is not None and held is not None and disk_path(Path(held)) == disk_path(target):
         return False
     return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
@@ -284,7 +286,7 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         refuse_where_locking_is_unsupported(config.data_root)
     documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
-    docs_resolved = documents_dir.resolve()
+    docs_resolved = disk_path(documents_dir)
     if not paths:
         return RegisterResult()
 
@@ -354,10 +356,18 @@ def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
     registered root, and a single-file root are all matched by the one rule
     instead of three shape-specific ones.
     """
-    named = [p.resolve() for p in paths]
+    config = active_config()
+    named = [disk_path(p) for p in paths]
+    # One listing per root, not per marker; the rest of a key is the walk's own spelling.
+    spelled = {
+        base: disk_path(base)
+        for base in (config.documents_dir, *map(Path, config.linked_roots.values()))
+    }
     covered = set()
     for name in markers:
-        tracked = resolve_source_path(name).resolve(strict=False)
+        stored = resolve_source_path(name)
+        base = next(base for base in spelled if stored.is_relative_to(base))
+        tracked = (spelled[base] / stored.relative_to(base)).resolve(strict=False)
         if any(tracked == path or path in tracked.parents for path in named):
             covered.add(name)
     return covered
