@@ -395,17 +395,22 @@ def _sync_lock_close_held_then_refused() -> Generator[
 
 
 @contextmanager
-def _recorded_read_takes() -> Generator[list[float], None, None]:
-    """Record the timeout of each take of a read lock while the block runs."""
+def _recorded_read_takes() -> Generator[tuple[list[float], threading.Event], None, None]:
+    """Record the timeout of each take of a read lock while the block runs.
+
+    Yields the timeouts and an event that is set when the first take is recorded.
+    """
     waits: list[float] = []
+    first_take = threading.Event()
     real_acquire = ReadWriteLock.acquire_read
 
     def _acquire(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> None:
         waits.append(timeout)
+        first_take.set()
         real_acquire(lock, timeout, blocking=blocking)
 
     with mock.patch.object(ReadWriteLock, "acquire_read", _acquire):
-        yield waits
+        yield waits, first_take
 
 
 def _lock_warnings(caplog) -> int:
@@ -441,16 +446,12 @@ class TestSyncMark:
             async with sync_running(tmp_path):
                 entered.append("sync")
 
-        async def _take_started() -> None:
-            while not waits:
-                await asyncio.sleep(0.01)
-
         before = set(threading.enumerate())
-        with reset_held(tmp_path), _recorded_read_takes() as waits:
+        with reset_held(tmp_path), _recorded_read_takes() as (waits, first_take):
             sync_task = asyncio.create_task(_sync())
-            await asyncio.wait_for(_take_started(), 5)
+            assert await asyncio.to_thread(first_take.wait, _FAILURE_TIMEOUT_S)
             sync_task.cancel()
-            await asyncio.wait({sync_task}, timeout=2)
+            await asyncio.wait({sync_task}, timeout=_FAILURE_TIMEOUT_S)
             returned = sync_task.done()
             with (
                 pytest.raises(ResetRefusedError, match="is running on this library"),
@@ -480,18 +481,16 @@ class TestSyncMark:
             except SyncMarkWaitCancelledError as exc:
                 outcome.append(exc)
 
-        with reset_held_on_a_thread(tmp_path), _recorded_read_takes() as waits:
+        with reset_held_on_a_thread(tmp_path), _recorded_read_takes() as (waits, first_take):
             writer = threading.Thread(target=_writer)
             writer.start()
             try:
-                while not waits:
-                    await asyncio.sleep(0.01)
+                assert await asyncio.to_thread(first_take.wait, _FAILURE_TIMEOUT_S)
             finally:
                 cancel.set()
-                await asyncio.to_thread(writer.join, 5)
-            ended = not writer.is_alive()
+                # A guard against a hang; the outcome below is what the test asserts.
+                await asyncio.to_thread(writer.join, _FAILURE_TIMEOUT_S)
 
-        assert ended, "one cancel did not end the wait for the reset"
         assert [type(exc) for exc in outcome] == [SyncMarkWaitCancelledError]
         assert waits
         assert all(0 < wait <= _SYNC_TAKE_SLICE_S for wait in waits), waits
