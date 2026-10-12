@@ -434,8 +434,16 @@ class TestOnePathInAnotherLetterCase:
             register_sources(folders[8:])
 
         assert sorted(_registry()) == [f"source{n}" for n in range(9)]
-        assert with_one_source > 0
-        assert read.count(str(shelf)) == with_one_source
+        assert with_one_source == 1
+        assert read.count(str(shelf)) == 1
+
+    def test_a_source_taken_in_by_one_parent_is_not_taken_in_again(self, library, notes):
+        register_sources([notes / "work"])
+
+        result = register_sources([notes, notes.parent])
+
+        assert result.registered == ["src"]
+        assert _registry() == {"src": str(notes.parent)}
 
 
 class TestTwoSourcesOfOneFolder:

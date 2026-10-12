@@ -640,6 +640,21 @@ class TestDiskPath:
         assert spelled == [shelf / "Notes", shelf / "Drafts", shelf / "Notes", shelf / "New"]
         assert read.count(str(shelf)) == 1
 
+    def test_one_spelling_resolves_a_path_one_time(self, shelf):
+        resolved: list[Path] = []
+        realpath = os.path.realpath
+
+        def _realpath(path: Path) -> str:
+            resolved.append(path)
+            return realpath(path)
+
+        spelling = DiskSpelling()
+        with mock.patch.object(os.path, "realpath", _realpath):
+            spelled = [spelling.of(shelf / "Notes"), spelling.of(shelf / "Notes")]
+
+        assert spelled == [shelf / "Notes", shelf / "Notes"]
+        assert resolved == [shelf / "Notes"]
+
     def test_one_spelling_asks_about_each_listed_entry_one_time(self, shelf):
         (shelf / "Drafts").mkdir()
         asked: list[str] = []
