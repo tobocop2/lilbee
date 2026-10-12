@@ -1662,12 +1662,14 @@ class TestEveryEntryPoint:
         await _add(notes / "work")
         screen = ChatScreen.__new__(ChatScreen)
         notify = MagicMock()
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = False
         with (
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
             mock.patch("lilbee.runtime.asyncio_loop.run") as run,
         ):
             async with sync_running(cfg.data_root):
-                screen._do_add([notes], MagicMock(spec=ProgressReporter))
+                screen._do_add([notes], reporter)
 
         run.assert_not_called()
         assert [call.args[2] for call in notify.call_args_list] == [
@@ -1980,13 +1982,15 @@ class TestAnAddThatTakesASourceInOnADataRootItCannotLock:
 
         _seeded_child(library.store, notes)
         screen = ChatScreen.__new__(ChatScreen)
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = False
         with (
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"),
             mock.patch("lilbee.runtime.asyncio_loop.run") as run,
             _data_root_that_cannot_be_locked(cause),
             pytest.raises(_UNFINISHED_ADD_ERRORS[cause]) as refused,
         ):
-            screen._do_add([notes], MagicMock(spec=ProgressReporter))
+            screen._do_add([notes], reporter)
 
         run.assert_not_called()
         self._assert_about_the_add(str(refused.value), cause)
