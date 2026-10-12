@@ -548,7 +548,8 @@ class TestTheParentTakesTheChild:
         _write(notes / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
         _register_as({"work": notes / "work", "deep": notes / "work" / "deep"})
         await sync(quiet=True)
-        assert _keys(library).count("deep/a.md") + _keys(library).count("work/deep/a.md") == 2
+        # The walk of the outer source leaves the inner one to its own entry.
+        assert _keys(library) == ["deep/a.md", "work/budget.md", "work/plan.md"]
         library.embedder.embed_batch.reset_mock()
 
         result, synced = await _add(notes)
@@ -653,6 +654,36 @@ class TestWhatIsNotAbsorbed:
         assert _keys(library) == ["notes/loose.md", "work/plan.md"]
         assert synced.added == ["notes/loose.md"]
         assert not absorb_pending(cfg.data_root)
+
+    async def test_a_child_below_an_ignored_folder_is_indexed_once_when_the_pattern_goes(
+        self, library, tmp_path
+    ):
+        base = tmp_path / "src" / "notes"
+        _write(base / "loose.md", "# Loose\n\nA loose page about the harbour schedule.\n")
+        _write(base / "skipped" / "other.md", "# Other\n\nA page about the tide tables.\n")
+        _write(base / "skipped" / "work" / "plan.md", "# Plan\n\nThe spring release plan.\n")
+        ignore = _write(base / ".lilbeeignore", "skipped/\n")
+        await _add(base / "skipped" / "work")
+        await _add(base)
+        ignore.unlink()
+
+        synced = await sync(quiet=True)
+
+        # The parent's walk enters the folder and leaves the source inside it to its own entry.
+        assert synced.added == ["notes/skipped/other.md"]
+        assert _keys(library) == ["notes/loose.md", "notes/skipped/other.md", "work/plan.md"]
+        assert sorted(_registry()) == ["notes", "work"]
+
+    async def test_a_single_file_child_is_indexed_once_when_the_pattern_goes(self, library, notes):
+        ignore = _write(notes / ".lilbeeignore", "plan.md\n")
+        await _add(notes / "work" / "plan.md")
+        await _add(notes)
+        ignore.unlink()
+
+        synced = await sync(quiet=True)
+
+        assert synced.added == []
+        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "plan.md"]
 
     async def test_a_single_file_child_that_is_a_dot_file_stays_its_own_source(
         self, library, notes
@@ -1624,21 +1655,16 @@ async def _nested_and_renamed(parent: Path) -> None:
 
 class TestTheOracle:
     @pytest.mark.parametrize(
-        ("registered_before", "doubled"),
-        [
-            (_one_child, 0),
-            (_renamed_folder, 0),
-            (_renamed_file, 0),
-            (_nested, 1),
-            (_nested_and_renamed, 1),
-        ],
+        "registered_before",
+        [_one_child, _renamed_folder, _renamed_file, _nested, _nested_and_renamed],
     )
     async def test_an_absorb_and_a_sync_equal_an_index_built_from_the_parent_alone(
-        self, library, notes, tmp_path, registered_before, doubled
+        self, library, notes, tmp_path, registered_before
     ):
         await registered_before(notes)
         keys = _keys(library)
-        assert len(keys) - len({key.rsplit("/", 1)[-1] for key in keys}) == doubled
+        # No file has two keys, whatever the sources that hold it.
+        assert len(keys) == len({key.rsplit("/", 1)[-1] for key in keys}) > 0
         await _add(notes)
         absorbed = _everything(library.store)
 
