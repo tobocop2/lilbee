@@ -15,9 +15,12 @@ from lilbee.app import services as svc_mod
 from lilbee.cli import app
 from lilbee.core.config import active_config, cfg
 from lilbee.data.store import Store
+from lilbee.runtime.lock import ResetRefusedError, no_sync_running
 from tests.conftest import make_mock_services, reset_held_on_a_thread
 
 runner = CliRunner()
+# How long a held reset lasts when a test hangs; no test waits for it.
+_HANG_LIMIT_S = 30.0
 
 
 class _StubEmbedder:
@@ -191,17 +194,25 @@ class TestImportCommand:
                 _thread.interrupt_main()
             real_acquire(lock, *args, **kwargs)
 
+        # The reset holds until this block ends; its own limit only ends a test that hangs.
         with (
-            reset_held_on_a_thread(data_root, ends_after_s=4) as resetter,
+            reset_held_on_a_thread(data_root, ends_after_s=_HANG_LIMIT_S) as resetter,
             mock.patch.object(ReadWriteLock, "acquire_read", _ctrl_c_once),
         ):
             result = runner.invoke(app, ["import", str(out)])
             reset_still_held = resetter.is_alive()
+            with (
+                pytest.raises(ResetRefusedError, match="is running on this library"),
+                no_sync_running(data_root),
+            ):
+                pytest.fail("the reset ended before the import did")
 
         assert interrupts == ["ctrl-c"]
         assert reset_still_held, "the import ended only when the reset did"
         assert result.exit_code != 0, result.output
         assert target.get_page_texts("doc.pdf") == []
+        with no_sync_running(data_root):
+            pass
 
     def test_import_embedder_mismatch_fails(self, store, tmp_path):
         out = tmp_path / "pages.jsonl"

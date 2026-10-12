@@ -2496,6 +2496,24 @@ class TestSyncsHeldOff:
         with syncs_held_off(tmp_path, "busy"):
             pass
 
+    def test_a_data_root_that_cannot_be_made_refuses_the_block_as_an_add(self, tmp_path):
+        from lilbee.runtime.lock import syncs_held_off
+
+        not_a_folder = tmp_path / "a-file"
+        not_a_folder.write_text("in the way", encoding="utf-8")
+        data_root = not_a_folder / "library"
+
+        with (
+            pytest.raises(LibraryUnlockableError, match="cannot be locked") as refused,
+            syncs_held_off(data_root, "busy"),
+        ):
+            pytest.fail("entered without the lock")
+
+        assert str(refused.value).startswith(
+            f"Cannot tell whether a sync or import is running: {data_root} cannot be locked ("
+        )
+        assert not isinstance(refused.value, ResetRefusedError)
+
 
 @contextlib.contextmanager
 def _sync_lock_take_refused():
@@ -2808,8 +2826,8 @@ _HOLDERS = {
     "a reset": reset_held_on_a_thread,
     "another process": _reset_held_in_another_process,
 }
-# A cancelled wiki writer returns within this many seconds, however long the holder lasts.
-_WIKI_CANCEL_BOUND_S = 0.5
+# How long a test waits for a wiki writer to reach a step; reaching it fails the test.
+_WIKI_FAILURE_TIMEOUT_S = 10.0
 
 
 class TestAWikiWriterCancelledWhileItWaitsForTheMark:
@@ -2840,10 +2858,12 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             "page": (_page, None),
         }
 
-    def _cancel_while_held(self, writer: str, *, close_fails: bool = False):
-        """Start *writer* against a held mark, cancel it once, and time its return."""
+    def _cancel_while_held(self, writer: str, *, close_fails: bool = False) -> None:
+        """Start *writer* against a held mark, cancel it once, and wait until it returns.
+
+        The caller holds the mark until this returns, so the writer returned while it was held.
+        """
         import threading
-        import time
 
         body = MagicMock()
         run, cancelled_result = self._writers(body)[writer]
@@ -2886,30 +2906,36 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             mock.patch.object(ReadWriteLock, "close", _close),
         ):
             thread.start()
-            waited = found_the_mark_held.wait(5)
+            waited = found_the_mark_held.wait(_WIKI_FAILURE_TIMEOUT_S)
             cancel.set()
-            cancelled_at = time.monotonic()
-            thread.join(5)
-            took = time.monotonic() - cancelled_at
+            thread.join(_WIKI_FAILURE_TIMEOUT_S)
+            returned = not thread.is_alive()
         assert waited, "the writer did not wait for the holder"
-        assert not thread.is_alive()
+        assert returned, "one cancel did not end the wait for the holder"
         assert outcome == [cancelled_result]
         body.assert_not_called()
         assert set(takes) == set(closes) == {thread.ident}
-        return took
+
+    @staticmethod
+    def _assert_still_held() -> None:
+        """The holder has not released: a reset of the data root is refused."""
+        with (
+            pytest.raises(ResetRefusedError, match="is running on this library"),
+            no_sync_running(cfg.data_root),
+        ):
+            pytest.fail("the holder released before the writer returned")
 
     @pytest.mark.parametrize("holder", list(_HOLDERS))
     @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
-    def test_it_returns_within_the_bound_and_leaves_no_lock(self, library, writer, holder):
+    def test_it_returns_while_the_holder_holds_and_leaves_no_lock(self, library, writer, holder):
         import threading
 
         cfg.data_root.mkdir(parents=True, exist_ok=True)
         before = set(threading.enumerate())
         with _HOLDERS[holder](cfg.data_root):
-            took = self._cancel_while_held(writer)
-            print(f"WIKI-CANCEL {writer} held by {holder}: {took:.3f} s")
+            self._cancel_while_held(writer)
+            self._assert_still_held()
 
-        assert took <= _WIKI_CANCEL_BOUND_S, took
         assert set(threading.enumerate()) - before == set()
         with no_sync_running(cfg.data_root):
             pass
@@ -2919,11 +2945,11 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         cfg.data_root.mkdir(parents=True, exist_ok=True)
         with (
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-            reset_held_on_a_thread(cfg.data_root),
+            reset_held_on_a_thread(cfg.data_root, ends_after_s=3 * _WIKI_FAILURE_TIMEOUT_S),
         ):
-            took = self._cancel_while_held(writer, close_fails=True)
+            self._cancel_while_held(writer, close_fails=True)
+            self._assert_still_held()
 
-        assert took <= _WIKI_CANCEL_BOUND_S, took
         assert f"Could not close {cfg.data_root / 'sync.lock'} (disk I/O error)." in caplog.text
         with no_sync_running(cfg.data_root):
             pass

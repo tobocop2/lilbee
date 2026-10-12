@@ -10,8 +10,7 @@ import sys
 import threading
 import time
 from collections.abc import Generator
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager, nullcontext, suppress
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -288,6 +287,8 @@ with no_sync_running(Path(sys.argv[1])):
 """
 # A cancelled sync returns within this many seconds, however long the reset lasts.
 _CANCEL_BOUND_S = 0.5
+# How long a test waits for a step that must happen; reaching it fails the test.
+_FAILURE_TIMEOUT_S = 20.0
 
 
 @pytest.fixture
@@ -371,18 +372,25 @@ def _sync_take_that_ends_busy() -> Generator[threading.Event, None, None]:
 
 
 @contextmanager
-def _pool_workers_slow_to_stop() -> Generator[None, None, None]:
-    """Keep each pool worker busy for a moment after its pool is told to stop, for the block."""
-    real_shutdown = ThreadPoolExecutor.shutdown
+def _sync_lock_close_held_then_refused() -> Generator[
+    tuple[threading.Event, threading.Event], None, None
+]:
+    """Yield (closing, finish): a close of a sync lock sets *closing* and raises after *finish*."""
+    closing, finish = threading.Event(), threading.Event()
+    real_close = ReadWriteLock.close
 
-    def _shutdown(pool: ThreadPoolExecutor, *args: object, **kwargs: object) -> None:
-        # A pool that already stopped takes no work.
-        with suppress(RuntimeError):
-            pool.submit(time.sleep, 0.05)
-        real_shutdown(pool, *args, **kwargs)
+    def _close(lock: ReadWriteLock) -> None:
+        real_close(lock)
+        if Path(lock.lock_file).name == "sync.lock":
+            closing.set()
+            finish.wait(_FAILURE_TIMEOUT_S)
+            raise sqlite3.OperationalError("disk I/O error")
 
-    with mock.patch.object(ThreadPoolExecutor, "shutdown", _shutdown):
-        yield
+    with mock.patch.object(ReadWriteLock, "close", _close):
+        try:
+            yield closing, finish
+        finally:
+            finish.set()
 
 
 def _lock_warnings(caplog) -> int:
@@ -456,33 +464,66 @@ class TestSyncMark:
         self, tmp_path: Path, caplog, cancelled_in: str
     ) -> None:
         entered = asyncio.Event()
+        left_at_the_return: list[str] = []
 
         async def _sync() -> None:
-            async with sync_running(tmp_path):
-                entered.set()
-                await asyncio.sleep(30)
+            try:
+                async with sync_running(tmp_path):
+                    entered.set()
+                    await asyncio.Event().wait()
+            finally:
+                # Nothing is awaited between the return of the mark and this line.
+                left_at_the_return.extend(_threads_left_since(before))
 
-        before = set(threading.enumerate())
         waits = cancelled_in == "the wait"
+        holder = reset_held_on_a_thread(tmp_path, ends_after_s=3 * _FAILURE_TIMEOUT_S)
         with (
-            reset_held_on_a_thread(tmp_path) if waits else nullcontext(),
+            holder if waits else nullcontext() as resetter,
             _sync_lock_close_refused(),
-            _pool_workers_slow_to_stop(),
             _sync_take_that_ends_busy() as found_the_mark_held,
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
+            before = set(threading.enumerate())
             sync_task = asyncio.create_task(_sync())
             if waits:
-                assert await asyncio.to_thread(found_the_mark_held.wait, 5)
+                assert await asyncio.to_thread(found_the_mark_held.wait, _FAILURE_TIMEOUT_S)
             else:
-                await asyncio.wait_for(entered.wait(), 5)
+                await asyncio.wait_for(entered.wait(), _FAILURE_TIMEOUT_S)
             sync_task.cancel()
-            await asyncio.wait({sync_task}, timeout=_CANCEL_BOUND_S)
+            await asyncio.wait({sync_task}, timeout=_FAILURE_TIMEOUT_S)
+            returned = sync_task.done()
+            # The reset holds until this block ends, so the sync returned while it held.
+            reset_still_holds = resetter is not None and resetter.is_alive()
 
+        assert returned, "one cancel did not end the sync"
+        assert reset_still_holds == waits
         assert sync_task.cancelled()
         assert entered.is_set() != waits
         assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
-        assert _threads_left_since(before) == []
+        assert left_at_the_return == []
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_cancel_during_a_close_that_fails_is_still_raised(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        async def _sync() -> str:
+            async with sync_running(tmp_path):
+                pass
+            return "finished"
+
+        with (
+            _sync_lock_close_held_then_refused() as (closing, finish),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            sync_task = asyncio.create_task(_sync())
+            assert await asyncio.to_thread(closing.wait, _FAILURE_TIMEOUT_S)
+            sync_task.cancel()
+            finish.set()
+            await asyncio.wait({sync_task}, timeout=_FAILURE_TIMEOUT_S)
+
+        assert sync_task.cancelled(), "the close error replaced the cancel"
+        assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
         with no_sync_running(tmp_path):
             pass
 
