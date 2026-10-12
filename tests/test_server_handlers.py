@@ -1,6 +1,7 @@
 """Tests for the framework-agnostic server handlers."""
 
 import asyncio
+import errno
 import json
 import logging
 from dataclasses import replace
@@ -6263,3 +6264,66 @@ class TestSseQueueEviction:
         drained = [queue.get_nowait() for _ in range(queue.qsize())]
         assert drained == ["token-1", "token-2", "done"]
         assert queue.dropped_events == 0
+
+
+def _data_root_tree() -> list[str]:
+    """Every path below the data root, to show that a refused request changed nothing."""
+    root = cfg.data_root
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
+
+
+def _error_frames(events: list[str]) -> list[dict]:
+    """The payload of each SSE error frame in *events*."""
+    frames = [e for e in events if e.startswith("event: error")]
+    return [json.loads(frame.split("data: ", 1)[1]) for frame in frames]
+
+
+class TestASyncLockThatCannotBeOpened:
+    """Each stream that starts a sync ends with one error frame that holds the refusal."""
+
+    _NO_HANDLES = (
+        "([Errno 24] Too many open files). "
+        "Close some programs or raise the limit of open files, then try again."
+    )
+
+    async def test_the_sync_stream_ends_with_the_refusal(self):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _data_root_tree()
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            events = [e async for e in handlers.sync_stream()]
+
+        assert _error_frames(events) == [
+            {
+                "message": (
+                    f"Cannot change the library: {cfg.data_root / 'sync.lock'} "
+                    f"cannot be locked {self._NO_HANDLES}"
+                )
+            }
+        ]
+        assert [e for e in events if e.startswith("event: done")] == []
+        assert _data_root_tree() == before
+
+    async def test_the_add_stream_ends_with_the_refusal_and_registers_nothing(self, tmp_path):
+        source = tmp_path / "outside" / "note.txt"
+        source.parent.mkdir()
+        source.write_text("hello world", encoding="utf-8")
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        lock_file = cfg.data_root / "sync.lock"
+        lock_file.write_bytes(b"not a lock database " * 8)
+        before = _data_root_tree()
+
+        events = [e async for e in handlers.add_files_stream([str(source)])]
+
+        assert _error_frames(events) == [
+            {
+                "message": (
+                    f"Cannot change the library: {lock_file} cannot be locked "
+                    f"(file is not a database). "
+                    f"Stop every lilbee process, delete {lock_file}, and try again."
+                )
+            }
+        ]
+        assert [e for e in events if e.startswith("event: done")] == []
+        assert _data_root_tree() == before
+        assert cfg.linked_roots == {}
