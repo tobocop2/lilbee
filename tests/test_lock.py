@@ -22,6 +22,7 @@ from filelock import Timeout as FileLockTimeout
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     _SYNC_TAKE_SLICE_S,
+    LibraryUnlockableError,
     LockingUnsupportedError,
     LockTimeoutError,
     ResetRefusedError,
@@ -267,6 +268,8 @@ _READ_ONLY = OSError(errno.EROFS, "Read-only file system")
 _LINK_DENIED = OSError(errno.EACCES, "Permission denied", "sync.probe", None, "lock.db")
 _LINK_DISK_FULL = OSError(errno.ENOSPC, "No space left on device", "sync.probe", None, "lock.db")
 _LINK_TOO_MANY = OSError(errno.EMLINK, "Too many links", "sync.probe", None, "lock.db")
+_FIX_ADVICE = "Fix that problem, then try again."
+_WRITABLE_ADVICE = "Make {path} writable, then try again."
 
 
 _RESET_IN_ANOTHER_PROCESS = """
@@ -753,34 +756,42 @@ class TestSyncMark:
         async with sync_running(root):
             assert root.is_dir()
 
-    async def test_a_lock_file_that_is_not_a_database_refuses_a_reset(
+    async def test_a_lock_file_that_is_not_a_database_refuses_a_sync_and_a_reset(
         self, tmp_path: Path, caplog
     ) -> None:
-        import logging
-
         junk = b"not a lock database " * 8
         assert not junk.startswith(_SQLITE_HEADER)
-        (tmp_path / "sync.lock").write_bytes(junk)
+        lock_file = tmp_path / "sync.lock"
+        lock_file.write_bytes(junk)
         ran = []
         with caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"):
-            async with sync_running(tmp_path):
-                ran.append("sync")
-                with (
-                    pytest.raises(ResetRefusedError, match="file is not a database") as caught,
-                    no_sync_running(tmp_path),
-                ):
-                    ran.append("reset")
+            with pytest.raises(LibraryUnlockableError) as refused_sync:
+                async with sync_running(tmp_path):
+                    ran.append("sync")
+            with (
+                pytest.raises(ResetRefusedError, match="file is not a database") as caught,
+                no_sync_running(tmp_path),
+            ):
+                ran.append("reset")
 
-        assert ran == ["sync"]
-        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
-        assert _lock_warnings(caplog) == 1
+        assert ran == []
+        assert str(refused_sync.value) == (
+            f"Cannot change the library: {lock_file} cannot be locked (file is not a database). "
+            f"Stop every lilbee process, delete {lock_file}, and try again."
+        )
+        assert type(refused_sync.value.__cause__) is sqlite3.DatabaseError
+        assert f"delete {lock_file}" in str(caught.value)
+        assert _lock_warnings(caplog) == 0
         assert "Traceback" not in caplog.text
-        (tmp_path / "sync.lock").unlink()
+        assert lock_file.read_bytes() == junk
+        lock_file.unlink()
+        async with sync_running(tmp_path):
+            ran.append("sync")
         with no_sync_running(tmp_path):
             ran.append("reset")
         assert ran == ["sync", "reset"]
 
-    async def test_a_lock_file_that_cannot_be_opened_runs_a_sync_and_refuses_a_reset(
+    async def test_a_lock_file_that_cannot_be_opened_refuses_a_sync_and_a_reset(
         self, tmp_path: Path, caplog
     ) -> None:
         refused = sqlite3.OperationalError("disk I/O error")
@@ -796,20 +807,84 @@ class TestSyncMark:
             mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
-            async with sync_running(tmp_path):
-                ran.append("sync")
+            with pytest.raises(LibraryUnlockableError) as refused_sync:
+                async with sync_running(tmp_path):
+                    ran.append("sync")
+            with (
+                pytest.raises(LibraryUnlockableError) as refused_wiki,
+                source_keys_in_use(tmp_path),
+            ):
+                ran.append("wiki")
             with (
                 pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
                 no_sync_running(tmp_path),
             ):
                 ran.append("reset")
 
-        assert ran == ["sync"]
-        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
+        assert ran == []
+        lock_file = tmp_path / "sync.lock"
+        assert str(refused_sync.value) == (
+            f"Cannot change the library: {lock_file} cannot be locked (disk I/O error). "
+            f"{_FIX_ADVICE}"
+        )
+        assert str(refused_wiki.value) == str(refused_sync.value)
+        assert refused_sync.value.__cause__ is refused
+        assert f"delete {lock_file}" in str(caught.value)
         assert caught.value.__cause__ is refused
-        assert _lock_warnings(caplog) == 1
+        assert _lock_warnings(caplog) == 0
 
-    async def test_a_lock_that_cannot_be_taken_runs_a_sync_and_refuses_a_reset(
+    @pytest.mark.parametrize(
+        ("refused", "advice"),
+        [
+            pytest.param(
+                OSError(errno.EMFILE, "Too many open files"),
+                "Close some programs or raise the limit of open files, then try again.",
+                id="too-many-open-files",
+            ),
+            pytest.param(
+                OSError(errno.ENFILE, "Too many open files in system"),
+                "Close some programs or raise the limit of open files, then try again.",
+                id="file-table-full",
+            ),
+            pytest.param(
+                OSError(errno.ENOSPC, "No space left on device"),
+                "Free some disk space, then try again.",
+                id="disk-full",
+            ),
+            pytest.param(OSError(errno.EACCES, "Permission denied"), _WRITABLE_ADVICE, id="denied"),
+            pytest.param(
+                OSError(errno.EPERM, "Operation not permitted"),
+                _WRITABLE_ADVICE,
+                id="not-permitted",
+            ),
+            pytest.param(
+                sqlite3.OperationalError("unable to open database file"),
+                _FIX_ADVICE,
+                id="sqlite-cannot-open",
+            ),
+        ],
+    )
+    async def test_the_advice_of_a_refused_sync_fits_what_stopped_the_open(
+        self, tmp_path: Path, refused: Exception, advice: str
+    ) -> None:
+        ran = []
+        with (
+            mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused),
+            pytest.raises(LibraryUnlockableError) as refused_sync,
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+
+        assert ran == []
+        lock_file = tmp_path / "sync.lock"
+        assert str(refused_sync.value) == (
+            f"Cannot change the library: {lock_file} cannot be locked ({refused}). "
+            + advice.format(path=lock_file)
+        )
+        assert "delete" not in str(refused_sync.value)
+        assert not lock_file.exists()
+
+    async def test_a_lock_that_cannot_be_taken_refuses_a_sync_and_a_reset(
         self, tmp_path: Path, caplog
     ) -> None:
         real_acquire_write = ReadWriteLock.acquire_write
@@ -827,18 +902,32 @@ class TestSyncMark:
             mock.patch.object(ReadWriteLock, "acquire_write", _refused),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
-            async with sync_running(tmp_path):
-                ran.append("sync")
+            with pytest.raises(LibraryUnlockableError) as refused_sync:
+                async with sync_running(tmp_path):
+                    ran.append("sync")
+            with (
+                pytest.raises(LibraryUnlockableError) as refused_wiki,
+                source_keys_in_use(tmp_path),
+            ):
+                ran.append("wiki")
             with (
                 pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
                 no_sync_running(tmp_path),
             ):
                 ran.append("reset")
 
-        assert ran == ["sync"]
-        assert f"delete {tmp_path / 'sync.lock'}" in str(caught.value)
-        assert _lock_warnings(caplog) == 1
+        assert ran == []
+        lock_file = tmp_path / "sync.lock"
+        assert str(refused_sync.value) == (
+            f"Cannot change the library: {lock_file} cannot be locked (disk I/O error). "
+            f"{_FIX_ADVICE}"
+        )
+        assert str(refused_wiki.value) == str(refused_sync.value)
+        assert f"delete {lock_file}" in str(caught.value)
+        assert _lock_warnings(caplog) == 0
         assert _threads_left_since(before) == []
+        async with sync_running(tmp_path):
+            ran.append("sync")
         with no_sync_running(tmp_path):
             ran.append("reset")
         assert ran == ["sync", "reset"]
@@ -911,14 +1000,21 @@ class TestSyncMark:
 
         assert ran == ["reset"]
 
+    @pytest.mark.parametrize(
+        "refused",
+        [
+            pytest.param(sqlite3.OperationalError("disk I/O error"), id="io-error"),
+            pytest.param(sqlite3.DatabaseError("file is not a database"), id="not-a-database"),
+        ],
+    )
     async def test_a_probe_that_errors_names_the_data_directory_not_the_lock_file(
-        self, tmp_path: Path, caplog
+        self, tmp_path: Path, caplog, refused: sqlite3.Error
     ) -> None:
         real_acquire_write = ReadWriteLock.acquire_write
 
         def _probe_errors(lock: ReadWriteLock, *args, **kwargs) -> None:
             if Path(lock.lock_file).name.startswith("sync.probe."):
-                raise sqlite3.OperationalError("disk I/O error")
+                raise refused
             real_acquire_write(lock, *args, **kwargs)
 
         ran = []
@@ -926,17 +1022,23 @@ class TestSyncMark:
             mock.patch.object(ReadWriteLock, "acquire_write", _probe_errors),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
-            async with sync_running(tmp_path):
-                ran.append("sync")
+            with pytest.raises(LibraryUnlockableError) as refused_sync:
+                async with sync_running(tmp_path):
+                    ran.append("sync")
             with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
                 ran.append("reset")
 
-        assert ran == ["sync"]
+        assert ran == []
+        assert str(refused_sync.value) == (
+            f"Cannot change the library: {tmp_path} cannot be locked ({refused}). {_FIX_ADVICE}"
+        )
+        assert refused_sync.value.__cause__ is refused
         assert str(caught.value) == (
             f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
-            "(disk I/O error)."
+            f"({refused})."
         )
-        assert _lock_warnings(caplog) == 1
+        assert _lock_warnings(caplog) == 0
+        assert not list(tmp_path.glob("sync.probe.*"))
 
     @pytest.mark.skipif(sys.platform != "darwin", reason="a failed hard link stops only macOS")
     async def test_a_macos_disk_without_hard_links_runs_a_sync_and_refuses_a_reset(
@@ -966,19 +1068,80 @@ class TestSyncMark:
         assert [path.name for path in tmp_path.iterdir()] == [cfg.lancedb_dir.name]
 
     @pytest.mark.parametrize(
-        ("refusal", "platform", "reported"),
+        ("platform", "reported"),
         [
-            pytest.param(_LINK_REFUSED, "darwin", _APFS_ADVICE, id="link-on-macos"),
-            pytest.param(_LINK_REFUSED, "linux", _LOCAL_DISK_ADVICE, id="link-on-linux"),
-            pytest.param(_OPEN_REFUSED, "darwin", str(_OPEN_REFUSED), id="open-not-supported"),
-            pytest.param(_READ_ONLY, "darwin", "[Errno 30] Read-only file system", id="read-only"),
-            pytest.param(_LINK_DENIED, "darwin", str(_LINK_DENIED), id="link-denied"),
-            pytest.param(_LINK_DISK_FULL, "darwin", str(_LINK_DISK_FULL), id="link-disk-full"),
-            pytest.param(_LINK_TOO_MANY, "linux", str(_LINK_TOO_MANY), id="link-too-many"),
+            pytest.param("darwin", _APFS_ADVICE, id="link-on-macos"),
+            pytest.param("linux", _LOCAL_DISK_ADVICE, id="link-on-linux"),
         ],
     )
-    async def test_a_probe_that_cannot_be_opened_is_deleted_and_reported(
-        self, tmp_path: Path, caplog, monkeypatch, refusal: OSError, platform: str, reported: str
+    async def test_a_probe_on_a_disk_without_hard_links_is_deleted_and_runs_a_sync(
+        self, tmp_path: Path, caplog, monkeypatch, platform: str, reported: str
+    ) -> None:
+        monkeypatch.setattr("lilbee.runtime.lock.sys", SimpleNamespace(platform=platform))
+
+        def _created_then_refused(path: Path, *_args, **_kwargs) -> ReadWriteLock:
+            Path(path).touch()
+            raise _LINK_REFUSED
+
+        ran = []
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", _created_then_refused),
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+        ):
+            async with sync_running(tmp_path):
+                ran.append("sync")
+            with source_keys_in_use(tmp_path):
+                ran.append("wiki")
+            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+                ran.append("reset")
+
+        assert ran == ["sync", "wiki"]
+        assert str(caught.value) == (
+            f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
+            f"({reported})."
+        )
+        assert [r.getMessage() for r in caplog.records if r.name == "lilbee.runtime.lock"] == [
+            f"Cannot lock {tmp_path} ({reported}); a reset refuses until it can."
+        ] * 2
+        assert [path.name for path in tmp_path.iterdir()] == [cfg.lancedb_dir.name]
+
+    @pytest.mark.parametrize(
+        ("refusal", "platform", "reported", "advice"),
+        [
+            pytest.param(
+                _OPEN_REFUSED, "darwin", str(_OPEN_REFUSED), _FIX_ADVICE, id="open-not-supported"
+            ),
+            pytest.param(
+                _READ_ONLY,
+                "darwin",
+                "[Errno 30] Read-only file system",
+                _WRITABLE_ADVICE,
+                id="read-only",
+            ),
+            pytest.param(
+                _LINK_DENIED, "darwin", str(_LINK_DENIED), _WRITABLE_ADVICE, id="link-denied"
+            ),
+            pytest.param(
+                _LINK_DISK_FULL,
+                "darwin",
+                str(_LINK_DISK_FULL),
+                "Free some disk space, then try again.",
+                id="link-disk-full",
+            ),
+            pytest.param(
+                _LINK_TOO_MANY, "linux", str(_LINK_TOO_MANY), _FIX_ADVICE, id="link-too-many"
+            ),
+        ],
+    )
+    async def test_a_probe_that_cannot_be_opened_is_deleted_and_refuses_a_sync_and_a_reset(
+        self,
+        tmp_path: Path,
+        caplog,
+        monkeypatch,
+        refusal: OSError,
+        platform: str,
+        reported: str,
+        advice: str,
     ) -> None:
         monkeypatch.setattr("lilbee.runtime.lock.sys", SimpleNamespace(platform=platform))
 
@@ -991,19 +1154,23 @@ class TestSyncMark:
             mock.patch("lilbee.runtime.lock.ReadWriteLock", _created_then_refused),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
         ):
-            async with sync_running(tmp_path):
-                ran.append("sync")
+            with pytest.raises(LibraryUnlockableError) as refused_sync:
+                async with sync_running(tmp_path):
+                    ran.append("sync")
             with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
                 ran.append("reset")
 
-        assert ran == ["sync"]
+        assert ran == []
+        assert str(refused_sync.value) == (
+            f"Cannot change the library: {tmp_path} cannot be locked ({reported}). "
+            + advice.format(path=tmp_path)
+        )
+        assert refused_sync.value.__cause__ is refusal
         assert str(caught.value) == (
             f"Cannot tell whether a sync or import is running: {tmp_path} cannot be locked "
             f"({reported})."
         )
-        assert [r.getMessage() for r in caplog.records if r.name == "lilbee.runtime.lock"] == [
-            f"Cannot lock {tmp_path} ({reported}); a reset refuses until it can."
-        ]
+        assert _lock_warnings(caplog) == 0
         assert [path.name for path in tmp_path.iterdir()] == [cfg.lancedb_dir.name]
 
     def test_a_busy_probe_is_probed_again_on_the_next_reset(self, tmp_path: Path) -> None:
