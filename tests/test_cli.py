@@ -960,6 +960,47 @@ class TestAutoSync:
         printed = mock_print.call_args.args[0]
         assert "locked: notes[draft].txt" in printed.plain
 
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_ask_answers_when_its_sync_cannot_take_the_sync_lock(
+        self, mock_svc, isolated_env, caplog, flags
+    ):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_stream.side_effect = lambda *a, **kw: _mock_stream("5 quarts")
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="5 quarts", sources=[])
+        healthy = runner.invoke(app, [*flags, "ask", "oil capacity?"])
+        lock = cfg.data_root / "sync.lock"
+        lock.write_bytes(b"not a lock database")
+        before = _tree(cfg.data_root)
+
+        with caplog.at_level(logging.WARNING, logger="lilbee.cli.helpers"):
+            result = runner.invoke(app, [*flags, "ask", "oil capacity?"])
+
+        assert result.exit_code == 0
+        assert "5 quarts" in result.output
+        assert result.output == healthy.output
+        assert [r.getMessage() for r in caplog.records if r.name == "lilbee.cli.helpers"] == [
+            "Skipped the sync before the answer. "
+            f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+            f"Stop every lilbee process, delete {lock}, and try again."
+        ]
+        assert _tree(cfg.data_root) == before
+
+    def test_auto_sync_still_exits_1_where_the_data_root_cannot_lock_files(self) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import auto_sync
+        from lilbee.runtime.lock import LockingUnsupportedError
+
+        con = Console(quiet=True)
+
+        def _no_locking() -> object:
+            raise LockingUnsupportedError("no file locking here")
+
+        with mock.patch.object(con, "print") as mock_print, pytest.raises(SystemExit):
+            auto_sync(con, _no_locking)
+        assert "no file locking here" in mock_print.call_args.args[0].plain
+
 
 class TestAddPathsBackground:
     def test_add_paths_background_mode(self, isolated_env, tmp_path) -> None:

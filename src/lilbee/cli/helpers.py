@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import signal
 import threading
 from collections.abc import Callable, Generator, Iterator
@@ -21,9 +22,14 @@ from lilbee.app.status import StatusResult
 from lilbee.cli import theme
 from lilbee.core.config import cfg
 from lilbee.runtime.console import PlainConsole, styled
+from lilbee.runtime.lock import LibraryUnlockableError
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
+
+log = logging.getLogger(__name__)
+
+_SYNC_SKIPPED = "Skipped the sync before the answer. %s"
 
 
 def json_output(data: dict) -> None:
@@ -292,7 +298,8 @@ def auto_sync(
     When *background* is True, sync runs in a background thread and this
     function returns immediately (for chat/REPL).  When False (default),
     *run_sync* (the CLI's Ctrl+C-cancellable runner) blocks until the sync
-    completes (for ``lilbee ask``).
+    completes (for ``lilbee ask``). A sync that cannot lock the library is
+    skipped with one warning in the log, and the caller goes on to its query.
     """
     if background:
         from lilbee.cli.sync import run_sync_background
@@ -305,6 +312,10 @@ def auto_sync(
 
     try:
         result = run_sync()
+    except LibraryUnlockableError as exc:
+        # The question only reads, so it is answered from the library as it is.
+        log.warning(_SYNC_SKIPPED, exc)
+        return
     except RuntimeError as exc:
         print_prefixed(con, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
