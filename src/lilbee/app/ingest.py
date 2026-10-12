@@ -519,10 +519,12 @@ def forget_roots(names: list[str]) -> list[str]:
     error is raised after.
     """
     roots = active_config().linked_roots
-    named = [Path(roots[label]) for label in (name.strip("/") for name in names) if label in roots]
+    labels = [label for label in (name.strip("/") for name in names) if label in roots]
+    named = [Path(roots[label]) for label in labels]
     try:
         # Records resolve through the registry, so they go before un-registering.
-        unmark_sources_under(named)
+        # A root that stays keeps its records, also when it names the folder of one that goes.
+        unmark_sources_under(named, spared=roots.keys() - set(labels))
     finally:
         unregistered = unregister_roots(names)
     return unregistered

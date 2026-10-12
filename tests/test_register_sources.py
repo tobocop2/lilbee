@@ -12,7 +12,12 @@ import pytest
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
-from lilbee.app.ingest import names_outside_corpus, register_sources, source_label_taken
+from lilbee.app.ingest import (
+    names_outside_corpus,
+    register_sources,
+    remove_documents_durably,
+    source_label_taken,
+)
 from lilbee.cli.app import app
 from lilbee.core import settings
 from lilbee.core.config import cfg
@@ -431,3 +436,26 @@ class TestOnePathInAnotherLetterCase:
         assert sorted(_registry()) == [f"source{n}" for n in range(9)]
         assert with_one_source > 0
         assert read.count(str(shelf)) == with_one_source
+
+
+class TestTwoSourcesOfOneFolder:
+    """A library that holds one folder under two labels keeps the records of each apart."""
+
+    @pytest.mark.parametrize("second", ["another-case", "a-link"])
+    def test_removing_one_source_keeps_the_records_of_the_other(self, library, notes, second):
+        other = notes.parent / "alias" if second == "a-link" else _other_case(notes)
+        if second == "a-link":
+            other.symlink_to(notes, target_is_directory=True)
+        elif not _one_entry(notes, other):
+            _write(other / "loose.md")
+        pair = {"notes": str(notes), other.name: str(other)}
+        settings.set_value(cfg.data_root, "linked_roots", pair)
+        cfg.linked_roots = dict(pair)
+        mark_removed(
+            cfg.data_root, {"notes/loose.md": "0" * 64, f"{other.name}/loose.md": "1" * 64}
+        )
+
+        remove_documents_durably([other.name])
+
+        assert _registry() == {"notes": str(notes)}
+        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
