@@ -3047,33 +3047,18 @@ class TestACancelledCallAtTheRecordsLock:
     @staticmethod
     async def _cancel_at_the_wait(tool: str, arguments: dict, target: str) -> BaseException | None:
         """Cancel *tool* once it waits for a held records lock; returns what *target* raised."""
-        import threading
-
         from lilbee.app import ingest
-        from tests._records_wait import files_under, records_lock_held_elsewhere
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
 
-        waiting, ended = anyio.Event(), threading.Event()
-        raised: list[BaseException | None] = []
-        real = getattr(ingest, target)
-
-        def _recorded(*args, **kwargs):
-            try:
-                result = real(*args, **kwargs)
-            except BaseException as exc:
-                raised.append(exc)
-                raise
-            else:
-                raised.append(None)
-                return result
-            finally:
-                ended.set()
+        waiting = anyio.Event()
+        call, outcome = recorded(getattr(ingest, target))
 
         def _report_the_wait() -> None:
             anyio.from_thread.run_sync(waiting.set)
 
         with (
             records_lock_held_elsewhere(cfg.data_root, _report_the_wait),
-            mock.patch.object(ingest, target, _recorded),
+            mock.patch.object(ingest, target, call),
         ):
             before = files_under(cfg.data_root)
             async with mcp_client() as (session, _init, drop):
@@ -3081,10 +3066,10 @@ class TestACancelledCallAtTheRecordsLock:
                     tg.start_soon(session.call_tool, tool, arguments)
                     await waiting.wait()
                     tg.cancel_scope.cancel()
-                await anyio.to_thread.run_sync(ended.wait)
+                await anyio.to_thread.run_sync(outcome.ended.wait)
                 await drop()
             assert files_under(cfg.data_root) == before
-        return raised[0]
+        return outcome.raised
 
     async def test_an_add_stops_at_the_wait(self, tmp_path):
         from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError

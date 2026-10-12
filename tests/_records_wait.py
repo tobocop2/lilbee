@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import threading
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,30 @@ def files_under(root: Path) -> dict[str, bytes]:
         for path in sorted(root.rglob("*"))
         if path.is_file() and path.suffix != ".lock"
     }
+
+
+class Outcome:
+    """What a call wrapped by :func:`recorded` raised, once it has ended."""
+
+    def __init__(self) -> None:
+        self.ended = threading.Event()
+        self.raised: BaseException | None = None
+
+
+def recorded(real: Callable[..., Any]) -> tuple[Callable[..., Any], Outcome]:
+    """Wrap *real* so a test can wait for its end on another thread and read what it raised."""
+    outcome = Outcome()
+
+    def _call(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return real(*args, **kwargs)
+        except BaseException as exc:
+            outcome.raised = exc
+            raise
+        finally:
+            outcome.ended.set()
+
+    return _call, outcome
 
 
 @contextlib.contextmanager

@@ -6348,3 +6348,62 @@ class TestASyncLockThatCannotBeOpened:
         assert [e for e in events if e.startswith("event: done")] == []
         assert _data_root_tree() == before
         assert not (cfg.documents_dir / "note.md").exists()
+
+
+class TestACancelledRequestAtTheRecordsLock:
+    """A request that stops while it waits for the records lock ends the wait, nothing changed."""
+
+    @staticmethod
+    async def _stop_at_the_wait(request, module, target: str) -> tuple[asyncio.Future, object]:
+        """Start *request* against a held records lock and cancel it once it waits.
+
+        Returns the cancelled request and the outcome of *target*, which has ended.
+        """
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
+
+        loop, waiting = asyncio.get_running_loop(), asyncio.Event()
+        call, outcome = recorded(getattr(module, target))
+
+        with (
+            records_lock_held_elsewhere(
+                cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
+            ),
+            patch.object(module, target, call),
+        ):
+            before = files_under(cfg.data_root)
+            pending = asyncio.ensure_future(request())
+            await waiting.wait()
+            pending.cancel()
+            await asyncio.wait([pending])
+            await asyncio.to_thread(outcome.ended.wait)
+            assert files_under(cfg.data_root) == before
+        return pending, outcome
+
+    async def test_an_add_stream_that_stops_ends_the_wait(self, tmp_path):
+        """The client of the add stream goes away: the stream ends with no frame."""
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        src = tmp_path / "source" / "scan.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+        stream = handlers.add_files_stream([str(src)])
+
+        pending, outcome = await self._stop_at_the_wait(
+            stream.__anext__, _ingest_h, "register_sources"
+        )
+
+        assert isinstance(pending.exception(), StopAsyncIteration)
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        assert cfg.linked_roots == {}
+
+    async def test_a_cancelled_delete_ends_the_wait(self, mock_svc):
+        import lilbee.app.ingest as app_ingest
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        pending, outcome = await self._stop_at_the_wait(
+            lambda: handlers.delete_documents(["a.md"]), app_ingest, "remove_documents_durably"
+        )
+
+        assert pending.cancelled()
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        mock_svc.store.remove_documents.assert_not_called()
