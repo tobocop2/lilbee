@@ -147,14 +147,28 @@ def _reached_below(src: Path, roots: dict[str, str]) -> dict[str, Path]:
     return {label: path for label, path in below.items() if walk_reaches(src, path, rules)}
 
 
+def _keys_below(
+    label: str, src: Path, reached: dict[str, Path], sources: frozenset[str]
+) -> dict[str, str]:
+    """The key below *label* that each root in *reached* takes, if it is one of *sources*."""
+    return {
+        child: f"{label}/{path.relative_to(src).as_posix()}"
+        for child, path in reached.items()
+        if child in sources
+    }
+
+
 def _classify(
     paths: list[Path], roots: dict[str, str], docs_resolved: Path, *, force: bool
 ) -> tuple[RegisterResult, dict[str, str]]:
     """Sort *paths* by what registering each one does, leaving *roots* as the registry after it.
 
     Also returns the key of each source a new parent takes in, with the key it gets.
+    A path of this call that a later path of it contains was never a source: it
+    leaves the registry and nothing moves.
     """
     result = RegisterResult()
+    sources = frozenset(roots)
     moves: dict[str, str] = {}
     by_target = {target: label for label, target in roots.items()}
     refused = excluded_extension_reasons()
@@ -189,14 +203,15 @@ def _classify(
             result.name_taken.append(src.name)
             outside.setdefault(src, src.name)
             continue
-        for child, child_path in reached.items():
+        for child in reached:
             by_target.pop(roots.pop(child), None)
-            moves[child] = f"{label}/{child_path.relative_to(src).as_posix()}"
+        taken = _keys_below(label, src, reached, sources)
+        moves.update(taken)
         roots[label] = str(src)
         by_target[str(src)] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
-        if reached:
-            result.absorbed_into[label] = sorted(reached)
+        if taken:
+            result.absorbed_into[label] = sorted(taken)
     result.outside_corpus = list(outside.values())
     return result, moves
 

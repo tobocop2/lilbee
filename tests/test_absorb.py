@@ -754,12 +754,24 @@ class TestWhatIsNotAbsorbed:
         assert result.absorbed_into == {"notes": ["work"]}
         assert _registry() == {"notes": str(notes.resolve())}
 
-    async def test_a_child_added_in_the_same_call_is_folded_and_not_listed(self, library, notes):
+    async def test_a_child_named_beside_its_parent_was_never_a_source(self, library, notes):
+        with mock.patch.object(absorb_mod, "write_journal") as journal:
+            result = register_sources([notes / "work", notes])
+
+        assert result.registered == ["notes"]
+        assert result.absorbed_into == {}
+        assert _registry() == {"notes": str(notes.resolve())}
+        journal.assert_not_called()
+
+    async def test_a_registered_child_named_beside_its_parent_is_absorbed(self, library, notes):
+        await _add(notes / "work")
+
         result = register_sources([notes / "work", notes])
 
         assert result.registered == ["notes"]
         assert result.absorbed_into == {"notes": ["work"]}
         assert _registry() == {"notes": str(notes.resolve())}
+        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
 
 
 class TestTheCommonAddPaysNothing:
@@ -863,6 +875,15 @@ class TestASyncIsRunning:
             result = register_sources([notes])
 
         assert result.registered == ["notes"]
+
+    async def test_a_folder_and_its_parent_in_one_add_go_through_while_a_sync_runs(
+        self, library, notes
+    ):
+        async with sync_running(cfg.data_root):
+            result = register_sources([notes / "work", notes])
+
+        assert result.registered == ["notes"] and result.absorbed == []
+        assert _registry() == {"notes": str(notes.resolve())}
 
     async def test_a_sync_waits_for_the_absorb_and_then_walks_the_new_registry(
         self, library, notes
