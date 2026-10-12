@@ -7746,3 +7746,62 @@ class TestSyncCancelledExit:
         assert json.loads(result.output) == {"error": "Sync cancelled."}
         assert isinstance(fake_sync.call_args.kwargs["cancel"], threading.Event)
         mock_svc.searcher.ask_raw.assert_not_called()
+
+
+def _files_under(root: Path) -> dict[str, bytes]:
+    """Every file under *root* with its bytes, the held lock file aside."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and path.suffix != ".lock"
+    }
+
+
+class TestCtrlCAtTheRecordsLock:
+    """Ctrl+C while a command waits for the records lock ends it as a cancel, nothing changed."""
+
+    @staticmethod
+    def _ctrl_c() -> None:
+        import signal
+
+        signal.raise_signal(signal.SIGINT)
+
+    def _run_until_ctrl_c(self, args: list[str]):
+        """Run *args* against a held records lock; the Ctrl+C lands once the command waits."""
+        from tests._records_wait import records_lock_held_elsewhere
+
+        with records_lock_held_elsewhere(cfg.data_root, self._ctrl_c):
+            before = _files_under(cfg.data_root)
+            result = runner.invoke(app, args)
+            assert _files_under(cfg.data_root) == before
+        return result
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])
+    def test_an_add_stops_at_the_wait(self, isolated_env, tmp_path, mock_svc, flags):
+        src = tmp_path / "source" / "scan.txt"
+        src.parent.mkdir()
+        src.write_text("content", encoding="utf-8")
+
+        result = self._run_until_ctrl_c([*flags, "add", str(src)])
+
+        assert result.exit_code == 130, result.output
+        stopped = "Add cancelled. scan.txt was not added."
+        if flags:
+            assert json.loads(result.output) == {"error": stopped, "not_added": ["scan.txt"]}
+        else:
+            assert " ".join(result.output.split()) == stopped
+        assert cfg.linked_roots == {}
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])
+    def test_a_remove_stops_at_the_wait(self, isolated_env, mock_svc, flags):
+        mock_svc.store.get_sources.return_value = [{"filename": "a.md"}]
+
+        result = self._run_until_ctrl_c([*flags, "remove", "a.md"])
+
+        assert result.exit_code == 130, result.output
+        stopped = "Remove cancelled. Nothing was removed."
+        if flags:
+            assert json.loads(result.output) == {"error": stopped}
+        else:
+            assert " ".join(result.output.split()) == stopped
+        mock_svc.store.remove_documents.assert_not_called()
