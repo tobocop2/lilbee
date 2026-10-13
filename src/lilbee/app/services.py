@@ -275,35 +275,37 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
     if _state.singleton is not None:
         return _state.singleton
 
+    from lilbee.core.config import cfg
+
     with _singleton_create_lock:
-        if _state.singleton is not None:
-            return _state.singleton
+        services = _state.singleton
+        if services is None:
+            from lilbee.app.settings import reconcile_embedding_dim
+            from lilbee.modelhub.registry import ModelRegistry
 
-        from lilbee.app.settings import reconcile_embedding_dim
-        from lilbee.core.config import cfg
-        from lilbee.modelhub.registry import ModelRegistry
+            registry = ModelRegistry(cfg.models_dir)
+            # Pin the store width to the embedder before Store(); pass the registry so
+            # resolution doesn't re-enter this half-built get_services.
+            reconcile_embedding_dim(registry)
+            services = build_services(cfg, registry=registry, interactive=_state.interactive)
+            _state.singleton = services
+            # Eager start is the default: pay the spawn cost per role server at TUI mount
+            # so the first user action lands on a warm fleet. Roles whose model is unset
+            # are skipped, so a setup with only chat + embed never spawns rerank or
+            # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
+            # where mount time matters more than first-call latency.
+            if cfg.worker_pool_eager_start:
+                from contextlib import suppress
 
-        registry = ModelRegistry(cfg.models_dir)
-        # Pin the store width to the embedder before Store(); pass the registry so
-        # resolution doesn't re-enter this half-built get_services.
-        reconcile_embedding_dim(registry)
-        _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
-        if absorb_pending(cfg.data_root):
-            # heavy: the absorb loads the ingest pipeline
-            from lilbee.app.absorb import finish_pending_absorb_at_start
+                with suppress(Exception):
+                    services.provider.warm_up_pool()
+    # Outside the creation lock: the finisher takes the sync lock and the records lock.
+    if absorb_pending(cfg.data_root):
+        # heavy: the absorb loads the ingest pipeline
+        from lilbee.app.absorb import finish_pending_absorb_at_start
 
-            finish_pending_absorb_at_start(cfg, _state.singleton.store, cancel)
-        # Eager start is the default: pay the spawn cost per role server at TUI mount
-        # so the first user action lands on a warm fleet. Roles whose model is unset
-        # are skipped, so a setup with only chat + embed never spawns rerank or
-        # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
-        # where mount time matters more than first-call latency.
-        if cfg.worker_pool_eager_start:
-            from contextlib import suppress
-
-            with suppress(Exception):
-                _state.singleton.provider.warm_up_pool()
-        return _state.singleton
+        finish_pending_absorb_at_start(cfg, services.store, cancel)
+    return services
 
 
 @contextmanager

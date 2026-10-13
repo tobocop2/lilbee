@@ -321,6 +321,8 @@ def register_sources(
 
     names = [p.name for p in paths]
     in_progress = keys_of_pending_absorb()
+    # Built before the first library lock, and after the read of the absorb in progress.
+    get_services(cancel)
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root, cancel):
         taken = [*in_progress, *finish_pending_absorb(names, cancel)]
@@ -506,6 +508,8 @@ def remove_documents_durably(
     nothing removed.
     """
     data_root = active_config().data_root
+    # Built before the first library lock.
+    store = get_services(cancel).store
     # Taken before the index changes, so a held lock refuses the removal with nothing done.
     with skip_records_lock(data_root, cancel):
         moved = absorb_pending(data_root)
@@ -513,7 +517,7 @@ def remove_documents_durably(
             finish_pending_absorb(cancel=cancel)
         if moved or targets is None:
             targets = expand_remove_targets(names)
-        result = get_services().store.remove_documents(targets)
+        result = store.remove_documents(targets)
         failed = set(held_out_names(active_config().data_root))
         held = [name for name in result.not_found if name in failed]
         roots = forget_roots(names)
