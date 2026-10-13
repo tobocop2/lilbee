@@ -1200,7 +1200,7 @@ class TestAddRegistersOffTheLoop:
         entered, release = threading.Event(), threading.Event()
         events: list[str] = []
 
-        def _held(paths, *, force):
+        def _held(paths, *, force, cancel):
             events.append(f"registering on {threading.current_thread().name}")
             entered.set()
             assert release.wait(20), "the loop never ran while the registration was held"
