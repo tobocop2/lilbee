@@ -245,6 +245,12 @@ def keys_of_pending_absorb() -> list[str]:
     return [] if journal is None else list(journal.moves.values())
 
 
+def _finish(config: Config, store: Store, wait: float, cancel: CancelSignal | None) -> list[str]:
+    """Finish the journal of *config*'s data root; a sync that outlasts *wait* refuses it."""
+    with library_held(config.data_root, _UNFINISHED_ADD_HELD, wait, cancel) as hold:
+        return finish_absorb(store, hold)
+
+
 def finish_pending_absorb(cancel: CancelSignal | None = None) -> list[str]:
     """Finish an absorb that started on the active data root and did not end.
 
@@ -256,9 +262,7 @@ def finish_pending_absorb(cancel: CancelSignal | None = None) -> list[str]:
     config = active_config()
     if not absorb_pending(config.data_root):
         return []
-    store = get_services(cancel).store
-    with library_held(config.data_root, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel) as hold:
-        return finish_absorb(store, hold)
+    return _finish(config, get_services(cancel).store, LOCK_TIMEOUT, cancel)
 
 
 def finish_pending_absorb_at_start(
@@ -270,7 +274,6 @@ def finish_pending_absorb_at_start(
     the take of a lock: ``SkipRecordsWaitCancelledError``.
     """
     try:
-        with library_held(config.data_root, _UNFINISHED_ADD_HELD, 0.0, cancel) as hold:
-            finish_absorb(store, hold)
+        _finish(config, store, 0.0, cancel)
     except (RuntimeError, OSError, ValueError) as exc:
         log.warning("An interrupted add is not finished yet: %s", exc)
