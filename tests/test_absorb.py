@@ -3505,6 +3505,39 @@ class TestACancelAtTheRecordsLock:
         assert _everything(library.store) == before
         assert before["journal"] is True
 
+    async def test_a_sync_that_builds_the_services_stops_before_it_finishes_an_add(
+        self, library, notes, monkeypatch, caplog
+    ):
+        """The first sync of a process builds the services; that finish gets the cancel too."""
+        import asyncio
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _add_that_died(library.store, notes)
+        before = _everything(library.store)
+        svc_mod.set_services(None)
+        monkeypatch.setattr(svc_mod._state, "singleton", None)
+        built = make_mock_services(store=library.store)
+        cfg.worker_pool_eager_start = False
+        cancel = _SetOnSecondPoll()
+
+        with (
+            mock.patch.object(svc_mod, "build_services", return_value=built),
+            mock.patch("lilbee.app.settings.reconcile_embedding_dim"),
+            mock.patch("lilbee.modelhub.registry.ModelRegistry"),
+            _records_lock_held_elsewhere(),
+            pytest.raises(asyncio.CancelledError) as raised,
+        ):
+            await sync(quiet=True, cancel=cancel)
+
+        assert cancel.polls >= 2
+        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
+        # No take ran without the cancel: none ended in the lock error that the start logs.
+        assert "An interrupted add is not finished yet" not in caplog.text
+        assert svc_mod.peek_services() is built
+        assert _everything(built.store) == before
+        assert before["journal"] is True
+
     async def test_a_retry_stops_before_it_clears_a_failure(self, library, notes):
         import asyncio
 

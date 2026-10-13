@@ -277,18 +277,22 @@ def finish_pending_absorb(
     config = active_config()
     if not absorb_pending(config.data_root):
         return []
+    store = get_services(cancel).store
     if names is None:
-        return _finish(config, get_services().store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
+        return _finish(config, store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
     running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    return _finish(config, get_services().store, running, 0.0, cancel)
+    return _finish(config, store, running, 0.0, cancel)
 
 
-def finish_pending_absorb_at_start(config: Config, store: Store) -> None:
-    """Finish an interrupted absorb when a process builds its services; never raises.
+def finish_pending_absorb_at_start(
+    config: Config, store: Store, cancel: CancelSignal | None = None
+) -> None:
+    """Finish an interrupted absorb when a process builds its services.
 
-    A sync or an add finishes what this leaves.
+    A sync or an add finishes what this leaves. Raises only when *cancel* ends
+    the wait for the records lock: ``SkipRecordsWaitCancelledError``.
     """
     try:
-        _finish(config, store, _UNFINISHED_ADD_HELD, 0.0)
+        _finish(config, store, _UNFINISHED_ADD_HELD, 0.0, cancel)
     except (RuntimeError, OSError, ValueError) as exc:
         log.warning("An interrupted add is not finished yet: %s", exc)
