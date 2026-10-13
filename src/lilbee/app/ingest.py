@@ -330,9 +330,7 @@ def register_sources(
     return result
 
 
-def unmark_sources_under(
-    paths: list[Path], *, spared: Iterable[str] = (), cancel: CancelSignal | None = None
-) -> None:
+def unmark_sources_under(paths: list[Path], *, spared: Iterable[str] = ()) -> None:
     """Drop the skip records (marker, reason and kind) of every source *paths* covers.
 
     A record at or below a key in *spared* stays: a parent that takes in a
@@ -346,8 +344,7 @@ def unmark_sources_under(
     which the user has no reason to reach for after typing the path they want.
 
     Each root in *paths* must be registered when this runs: marker keys resolve
-    to files through the live registry. Setting *cancel* ends the wait for the
-    records lock, with nothing dropped.
+    to files through the live registry.
     """
 
     kept = list(spared)
@@ -357,7 +354,7 @@ def unmark_sources_under(
             if not any(is_under(name, key) for key in kept):
                 records.markers.pop(name)
 
-    update_skip_records(active_config().data_root, _drop_covered, cancel)
+    update_skip_records(active_config().data_root, _drop_covered)
 
 
 def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
@@ -527,11 +524,11 @@ def remove_documents_durably(
     )
 
 
-def forget_roots(names: list[str], cancel: CancelSignal | None = None) -> list[str]:
+def forget_roots(names: list[str]) -> list[str]:
     """Un-register every root named in *names* and drop the skip records under it.
 
     The roots are un-registered even when the records cannot be changed; the
-    error is raised after. Setting *cancel* ends the wait for the records lock.
+    error is raised after.
     """
     roots = active_config().linked_roots
     labels = [label for label in (name.strip("/") for name in names) if label in roots]
@@ -539,7 +536,7 @@ def forget_roots(names: list[str], cancel: CancelSignal | None = None) -> list[s
     try:
         # Records resolve through the registry, so they go before un-registering.
         # A root that stays keeps its records, also when it names the folder of one that goes.
-        unmark_sources_under(named, spared=roots.keys() - set(labels), cancel=cancel)
+        unmark_sources_under(named, spared=roots.keys() - set(labels))
     finally:
         unregistered = unregister_roots(names)
     return unregistered

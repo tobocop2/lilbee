@@ -3459,20 +3459,6 @@ class TestACancelAtTheRecordsLock:
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
         assert _records_lock_is_free(cfg.data_root)
 
-    def test_forgetting_a_root_unregisters_it_and_keeps_its_records(self, library, notes):
-        from lilbee.app.ingest import forget_roots
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _seeded_child(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(SkipRecordsWaitCancelledError):
-            forget_roots(["work"], cancel)
-
-        assert cancel.polls >= 2
-        assert _everything(library.store) == {**before, "registry": []}
-
     @pytest.mark.parametrize("names", [None, ["notes"]], ids=["waits", "asks_again"])
     def test_finishing_an_add_stops_before_it_moves_a_key(self, library, notes, names):
         from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
