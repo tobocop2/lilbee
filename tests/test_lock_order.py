@@ -311,10 +311,22 @@ def _process_start(notes: Path) -> None:
     svc_mod.get_services()
 
 
+def _add_that_finishes_a_journal(notes: Path) -> None:
+    """The process started before the journal was left, so the add finishes it."""
+    svc_mod.get_services()
+    _add_with_a_journal(notes)
+
+
+def _remove_that_finishes_a_journal(notes: Path) -> None:
+    """The process started before the journal was left, so the remove finishes it."""
+    svc_mod.get_services()
+    _remove_with_a_journal(notes)
+
+
 _PATHS_THAT_TAKE_BOTH_LOCKS = {
     "add that takes a source in": _add_that_takes_a_source_in,
-    "add with a journal pending": _add_with_a_journal,
-    "remove with a journal pending": _remove_with_a_journal,
+    "add with a journal pending": _add_that_finishes_a_journal,
+    "remove with a journal pending": _remove_that_finishes_a_journal,
     "reset": _reset,
     "sync finisher": _sync_finisher,
     "process start": _process_start,
