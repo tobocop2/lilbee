@@ -68,9 +68,50 @@ class _AlwaysSet:
         return True
 
 
+class _SetAsTheLockFrees:
+    """A cancel set after the lock's last poll of it, while the holder lets go."""
+
+    def __init__(self, holder: FileLock) -> None:
+        self._holder = holder
+        self.set = False
+
+    def is_set(self) -> bool:
+        if self.set:
+            return True
+        # This poll reads unset; the lock is free and the cancel set before the next take.
+        self._holder.release()
+        self.set = True
+        return False
+
+
 def _enter_records_lock(data_root: Path, cancel: _NeverSet) -> None:
     with skip_marker.skip_records_lock(data_root, cancel):
-        raise AssertionError("entered a lock another holder has")
+        raise AssertionError("entered the records lock with the cancel set")
+
+
+# Each call that takes the records lock with a cancel.
+_CANCELLABLE_CHANGES = [
+    pytest.param(
+        lambda root, cancel: update_skip_records(
+            root, lambda records: records.markers.update({"new.pdf": "h2"}), cancel
+        ),
+        id="update",
+    ),
+    pytest.param(clear_skip_markers, id="clear"),
+    pytest.param(clear_failed_markers, id="clear_failed"),
+    pytest.param(_enter_records_lock, id="lock"),
+]
+
+
+def _records_lock_is_free(data_root: Path) -> bool:
+    """Whether a second holder takes the records lock without a wait."""
+    other = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock")
+    try:
+        other.acquire(timeout=0)
+    except OSError:
+        return False
+    other.release()
+    return True
 
 
 def test_load_empty_when_file_missing(tmp_path: Path) -> None:
@@ -343,20 +384,7 @@ class TestUpdateSkipRecords:
         assert load_skip_markers(tmp_path) == {"old.pdf": "h1"}
         assert load_skip_kinds(tmp_path) == {"old.pdf": SkipKind.FAILED}
 
-    @pytest.mark.parametrize(
-        "operation",
-        [
-            pytest.param(
-                lambda root, cancel: update_skip_records(
-                    root, lambda records: records.markers.update({"new.pdf": "h2"}), cancel
-                ),
-                id="update",
-            ),
-            pytest.param(clear_skip_markers, id="clear"),
-            pytest.param(clear_failed_markers, id="clear_failed"),
-            pytest.param(_enter_records_lock, id="lock"),
-        ],
-    )
+    @pytest.mark.parametrize("operation", _CANCELLABLE_CHANGES)
     def test_a_cancel_ends_the_wait_for_a_held_lock_without_writing(
         self, tmp_path: Path, operation
     ):
@@ -383,8 +411,29 @@ class TestUpdateSkipRecords:
         assert load_skip_markers(tmp_path) == {"old.pdf": "h1"}
         assert load_skip_kinds(tmp_path) == {"old.pdf": SkipKind.FAILED}
         # The cancelled call left no hold of its own: the next take enters at once.
-        with skip_marker.skip_records_lock(tmp_path, _AlwaysSet()):
-            pass
+        assert _records_lock_is_free(tmp_path)
+
+    @pytest.mark.parametrize("operation", _CANCELLABLE_CHANGES)
+    def test_a_cancel_set_as_the_lock_frees_gives_the_lock_back_without_writing(
+        self, tmp_path: Path, operation
+    ):
+        """A take granted with the cancel set raises the cancel; nothing is written."""
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _head_failure(tmp_path, "old.pdf", "h1", "no text")
+        holder = FileLock(str(tmp_path / SKIP_MARKER_FILENAME) + ".lock")
+        holder.acquire()
+        cancel = _SetAsTheLockFrees(holder)
+
+        with pytest.raises(SkipRecordsWaitCancelledError) as raised:
+            operation(tmp_path, cancel)
+
+        # The holder let go before the cancel was set, so the take was granted.
+        assert not holder.is_locked
+        assert raised.value.__cause__ is None
+        assert load_skip_markers(tmp_path) == {"old.pdf": "h1"}
+        assert load_skip_kinds(tmp_path) == {"old.pdf": SkipKind.FAILED}
+        assert _records_lock_is_free(tmp_path)
 
     def test_a_set_cancel_does_not_refuse_a_free_lock(self, tmp_path: Path):
         """A cancel ends only a wait: with the lock free the change is written."""
@@ -395,6 +444,21 @@ class TestUpdateSkipRecords:
         )
 
         assert load_skip_markers(tmp_path) == {"old.pdf": "h1", "new.pdf": "h2"}
+        assert _records_lock_is_free(tmp_path)
+
+    def test_a_set_cancel_does_not_end_a_take_under_a_held_lock(self, tmp_path: Path):
+        """A take inside the caller's own hold enters with the cancel set and writes."""
+        write_skip_markers(tmp_path, {"old.pdf": "h1"})
+
+        with skip_marker.skip_records_lock(tmp_path):
+            update_skip_records(
+                tmp_path, lambda records: records.markers.update({"new.pdf": "h2"}), _AlwaysSet()
+            )
+            # The inner take gave back its own hold only.
+            assert not _records_lock_is_free(tmp_path)
+
+        assert load_skip_markers(tmp_path) == {"old.pdf": "h1", "new.pdf": "h2"}
+        assert _records_lock_is_free(tmp_path)
 
     def test_an_unset_cancel_keeps_the_timeout_and_its_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

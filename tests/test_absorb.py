@@ -72,7 +72,12 @@ from tests.conftest import (
     unfinished_add_refused,
 )
 from tests.test_lock import _reset_held_in_another_process
-from tests.test_skip_marker import _SetOnSecondPoll, record_file_reads
+from tests.test_skip_marker import (
+    _records_lock_is_free,
+    _SetAsTheLockFrees,
+    _SetOnSecondPoll,
+    record_file_reads,
+)
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 from tests.test_wiki_shared import leave_temp_of_a_dead_writer
 
@@ -3420,6 +3425,39 @@ class TestACancelAtTheRecordsLock:
         assert cancel.polls >= 2
         assert raised.value.__cause__ is None
         assert _everything(library.store) == before
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(lambda notes, cancel: register_sources([notes], cancel=cancel), id="add"),
+            pytest.param(
+                lambda notes, cancel: remove_documents_durably(
+                    ["work/plan.md", "work"], cancel=cancel
+                ),
+                id="remove",
+            ),
+        ],
+    )
+    def test_a_cancel_set_as_the_lock_frees_changes_nothing(self, library, notes, command):
+        """The lock is granted after a wait with the cancel set: the command ends as a cancel."""
+        from filelock import FileLock
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _seeded_child(library.store, notes)
+        before = _everything(library.store)
+        holder = FileLock(str(cfg.data_root / SKIP_MARKER_FILENAME) + ".lock")
+        holder.acquire()
+        cancel = _SetAsTheLockFrees(holder)
+
+        with pytest.raises(SkipRecordsWaitCancelledError):
+            command(notes, cancel)
+
+        # The holder let go before the cancel was set, so the take was granted.
+        assert not holder.is_locked
+        assert _everything(library.store) == before
+        assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
+        assert _records_lock_is_free(cfg.data_root)
 
     def test_forgetting_a_root_unregisters_it_and_keeps_its_records(self, library, notes):
         from lilbee.app.ingest import forget_roots
