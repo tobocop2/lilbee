@@ -973,16 +973,20 @@ class TestAutoSync:
         lock.write_bytes(b"not a lock database")
         before = _tree(cfg.data_root)
 
-        with caplog.at_level(logging.WARNING, logger="lilbee.cli.helpers"):
+        with caplog.at_level(logging.WARNING):
             result = runner.invoke(app, [*flags, "ask", "oil capacity?"])
 
         assert result.exit_code == 0
         assert "5 quarts" in result.output
         assert result.output == healthy.output
-        assert [r.getMessage() for r in caplog.records if r.name == "lilbee.cli.helpers"] == [
-            "Skipped the sync before the answer. "
-            f"Cannot change the library: {lock} cannot be locked (file is not a database). "
-            f"Stop every lilbee process, delete {lock}, and try again."
+        assert "Traceback" not in caplog.text
+        assert [(r.name, r.getMessage()) for r in caplog.records] == [
+            (
+                "lilbee.cli.helpers",
+                "Skipped the sync before the answer. "
+                f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+                f"Stop every lilbee process, delete {lock}, and try again.",
+            )
         ]
         assert _tree(cfg.data_root) == before
 
