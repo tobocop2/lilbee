@@ -12,6 +12,7 @@ from filelock import BaseFileLock, ReadWriteLock
 
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
+from lilbee.app import ingest as ingest_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.reset import perform_reset
 from lilbee.core import settings
@@ -387,6 +388,53 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
                 pytest.fail("the block ran under a held sync lock")
 
             assert takes.records_takes == taken
+
+
+class TestARemoveFinishesAJournalUnderOneHold:
+    def test_the_removal_runs_under_the_one_take_of_the_owner(
+        self, notes, takes, builds, monkeypatch
+    ):
+        svc_mod.get_services()
+        _leave_journal(notes)
+        store = builds.services.store
+        real_remove = store.remove_documents
+        held_at_removal: list[list[str]] = []
+
+        def remove_documents(names):
+            held_at_removal.append(takes.held())
+            return real_remove(names)
+
+        monkeypatch.setattr(store, "remove_documents", remove_documents)
+
+        remove_documents_durably(["notes/work/plan.md"])
+
+        assert held_at_removal == [[_RECORDS_LOCK, _SYNC_LOCK]]
+        assert takes.sync_write_takes == 1
+        assert not absorb_pending(cfg.data_root)
+        assert takes.held() == []
+
+    def test_a_finisher_that_leaves_the_journal_is_asked_one_time(
+        self, notes, takes, builds, monkeypatch
+    ):
+        svc_mod.get_services()
+        _leave_journal(notes)
+        held_at_finish: list[list[str]] = []
+
+        def leaves_the_journal(store, hold):
+            if held_at_finish:
+                raise AssertionError("the remove asked the finisher again")
+            held_at_finish.append(takes.held())
+            return []
+
+        monkeypatch.setattr(ingest_mod, "finish_absorb", leaves_the_journal)
+        monkeypatch.setattr(absorb_mod, "finish_absorb", leaves_the_journal)
+
+        remove_documents_durably(["notes/work/plan.md"])
+
+        assert held_at_finish == [[_RECORDS_LOCK, _SYNC_LOCK]]
+        assert takes.sync_write_takes == 1
+        assert absorb_pending(cfg.data_root)
+        assert takes.held() == []
 
 
 class TestAnAddActsOnTheReadUnderItsFinalHold:

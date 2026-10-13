@@ -7,15 +7,15 @@ import fnmatch
 import logging
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from lilbee.app.absorb import (
     SYNC_RUNNING_ADD_AGAIN,
+    UNFINISHED_ADD_HELD,
     absorb,
     finish_absorb,
-    finish_pending_absorb,
     keys_of_pending_absorb,
     new_journal,
 )
@@ -44,6 +44,7 @@ from lilbee.data.types import is_under
 from lilbee.runtime.absorb_journal import AbsorbJournal, AbsorbJournalError, absorb_pending
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import (
+    LOCK_TIMEOUT,
     LibraryUnlockableError,
     LockingUnsupportedError,
     SyncRunningError,
@@ -514,10 +515,10 @@ def remove_documents_durably(
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
 
-    An interrupted absorb is finished first, under the locks an absorb holds from
-    start to end and with the records lock free while it waits for a running sync,
-    so no removal runs on keys that are part way through a move.
-    The names are then expanded at the keys the library holds. Raises one of
+    An interrupted absorb is finished first, and the removal runs under the same
+    hold of the locks an absorb holds from start to end, so no removal runs on keys
+    that are part way through a move. The records lock is free during the wait for
+    a running sync. The names are then expanded at the keys the library holds. Raises one of
     ``LIBRARY_REFUSALS`` with nothing removed when it cannot start. Setting
     *cancel* ends the wait for the records lock, and the wait for a running sync
     before it finishes an absorb, with ``SkipRecordsWaitCancelledError`` and
@@ -526,23 +527,25 @@ def remove_documents_durably(
     data_root = active_config().data_root
     # Built before the first library lock.
     store = get_services(cancel).store
-    moved = False
-    while True:
+    with ExitStack() as locks:
         # Taken before the index changes, so a held lock refuses the removal with nothing done.
-        with skip_records_lock(data_root, cancel):
-            # An absorb writes its journal under the records lock, so none appears in here.
-            if not absorb_pending(data_root):
-                if moved or targets is None:
-                    targets = expand_remove_targets(names)
-                result = store.remove_documents(targets)
-                failed = set(held_out_names(active_config().data_root))
-                held = [name for name in result.not_found if name in failed]
-                roots = forget_roots(names)
-                _hold_out_removed([*result.removed, *held], roots)
-                break
-        # The records lock is free during the wait for a running sync.
-        finish_pending_absorb(cancel=cancel)
-        moved = True
+        locks.enter_context(skip_records_lock(data_root, cancel))
+        # An absorb writes its journal under the records lock, so none appears under a hold.
+        if absorb_pending(data_root):
+            # The records lock is free during the wait for a running sync.
+            locks.close()
+            hold = locks.enter_context(
+                library_held(data_root, UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
+            )
+            finish_absorb(store, hold)
+            targets = None
+        if targets is None:
+            targets = expand_remove_targets(names)
+        result = store.remove_documents(targets)
+        failed = set(held_out_names(active_config().data_root))
+        held = [name for name in result.not_found if name in failed]
+        roots = forget_roots(names)
+        _hold_out_removed([*result.removed, *held], roots)
     forget_removed_from_wiki_index(list(result.removed))
     missing = [name for name in result.not_found if name not in failed]
     emptied = [name for name in missing if name.strip("/") in roots]

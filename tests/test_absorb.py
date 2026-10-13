@@ -1260,7 +1260,7 @@ class TestInterruptedAbsorb:
         store = library.store
         _seeded_child(store, notes)
 
-        with mock.patch("lilbee.app.ingest.finish_pending_absorb") as finish:
+        with mock.patch("lilbee.app.ingest.finish_absorb") as finish:
             result = remove_documents_durably(["anything"], targets=["work/plan.md"])
 
         assert result.removed == ["work/plan.md"]

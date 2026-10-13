@@ -31,7 +31,7 @@ from lilbee.runtime.lock import LOCK_TIMEOUT, LibraryHold, library_held
 log = logging.getLogger(__name__)
 
 SYNC_RUNNING_ADD_AGAIN = "A sync or a wiki build is running. Add {names} again when it ends."
-_UNFINISHED_ADD_HELD = (
+UNFINISHED_ADD_HELD = (
     "An interrupted add is not finished and another lilbee process holds this library. "
     "Try again when it ends."
 )
@@ -247,7 +247,7 @@ def keys_of_pending_absorb() -> list[str]:
 
 def _finish(config: Config, store: Store, wait: float, cancel: CancelSignal | None) -> list[str]:
     """Finish the journal of *config*'s data root; a sync that outlasts *wait* refuses it."""
-    with library_held(config.data_root, _UNFINISHED_ADD_HELD, wait, cancel) as hold:
+    with library_held(config.data_root, UNFINISHED_ADD_HELD, wait, cancel) as hold:
         return finish_absorb(store, hold)
 
 
