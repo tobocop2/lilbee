@@ -277,7 +277,7 @@ class TestTheStartFinisherRunsOutsideTheCreationLock:
         builds.services.provider.warm_up_pool.assert_called_once_with()
 
     def test_two_threads_that_start_at_once_finish_a_journal_one_time(
-        self, notes, takes, builds, monkeypatch
+        self, notes, takes, builds, monkeypatch, caplog
     ):
         _leave_journal(notes)
         both_asked = threading.Event()
@@ -293,7 +293,7 @@ class TestTheStartFinisherRunsOutsideTheCreationLock:
             return real_build(*args, **kwargs)
 
         def roll_when_the_other_returned(*args, **kwargs):
-            # The other thread runs its finisher while this one holds the locks.
+            # The other thread returns while this one holds the locks.
             assert second_returned.wait(_HANG_GUARD_S)
             rolls.append(threading.get_ident())
             return real_roll(*args, **kwargs)
@@ -319,6 +319,8 @@ class TestTheStartFinisherRunsOutsideTheCreationLock:
         assert [thread.is_alive() for thread in threads] == [False, False]
         assert list(results.values()) == [builds.services, builds.services]
         assert len(rolls) == 1
+        assert takes.sync_write_takes == 1
+        assert "not finished yet" not in caplog.text
         assert len(builds.held_at_build) == 1
         assert not absorb_pending(cfg.data_root)
         assert _registry() == {"notes": str(notes.resolve())}

@@ -279,6 +279,7 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
 
     with _singleton_create_lock:
         services = _state.singleton
+        built = services is None
         if services is None:
             from lilbee.app.settings import reconcile_embedding_dim
             from lilbee.modelhub.registry import ModelRegistry
@@ -300,7 +301,8 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
                 with suppress(Exception):
                     services.provider.warm_up_pool()
     # Outside the creation lock: the finisher takes the sync lock and the records lock.
-    if absorb_pending(cfg.data_root):
+    # Only the thread that built: two takes of the sync lock at once can refuse each other.
+    if built and absorb_pending(cfg.data_root):
         # heavy: the absorb loads the ingest pipeline
         from lilbee.app.absorb import finish_pending_absorb_at_start
 
