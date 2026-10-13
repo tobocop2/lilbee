@@ -17,7 +17,7 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator, Iterator
-from contextlib import asynccontextmanager, closing, contextmanager
+from contextlib import ExitStack, asynccontextmanager, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, Self, overload
@@ -542,6 +542,46 @@ def syncs_held_off(
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError)
         yield
+
+
+@dataclass(frozen=True)
+class LibraryHold:
+    """What ``library_held`` yields: its block has syncs off *data_root* and its records lock."""
+
+    data_root: Path
+
+
+@contextmanager
+def library_held(
+    data_root: Path,
+    running: str | None = None,
+    wait: float = 0.0,
+    cancel: CancelSignal | None = None,
+) -> Generator[LibraryHold, None, None]:
+    """Keep syncs off *data_root*, then hold its records lock, for the block.
+
+    The one take of both locks, the sync lock first. A sync that outlasts *wait*
+    raises ``SyncRunningError`` with the text *running*. With no *running* the hold
+    is the one of a reset: it does not wait, and it raises ``ResetRefusedError``.
+    A records lock that stays held raises ``SkipRecordsLockError``. A *cancel* that
+    is set during a wait, or when a lock is taken, raises
+    ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
+    """
+    # circular: runtime.lock -> data.ingest.pipeline via skip_records_lock
+    from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
+
+    if running is None:
+        syncs_off = no_sync_running(data_root)
+    else:
+        syncs_off = syncs_held_off(data_root, running, wait, cancel)
+    with ExitStack() as held:
+        try:
+            held.enter_context(syncs_off)
+        except SyncMarkWaitCancelledError:
+            # No cause: a cancel that carries an error is reported as that error.
+            raise SkipRecordsWaitCancelledError from None
+        held.enter_context(skip_records_lock(data_root, cancel))
+        yield LibraryHold(data_root)
 
 
 @contextmanager

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import logging
 import secrets
-from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
 
 from lilbee.app.services import get_services
 from lilbee.core import settings
@@ -13,9 +11,7 @@ from lilbee.core.config import Config, active_config
 from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
-    SkipRecordsWaitCancelledError,
     load_skip_records,
-    skip_records_lock,
     update_skip_records,
 )
 from lilbee.data.store import Store
@@ -30,7 +26,7 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.cancellation import CancelSignal
-from lilbee.runtime.lock import LOCK_TIMEOUT, SyncMarkWaitCancelledError, syncs_held_off
+from lilbee.runtime.lock import LOCK_TIMEOUT, LibraryHold, library_held
 
 log = logging.getLogger(__name__)
 
@@ -45,7 +41,7 @@ _JOURNAL_ID_BYTES = 4
 def new_journal(moves: dict[str, str], add: dict[str, str], drop: list[str]) -> AbsorbJournal:
     """A journal for *moves* and the registry change, under an id no source key starts with.
 
-    The caller holds the skip-records lock: the journal takes the records of the
+    The caller holds the records lock: the journal takes the records of the
     sources that move as they are now.
     """
     records = _records_after(load_skip_records(active_config().data_root), moves)
@@ -203,75 +199,37 @@ def _sweep_wiki_temp_files(config: Config) -> None:
     remove_dead_temp_files(config.data_root / config.wiki_dir)
 
 
-def _roll_forward(config: Config, store: Store, journal: AbsorbJournal) -> None:
+def _roll_forward(config: Config, store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
     """Finish the absorb *journal* records from its phase; each step is safe to run again."""
     _sweep_wiki_temp_files(config)
     if journal.phase is AbsorbPhase.LIFT:
         _lift(config, store, journal)
         journal = journal.at(AbsorbPhase.LAND)
-        write_journal(config.data_root, journal)
+        write_journal(hold.data_root, journal)
     _land(config, store, journal)
     _write_records(config, journal)
     _refresh_wiki_index(config, journal)
     _write_registry(config, journal)
-    delete_journal(config.data_root)
+    delete_journal(hold.data_root)
 
 
-@contextmanager
-def _syncs_held_off(
-    config: Config, running: str, wait: float, cancel: CancelSignal | None
-) -> Iterator[None]:
-    """Keep syncs off the data root of *config* for the block, as ``syncs_held_off`` does.
-
-    A *cancel* that ends the wait raises ``SkipRecordsWaitCancelledError``, the
-    cancel an add, a remove and a sync report for the records lock.
-    """
-    with ExitStack() as held:
-        try:
-            held.enter_context(syncs_held_off(config.data_root, running, wait, cancel))
-        except SyncMarkWaitCancelledError:
-            # No cause: a cancel that carries an error is reported as that error.
-            raise SkipRecordsWaitCancelledError from None
-        yield
+def absorb(journal: AbsorbJournal, hold: LibraryHold) -> None:
+    """Write the absorb *journal* and run what it records, under *hold*."""
+    write_journal(hold.data_root, journal)
+    _roll_forward(active_config(), get_services().store, journal, hold)
 
 
-def absorb(journal: AbsorbJournal, names: list[str], cancel: CancelSignal | None = None) -> None:
-    """Run the absorb *journal* records; a running sync or wiki write raises ``SyncRunningError``.
-
-    The caller holds the skip-records lock. *names* are the paths the user is adding.
-    A *cancel* set when syncs are held off raises ``SkipRecordsWaitCancelledError``,
-    with nothing moved.
-    """
-    config = active_config()
-    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    with _syncs_held_off(config, running, 0.0, cancel):
-        write_journal(config.data_root, journal)
-        _roll_forward(config, get_services().store, journal)
-
-
-def _finish(
-    config: Config,
-    store: Store,
-    running: str,
-    wait: float,
-    cancel: CancelSignal | None = None,
-) -> list[str]:
-    """Roll the journal of *config*'s data root forward under the locks an absorb holds.
+def finish_absorb(store: Store, hold: LibraryHold) -> list[str]:
+    """Roll the journal of the active data root forward under *hold*.
 
     Returns the keys the absorbed sources took, empty when no journal was left.
-    Setting *cancel* ends the wait for a running sync and the wait for the records
-    lock, with nothing moved.
     """
-    with (
-        _syncs_held_off(config, running, wait, cancel),
-        skip_records_lock(config.data_root, cancel),
-    ):
-        journal = read_journal(config.data_root)
-        if journal is None:  # another process finished it while this one waited
-            return []
-        log.warning("Finishing an interrupted add: %s", ", ".join(journal.add))
-        _roll_forward(config, store, journal)
-        return list(journal.moves.values())
+    journal = read_journal(hold.data_root)
+    if journal is None:  # another process finished it while this one waited
+        return []
+    log.warning("Finishing an interrupted add: %s", ", ".join(journal.add))
+    _roll_forward(active_config(), store, journal, hold)
+    return list(journal.moves.values())
 
 
 def keys_of_pending_absorb() -> list[str]:
@@ -302,10 +260,11 @@ def finish_pending_absorb(
     if not absorb_pending(config.data_root):
         return []
     store = get_services(cancel).store
-    if names is None:
-        return _finish(config, store, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
-    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    return _finish(config, store, running, 0.0, cancel)
+    running, wait = _UNFINISHED_ADD_HELD, LOCK_TIMEOUT
+    if names is not None:
+        running, wait = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names)), 0.0
+    with library_held(config.data_root, running, wait, cancel) as hold:
+        return finish_absorb(store, hold)
 
 
 def finish_pending_absorb_at_start(
@@ -317,6 +276,7 @@ def finish_pending_absorb_at_start(
     the take of a lock: ``SkipRecordsWaitCancelledError``.
     """
     try:
-        _finish(config, store, _UNFINISHED_ADD_HELD, 0.0, cancel)
+        with library_held(config.data_root, _UNFINISHED_ADD_HELD, 0.0, cancel) as hold:
+            finish_absorb(store, hold)
     except (RuntimeError, OSError, ValueError) as exc:
         log.warning("An interrupted add is not finished yet: %s", exc)

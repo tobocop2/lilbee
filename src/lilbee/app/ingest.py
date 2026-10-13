@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from lilbee.app.absorb import (
+    SYNC_RUNNING_ADD_AGAIN,
     absorb,
     finish_pending_absorb,
     keys_of_pending_absorb,
@@ -45,6 +46,7 @@ from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
     SyncRunningError,
+    library_held,
     refuse_where_a_sync_cannot_lock,
 )
 
@@ -328,7 +330,9 @@ def register_sources(
         taken = [*in_progress, *finish_pending_absorb(names, cancel)]
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
-            absorb(journal, list(result.absorbed_into), cancel)
+            running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(result.absorbed_into))
+            with library_held(config.data_root, running, 0.0, cancel) as hold:
+                absorb(journal, hold)
             taken = [*taken, *journal.moves.values()]
         unmark_sources_under(paths, spared=taken)
     return result

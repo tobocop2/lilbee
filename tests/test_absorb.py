@@ -20,6 +20,7 @@ from filelock import Timeout as FileLockTimeout
 
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
+from lilbee.app import ingest as ingest_mod
 from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN, finish_pending_absorb
 from lilbee.app.ingest import (
     forget_unfinished_on_cancel,
@@ -53,10 +54,12 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.lock import (
+    LibraryHold,
     LibraryUnlockableError,
     LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
+    library_held,
     no_sync_running,
     source_keys_in_use,
     sync_running,
@@ -879,7 +882,7 @@ class TestTheCommonAddPaysNothing:
             return real_exists(path, **kwargs)
 
         with (
-            mock.patch.object(absorb_mod, "syncs_held_off") as held_off,
+            mock.patch.object(ingest_mod, "library_held") as held_off,
             mock.patch.object(absorb_mod, "write_journal") as journal,
             mock.patch.object(absorb_mod, "_rekey") as rekey,
             mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus") as rules,
@@ -933,9 +936,9 @@ class TestTheCommonAddPaysNothing:
     async def test_an_absorb_does_take_the_lock_and_write_the_journal(self, library, notes):
         """The control for the test above: the same probes fire when a child is there."""
         await _add(notes / "work")
-        real_held_off = absorb_mod.syncs_held_off
+        real_held_off = ingest_mod.library_held
         with (
-            mock.patch.object(absorb_mod, "syncs_held_off", side_effect=real_held_off) as held_off,
+            mock.patch.object(ingest_mod, "library_held", side_effect=real_held_off) as held_off,
             mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus", wraps=None) as rules,
         ):
             rules.return_value.excludes_entry.return_value = False
@@ -1878,7 +1881,6 @@ class TestAnMcpSyncThatCannotFinishAnAdd:
 
     async def test_the_sync_inside_an_add_returns_an_error(self, library, tmp_path, cause):
         """Another process's add dies between this add's registration and its sync."""
-        from lilbee.app import ingest as ingest_mod
         from lilbee.mcp_server import add
 
         other = tmp_path / "src" / "other"
@@ -2709,8 +2711,6 @@ class TestTheAddThatFinishesAnAbsorb:
     def test_an_add_that_waits_while_another_process_finishes_keeps_them(self, library, notes):
         from contextlib import contextmanager
 
-        import lilbee.app.ingest as ingest_mod
-
         self._killed_absorb(library, notes)
         real_lock = ingest_mod.skip_records_lock
 
@@ -2719,7 +2719,7 @@ class TestTheAddThatFinishesAnAbsorb:
             with real_lock(data_root, cancel):
                 journal = read_journal(data_root)
                 if journal is not None:
-                    absorb_mod._roll_forward(cfg, library.store, journal)
+                    absorb_mod._roll_forward(cfg, library.store, journal, LibraryHold(data_root))
                 yield
 
         with mock.patch.object(ingest_mod, "skip_records_lock", _the_other_process_finishes_first):
@@ -2731,8 +2731,6 @@ class TestTheAddThatFinishesAnAbsorb:
 
     def test_a_journal_left_after_the_add_arrived_is_finished_and_kept(self, library, notes):
         """The other process died while this add waited for the lock."""
-        import lilbee.app.ingest as ingest_mod
-
         self._killed_absorb(library, notes)
 
         with mock.patch.object(ingest_mod, "keys_of_pending_absorb", return_value=[]):
@@ -3781,7 +3779,7 @@ class TestACancelAtTheWaitForARunningSync:
 
         with (
             pytest.raises(SyncMarkWaitCancelledError),
-            absorb_mod._syncs_held_off(cfg, "a sync is running", 0.0, None),
+            library_held(cfg.data_root, "a sync is running"),
         ):
             raise SyncMarkWaitCancelledError
 

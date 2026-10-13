@@ -13,8 +13,10 @@ from filelock import BaseFileLock, ReadWriteLock
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
+from lilbee.app.reset import perform_reset
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.data.ingest.pipeline import _finish_pending_absorb
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
     SkipKind,
@@ -29,6 +31,7 @@ from lilbee.runtime.absorb_journal import (
     absorb_pending,
     write_journal,
 )
+from lilbee.runtime.lock import LibraryHold, ResetRefusedError, SyncRunningError, library_held
 from tests.conftest import make_mock_services
 
 _RECORDS_LOCK = "records"
@@ -290,6 +293,85 @@ class TestACancelSetAtTheFirstBuild:
         assert _registry() == {"work": str((notes / "work").resolve())}
         assert load_skip_kinds(cfg.data_root) == {}
         assert takes.held() == []
+
+
+def _reset(notes: Path) -> None:
+    _leave_journal(notes)
+    perform_reset()
+
+
+def _sync_finisher(notes: Path) -> None:
+    svc_mod.get_services()
+    _leave_journal(notes)
+    _finish_pending_absorb()
+
+
+def _process_start(notes: Path) -> None:
+    _leave_journal(notes)
+    svc_mod.get_services()
+
+
+_PATHS_THAT_TAKE_BOTH_LOCKS = {
+    "reset": _reset,
+    "sync finisher": _sync_finisher,
+    "process start": _process_start,
+}
+_A_SYNC_RUNS = "A sync is running."
+
+
+class TestTheSyncLockIsTakenBeforeTheRecordsLock:
+    @pytest.mark.parametrize("path", list(_PATHS_THAT_TAKE_BOTH_LOCKS))
+    def test_no_records_lock_is_open_when_a_take_of_the_sync_lock_starts(
+        self, path, notes, takes, builds
+    ):
+        held_at_take: list[list[str]] = []
+        takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
+
+        _PATHS_THAT_TAKE_BOTH_LOCKS[path](notes)
+
+        assert held_at_take
+        assert [held for held in held_at_take if _RECORDS_LOCK in held] == []
+        assert takes.records_takes > 0
+        assert not absorb_pending(cfg.data_root)
+        assert takes.held() == []
+
+    def test_the_recorder_sees_a_take_of_the_sync_lock_under_the_records_lock(self, takes):
+        """Control: the recorder names the records lock when the sync lock is taken under it."""
+        held_at_take: list[list[str]] = []
+        takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
+
+        with skip_records_lock(cfg.data_root), library_held(cfg.data_root, _A_SYNC_RUNS):
+            pass
+
+        assert held_at_take == [[_RECORDS_LOCK]]
+
+    @pytest.mark.parametrize("running", [_A_SYNC_RUNS, None], ids=["a change", "a reset"])
+    def test_the_owner_holds_both_locks_for_its_block_and_frees_both(self, running, takes):
+        held_at_take: list[list[str]] = []
+        takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
+
+        with library_held(cfg.data_root, running) as hold:
+            assert hold == LibraryHold(cfg.data_root)
+            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
+
+        assert held_at_take == [[]]
+        assert (takes.sync_write_takes, takes.records_takes) == (1, 1)
+        assert takes.held() == []
+
+    @pytest.mark.parametrize(
+        ("running", "refusal"),
+        [(_A_SYNC_RUNS, SyncRunningError), (None, ResetRefusedError)],
+        ids=["a change", "a reset"],
+    )
+    def test_a_held_sync_lock_refuses_the_owner_before_the_records_lock(
+        self, running, refusal, takes
+    ):
+        with library_held(cfg.data_root, _A_SYNC_RUNS):
+            taken = takes.records_takes
+            with pytest.raises(refusal), library_held(cfg.data_root, running):
+                pytest.fail("the block ran under a held sync lock")
+
+            assert takes.records_takes == taken
 
 
 class TestTheStartFinisherRunsOutsideTheCreationLock:
