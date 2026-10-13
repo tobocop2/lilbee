@@ -9,6 +9,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -22,6 +23,7 @@ from lilbee.data.ingest.discovery import excluded_extension_reasons
 from lilbee.runtime.ingest_lock import IngestLockRegistry
 from lilbee.runtime.lock import refuse_where_a_sync_cannot_lock
 from lilbee.runtime.progress import SseEvent
+from lilbee.runtime.thread_end import run_to_thread_end
 from lilbee.server.handlers.sse import SseStream, sse_event
 from lilbee.server.models import AddSummary, SyncSummary
 
@@ -42,17 +44,13 @@ async def _to_thread_unbroken(work: Callable[[], _Result]) -> _Result:
 
     The caller is cancelled again when *work* has returned, so its next await raises.
     """
-    running = asyncio.ensure_future(asyncio.to_thread(work))
-    cancelled = False
-    while not running.done():
-        try:
-            await asyncio.shield(running)
-        except asyncio.CancelledError:
-            cancelled = True
-    task = asyncio.current_task()
-    if cancelled and task is not None:
-        task.cancel()
-    return running.result()
+    cancel = threading.Event()
+    try:
+        return await run_to_thread_end(functools.partial(asyncio.to_thread, work), cancel)
+    finally:
+        task = asyncio.current_task()
+        if cancel.is_set() and task is not None:
+            task.cancel()
 
 
 async def _run_sync_with_sentinel(

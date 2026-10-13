@@ -517,7 +517,7 @@ class TestRemove:
         assert load_skip_kinds(cfg.data_root) == {"scan.pdf": SkipKind.REMOVED}
 
     async def test_removes_known_file(self, mock_svc):
-        from lilbee.data.store import RemoveResult
+        from lilbee.data.store.types import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
         result = await remove(["a.md"])
@@ -525,7 +525,7 @@ class TestRemove:
         assert result["not_found"] == []
 
     async def test_not_found(self, mock_svc):
-        from lilbee.data.store import RemoveResult
+        from lilbee.data.store.types import RemoveResult
 
         mock_svc.store.remove_documents.return_value = RemoveResult(
             removed=[], not_found=["missing.md"]
@@ -3148,3 +3148,134 @@ class TestACallCancelledBeforeItAsksForTheRecordsLock:
 
         assert isinstance(raised, SkipRecordsWaitCancelledError)
         mock_svc.store.remove_documents.assert_not_called()
+
+
+class TestACancelledCallEndsWhenItsThreadEnds:
+    """A tool call cancelled while its thread works ends after the thread, with its result."""
+
+    @staticmethod
+    async def _cancel_while_the_thread_is_parked(call, park) -> tuple[list[str], list]:
+        """Cancel *call* while *park* holds its thread; returns the order of ends and the report."""
+        import threading
+
+        parked, release = anyio.Event(), threading.Event()
+        order: list[str] = []
+        report: list = []
+        scope = anyio.CancelScope()
+
+        def _park_the_thread() -> None:
+            anyio.from_thread.run_sync(parked.set)
+            assert release.wait(60), "the test never released the thread"
+            order.append("thread left its park")
+
+        async def _call() -> None:
+            with scope:
+                try:
+                    report.append(await call())
+                finally:
+                    order.append("call ended")
+
+        with park(_park_the_thread):
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_call)
+                await parked.wait()
+                scope.cancel()
+                await anyio.wait_all_tasks_blocked()
+                release.set()
+        return order, report
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _under_the_records_lock(park_the_thread):
+        """Park the thread that takes the records lock, with the lock held and nothing changed."""
+        from lilbee.app import ingest
+
+        real = ingest.skip_records_lock
+
+        @contextlib.contextmanager
+        def _held(*args, **kwargs):
+            with real(*args, **kwargs):
+                park_the_thread()
+                yield
+
+        with mock.patch.object(ingest, "skip_records_lock", _held):
+            yield
+
+    async def test_an_add_reports_the_registration_and_starts_no_sync(self, tmp_path):
+        src = tmp_path / "source" / "scan.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+
+        with mock.patch("lilbee.data.ingest.sync", new=AsyncMock()) as run_sync:
+            order, report = await self._cancel_while_the_thread_is_parked(
+                lambda: add(paths=[str(src)]), self._under_the_records_lock
+            )
+
+        assert order == ["thread left its park", "call ended"]
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
+        assert report[0]["copied"] == ["scan.txt"]
+        assert report[0]["sync"] is None
+        run_sync.assert_not_awaited()
+
+    async def test_a_remove_reports_the_removal(self, mock_svc):
+        from lilbee.data.store.types import RemoveResult
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
+
+        order, report = await self._cancel_while_the_thread_is_parked(
+            lambda: remove(names=["a.md"]), self._under_the_records_lock
+        )
+
+        assert order == ["thread left its park", "call ended"]
+        mock_svc.store.remove_documents.assert_called_once()
+        assert report == [{"command": "remove", "removed": ["a.md"], "not_found": []}]
+
+    async def test_a_sync_handler_reports_its_result(self, mock_svc):
+        from lilbee import mcp_server
+
+        registered = [
+            handler
+            for handler, _name, _gate in mcp_server._REGISTRATIONS
+            if getattr(handler, "__wrapped__", None) is mcp_server.list_documents
+        ]
+        assert len(registered) == 1
+
+        @contextlib.contextmanager
+        def _in_the_store(park_the_thread):
+            def _sources():
+                park_the_thread()
+                return [{"filename": "a.md", "chunk_count": 2}]
+
+            mock_svc.store.get_sources.side_effect = _sources
+            yield
+
+        order, report = await self._cancel_while_the_thread_is_parked(registered[0], _in_the_store)
+
+        assert order == ["thread left its park", "call ended"]
+        assert [doc["filename"] for doc in report[0]["documents"]] == ["a.md"]
+
+    async def test_a_thread_that_stops_on_the_cancel_ends_the_call_as_cancelled(self, mock_svc):
+        """A sync handler that raises on its cancel token ends its call with the cancel."""
+        from lilbee import mcp_server
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        def _stops_on_its_token() -> dict:
+            token = mcp_server._caller_cancelled()
+            assert token is not None
+            park[0]()
+            assert token.is_set(), "the cancel did not reach the thread before the thread went on"
+            raise TaskCancelledError
+
+        park: list = []
+
+        @contextlib.contextmanager
+        def _in_the_handler(park_the_thread):
+            park.append(park_the_thread)
+            yield
+
+        order, report = await self._cancel_while_the_thread_is_parked(
+            mcp_server._offload_sync(_stops_on_its_token), _in_the_handler
+        )
+
+        assert order == ["thread left its park", "call ended"]
+        assert report == []

@@ -70,6 +70,7 @@ from lilbee.data.store import (
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
 from lilbee.runtime.lock import ResetRefusedError
+from lilbee.runtime.thread_end import run_to_thread_end
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -126,6 +127,7 @@ def set_http_mounted(value: bool) -> None:
 
 
 _F = TypeVar("_F", bound=Callable[..., Any])
+_T = TypeVar("_T")
 
 # Set by the offload for the duration of one sync handler and read by the long
 # ones. A parameter would reach the generated tool schema and invite an agent to
@@ -138,6 +140,11 @@ def _caller_cancelled() -> threading.Event | None:
     return _CANCEL.get()
 
 
+async def _on_thread(work: Callable[[], _T], cancel: threading.Event) -> _T:
+    """Run blocking *work* on a worker thread; a cancelled call ends when the thread ends."""
+    return await run_to_thread_end(functools.partial(anyio.to_thread.run_sync, work), cancel)
+
+
 def _offload_sync(fn: _F) -> _F:
     """Run a sync tool handler off the event loop; async handlers pass through.
 
@@ -146,12 +153,9 @@ def _offload_sync(fn: _F) -> _F:
     connected agent. ``functools.wraps`` preserves the wrapped signature so the
     generated tool schema is unchanged.
 
-    ``abandon_on_cancel`` releases the caller the moment it cancels. A worker
-    thread cannot be interrupted, so the handler still runs to completion; the
-    default would additionally hold the cancelling task until it did, which on
-    the shared mount keeps a connection open for a request nobody is waiting
-    for. Work that must actually stop takes a cancel token instead, as the
-    ingest tools do.
+    A cancelled call sets the cancel token at once and ends when its thread
+    ends, so no handler changes the library after its call has ended. A worker
+    thread cannot be interrupted: work that must stop early polls the token.
     """
     if inspect.iscoroutinefunction(fn):
         return fn
@@ -160,9 +164,7 @@ def _offload_sync(fn: _F) -> _F:
     async def _runner(*args: Any, **kwargs: Any) -> Any:
         with _cancel_token() as token:
             _CANCEL.set(token)
-            return await anyio.to_thread.run_sync(
-                functools.partial(fn, *args, **kwargs), abandon_on_cancel=True
-            )
+            return await _on_thread(functools.partial(fn, *args, **kwargs), token)
 
     return cast("_F", _runner)
 
@@ -445,16 +447,15 @@ async def add(
 
     # Registration touches config.toml (a locked read-modify-write); keep the
     # blocking disk I/O off the event loop. A cancelled call ends its wait for
-    # the records lock.
+    # the records lock. A cancel after the lock is taken stops the sync, not the add.
     try:
         with _cancel_token() as cancel:
-            reg_result = await anyio.to_thread.run_sync(
-                functools.partial(register_sources, valid, force=force, cancel=cancel),
-                abandon_on_cancel=True,
+            reg_result = await _on_thread(
+                functools.partial(register_sources, valid, force=force, cancel=cancel), cancel
             )
         errors.extend(reg_result.refused)
         reached = reg_result.reached_corpus or bool(crawled_count)
-        sync_result = await _sync_after_add(reached, ocr, ocr_timeout)
+        sync_result = None if cancel.is_set() else await _sync_after_add(reached, ocr, ocr_timeout)
     except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
     result: dict[str, Any] = {
@@ -594,9 +595,8 @@ async def remove(names: list[str]) -> dict[str, Any]:
 
     try:
         with _cancel_token() as cancel:
-            result = await anyio.to_thread.run_sync(
-                functools.partial(remove_documents_durably, names, cancel=cancel),
-                abandon_on_cancel=True,
+            result = await _on_thread(
+                functools.partial(remove_documents_durably, names, cancel=cancel), cancel
             )
     except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
