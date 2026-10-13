@@ -287,8 +287,10 @@ def register_sources(
     A data root whose filesystem cannot lock files raises ``LockingUnsupportedError``
     for every add, and a sync lock that cannot be opened raises
     ``LibraryUnlockableError``, because the sync after the add refuses there.
-    Setting *cancel* ends the wait for the records lock, and the wait for a running
-    sync, with ``SkipRecordsWaitCancelledError``, with nothing changed.
+    Setting *cancel* ends the wait for the records lock with
+    ``SkipRecordsWaitCancelledError``, with nothing changed. An add does not wait
+    for a running sync: it takes the sync lock once, and a *cancel* set at that
+    take raises the same error, with nothing changed.
     """
     config = active_config()
     if paths:

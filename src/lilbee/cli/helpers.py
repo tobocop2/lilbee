@@ -214,8 +214,9 @@ def register_paths(
 ) -> RegisterResult:
     """Register *paths* as source roots, reporting what happened to each.
 
-    Setting *cancel* ends the wait for the records lock, and the wait for a running
-    sync, with nothing registered.
+    Setting *cancel* ends the wait for the records lock, with nothing registered.
+    An add does not wait for a running sync: it takes the sync lock once, and a
+    *cancel* set at that take ends the add, with nothing registered.
     """
     result = register_sources(paths, force=force, cancel=cancel)
     for name in result.name_taken:
