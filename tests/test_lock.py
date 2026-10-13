@@ -471,6 +471,56 @@ class TestSyncMark:
         with no_sync_running(tmp_path):
             pass
 
+    @pytest.mark.parametrize("reset_held", [reset_held_on_a_thread, _reset_held_in_another_process])
+    async def test_a_set_cancel_ends_the_wait_of_a_sync_while_the_reset_still_holds(
+        self, tmp_path: Path, reset_held
+    ) -> None:
+        cancel = threading.Event()
+        entered = []
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path, cancel):
+                entered.append("sync")
+
+        before = set(threading.enumerate())
+        with reset_held(tmp_path), _recorded_read_takes() as (_waits, first_take):
+            sync_task = asyncio.create_task(_sync())
+            assert await asyncio.to_thread(first_take.wait, _FAILURE_TIMEOUT_S)
+            cancel.set()
+            # A guard against a hang; the task is never cancelled, only the signal is set.
+            await asyncio.wait({sync_task}, timeout=_FAILURE_TIMEOUT_S)
+            returned = sync_task.done()
+            with (
+                pytest.raises(ResetRefusedError, match="is running on this library"),
+                no_sync_running(tmp_path),
+            ):
+                pass
+
+        assert returned, "the set cancel did not end the wait for the reset"
+        assert sync_task.cancelled()
+        assert entered == []
+        assert _threads_left_since(before) == []
+        with no_sync_running(tmp_path):
+            pass
+
+    async def test_a_sync_with_an_unset_cancel_waits_for_the_reset_and_runs(
+        self, tmp_path: Path
+    ) -> None:
+        cancel = threading.Event()
+        order: list[str] = []
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path, cancel):
+                order.append("sync ran")
+
+        with reset_held_on_a_thread(tmp_path), _sync_take_that_ends_busy() as found_the_mark_held:
+            sync_task = asyncio.create_task(_sync())
+            assert await asyncio.to_thread(found_the_mark_held.wait, _FAILURE_TIMEOUT_S)
+            order.append("reset ended")
+        await asyncio.wait_for(sync_task, _FAILURE_TIMEOUT_S)
+
+        assert order == ["reset ended", "sync ran"]
+
     async def test_a_wiki_writer_cancelled_while_it_waits_takes_the_mark_in_short_slices(
         self, tmp_path: Path
     ) -> None:

@@ -1477,6 +1477,38 @@ class TestSyncCancellation:
         # The unplanned corpus is not reconciled as a silent drop.
         assert "Sync reconciliation" not in caplog.text
 
+    async def test_a_set_cancel_ends_a_sync_that_waits_for_a_reset(
+        self, mock_extract_file, isolated_env, mock_svc
+    ):
+        from filelock import ReadWriteLock
+
+        from lilbee.data.ingest import sync
+        from lilbee.runtime.lock import no_sync_running
+        from tests.conftest import reset_held_on_a_thread
+
+        (isolated_env / "a.txt").write_text("file a", encoding="utf-8")
+        cancel = threading.Event()
+        real_acquire = ReadWriteLock.acquire_read
+
+        def _cancel_at_the_take(lock: ReadWriteLock, *args, **kwargs) -> None:
+            cancel.set()
+            real_acquire(lock, *args, **kwargs)
+
+        # The reset holds until this block ends; its own limit only ends a test that hangs.
+        with (
+            reset_held_on_a_thread(cfg.data_root, ends_after_s=30.0) as resetter,
+            mock.patch.object(ReadWriteLock, "acquire_read", _cancel_at_the_take),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await sync(quiet=True, cancel=cancel)
+            reset_still_held = resetter.is_alive()
+
+        assert reset_still_held, "the sync ended only when the reset did"
+        mock_extract_file.assert_not_called()
+        mock_svc.store.write_chunks_batch.assert_not_called()
+        with no_sync_running(cfg.data_root):
+            pass
+
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio

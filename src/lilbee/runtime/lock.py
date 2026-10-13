@@ -379,8 +379,12 @@ def _raise_cancel_behind(error: Exception) -> None:
         raise error.__context__ from None
 
 
-async def _take_sync_lock(lock: AsyncReadWriteLock) -> None:
-    """Take the read side of *lock*, waiting for a reset in slices a cancel can end."""
+async def _take_sync_lock(lock: AsyncReadWriteLock, cancel: CancelSignal | None) -> None:
+    """Take the read side of *lock*, waiting for a reset in slices a cancel can end.
+
+    A task cancel, or *cancel* set while the lock is busy, ends the wait with
+    ``asyncio.CancelledError``.
+    """
     while True:
         try:
             await lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
@@ -389,6 +393,8 @@ async def _take_sync_lock(lock: AsyncReadWriteLock) -> None:
             # Only a busy lock is waited out.
             if not isinstance(exc, FileLockTimeout):
                 raise
+            if _is_set(cancel):
+                raise asyncio.CancelledError from None
         else:
             return
 
@@ -413,10 +419,13 @@ def _is_set(cancel: CancelSignal | None) -> bool:
 
 
 @asynccontextmanager
-async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
+async def sync_running(
+    data_root: Path, cancel: CancelSignal | None = None
+) -> AsyncGenerator[None, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
-    The wait for a reset to finish runs off the event loop.
+    The wait for a reset to finish runs off the event loop. Setting *cancel* ends
+    that wait with ``asyncio.CancelledError``, and the block does not run.
     """
     # Opening the lock reads and writes files, so it runs off the event loop too.
     lock = await asyncio.to_thread(
@@ -427,7 +436,7 @@ async def sync_running(data_root: Path) -> AsyncGenerator[None, None]:
         return
     try:
         try:
-            await _take_sync_lock(lock)
+            await _take_sync_lock(lock, cancel)
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
         yield
