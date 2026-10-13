@@ -16,11 +16,11 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Generator, Iterator
 from contextlib import asynccontextmanager, closing, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, NoReturn, overload
+from typing import Literal, NoReturn, Self, overload
 
 from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
@@ -50,7 +50,7 @@ _SYNC_LOCK_NAME = "sync.lock"
 _SYNC_PROBE_PREFIX = "sync.probe."
 # How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
 _PROBE_WAIT_S = 0.3
-# Longest single wait for a reset to finish; a cancelled sync returns within it.
+# Longest single attempt at a side of the sync lock; a cancelled wait returns within it.
 _SYNC_TAKE_SLICE_S = 0.1
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
@@ -119,7 +119,7 @@ class _NoHardLinksError(OSError):
 
 
 class SyncMarkWaitCancelledError(Exception):
-    """Raised when a cancel ends the wait for the sync mark; the block did not run."""
+    """Raised when a cancel ends a wait for the sync lock; the block did not run."""
 
 
 # How each error that refuses a writer tells the user to run the command again.
@@ -379,27 +379,47 @@ def _raise_cancel_behind(error: Exception) -> None:
         raise error.__context__ from None
 
 
-async def _take_sync_lock(lock: AsyncReadWriteLock, cancel: CancelSignal | None) -> None:
-    """Take the read side of *lock*, waiting for a reset in slices a cancel can end.
+class _SyncLockAttempt:
+    """One try at a side of the sync lock, *seconds* long at most; ``busy`` is how it failed."""
 
-    A task cancel, or *cancel* set at the end of a slice, raises
-    ``asyncio.CancelledError``. The slice can have taken the lock: the caller closes it.
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+        self.busy: FileLockTimeout | None = None
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, _kind: object, error: BaseException | None, _traceback: object) -> bool:
+        if isinstance(error, _SYNC_LOCK_ERRORS):
+            _raise_cancel_behind(error)
+        # Only a busy lock is waited out.
+        if isinstance(error, FileLockTimeout):
+            self.busy = error
+        return self.busy is not None
+
+
+def _sync_lock_wait(
+    cancel: CancelSignal | None, wait: float | None = None
+) -> Iterator[_SyncLockAttempt]:
+    """Every wait for a side of the sync lock: yield one attempt after another until one takes it.
+
+    The caller takes the lock inside the ``with`` of each attempt, for its ``seconds``.
+    *cancel* is read after every attempt, the one that took the lock included: a set
+    *cancel* raises ``SyncMarkWaitCancelledError``, and the caller closes the lock.
+    A lock still busy *wait* seconds after the first attempt raises filelock's
+    ``Timeout``; None sets no limit.
     """
+    deadline = None if wait is None else time.monotonic() + wait
     while True:
-        try:
-            await lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
-        except _SYNC_LOCK_ERRORS as exc:
-            _raise_cancel_behind(exc)
-            # Only a busy lock is waited out.
-            if not isinstance(exc, FileLockTimeout):
-                raise
-            taken = False
-        else:
-            taken = True
+        left = _SYNC_TAKE_SLICE_S if deadline is None else deadline - time.monotonic()
+        attempt = _SyncLockAttempt(max(0.0, min(_SYNC_TAKE_SLICE_S, left)))
+        yield attempt
         if _is_set(cancel):
-            raise asyncio.CancelledError
-        if taken:
+            raise SyncMarkWaitCancelledError
+        if attempt.busy is None:
             return
+        if deadline is not None and time.monotonic() >= deadline:
+            raise attempt.busy
 
 
 def _take_sync_lock_on_thread(lock: ReadWriteLock, cancel: CancelSignal | None) -> None:
@@ -440,7 +460,11 @@ async def sync_running(
         return
     try:
         try:
-            await _take_sync_lock(lock, cancel)
+            for attempt in _sync_lock_wait(cancel):
+                with attempt:
+                    await lock.acquire_read(timeout=attempt.seconds)
+        except SyncMarkWaitCancelledError:
+            raise asyncio.CancelledError from None
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
         yield

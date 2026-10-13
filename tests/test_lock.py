@@ -11,6 +11,7 @@ import threading
 import time
 from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -28,6 +29,7 @@ from lilbee.runtime.lock import (
     ResetRefusedError,
     SyncMarkWaitCancelledError,
     _lock_path,
+    _sync_lock_wait,
     acquire_scope_lock,
     acquire_server_lock,
     no_sync_running,
@@ -1331,6 +1333,145 @@ class TestSyncMark:
         assert _lock_warnings(caplog) == 1
         assert "Could not delete the lock probe" in caplog.text
         assert len(list(tmp_path.glob("sync.probe.*"))) == 1
+
+
+@dataclass
+class _DrivenWait:
+    """One wait for the sync lock, driven over *outcomes*, each "busy" or "taken".
+
+    Attempt number *set_cancel_at* sets *cancel* as it ends. Each attempt moves
+    ``clock`` on by its seconds, and records them and the busy error it raised.
+    """
+
+    outcomes: list[str]
+    cancel: threading.Event | None = None
+    set_cancel_at: int = -1
+    clock: float = 0.0
+    seconds: list[float] = field(default_factory=list)
+    raised: list[FileLockTimeout] = field(default_factory=list)
+
+    def run(self, wait: float | None = None) -> None:
+        clock = SimpleNamespace(monotonic=lambda: self.clock)
+        with mock.patch("lilbee.runtime.lock.time", clock):
+            for attempt in _sync_lock_wait(self.cancel, wait):
+                with attempt:
+                    self._make(attempt.seconds)
+
+    def _make(self, seconds: float) -> None:
+        number = len(self.seconds)
+        self.seconds.append(seconds)
+        self.clock += seconds
+        if self.cancel is not None and number == self.set_cancel_at:
+            self.cancel.set()
+        if self.outcomes[number] == "busy":
+            self.raised.append(FileLockTimeout("sync.lock"))
+            raise self.raised[-1]
+
+
+class TestSyncLockWait:
+    """One rule for every wait for a side of the sync lock: slices, cancel, deadline."""
+
+    def test_a_wait_with_no_cancel_tries_in_slices_until_an_attempt_takes_the_lock(self) -> None:
+        wait = _DrivenWait(["busy", "busy", "taken"])
+
+        wait.run()
+
+        assert wait.seconds == [_SYNC_TAKE_SLICE_S] * 3
+        assert len(wait.raised) == 2
+
+    @pytest.mark.parametrize(
+        ("outcomes", "set_cancel_at"),
+        [
+            (["busy", "busy", "taken"], 1),
+            (["busy", "taken", "taken"], 1),
+            (["taken", "taken"], 0),
+        ],
+        ids=["during the wait", "at the attempt that takes the lock", "at a free first attempt"],
+    )
+    @pytest.mark.parametrize("limit", [None, 30.0])
+    def test_a_cancel_set_at_an_attempt_ends_the_wait_after_that_attempt(
+        self, outcomes: list[str], set_cancel_at: int, limit: float | None
+    ) -> None:
+        wait = _DrivenWait(outcomes, threading.Event(), set_cancel_at)
+
+        with pytest.raises(SyncMarkWaitCancelledError):
+            wait.run(limit)
+
+        assert len(wait.seconds) == set_cancel_at + 1, "the wait tried again after the cancel"
+
+    def test_a_cancel_set_before_the_wait_ends_it_after_one_attempt(self) -> None:
+        cancel = threading.Event()
+        cancel.set()
+        wait = _DrivenWait(["taken", "taken"], cancel)
+
+        with pytest.raises(SyncMarkWaitCancelledError):
+            wait.run()
+
+        assert len(wait.seconds) == 1
+
+    def test_a_wait_of_zero_makes_one_attempt_that_does_not_block(self) -> None:
+        wait = _DrivenWait(["busy", "taken"])
+
+        with pytest.raises(FileLockTimeout) as refusal:
+            wait.run(0.0)
+
+        assert wait.seconds == [0.0]
+        assert refusal.value is wait.raised[0], "the deadline did not raise the lock's busy error"
+
+    def test_a_wait_of_zero_returns_when_its_one_attempt_takes_the_lock(self) -> None:
+        wait = _DrivenWait(["taken"])
+
+        wait.run(0.0)
+
+        assert (wait.seconds, wait.raised) == ([0.0], [])
+
+    def test_a_deadline_ends_a_wait_that_stays_busy(self) -> None:
+        wait = _DrivenWait(["busy"] * 9)
+
+        with pytest.raises(FileLockTimeout) as refusal:
+            wait.run(2.5 * _SYNC_TAKE_SLICE_S)
+
+        assert wait.seconds == pytest.approx(
+            [_SYNC_TAKE_SLICE_S, _SYNC_TAKE_SLICE_S, 0.5 * _SYNC_TAKE_SLICE_S]
+        )
+        assert refusal.value is wait.raised[-1]
+
+    def test_a_lock_taken_at_the_last_attempt_before_the_deadline_is_held(self) -> None:
+        wait = _DrivenWait(["busy", "busy", "taken"])
+
+        wait.run(2.5 * _SYNC_TAKE_SLICE_S)
+
+        assert len(wait.seconds) == 3
+
+    def test_a_cancel_set_at_the_last_attempt_before_the_deadline_is_a_cancel(self) -> None:
+        wait = _DrivenWait(["busy"], threading.Event(), set_cancel_at=0)
+
+        with pytest.raises(SyncMarkWaitCancelledError):
+            wait.run(0.0)
+
+    def test_an_error_that_is_not_a_busy_lock_ends_the_wait(self) -> None:
+        tried: list[float] = []
+
+        with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+            for attempt in _sync_lock_wait(None):
+                with attempt:
+                    tried.append(attempt.seconds)
+                    raise sqlite3.DatabaseError("file is not a database")
+
+        assert len(tried) == 1
+
+    def test_a_busy_error_that_replaced_a_task_cancel_ends_the_wait_as_that_cancel(self) -> None:
+        tried: list[float] = []
+        busy = FileLockTimeout("sync.lock")
+        busy.__context__ = asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            for attempt in _sync_lock_wait(None):
+                with attempt:
+                    tried.append(attempt.seconds)
+                    raise busy
+
+        assert len(tried) == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")
