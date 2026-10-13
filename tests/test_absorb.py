@@ -64,6 +64,7 @@ from lilbee.runtime.lock import (
 from tests.conftest import (
     UNFINISHED_ADD_REFUSALS,
     UnfinishedAdd,
+    cancel_set_when_the_sync_lock_is_granted,
     filesystem_without_locking,
     leave_unfinished_add,
     make_mock_services,
@@ -71,7 +72,7 @@ from tests.conftest import (
     sync_lock_not_a_lock_file,
     unfinished_add_refused,
 )
-from tests.test_lock import _reset_held_in_another_process
+from tests.test_lock import _reset_held_in_another_process, _sync_take_that_ends_busy
 from tests.test_skip_marker import (
     _records_lock_is_free,
     _SetAsTheLockFrees,
@@ -2998,6 +2999,45 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             assert run(cancel) == cancelled_result
 
         body.assert_not_called()
+        with no_sync_running(cfg.data_root):
+            pass
+
+    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
+    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
+    def test_a_writer_granted_the_mark_with_its_cancel_set_writes_nothing(
+        self, library, writer, cancel_set
+    ):
+        import threading
+
+        cancel = threading.Event()
+        body = MagicMock()
+        run, cancelled_result = self._writers(body)[writer]
+        outcome: list[object] = []
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        if cancel_set == "before a free take":
+            cancel.set()
+        with cancel_set_when_the_sync_lock_is_granted(cancel) as grants:
+            if cancel_set == "after a wait":
+                with (
+                    reset_held_on_a_thread(cfg.data_root),
+                    _sync_take_that_ends_busy() as found_the_mark_held,
+                ):
+                    thread = threading.Thread(target=lambda: outcome.append(run(cancel)))
+                    thread.start()
+                    assert found_the_mark_held.wait(_WIKI_FAILURE_TIMEOUT_S)
+                    assert not cancel.is_set()
+                # A guard against a hang; the outcome below is what the test asserts.
+                thread.join(_WIKI_FAILURE_TIMEOUT_S)
+            else:
+                outcome.append(run(cancel))
+
+        if cancel_set != "before a free take":
+            assert grants == ["granted"], "the writer never held the mark"
+        assert outcome == [cancelled_result]
+        body.assert_not_called()
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        assert not (wiki_root / "index.md").exists()
+        assert not (wiki_root / "log.md").exists()
         with no_sync_running(cfg.data_root):
             pass
 

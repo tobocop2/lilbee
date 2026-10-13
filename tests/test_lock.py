@@ -591,6 +591,61 @@ class TestSyncMark:
         with no_sync_running(tmp_path):
             pass
 
+    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
+    def test_a_wiki_writer_granted_the_mark_with_its_cancel_set_does_not_run(
+        self, tmp_path: Path, cancel_set: str
+    ) -> None:
+        cancel = threading.Event()
+        outcome: list[object] = []
+
+        def _writer() -> None:
+            try:
+                with source_keys_in_use(tmp_path, cancel):
+                    outcome.append("the block ran")
+            except SyncMarkWaitCancelledError as exc:
+                outcome.append(type(exc))
+
+        if cancel_set == "before a free take":
+            cancel.set()
+        with cancel_set_when_the_sync_lock_is_granted(cancel) as grants:
+            if cancel_set == "after a wait":
+                with (
+                    reset_held_on_a_thread(tmp_path),
+                    _sync_take_that_ends_busy() as found_the_mark_held,
+                ):
+                    writer = threading.Thread(target=_writer)
+                    writer.start()
+                    assert found_the_mark_held.wait(_FAILURE_TIMEOUT_S)
+                    assert not cancel.is_set()
+                # A guard against a hang; the outcome below is what the test asserts.
+                writer.join(_FAILURE_TIMEOUT_S)
+            else:
+                _writer()
+
+        if cancel_set != "before a free take":
+            assert grants == ["granted"], "the writer never held the mark"
+        assert outcome == [SyncMarkWaitCancelledError]
+        with no_sync_running(tmp_path):
+            pass
+
+    def test_a_wiki_writer_with_an_unset_cancel_waits_for_the_reset_and_runs(
+        self, tmp_path: Path
+    ) -> None:
+        order: list[str] = []
+
+        def _writer() -> None:
+            with source_keys_in_use(tmp_path, threading.Event()):
+                order.append("writer ran")
+
+        with reset_held_on_a_thread(tmp_path), _sync_take_that_ends_busy() as found_the_mark_held:
+            writer = threading.Thread(target=_writer)
+            writer.start()
+            assert found_the_mark_held.wait(_FAILURE_TIMEOUT_S)
+            order.append("reset ended")
+        writer.join(_FAILURE_TIMEOUT_S)
+
+        assert order == ["reset ended", "writer ran"]
+
     @pytest.mark.parametrize("cancelled_in", ["the wait", "the block"])
     async def test_a_close_error_does_not_replace_the_cancel_of_a_sync(
         self, tmp_path: Path, caplog, cancelled_in: str

@@ -422,21 +422,6 @@ def _sync_lock_wait(
             raise attempt.busy
 
 
-def _take_sync_lock_on_thread(lock: ReadWriteLock, cancel: CancelSignal | None) -> None:
-    """Take the read side of *lock* on this thread, in the slices ``_take_sync_lock`` waits in.
-
-    Raises ``SyncMarkWaitCancelledError`` when *cancel* is set before the lock is free.
-    """
-    while True:
-        if _is_set(cancel):
-            raise SyncMarkWaitCancelledError
-        try:
-            lock.acquire_read(timeout=_SYNC_TAKE_SLICE_S)
-        except FileLockTimeout:
-            continue
-        return
-
-
 def _is_set(cancel: CancelSignal | None) -> bool:
     return cancel is not None and cancel.is_set()
 
@@ -485,8 +470,9 @@ def source_keys_in_use(
 ) -> Generator[None, None, None]:
     """Hold the sync mark of *data_root* for a block that reads and writes source keys.
 
-    Waits while a reset or an add that moves keys holds syncs off. Setting *cancel*
-    ends the wait with ``SyncMarkWaitCancelledError``, and the block does not run.
+    Waits while a reset or an add that moves keys holds syncs off. A *cancel* that is
+    set during that wait, or when the mark is taken, raises
+    ``SyncMarkWaitCancelledError``: the block does not run and the mark is free.
     """
     lock = _open_sync_lock(
         data_root, write=False, on_caller_thread=True, refused=LibraryUnlockableError
@@ -496,7 +482,9 @@ def source_keys_in_use(
         return
     try:
         try:
-            _take_sync_lock_on_thread(lock, cancel)
+            for attempt in _sync_lock_wait(cancel):
+                with attempt:
+                    lock.acquire_read(timeout=attempt.seconds)
         except _SYNC_LOCK_ERRORS as exc:
             if _is_set(cancel):
                 raise SyncMarkWaitCancelledError from None
