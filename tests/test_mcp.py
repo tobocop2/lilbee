@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import errno
 import os
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -382,6 +383,41 @@ class TestSkipRecordsLockHeld:
             result = await sync(retry_skipped=True)
 
         assert result == {"error": "Could not lock records.lock"}
+
+    async def test_sync_that_cannot_open_its_sync_lock_returns_an_error(self):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = sorted(cfg.data_root.rglob("*"))
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = await sync()
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {cfg.data_root / 'sync.lock'} cannot be locked "
+                "([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert sorted(cfg.data_root.rglob("*")) == before
+
+    async def test_add_on_a_data_root_that_cannot_be_locked_adds_nothing(self, tmp_path):
+        src = tmp_path / "outside" / "note.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = sorted(cfg.data_root.rglob("*"))
+        refused = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=refused):
+            result = await add([str(src)])
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {cfg.data_root} cannot be locked "
+                f"([Errno 13] Permission denied). Make {cfg.data_root} writable, then try again."
+            )
+        }
+        assert sorted(cfg.data_root.rglob("*")) == before
+        assert cfg.linked_roots == {}
 
 
 class TestSync:
@@ -1914,6 +1950,34 @@ class TestWikiRuntimeGate:
         cfg.data_root = isolated_env
         assert handler(*args) == {"error": WIKI_DISABLED_ERROR}
 
+    @pytest.mark.parametrize(
+        ("handler", "args"),
+        [
+            (wiki_build, ()),
+            (wiki_update, ()),
+            (wiki_synthesize, ()),
+            (wiki_generate, ("some-page",)),
+        ],
+    )
+    def test_a_write_that_cannot_take_the_sync_lock_returns_an_error(
+        self, mock_svc, isolated_env, handler, args
+    ):
+        cfg.wiki = True
+        cfg.data_root = isolated_env
+        lock = isolated_env / "sync.lock"
+        lock.write_bytes(b"not a lock database")
+        before = sorted(isolated_env.rglob("*"))
+
+        result = handler(*args)
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+                f"Stop every lilbee process, delete {lock}, and try again."
+            )
+        }
+        assert sorted(isolated_env.rglob("*")) == before
+
     def test_status_still_answers_while_disabled(self, mock_svc, isolated_env):
         """Matches the HTTP status route: report the disabled state, don't lint."""
         cfg.wiki = False
@@ -2921,6 +2985,28 @@ class TestImportDataset:
     async def test_error_envelope(self, dataset_store, tmp_path):
         result = await import_dataset(str(tmp_path / "nope.parquet"))
         assert "Dataset not found" in result["error"]
+
+    async def test_an_import_that_cannot_open_its_sync_lock_returns_an_error(
+        self, dataset_store, tmp_path
+    ):
+        from lilbee.core.config import active_config
+
+        out = tmp_path / "pages.jsonl"
+        out.write_text(
+            '{"source":"new.pdf","page":1,"text":"body","content_type":"pdf"}\n', encoding="utf-8"
+        )
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = await import_dataset(str(out))
+
+        assert result == {
+            "error": (
+                f"Cannot change the library: {active_config().data_root / 'sync.lock'} "
+                "cannot be locked ([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert dataset_store.get_page_texts("new.pdf") == []
 
     async def test_reports_embed_progress_with_ctx(self, dataset_store, tmp_path):
         from tests.conftest import make_mock_services

@@ -1,6 +1,7 @@
 """Tests for the CLI interface using typer's test runner."""
 
 import contextlib
+import errno
 import json
 import logging
 import os
@@ -276,6 +277,68 @@ class TestSync:
         assert result.exit_code == 1
         assert "Error:" in result.output
         assert "does not support file locking" in result.output
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_sync_that_cannot_open_its_sync_lock_exits_1_and_changes_nothing(
+        self, isolated_env, command
+    ):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _tree(cfg.data_root)
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, [command])
+
+        assert result.exit_code == 1
+        output = " ".join(result.output.split())
+        assert "Error: Cannot change the library:" in output
+        assert "cannot be locked ([Errno 24] Too many open files)." in output
+        assert "Close some programs or raise the limit of open files, then try again." in output
+        assert "Traceback" not in result.output
+        assert _tree(cfg.data_root) == before
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_sync_that_cannot_open_its_sync_lock_reports_it_as_json(self, isolated_env, command):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _tree(cfg.data_root)
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with mock.patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, ["--json", command])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {
+            "error": (
+                f"Cannot change the library: {cfg.data_root / 'sync.lock'} cannot be locked "
+                "([Errno 24] Too many open files). "
+                "Close some programs or raise the limit of open files, then try again."
+            )
+        }
+        assert _tree(cfg.data_root) == before
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_an_add_on_a_data_directory_that_cannot_be_locked_adds_nothing(
+        self, isolated_env, tmp_path, flags
+    ):
+        src = tmp_path / "outside" / "note.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        before = _tree(cfg.data_root)
+        refused = OSError(errno.EACCES, "Permission denied")
+        with mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=refused):
+            result = runner.invoke(app, [*flags, "add", str(src)])
+
+        assert result.exit_code == 1
+        output = " ".join(result.output.split())
+        assert "Cannot change the library:" in output
+        assert "cannot be locked ([Errno 13] Permission denied)." in output
+        assert "writable, then try again." in output
+        assert _tree(cfg.data_root) == before
+        assert cfg.linked_roots == {}
+
+
+def _tree(root: Path) -> list[str]:
+    """Every path below *root*, to show that a refused command changed nothing."""
+    return sorted(path.relative_to(root).as_posix() for path in root.rglob("*"))
 
 
 class TestRebuild:
@@ -896,6 +959,51 @@ class TestAutoSync:
             auto_sync(con, _locked_sync)
         printed = mock_print.call_args.args[0]
         assert "locked: notes[draft].txt" in printed.plain
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_ask_answers_when_its_sync_cannot_take_the_sync_lock(
+        self, mock_svc, isolated_env, caplog, flags
+    ):
+        from lilbee.retrieval.query import AskResult
+
+        mock_svc.searcher.ask_stream.side_effect = lambda *a, **kw: _mock_stream("5 quarts")
+        mock_svc.searcher.ask_raw.return_value = AskResult(answer="5 quarts", sources=[])
+        healthy = runner.invoke(app, [*flags, "ask", "oil capacity?"])
+        lock = cfg.data_root / "sync.lock"
+        lock.write_bytes(b"not a lock database")
+        before = _tree(cfg.data_root)
+
+        with caplog.at_level(logging.WARNING):
+            result = runner.invoke(app, [*flags, "ask", "oil capacity?"])
+
+        assert result.exit_code == 0
+        assert "5 quarts" in result.output
+        assert result.output == healthy.output
+        assert "Traceback" not in caplog.text
+        assert [(r.name, r.getMessage()) for r in caplog.records] == [
+            (
+                "lilbee.cli.helpers",
+                "Skipped the sync before the answer. "
+                f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+                f"Stop every lilbee process, delete {lock}, and try again.",
+            )
+        ]
+        assert _tree(cfg.data_root) == before
+
+    def test_auto_sync_still_exits_1_where_the_data_root_cannot_lock_files(self) -> None:
+        from rich.console import Console
+
+        from lilbee.cli.helpers import auto_sync
+        from lilbee.runtime.lock import LockingUnsupportedError
+
+        con = Console(quiet=True)
+
+        def _no_locking() -> object:
+            raise LockingUnsupportedError("no file locking here")
+
+        with mock.patch.object(con, "print") as mock_print, pytest.raises(SystemExit):
+            auto_sync(con, _no_locking)
+        assert "no file locking here" in mock_print.call_args.args[0].plain
 
 
 class TestAddPathsBackground:
@@ -4134,6 +4242,53 @@ class TestWikiLint:
         data = json.loads(result.output)
         assert data["command"] == "wiki_lint"
         assert "total" in data
+
+
+_WIKI_WRITES = [
+    ["wiki", "build"],
+    ["wiki", "update"],
+    ["wiki", "synthesize"],
+    ["wiki", "generate", "some-page"],
+]
+
+
+@pytest.mark.usefixtures("wiki_enabled")
+class TestWikiWriteWithoutItsSyncLock:
+    """A wiki write that cannot take the sync lock exits 1 with one error and writes nothing."""
+
+    @staticmethod
+    def _refusal() -> str:
+        lock = cfg.data_root / "sync.lock"
+        return (
+            f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+            f"Stop every lilbee process, delete {lock}, and try again."
+        )
+
+    @pytest.mark.parametrize("command", _WIKI_WRITES, ids=" ".join)
+    def test_the_command_exits_1_with_the_refusal(self, mock_svc, isolated_env, command):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "sync.lock").write_bytes(b"not a lock database")
+        before = _tree(cfg.data_root)
+
+        result = runner.invoke(app, command)
+
+        assert result.exit_code == 1
+        assert f"Error: {self._refusal()}" in " ".join(result.output.split())
+        assert "Traceback" not in result.output
+        assert result.exception is None or isinstance(result.exception, SystemExit)
+        assert _tree(cfg.data_root) == before
+
+    @pytest.mark.parametrize("command", _WIKI_WRITES, ids=" ".join)
+    def test_the_command_reports_the_refusal_as_json(self, mock_svc, isolated_env, command):
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        (cfg.data_root / "sync.lock").write_bytes(b"not a lock database")
+        before = _tree(cfg.data_root)
+
+        result = runner.invoke(app, ["--json", *command])
+
+        assert result.exit_code == 1
+        assert json.loads(result.output) == {"error": self._refusal()}
+        assert _tree(cfg.data_root) == before
 
 
 @pytest.mark.usefixtures("wiki_enabled")

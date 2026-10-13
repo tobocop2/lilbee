@@ -89,10 +89,11 @@ def import_cmd(
     """Import a per-page text dataset, re-embedding it with the current model."""
     apply_overrides(data_dir=data_dir, use_global=use_global)
     from lilbee.app.dataset import DatasetError, import_from_path
+    from lilbee.app.ingest import LIBRARY_REFUSALS
 
     try:
         summary = asyncio.run(import_from_path(dataset, fmt))
-    except DatasetError as exc:
+    except (DatasetError, *LIBRARY_REFUSALS) as exc:
         _fail(str(exc))
 
     if cfg.json_mode:

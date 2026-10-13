@@ -1,5 +1,7 @@
 """Tests for crawl task management."""
 
+import errno
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -225,6 +227,45 @@ class TestRunCrawl:
         await run_crawl(task)
         assert task.status == TaskStatus.DONE
         assert task.error is None
+
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_sync_that_cannot_open_its_sync_lock_is_one_warning_with_no_traceback(
+        self, mock_crawl, isolated_env, caplog
+    ):
+        cfg.data_root = isolated_env / "library"
+        mock_crawl.return_value = [cfg.documents_dir / "a.md"]
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
+        refused = OSError(errno.EMFILE, "Too many open files")
+        with (
+            patch("lilbee.runtime.lock.AsyncReadWriteLock", side_effect=refused),
+            caplog.at_level(logging.WARNING, logger="lilbee.crawler.task"),
+        ):
+            await run_crawl(task)
+
+        warnings = [r for r in caplog.records if r.name == "lilbee.crawler.task"]
+        assert [r.getMessage() for r in warnings] == [
+            "Post-crawl sync failed for https://example.com: Cannot change the library: "
+            f"{cfg.data_root / 'sync.lock'} cannot be locked ([Errno 24] Too many open files). "
+            "Close some programs or raise the limit of open files, then try again."
+        ]
+        assert [r.exc_info for r in warnings] == [None]
+        assert task.status == TaskStatus.DONE
+
+    @patch("lilbee.data.ingest.sync", new_callable=AsyncMock, side_effect=RuntimeError("sync boom"))
+    @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
+    async def test_a_sync_failure_of_another_kind_keeps_its_traceback(
+        self, mock_crawl, mock_sync, caplog
+    ):
+        mock_crawl.return_value = [cfg.documents_dir / "a.md"]
+        task = CrawlTask(task_id="t1", url="https://example.com", depth=0, max_pages=10)
+        with caplog.at_level(logging.WARNING, logger="lilbee.crawler.task"):
+            await run_crawl(task)
+
+        warnings = [r for r in caplog.records if r.name == "lilbee.crawler.task"]
+        assert [r.getMessage() for r in warnings] == [
+            "Post-crawl sync failed for https://example.com"
+        ]
+        assert warnings[0].exc_info[1] is mock_sync.side_effect
 
     @patch("lilbee.crawler.task.crawl_and_save", new_callable=AsyncMock)
     async def test_finished_at_set_before_sync(self, mock_crawl):

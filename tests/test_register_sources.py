@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import json
+import logging
 import os
 import sys
 from pathlib import Path
 from unittest import mock
 
 import pytest
+from filelock import ReadWriteLock
 from typer.testing import CliRunner
 
 import lilbee.app.services as svc_mod
@@ -26,10 +29,18 @@ from lilbee.core.system import DiskSpelling
 from lilbee.data.ingest.discovery import discover_files
 from lilbee.data.ingest.skip_marker import SkipKind, load_skip_kinds, mark_removed
 from lilbee.data.store import Store
-from lilbee.runtime.lock import LockingUnsupportedError
+from lilbee.runtime.lock import (
+    LibraryUnlockableError,
+    LockingUnsupportedError,
+    _NoHardLinksError,
+    no_sync_running,
+)
 from tests.conftest import filesystem_without_locking, make_mock_services
+from tests.test_lock import _sync_lock_close_refused
 
 _NO_LOCKING = "is on a filesystem that does not support file locking"
+_SQLITE_HEADER = b"SQLite format 3\x00"
+_JUNK = b"not a lock database " * 8
 
 
 @pytest.fixture(autouse=True)
@@ -132,15 +143,24 @@ class TestADataRootThatCannotLockFiles:
 
         assert _files(cfg.data_root) == {}
 
-    def test_a_probe_that_fails_another_way_does_not_refuse_the_add(self, library, notes):
-        """A sync runs unmarked on such a data root, so the add before it registers."""
+    def test_a_probe_that_fails_another_way_refuses_the_add(self, library, notes):
+        """A sync refuses on such a data root, so the add before it registers nothing."""
+        before = _files(library)
         failure = OSError(5, "Input/output error")
-        with mock.patch("lilbee.runtime.lock._require_locking", side_effect=failure) as probe:
-            result = register_sources([notes])
+        with (
+            mock.patch("lilbee.runtime.lock._require_locking", side_effect=failure) as probe,
+            pytest.raises(LibraryUnlockableError) as refused,
+        ):
+            register_sources([notes])
 
         probe.assert_called_once_with(cfg.data_root)
-        assert result.registered == ["notes"]
-        assert sorted(_registry()) == ["notes"]
+        assert str(refused.value) == (
+            f"Cannot change the library: {library} cannot be locked "
+            "([Errno 5] Input/output error). Fix that problem, then try again."
+        )
+        assert _files(library) == before
+        assert _registry() == {}
+        assert cfg.linked_roots == {}
 
     def test_an_add_of_no_path_probes_nothing(self, library):
         with mock.patch("lilbee.runtime.lock._require_locking") as probe:
@@ -473,3 +493,130 @@ class TestTwoSourcesOfOneFolder:
 
         assert _registry() == {"notes": str(notes)}
         assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
+
+
+def _junk_sync_lock(root: Path) -> Path:
+    """Put a file that is not a lock database where the sync lock of *root* lives."""
+    assert not _JUNK.startswith(_SQLITE_HEADER)
+    lock_file = root / "sync.lock"
+    lock_file.write_bytes(_JUNK)
+    return lock_file
+
+
+class TestASyncLockThatCannotBeOpened:
+    """An add stops before it registers a source when the sync after it cannot open its lock."""
+
+    def test_the_refusal_leaves_the_library_as_it_was(self, library, notes):
+        other = _write(notes.parent / "other" / "memo.md").parent
+        register_sources([other])
+        mark_removed(cfg.data_root, {"notes/loose.md": "hash of notes/loose.md"})
+        lock_file = _junk_sync_lock(library)
+        before = _files(library)
+        assert "config.toml" in before
+
+        with pytest.raises(LibraryUnlockableError) as refused:
+            register_sources([notes])
+
+        assert str(refused.value) == (
+            f"Cannot change the library: {lock_file} cannot be locked (file is not a database). "
+            f"Stop every lilbee process, delete {lock_file}, and try again."
+        )
+        assert _files(library) == before
+        assert sorted(_registry()) == ["other"]
+        assert sorted(cfg.linked_roots) == ["other"]
+        assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
+
+    def test_the_same_add_registers_after_the_lock_file_is_deleted(self, library, notes):
+        """The control for the test above: the advice in the refusal makes the add work."""
+        lock_file = _junk_sync_lock(library)
+        with pytest.raises(LibraryUnlockableError):
+            register_sources([notes])
+        lock_file.unlink()
+
+        assert register_sources([notes]).registered == ["notes"]
+
+        assert sorted(_registry()) == ["notes"]
+
+    def test_an_open_that_runs_out_of_file_handles_refuses_the_add(self, library, notes):
+        opened: list[str] = []
+
+        def _open(lock_file: Path, **kwargs: object) -> ReadWriteLock:
+            opened.append(Path(lock_file).name)
+            if Path(lock_file).name == "sync.lock":
+                raise OSError(errno.EMFILE, "Too many open files")
+            return ReadWriteLock(lock_file, **kwargs)
+
+        before = _files(library)
+        with (
+            mock.patch("lilbee.runtime.lock.ReadWriteLock", side_effect=_open),
+            pytest.raises(LibraryUnlockableError) as refused,
+        ):
+            register_sources([notes])
+
+        assert opened[-1] == "sync.lock"
+        assert str(refused.value) == (
+            f"Cannot change the library: {library / 'sync.lock'} cannot be locked "
+            "([Errno 24] Too many open files). "
+            "Close some programs or raise the limit of open files, then try again."
+        )
+        assert _files(library) == before
+        assert _registry() == {}
+        assert cfg.linked_roots == {}
+
+    def test_a_disk_without_hard_links_does_not_refuse_the_add(self, library, notes, caplog):
+        """A sync warns and runs on such a disk, so the add before it registers."""
+        no_links = _NoHardLinksError("its filesystem does not support hard links")
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            mock.patch("lilbee.runtime.lock._require_locking", side_effect=no_links),
+        ):
+            result = register_sources([notes])
+
+        assert result.registered == ["notes"]
+        assert sorted(_registry()) == ["notes"]
+        assert f"Cannot lock {library} (its filesystem does not support hard links)" in caplog.text
+        assert not (library / "sync.lock").exists()
+
+    def test_a_reset_that_holds_the_lock_does_not_refuse_the_add(self, library, notes):
+        """A busy lock works: the sync after the add waits for the reset."""
+        with no_sync_running(library):
+            result = register_sources([notes])
+
+        assert result.registered == ["notes"]
+        assert sorted(_registry()) == ["notes"]
+
+    def test_a_close_that_fails_after_the_check_does_not_refuse_the_add(
+        self, library, notes, caplog
+    ):
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            _sync_lock_close_refused(),
+        ):
+            result = register_sources([notes])
+
+        assert result.registered == ["notes"]
+        assert f"Could not close {library / 'sync.lock'} (disk I/O error)." in caplog.text
+        with no_sync_running(library):
+            pass
+
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])
+    def test_the_command_reports_the_refusal_and_registers_nothing(self, library, notes, flags):
+        lock_file = _junk_sync_lock(library)
+        before = _files(library)
+
+        outcome = CliRunner().invoke(app, [*flags, "add", str(notes)])
+
+        assert outcome.exit_code == 1
+        output = " ".join(outcome.output.split())
+        assert "cannot be locked (file is not a database). Stop every lilbee process, delete" in (
+            output
+        )
+        assert "Registered" not in outcome.output
+        assert "Traceback" not in outcome.output
+        if flags:
+            assert set(json.loads(outcome.output)) == {"error"}
+            assert json.loads(outcome.output)["error"].endswith(
+                f"delete {lock_file}, and try again."
+            )
+        assert _files(library) == before
+        assert _registry() == {}

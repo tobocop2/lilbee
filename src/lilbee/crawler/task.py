@@ -134,10 +134,15 @@ async def run_crawl(task: CrawlTask) -> None:
         task.pages_crawled = task.pages_crawled or len(paths)
         task.finished_at = now_iso()
         log.info("Crawl complete: %s → %d files", task.url, len(paths))
+        from lilbee.app.ingest import LIBRARY_REFUSALS
+
         try:
             from lilbee.data.ingest import sync
 
             await sync(quiet=True, cancel=task.cancel)
+        except LIBRARY_REFUSALS as exc:
+            # A refusal says what to do; a traceback adds nothing to it.
+            log.warning("Post-crawl sync failed for %s: %s", task.url, exc)
         except Exception:
             log.warning("Post-crawl sync failed for %s", task.url, exc_info=True)
     except Exception as exc:
