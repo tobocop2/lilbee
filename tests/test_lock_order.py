@@ -37,6 +37,7 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.lock import (
+    LOCK_TIMEOUT,
     LibraryHold,
     LockOrderError,
     ResetRefusedError,
@@ -88,6 +89,7 @@ class _Takes:
         self._sync_holds: dict[int, int] = {}
         self.on_sync_write_take: list[Callable[[], None]] = []
         self.sync_write_takes = 0
+        self.sync_write_waits: list[float | None] = []
         self.sync_read_takes = 0
         self.records_takes = 0
         self._watch_records_lock(monkeypatch)
@@ -124,6 +126,7 @@ class _Takes:
             watched = Path(lock.lock_file).name == _SYNC_LOCK_FILE
             if watched:
                 takes.sync_write_takes += 1
+                takes.sync_write_waits.append(kwargs.get("timeout"))
                 for callback in takes.on_sync_write_take:
                     callback()
             proxy = real_write(lock, *args, **kwargs)
@@ -432,7 +435,7 @@ class TestARemoveFinishesAJournalUnderOneHold:
         remove_documents_durably(["notes/work/plan.md"])
 
         assert held_at_removal == [[_RECORDS_LOCK, _SYNC_LOCK]]
-        assert takes.sync_write_takes == 1
+        assert takes.sync_write_waits == [LOCK_TIMEOUT]
         assert not absorb_pending(cfg.data_root)
         assert takes.held() == []
 
