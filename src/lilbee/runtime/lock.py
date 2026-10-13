@@ -66,6 +66,10 @@ _SYNC_LOCK_UNKNOWN = (
     "Stop every lilbee process, delete {path}, and {again}."
 )
 _SYNC_LOCK_NOT_CLOSED = "Could not close %s (%s)."
+_RECORDS_LOCK_HELD = (
+    "This thread holds the records lock of {root}. "
+    "Build the services and take the sync lock before the records lock."
+)
 _DATA_ROOT_UNLOCKABLE = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error})."
 )
@@ -113,6 +117,10 @@ class SyncRunningError(RuntimeError):
 
 class LibraryUnlockableError(RuntimeError):
     """Raised when a sync or a change that keeps syncs off cannot lock the data root."""
+
+
+class LockOrderError(RuntimeError):
+    """Raised when a thread that holds the records lock asks for a lock that comes before it."""
 
 
 class _NoHardLinksError(OSError):
@@ -267,11 +275,25 @@ def _data_root_locks(
     return True
 
 
+def refuse_under_records_lock(data_root: Path) -> None:
+    """Raise ``LockOrderError`` when the calling thread holds the records lock of *data_root*.
+
+    The services and the sync lock come before the records lock. The check runs
+    before any wait and reads the hold count of the calling thread alone.
+    """
+    # circular: runtime.lock -> data.ingest.pipeline via records_lock_held
+    from lilbee.data.ingest.skip_marker import records_lock_held
+
+    if records_lock_held(data_root):
+        raise LockOrderError(_RECORDS_LOCK_HELD.format(root=data_root))
+
+
 def refuse_where_a_sync_cannot_lock(data_root: Path) -> None:
     """Raise the error a sync raises when it cannot open or take the sync lock of *data_root*.
 
     The lock is not held on return, and a busy lock is not waited for.
     """
+    refuse_under_records_lock(data_root)
     lock = _open_sync_lock(
         data_root, write=False, on_caller_thread=True, refused=LibraryUnlockableError
     )
@@ -445,6 +467,7 @@ async def sync_running(
     during that wait, or when the mark is taken, raises ``asyncio.CancelledError``:
     the block does not run and the mark is free.
     """
+    refuse_under_records_lock(data_root)
     # Opening the lock reads and writes files, so it runs off the event loop too.
     lock = await asyncio.to_thread(
         _open_sync_lock, data_root, write=False, refused=LibraryUnlockableError
@@ -483,6 +506,7 @@ def source_keys_in_use(
     set during that wait, or when the mark is taken, raises
     ``SyncMarkWaitCancelledError``: the block does not run and the mark is free.
     """
+    refuse_under_records_lock(data_root)
     lock = _open_sync_lock(
         data_root, write=False, on_caller_thread=True, refused=LibraryUnlockableError
     )
@@ -506,6 +530,7 @@ def source_keys_in_use(
 @contextmanager
 def no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
+    refuse_under_records_lock(data_root)
     try:
         lock = _open_sync_lock(data_root, write=True)
     except LockingUnsupportedError as exc:
@@ -531,6 +556,7 @@ def syncs_held_off(
     A *cancel* that is set during the wait, or when the lock is taken, raises
     ``SyncMarkWaitCancelledError``: the block does not run and the lock is free.
     """
+    refuse_under_records_lock(data_root)
     lock = _open_sync_lock(data_root, write=True, refused=LibraryUnlockableError)
     with closing(lock):
         try:

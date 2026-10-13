@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from collections.abc import Callable
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -32,7 +34,18 @@ from lilbee.runtime.absorb_journal import (
     absorb_pending,
     write_journal,
 )
-from lilbee.runtime.lock import LibraryHold, ResetRefusedError, SyncRunningError, library_held
+from lilbee.runtime.lock import (
+    LibraryHold,
+    LockOrderError,
+    ResetRefusedError,
+    SyncRunningError,
+    library_held,
+    no_sync_running,
+    refuse_where_a_sync_cannot_lock,
+    source_keys_in_use,
+    sync_running,
+    syncs_held_off,
+)
 from tests.conftest import make_mock_services
 
 _RECORDS_LOCK = "records"
@@ -73,6 +86,7 @@ class _Takes:
         self._sync_holds: dict[int, int] = {}
         self.on_sync_write_take: list[Callable[[], None]] = []
         self.sync_write_takes = 0
+        self.sync_read_takes = 0
         self.records_takes = 0
         self._watch_records_lock(monkeypatch)
         self._watch_sync_lock(monkeypatch)
@@ -116,8 +130,11 @@ class _Takes:
             return proxy
 
         def acquire_read(lock, *args, **kwargs):
+            watched = Path(lock.lock_file).name == _SYNC_LOCK_FILE
+            if watched:
+                takes.sync_read_takes += 1
             proxy = real_read(lock, *args, **kwargs)
-            if Path(lock.lock_file).name == _SYNC_LOCK_FILE:
+            if watched:
                 takes._hold_sync(lock)
             return proxy
 
@@ -249,7 +266,7 @@ class TestTheServicesAreBuiltBeforeAnyLibraryLock:
     def test_the_recorder_sees_a_build_under_the_records_lock(self, notes, takes, builds):
         """Control: the recorder names the records lock when a build runs under it."""
         with skip_records_lock(cfg.data_root):
-            svc_mod.get_services()
+            svc_mod.build_services(cfg)
 
         assert builds.held_at_build == [[_RECORDS_LOCK]]
 
@@ -356,8 +373,13 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         held_at_take: list[list[str]] = []
         takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
 
-        with skip_records_lock(cfg.data_root), library_held(cfg.data_root, _A_SYNC_RUNS):
-            pass
+        with (
+            skip_records_lock(cfg.data_root),
+            closing(
+                ReadWriteLock(str(cfg.data_root / _SYNC_LOCK_FILE), is_singleton=False)
+            ) as lock,
+        ):
+            lock.acquire_write(blocking=False)
 
         assert held_at_take == [[_RECORDS_LOCK]]
 
@@ -382,12 +404,11 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
     def test_a_held_sync_lock_refuses_the_owner_before_the_records_lock(
         self, running, refusal, takes
     ):
-        with library_held(cfg.data_root, _A_SYNC_RUNS):
-            taken = takes.records_takes
+        with syncs_held_off(cfg.data_root, _A_SYNC_RUNS):
             with pytest.raises(refusal), library_held(cfg.data_root, running):
                 pytest.fail("the block ran under a held sync lock")
 
-            assert takes.records_takes == taken
+            assert takes.records_takes == 0
 
 
 class TestARemoveFinishesAJournalUnderOneHold:
@@ -435,6 +456,94 @@ class TestARemoveFinishesAJournalUnderOneHold:
         assert takes.sync_write_takes == 1
         assert absorb_pending(cfg.data_root)
         assert takes.held() == []
+
+
+def _enter(take: Callable[[Path], object]) -> Callable[[Path], None]:
+    def entered(root: Path) -> None:
+        with take(root):
+            pass
+
+    return entered
+
+
+def _mark_a_sync(root: Path) -> None:
+    async def marked() -> None:
+        async with sync_running(root):
+            pass
+
+    asyncio.run(marked())
+
+
+_TAKES_OF_THE_SYNC_LOCK = {
+    "the mark of a sync": _mark_a_sync,
+    "the mark of a wiki build": _enter(source_keys_in_use),
+    "the probe of an add": refuse_where_a_sync_cannot_lock,
+    "the hold of a reset": _enter(no_sync_running),
+    "the hold of a change": _enter(lambda root: syncs_held_off(root, _A_SYNC_RUNS)),
+    "the owner of both locks": _enter(lambda root: library_held(root, _A_SYNC_RUNS)),
+}
+_ORDER_ERROR = "holds the records lock of .*library"
+
+
+class TestTheRecordsLockRefusesTheLocksBeforeIt:
+    @pytest.mark.parametrize("take", list(_TAKES_OF_THE_SYNC_LOCK))
+    def test_a_take_of_the_sync_lock_under_the_records_lock_raises_before_any_take(
+        self, take, takes
+    ):
+        with (
+            skip_records_lock(cfg.data_root),
+            pytest.raises(LockOrderError, match=_ORDER_ERROR),
+        ):
+            _TAKES_OF_THE_SYNC_LOCK[take](cfg.data_root)
+
+        assert (takes.sync_write_takes, takes.sync_read_takes) == (0, 0)
+        assert takes.held() == []
+
+    @pytest.mark.parametrize("take", list(_TAKES_OF_THE_SYNC_LOCK))
+    def test_the_same_take_enters_with_no_records_lock_held(self, take, takes):
+        """Control: the records lock is what refuses each take above."""
+        _TAKES_OF_THE_SYNC_LOCK[take](cfg.data_root)
+
+        assert takes.sync_write_takes + takes.sync_read_takes == 1
+        assert takes.held() == []
+
+    def test_a_first_build_under_the_records_lock_raises_before_the_build(self, takes, builds):
+        with (
+            skip_records_lock(cfg.data_root),
+            pytest.raises(LockOrderError, match=_ORDER_ERROR),
+        ):
+            svc_mod.get_services()
+
+        assert builds.held_at_build == []
+        assert svc_mod.peek_services() is None
+        assert not svc_mod._singleton_create_lock.locked()
+
+    def test_built_services_are_returned_under_the_records_lock(self, takes, builds):
+        built = svc_mod.get_services()
+
+        with skip_records_lock(cfg.data_root):
+            assert svc_mod.get_services() is built
+
+    def test_the_hold_of_another_thread_refuses_nothing(self, takes):
+        entered: list[list[str]] = []
+
+        def take() -> None:
+            with source_keys_in_use(cfg.data_root):
+                entered.append(takes.held())
+
+        with skip_records_lock(cfg.data_root):
+            other = threading.Thread(target=take)
+            other.start()
+            other.join(_HANG_GUARD_S)
+
+        assert entered == [[_SYNC_LOCK]]
+
+    def test_the_records_lock_of_another_library_refuses_nothing(self, tmp_path, takes):
+        other_root = tmp_path / "other library"
+        other_root.mkdir()
+
+        with skip_records_lock(other_root), library_held(cfg.data_root, _A_SYNC_RUNS):
+            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
 
 
 class TestAnAddActsOnTheReadUnderItsFinalHold:

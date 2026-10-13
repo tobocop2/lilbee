@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import shutil
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import ClassVar
 from unittest import mock
@@ -3354,6 +3356,17 @@ _RESET_REFUSED = (
     "A sync, an import, an add or a wiki build is running on this library. "
     "Reset again when it finishes."
 )
+# Only a hang guard: no assertion reads a duration.
+_RESET_HANG_GUARD_S = 60.0
+
+
+def _refusal_of_a_reset_from_another_thread() -> str:
+    """The text a reset is refused with, run where no lock of the calling thread is held."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        reset = pool.submit(contextvars.copy_context().run, perform_reset)
+        with pytest.raises(ResetRefusedError) as caught:
+            reset.result(timeout=_RESET_HANG_GUARD_S)
+    return str(caught.value)
 
 
 class TestAResetAndAnAbsorb:
@@ -3363,9 +3376,7 @@ class TestAResetAndAnAbsorb:
         real_land = absorb_mod._land
 
         def _reset_then_land(*args, **kwargs):
-            with pytest.raises(ResetRefusedError) as caught:
-                perform_reset()
-            refused.append(str(caught.value))
+            refused.append(_refusal_of_a_reset_from_another_thread())
             return real_land(*args, **kwargs)
 
         with mock.patch.object(absorb_mod, "_land", side_effect=_reset_then_land):

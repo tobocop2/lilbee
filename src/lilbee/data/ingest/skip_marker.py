@@ -285,6 +285,16 @@ def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
     return _load_records(data_root).kinds
 
 
+def _records_lock(data_root: Path) -> FileLock:
+    """The records lock of *data_root*: one object, with a hold count for each thread."""
+    return FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
+
+
+def records_lock_held(data_root: Path) -> bool:
+    """Whether the calling thread holds the records lock of *data_root*."""
+    return _records_lock(data_root).lock_counter > 0
+
+
 @contextlib.contextmanager
 def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> Iterator[None]:
     """Hold the cross-process lock on the records, or raise without entering.
@@ -296,7 +306,7 @@ def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> It
     back. Both raise ``SkipRecordsWaitCancelledError``. A take under the
     caller's own hold does not read *cancel*.
     """
-    lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
+    lock = _records_lock(data_root)
 
     def _cancelled() -> bool:
         return cancel is not None and cancel.is_set()
