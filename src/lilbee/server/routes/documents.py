@@ -7,13 +7,17 @@ files and ``/api/export`` serializes the whole corpus.
 from __future__ import annotations
 
 import asyncio
-from typing import Annotated
+import logging
+from collections.abc import Awaitable
+from typing import Annotated, TypeVar
 
 from litestar import Request, Response, get, post
+from litestar.constants import HTTP_DISCONNECT
 from litestar.datastructures import UploadFile
-from litestar.exceptions import ValidationException
+from litestar.exceptions import ClientException, ValidationException
 from litestar.params import FromQuery, MultipartBody, QueryParameter
 from litestar.response import Stream
+from litestar.types import Receive
 from pydantic import BaseModel, Field
 
 from lilbee.core.config import validate_ocr_timeout
@@ -27,11 +31,43 @@ from lilbee.server.models import (
     SyncRequest,
 )
 
+log = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+# No client reads this answer; nginx gave the status its name.
+_CLIENT_CLOSED_REQUEST = 499
+_CLIENT_GONE = "The client closed the connection before the request ended."
+
 
 class RemoveRequest(BaseModel):
     """Request body for /api/documents/remove."""
 
     names: list[str] = Field(max_length=100)
+
+
+async def _client_gone(receive: Receive) -> None:
+    """Return when the ASGI channel reports that the client disconnected."""
+    message = await receive()
+    while message["type"] != HTTP_DISCONNECT:
+        message = await receive()
+
+
+async def _unless_client_gone(receive: Receive, work: Awaitable[_T]) -> _T:
+    """Await *work*, and cancel it when the client disconnects first."""
+    task = asyncio.ensure_future(work)
+    gone = asyncio.ensure_future(_client_gone(receive))
+    try:
+        await asyncio.wait({task, gone}, return_when=asyncio.FIRST_COMPLETED)
+    finally:
+        gone.cancel()
+        # A task that has ended ignores the cancel.
+        task.cancel()
+    await asyncio.wait({task})
+    if task.cancelled():
+        log.info("Request stopped: the client disconnected")
+        raise ClientException(detail=_CLIENT_GONE, status_code=_CLIENT_CLOSED_REQUEST)
+    return task.result()
 
 
 @post("/api/sync", media_type=SSE_MEDIA_TYPE)
@@ -123,9 +159,9 @@ async def documents_list_route(
 
 
 @post("/api/documents/remove")
-async def documents_remove_route(data: RemoveRequest) -> DocumentRemoveResponse:
+async def documents_remove_route(request: Request, data: RemoveRequest) -> DocumentRemoveResponse:
     """Remove documents from the knowledge base by source name."""
-    return await handlers.delete_documents(data.names)
+    return await _unless_client_gone(request.receive, handlers.delete_documents(data.names))
 
 
 @get("/api/export", media_type="application/octet-stream")

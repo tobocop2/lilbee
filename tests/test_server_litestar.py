@@ -1458,6 +1458,88 @@ class TestDocumentsRemoveRoute:
         assert load_skip_markers(cfg.data_root) == {"scan.pdf": "h1"}
         assert (cfg.documents_dir / "a.md").read_text(encoding="utf-8") == "kept"
 
+    async def test_a_client_that_disconnects_ends_the_wait_at_the_records_lock(
+        self, client, caplog
+    ):
+        """The server reports the disconnect on the receive channel: nothing is removed."""
+        import lilbee.app.ingest as app_ingest
+        from lilbee.app.services import set_services
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
+        from tests.conftest import make_mock_services
+
+        loop, waiting, gone = asyncio.get_running_loop(), asyncio.Event(), asyncio.Event()
+        asked_again = asyncio.Event()
+        body = json.dumps({"names": ["a.md"]}).encode()
+        asked: list[str] = []
+
+        async def receive():
+            asked.append("receive")
+            if len(asked) == 1:
+                return {"type": "http.request", "body": body, "more_body": False}
+            if len(asked) == 2:
+                # A server answers an early wake-up with an empty body message.
+                await waiting.wait()
+                return {"type": "http.request", "body": b"", "more_body": False}
+            asked_again.set()
+            await gone.wait()
+            return {"type": "http.disconnect"}
+
+        sent: list[dict] = []
+
+        async def send(message):
+            sent.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "POST",
+            "scheme": "http",
+            "path": "/api/documents/remove",
+            "raw_path": b"/api/documents/remove",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+            "client": ("127.0.0.1", 50000),
+            "server": ("127.0.0.1", 80),
+            "extensions": {},
+            "state": {},
+        }
+        (cfg.documents_dir / "a.md").write_text("kept", encoding="utf-8")
+        services = make_mock_services()
+        set_services(services)
+        call, outcome = recorded(app_ingest.remove_documents_durably)
+        try:
+            with (
+                records_lock_held_elsewhere(
+                    cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
+                ),
+                mock.patch.object(app_ingest, "remove_documents_durably", call),
+            ):
+                before = files_under(cfg.data_root)
+                caplog.set_level(logging.INFO, logger="lilbee.server.routes.documents")
+                request = asyncio.ensure_future(client.app(scope, receive, send))
+                listening = asyncio.ensure_future(asked_again.wait())
+                await asyncio.wait({request, listening}, return_when=asyncio.FIRST_COMPLETED)
+                listening.cancel()
+                # A message that is not a disconnect leaves the request at the lock.
+                assert not request.done() and sent == [] and not outcome.ended.is_set()
+                gone.set()
+                await request
+                await asyncio.to_thread(outcome.ended.wait)
+                assert files_under(cfg.data_root) == before
+        finally:
+            set_services(None)
+
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        services.store.remove_documents.assert_not_called()
+        assert [m["status"] for m in sent if m["type"] == "http.response.start"] == [499]
+        assert "the client disconnected" in caplog.text
+
 
 SSE_ROUTES = [
     ("get", "/api/warm/stream"),
