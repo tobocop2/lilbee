@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import secrets
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 
 from lilbee.app.services import get_services
 from lilbee.core import settings
@@ -226,12 +226,13 @@ def _syncs_held_off(
     A *cancel* that ends the wait raises ``SkipRecordsWaitCancelledError``, the
     cancel an add, a remove and a sync report for the records lock.
     """
-    try:
-        with syncs_held_off(config.data_root, running, wait, cancel):
-            yield
-    except SyncMarkWaitCancelledError:
-        # No cause: a cancel that carries an error is reported as that error.
-        raise SkipRecordsWaitCancelledError from None
+    with ExitStack() as held:
+        try:
+            held.enter_context(syncs_held_off(config.data_root, running, wait, cancel))
+        except SyncMarkWaitCancelledError:
+            # No cause: a cancel that carries an error is reported as that error.
+            raise SkipRecordsWaitCancelledError from None
+        yield
 
 
 def absorb(journal: AbsorbJournal, names: list[str], cancel: CancelSignal | None = None) -> None:

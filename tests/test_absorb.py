@@ -3773,3 +3773,17 @@ class TestACancelAtTheWaitForARunningSync:
         assert _everything(library.store) == before
         assert before["journal"] is True
         assert _records_lock_is_free(cfg.data_root)
+
+    def test_a_cancel_of_the_sync_lock_that_the_block_raises_is_not_the_cancel_of_the_wait(
+        self, library
+    ):
+        from lilbee.runtime.lock import SyncMarkWaitCancelledError
+
+        with (
+            pytest.raises(SyncMarkWaitCancelledError),
+            absorb_mod._syncs_held_off(cfg, "a sync is running", 0.0, None),
+        ):
+            raise SyncMarkWaitCancelledError
+
+        with no_sync_running(cfg.data_root):
+            pass

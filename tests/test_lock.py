@@ -12,6 +12,7 @@ import time
 from collections.abc import Callable, Generator
 from contextlib import ExitStack, closing, contextmanager, nullcontext
 from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -1705,6 +1706,10 @@ class _DrivenWait:
             raise self.raised[-1]
 
 
+# Where a test ends a wait that a wrong rule would keep making attempts for.
+_ATTEMPTS_OF_A_WRONG_WAIT = 3
+
+
 class TestSyncLockWait:
     """One rule for every wait for a side of the sync lock: slices, cancel, deadline."""
 
@@ -1806,7 +1811,7 @@ class TestSyncLockWait:
         tried: list[float] = []
 
         with pytest.raises(sqlite3.DatabaseError, match="not a database"):
-            for attempt in _sync_lock_wait(None):
+            for attempt in islice(_sync_lock_wait(None), _ATTEMPTS_OF_A_WRONG_WAIT):
                 with attempt:
                     tried.append(attempt.seconds)
                     raise sqlite3.DatabaseError("file is not a database")
@@ -1819,7 +1824,7 @@ class TestSyncLockWait:
         busy.__context__ = asyncio.CancelledError()
 
         with pytest.raises(asyncio.CancelledError):
-            for attempt in _sync_lock_wait(None):
+            for attempt in islice(_sync_lock_wait(None), _ATTEMPTS_OF_A_WRONG_WAIT):
                 with attempt:
                     tried.append(attempt.seconds)
                     raise busy
