@@ -13,8 +13,8 @@ from filelock import FileLock
 
 from lilbee.data.ingest import skip_marker
 
-_WAIT_WITHOUT_A_CANCEL_S = 2.0
-"""A take that gets no cancel fails after this wait, not after the product's."""
+_HANG_GUARD_S = 60.0
+"""A take that never gets its cancel fails after this guard; no test waits for it."""
 
 
 def files_under(root: Path) -> dict[str, bytes]:
@@ -74,7 +74,7 @@ def records_lock_held_elsewhere(data_root: Path, on_wait: Callable[[], None]) ->
     try:
         with (
             mock.patch.object(skip_marker, "FileLock", _ReportsItsWait),
-            mock.patch.object(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", _WAIT_WITHOUT_A_CANCEL_S),
+            mock.patch.object(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", _HANG_GUARD_S),
         ):
             yield
     finally:

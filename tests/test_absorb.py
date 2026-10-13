@@ -3390,13 +3390,6 @@ class _SetOnceArmed:
 class TestACancelAtTheRecordsLock:
     """A cancel set while a call waits for the records lock ends the call with nothing changed."""
 
-    @pytest.fixture(autouse=True)
-    def short_wait(self, monkeypatch):
-        """A call that does not get the cancel fails after this wait, not the product's."""
-        from lilbee.data.ingest import skip_marker
-
-        monkeypatch.setattr(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", 2.0)
-
     def test_an_add_stops_before_it_registers(self, library, notes):
         from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 

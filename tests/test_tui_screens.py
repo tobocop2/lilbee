@@ -5159,8 +5159,8 @@ async def test_add_rollback_unregisters_the_roots_when_the_records_lock_is_held(
     assert not settings.load(cfg.data_root).get("linked_roots")
 
 
-_RECORDS_WAIT_SETTLE_S = 10.0
-"""A budget for a worker thread to reach or leave the wait, never a duration under test."""
+_RECORDS_WAIT_SETTLE_S = 30.0
+"""A guard against a hang while a worker thread reaches or leaves the wait; no test measures it."""
 
 
 class TestATuiCancelAtTheRecordsLock:
