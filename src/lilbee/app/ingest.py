@@ -21,6 +21,7 @@ from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
 from lilbee.core.config.enums import OcrMode
+from lilbee.core.system import DiskSpelling, disk_path
 from lilbee.data.ingest.discovery import (
     excluded_extension_reasons,
     file_hash,
@@ -138,9 +139,9 @@ def _resolve_label(
     return base
 
 
-def _live_roots(roots: dict[str, str]) -> list[Path]:
-    """The resolved path of each registered root that exists; a vanished one overlaps nothing."""
-    return [Path(target).resolve() for target in roots.values() if Path(target).exists()]
+def _live_roots(spelled: dict[str, Path]) -> list[Path]:
+    """Each of the disk paths in *spelled* that exists; a vanished root overlaps nothing."""
+    return [path for path in spelled.values() if path.exists()]
 
 
 def _inside_a_root(src: Path, live_roots: list[Path]) -> bool:
@@ -148,14 +149,14 @@ def _inside_a_root(src: Path, live_roots: list[Path]) -> bool:
     return any(src.is_relative_to(root) for root in live_roots)
 
 
-def _reached_below(src: Path, roots: dict[str, str]) -> dict[str, Path]:
-    """Each registered root below *src* that the walk of *src* reaches, by label.
+def _reached_below(src: Path, spelled: dict[str, Path]) -> dict[str, Path]:
+    """Each root of *spelled* below *src* that the walk of *src* reaches, by label.
 
-    A root whose folder is gone counts by its stored path.
+    *spelled* holds the disk path of each registered root. A root whose folder is
+    gone counts by its stored path.
     """
-    resolved = {label: Path(target).resolve() for label, target in roots.items()}
     below = {
-        label: path for label, path in resolved.items() if path != src and path.is_relative_to(src)
+        label: path for label, path in spelled.items() if path != src and path.is_relative_to(src)
     }
     if not below:
         return below
@@ -186,11 +187,14 @@ def _classify(
     result = RegisterResult()
     sources = frozenset(roots)
     moves: dict[str, str] = {}
-    by_target = {target: label for label, target in roots.items()}
+    spelling = DiskSpelling()
+    # The disk is asked one time for each root; every comparison below reads this.
+    spelled = {label: spelling.of(Path(target)) for label, target in roots.items()}
+    by_target = {path: label for label, path in spelled.items()}
     refused = excluded_extension_reasons()
     outside: dict[Path, str] = {}
     for p in paths:
-        src = p.resolve()
+        src = spelling.of(p)
         reason = refused.get(src.suffix.lower()) if src.is_file() else None
         if reason is not None:
             result.refused.append(f"{p.name}: {reason}")
@@ -199,15 +203,14 @@ def _classify(
         if src == docs_resolved or docs_resolved in src.parents:
             result.tracked.append(p.name)  # already owned by the knowledge base
             continue
-        already = by_target.get(str(src))
+        already = by_target.get(src)
         if already is not None:
             result.tracked.append(already)  # this exact source is already registered
             continue
-        live_roots = _live_roots(roots)
-        if _inside_a_root(src, live_roots):
+        if _inside_a_root(src, _live_roots(spelled)):
             result.overlapping.append(p.name)  # would walk the same files twice
             continue
-        reached = _reached_below(src, roots)
+        reached = _reached_below(src, spelled)
         if docs_resolved.is_relative_to(src):
             result.overlapping.append(p.name)
             result.containing.append(p.name)
@@ -220,11 +223,13 @@ def _classify(
             outside.setdefault(src, src.name)
             continue
         for child in reached:
-            by_target.pop(roots.pop(child), None)
+            del roots[child]
+            by_target.pop(spelled.pop(child), None)
         taken = _keys_below(label, src, reached, sources)
         moves.update(taken)
         roots[label] = str(src)
-        by_target[str(src)] = label
+        spelled[label] = src
+        by_target[src] = label
         result.registered = [name for name in result.registered if name not in reached] + [label]
         if taken:
             result.absorbed_into[label] = sorted(taken)
@@ -238,7 +243,7 @@ def names_outside_corpus(paths: list[Path]) -> list[str]:
         return []  # a stopped sync has no paths, and reads no registry to say so
     config = active_config()
     roots = dict(settings.load(config.data_root).get("linked_roots") or {})
-    plan, _moves = _classify(paths, roots, config.documents_dir.resolve(), force=False)
+    plan, _moves = _classify(paths, roots, disk_path(config.documents_dir), force=False)
     return [*plan.outside_corpus, *plan.registered]
 
 
@@ -253,7 +258,8 @@ def source_label_taken(name: str, target: Path | None = None) -> bool:
     """
     config = active_config()
     roots = dict(config.linked_roots)
-    if target is not None and roots.get(name) == str(target.resolve()):
+    held = roots.get(name)
+    if target is not None and held is not None and disk_path(Path(held)) == disk_path(target):
         return False
     return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
@@ -284,7 +290,7 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
         refuse_where_locking_is_unsupported(config.data_root)
     documents_dir = config.documents_dir
     documents_dir.mkdir(parents=True, exist_ok=True)
-    docs_resolved = documents_dir.resolve()
+    docs_resolved = disk_path(documents_dir)
     if not paths:
         return RegisterResult()
 
@@ -354,10 +360,18 @@ def _markers_covering(markers: dict[str, str], paths: list[Path]) -> set[str]:
     registered root, and a single-file root are all matched by the one rule
     instead of three shape-specific ones.
     """
-    named = [p.resolve() for p in paths]
+    if not markers:
+        return set()  # nothing to match, so the disk is not asked
+    config = active_config()
+    spelling = DiskSpelling()
+    named = [spelling.of(p) for p in paths]
+    bases = (config.documents_dir, *map(Path, config.linked_roots.values()))
     covered = set()
     for name in markers:
-        tracked = resolve_source_path(name).resolve(strict=False)
+        stored = resolve_source_path(name)
+        base = next(base for base in bases if stored.is_relative_to(base))
+        # The disk spells the root, one time; the rest of a key is the walk's own spelling.
+        tracked = (spelling.of(base) / stored.relative_to(base)).resolve(strict=False)
         if any(tracked == path or path in tracked.parents for path in named):
             covered.add(name)
     return covered
@@ -505,10 +519,12 @@ def forget_roots(names: list[str]) -> list[str]:
     error is raised after.
     """
     roots = active_config().linked_roots
-    named = [Path(roots[label]) for label in (name.strip("/") for name in names) if label in roots]
+    labels = [label for label in (name.strip("/") for name in names) if label in roots]
+    named = [Path(roots[label]) for label in labels]
     try:
         # Records resolve through the registry, so they go before un-registering.
-        unmark_sources_under(named)
+        # A root that stays keeps its records, also when it names the folder of one that goes.
+        unmark_sources_under(named, spared=roots.keys() - set(labels))
     finally:
         unregistered = unregister_roots(names)
     return unregistered

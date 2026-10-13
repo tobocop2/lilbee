@@ -3695,6 +3695,33 @@ async def test_prompt_overwrite_declined_notifies_a_bracketed_name_literally(tmp
         assert "note[draft].txt" in mock_notify.call_args[0][0]
 
 
+@pytest.mark.parametrize("typed_as", ["another-case", "a-link"])
+async def test_chat_slash_add_asks_with_the_name_the_add_gives_the_file(tmp_path, typed_as):
+    """The overwrite question tests the label the add uses, not the name that was typed."""
+    held = tmp_path / "first" / "loose.md"
+    listed = tmp_path / "second" / "loose.md"
+    for file in (held, listed):
+        file.parent.mkdir()
+        file.write_text("# Page\n", encoding="utf-8")
+    typed = listed.with_name("alias.md" if typed_as == "a-link" else "LOOSE.MD")
+    if typed_as == "a-link":
+        typed.symlink_to(listed)
+    one_file = typed.exists() and typed.samefile(listed)
+    if not one_file:
+        typed.write_text("# Another page\n", encoding="utf-8")
+    cfg.linked_roots = {"loose.md": str(held)}
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)):
+        with (
+            patch.object(app.screen, "_prompt_overwrite") as mock_prompt,
+            patch.object(app.screen, "_submit_add") as mock_submit,
+        ):
+            app.screen._cmd_add(str(typed))
+
+    assert mock_prompt.called is one_file
+    assert mock_submit.called is not one_file
+
+
 async def test_chat_slash_add_blocked_by_sync(tmp_path):
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello")

@@ -6,6 +6,7 @@ import sys
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from functools import cached_property
 from pathlib import Path
 
 #: Directory name for a project-local lilbee knowledge base (sibling of ``.git/``).
@@ -136,6 +137,74 @@ def canonical_data_root(root: Path | str) -> Path:
     on Windows (``Path()`` picks its flavour from ``os.name``, which tests patch).
     """
     return Path(os.path.realpath(os.path.expanduser(os.fspath(root))))
+
+
+class _Folder:
+    """One folder, with its listing read from the disk at most one time."""
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+
+    @cached_property
+    def _names(self) -> list[str]:
+        return os.listdir(self._path)
+
+    @cached_property
+    def _listed(self) -> frozenset[str]:
+        return frozenset(self._names)
+
+    @cached_property
+    def _by_entry(self) -> dict[tuple[int, int], str]:
+        """The first listed name of each entry, by the device and inode ``lstat`` gives."""
+        by_entry: dict[tuple[int, int], str] = {}
+        for name in self._names:
+            entry = os.lstat(os.path.join(self._path, name))
+            by_entry.setdefault((entry.st_dev, entry.st_ino), name)
+        return by_entry
+
+    def listed_name(self, name: str) -> str:
+        """The name the listing gives the entry that *name* opens, else *name*."""
+        try:
+            if name in self._listed:
+                return name
+            opened = os.lstat(os.path.join(self._path, name))
+            return self._by_entry.get((opened.st_dev, opened.st_ino), name)
+        except OSError:
+            return name
+
+
+class DiskSpelling:
+    """Paths spelled as the disk spells them, with each folder read at most one time.
+
+    One instance serves one operation: it does not see a rename that follows a read.
+    """
+
+    def __init__(self) -> None:
+        self._folders: dict[str, _Folder] = {}
+        self._spelled: dict[Path, Path] = {}
+
+    def of(self, path: Path) -> Path:
+        """*path* with symlinks resolved and each part that exists spelled as its folder lists it.
+
+        Two spellings of one entry give one path, on a disk that ignores letter case
+        or Unicode form as on one that does not. A part that does not exist, or whose
+        folder cannot be listed, keeps the spelling it came with.
+        """
+        known = self._spelled.get(path)
+        if known is not None:
+            return known
+        anchor, *parts = Path(os.path.realpath(path)).parts
+        spelled = anchor
+        for part in parts:
+            folder = self._folders.setdefault(spelled, _Folder(spelled))
+            spelled = os.path.join(spelled, folder.listed_name(part))
+        self._spelled[path] = Path(spelled)
+        return self._spelled[path]
+
+
+def disk_path(path: Path) -> Path:
+    """*path* as :meth:`DiskSpelling.of` spells it, for a caller with one path to ask about."""
+    return DiskSpelling().of(path)
 
 
 def canonical_models_dir() -> Path:
