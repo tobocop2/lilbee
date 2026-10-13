@@ -7125,6 +7125,8 @@ class TestSyncCancelledExit:
     def test_one_ctrl_c_ends_a_sync_that_waits_to_finish_an_add(
         self, isolated_env, mock_svc, caplog, command
     ):
+        from tests.integration._crawl_site import windows_proactor_loop
+
         leave_unfinished_add(cfg.data_root, UnfinishedAdd.HELD)
         assert threading.current_thread() is threading.main_thread()
 
@@ -7139,6 +7141,7 @@ class TestSyncCancelledExit:
             if len(takes) > 1:
                 return
             # The main thread sleeps in its event loop: only a signal sent to it wakes it.
+            # On Windows the wakeup socket of the proactor loop does that.
             if sys.platform == "win32":
                 _thread.interrupt_main()
             else:
@@ -7149,6 +7152,8 @@ class TestSyncCancelledExit:
             caplog.at_level(logging.WARNING),
             _mark_held_on_a_thread(cfg.data_root),
             _sync_write_takes(after=_ctrl_c_once) as takes,
+            # The suite runs Windows on the selector loop, which no signal wakes.
+            windows_proactor_loop(),
         ):
             result = runner.invoke(app, command)
             takes_of_the_wait = list(takes)
