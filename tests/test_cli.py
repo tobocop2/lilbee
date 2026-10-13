@@ -46,6 +46,7 @@ from lilbee.runtime.progress import (
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
+from tests._windows_loop import windows_proactor_loop
 from tests.conftest import UnfinishedAdd, leave_unfinished_add, reset_held_on_a_thread
 from tests.test_lock import _mark_held_on_a_thread, _sync_write_takes
 
@@ -7125,8 +7126,6 @@ class TestSyncCancelledExit:
     def test_one_ctrl_c_ends_a_sync_that_waits_to_finish_an_add(
         self, isolated_env, mock_svc, caplog, command
     ):
-        from tests.integration._crawl_site import windows_proactor_loop
-
         leave_unfinished_add(cfg.data_root, UnfinishedAdd.HELD)
         assert threading.current_thread() is threading.main_thread()
 

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from lilbee.core.config.enums import CrawlRenderMode
+from tests._windows_loop import windows_proactor_loop
 from tests.integration import _crawl_site as site_mod
 from tests.integration._crawl_site import (
     LOOPBACK,
@@ -26,7 +27,6 @@ from tests.integration._crawl_site import (
     run_add,
     run_cli,
     saved_pages,
-    windows_proactor_loop,
 )
 
 pytestmark = [pytest.mark.slow, needs_crawler]
