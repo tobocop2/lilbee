@@ -103,7 +103,7 @@ def _use_selector_loop_on_windows() -> None:
 
     The selector loop cannot start asyncio subprocesses, so the browser-mode
     crawl tests, which launch Chromium, run their crawl loops on the proactor
-    loop through ``windows_proactor_loop`` in ``tests/integration/_crawl_site.py``.
+    loop through ``windows_proactor_loop`` in ``tests/_windows_loop.py``.
     Production Windows keeps the proactor loop; this touches the test process
     only. Set at import, before any loop is created, so every xdist worker
     inherits it.

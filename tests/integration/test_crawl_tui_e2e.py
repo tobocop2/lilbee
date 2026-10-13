@@ -22,6 +22,7 @@ from lilbee.cli.tui.widgets.task_row import TaskRow
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import require_valid_crawl_url
+from tests._windows_loop import windows_proactor_loop
 from tests.integration import _crawl_site as site_mod
 from tests.integration._crawl_site import (
     NAMED_HOST,
@@ -33,7 +34,6 @@ from tests.integration._crawl_site import (
     needs_named_hosts,
     require_chromium,
     saved_pages,
-    windows_proactor_loop,
 )
 from tests.integration.test_tui_integration import (
     _IntegrationChatApp,

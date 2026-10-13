@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import sys
 import threading
 from pathlib import Path
@@ -32,7 +33,8 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
-from lilbee.runtime.lock import no_sync_running
+from lilbee.runtime.absorb_journal import absorb_pending
+from lilbee.runtime.lock import ResetRefusedError, no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     EventType,
@@ -44,7 +46,9 @@ from lilbee.runtime.progress import (
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
-from tests.conftest import reset_held_on_a_thread
+from tests._windows_loop import windows_proactor_loop
+from tests.conftest import UnfinishedAdd, leave_unfinished_add, reset_held_on_a_thread
+from tests.test_lock import _mark_held_on_a_thread, _sync_write_takes
 
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
@@ -7117,6 +7121,55 @@ class TestSyncCancelledExit:
         assert mock_svc.store.method_calls == [], "the sync started under the held reset"
         with no_sync_running(cfg.data_root):
             pass
+
+    @pytest.mark.parametrize("command", [["sync"], ["rebuild"], ["--json", "sync"]])
+    def test_one_ctrl_c_ends_a_sync_that_waits_to_finish_an_add(
+        self, isolated_env, mock_svc, caplog, command
+    ):
+        leave_unfinished_add(cfg.data_root, UnfinishedAdd.HELD)
+        assert threading.current_thread() is threading.main_thread()
+
+        def _library() -> list[str]:
+            """Every name in the data root but the files of the sync lock itself."""
+            names = (path.name for path in cfg.data_root.iterdir())
+            return sorted(name for name in names if not name.startswith(("sync.", ".filelock-")))
+
+        before = _library()
+
+        def _ctrl_c_once(_outcome: str) -> None:
+            if len(takes) > 1:
+                return
+            # The main thread sleeps in its event loop: only a signal sent to it wakes it.
+            # On Windows the wakeup socket of the proactor loop does that.
+            if sys.platform == "win32":
+                _thread.interrupt_main()
+            else:
+                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
+
+        # The other sync holds its mark until this block ends.
+        with (
+            caplog.at_level(logging.WARNING),
+            _mark_held_on_a_thread(cfg.data_root),
+            _sync_write_takes(after=_ctrl_c_once) as takes,
+            # The suite runs Windows on the selector loop, which no signal wakes.
+            windows_proactor_loop(),
+        ):
+            result = runner.invoke(app, command)
+            takes_of_the_wait = list(takes)
+            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+                pass
+
+        assert takes_of_the_wait, "the sync never waited for the other sync"
+        assert set(takes_of_the_wait) == {"busy"}, "the sync ended only when the other sync did"
+        assert result.exit_code == 130, result.output
+        if "--json" in command:
+            assert json.loads(result.output) == {"error": "Sync cancelled."}
+        else:
+            assert result.output.strip() == "Sync cancelled."
+        assert _cancel_error_records(caplog) == []
+        assert absorb_pending(cfg.data_root)
+        assert _library() == before
+        assert mock_svc.store.method_calls == [], "the sync started under the held mark"
 
     @staticmethod
     def _source(tmp_path: Path, name: str = "scan.txt") -> Path:

@@ -64,6 +64,7 @@ from lilbee.runtime.lock import (
 from tests.conftest import (
     UNFINISHED_ADD_REFUSALS,
     UnfinishedAdd,
+    cancel_set_when_the_sync_lock_is_granted,
     filesystem_without_locking,
     leave_unfinished_add,
     make_mock_services,
@@ -71,7 +72,12 @@ from tests.conftest import (
     sync_lock_not_a_lock_file,
     unfinished_add_refused,
 )
-from tests.test_lock import _reset_held_in_another_process
+from tests.test_lock import (
+    _mark_held_on_a_thread,
+    _reset_held_in_another_process,
+    _sync_take_that_ends_busy,
+    _sync_write_takes,
+)
 from tests.test_skip_marker import (
     _records_lock_is_free,
     _SetAsTheLockFrees,
@@ -3001,6 +3007,45 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         with no_sync_running(cfg.data_root):
             pass
 
+    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
+    @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
+    def test_a_writer_granted_the_mark_with_its_cancel_set_writes_nothing(
+        self, library, writer, cancel_set
+    ):
+        import threading
+
+        cancel = threading.Event()
+        body = MagicMock()
+        run, cancelled_result = self._writers(body)[writer]
+        outcome: list[object] = []
+        cfg.data_root.mkdir(parents=True, exist_ok=True)
+        if cancel_set == "before a free take":
+            cancel.set()
+        with cancel_set_when_the_sync_lock_is_granted(cancel) as grants:
+            if cancel_set == "after a wait":
+                with (
+                    reset_held_on_a_thread(cfg.data_root),
+                    _sync_take_that_ends_busy() as found_the_mark_held,
+                ):
+                    thread = threading.Thread(target=lambda: outcome.append(run(cancel)))
+                    thread.start()
+                    assert found_the_mark_held.wait(_WIKI_FAILURE_TIMEOUT_S)
+                    assert not cancel.is_set()
+                # A guard against a hang; the outcome below is what the test asserts.
+                thread.join(_WIKI_FAILURE_TIMEOUT_S)
+            else:
+                outcome.append(run(cancel))
+
+        if cancel_set != "before a free take":
+            assert grants == ["granted"], "the writer never held the mark"
+        assert outcome == [cancelled_result]
+        body.assert_not_called()
+        wiki_root = cfg.data_root / cfg.wiki_dir
+        assert not (wiki_root / "index.md").exists()
+        assert not (wiki_root / "log.md").exists()
+        with no_sync_running(cfg.data_root):
+            pass
+
     @pytest.mark.parametrize("block_error", [None, ValueError("the block failed")])
     def test_a_close_error_is_logged_and_keeps_the_outcome_of_the_block(
         self, library, tmp_path, caplog, block_error
@@ -3590,3 +3635,155 @@ class TestACancelAtTheRecordsLock:
             load_skip_reasons(cfg.data_root),
             load_skip_kinds(cfg.data_root),
         )
+
+
+class TestACancelAtTheWaitForARunningSync:
+    """A cancel set while a call waits for a running sync ends the call with nothing changed."""
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            pytest.param(lambda cancel: finish_pending_absorb(cancel=cancel), id="finish"),
+            pytest.param(
+                lambda cancel: remove_documents_durably(["work/plan.md", "work"], cancel=cancel),
+                id="remove",
+            ),
+        ],
+    )
+    def test_a_call_that_finishes_an_add_stops_while_the_sync_still_runs(
+        self, library, notes, command
+    ):
+        import threading
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _add_that_died(library.store, notes)
+        before = _everything(library.store)
+        cancel = threading.Event()
+
+        with (
+            _mark_held_on_a_thread(cfg.data_root),
+            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
+        ):
+            with pytest.raises(SkipRecordsWaitCancelledError) as raised:
+                command(cancel)
+            takes_of_the_wait = list(takes)
+            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+                pass
+
+        assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
+        assert raised.value.__cause__ is None
+        assert _everything(library.store) == before
+        assert before["journal"] is True
+        assert _records_lock_is_free(cfg.data_root)
+        assert finish_pending_absorb() == ["notes/work"]
+
+    async def test_a_sync_stops_while_the_other_sync_still_runs(self, library, notes):
+        import asyncio
+        import threading
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _add_that_died(library.store, notes)
+        before = _everything(library.store)
+        cancel = threading.Event()
+
+        with (
+            _mark_held_on_a_thread(cfg.data_root),
+            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
+        ):
+            with pytest.raises(asyncio.CancelledError) as raised:
+                await sync(quiet=True, cancel=cancel)
+            takes_of_the_wait = list(takes)
+            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+                pass
+
+        assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
+        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
+        assert _everything(library.store) == before
+        assert before["journal"] is True
+        with no_sync_running(cfg.data_root):
+            pass
+
+    @pytest.mark.parametrize("names", [None, ["notes"]], ids=["waits", "asks_again"])
+    def test_finishing_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(
+        self, library, notes, names
+    ):
+        import threading
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _add_that_died(library.store, notes)
+        before = _everything(library.store)
+        cancel = threading.Event()
+
+        with (
+            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
+            pytest.raises(SkipRecordsWaitCancelledError),
+        ):
+            finish_pending_absorb(names, cancel)
+
+        assert takes == ["granted"]
+        assert _everything(library.store) == before
+        assert before["journal"] is True
+        with no_sync_running(cfg.data_root):
+            pass
+
+    def test_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(self, library, notes):
+        import threading
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _seeded_child(library.store, notes)
+        before = _everything(library.store)
+        cancel = threading.Event()
+
+        with (
+            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
+            pytest.raises(SkipRecordsWaitCancelledError),
+        ):
+            register_sources([notes], cancel=cancel)
+
+        assert takes == ["granted"]
+        assert _everything(library.store) == before
+        assert before["journal"] is False
+        assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
+        assert _records_lock_is_free(cfg.data_root)
+        with no_sync_running(cfg.data_root):
+            pass
+
+    def test_an_add_that_finishes_another_add_with_the_cancel_set_moves_no_key(
+        self, library, notes
+    ):
+        import threading
+
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _add_that_died(library.store, notes)
+        before = _everything(library.store)
+        cancel = threading.Event()
+
+        with (
+            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
+            pytest.raises(SkipRecordsWaitCancelledError),
+        ):
+            register_sources([notes], cancel=cancel)
+
+        assert takes == ["granted"]
+        assert _everything(library.store) == before
+        assert before["journal"] is True
+        assert _records_lock_is_free(cfg.data_root)
+
+    def test_a_cancel_of_the_sync_lock_that_the_block_raises_is_not_the_cancel_of_the_wait(
+        self, library
+    ):
+        from lilbee.runtime.lock import SyncMarkWaitCancelledError
+
+        with (
+            pytest.raises(SyncMarkWaitCancelledError),
+            absorb_mod._syncs_held_off(cfg, "a sync is running", 0.0, None),
+        ):
+            raise SyncMarkWaitCancelledError
+
+        with no_sync_running(cfg.data_root):
+            pass

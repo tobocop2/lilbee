@@ -9,8 +9,10 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Generator
-from contextlib import contextmanager, nullcontext
+from collections.abc import Callable, Generator
+from contextlib import ExitStack, closing, contextmanager, nullcontext
+from dataclasses import dataclass, field
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -22,12 +24,15 @@ from filelock import Timeout as FileLockTimeout
 from lilbee.core.config import cfg
 from lilbee.runtime.lock import (
     _SYNC_TAKE_SLICE_S,
+    LOCK_TIMEOUT,
     LibraryUnlockableError,
     LockingUnsupportedError,
     LockTimeoutError,
     ResetRefusedError,
     SyncMarkWaitCancelledError,
+    SyncRunningError,
     _lock_path,
+    _sync_lock_wait,
     acquire_scope_lock,
     acquire_server_lock,
     no_sync_running,
@@ -35,6 +40,7 @@ from lilbee.runtime.lock import (
     server_lock_path,
     source_keys_in_use,
     sync_running,
+    syncs_held_off,
     write_lock,
 )
 from tests.conftest import cancel_set_when_the_sync_lock_is_granted, reset_held_on_a_thread
@@ -416,6 +422,70 @@ def _recorded_read_takes() -> Generator[tuple[list[float], threading.Event], Non
         yield waits, first_take
 
 
+@contextmanager
+def _mark_held_on_a_thread(data_root: Path) -> Generator[Callable[[], None], None, None]:
+    """Hold the sync mark of *data_root* on a thread, as a running sync does.
+
+    Yields the call that ends the hold; the hold ends with the block at the latest.
+    """
+    held, release = threading.Event(), threading.Event()
+
+    def _sync() -> None:
+        with source_keys_in_use(data_root):
+            held.set()
+            release.wait(3 * _FAILURE_TIMEOUT_S)
+
+    def _end() -> None:
+        release.set()
+        holder.join(_FAILURE_TIMEOUT_S)
+
+    holder = threading.Thread(target=_sync)
+    holder.start()
+    try:
+        assert held.wait(_FAILURE_TIMEOUT_S)
+        yield _end
+    finally:
+        _end()
+
+
+@contextmanager
+def _sync_write_takes(
+    after: Callable[[str], object] = lambda _outcome: None,
+) -> Generator[list[str], None, None]:
+    """Record each take of the write side of a sync lock as "busy" or "granted".
+
+    *after* is called with that word when the take ends, before the caller sees it.
+    """
+    takes: list[str] = []
+    real_take = ReadWriteLock.acquire_write
+
+    def _take(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+        if Path(lock.lock_file).name != "sync.lock":
+            return real_take(lock, *args, **kwargs)
+        try:
+            taken = real_take(lock, *args, **kwargs)
+        except FileLockTimeout:
+            takes.append("busy")
+            after("busy")
+            raise
+        takes.append("granted")
+        after("granted")
+        return taken
+
+    with mock.patch.object(ReadWriteLock, "acquire_write", _take):
+        yield takes
+
+
+def _a_sync_can_start(data_root: Path) -> bool:
+    """True when the read side of the sync lock of *data_root* is free to take now."""
+    with closing(ReadWriteLock(data_root / "sync.lock", is_singleton=False)) as probe:
+        try:
+            probe.acquire_read(blocking=False)
+        except FileLockTimeout:
+            return False
+    return True
+
+
 def _lock_warnings(caplog) -> int:
     return sum(r.name == "lilbee.runtime.lock" and r.levelname == "WARNING" for r in caplog.records)
 
@@ -588,6 +658,61 @@ class TestSyncMark:
         assert all(0 < wait <= _SYNC_TAKE_SLICE_S for wait in waits), waits
         with no_sync_running(tmp_path):
             pass
+
+    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
+    def test_a_wiki_writer_granted_the_mark_with_its_cancel_set_does_not_run(
+        self, tmp_path: Path, cancel_set: str
+    ) -> None:
+        cancel = threading.Event()
+        outcome: list[object] = []
+
+        def _writer() -> None:
+            try:
+                with source_keys_in_use(tmp_path, cancel):
+                    outcome.append("the block ran")
+            except SyncMarkWaitCancelledError as exc:
+                outcome.append(type(exc))
+
+        if cancel_set == "before a free take":
+            cancel.set()
+        with cancel_set_when_the_sync_lock_is_granted(cancel) as grants:
+            if cancel_set == "after a wait":
+                with (
+                    reset_held_on_a_thread(tmp_path),
+                    _sync_take_that_ends_busy() as found_the_mark_held,
+                ):
+                    writer = threading.Thread(target=_writer)
+                    writer.start()
+                    assert found_the_mark_held.wait(_FAILURE_TIMEOUT_S)
+                    assert not cancel.is_set()
+                # A guard against a hang; the outcome below is what the test asserts.
+                writer.join(_FAILURE_TIMEOUT_S)
+            else:
+                _writer()
+
+        if cancel_set != "before a free take":
+            assert grants == ["granted"], "the writer never held the mark"
+        assert outcome == [SyncMarkWaitCancelledError]
+        with no_sync_running(tmp_path):
+            pass
+
+    def test_a_wiki_writer_with_an_unset_cancel_waits_for_the_reset_and_runs(
+        self, tmp_path: Path
+    ) -> None:
+        order: list[str] = []
+
+        def _writer() -> None:
+            with source_keys_in_use(tmp_path, threading.Event()):
+                order.append("writer ran")
+
+        with reset_held_on_a_thread(tmp_path), _sync_take_that_ends_busy() as found_the_mark_held:
+            writer = threading.Thread(target=_writer)
+            writer.start()
+            assert found_the_mark_held.wait(_FAILURE_TIMEOUT_S)
+            order.append("reset ended")
+        writer.join(_FAILURE_TIMEOUT_S)
+
+        assert order == ["reset ended", "writer ran"]
 
     @pytest.mark.parametrize("cancelled_in", ["the wait", "the block"])
     async def test_a_close_error_does_not_replace_the_cancel_of_a_sync(
@@ -1331,6 +1456,380 @@ class TestSyncMark:
         assert _lock_warnings(caplog) == 1
         assert "Could not delete the lock probe" in caplog.text
         assert len(list(tmp_path.glob("sync.probe.*"))) == 1
+
+
+class TestSyncsHeldOffWait:
+    """The wait that holds syncs off ends at a set cancel, at its deadline or with the lock."""
+
+    def test_a_cancel_set_during_the_wait_ends_it_while_the_sync_still_holds(
+        self, tmp_path: Path
+    ) -> None:
+        cancel = threading.Event()
+        ran: list[str] = []
+
+        with (
+            _mark_held_on_a_thread(tmp_path),
+            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
+        ):
+            with (
+                pytest.raises(SyncMarkWaitCancelledError),
+                syncs_held_off(tmp_path, "a sync is running", LOCK_TIMEOUT, cancel),
+            ):
+                ran.append("the block")
+            takes_of_the_wait = list(takes)
+            # The sync still holds its mark, and a second sync shares it at once.
+            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
+                pass
+            with source_keys_in_use(tmp_path):
+                ran.append("a second sync")
+
+        assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
+        assert ran == ["a second sync"]
+        with no_sync_running(tmp_path):
+            pass
+
+    @pytest.mark.parametrize(
+        ("cancel_set", "wait"),
+        [
+            ("before a free take", 0.0),
+            ("before a free take", LOCK_TIMEOUT),
+            ("at the grant", 0.0),
+            ("at the grant", LOCK_TIMEOUT),
+            ("after a wait", LOCK_TIMEOUT),
+        ],
+    )
+    def test_a_block_granted_the_lock_with_its_cancel_set_does_not_run(
+        self, tmp_path: Path, cancel_set: str, wait: float
+    ) -> None:
+        cancel = threading.Event()
+        ran: list[str] = []
+        if cancel_set == "before a free take":
+            cancel.set()
+
+        def _after(outcome: str) -> None:
+            if outcome == "busy":
+                end_the_sync()
+            else:
+                cancel.set()
+
+        with ExitStack() as stack:
+            end_the_sync = (
+                stack.enter_context(_mark_held_on_a_thread(tmp_path))
+                if cancel_set == "after a wait"
+                else lambda: None
+            )
+            takes = stack.enter_context(_sync_write_takes(_after))
+            with (
+                pytest.raises(SyncMarkWaitCancelledError),
+                syncs_held_off(tmp_path, "a sync is running", wait, cancel),
+            ):
+                ran.append("the block")
+
+        assert takes == (["busy", "granted"] if cancel_set == "after a wait" else ["granted"])
+        assert ran == []
+        with no_sync_running(tmp_path):
+            pass
+
+    def test_a_wait_with_an_unset_cancel_runs_the_block_when_the_sync_ends(
+        self, tmp_path: Path
+    ) -> None:
+        order: list[str] = []
+
+        def _after(outcome: str) -> None:
+            if outcome == "busy" and "the sync ended" not in order:
+                order.append("the sync ended")
+                end_the_sync()
+
+        with (
+            _mark_held_on_a_thread(tmp_path) as end_the_sync,
+            _sync_write_takes(_after) as takes,
+            syncs_held_off(
+                tmp_path,
+                "a sync is running",
+                LOCK_TIMEOUT,
+                threading.Event(),
+            ),
+        ):
+            order.append("the block ran")
+
+        assert order == ["the sync ended", "the block ran"]
+        assert takes == ["busy", "granted"]
+
+    def test_a_wait_with_no_cancel_keeps_its_place_ahead_of_a_later_sync(
+        self, tmp_path: Path
+    ) -> None:
+        order: list[str] = []
+        later_sync_tried, later_sync_ended = threading.Event(), threading.Event()
+        real_take = ReadWriteLock.acquire_read
+
+        def _take(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+            try:
+                return real_take(lock, *args, **kwargs)
+            finally:
+                if threading.current_thread() is later_sync:
+                    later_sync_tried.set()
+
+        def _add() -> None:
+            with syncs_held_off(tmp_path, "a sync is running", LOCK_TIMEOUT):
+                order.append("the add")
+
+        def _later_sync() -> None:
+            try:
+                with source_keys_in_use(tmp_path):
+                    order.append("a later sync")
+            finally:
+                later_sync_ended.set()
+
+        def _after(outcome: str) -> None:
+            # A take that ends busy has let go of its place: the later sync gets its turn.
+            if outcome == "busy":
+                later_sync_ended.wait(_FAILURE_TIMEOUT_S)
+
+        add, later_sync = threading.Thread(target=_add), threading.Thread(target=_later_sync)
+        with (
+            _mark_held_on_a_thread(tmp_path) as end_the_first_sync,
+            _sync_write_takes(_after) as takes,
+            mock.patch.object(ReadWriteLock, "acquire_read", _take),
+        ):
+            add.start()
+            give_up_at = time.monotonic() + _FAILURE_TIMEOUT_S
+            while not takes and _a_sync_can_start(tmp_path):
+                assert time.monotonic() < give_up_at, "the add never waited for the lock"
+            later_sync.start()
+            assert later_sync_tried.wait(_FAILURE_TIMEOUT_S)
+            end_the_first_sync()
+            add.join(_FAILURE_TIMEOUT_S)
+            later_sync.join(_FAILURE_TIMEOUT_S)
+
+        assert order == ["the add", "a later sync"]
+        assert takes == ["granted"], "the add let go of its place during the wait"
+
+    def test_a_wait_with_no_cancel_makes_one_take_for_the_whole_wait(self, tmp_path: Path) -> None:
+        asked: list[tuple[object, ...]] = []
+        real_take = ReadWriteLock.acquire_write
+
+        def _take(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> object:
+            if Path(lock.lock_file).name == "sync.lock":
+                asked.append((timeout, blocking))
+            return real_take(lock, timeout, blocking=blocking)
+
+        with (
+            _mark_held_on_a_thread(tmp_path),
+            mock.patch.object(ReadWriteLock, "acquire_write", _take),
+            pytest.raises(SyncRunningError, match=r"^a sync is running$"),
+            syncs_held_off(tmp_path, "a sync is running", 2.5 * _SYNC_TAKE_SLICE_S),
+        ):
+            pass
+
+        assert asked == [(2.5 * _SYNC_TAKE_SLICE_S, True)]
+
+    @pytest.mark.parametrize("cancel", [None, "unset"])
+    def test_a_sync_that_outlasts_the_wait_raises_the_text_of_the_caller(
+        self, tmp_path: Path, cancel: str | None
+    ) -> None:
+        ran: list[str] = []
+        wait = 2.5 * _SYNC_TAKE_SLICE_S
+
+        with _mark_held_on_a_thread(tmp_path), _sync_write_takes() as takes:
+            with (
+                pytest.raises(SyncRunningError, match=r"^a sync is running$"),
+                syncs_held_off(
+                    tmp_path,
+                    "a sync is running",
+                    wait,
+                    None if cancel is None else threading.Event(),
+                ),
+            ):
+                ran.append("the block")
+            takes_of_the_wait = list(takes)
+            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
+                pass
+
+        # With a cancel the count of attempts depends on the machine; the test of the rule
+        # counts them.
+        assert takes_of_the_wait, "the wait never tried the lock"
+        assert set(takes_of_the_wait) == {"busy"}
+        if cancel is None:
+            assert takes_of_the_wait == ["busy"]
+        assert ran == []
+
+    def test_no_wait_makes_one_take_that_does_not_block(self, tmp_path: Path) -> None:
+        asked: list[tuple[object, ...]] = []
+        real_take = ReadWriteLock.acquire_write
+
+        def _take(lock: ReadWriteLock, timeout: float = -1, *, blocking: bool = True) -> object:
+            if Path(lock.lock_file).name == "sync.lock":
+                asked.append((timeout, blocking))
+            return real_take(lock, timeout, blocking=blocking)
+
+        with (
+            _mark_held_on_a_thread(tmp_path),
+            mock.patch.object(ReadWriteLock, "acquire_write", _take),
+            pytest.raises(SyncRunningError, match=r"^a sync is running$"),
+            syncs_held_off(tmp_path, "a sync is running"),
+        ):
+            pass
+
+        assert asked == [(0.0, False)]
+
+
+@dataclass
+class _DrivenWait:
+    """One wait for the sync lock, driven over *outcomes*, each "busy" or "taken".
+
+    Attempt number *set_cancel_at* sets *cancel* as it ends. Each attempt moves
+    ``clock`` on by its seconds, and records them and the busy error it raised.
+    """
+
+    outcomes: list[str]
+    cancel: threading.Event | None = None
+    set_cancel_at: int = -1
+    clock: float = 0.0
+    seconds: list[float] = field(default_factory=list)
+    raised: list[FileLockTimeout] = field(default_factory=list)
+
+    def run(self, wait: float | None = None) -> None:
+        clock = SimpleNamespace(monotonic=lambda: self.clock)
+        with mock.patch("lilbee.runtime.lock.time", clock):
+            for attempt in _sync_lock_wait(self.cancel, wait):
+                with attempt:
+                    self._make(attempt.seconds)
+
+    def _make(self, seconds: float) -> None:
+        number = len(self.seconds)
+        self.seconds.append(seconds)
+        self.clock += seconds
+        if self.cancel is not None and number == self.set_cancel_at:
+            self.cancel.set()
+        if self.outcomes[number] == "busy":
+            self.raised.append(FileLockTimeout("sync.lock"))
+            raise self.raised[-1]
+
+
+# Where a test ends a wait that a wrong rule would keep making attempts for.
+_ATTEMPTS_OF_A_WRONG_WAIT = 3
+
+
+class TestSyncLockWait:
+    """One rule for every wait for a side of the sync lock: slices, cancel, deadline."""
+
+    def test_a_wait_with_no_limit_tries_in_slices_until_an_attempt_takes_the_lock(self) -> None:
+        wait = _DrivenWait(["busy", "busy", "taken"])
+
+        wait.run()
+
+        assert wait.seconds == [_SYNC_TAKE_SLICE_S] * 3
+        assert len(wait.raised) == 2
+
+    @pytest.mark.parametrize(
+        ("outcomes", "set_cancel_at"),
+        [
+            (["busy", "busy", "taken"], 1),
+            (["busy", "taken", "taken"], 1),
+            (["taken", "taken"], 0),
+        ],
+        ids=["during the wait", "at the attempt that takes the lock", "at a free first attempt"],
+    )
+    @pytest.mark.parametrize("limit", [None, 30.0])
+    def test_a_cancel_set_at_an_attempt_ends_the_wait_after_that_attempt(
+        self, outcomes: list[str], set_cancel_at: int, limit: float | None
+    ) -> None:
+        wait = _DrivenWait(outcomes, threading.Event(), set_cancel_at)
+
+        with pytest.raises(SyncMarkWaitCancelledError):
+            wait.run(limit)
+
+        assert len(wait.seconds) == set_cancel_at + 1, "the wait tried again after the cancel"
+
+    def test_a_cancel_set_before_the_wait_ends_it_after_one_attempt(self) -> None:
+        cancel = threading.Event()
+        cancel.set()
+        wait = _DrivenWait(["taken", "taken"], cancel)
+
+        with pytest.raises(SyncMarkWaitCancelledError):
+            wait.run()
+
+        assert len(wait.seconds) == 1
+
+    def test_a_wait_of_zero_makes_one_attempt_that_does_not_block(self) -> None:
+        wait = _DrivenWait(["busy", "taken"])
+
+        with pytest.raises(FileLockTimeout) as refusal:
+            wait.run(0.0)
+
+        assert wait.seconds == [0.0]
+        assert refusal.value is wait.raised[0], "the deadline did not raise the lock's busy error"
+
+    def test_a_wait_of_zero_returns_when_its_one_attempt_takes_the_lock(self) -> None:
+        wait = _DrivenWait(["taken"])
+
+        wait.run(0.0)
+
+        assert (wait.seconds, wait.raised) == ([0.0], [])
+
+    def test_a_deadline_with_no_cancel_is_one_attempt_for_the_whole_wait(self) -> None:
+        wait = _DrivenWait(["busy", "taken"])
+
+        with pytest.raises(FileLockTimeout) as refusal:
+            wait.run(2.5 * _SYNC_TAKE_SLICE_S)
+
+        assert wait.seconds == [2.5 * _SYNC_TAKE_SLICE_S]
+        assert refusal.value is wait.raised[0], "the deadline did not raise the lock's busy error"
+
+    def test_a_wait_with_no_cancel_returns_when_its_one_attempt_takes_the_lock(self) -> None:
+        wait = _DrivenWait(["taken"])
+
+        wait.run(LOCK_TIMEOUT)
+
+        assert (wait.seconds, wait.raised) == ([LOCK_TIMEOUT], [])
+
+    def test_a_deadline_ends_a_wait_with_a_cancel_that_stays_busy(self) -> None:
+        wait = _DrivenWait(["busy"] * 9, threading.Event())
+
+        with pytest.raises(FileLockTimeout) as refusal:
+            wait.run(2.5 * _SYNC_TAKE_SLICE_S)
+
+        assert wait.seconds == pytest.approx(
+            [_SYNC_TAKE_SLICE_S, _SYNC_TAKE_SLICE_S, 0.5 * _SYNC_TAKE_SLICE_S]
+        )
+        assert refusal.value is wait.raised[-1]
+
+    def test_a_lock_taken_at_the_last_attempt_before_the_deadline_is_held(self) -> None:
+        wait = _DrivenWait(["busy", "busy", "taken"], threading.Event())
+
+        wait.run(2.5 * _SYNC_TAKE_SLICE_S)
+
+        assert len(wait.seconds) == 3
+
+    def test_a_cancel_set_at_the_last_attempt_before_the_deadline_is_a_cancel(self) -> None:
+        wait = _DrivenWait(["busy"], threading.Event(), set_cancel_at=0)
+
+        with pytest.raises(SyncMarkWaitCancelledError):
+            wait.run(0.0)
+
+    def test_an_error_that_is_not_a_busy_lock_ends_the_wait(self) -> None:
+        tried: list[float] = []
+
+        with pytest.raises(sqlite3.DatabaseError, match="not a database"):
+            for attempt in islice(_sync_lock_wait(None), _ATTEMPTS_OF_A_WRONG_WAIT):
+                with attempt:
+                    tried.append(attempt.seconds)
+                    raise sqlite3.DatabaseError("file is not a database")
+
+        assert len(tried) == 1
+
+    def test_a_busy_error_that_replaced_a_task_cancel_ends_the_wait_as_that_cancel(self) -> None:
+        tried: list[float] = []
+        busy = FileLockTimeout("sync.lock")
+        busy.__context__ = asyncio.CancelledError()
+
+        with pytest.raises(asyncio.CancelledError):
+            for attempt in islice(_sync_lock_wait(None), _ATTEMPTS_OF_A_WRONG_WAIT):
+                with attempt:
+                    tried.append(attempt.seconds)
+                    raise busy
+
+        assert len(tried) == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="ENOLCK comes from POSIX flock")

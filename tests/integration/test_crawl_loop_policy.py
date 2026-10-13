@@ -8,7 +8,7 @@ import sys
 import pytest
 
 from lilbee.runtime import asyncio_loop
-from tests.integration._crawl_site import windows_proactor_loop
+from tests._windows_loop import windows_proactor_loop
 
 
 class _StubProactorPolicy(asyncio.DefaultEventLoopPolicy):

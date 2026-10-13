@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import secrets
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 
 from lilbee.app.services import get_services
 from lilbee.core import settings
@@ -11,6 +13,7 @@ from lilbee.core.config import Config, active_config
 from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
+    SkipRecordsWaitCancelledError,
     load_skip_records,
     skip_records_lock,
     update_skip_records,
@@ -27,7 +30,7 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.cancellation import CancelSignal
-from lilbee.runtime.lock import LOCK_TIMEOUT, syncs_held_off
+from lilbee.runtime.lock import LOCK_TIMEOUT, SyncMarkWaitCancelledError, syncs_held_off
 
 log = logging.getLogger(__name__)
 
@@ -214,14 +217,34 @@ def _roll_forward(config: Config, store: Store, journal: AbsorbJournal) -> None:
     delete_journal(config.data_root)
 
 
-def absorb(journal: AbsorbJournal, names: list[str]) -> None:
+@contextmanager
+def _syncs_held_off(
+    config: Config, running: str, wait: float, cancel: CancelSignal | None
+) -> Iterator[None]:
+    """Keep syncs off the data root of *config* for the block, as ``syncs_held_off`` does.
+
+    A *cancel* that ends the wait raises ``SkipRecordsWaitCancelledError``, the
+    cancel an add, a remove and a sync report for the records lock.
+    """
+    with ExitStack() as held:
+        try:
+            held.enter_context(syncs_held_off(config.data_root, running, wait, cancel))
+        except SyncMarkWaitCancelledError:
+            # No cause: a cancel that carries an error is reported as that error.
+            raise SkipRecordsWaitCancelledError from None
+        yield
+
+
+def absorb(journal: AbsorbJournal, names: list[str], cancel: CancelSignal | None = None) -> None:
     """Run the absorb *journal* records; a running sync or wiki write raises ``SyncRunningError``.
 
     The caller holds the skip-records lock. *names* are the paths the user is adding.
+    A *cancel* set when syncs are held off raises ``SkipRecordsWaitCancelledError``,
+    with nothing moved.
     """
     config = active_config()
     running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    with syncs_held_off(config.data_root, running):
+    with _syncs_held_off(config, running, 0.0, cancel):
         write_journal(config.data_root, journal)
         _roll_forward(config, get_services().store, journal)
 
@@ -236,10 +259,11 @@ def _finish(
     """Roll the journal of *config*'s data root forward under the locks an absorb holds.
 
     Returns the keys the absorbed sources took, empty when no journal was left.
-    Setting *cancel* ends the wait for the records lock, with nothing moved.
+    Setting *cancel* ends the wait for a running sync and the wait for the records
+    lock, with nothing moved.
     """
     with (
-        syncs_held_off(config.data_root, running, wait),
+        _syncs_held_off(config, running, wait, cancel),
         skip_records_lock(config.data_root, cancel),
     ):
         journal = read_journal(config.data_root)
@@ -271,8 +295,8 @@ def finish_pending_absorb(
     Costs one existence check without one. With *names*, a running sync raises
     ``SyncRunningError`` at once and asks for them again; without, it waits.
     Returns the keys the absorbed sources took, empty when it finished none.
-    Setting *cancel* ends the wait for the records lock with
-    ``SkipRecordsWaitCancelledError``, with nothing moved.
+    Setting *cancel* ends the wait for a running sync and the wait for the records
+    lock with ``SkipRecordsWaitCancelledError``, with nothing moved.
     """
     config = active_config()
     if not absorb_pending(config.data_root):
@@ -290,7 +314,7 @@ def finish_pending_absorb_at_start(
     """Finish an interrupted absorb when a process builds its services.
 
     A sync or an add finishes what this leaves. Raises only when *cancel* ends
-    the wait for the records lock: ``SkipRecordsWaitCancelledError``.
+    the take of a lock: ``SkipRecordsWaitCancelledError``.
     """
     try:
         _finish(config, store, _UNFINISHED_ADD_HELD, 0.0, cancel)

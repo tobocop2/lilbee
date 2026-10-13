@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import json
 import os
 import socket
-import sys
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -32,7 +30,6 @@ from lilbee.crawler import (
     crawler_browsers_path,
     url_filter,
 )
-from lilbee.runtime import asyncio_loop
 from tests.integration.conftest import EMBED_ENTRY, EMBEDDING_DIM, _resolve_installed_ref
 
 LOOPBACK = "127.0.0.1"
@@ -445,27 +442,6 @@ def crawl_sandbox(
             reset_services()
             for name in type(cfg).model_fields:
                 setattr(cfg, name, getattr(snapshot, name))
-
-
-@contextmanager
-def windows_proactor_loop() -> Iterator[None]:
-    """On Windows, run the block's crawl loops on the proactor loop, which can start Chromium.
-
-    Covers loops made with ``asyncio.new_event_loop()`` inside the block and the TUI's
-    background loop, which is made here so a test's own loop policy cannot replace it.
-    """
-    if sys.platform != "win32":
-        yield
-        return
-    previous = asyncio.get_event_loop_policy()
-    asyncio_loop.shutdown()
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
-    try:
-        asyncio_loop.get_loop()
-        yield
-    finally:
-        asyncio_loop.shutdown()
-        asyncio.set_event_loop_policy(previous)
 
 
 def require_chromium() -> None:
