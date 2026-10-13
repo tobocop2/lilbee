@@ -407,8 +407,16 @@ def _sync_lock_wait(
     *cancel* is read after every attempt, the one that took the lock included: a set
     *cancel* raises ``SyncMarkWaitCancelledError``, and the caller closes the lock.
     A lock still busy *wait* seconds after the first attempt raises filelock's
-    ``Timeout``; None sets no limit.
+    ``Timeout``; None sets no limit. A wait with a limit and no *cancel* is one
+    attempt *wait* seconds long: a writer has its place ahead of later readers only
+    during an attempt, so with a *cancel* a later reader can pass it.
     """
+    if cancel is None and wait is not None:
+        attempt = _SyncLockAttempt(wait)
+        yield attempt
+        if attempt.busy is not None:
+            raise attempt.busy
+        return
     deadline = None if wait is None else time.monotonic() + wait
     while True:
         left = _SYNC_TAKE_SLICE_S if deadline is None else deadline - time.monotonic()
