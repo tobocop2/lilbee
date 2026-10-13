@@ -18,6 +18,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
     SkipKind,
+    SkipRecordsWaitCancelledError,
     load_skip_kinds,
     skip_records_lock,
 )
@@ -85,7 +86,8 @@ class _Takes:
             return proxy
 
         def release(lock, *args, **kwargs):
-            if Path(lock.lock_file).name == _RECORDS_LOCK_FILE:
+            # filelock releases a lock again when it deletes the object; that one is no hold.
+            if Path(lock.lock_file).name == _RECORDS_LOCK_FILE and lock.lock_counter:
                 takes._change(_RECORDS_LOCK, -1)
             return real_release(lock, *args, **kwargs)
 
@@ -150,6 +152,7 @@ class _Builds:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, takes: _Takes) -> None:
         self.held_at_build: list[list[str]] = []
+        self.on_build: list[Callable[[], None]] = []
         self.services = make_mock_services(store=Store(cfg))
         self._takes = takes
         monkeypatch.setattr(svc_mod, "build_services", self._build)
@@ -160,6 +163,8 @@ class _Builds:
 
     def _build(self, config, provider=None, registry=None, interactive=False):
         self.held_at_build.append(self._takes.held())
+        for callback in self.on_build:
+            callback()
         return self.services
 
 
@@ -251,6 +256,40 @@ class TestTheServicesAreBuiltBeforeAnyLibraryLock:
 
         assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
         assert _registry() == {"notes": str(notes.resolve())}
+
+
+def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
+    register_sources([notes], cancel=cancel)
+
+
+def _cancelled_remove(notes: Path, cancel: threading.Event) -> None:
+    remove_documents_durably(["work/plan.md"], cancel=cancel)
+
+
+_PATHS_THAT_TAKE_A_CANCEL = {"add": _cancelled_add, "remove": _cancelled_remove}
+
+
+class TestACancelSetAtTheFirstBuild:
+    @pytest.mark.parametrize("path", list(_PATHS_THAT_TAKE_A_CANCEL))
+    @pytest.mark.parametrize("journal", [True, False], ids=["journal pending", "no journal"])
+    def test_the_cancel_is_reported_with_nothing_finished_or_changed(
+        self, path, journal, notes, takes, builds
+    ):
+        if journal:
+            _leave_journal(notes)
+        else:
+            _register_work(notes)
+        cancel = threading.Event()
+        builds.on_build.append(cancel.set)
+
+        with pytest.raises(SkipRecordsWaitCancelledError):
+            _PATHS_THAT_TAKE_A_CANCEL[path](notes, cancel)
+
+        assert builds.held_at_build == [[]]
+        assert absorb_pending(cfg.data_root) is journal
+        assert _registry() == {"work": str((notes / "work").resolve())}
+        assert load_skip_kinds(cfg.data_root) == {}
+        assert takes.held() == []
 
 
 class TestTheStartFinisherRunsOutsideTheCreationLock:
