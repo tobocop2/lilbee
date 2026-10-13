@@ -321,10 +321,10 @@ def register_sources(
     in_progress = keys_of_pending_absorb()
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root, cancel):
-        taken = [*in_progress, *finish_pending_absorb(names)]
+        taken = [*in_progress, *finish_pending_absorb(names, cancel)]
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
-            absorb(journal, list(result.absorbed_into))
+            absorb(journal, list(result.absorbed_into), cancel)
             taken = [*taken, *journal.moves.values()]
         unmark_sources_under(paths, spared=taken)
     return result
@@ -499,15 +499,16 @@ def remove_documents_durably(
     start to end, so no removal runs on keys that are part way through a move.
     The names are then expanded at the keys the library holds. Raises one of
     ``LIBRARY_REFUSALS`` with nothing removed when it cannot start. Setting
-    *cancel* ends the wait for the records lock with
-    ``SkipRecordsWaitCancelledError``, with nothing removed.
+    *cancel* ends the wait for the records lock, and the wait for a running sync
+    before it finishes an absorb, with ``SkipRecordsWaitCancelledError`` and
+    nothing removed.
     """
     data_root = active_config().data_root
     # Taken before the index changes, so a held lock refuses the removal with nothing done.
     with skip_records_lock(data_root, cancel):
         moved = absorb_pending(data_root)
         if moved:
-            finish_pending_absorb()
+            finish_pending_absorb(cancel=cancel)
         if moved or targets is None:
             targets = expand_remove_targets(names)
         result = get_services().store.remove_documents(targets)

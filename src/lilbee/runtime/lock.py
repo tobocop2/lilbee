@@ -512,16 +512,22 @@ def no_sync_running(data_root: Path) -> Generator[None, None, None]:
 
 
 @contextmanager
-def syncs_held_off(data_root: Path, running: str, wait: float = 0.0) -> Generator[None, None, None]:
+def syncs_held_off(
+    data_root: Path, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
+) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; a sync that outlasts *wait* raises *running*.
 
     Raises ``SyncRunningError`` with the text *running*. A data root that cannot
     be locked raises ``LibraryUnlockableError`` or ``LockingUnsupportedError``.
+    A *cancel* that is set during the wait, or when the lock is taken, raises
+    ``SyncMarkWaitCancelledError``: the block does not run and the lock is free.
     """
     lock = _open_sync_lock(data_root, write=True, refused=LibraryUnlockableError)
     with closing(lock):
         try:
-            lock.acquire_write(timeout=wait, blocking=wait > 0)
+            for attempt in _sync_lock_wait(cancel, wait):
+                with attempt:
+                    lock.acquire_write(timeout=attempt.seconds, blocking=attempt.seconds > 0)
         except FileLockTimeout:
             raise SyncRunningError(running) from None
         except _SYNC_LOCK_ERRORS as exc:
