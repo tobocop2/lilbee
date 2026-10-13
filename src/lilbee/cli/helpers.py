@@ -311,7 +311,8 @@ def auto_sync(
     function returns immediately (for chat/REPL).  When False (default),
     *run_sync* (the CLI's Ctrl+C-cancellable runner) blocks until the sync
     completes (for ``lilbee ask``). A sync that cannot lock the library is
-    skipped with one warning in the log, and the caller goes on to its query.
+    skipped with one warning in the log and one notice on stderr, and the
+    caller goes on to its query.
     """
     if background:
         from lilbee.cli.sync import run_sync_background
@@ -327,6 +328,9 @@ def auto_sync(
     except LibraryUnlockableError as exc:
         # The question only reads, so it is answered from the library as it is.
         log.warning(_SYNC_SKIPPED, exc)
+        print_prefixed(
+            PlainConsole(stderr=True), "Warning: ", _SYNC_SKIPPED % exc, style=theme.WARNING
+        )
         return
     except RuntimeError as exc:
         print_prefixed(con, "Error: ", exc, style=theme.ERROR)
