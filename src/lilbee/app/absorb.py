@@ -245,25 +245,19 @@ def keys_of_pending_absorb() -> list[str]:
     return [] if journal is None else list(journal.moves.values())
 
 
-def finish_pending_absorb(
-    names: list[str] | None = None, cancel: CancelSignal | None = None
-) -> list[str]:
+def finish_pending_absorb(cancel: CancelSignal | None = None) -> list[str]:
     """Finish an absorb that started on the active data root and did not end.
 
-    Costs one existence check without one. With *names*, a running sync raises
-    ``SyncRunningError`` at once and asks for them again; without, it waits.
-    Returns the keys the absorbed sources took, empty when it finished none.
-    Setting *cancel* ends the wait for a running sync and the wait for the records
-    lock with ``SkipRecordsWaitCancelledError``, with nothing moved.
+    Costs one existence check without one. Waits for a running sync, with no
+    records lock held. Returns the keys the absorbed sources took, empty when it
+    finished none. Setting *cancel* ends the wait for a running sync and the wait
+    for the records lock with ``SkipRecordsWaitCancelledError``, with nothing moved.
     """
     config = active_config()
     if not absorb_pending(config.data_root):
         return []
     store = get_services(cancel).store
-    running, wait = _UNFINISHED_ADD_HELD, LOCK_TIMEOUT
-    if names is not None:
-        running, wait = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names)), 0.0
-    with library_held(config.data_root, running, wait, cancel) as hold:
+    with library_held(config.data_root, _UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel) as hold:
         return finish_absorb(store, hold)
 
 

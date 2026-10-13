@@ -312,6 +312,9 @@ def _process_start(notes: Path) -> None:
 
 
 _PATHS_THAT_TAKE_BOTH_LOCKS = {
+    "add that takes a source in": _add_that_takes_a_source_in,
+    "add with a journal pending": _add_with_a_journal,
+    "remove with a journal pending": _remove_with_a_journal,
     "reset": _reset,
     "sync finisher": _sync_finisher,
     "process start": _process_start,

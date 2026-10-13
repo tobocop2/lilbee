@@ -14,6 +14,7 @@ from pathlib import Path
 from lilbee.app.absorb import (
     SYNC_RUNNING_ADD_AGAIN,
     absorb,
+    finish_absorb,
     finish_pending_absorb,
     keys_of_pending_absorb,
     new_journal,
@@ -324,15 +325,25 @@ def register_sources(
     names = [p.name for p in paths]
     in_progress = keys_of_pending_absorb()
     # Built before the first library lock, and after the read of the absorb in progress.
-    get_services(cancel)
+    store = get_services(cancel).store
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root, cancel):
-        taken = [*in_progress, *finish_pending_absorb(names, cancel)]
+        # An absorb writes its journal under the records lock, so none appears in here.
+        if not absorb_pending(config.data_root):
+            result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+            if journal is None:
+                unmark_sources_under(paths, spared=in_progress)
+                return result
+            # A source moves, so nothing is registered yet; the error names what takes it in.
+            names = list(result.absorbed_into)
+    # A source that moves and an unfinished add both need every sync stopped. The registry
+    # is read again under that hold: the read above only chose it.
+    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
+    with library_held(config.data_root, running, 0.0, cancel) as hold:
+        taken = [*in_progress, *finish_absorb(store, hold)]
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
-            running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(result.absorbed_into))
-            with library_held(config.data_root, running, 0.0, cancel) as hold:
-                absorb(journal, hold)
+            absorb(journal, hold)
             taken = [*taken, *journal.moves.values()]
         unmark_sources_under(paths, spared=taken)
     return result
@@ -503,8 +514,9 @@ def remove_documents_durably(
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
 
-    An interrupted absorb is finished first, under the lock an absorb holds from
-    start to end, so no removal runs on keys that are part way through a move.
+    An interrupted absorb is finished first, under the locks an absorb holds from
+    start to end and with the records lock free while it waits for a running sync,
+    so no removal runs on keys that are part way through a move.
     The names are then expanded at the keys the library holds. Raises one of
     ``LIBRARY_REFUSALS`` with nothing removed when it cannot start. Setting
     *cancel* ends the wait for the records lock, and the wait for a running sync
@@ -514,18 +526,23 @@ def remove_documents_durably(
     data_root = active_config().data_root
     # Built before the first library lock.
     store = get_services(cancel).store
-    # Taken before the index changes, so a held lock refuses the removal with nothing done.
-    with skip_records_lock(data_root, cancel):
-        moved = absorb_pending(data_root)
-        if moved:
-            finish_pending_absorb(cancel=cancel)
-        if moved or targets is None:
-            targets = expand_remove_targets(names)
-        result = store.remove_documents(targets)
-        failed = set(held_out_names(active_config().data_root))
-        held = [name for name in result.not_found if name in failed]
-        roots = forget_roots(names)
-        _hold_out_removed([*result.removed, *held], roots)
+    moved = False
+    while True:
+        # Taken before the index changes, so a held lock refuses the removal with nothing done.
+        with skip_records_lock(data_root, cancel):
+            # An absorb writes its journal under the records lock, so none appears in here.
+            if not absorb_pending(data_root):
+                if moved or targets is None:
+                    targets = expand_remove_targets(names)
+                result = store.remove_documents(targets)
+                failed = set(held_out_names(active_config().data_root))
+                held = [name for name in result.not_found if name in failed]
+                roots = forget_roots(names)
+                _hold_out_removed([*result.removed, *held], roots)
+                break
+        # The records lock is free during the wait for a running sync.
+        finish_pending_absorb(cancel=cancel)
+        moved = True
     forget_removed_from_wiki_index(list(result.removed))
     missing = [name for name in result.not_found if name not in failed]
     emptied = [name for name in missing if name.strip("/") in roots]

@@ -91,6 +91,14 @@ from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 from tests.test_wiki_shared import leave_temp_of_a_dead_writer
 
 
+def _finish_as(names: list[str] | None, notes: Path, cancel) -> None:
+    """Finish an interrupted add as a remove or a sync does, or as the add of *notes* does."""
+    if names is None:
+        finish_pending_absorb(cancel=cancel)
+    else:
+        register_sources([notes], cancel=cancel)
+
+
 class _Killed(BaseException):
     """Stands in for a process that dies: no handler in the product catches it."""
 
@@ -945,7 +953,8 @@ class TestTheCommonAddPaysNothing:
             register_sources([notes])
 
         held_off.assert_called_once()
-        rules.assert_called_once()
+        # Once to choose the hold and once under it.
+        assert rules.call_count == 2
 
     async def test_a_sync_without_a_journal_checks_once_and_finishes_nothing(self, library, notes):
         with mock.patch("lilbee.data.ingest.pipeline._finish_pending_absorb") as finish:
@@ -3505,7 +3514,7 @@ class TestACancelAtTheRecordsLock:
         cancel = _SetOnSecondPoll()
 
         with _records_lock_held_elsewhere(), pytest.raises(SkipRecordsWaitCancelledError):
-            finish_pending_absorb(names, cancel)
+            _finish_as(names, notes, cancel)
 
         assert cancel.polls >= 2
         assert _everything(library.store) == before
@@ -3719,7 +3728,7 @@ class TestACancelAtTheWaitForARunningSync:
             _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
             pytest.raises(SkipRecordsWaitCancelledError),
         ):
-            finish_pending_absorb(names, cancel)
+            _finish_as(names, notes, cancel)
 
         assert takes == ["granted"]
         assert _everything(library.store) == before
