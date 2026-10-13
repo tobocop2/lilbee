@@ -51,11 +51,14 @@ def recorded(real: Callable[..., Any]) -> tuple[Callable[..., Any], Outcome]:
 
 
 @contextlib.contextmanager
-def records_lock_held_elsewhere(data_root: Path, on_wait: Callable[[], None]) -> Iterator[None]:
+def records_lock_held_elsewhere(
+    data_root: Path, on_wait: Callable[[], None]
+) -> Iterator[Callable[[], None]]:
     """Hold the records lock the way another process does; a take that fails calls *on_wait* once.
 
     *on_wait* runs on the thread that waits, after its first failed take, whether
-    or not the caller passed a cancel to the lock.
+    or not the caller passed a cancel to the lock. The block gets a call that
+    frees the lock before the block ends.
     """
     waited: list[bool] = []
 
@@ -76,7 +79,7 @@ def records_lock_held_elsewhere(data_root: Path, on_wait: Callable[[], None]) ->
             mock.patch.object(skip_marker, "FileLock", _ReportsItsWait),
             mock.patch.object(skip_marker, "_RECORDS_LOCK_TIMEOUT_S", _HANG_GUARD_S),
         ):
-            yield
+            yield holder.release
     finally:
         holder.release()
     assert waited, "no take of the records lock waited"

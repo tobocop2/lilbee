@@ -131,10 +131,9 @@ async def _run_add(
                 valid.append(p)
 
         # A stream that stops while the registration runs stops the sync, not the add.
-        # One that stops while the registration waits for the records lock ends the wait.
         stopped = sse.cancel.is_set()
         reg_result = await _to_thread_unbroken(
-            functools.partial(register_sources, valid, force=force, cancel=sse.cancel)
+            functools.partial(register_sources, valid, force=force)
         )
 
         errors.extend(reg_result.refused)
