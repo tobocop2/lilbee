@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from unittest import mock
 
 import anyio
@@ -52,6 +52,27 @@ class _ParkedWork:
         self._order.append("thread released")
         self._release.set()
 
+    def let_go(self) -> None:
+        """Free the thread of a test that failed before its release."""
+        self._release.set()
+
+
+_Park = Callable[..., _ParkedWork]
+
+
+@pytest.fixture
+async def parked() -> AsyncIterator[_Park]:
+    """Make parked work; no thread stays parked after the test, whatever its result."""
+    made: list[_ParkedWork] = []
+
+    def _park(order: list[str], ending: BaseException | None = None) -> _ParkedWork:
+        made.append(_ParkedWork(order, ending))
+        return made[-1]
+
+    yield _park
+    for work in made:
+        work.let_go()
+
 
 class _Call:
     """One call of the helper on a task of its own, inside an anyio cancel scope."""
@@ -95,9 +116,27 @@ async def test_a_caller_already_cancelled_starts_nothing(offload):
     assert not token.is_set()
 
 
-async def test_no_cancel_returns_the_result_and_leaves_the_token_unset(offload):
+async def test_a_task_cancelled_before_the_call_starts_nothing(offload):
+    started: list[str] = []
+    token = threading.Event()
+
+    async def _cancel_itself_then_call() -> None:
+        task = asyncio.current_task()
+        assert task is not None
+        task.cancel()
+        await run_to_thread_end(functools.partial(offload, lambda: started.append("work")), token)
+
+    task = asyncio.create_task(_cancel_itself_then_call())
+    await asyncio.wait([task])
+
+    assert task.cancelled()
+    assert started == []
+    assert not token.is_set()
+
+
+async def test_no_cancel_returns_the_result_and_leaves_the_token_unset(offload, parked):
     order: list[str] = []
-    work = _ParkedWork(order)
+    work = parked(order)
     call = _Call(offload, work, order)
 
     await work.reached.wait()
@@ -109,9 +148,9 @@ async def test_no_cancel_returns_the_result_and_leaves_the_token_unset(offload):
 
 
 @pytest.mark.parametrize("cancel", ["scope", "task"])
-async def test_a_cancel_sets_the_token_before_the_thread_is_released(offload, cancel):
+async def test_a_cancel_sets_the_token_before_the_thread_is_released(offload, parked, cancel):
     order: list[str] = []
-    work = _ParkedWork(order)
+    work = parked(order)
     call = _Call(offload, work, order)
     await work.reached.wait()
     assert not call.token.is_set()
@@ -130,9 +169,9 @@ async def test_a_cancel_sets_the_token_before_the_thread_is_released(offload, ca
     assert order == ["thread released", "thread ended", "call ended"]
 
 
-async def test_a_second_cancel_does_not_end_the_wait_or_abandon_the_thread(offload):
+async def test_a_second_cancel_does_not_end_the_wait_or_abandon_the_thread(offload, parked):
     order: list[str] = []
-    work = _ParkedWork(order)
+    work = parked(order)
     call = _Call(offload, work, order)
     await work.reached.wait()
     call.task.cancel()
@@ -148,9 +187,9 @@ async def test_a_second_cancel_does_not_end_the_wait_or_abandon_the_thread(offlo
     assert order == ["thread released", "thread ended", "call ended"]
 
 
-async def test_a_cancelled_scope_does_not_wake_the_wait_again(offload):
+async def test_a_cancelled_scope_does_not_wake_the_wait_again(offload, parked):
     order: list[str] = []
-    work = _ParkedWork(order)
+    work = parked(order)
     with mock.patch.object(asyncio, "wait", wraps=asyncio.wait) as waits:
         call = _Call(offload, work, order)
         await work.reached.wait()
@@ -167,10 +206,10 @@ async def test_a_cancelled_scope_does_not_wake_the_wait_again(offload):
     assert order == ["thread released", "thread ended", "call ended"]
 
 
-async def test_an_exception_with_no_cancel_reaches_the_caller_unchanged(offload):
+async def test_an_exception_with_no_cancel_reaches_the_caller_unchanged(offload, parked):
     order: list[str] = []
     boom = ValueError("the work failed")
-    work = _ParkedWork(order, ending=boom)
+    work = parked(order, ending=boom)
     call = _Call(offload, work, order)
     await work.reached.wait()
 
@@ -182,10 +221,10 @@ async def test_an_exception_with_no_cancel_reaches_the_caller_unchanged(offload)
     assert order == ["thread released", "thread ended", "call ended"]
 
 
-async def test_a_stop_error_with_no_cancel_reaches_the_caller_unchanged(offload):
+async def test_a_stop_error_with_no_cancel_reaches_the_caller_unchanged(offload, parked):
     order: list[str] = []
     stopped = TaskCancelledError("stopped by something else")
-    work = _ParkedWork(order, ending=stopped)
+    work = parked(order, ending=stopped)
     call = _Call(offload, work, order)
     await work.reached.wait()
 
@@ -197,10 +236,10 @@ async def test_a_stop_error_with_no_cancel_reaches_the_caller_unchanged(offload)
 
 
 async def test_work_that_completes_under_a_cancelled_scope_returns_and_the_scope_then_cancels(
-    offload,
+    offload, parked
 ):
     order: list[str] = []
-    work = _ParkedWork(order)
+    work = parked(order)
     call = _Call(offload, work, order)
     await work.reached.wait()
     call.scope.cancel()
@@ -216,10 +255,10 @@ async def test_work_that_completes_under_a_cancelled_scope_returns_and_the_scope
 
 
 async def test_work_that_completes_under_a_task_cancel_returns_and_the_task_is_not_cancelled(
-    offload,
+    offload, parked
 ):
     order: list[str] = []
-    work = _ParkedWork(order)
+    work = parked(order)
     call = _Call(offload, work, order)
     await work.reached.wait()
     call.task.cancel()
@@ -235,10 +274,10 @@ async def test_work_that_completes_under_a_task_cancel_returns_and_the_task_is_n
     assert order == ["thread released", "thread ended", "call ended"]
 
 
-async def test_work_that_fails_under_a_cancel_raises_its_own_error(offload):
+async def test_work_that_fails_under_a_cancel_raises_its_own_error(offload, parked):
     order: list[str] = []
     boom = ValueError("the work failed")
-    work = _ParkedWork(order, ending=boom)
+    work = parked(order, ending=boom)
     call = _Call(offload, work, order)
     await work.reached.wait()
     call.task.cancel()
@@ -252,9 +291,9 @@ async def test_work_that_fails_under_a_cancel_raises_its_own_error(offload):
 
 
 @pytest.mark.parametrize("cancel", ["scope", "task"])
-async def test_work_that_stops_on_the_cancel_raises_the_cancel(offload, cancel):
+async def test_work_that_stops_on_the_cancel_raises_the_cancel(offload, parked, cancel):
     order: list[str] = []
-    work = _ParkedWork(order, ending=TaskCancelledError("stopped at the token"))
+    work = parked(order, ending=TaskCancelledError("stopped at the token"))
     call = _Call(offload, work, order)
     await work.reached.wait()
     if cancel == "scope":

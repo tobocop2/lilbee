@@ -26,7 +26,7 @@ async def run_to_thread_end(
     raised if the work stopped on it with ``TaskCancelledError``. Otherwise the outcome
     of the work stands, and ``cancel.is_set()`` says that a cancel arrived.
     """
-    await anyio.lowlevel.checkpoint_if_cancelled()
+    await anyio.lowlevel.checkpoint()
     running = asyncio.ensure_future(start())
     try:
         await asyncio.wait([running])
