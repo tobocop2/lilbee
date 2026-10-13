@@ -7104,10 +7104,11 @@ class TestSyncCancelledExit:
         if "--json" in command:
             assert json.loads(result.output) == {"error": "Sync cancelled."}
         else:
-            assert "Sync cancelled." in result.output
+            # A refusal behind the cancel adds its own sentence to this line.
+            assert result.output.strip() == "Sync cancelled."
         assert before == ["documents", "documents/doc.txt"]
         assert _library() == before
-        mock_svc.store.add_chunks.assert_not_called()
+        assert mock_svc.store.method_calls == [], "the sync started under the held reset"
         with no_sync_running(cfg.data_root):
             pass
 

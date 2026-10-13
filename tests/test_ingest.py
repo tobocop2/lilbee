@@ -1504,8 +1504,8 @@ class TestSyncCancellation:
             reset_still_held = resetter.is_alive()
 
         assert reset_still_held, "the sync ended only when the reset did"
+        assert mock_svc.store.method_calls == [], "the sync started under the held reset"
         mock_extract_file.assert_not_called()
-        mock_svc.store.write_chunks_batch.assert_not_called()
         with no_sync_running(cfg.data_root):
             pass
 
