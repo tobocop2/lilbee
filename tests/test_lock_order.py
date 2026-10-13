@@ -377,6 +377,26 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
             assert takes.records_takes == taken
 
 
+class TestAnAddActsOnTheReadUnderItsFinalHold:
+    def test_a_registry_that_changes_before_the_owner_is_taken_is_read_again(
+        self, notes, takes, builds
+    ):
+        _register_work(notes)
+
+        def _work_leaves_the_registry() -> None:
+            assert takes.held() == []
+            settings.set_value(cfg.data_root, "linked_roots", {})
+
+        takes.on_sync_write_take.append(_work_leaves_the_registry)
+
+        result = register_sources([notes])
+
+        assert takes.sync_write_takes == 1
+        assert (result.registered, result.absorbed) == (["notes"], [])
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert not absorb_pending(cfg.data_root)
+
+
 class TestTheStartFinisherRunsOutsideTheCreationLock:
     def test_the_creation_lock_is_free_when_the_finisher_takes_the_sync_lock(
         self, notes, takes, builds
