@@ -14,6 +14,7 @@ from rich.text import Text
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
 
+    from lilbee.data.store.types import RemoveResult
     from lilbee.runtime.progress import DetailedProgressCallback
 
 from lilbee.app.ingest import (
@@ -45,8 +46,10 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
+from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
+_REMOVE_CANCELLED_MESSAGE = "Remove cancelled. Nothing was removed."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
 _EXIT_INTERRUPTED = 130
 
@@ -289,9 +292,11 @@ def _cancellable_progress(
     return _callback
 
 
-def _exit_cancelled(rollback: AddRollback) -> NoReturn:
+def _exit_cancelled(
+    rollback: AddRollback, nothing_dropped: str = _SYNC_CANCELLED_MESSAGE
+) -> NoReturn:
     """Report a cancelled command and exit with the Ctrl+C status."""
-    message = rollback.message(_SYNC_CANCELLED_MESSAGE)
+    message = rollback.message(nothing_dropped)
     if cfg.json_mode:
         payload: dict[str, object] = {"error": message}
         if rollback.not_added:
@@ -555,11 +560,12 @@ def _add_json_mode(
     *,
     force: bool,
     run_sync: Callable[[RegisterResult], object],
+    cancel_event: threading.Event,
 ) -> dict:
     """Run the JSON-mode finish: register roots, sync, return the one structured result."""
     reg_result = RegisterResult()
     if file_paths:
-        reg_result = register_sources(file_paths, force=force)
+        reg_result = register_sources(file_paths, force=force, cancel=cancel_event)
     # A sync is a whole-vault pass; run it only when something named reached the corpus.
     result = run_sync(reg_result) if reg_result.reached_corpus or crawled_paths else None
     return {
@@ -595,10 +601,19 @@ def _register_and_sync(
         return _run_sync(cancel_event, before_sync=_sync_starts)
 
     if cfg.json_mode:
-        return _add_json_mode(file_paths, crawled_paths, force=force, run_sync=_sync)
+        return _add_json_mode(
+            file_paths, crawled_paths, force=force, run_sync=_sync, cancel_event=cancel_event
+        )
     if file_paths:
         # Crawled pages are new content even when no file reached the corpus.
-        add_paths(file_paths, console, force=force, run_sync=_sync, sync_anyway=bool(crawled_paths))
+        add_paths(
+            file_paths,
+            console,
+            force=force,
+            run_sync=_sync,
+            sync_anyway=bool(crawled_paths),
+            cancel=cancel_event,
+        )
     elif sync_urls:
         # URLs already saved; just trigger sync
         console.print(_sync(RegisterResult()))
@@ -717,6 +732,22 @@ _remove_yes_option = typer.Option(
 )
 
 
+def _remove_under_ctrl_c(names: list[str], targets: list[str]) -> RemoveResult:
+    """Remove *targets*; Ctrl+C during the wait for the records lock exits 130, nothing removed."""
+    cancel_event = threading.Event()
+    try:
+        with _ctrl_c_sets(cancel_event):
+            return remove_documents_durably(names, targets=targets, cancel=cancel_event)
+    except SkipRecordsWaitCancelledError:
+        _exit_cancelled(AddRollback(), _REMOVE_CANCELLED_MESSAGE)
+    except LIBRARY_REFUSALS as exc:
+        if cfg.json_mode:
+            json_output({"error": str(exc)})
+        else:
+            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
+        raise SystemExit(1) from None
+
+
 def remove(
     names: list[str] = _remove_names_argument,
     data_dir: Path | None = data_dir_option,
@@ -742,14 +773,7 @@ def remove(
         removable = sum(1 for t in targets if t in set(known))
         typer.confirm(f"Remove {removable} document(s)? Source files on disk are kept.", abort=True)
 
-    try:
-        result = remove_documents_durably(names, targets=targets)
-    except LIBRARY_REFUSALS as exc:
-        if cfg.json_mode:
-            json_output({"error": str(exc)})
-        else:
-            print_prefixed(console, "Error: ", exc, style=theme.ERROR)
-        raise SystemExit(1) from None
+    result = _remove_under_ctrl_c(names, targets)
 
     if cfg.json_mode:
         payload: dict = {"command": "remove", "removed": result.removed}

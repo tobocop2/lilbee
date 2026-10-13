@@ -2264,7 +2264,9 @@ class TestFanoutReadsTheCorpusSkipRecords:
         cleared = []
         real_clear = pipeline.clear_skip_markers
         monkeypatch.setattr(
-            pipeline, "clear_skip_markers", lambda root: cleared.append(root) or real_clear(root)
+            pipeline,
+            "clear_skip_markers",
+            lambda root, cancel: cleared.append(root) or real_clear(root, cancel),
         )
         gone = isolated_env / "gone.txt"
         gone.write_text("removed, then restored by the rebuild", encoding="utf-8")
@@ -8218,7 +8220,9 @@ class TestTuiSurface:
                         with mock.patch(
                             "lilbee.data.ingest.sync", new_callable=mock.AsyncMock
                         ) as run_sync:
-                            screen._do_add([drawing], MagicMock(spec=ProgressReporter))
+                            reporter = MagicMock(spec=ProgressReporter)
+                            reporter.is_set.return_value = False
+                            screen._do_add([drawing], reporter)
                         run_sync.assert_not_called()
                     except BaseException as exc:  # pragma: no cover - surfaced below
                         errors.append(exc)
@@ -8289,11 +8293,13 @@ class TestTuiSurface:
         around = isolated_env.parent
         screen = ChatScreen.__new__(ChatScreen)
         notify = MagicMock()
+        reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = False
         with (
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
             mock.patch("lilbee.runtime.asyncio_loop.run", return_value=SyncResult()),
         ):
-            screen._do_add([papers, around], MagicMock(spec=ProgressReporter))
+            screen._do_add([papers, around], reporter)
 
         assert set(cfg.linked_roots) == {"lib"}
         toasts = [call.args[2] for call in notify.call_args_list]

@@ -10,7 +10,7 @@ from textual.command import Hit, Hits, Provider
 from lilbee.catalog import display_label_for_ref
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.command_registry import COMMANDS, SlashCommand, get_command
-from lilbee.cli.tui.thread_safe import call_from_thread
+from lilbee.cli.tui.thread_safe import WorkerCancel, call_from_thread
 from lilbee.core.config import cfg
 from lilbee.data.ingest.skip_marker import SkipRecordsLockError, clear_failed_markers
 
@@ -155,7 +155,7 @@ class LilbeeCommandProvider(Provider):
         """Clear the markers off the UI thread, since the records lock can wait."""
         app = self._app
         try:
-            cleared = clear_failed_markers(cfg.data_root)
+            cleared = clear_failed_markers(cfg.data_root, WorkerCancel())
         except SkipRecordsLockError as exc:
             call_from_thread(app, app.notify, str(exc), severity="error")
             return

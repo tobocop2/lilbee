@@ -264,7 +264,9 @@ def source_label_taken(name: str, target: Path | None = None) -> bool:
     return _resolve_label(name, roots, config.documents_dir.resolve(), force=False) is None
 
 
-def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResult:
+def register_sources(
+    paths: list[Path], *, force: bool = False, cancel: CancelSignal | None = None
+) -> RegisterResult:
     """Register each path as a root lilbee indexes where it already lives.
 
     A prepared corpus is already on local disk, so ``add`` records where it is
@@ -285,6 +287,8 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     A data root whose filesystem cannot lock files raises ``LockingUnsupportedError``
     for every add, and a sync lock that cannot be opened raises
     ``LibraryUnlockableError``, because the sync after the add refuses there.
+    Setting *cancel* ends the wait for the records lock with
+    ``SkipRecordsWaitCancelledError``, with nothing changed.
     """
     config = active_config()
     if paths:
@@ -316,7 +320,7 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     names = [p.name for p in paths]
     in_progress = keys_of_pending_absorb()
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
-    with skip_records_lock(config.data_root):
+    with skip_records_lock(config.data_root, cancel):
         taken = [*in_progress, *finish_pending_absorb(names)]
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
@@ -473,7 +477,12 @@ def unregister_roots(names: Iterable[str]) -> list[str]:
 log = logging.getLogger(__name__)
 
 
-def remove_documents_durably(names: list[str], targets: list[str] | None = None) -> RemoveResult:
+def remove_documents_durably(
+    names: list[str],
+    targets: list[str] | None = None,
+    *,
+    cancel: CancelSignal | None = None,
+) -> RemoveResult:
     """Remove documents from the index (folders and globs expand) and make it stick.
 
     Never deletes source bytes. A name is an indexed source, a file an ingestion
@@ -489,11 +498,13 @@ def remove_documents_durably(names: list[str], targets: list[str] | None = None)
     An interrupted absorb is finished first, under the lock an absorb holds from
     start to end, so no removal runs on keys that are part way through a move.
     The names are then expanded at the keys the library holds. Raises one of
-    ``LIBRARY_REFUSALS`` with nothing removed when it cannot start.
+    ``LIBRARY_REFUSALS`` with nothing removed when it cannot start. Setting
+    *cancel* ends the wait for the records lock with
+    ``SkipRecordsWaitCancelledError``, with nothing removed.
     """
     data_root = active_config().data_root
     # Taken before the index changes, so a held lock refuses the removal with nothing done.
-    with skip_records_lock(data_root):
+    with skip_records_lock(data_root, cancel):
         moved = absorb_pending(data_root)
         if moved:
             finish_pending_absorb()

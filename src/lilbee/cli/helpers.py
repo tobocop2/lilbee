@@ -26,6 +26,7 @@ from lilbee.runtime.lock import LibraryUnlockableError
 
 if TYPE_CHECKING:
     from lilbee.cli.sync import SyncStatus
+    from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
 
@@ -204,9 +205,18 @@ def print_prefixed(con: PlainConsole, prefix: str, detail: object, *, style: str
     con.print(Text.assemble((prefix, style), str(detail)), soft_wrap=True)
 
 
-def register_paths(paths: list[Path], con: PlainConsole, *, force: bool = False) -> RegisterResult:
-    """Register *paths* as source roots, reporting what happened to each."""
-    result = register_sources(paths, force=force)
+def register_paths(
+    paths: list[Path],
+    con: PlainConsole,
+    *,
+    force: bool = False,
+    cancel: CancelSignal | None = None,
+) -> RegisterResult:
+    """Register *paths* as source roots, reporting what happened to each.
+
+    Setting *cancel* ends the wait for the records lock, with nothing registered.
+    """
+    result = register_sources(paths, force=force, cancel=cancel)
     for name in result.name_taken:
         warning = NAME_TAKEN_WARNING.format(name=name)
         print_prefixed(con, "Warning: ", warning, style=theme.WARNING)
@@ -247,6 +257,7 @@ def add_paths(
     sync_status: SyncStatus | None = None,
     run_sync: Callable[[RegisterResult], object] | None = None,
     sync_anyway: bool = False,
+    cancel: CancelSignal | None = None,
 ) -> None:
     """Register *paths* as source roots and sync (human output).
     When *background* is True (chat ``/add``), sync runs in a background thread
@@ -254,9 +265,10 @@ def add_paths(
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
     ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
-    when *sync_anyway* says the caller has other new content to index.
+    when *sync_anyway* says the caller has other new content to index. Setting
+    *cancel* ends the registration's wait for the records lock.
     """
-    registration = register_paths(paths, con, force=force)
+    registration = register_paths(paths, con, force=force, cancel=cancel)
     summary = describe_registration(registration)
     if chat_mode:
         print(summary)

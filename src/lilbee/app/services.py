@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
+    from lilbee.runtime.cancellation import CancelSignal
     from lilbee.runtime.ingest_lock import IngestLockRegistry
     from lilbee.sessions import SessionStore
 
@@ -257,8 +258,11 @@ def build_services(
 _singleton_create_lock = threading.Lock()
 
 
-def get_services() -> Services:
+def get_services(cancel: CancelSignal | None = None) -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
+
+    Setting *cancel* ends the wait of the first call for the records lock, when
+    it finishes an interrupted add, with ``SkipRecordsWaitCancelledError``.
 
     Creates the singleton on first call (against the process-global cfg). A
     config-file embedding_model with no embedding_dim would otherwise build the
@@ -288,7 +292,7 @@ def get_services() -> Services:
             # heavy: the absorb loads the ingest pipeline
             from lilbee.app.absorb import finish_pending_absorb_at_start
 
-            finish_pending_absorb_at_start(cfg, _state.singleton.store)
+            finish_pending_absorb_at_start(cfg, _state.singleton.store, cancel)
         # Eager start is the default: pay the spawn cost per role server at TUI mount
         # so the first user action lands on a warm fleet. Roles whose model is unset
         # are skipped, so a setup with only chat + embed never spawns rerank or

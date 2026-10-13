@@ -5098,9 +5098,9 @@ async def test_command_provider_retry_skipped_action(tmp_path):
         cleared_on: list[threading.Thread] = []
         real_clear = commands.clear_failed_markers
 
-        def _spy(root):
+        def _spy(root, cancel):
             cleared_on.append(threading.current_thread())
-            return real_clear(root)
+            return real_clear(root, cancel)
 
         with (
             patch.object(app, "action_run_sync") as mock_sync,
@@ -5157,6 +5157,129 @@ async def test_add_rollback_unregisters_the_roots_when_the_records_lock_is_held(
 
     assert cfg.linked_roots == {}
     assert not settings.load(cfg.data_root).get("linked_roots")
+
+
+_RECORDS_WAIT_SETTLE_S = 30.0
+"""A guard against a hang while a worker thread reaches or leaves the wait; no test measures it."""
+
+
+class TestATuiCancelAtTheRecordsLock:
+    """A TUI cancel sent while a command waits for the records lock ends the wait."""
+
+    async def test_a_cancelled_add_task_stops_at_the_wait(self, mock_svc, tmp_path_factory):
+        import threading
+
+        from lilbee.app import ingest
+        from lilbee.cli.tui.task_queue import CancelOrigin
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+        from tests._async_wait import wait_until
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
+
+        scan = tmp_path_factory.mktemp("source") / "scan.txt"
+        scan.write_text("hello world", encoding="utf-8")
+        stopped = "Add cancelled. scan.txt was not added."
+        waiting = threading.Event()
+        call, outcome = recorded(ingest.register_sources)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            set_services(mock_svc)
+            with (
+                records_lock_held_elsewhere(cfg.data_root, waiting.set),
+                patch.object(ingest, "register_sources", call),
+            ):
+                before = files_under(cfg.data_root)
+                app.screen._cmd_add(str(scan))
+                assert await wait_until(pilot, waiting.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
+                (task,) = [
+                    t for t in app.task_bar.queue.active_tasks if t.task_type == TaskType.ADD.value
+                ]
+                app.task_bar.cancel_task(task.task_id)
+                assert await wait_until(
+                    pilot, lambda: task.detail == stopped, timeout=_RECORDS_WAIT_SETTLE_S
+                )
+                assert files_under(cfg.data_root) == before
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        assert task.status is TaskStatus.CANCELLED
+        assert task.cancel_origin is CancelOrigin.USER
+        assert cfg.linked_roots == {}
+
+    async def test_a_cancelled_delete_stops_at_the_wait(self, mock_svc):
+        import threading
+
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.screens import chat
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+        from tests._async_wait import wait_until
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
+
+        mock_svc.store.get_sources.return_value = [{"filename": "notes.md", "source": "notes.md"}]
+        waiting = threading.Event()
+        call, outcome = recorded(chat.remove_documents_durably)
+        app = ChatTestApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            set_services(mock_svc)
+            with (
+                records_lock_held_elsewhere(cfg.data_root, waiting.set),
+                patch.object(chat, "remove_documents_durably", call),
+                patch.object(app.screen, "notify") as notify,
+            ):
+                before = files_under(cfg.data_root)
+                app.screen._cmd_delete("notes.md")
+                assert await wait_until(pilot, waiting.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
+                app.screen._cmd_cancel("")
+                assert await wait_until(
+                    pilot, lambda: notify.call_count == 2, timeout=_RECORDS_WAIT_SETTLE_S
+                )
+                assert files_under(cfg.data_root) == before
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        assert [sent.args for sent in notify.call_args_list] == [
+            (msg.CMD_CANCEL,),
+            (msg.CMD_DELETE_CANCELLED,),
+        ]
+        mock_svc.store.remove_documents.assert_not_called()
+
+    async def test_a_cancelled_retry_stops_at_the_wait(self):
+        import threading
+
+        from lilbee.cli.tui import commands
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.data.ingest.skip_marker import (
+            SkipKind,
+            SkipRecords,
+            SkipRecordsWaitCancelledError,
+            load_skip_markers,
+            write_skip_records,
+        )
+        from tests._async_wait import wait_until
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
+
+        write_skip_records(
+            cfg.data_root,
+            SkipRecords(markers={"stuck.pdf": "deadbeef"}, kinds={"stuck.pdf": SkipKind.FAILED}),
+        )
+        waiting = threading.Event()
+        call, outcome = recorded(commands.clear_failed_markers)
+        app = LilbeeApp()
+        async with app.run_test(size=(120, 40)) as pilot:
+            await await_chat(app, pilot)
+            provider = commands.LilbeeCommandProvider(app.screen, match_style=None)
+            with (
+                records_lock_held_elsewhere(cfg.data_root, waiting.set),
+                patch.object(commands, "clear_failed_markers", call),
+                patch.object(app, "action_run_sync") as mock_sync,
+                patch.object(app, "notify") as notify,
+            ):
+                before = files_under(cfg.data_root)
+                provider._action_retry_skipped()
+                assert await wait_until(pilot, waiting.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
+                app.screen._cmd_cancel("")
+                assert await wait_until(pilot, outcome.ended.is_set, timeout=_RECORDS_WAIT_SETTLE_S)
+                assert files_under(cfg.data_root) == before
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        assert [sent.args for sent in notify.call_args_list] == [(msg.CMD_CANCEL,)]
+        mock_sync.assert_not_called()
+        assert load_skip_markers(cfg.data_root) == {"stuck.pdf": "deadbeef"}
 
 
 async def test_command_provider_prune_ignored_dispatches_the_command(mock_svc):

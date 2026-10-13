@@ -38,8 +38,10 @@ from textual.worker import get_current_worker as _get_worker
 
 from lilbee.app.ingest import (
     LIBRARY_REFUSALS,
+    AddRollback,
     RegisterResult,
     forget_unfinished_on_cancel,
+    leave_as_cancel,
     removable_names,
     remove_documents_durably,
 )
@@ -62,7 +64,7 @@ from lilbee.cli.tui.screens.chat_helpers import (
     remember_from_input,
     unregister_added_roots,
 )
-from lilbee.cli.tui.thread_safe import call_from_thread, post_from_thread
+from lilbee.cli.tui.thread_safe import WorkerCancel, call_from_thread, post_from_thread
 from lilbee.cli.tui.widgets.arg_hint import ArgHintLine
 from lilbee.cli.tui.widgets.autocomplete import (
     PATH_ARG_COMMANDS,
@@ -88,6 +90,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -867,8 +870,12 @@ class ChatScreen(Screen[None]):
 
         label = paths[0].name if len(paths) == 1 else f"{len(paths)} files"
         reporter.update(0, f"Adding {label}...", indeterminate=True)
+        unregistered = AddRollback(paths=paths, at_sync=False)
         try:
-            reg_result = register_sources(paths, force=force)
+            with leave_as_cancel(unregistered, reporter, reporter.cancelled_by_user):
+                reg_result = register_sources(paths, force=force, cancel=reporter)
+        except asyncio.CancelledError as exc:
+            raise TaskCancelledError(unregistered.message(msg.SYNC_CANCELLED_RESUME)) from exc
         except SyncRunningError as exc:
             call_from_thread(self, self.notify, str(exc), severity="warning")
             return
@@ -1211,7 +1218,10 @@ class ChatScreen(Screen[None]):
             return
 
         try:
-            remove_documents_durably([name])
+            remove_documents_durably([name], cancel=WorkerCancel())
+        except SkipRecordsWaitCancelledError:
+            call_from_thread(self, self.notify, msg.CMD_DELETE_CANCELLED)
+            return
         except LIBRARY_REFUSALS as exc:
             call_from_thread(self, self.notify, str(exc), severity="error")
             return

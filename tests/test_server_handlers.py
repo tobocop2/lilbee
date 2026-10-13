@@ -6348,3 +6348,84 @@ class TestASyncLockThatCannotBeOpened:
         assert [e for e in events if e.startswith("event: done")] == []
         assert _data_root_tree() == before
         assert not (cfg.documents_dir / "note.md").exists()
+
+
+class TestACancelledRequestAtTheRecordsLock:
+    """A request that stops while it waits for the records lock ends the wait, nothing changed."""
+
+    @staticmethod
+    async def _stop_at_the_wait(request, module, target: str) -> tuple[asyncio.Future, object]:
+        """Start *request* against a held records lock and cancel it once it waits.
+
+        Returns the cancelled request and the outcome of *target*, which has ended.
+        """
+        from tests._records_wait import files_under, recorded, records_lock_held_elsewhere
+
+        loop, waiting = asyncio.get_running_loop(), asyncio.Event()
+        call, outcome = recorded(getattr(module, target))
+
+        with (
+            records_lock_held_elsewhere(
+                cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
+            ),
+            patch.object(module, target, call),
+        ):
+            before = files_under(cfg.data_root)
+            pending = asyncio.ensure_future(request())
+            await waiting.wait()
+            pending.cancel()
+            await asyncio.wait([pending])
+            await asyncio.to_thread(outcome.ended.wait)
+            assert files_under(cfg.data_root) == before
+        return pending, outcome
+
+    async def test_a_cancelled_delete_ends_the_wait(self, mock_svc):
+        import lilbee.app.ingest as app_ingest
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        pending, outcome = await self._stop_at_the_wait(
+            lambda: handlers.delete_documents(["a.md"]), app_ingest, "remove_documents_durably"
+        )
+
+        assert pending.cancelled()
+        assert isinstance(outcome.raised, SkipRecordsWaitCancelledError)
+        mock_svc.store.remove_documents.assert_not_called()
+
+
+class TestAnAddStreamThatStopsAtTheRecordsLock:
+    """A stopped add stream is not a cancel by the user: the registration waits and lands."""
+
+    async def test_the_source_is_registered_when_the_lock_frees(self, tmp_path):
+        from tests._records_wait import recorded, records_lock_held_elsewhere
+
+        src = tmp_path / "source" / "scan.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+        loop, waiting = asyncio.get_running_loop(), asyncio.Event()
+        call, outcome = recorded(_ingest_h.register_sources)
+        streams: list[handlers.SseStream] = []
+
+        def _stream() -> handlers.SseStream:
+            streams.append(handlers.SseStream())
+            return streams[-1]
+
+        with (
+            patch.object(_ingest_h, "register_sources", call),
+            patch.object(_ingest_h, "SseStream", _stream),
+            records_lock_held_elsewhere(
+                cfg.data_root, lambda: loop.call_soon_threadsafe(waiting.set)
+            ) as free,
+        ):
+            pending = asyncio.ensure_future(handlers.add_files_stream([str(src)]).__anext__())
+            await waiting.wait()
+            pending.cancel()
+            async with asyncio.timeout(30):
+                while not streams[0].cancel.is_set():
+                    await asyncio.sleep(0)
+            assert not outcome.ended.is_set()
+            free()
+            await asyncio.wait([pending])
+
+        assert isinstance(pending.exception(), StopAsyncIteration)
+        assert outcome.ended.is_set() and outcome.raised is None
+        assert cfg.linked_roots == {"scan.txt": str(src.resolve())}
