@@ -1383,13 +1383,13 @@ def _marks_sync_running(
     @functools.wraps(run)
     async def _marked(*args: _SyncParams.args, **kwargs: _SyncParams.kwargs) -> SyncResult:
         data_root = active_config().data_root
+        # ``cancel`` is keyword-only on a sync, so it is never in *args*.
+        cancel = cast("CancelSignal | None", kwargs.get("cancel"))
         while True:
-            async with sync_running(data_root):
+            async with sync_running(data_root, cancel):
                 # An absorb writes its journal with every sync stopped, so none appears in here.
                 if not absorb_pending(data_root):
                     return await run(*args, **kwargs)
-            # ``cancel`` is keyword-only on a sync, so it is never in *args*.
-            cancel = cast("CancelSignal | None", kwargs.get("cancel"))
             await to_ingest_thread(_finish_pending_absorb, cancel)
 
     return _marked

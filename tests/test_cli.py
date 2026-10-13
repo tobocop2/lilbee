@@ -1,5 +1,6 @@
 """Tests for the CLI interface using typer's test runner."""
 
+import _thread
 import contextlib
 import errno
 import json
@@ -31,6 +32,7 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
+from lilbee.runtime.lock import no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     EventType,
@@ -42,8 +44,11 @@ from lilbee.runtime.progress import (
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
+from tests.conftest import reset_held_on_a_thread
 
 runner = CliRunner()
+# How long a held reset lasts when a test hangs; no test waits for it.
+_HANG_LIMIT_S = 30.0
 
 _SYNC_NOOP = SyncResult()
 
@@ -7069,6 +7074,49 @@ class TestSyncCancelledExit:
         assert result.exit_code == 130, result.output
         assert "Sync cancelled." in result.output
         assert isinstance(result.exception, SystemExit)
+
+    @pytest.mark.parametrize("command", [["sync"], ["rebuild"], ["--json", "sync"]])
+    def test_one_ctrl_c_ends_a_sync_that_waits_for_a_reset(self, isolated_env, mock_svc, command):
+        (cfg.documents_dir / "doc.txt").write_text("content", encoding="utf-8")
+        assert threading.current_thread() is threading.main_thread()
+        interrupts: list[str] = []
+        real_acquire = ReadWriteLock.acquire_read
+
+        def _ctrl_c_once(lock: ReadWriteLock, *args, **kwargs) -> None:
+            if not interrupts:
+                interrupts.append("ctrl-c")
+                _thread.interrupt_main()
+            real_acquire(lock, *args, **kwargs)
+
+        def _library() -> list[str]:
+            """Every path of the data root but the files of the sync lock itself."""
+            paths = (
+                path.relative_to(cfg.data_root).as_posix() for path in cfg.data_root.rglob("*")
+            )
+            return sorted(
+                path for path in paths if not path.startswith(("sync.lock", ".filelock-"))
+            )
+
+        # The reset holds until this block ends; its own limit only ends a test that hangs.
+        with reset_held_on_a_thread(cfg.data_root, ends_after_s=_HANG_LIMIT_S) as resetter:
+            before = _library()
+            with mock.patch.object(ReadWriteLock, "acquire_read", _ctrl_c_once):
+                result = runner.invoke(app, command)
+            reset_still_held = resetter.is_alive()
+
+        assert interrupts == ["ctrl-c"]
+        assert reset_still_held, "the sync ended only when the reset did"
+        assert result.exit_code == 130, result.output
+        if "--json" in command:
+            assert json.loads(result.output) == {"error": "Sync cancelled."}
+        else:
+            # A refusal behind the cancel adds its own sentence to this line.
+            assert result.output.strip() == "Sync cancelled."
+        assert before == ["documents", "documents/doc.txt"]
+        assert _library() == before
+        assert mock_svc.store.method_calls == [], "the sync started under the held reset"
+        with no_sync_running(cfg.data_root):
+            pass
 
     @staticmethod
     def _source(tmp_path: Path, name: str = "scan.txt") -> Path:
