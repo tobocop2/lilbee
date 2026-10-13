@@ -50,7 +50,8 @@ _SYNC_LOCK_NAME = "sync.lock"
 _SYNC_PROBE_PREFIX = "sync.probe."
 # How long the probe waits out a momentary busy before it concludes the filesystem cannot lock.
 _PROBE_WAIT_S = 0.3
-# Longest single attempt at a side of the sync lock; a cancelled wait returns within it.
+# Longest attempt of a wait that takes the sync lock in slices; a cancelled wait returns
+# within it.
 _SYNC_TAKE_SLICE_S = 0.1
 # What the filesystem raises when the sync lock cannot be created or taken: OSError
 # from making the data root, sqlite3.Error from SQLite (a file that is not a
