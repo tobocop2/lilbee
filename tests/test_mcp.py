@@ -3159,12 +3159,13 @@ class TestACancelledCallEndsWhenItsThreadEnds:
         import threading
 
         parked, release = anyio.Event(), threading.Event()
+        loop = asyncio.get_running_loop()
         order: list[str] = []
         report: list = []
         scope = anyio.CancelScope()
 
         def _park_the_thread() -> None:
-            anyio.from_thread.run_sync(parked.set)
+            loop.call_soon_threadsafe(parked.set)
             assert release.wait(60), "the test never released the thread"
             order.append("thread left its park")
 
@@ -3230,29 +3231,91 @@ class TestACancelledCallEndsWhenItsThreadEnds:
         mock_svc.store.remove_documents.assert_called_once()
         assert report == [{"command": "remove", "removed": ["a.md"], "not_found": []}]
 
-    async def test_a_sync_handler_reports_its_result(self, mock_svc):
+    async def test_a_handler_that_polls_its_token_reports_its_result(self):
+        """The token is set while the thread is still in its step; the call ends after it."""
         from lilbee import mcp_server
 
-        registered = [
-            handler
-            for handler, _name, _gate in mcp_server._REGISTRATIONS
-            if getattr(handler, "__wrapped__", None) is mcp_server.list_documents
-        ]
-        assert len(registered) == 1
+        def _one_step() -> dict:
+            token = mcp_server._caller_cancelled()
+            assert token is not None
+            park[0]()
+            assert token.is_set(), "the cancel did not reach the thread before the thread went on"
+            return {"steps": 1}
+
+        park: list = []
 
         @contextlib.contextmanager
-        def _in_the_store(park_the_thread):
-            def _sources():
-                park_the_thread()
-                return [{"filename": "a.md", "chunk_count": 2}]
-
-            mock_svc.store.get_sources.side_effect = _sources
+        def _in_the_handler(park_the_thread):
+            park.append(park_the_thread)
             yield
 
-        order, report = await self._cancel_while_the_thread_is_parked(registered[0], _in_the_store)
+        with mock.patch.object(mcp_server, "_STOPS_AT_CANCEL", {_one_step}):
+            handler = mcp_server._offload_sync(_one_step)
+        order, report = await self._cancel_while_the_thread_is_parked(handler, _in_the_handler)
 
         assert order == ["thread left its park", "call ended"]
-        assert [doc["filename"] for doc in report[0]["documents"]] == ["a.md"]
+        assert report == [{"steps": 1}]
+
+    def test_the_marked_handlers_are_the_ones_that_take_the_token(self):
+        """A handler is held through a cancel exactly when its source hands the token on."""
+        import inspect
+
+        from lilbee import mcp_server
+
+        sync_handlers = [
+            inspect.unwrap(handler)
+            for handler, _name, _gate in mcp_server._REGISTRATIONS
+            if not inspect.iscoroutinefunction(inspect.unwrap(handler))
+        ]
+        takes_token = {
+            fn.__name__ for fn in sync_handlers if "_caller_cancelled()" in inspect.getsource(fn)
+        }
+        assert takes_token == {fn.__name__ for fn in mcp_server._STOPS_AT_CANCEL}
+        assert takes_token == {
+            "export_dataset",
+            "wiki_lint",
+            "wiki_status",
+            "wiki_build",
+            "wiki_update",
+            "wiki_synthesize",
+            "wiki_prune",
+        }
+        assert len(sync_handlers) > len(takes_token)
+
+    async def test_a_model_pull_ends_when_its_download_stops(self):
+        from lilbee.mcp_server import model_pull
+        from lilbee.runtime.cancellation import TaskCancelledError
+
+        @contextlib.contextmanager
+        def _in_the_download(park_the_thread):
+            def _pull(model, src, *, on_update, allow_unsupported, cancel):
+                park_the_thread()
+                assert cancel.is_set(), "the cancel did not reach the download before it went on"
+                raise TaskCancelledError
+
+            with mock.patch("lilbee.app.models.pull_model_data", _pull):
+                yield
+
+        order, report = await self._cancel_while_the_thread_is_parked(
+            lambda: model_pull("org/repo"), _in_the_download
+        )
+
+        assert order == ["thread left its park", "call ended"]
+        assert report == []
+
+    async def test_the_http_remove_answers_with_what_it_removed(self, mock_svc):
+        from lilbee.data.store.types import RemoveResult
+        from lilbee.server.handlers.documents import delete_documents
+
+        mock_svc.store.remove_documents.return_value = RemoveResult(removed=["a.md"], not_found=[])
+
+        order, report = await self._cancel_while_the_thread_is_parked(
+            lambda: delete_documents(["a.md"]), self._under_the_records_lock
+        )
+
+        assert order == ["thread left its park", "call ended"]
+        mock_svc.store.remove_documents.assert_called_once()
+        assert report[0].removed == ["a.md"]
 
     async def test_a_thread_that_stops_on_the_cancel_ends_the_call_as_cancelled(self, mock_svc):
         """A sync handler that raises on its cancel token ends its call with the cancel."""
@@ -3273,9 +3336,9 @@ class TestACancelledCallEndsWhenItsThreadEnds:
             park.append(park_the_thread)
             yield
 
-        order, report = await self._cancel_while_the_thread_is_parked(
-            mcp_server._offload_sync(_stops_on_its_token), _in_the_handler
-        )
+        with mock.patch.object(mcp_server, "_STOPS_AT_CANCEL", {_stops_on_its_token}):
+            handler = mcp_server._offload_sync(_stops_on_its_token)
+        order, report = await self._cancel_while_the_thread_is_parked(handler, _in_the_handler)
 
         assert order == ["thread left its park", "call ended"]
         assert report == []

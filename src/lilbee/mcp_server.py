@@ -140,6 +140,16 @@ def _caller_cancelled() -> threading.Event | None:
     return _CANCEL.get()
 
 
+# The sync handlers that poll the cancel token, filled by ``_stops_at_cancel``.
+_STOPS_AT_CANCEL: set[Callable[..., Any]] = set()
+
+
+def _stops_at_cancel(fn: _F) -> _F:
+    """Mark a sync handler that hands ``_caller_cancelled()`` to its work."""
+    _STOPS_AT_CANCEL.add(fn)
+    return fn
+
+
 async def _on_thread(work: Callable[[], _T], cancel: threading.Event) -> _T:
     """Run blocking *work* on a worker thread; a cancelled call ends when the thread ends."""
     return await run_to_thread_end(functools.partial(anyio.to_thread.run_sync, work), cancel)
@@ -153,18 +163,24 @@ def _offload_sync(fn: _F) -> _F:
     connected agent. ``functools.wraps`` preserves the wrapped signature so the
     generated tool schema is unchanged.
 
-    A cancelled call sets the cancel token at once and ends when its thread
-    ends, so no handler changes the library after its call has ended. A worker
-    thread cannot be interrupted: work that must stop early polls the token.
+    A worker thread cannot be interrupted. A handler marked ``_stops_at_cancel``
+    polls the cancel token: a cancelled call to it sets the token at once and
+    ends when its thread ends, which is the next check of the token. Any other
+    handler has no way to stop early, so ``abandon_on_cancel`` releases its
+    caller at once and the thread runs to its end.
     """
     if inspect.iscoroutinefunction(fn):
         return fn
+    held = inspect.unwrap(fn) in _STOPS_AT_CANCEL
 
     @functools.wraps(fn)
     async def _runner(*args: Any, **kwargs: Any) -> Any:
         with _cancel_token() as token:
             _CANCEL.set(token)
-            return await _on_thread(functools.partial(fn, *args, **kwargs), token)
+            work = functools.partial(fn, *args, **kwargs)
+            if held:
+                return await _on_thread(work, token)
+            return await anyio.to_thread.run_sync(work, abandon_on_cancel=True)
 
     return cast("_F", _runner)
 
@@ -761,6 +777,7 @@ def session_delete(session_id: str) -> dict[str, Any]:
 
 
 @_tool
+@_stops_at_cancel
 def export_dataset(output: str, fmt: str = "", source: str = "") -> dict[str, Any]:
     """Write the per-page {source, page, text} dataset to a file (no vectors).
 
@@ -836,6 +853,7 @@ def reset(confirm: bool = False) -> dict[str, Any]:
 
 
 @_wiki_tool
+@_stops_at_cancel
 def wiki_lint(wiki_source: str = "") -> dict[str, Any]:
     """Lint wiki pages; empty ``wiki_source`` lints all."""
     from lilbee.wiki.lint import LintReport, lint_all, lint_wiki_page
@@ -882,6 +900,7 @@ def wiki_citations(wiki_source: str = "", source: str = "") -> dict[str, Any]:
 
 
 @_tool
+@_stops_at_cancel
 def wiki_status() -> dict[str, Any]:
     """Show wiki layer status: page counts, recent lint issues.
 
@@ -951,6 +970,7 @@ def wiki_read(slug: str) -> dict[str, Any]:
 
 
 @_wiki_tool
+@_stops_at_cancel
 def wiki_build(dry_run: bool = False) -> dict[str, Any]:
     """Build the concept and entity wiki across all ingested sources. Blocks until done.
 
@@ -973,6 +993,7 @@ def wiki_build(dry_run: bool = False) -> dict[str, Any]:
 
 
 @_wiki_tool
+@_stops_at_cancel
 def wiki_update() -> dict[str, Any]:
     """Refresh the concept and entity wiki after an ingest. A full rebuild; blocks until done."""
     from lilbee.wiki import run_full_build
@@ -981,6 +1002,7 @@ def wiki_update() -> dict[str, Any]:
 
 
 @_wiki_tool
+@_stops_at_cancel
 def wiki_synthesize() -> dict[str, Any]:
     """Generate synthesis pages for concept clusters with three or more sources."""
     from lilbee.wiki import run_full_synthesize
@@ -989,6 +1011,7 @@ def wiki_synthesize() -> dict[str, Any]:
 
 
 @_wiki_tool
+@_stops_at_cancel
 def wiki_prune() -> dict[str, Any]:
     """Prune stale and orphaned wiki pages."""
     from lilbee.wiki.prune import prune_wiki
@@ -1289,13 +1312,16 @@ async def model_pull(
             future.add_done_callback(_log_progress_failure)
 
         try:
-            result = await asyncio.to_thread(
-                pull_model_data,
-                model,
-                src,
-                on_update=on_update,
-                allow_unsupported=allow_unsupported,
-                cancel=cancel,
+            result = await _on_thread(
+                functools.partial(
+                    pull_model_data,
+                    model,
+                    src,
+                    on_update=on_update,
+                    allow_unsupported=allow_unsupported,
+                    cancel=cancel,
+                ),
+                cancel,
             )
         except UnsupportedArchError as exc:
             return {

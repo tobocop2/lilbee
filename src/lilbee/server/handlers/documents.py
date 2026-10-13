@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import mimetypes
 import threading
 
@@ -10,6 +11,7 @@ from litestar.exceptions import ClientException
 from litestar.status_codes import HTTP_409_CONFLICT
 
 from lilbee.app.services import get_services
+from lilbee.runtime.thread_end import run_to_thread_end
 from lilbee.server.models import (
     DocumentInfo,
     DocumentListResponse,
@@ -76,13 +78,14 @@ async def delete_documents(names: list[str]) -> DocumentRemoveResponse:
     # documents from the browse index, so it cannot run on the event loop: a
     # build in flight holds that mutex for the length of the whole run.
     # A cancelled request ends the wait for the records lock; a thread cannot be
-    # interrupted, so the remove polls this token there.
+    # interrupted, so the remove polls this token there. Past the lock the
+    # request is held until the thread ends, and answers with what it removed.
     cancel = threading.Event()
     try:
-        result = await asyncio.to_thread(remove_documents_durably, names, cancel=cancel)
-    except asyncio.CancelledError:
-        cancel.set()
-        raise
+        result = await run_to_thread_end(
+            functools.partial(asyncio.to_thread, remove_documents_durably, names, cancel=cancel),
+            cancel,
+        )
     except LIBRARY_REFUSALS as exc:
         raise ClientException(detail=str(exc), status_code=HTTP_409_CONFLICT) from exc
     return DocumentRemoveResponse(removed=result.removed, not_found=result.not_found)
