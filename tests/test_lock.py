@@ -37,7 +37,7 @@ from lilbee.runtime.lock import (
     sync_running,
     write_lock,
 )
-from tests.conftest import reset_held_on_a_thread
+from tests.conftest import cancel_set_when_the_sync_lock_is_granted, reset_held_on_a_thread
 
 
 @pytest.fixture(autouse=True)
@@ -520,6 +520,45 @@ class TestSyncMark:
         await asyncio.wait_for(sync_task, _FAILURE_TIMEOUT_S)
 
         assert order == ["reset ended", "sync ran"]
+
+    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
+    async def test_a_sync_granted_the_lock_with_its_cancel_set_does_not_run(
+        self, tmp_path: Path, caplog, cancel_set: str
+    ) -> None:
+        cancel = threading.Event()
+        entered: list[str] = []
+
+        async def _sync() -> None:
+            async with sync_running(tmp_path, cancel):
+                entered.append("sync")
+
+        if cancel_set == "before a free take":
+            cancel.set()
+        before = set(threading.enumerate())
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
+            cancel_set_when_the_sync_lock_is_granted(cancel) as grants,
+        ):
+            if cancel_set == "after a wait":
+                with (
+                    reset_held_on_a_thread(tmp_path),
+                    _sync_take_that_ends_busy() as found_the_mark_held,
+                ):
+                    sync_task = asyncio.create_task(_sync())
+                    assert await asyncio.to_thread(found_the_mark_held.wait, _FAILURE_TIMEOUT_S)
+                    assert not cancel.is_set()
+            else:
+                sync_task = asyncio.create_task(_sync())
+            # A guard against a hang; the task is never cancelled, only the signal is set.
+            await asyncio.wait({sync_task}, timeout=_FAILURE_TIMEOUT_S)
+
+        assert grants == ["granted"], "the sync never held the lock"
+        assert sync_task.cancelled()
+        assert entered == []
+        assert _lock_warnings(caplog) == 0
+        assert _threads_left_since(before) == []
+        with no_sync_running(tmp_path):
+            pass
 
     async def test_a_wiki_writer_cancelled_while_it_waits_takes_the_mark_in_short_slices(
         self, tmp_path: Path

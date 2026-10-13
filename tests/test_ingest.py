@@ -1509,6 +1509,31 @@ class TestSyncCancellation:
         with no_sync_running(cfg.data_root):
             pass
 
+    @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant"])
+    async def test_a_rebuild_granted_the_lock_with_its_cancel_set_keeps_the_store(
+        self, mock_extract_file, isolated_env, mock_svc, cancel_set
+    ):
+        from lilbee.data.ingest import sync
+        from lilbee.runtime.lock import no_sync_running
+        from tests.conftest import cancel_set_when_the_sync_lock_is_granted
+
+        (isolated_env / "a.txt").write_text("file a", encoding="utf-8")
+        cancel = threading.Event()
+        if cancel_set == "before a free take":
+            cancel.set()
+
+        with (
+            cancel_set_when_the_sync_lock_is_granted(cancel) as grants,
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await sync(force_rebuild=True, quiet=True, cancel=cancel)
+
+        assert grants == ["granted"], "the sync never held the lock"
+        mock_svc.store.drop_all.assert_not_called()
+        mock_extract_file.assert_not_called()
+        with no_sync_running(cfg.data_root):
+            pass
+
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
         """Cancel set mid-batch raises CancelledError for pending files."""
         import asyncio

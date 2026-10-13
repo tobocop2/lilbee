@@ -382,8 +382,8 @@ def _raise_cancel_behind(error: Exception) -> None:
 async def _take_sync_lock(lock: AsyncReadWriteLock, cancel: CancelSignal | None) -> None:
     """Take the read side of *lock*, waiting for a reset in slices a cancel can end.
 
-    A task cancel, or *cancel* set while the lock is busy, ends the wait with
-    ``asyncio.CancelledError``.
+    A task cancel, or *cancel* set at the end of a slice, raises
+    ``asyncio.CancelledError``. The slice can have taken the lock: the caller closes it.
     """
     while True:
         try:
@@ -393,9 +393,12 @@ async def _take_sync_lock(lock: AsyncReadWriteLock, cancel: CancelSignal | None)
             # Only a busy lock is waited out.
             if not isinstance(exc, FileLockTimeout):
                 raise
-            if _is_set(cancel):
-                raise asyncio.CancelledError from None
+            taken = False
         else:
+            taken = True
+        if _is_set(cancel):
+            raise asyncio.CancelledError
+        if taken:
             return
 
 
@@ -424,8 +427,9 @@ async def sync_running(
 ) -> AsyncGenerator[None, None]:
     """Mark a sync or import running on *data_root*, across processes; they share the mark.
 
-    The wait for a reset to finish runs off the event loop. Setting *cancel* ends
-    that wait with ``asyncio.CancelledError``, and the block does not run.
+    The wait for a reset to finish runs off the event loop. A *cancel* that is set
+    during that wait, or when the mark is taken, raises ``asyncio.CancelledError``:
+    the block does not run and the mark is free.
     """
     # Opening the lock reads and writes files, so it runs off the event loop too.
     lock = await asyncio.to_thread(

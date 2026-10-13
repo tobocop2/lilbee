@@ -767,6 +767,25 @@ def reset_held_on_a_thread(
         resetter.join(timeout=5)
 
 
+@contextmanager
+def cancel_set_when_the_sync_lock_is_granted(
+    cancel: threading.Event,
+) -> Generator[list[str], None, None]:
+    """Set *cancel* as each take of the read side of a sync lock is granted; yield the grants."""
+    grants: list[str] = []
+    real_take = ReadWriteLock.acquire_read
+
+    def _take(lock: ReadWriteLock, *args: object, **kwargs: object) -> object:
+        taken = real_take(lock, *args, **kwargs)
+        if Path(lock.lock_file).name == "sync.lock":
+            grants.append("granted")
+            cancel.set()
+        return taken
+
+    with mock.patch.object(ReadWriteLock, "acquire_read", _take):
+        yield grants
+
+
 class UnfinishedAdd(StrEnum):
     """Why this process cannot finish an add that another process left part way."""
 
