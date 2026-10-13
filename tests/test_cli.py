@@ -34,7 +34,7 @@ from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.absorb_journal import absorb_pending
-from lilbee.runtime.lock import ResetRefusedError, no_sync_running
+from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     EventType,
@@ -7119,7 +7119,7 @@ class TestSyncCancelledExit:
         assert before == ["documents", "documents/doc.txt"]
         assert _library() == before
         assert mock_svc.store.method_calls == [], "the sync started under the held reset"
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("command", [["sync"], ["rebuild"], ["--json", "sync"]])
@@ -7156,7 +7156,7 @@ class TestSyncCancelledExit:
         ):
             result = runner.invoke(app, command)
             takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
                 pass
 
         assert takes_of_the_wait, "the sync never waited for the other sync"

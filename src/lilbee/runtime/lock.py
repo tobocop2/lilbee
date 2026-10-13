@@ -528,7 +528,7 @@ def source_keys_in_use(
 
 
 @contextmanager
-def no_sync_running(data_root: Path) -> Generator[None, None, None]:
+def _no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
     refuse_under_records_lock(data_root)
     try:
@@ -546,7 +546,7 @@ def no_sync_running(data_root: Path) -> Generator[None, None, None]:
 
 
 @contextmanager
-def syncs_held_off(
+def _syncs_held_off(
     data_root: Path, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
 ) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; a sync that outlasts *wait* raises *running*.
@@ -597,9 +597,9 @@ def library_held(
     from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
 
     if running is None:
-        syncs_off = no_sync_running(data_root)
+        syncs_off = _no_sync_running(data_root)
     else:
-        syncs_off = syncs_held_off(data_root, running, wait, cancel)
+        syncs_off = _syncs_held_off(data_root, running, wait, cancel)
     with ExitStack() as held:
         try:
             held.enter_context(syncs_off)

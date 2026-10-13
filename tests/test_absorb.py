@@ -61,8 +61,8 @@ from lilbee.runtime.lock import (
     LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
+    _no_sync_running,
     library_held,
-    no_sync_running,
     source_keys_in_use,
     sync_running,
 )
@@ -908,7 +908,7 @@ class TestTheCommonAddPaysNothing:
         rekey.assert_not_called()
         rules.assert_not_called()
         # The add opened the sync lock to check it and left it free.
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
         assert library.store.get_sources() == []
 
@@ -2450,22 +2450,22 @@ class TestDraftMarkers:
 
 class TestSyncsHeldOff:
     async def test_it_raises_the_text_it_was_given_while_a_sync_runs(self, tmp_path):
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         async with sync_running(tmp_path):
             with (
                 pytest.raises(SyncRunningError, match=r"^try later$"),
-                syncs_held_off(tmp_path, "try later"),
+                _syncs_held_off(tmp_path, "try later"),
             ):
                 pytest.fail("entered while a sync ran")
-        with syncs_held_off(tmp_path, "try later"):
+        with _syncs_held_off(tmp_path, "try later"):
             pass
 
     def test_a_sync_in_another_process_waits_until_the_block_ends(self, tmp_path):
         import subprocess
         import sys
 
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         script = (
             "import asyncio, sys\n"
@@ -2476,7 +2476,7 @@ class TestSyncsHeldOff:
             "        print('IN', flush=True)\n"
             "asyncio.run(main())\n"
         )
-        with syncs_held_off(tmp_path, "busy"):
+        with _syncs_held_off(tmp_path, "busy"):
             child = subprocess.Popen(
                 [sys.executable, "-c", script, str(tmp_path)],
                 stdout=subprocess.PIPE,
@@ -2490,7 +2490,7 @@ class TestSyncsHeldOff:
     def test_with_a_wait_it_takes_the_lock_when_the_sync_ends(self, tmp_path):
         import threading
 
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         held = threading.Event()
         release = threading.Event()
@@ -2505,31 +2505,31 @@ class TestSyncsHeldOff:
         assert held.wait(10)
         with (
             pytest.raises(SyncRunningError, match="busy"),
-            syncs_held_off(tmp_path, "busy", wait=0.2),
+            _syncs_held_off(tmp_path, "busy", wait=0.2),
         ):
             pytest.fail("entered while a sync ran")
         threading.Timer(0.3, release.set).start()
-        with syncs_held_off(tmp_path, "busy", wait=10):
+        with _syncs_held_off(tmp_path, "busy", wait=10):
             assert release.is_set()
         thread.join(10)
 
     def test_a_lock_that_cannot_be_taken_refuses_the_block(self, tmp_path):
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         with (
             _sync_lock_take_refused(),
             pytest.raises(LibraryUnlockableError, match="disk I/O error") as refused,
-            syncs_held_off(tmp_path, "busy"),
+            _syncs_held_off(tmp_path, "busy"),
         ):
             pytest.fail("entered without the lock")
 
         assert f"delete {tmp_path / 'sync.lock'}, and try again." in str(refused.value)
         assert "reset" not in str(refused.value)
-        with syncs_held_off(tmp_path, "busy"):
+        with _syncs_held_off(tmp_path, "busy"):
             pass
 
     def test_a_data_root_that_cannot_be_made_refuses_the_block_as_an_add(self, tmp_path):
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         not_a_folder = tmp_path / "a-file"
         not_a_folder.write_text("in the way", encoding="utf-8")
@@ -2537,7 +2537,7 @@ class TestSyncsHeldOff:
 
         with (
             pytest.raises(LibraryUnlockableError, match="cannot be locked") as refused,
-            syncs_held_off(data_root, "busy"),
+            _syncs_held_off(data_root, "busy"),
         ):
             pytest.fail("entered without the lock")
 
@@ -2592,7 +2592,7 @@ class TestSourceKeysInUse:
         assert ran == []
         assert str(refused.value) == _cannot_change(tmp_path)
         assert caplog.text == ""
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     def test_a_lock_file_that_cannot_be_opened_refuses_the_block(self, tmp_path, caplog):
@@ -2842,12 +2842,12 @@ def _add_held_on_a_thread(data_root: Path):
     """Hold syncs off *data_root* on a thread, as an add that moves keys does, for the block."""
     import threading
 
-    from lilbee.runtime.lock import syncs_held_off
+    from lilbee.runtime.lock import _syncs_held_off
 
     held, release = threading.Event(), threading.Event()
 
     def _an_add() -> None:
-        with syncs_held_off(data_root, "held by an add"):
+        with _syncs_held_off(data_root, "held by an add"):
             held.set()
             release.wait(30)
 
@@ -2961,7 +2961,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         """The holder has not released: a reset of the data root is refused."""
         with (
             pytest.raises(ResetRefusedError, match="is running on this library"),
-            no_sync_running(cfg.data_root),
+            _no_sync_running(cfg.data_root),
         ):
             pytest.fail("the holder released before the writer returned")
 
@@ -2977,7 +2977,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             self._assert_still_held()
 
         assert set(threading.enumerate()) - before == set()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
@@ -2991,7 +2991,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             self._assert_still_held()
 
         assert f"Could not close {cfg.data_root / 'sync.lock'} (disk I/O error)." in caplog.text
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
@@ -3013,7 +3013,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             assert run(cancel) == cancelled_result
 
         body.assert_not_called()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
@@ -3052,7 +3052,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         wiki_root = cfg.data_root / cfg.wiki_dir
         assert not (wiki_root / "index.md").exists()
         assert not (wiki_root / "log.md").exists()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("block_error", [None, ValueError("the block failed")])
@@ -3082,7 +3082,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
                     _block()
 
         assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     def test_a_take_error_without_a_cancel_refuses_the_block(self, library, tmp_path):
@@ -3686,7 +3686,7 @@ class TestACancelAtTheWaitForARunningSync:
             with pytest.raises(SkipRecordsWaitCancelledError) as raised:
                 command(cancel)
             takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
                 pass
 
         assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
@@ -3713,14 +3713,14 @@ class TestACancelAtTheWaitForARunningSync:
             with pytest.raises(asyncio.CancelledError) as raised:
                 await sync(quiet=True, cancel=cancel)
             takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
                 pass
 
         assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
         assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
         assert _everything(library.store) == before
         assert before["journal"] is True
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("names", [None, ["notes"]], ids=["waits", "asks_again"])
@@ -3744,7 +3744,7 @@ class TestACancelAtTheWaitForARunningSync:
         assert takes == ["granted"]
         assert _everything(library.store) == before
         assert before["journal"] is True
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     def test_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(self, library, notes):
@@ -3767,7 +3767,7 @@ class TestACancelAtTheWaitForARunningSync:
         assert before["journal"] is False
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
         assert _records_lock_is_free(cfg.data_root)
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     def test_an_add_that_finishes_another_add_with_the_cancel_set_moves_no_key(
@@ -3803,5 +3803,5 @@ class TestACancelAtTheWaitForARunningSync:
         ):
             raise SyncMarkWaitCancelledError
 
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass

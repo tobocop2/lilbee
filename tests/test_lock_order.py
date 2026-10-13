@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import re
 import threading
 from collections.abc import Callable
 from contextlib import closing
@@ -39,12 +41,12 @@ from lilbee.runtime.lock import (
     LockOrderError,
     ResetRefusedError,
     SyncRunningError,
+    _no_sync_running,
+    _syncs_held_off,
     library_held,
-    no_sync_running,
     refuse_where_a_sync_cannot_lock,
     source_keys_in_use,
     sync_running,
-    syncs_held_off,
 )
 from tests.conftest import make_mock_services
 
@@ -404,7 +406,7 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
     def test_a_held_sync_lock_refuses_the_owner_before_the_records_lock(
         self, running, refusal, takes
     ):
-        with syncs_held_off(cfg.data_root, _A_SYNC_RUNS):
+        with _syncs_held_off(cfg.data_root, _A_SYNC_RUNS):
             with pytest.raises(refusal), library_held(cfg.data_root, running):
                 pytest.fail("the block ran under a held sync lock")
 
@@ -478,8 +480,8 @@ _TAKES_OF_THE_SYNC_LOCK = {
     "the mark of a sync": _mark_a_sync,
     "the mark of a wiki build": _enter(source_keys_in_use),
     "the probe of an add": refuse_where_a_sync_cannot_lock,
-    "the hold of a reset": _enter(no_sync_running),
-    "the hold of a change": _enter(lambda root: syncs_held_off(root, _A_SYNC_RUNS)),
+    "the hold of a reset": _enter(_no_sync_running),
+    "the hold of a change": _enter(lambda root: _syncs_held_off(root, _A_SYNC_RUNS)),
     "the owner of both locks": _enter(lambda root: library_held(root, _A_SYNC_RUNS)),
 }
 _ORDER_ERROR = "holds the records lock of .*library"
@@ -544,6 +546,90 @@ class TestTheRecordsLockRefusesTheLocksBeforeIt:
 
         with skip_records_lock(other_root), library_held(cfg.data_root, _A_SYNC_RUNS):
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
+
+
+_SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
+_LOCK_MODULE = _SOURCE_ROOT / "runtime" / "lock.py"
+_OWNER = "library_held"
+_WRITE_TAKES = {"_no_sync_running", "_syncs_held_off"}
+_A_WRITE_TAKE = re.compile(r"(?<![A-Za-z0-9_])_?(?:no_sync_running|syncs_held_off)(?![A-Za-z0-9_])")
+
+
+def _write_takes_named(source: str) -> list[str]:
+    """Each mention in *source* of a function that takes the sync write lock."""
+    return _A_WRITE_TAKE.findall(source)
+
+
+def _uses_of_the_write_takes(tree: ast.AST) -> list[str]:
+    """Each use of a write take below *tree*, a call or any other read of the name."""
+    return [
+        node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id in _WRITE_TAKES
+    ]
+
+
+def _owner_of(module: ast.Module) -> ast.FunctionDef:
+    functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
+    return next(function for function in functions if function.name == _OWNER)
+
+
+def _uses_outside_the_owner(source: str) -> int:
+    module = ast.parse(source)
+    return len(_uses_of_the_write_takes(module)) - len(_uses_of_the_write_takes(_owner_of(module)))
+
+
+_A_MODULE_THAT_TAKES_THE_WRITE_LOCK = """
+from lilbee.runtime.lock import _syncs_held_off
+
+
+def change(root):
+    with _syncs_held_off(root, "busy"):
+        pass
+"""
+_A_LOCK_MODULE_WITH_A_SECOND_CALLER = """
+def library_held(root):
+    return _no_sync_running(root) or _syncs_held_off(root)
+
+
+def second_owner(root):
+    return _syncs_held_off(root)
+"""
+
+
+class TestOnlyTheOwnerTakesTheSyncWriteLock:
+    def test_no_module_but_the_lock_module_names_a_write_take(self):
+        modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
+        naming = [
+            str(path.relative_to(_SOURCE_ROOT))
+            for path in modules
+            if _write_takes_named(path.read_text(encoding="utf-8"))
+        ]
+
+        assert _SOURCE_ROOT / "app" / "absorb.py" in modules
+        assert _SOURCE_ROOT / "app" / "reset.py" in modules
+        assert naming == []
+
+    def test_the_census_finds_a_module_that_names_a_write_take(self):
+        """Control: the scan above reports a module with a planted import and call."""
+        assert _write_takes_named(_A_MODULE_THAT_TAKES_THE_WRITE_LOCK) == ["_syncs_held_off"] * 2
+
+    def test_only_the_owner_uses_a_write_take_in_the_lock_module(self):
+        source = _LOCK_MODULE.read_text(encoding="utf-8")
+
+        assert set(_uses_of_the_write_takes(_owner_of(ast.parse(source)))) == _WRITE_TAKES
+        assert _uses_outside_the_owner(source) == 0
+
+    def test_the_census_finds_a_second_caller_in_the_lock_module(self):
+        """Control: the scan above counts a planted call outside the owner."""
+        assert _uses_outside_the_owner(_A_LOCK_MODULE_WITH_A_SECOND_CALLER) == 1
+
+    @pytest.mark.parametrize("name", sorted(_WRITE_TAKES))
+    def test_the_lock_module_defines_each_write_take(self, name):
+        source = _LOCK_MODULE.read_text(encoding="utf-8")
+        defined = [
+            node.name for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)
+        ]
+
+        assert defined.count(name) == 1
 
 
 class TestAnAddActsOnTheReadUnderItsFinalHold:

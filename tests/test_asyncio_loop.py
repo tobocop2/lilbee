@@ -11,7 +11,7 @@ import pytest
 from filelock import ReadWriteLock
 
 from lilbee.runtime import asyncio_loop
-from lilbee.runtime.lock import ResetRefusedError, no_sync_running, sync_running
+from lilbee.runtime.lock import ResetRefusedError, _no_sync_running, sync_running
 from tests.conftest import reset_held_on_a_thread
 
 
@@ -158,7 +158,7 @@ def test_shutdown_does_not_wait_for_the_reset_a_sync_waits_for(tmp_path: Path) -
         sync_ended = sync.cancelled()
         with (
             pytest.raises(ResetRefusedError, match="is running on this library"),
-            no_sync_running(tmp_path),
+            _no_sync_running(tmp_path),
         ):
             pass
 

@@ -32,8 +32,8 @@ from lilbee.data.store import Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
+    _no_sync_running,
     _NoHardLinksError,
-    no_sync_running,
 )
 from tests.conftest import filesystem_without_locking, make_mock_services
 from tests.test_lock import _sync_lock_close_refused
@@ -579,7 +579,7 @@ class TestASyncLockThatCannotBeOpened:
 
     def test_a_reset_that_holds_the_lock_does_not_refuse_the_add(self, library, notes):
         """A busy lock works: the sync after the add waits for the reset."""
-        with no_sync_running(library):
+        with _no_sync_running(library):
             result = register_sources([notes])
 
         assert result.registered == ["notes"]
@@ -596,7 +596,7 @@ class TestASyncLockThatCannotBeOpened:
 
         assert result.registered == ["notes"]
         assert f"Could not close {library / 'sync.lock'} (disk I/O error)." in caplog.text
-        with no_sync_running(library):
+        with _no_sync_running(library):
             pass
 
     @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["human", "json"])

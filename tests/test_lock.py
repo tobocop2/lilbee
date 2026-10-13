@@ -32,15 +32,15 @@ from lilbee.runtime.lock import (
     SyncMarkWaitCancelledError,
     SyncRunningError,
     _lock_path,
+    _no_sync_running,
     _sync_lock_wait,
+    _syncs_held_off,
     acquire_scope_lock,
     acquire_server_lock,
-    no_sync_running,
     read_scope_owner,
     server_lock_path,
     source_keys_in_use,
     sync_running,
-    syncs_held_off,
     write_lock,
 )
 from tests.conftest import cancel_set_when_the_sync_lock_is_granted, reset_held_on_a_thread
@@ -281,9 +281,9 @@ _WRITABLE_ADVICE = "Make {path} writable, then try again."
 _RESET_IN_ANOTHER_PROCESS = """
 import sys
 from pathlib import Path
-from lilbee.runtime.lock import ResetRefusedError, no_sync_running
+from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
 try:
-    with no_sync_running(Path(sys.argv[1])):
+    with _no_sync_running(Path(sys.argv[1])):
         pass
 except ResetRefusedError:
     sys.exit(3)
@@ -292,8 +292,8 @@ _RESET_HOLDS = "reset holds"
 _HELD_RESET_IN_ANOTHER_PROCESS = f"""
 import sys
 from pathlib import Path
-from lilbee.runtime.lock import no_sync_running
-with no_sync_running(Path(sys.argv[1])):
+from lilbee.runtime.lock import _no_sync_running
+with _no_sync_running(Path(sys.argv[1])):
     print("{_RESET_HOLDS}", flush=True)
     sys.stdin.read()
 """
@@ -504,9 +504,9 @@ class TestSyncMark:
 
     async def test_syncs_share_the_mark(self, tmp_path: Path) -> None:
         async with sync_running(tmp_path), sync_running(tmp_path):
-            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError), _no_sync_running(tmp_path):
                 pass
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     @pytest.mark.parametrize("reset_held", [reset_held_on_a_thread, _reset_held_in_another_process])
@@ -528,7 +528,7 @@ class TestSyncMark:
             returned = sync_task.done()
             with (
                 pytest.raises(ResetRefusedError, match="is running on this library"),
-                no_sync_running(tmp_path),
+                _no_sync_running(tmp_path),
             ):
                 pass
 
@@ -538,7 +538,7 @@ class TestSyncMark:
         assert waits
         assert all(0 < wait <= _SYNC_TAKE_SLICE_S for wait in waits), waits
         assert _threads_left_since(before) == []
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     @pytest.mark.parametrize("reset_held", [reset_held_on_a_thread, _reset_held_in_another_process])
@@ -562,7 +562,7 @@ class TestSyncMark:
             returned = sync_task.done()
             with (
                 pytest.raises(ResetRefusedError, match="is running on this library"),
-                no_sync_running(tmp_path),
+                _no_sync_running(tmp_path),
             ):
                 pass
 
@@ -570,7 +570,7 @@ class TestSyncMark:
         assert sync_task.cancelled()
         assert entered == []
         assert _threads_left_since(before) == []
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     async def test_a_sync_with_an_unset_cancel_waits_for_the_reset_and_runs(
@@ -627,7 +627,7 @@ class TestSyncMark:
         assert entered == []
         assert _lock_warnings(caplog) == 0
         assert _threads_left_since(before) == []
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     async def test_a_wiki_writer_cancelled_while_it_waits_takes_the_mark_in_short_slices(
@@ -656,7 +656,7 @@ class TestSyncMark:
         assert [type(exc) for exc in outcome] == [SyncMarkWaitCancelledError]
         assert waits
         assert all(0 < wait <= _SYNC_TAKE_SLICE_S for wait in waits), waits
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
@@ -693,7 +693,7 @@ class TestSyncMark:
         if cancel_set != "before a free take":
             assert grants == ["granted"], "the writer never held the mark"
         assert outcome == [SyncMarkWaitCancelledError]
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     def test_a_wiki_writer_with_an_unset_cancel_waits_for_the_reset_and_runs(
@@ -756,7 +756,7 @@ class TestSyncMark:
         assert entered.is_set() != waits
         assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
         assert left_at_the_return == []
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     async def test_a_cancel_during_a_close_that_fails_is_still_raised(
@@ -779,7 +779,7 @@ class TestSyncMark:
 
         assert sync_task.cancelled(), "the close error replaced the cancel"
         assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     @pytest.mark.parametrize("sync_error", [None, ValueError("the sync failed")])
@@ -805,7 +805,7 @@ class TestSyncMark:
 
         assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
         assert _threads_left_since(before) == []
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     async def test_a_sync_cancelled_as_its_take_succeeds_frees_the_mark(
@@ -838,7 +838,7 @@ class TestSyncMark:
         assert sync_task.cancelled()
         assert entered == []
         assert len(still_referenced) == 1
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     async def test_a_sync_cancelled_as_its_take_fails_does_not_run(
@@ -899,11 +899,11 @@ class TestSyncMark:
                 async with sync_running(tmp_path):
                     pass
             else:
-                with no_sync_running(tmp_path):
+                with _no_sync_running(tmp_path):
                     pass
 
         assert len(still_referenced) == 1
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     async def test_a_sync_probes_the_data_root_off_the_event_loop(self, tmp_path: Path) -> None:
@@ -942,7 +942,7 @@ class TestSyncMark:
         release = threading.Event()
 
         def _reset() -> None:
-            with no_sync_running(tmp_path):
+            with _no_sync_running(tmp_path):
                 held.set()
                 release.wait(5)
 
@@ -984,7 +984,7 @@ class TestSyncMark:
                     ran.append("sync")
             with (
                 pytest.raises(ResetRefusedError, match="file is not a database") as caught,
-                no_sync_running(tmp_path),
+                _no_sync_running(tmp_path),
             ):
                 ran.append("reset")
 
@@ -1001,7 +1001,7 @@ class TestSyncMark:
         lock_file.unlink()
         async with sync_running(tmp_path):
             ran.append("sync")
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             ran.append("reset")
         assert ran == ["sync", "reset"]
 
@@ -1031,7 +1031,7 @@ class TestSyncMark:
                 ran.append("wiki")
             with (
                 pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
-                no_sync_running(tmp_path),
+                _no_sync_running(tmp_path),
             ):
                 ran.append("reset")
 
@@ -1126,7 +1126,7 @@ class TestSyncMark:
                 ran.append("wiki")
             with (
                 pytest.raises(ResetRefusedError, match="disk I/O error") as caught,
-                no_sync_running(tmp_path),
+                _no_sync_running(tmp_path),
             ):
                 ran.append("reset")
 
@@ -1142,7 +1142,7 @@ class TestSyncMark:
         assert _threads_left_since(before) == []
         async with sync_running(tmp_path):
             ran.append("sync")
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             ran.append("reset")
         assert ran == ["sync", "reset"]
 
@@ -1183,7 +1183,7 @@ class TestSyncMark:
         self, tmp_path: Path
     ) -> None:
         ran = []
-        with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+        with pytest.raises(ResetRefusedError) as caught, _no_sync_running(tmp_path):
             ran.append("reset")
 
         assert ran == []
@@ -1208,7 +1208,7 @@ class TestSyncMark:
         ran = []
         with (
             mock.patch.object(ReadWriteLock, "acquire_write", _free_after_a_moment),
-            no_sync_running(tmp_path),
+            _no_sync_running(tmp_path),
         ):
             ran.append("reset")
 
@@ -1239,7 +1239,7 @@ class TestSyncMark:
             with pytest.raises(LibraryUnlockableError) as refused_sync:
                 async with sync_running(tmp_path):
                     ran.append("sync")
-            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError) as caught, _no_sync_running(tmp_path):
                 ran.append("reset")
 
         assert ran == []
@@ -1268,7 +1268,7 @@ class TestSyncMark:
         ):
             async with sync_running(tmp_path):
                 ran.append("sync")
-            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError) as caught, _no_sync_running(tmp_path):
                 ran.append("reset")
 
         assert ran == ["sync"]
@@ -1306,7 +1306,7 @@ class TestSyncMark:
                 ran.append("sync")
             with source_keys_in_use(tmp_path):
                 ran.append("wiki")
-            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError) as caught, _no_sync_running(tmp_path):
                 ran.append("reset")
 
         assert ran == ["sync", "wiki"]
@@ -1383,7 +1383,7 @@ class TestSyncMark:
             with pytest.raises(LibraryUnlockableError) as refused_sync:
                 async with sync_running(tmp_path):
                     ran.append("sync")
-            with pytest.raises(ResetRefusedError) as caught, no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError) as caught, _no_sync_running(tmp_path):
                 ran.append("reset")
 
         assert ran == []
@@ -1414,10 +1414,10 @@ class TestSyncMark:
         with mock.patch.object(ReadWriteLock, "acquire_write", _first_probe_busy):
             with (
                 pytest.raises(ResetRefusedError, match="does not support file locking"),
-                no_sync_running(tmp_path),
+                _no_sync_running(tmp_path),
             ):
                 ran.append("refused reset")
-            with no_sync_running(tmp_path):
+            with _no_sync_running(tmp_path):
                 ran.append("reset")
 
         assert ran == ["reset"]
@@ -1426,9 +1426,9 @@ class TestSyncMark:
     async def test_a_lockable_mount_leaves_no_probe_behind(self, tmp_path: Path) -> None:
         async with sync_running(tmp_path):
             with pytest.raises(ResetRefusedError, match="is running on this library"):
-                with no_sync_running(tmp_path):
+                with _no_sync_running(tmp_path):
                     pass
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
         assert (tmp_path / "sync.lock").is_file()
@@ -1448,7 +1448,7 @@ class TestSyncMark:
         with (
             mock.patch.object(Path, "unlink", _unlink),
             caplog.at_level(logging.WARNING, logger="lilbee.runtime.lock"),
-            no_sync_running(tmp_path),
+            _no_sync_running(tmp_path),
         ):
             ran.append("reset")
 
@@ -1473,19 +1473,19 @@ class TestSyncsHeldOffWait:
         ):
             with (
                 pytest.raises(SyncMarkWaitCancelledError),
-                syncs_held_off(tmp_path, "a sync is running", LOCK_TIMEOUT, cancel),
+                _syncs_held_off(tmp_path, "a sync is running", LOCK_TIMEOUT, cancel),
             ):
                 ran.append("the block")
             takes_of_the_wait = list(takes)
             # The sync still holds its mark, and a second sync shares it at once.
-            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError), _no_sync_running(tmp_path):
                 pass
             with source_keys_in_use(tmp_path):
                 ran.append("a second sync")
 
         assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
         assert ran == ["a second sync"]
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     @pytest.mark.parametrize(
@@ -1521,13 +1521,13 @@ class TestSyncsHeldOffWait:
             takes = stack.enter_context(_sync_write_takes(_after))
             with (
                 pytest.raises(SyncMarkWaitCancelledError),
-                syncs_held_off(tmp_path, "a sync is running", wait, cancel),
+                _syncs_held_off(tmp_path, "a sync is running", wait, cancel),
             ):
                 ran.append("the block")
 
         assert takes == (["busy", "granted"] if cancel_set == "after a wait" else ["granted"])
         assert ran == []
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     def test_a_wait_with_an_unset_cancel_runs_the_block_when_the_sync_ends(
@@ -1543,7 +1543,7 @@ class TestSyncsHeldOffWait:
         with (
             _mark_held_on_a_thread(tmp_path) as end_the_sync,
             _sync_write_takes(_after) as takes,
-            syncs_held_off(
+            _syncs_held_off(
                 tmp_path,
                 "a sync is running",
                 LOCK_TIMEOUT,
@@ -1570,7 +1570,7 @@ class TestSyncsHeldOffWait:
                     later_sync_tried.set()
 
         def _add() -> None:
-            with syncs_held_off(tmp_path, "a sync is running", LOCK_TIMEOUT):
+            with _syncs_held_off(tmp_path, "a sync is running", LOCK_TIMEOUT):
                 order.append("the add")
 
         def _later_sync() -> None:
@@ -1617,7 +1617,7 @@ class TestSyncsHeldOffWait:
             _mark_held_on_a_thread(tmp_path),
             mock.patch.object(ReadWriteLock, "acquire_write", _take),
             pytest.raises(SyncRunningError, match=r"^a sync is running$"),
-            syncs_held_off(tmp_path, "a sync is running", 2.5 * _SYNC_TAKE_SLICE_S),
+            _syncs_held_off(tmp_path, "a sync is running", 2.5 * _SYNC_TAKE_SLICE_S),
         ):
             pass
 
@@ -1633,7 +1633,7 @@ class TestSyncsHeldOffWait:
         with _mark_held_on_a_thread(tmp_path), _sync_write_takes() as takes:
             with (
                 pytest.raises(SyncRunningError, match=r"^a sync is running$"),
-                syncs_held_off(
+                _syncs_held_off(
                     tmp_path,
                     "a sync is running",
                     wait,
@@ -1642,7 +1642,7 @@ class TestSyncsHeldOffWait:
             ):
                 ran.append("the block")
             takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), no_sync_running(tmp_path):
+            with pytest.raises(ResetRefusedError), _no_sync_running(tmp_path):
                 pass
 
         # With a cancel the count of attempts depends on the machine; the test of the rule
@@ -1666,7 +1666,7 @@ class TestSyncsHeldOffWait:
             _mark_held_on_a_thread(tmp_path),
             mock.patch.object(ReadWriteLock, "acquire_write", _take),
             pytest.raises(SyncRunningError, match=r"^a sync is running$"),
-            syncs_held_off(tmp_path, "a sync is running"),
+            _syncs_held_off(tmp_path, "a sync is running"),
         ):
             pass
 
