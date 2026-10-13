@@ -976,17 +976,23 @@ class TestAutoSync:
         with caplog.at_level(logging.WARNING):
             result = runner.invoke(app, [*flags, "ask", "oil capacity?"])
 
+        skipped = (
+            "Skipped the sync before the answer. "
+            f"Cannot change the library: {lock} cannot be locked (file is not a database). "
+            f"Stop every lilbee process, delete {lock}, and try again."
+        )
         assert result.exit_code == 0
-        assert "5 quarts" in result.output
-        assert result.output == healthy.output
+        assert "5 quarts" in result.stdout
+        assert result.stdout == healthy.stdout
+        assert healthy.stderr == ""
+        assert "Skipped the sync" not in result.stdout
+        assert result.stderr.count("Skipped the sync") == 1
+        assert "".join(result.stderr.split()) == "".join(f"Warning: {skipped}".split())
+        if flags:
+            assert json.loads(result.stdout)["answer"] == "5 quarts"
         assert "Traceback" not in caplog.text
         assert [(r.name, r.getMessage()) for r in caplog.records] == [
-            (
-                "lilbee.cli.helpers",
-                "Skipped the sync before the answer. "
-                f"Cannot change the library: {lock} cannot be locked (file is not a database). "
-                f"Stop every lilbee process, delete {lock}, and try again.",
-            )
+            ("lilbee.cli.helpers", skipped)
         ]
         assert _tree(cfg.data_root) == before
 
