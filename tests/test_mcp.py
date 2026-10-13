@@ -3092,3 +3092,59 @@ class TestACancelledCallAtTheRecordsLock:
 
         assert isinstance(raised, SkipRecordsWaitCancelledError)
         mock_svc.store.remove_documents.assert_not_called()
+
+
+class TestACallCancelledBeforeItAsksForTheRecordsLock:
+    """A tool call cancelled before its thread asks for a free records lock changes nothing."""
+
+    @staticmethod
+    async def _cancel_before_the_take(
+        tool: str, arguments: dict, target: str
+    ) -> BaseException | None:
+        """Cancel *tool* while its thread has not yet asked for the lock; returns what it raised."""
+        from lilbee.app import ingest
+        from tests._records_wait import files_under, recorded
+
+        real, reached = getattr(ingest, target), anyio.Event()
+
+        def _after_the_cancel(*args, cancel, **kwargs):
+            anyio.from_thread.run_sync(reached.set)
+            assert cancel.wait(30), "the call was never cancelled"
+            return real(*args, cancel=cancel, **kwargs)
+
+        call, outcome = recorded(_after_the_cancel)
+        with mock.patch.object(ingest, target, call):
+            before = files_under(cfg.data_root)
+            async with mcp_client() as (session, _init, drop):
+                async with anyio.create_task_group() as tg:
+                    tg.start_soon(session.call_tool, tool, arguments)
+                    await reached.wait()
+                    tg.cancel_scope.cancel()
+                await anyio.to_thread.run_sync(outcome.ended.wait)
+                await drop()
+            assert files_under(cfg.data_root) == before
+        return outcome.raised
+
+    async def test_an_add_registers_nothing(self, tmp_path):
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        src = tmp_path / "source" / "scan.txt"
+        src.parent.mkdir()
+        src.write_text("hello world", encoding="utf-8")
+
+        raised = await self._cancel_before_the_take(
+            "add", {"paths": [str(src)]}, "register_sources"
+        )
+
+        assert isinstance(raised, SkipRecordsWaitCancelledError)
+        assert cfg.linked_roots == {}
+
+    async def test_a_remove_removes_nothing(self, mock_svc):
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        raised = await self._cancel_before_the_take(
+            "remove", {"names": ["a.md"]}, "remove_documents_durably"
+        )
+
+        assert isinstance(raised, SkipRecordsWaitCancelledError)
+        mock_svc.store.remove_documents.assert_not_called()

@@ -435,14 +435,30 @@ class TestUpdateSkipRecords:
         assert load_skip_kinds(tmp_path) == {"old.pdf": SkipKind.FAILED}
         assert _records_lock_is_free(tmp_path)
 
-    def test_a_set_cancel_does_not_refuse_a_free_lock(self, tmp_path: Path):
-        """A cancel ends only a wait: with the lock free the change is written."""
+    @pytest.mark.parametrize("operation", _CANCELLABLE_CHANGES)
+    def test_a_set_cancel_gives_a_free_lock_back_without_writing(self, tmp_path: Path, operation):
+        """No call enters with the cancel set: a take that did not wait raises the cancel too."""
+        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
+
+        _head_failure(tmp_path, "old.pdf", "h1", "no text")
+
+        with pytest.raises(SkipRecordsWaitCancelledError) as raised:
+            operation(tmp_path, _AlwaysSet())
+
+        assert raised.value.__cause__ is None
+        assert load_skip_markers(tmp_path) == {"old.pdf": "h1"}
+        assert load_skip_kinds(tmp_path) == {"old.pdf": SkipKind.FAILED}
+        assert _records_lock_is_free(tmp_path)
+
+    def test_a_free_lock_reads_an_unset_cancel_one_time_and_writes(self, tmp_path: Path):
         write_skip_markers(tmp_path, {"old.pdf": "h1"})
+        cancel = _NeverSet()
 
         update_skip_records(
-            tmp_path, lambda records: records.markers.update({"new.pdf": "h2"}), _AlwaysSet()
+            tmp_path, lambda records: records.markers.update({"new.pdf": "h2"}), cancel
         )
 
+        assert cancel.polls == 1
         assert load_skip_markers(tmp_path) == {"old.pdf": "h1", "new.pdf": "h2"}
         assert _records_lock_is_free(tmp_path)
 

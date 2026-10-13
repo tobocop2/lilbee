@@ -290,31 +290,29 @@ def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> It
     """Hold the cross-process lock on the records, or raise without entering.
 
     Re-entrant within a thread, so an operation can take it before its first
-    change and still call the record helpers inside. A lock that is free, or
-    that the caller holds, is taken whether or not *cancel* is set. A call that
-    waits for a held lock raises ``SkipRecordsWaitCancelledError`` without
-    entering when *cancel* is set during the wait or at its end.
+    change and still call the record helpers inside. No call enters with
+    *cancel* set: a set *cancel* ends the wait for a held lock, and a lock that
+    is granted with *cancel* set, after a wait or at the first try, is given
+    back. Both raise ``SkipRecordsWaitCancelledError``. A take under the
+    caller's own hold does not read *cancel*.
     """
     lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
-    waited = False
 
     def _cancelled() -> bool:
-        # filelock asks only after a take failed.
-        nonlocal waited
-        waited = True
         return cancel is not None and cancel.is_set()
 
     try:
         lock.acquire(timeout=_RECORDS_LOCK_TIMEOUT_S, cancel_check=_cancelled)
     except OSError as error:  # filelock's Timeout is an OSError too
-        if cancel is not None and cancel.is_set():
+        if _cancelled():
             # No cause: a cancel that carries an error is reported as that error.
             raise SkipRecordsWaitCancelledError from None
         raise SkipRecordsLockError(_RECORDS_LOCKED.format(path=lock.lock_file)) from error
     try:
-        # filelock takes a lock that frees before it asks again, so a wait can
-        # end in a grant with the cancel set. The caller reports a cancel then.
-        if waited and _cancelled():
+        # A caller that reports a cancel has changed nothing, so the first hold
+        # reads the cancel before it enters. A hold under the caller's own has
+        # entered already.
+        if lock.lock_counter == 1 and _cancelled():
             raise SkipRecordsWaitCancelledError
         yield
     finally:

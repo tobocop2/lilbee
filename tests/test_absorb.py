@@ -1630,6 +1630,7 @@ class TestEveryEntryPoint:
         screen = ChatScreen.__new__(ChatScreen)
         notify = MagicMock()
         reporter = MagicMock(spec=ProgressReporter)
+        reporter.is_set.return_value = False
         with (
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread", notify),
             mock.patch("lilbee.runtime.asyncio_loop.run", return_value=SyncResult()),
