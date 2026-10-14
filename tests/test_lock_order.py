@@ -25,6 +25,8 @@ from lilbee.app import dataset as dataset_mod
 from lilbee.app import ingest as ingest_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.reset import perform_reset
+from lilbee.app.settings import apply_settings_update
+from lilbee.cli.tui.widgets import model_bar as model_bar_mod
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg, config_scope
 from lilbee.data import offload
@@ -51,6 +53,7 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.daemon_call import DaemonCall
+from lilbee.runtime.progress import EventType, WikiPhase
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     LibraryHoldEndedError,
@@ -456,6 +459,56 @@ def test_a_first_build_under_the_mark_of_a_sync_raises(takes, builds):
         asyncio.run(build_under_the_mark())
 
     assert builds.held_at_build == []
+
+
+def _reset_from_the_model_bar() -> None:
+    model_bar_mod.reset_services()
+
+
+def _reset_from_a_settings_change() -> None:
+    apply_settings_update({"llm_provider": "remote"})
+
+
+_RESETS = {"model bar": _reset_from_the_model_bar, "settings change": _reset_from_a_settings_change}
+
+
+class TestARebuildAfterAResetRunsNoFinisher:
+    @pytest.mark.parametrize("reset", list(_RESETS))
+    def test_a_reset_during_a_wiki_build_rebuilds_and_the_build_finishes(
+        self, reset, notes, takes, builds
+    ):
+        def reset_at_the_index(event: EventType, data: Any) -> None:
+            if event == EventType.WIKI_PHASE and data.phase == WikiPhase.INDEX:
+                _leave_journal(notes)
+                _RESETS[reset]()
+                svc_mod.get_services()
+
+        summary = run_full_build(cfg, on_progress=reset_at_the_index)
+
+        assert summary["count"] == 0
+        assert builds.held_at_build == [[], [_SYNC_LOCK]]
+        assert absorb_pending(cfg.data_root)
+        assert takes.sync_write_takes == 0
+        assert takes.records_takes == 0
+
+    def test_a_rebuild_under_the_sync_lock_raises_nothing(self, takes, builds):
+        svc_mod.get_services()
+        svc_mod.reset_services()
+
+        with source_keys_in_use(cfg.data_root):
+            svc_mod.get_services()
+
+        assert builds.held_at_build == [[], [_SYNC_LOCK]]
+
+    def test_a_rebuild_leaves_an_interrupted_add_for_the_next_process(self, notes, builds):
+        svc_mod.get_services()
+        _leave_journal(notes)
+        svc_mod.reset_services()
+
+        svc_mod.get_services()
+
+        assert len(builds.held_at_build) == 2
+        assert absorb_pending(cfg.data_root)
 
 
 def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
