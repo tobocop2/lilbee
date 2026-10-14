@@ -3359,9 +3359,9 @@ _RESET_HANG_GUARD_S = 60.0
 
 
 def _refusal_of_a_reset_from_another_thread() -> str:
-    """The text a reset is refused with, run where no lock of the calling thread is held."""
+    """The text a reset is refused with, run as work that holds no lock of the caller."""
     with ThreadPoolExecutor(max_workers=1) as pool:
-        reset = pool.submit(contextvars.copy_context().run, perform_reset)
+        reset = pool.submit(contextvars.Context().run, perform_reset)
         with pytest.raises(ResetRefusedError) as caught:
             reset.result(timeout=_RESET_HANG_GUARD_S)
     return str(caught.value)

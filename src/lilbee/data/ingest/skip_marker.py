@@ -30,6 +30,7 @@ from filelock import FileLock
 
 from lilbee.data.types import SkippedSource
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.lock import records_lock_noted
 
 log = logging.getLogger(__name__)
 
@@ -290,11 +291,6 @@ def _records_lock(data_root: Path) -> FileLock:
     return FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
 
 
-def records_lock_held(data_root: Path) -> bool:
-    """Whether the calling thread holds the records lock of *data_root*."""
-    return _records_lock(data_root).lock_counter > 0
-
-
 @contextlib.contextmanager
 def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> Iterator[None]:
     """Hold the cross-process lock on the records, or raise without entering.
@@ -324,7 +320,8 @@ def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> It
         # entered already.
         if lock.lock_counter == 1 and _cancelled():
             raise SkipRecordsWaitCancelledError
-        yield
+        with records_lock_noted(data_root):
+            yield
     finally:
         lock.release()
 

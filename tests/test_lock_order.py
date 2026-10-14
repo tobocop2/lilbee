@@ -7,7 +7,8 @@ import asyncio
 import inspect
 import re
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, nullcontext
 from pathlib import Path
 from typing import Any
@@ -25,7 +26,9 @@ from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.reset import perform_reset
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg, config_scope
-from lilbee.data.ingest.pipeline import _finish_pending_absorb
+from lilbee.data import offload
+from lilbee.data.extract import xberg as xberg_mod
+from lilbee.data.ingest.pipeline import _classify_pooled, _finish_pending_absorb, _PlanProgress
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
     SkipKind,
@@ -34,7 +37,9 @@ from lilbee.data.ingest.skip_marker import (
     skip_records_lock,
     update_skip_records,
 )
+from lilbee.data.offload import to_executor, to_ingest_thread
 from lilbee.data.store import Store
+from lilbee.runtime import asyncio_loop
 from lilbee.runtime.absorb_journal import (
     AbsorbJournal,
     HeldOut,
@@ -43,6 +48,7 @@ from lilbee.runtime.absorb_journal import (
     read_journal,
     write_journal,
 )
+from lilbee.runtime.daemon_call import DaemonCall
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     LibraryHoldEndedError,
@@ -58,10 +64,13 @@ from lilbee.runtime.lock import (
     held_config,
     library_held,
     library_held_for_reset,
+    records_lock_held,
     refuse_where_a_sync_cannot_lock,
     source_keys_in_use,
+    sync_lock_held,
     sync_running,
 )
+from lilbee.server.handlers.ingest import _to_thread_unbroken
 from lilbee.wiki import stubs as wiki_stubs
 from tests.conftest import make_mock_services
 
@@ -646,6 +655,179 @@ class TestTheRecordsLockRefusesTheLocksBeforeIt:
 
         with skip_records_lock(other_root), library_held(cfg, _A_SYNC_RUNS):
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
+
+
+_Work = Callable[[], None]
+
+
+def _on_a_loop(hand: Callable[[_Work], Awaitable[object]]) -> Callable[[_Work], None]:
+    def handed(work: _Work) -> None:
+        asyncio.run(hand(work))
+
+    return handed
+
+
+async def _to_an_executor(work: _Work) -> None:
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        await to_executor(pool, work)
+
+
+async def _to_the_loop_of_an_extraction(work: _Work) -> None:
+    async def extraction() -> None:
+        work()
+
+    xberg_mod._run(extraction())
+
+
+def _to_the_shared_loop(work: _Work) -> None:
+    async def on_the_loop() -> None:
+        work()
+
+    try:
+        asyncio_loop.run(on_the_loop())
+    finally:
+        asyncio_loop.shutdown()
+
+
+def _to_the_plan_pool(work: _Work) -> None:
+    def classify(name: str, path: Path) -> object:
+        work()
+        return mock.sentinel.verdict
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        _classify_pooled(pool, [("plan.md", Path("plan.md"))], classify, None, _PlanProgress(1))
+
+
+_HAND_OFFS: dict[str, Callable[[_Work], None]] = {
+    "the ingest pool": _on_a_loop(to_ingest_thread),
+    "an executor of the ingest": _on_a_loop(_to_an_executor),
+    "the thread of a route": _on_a_loop(_to_thread_unbroken),
+    "the loop of an extraction": _on_a_loop(_to_the_loop_of_an_extraction),
+    "the shared loop": _to_the_shared_loop,
+    "a daemon call": lambda work: DaemonCall(work, name="handed").result(),
+    "the plan pool": _to_the_plan_pool,
+}
+_HOLDS_OF_THE_SYNC_LOCK = {
+    "the mark of a wiki build": source_keys_in_use,
+    "the hold of a reset": _no_sync_running,
+    "the hold of a change": lambda root: _syncs_held_off(root, _A_SYNC_RUNS),
+}
+
+
+class TestTheOrderCheckFollowsTheWork:
+    @pytest.fixture(autouse=True)
+    def no_thread_of_the_shared_pool_is_left(self):
+        yield
+        offload._ingest_executor().shutdown()
+        offload._ingest_executor.cache_clear()
+
+    @pytest.fixture
+    def asked_on(self) -> list[int]:
+        return []
+
+    @pytest.fixture
+    def ask_for_the_sync_lock(self, library, asked_on) -> _Work:
+        def ask() -> None:
+            asked_on.append(threading.get_ident())
+            with source_keys_in_use(library):
+                pass
+
+        return ask
+
+    @pytest.mark.parametrize("helper", list(_HAND_OFFS))
+    def test_work_a_holder_hands_to_a_thread_raises_before_any_take(
+        self, helper, library, takes, asked_on, ask_for_the_sync_lock
+    ):
+        with (
+            skip_records_lock(library),
+            pytest.raises(LockOrderError, match=_ORDER_ERROR),
+        ):
+            _HAND_OFFS[helper](ask_for_the_sync_lock)
+
+        assert len(asked_on) == 1
+        assert asked_on != [threading.get_ident()]
+        assert (takes.sync_write_takes, takes.sync_read_takes) == (0, 0)
+
+    @pytest.mark.parametrize("helper", list(_HAND_OFFS))
+    def test_the_same_work_enters_when_no_holder_hands_it(
+        self, helper, takes, asked_on, ask_for_the_sync_lock
+    ):
+        """Control: the hold of the one that hands the work is what refuses it above."""
+        _HAND_OFFS[helper](ask_for_the_sync_lock)
+
+        assert len(asked_on) == 1
+        assert asked_on != [threading.get_ident()]
+        assert takes.sync_read_takes == 1
+
+    async def test_another_task_on_the_thread_of_the_holder_is_not_flagged(self, library, takes):
+        holding = asyncio.Event()
+        seen: list[bool] = []
+
+        async def other_work() -> None:
+            await holding.wait()
+            seen.append(records_lock_held(library))
+            async with sync_running(library):
+                seen.append(sync_lock_held(library))
+
+        other = asyncio.create_task(other_work())
+        with skip_records_lock(library):
+            holding.set()
+            await asyncio.wait_for(other, _HANG_GUARD_S)
+            held_by_the_holder = records_lock_held(library)
+
+        assert (held_by_the_holder, seen) == (True, [False, True])
+        assert takes.sync_read_takes == 1
+
+    def test_a_hold_under_a_hold_ends_with_the_outer_one(self, library, tmp_path):
+        with skip_records_lock(library):
+            with skip_records_lock(library):
+                pass
+            under_the_outer_hold = (records_lock_held(library), records_lock_held(tmp_path))
+
+        assert under_the_outer_hold == (True, False)
+        assert not records_lock_held(library)
+
+    @pytest.mark.parametrize("hold", list(_HOLDS_OF_THE_SYNC_LOCK))
+    def test_a_hold_of_the_sync_lock_is_seen_for_its_library_while_it_lasts(
+        self, hold, library, tmp_path
+    ):
+        before = sync_lock_held(library)
+        with _HOLDS_OF_THE_SYNC_LOCK[hold](library):
+            during = (sync_lock_held(library), sync_lock_held(tmp_path))
+
+        assert (before, during, sync_lock_held(library)) == (False, (True, False), False)
+
+    async def test_the_mark_of_a_sync_is_seen_by_the_work_started_inside_it(self, library):
+        seen: dict[str, list[bool]] = {}
+        looked = {name: asyncio.Event() for name in ("started before", "started inside")}
+        ended = asyncio.Event()
+
+        async def look(name: str) -> None:
+            await marked.wait()
+            seen[name] = [sync_lock_held(library)]
+            looked[name].set()
+            await ended.wait()
+            seen[name].append(sync_lock_held(library))
+
+        marked = asyncio.Event()
+        before = asyncio.create_task(look("started before"))
+        async with sync_running(library):
+            inside = asyncio.create_task(look("started inside"))
+            marked.set()
+            for event in looked.values():
+                await asyncio.wait_for(event.wait(), _HANG_GUARD_S)
+            seen["a thread of the ingest pool"] = [await to_ingest_thread(sync_lock_held, library)]
+            seen["the holder"] = [sync_lock_held(library)]
+        ended.set()
+        await asyncio.wait_for(asyncio.gather(before, inside), _HANG_GUARD_S)
+        seen["the holder"].append(sync_lock_held(library))
+
+        assert seen == {
+            "started before": [False, False],
+            "started inside": [True, False],
+            "a thread of the ingest pool": [True],
+            "the holder": [True, False],
+        }
 
 
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
