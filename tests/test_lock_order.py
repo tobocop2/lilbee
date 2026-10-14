@@ -16,6 +16,7 @@ import pytest
 from filelock import BaseFileLock, ReadWriteLock
 
 import lilbee.app.services as svc_mod
+import lilbee.runtime.lock as lock_mod
 from lilbee import mcp_server
 from lilbee.app import absorb as absorb_mod
 from lilbee.app import ingest as ingest_mod
@@ -44,6 +45,7 @@ from lilbee.runtime.absorb_journal import (
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     LibraryHoldEndedError,
+    LockBugError,
     LockOrderError,
     ResetRefusedError,
     SyncRunningError,
@@ -1233,7 +1235,10 @@ _HANDLERS_ON_THE_WAY_FROM_A_TAKE = {
 }
 
 
-class TestNoHandlerTakesTheOrderError:
+_BUG_ERRORS = {"the order error": LockOrderError, "the ended-token error": LibraryHoldEndedError}
+
+
+class TestNoHandlerTakesABugError:
     @pytest.fixture(autouse=True)
     def a_wiki_that_lists_the_removed_source(self, monkeypatch):
         monkeypatch.setattr(cfg, "wiki", True)
@@ -1241,20 +1246,45 @@ class TestNoHandlerTakesTheOrderError:
             wiki_stubs, "load_stub_index", lambda config: _a_stub_index_that_names("plan.md")
         )
 
-    def test_the_order_error_is_no_kind_of_refusal(self):
-        assert LockOrderError.__bases__ == (Exception,)
-        assert not issubclass(LockOrderError, ingest_mod.LIBRARY_REFUSALS)
+    def test_the_bug_errors_share_one_base_that_is_no_kind_of_refusal(self):
+        assert LockBugError.__bases__ == (Exception,)
+        assert {error.__bases__ for error in _BUG_ERRORS.values()} == {(LockBugError,)}
+        assert not issubclass(LockBugError, ingest_mod.LIBRARY_REFUSALS)
 
+    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
     @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
-    def test_a_handler_under_the_records_lock_raises_the_order_error(self, handler, takes, builds):
+    def test_a_handler_under_the_records_lock_raises_each_bug_error(
+        self, handler, error, takes, builds, monkeypatch
+    ):
+        """The check under the records lock raises *error*, and no handler on the way takes it."""
+        monkeypatch.setattr(lock_mod, "LockOrderError", _BUG_ERRORS[error])
+
         with (
             skip_records_lock(cfg.data_root),
-            pytest.raises(LockOrderError, match=_ORDER_ERROR),
+            pytest.raises(LockBugError, match=_ORDER_ERROR) as raised,
         ):
             _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
 
+        assert type(raised.value) is _BUG_ERRORS[error]
         assert takes.sync_write_takes == 0
         assert builds.held_at_build == []
+
+    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
+    def test_a_stopped_add_notes_no_bug_error(self, error):
+        rollback = ingest_mod.AddRollback()
+
+        with pytest.raises(_BUG_ERRORS[error], match="ended"):
+            rollback.note_error(_BUG_ERRORS[error]("ended"))
+
+        assert rollback.error is None
+
+    def test_a_stopped_add_notes_an_error_that_is_no_bug(self):
+        """Control: the same call returns, and names the error, for an error of the add."""
+        rollback = ingest_mod.AddRollback()
+
+        rollback.note_error(OSError("ended"))
+
+        assert "ended" in str(rollback.error)
 
     @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
     def test_the_same_handler_returns_with_no_records_lock_held(self, handler, takes, builds):
