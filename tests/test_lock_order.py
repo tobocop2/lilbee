@@ -458,7 +458,7 @@ class TestARebuildAfterAReset:
         assert _registry() == {"notes": str(notes.resolve())}
 
 
-class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
+class TestEveryBuildAfterASwitchOfLibraryFinishesItsAdd:
     @pytest.fixture
     def vaults(self, tmp_path) -> tuple[Path, Path]:
         first, second = tmp_path / "vault-a", tmp_path / "vault-b"
