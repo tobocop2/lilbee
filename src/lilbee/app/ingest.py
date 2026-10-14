@@ -325,8 +325,6 @@ def register_sources(
 
     names = [p.name for p in paths]
     in_progress = keys_of_pending_absorb()
-    # Built before the first library lock, and after the read of the absorb in progress.
-    store = get_services(cancel).store
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root, cancel):
         # An absorb writes its journal under the records lock, so none appears in here.
@@ -338,7 +336,9 @@ def register_sources(
             # A source moves, so nothing is registered yet; the error names what takes it in.
             names = list(result.absorbed_into)
     # A source that moves and an unfinished add both need every sync stopped. The registry
-    # is read again under that hold: the read above only chose it.
+    # is read again under that hold: the read above only chose it. The services are built
+    # here, with no library lock held; an add that registers above builds none.
+    store = get_services(cancel).store
     running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
     with library_held(config.data_root, running, 0.0, cancel) as hold:
         taken = [*in_progress, *finish_absorb(store, hold)]

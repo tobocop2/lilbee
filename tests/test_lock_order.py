@@ -259,13 +259,36 @@ _PATHS_THAT_BUILD = {
 }
 
 
-class TestTheServicesAreBuiltBeforeAnyLibraryLock:
+class TestTheServicesAreBuiltUnderNoLibraryLock:
     @pytest.mark.parametrize("path", list(_PATHS_THAT_BUILD))
     def test_the_first_build_of_a_process_holds_no_library_lock(self, path, notes, takes, builds):
         _PATHS_THAT_BUILD[path](notes)
 
         assert builds.held_at_build == [[]]
         assert takes.records_takes > 0
+        assert not absorb_pending(cfg.data_root)
+
+    def test_a_plain_add_builds_no_services(self, notes, takes, builds):
+        register_sources([notes])
+
+        assert builds.held_at_build == []
+        assert takes.records_takes > 0
+        assert takes.sync_write_takes == 0
+        assert _registry() == {"notes": str(notes.resolve())}
+
+    @pytest.mark.parametrize("path", ["add with a journal pending", "add that takes a source in"])
+    def test_an_add_that_needs_the_owner_builds_between_its_two_passes(
+        self, path, notes, takes, builds
+    ):
+        released_first: list[tuple[bool, int]] = []
+        builds.on_build.append(
+            lambda: released_first.append((takes.records_takes > 0, takes.sync_write_takes))
+        )
+
+        _PATHS_THAT_BUILD[path](notes)
+
+        assert released_first == [(True, 0)]
+        assert builds.held_at_build == [[]]
         assert not absorb_pending(cfg.data_root)
 
     def test_the_recorder_sees_a_build_under_the_records_lock(self, notes, takes, builds):
