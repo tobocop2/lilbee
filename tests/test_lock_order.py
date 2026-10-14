@@ -29,12 +29,14 @@ from lilbee.data.ingest.skip_marker import (
     SkipRecordsWaitCancelledError,
     load_skip_kinds,
     skip_records_lock,
+    update_skip_records,
 )
 from lilbee.data.store import Store
 from lilbee.runtime.absorb_journal import (
     AbsorbJournal,
     HeldOut,
     absorb_pending,
+    delete_journal,
     read_journal,
     write_journal,
 )
@@ -848,6 +850,61 @@ class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
         assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
         assert list(other.data_root.iterdir()) == []
         assert other.linked_roots == {}
+
+    def test_a_new_journal_takes_the_records_of_the_data_root_it_is_given(self, tmp_path):
+        update_skip_records(
+            cfg.data_root, lambda records: records.markers.update({"work/gone.md": _GONE_HASH})
+        )
+        other = _another_library(tmp_path / "other library")
+
+        with config_scope(other):
+            journal = absorb_mod.new_journal(cfg.data_root, {"work": "notes/work"}, {}, [])
+
+        assert list(journal.records) == ["notes/work/gone.md"]
+
+    def test_an_absorb_under_the_hold_asks_for_no_services(self, notes, takes, builds, monkeypatch):
+        _register_work(notes)
+        asked: list[list[str]] = []
+        real_get = svc_mod.get_services
+
+        def get_services(*args, **kwargs):
+            asked.append(takes.held())
+            return real_get(*args, **kwargs)
+
+        monkeypatch.setattr(absorb_mod, "get_services", get_services)
+        monkeypatch.setattr(ingest_mod, "get_services", get_services)
+
+        result = register_sources([notes])
+
+        assert result.absorbed == ["work"]
+        assert asked == [[]]
+
+    def test_an_absorb_under_the_scope_of_another_library_writes_only_its_own(
+        self, tmp_path, notes, builds
+    ):
+        svc_mod.get_services()
+        _leave_journal(notes)
+        journal = read_journal(cfg.data_root)
+        assert journal is not None
+        delete_journal(cfg.data_root)
+        other = _another_library(tmp_path / "other library")
+
+        with config_scope(other), library_held(cfg, _A_SYNC_RUNS) as hold:
+            absorb_mod.absorb(builds.services.store, journal, hold)
+
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert not absorb_pending(cfg.data_root)
+        assert list(other.data_root.iterdir()) == []
+
+    def test_a_hold_of_another_library_gives_the_config_it_was_taken_for(self, tmp_path, takes):
+        other = _another_library(tmp_path / "other library")
+
+        with library_held(other, _A_SYNC_RUNS) as hold:
+            assert hold.config is other
+            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
+
+        with library_held_for_reset(other) as hold:
+            assert hold.config is other
 
     def test_the_same_first_build_under_no_scope_finishes_the_journal(self, notes, builds):
         """Control: the journal above is one the start finisher rolls forward."""
