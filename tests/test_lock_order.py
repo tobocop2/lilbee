@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import inspect
+import pickle
 import re
 import sqlite3
 import threading
@@ -1899,6 +1900,21 @@ class TestNoHandlerTakesABugError:
         assert len(logged) == 1
         assert str(raised.value) in logged[0].getMessage()
         assert "in refuse_under_records_lock" in (logged[0].stack_info or "")
+
+    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
+    def test_a_bug_error_logs_once_and_not_again_when_unpickled(self, error, caplog):
+        with caplog.at_level("ERROR"):
+            with pytest.raises(_BUG_ERRORS[error], match="planted") as raised:
+                raise _BUG_ERRORS[error]("planted", 7)
+            raised.value.add_note("a note")
+            copy = pickle.loads(pickle.dumps(raised.value))  # noqa: S301  # bytes made here
+
+        assert type(copy) is _BUG_ERRORS[error]
+        assert copy.args == ("planted", 7)
+        assert copy.__notes__ == ["a note"]
+        assert [record.getMessage() for record in caplog.records] == [
+            "A bug in the use of the library locks: (\x27planted\x27, 7)"
+        ]
 
     @pytest.mark.parametrize("error", list(_BUG_ERRORS))
     def test_a_stopped_add_notes_no_bug_error(self, error):

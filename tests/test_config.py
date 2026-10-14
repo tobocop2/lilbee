@@ -1413,7 +1413,7 @@ class TestEmptyStringValidation:
         assert c.embedding_model == ""
 
     def test_empty_rag_system_prompt_rejected(self, tmp_path):
-        with pytest.raises(Exception, match="at least 1 character"):
+        with pytest.raises(ValidationError, match="at least 1 character"):
             Config(
                 data_root=tmp_path,
                 documents_dir=tmp_path / "docs",

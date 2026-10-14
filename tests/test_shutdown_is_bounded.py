@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 
 import pytest
-from filelock import FileLock
+from filelock import FileLock, Timeout
 
 from lilbee.runtime import engine_lock
 
@@ -37,7 +37,7 @@ def test_a_build_caller_still_waits_the_full_timeout(monkeypatch, tmp_path) -> N
     held = FileLock(tmp_path / "engine.lock")
     held.acquire()
     try:
-        with pytest.raises(Exception, match=r"(?i)timeout|lock"), engine_lock.build_lock(tmp_path):
+        with pytest.raises(Timeout, match=r"(?i)timeout|lock"), engine_lock.build_lock(tmp_path):
             pass
     finally:
         held.release()

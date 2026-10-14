@@ -198,11 +198,12 @@ def _fence_lock_bugs(request, monkeypatch):
     """Fail a test in which a lock bug error was made that the test did not expect.
 
     The error is recorded when it is made, so a handler that swallows it cannot
-    hide it. A test expects one through ``pytest.raises`` of its class or the
-    ``lock_bug_expected`` marker.
+    hide it. A test expects one through ``pytest.raises`` of ``LockBugError`` or a
+    subclass of it, or the ``lock_bug_expected`` marker; ``pytest.raises`` of a
+    broader class such as ``Exception`` expects none.
     """
     made: list[LockBugError] = []
-    expected: list[type[BaseException] | tuple[type[BaseException], ...]] = []
+    expected: list[type[LockBugError]] = []
     make = LockBugError.__init__
     real_raises = pytest.raises
 
@@ -211,7 +212,10 @@ def _fence_lock_bugs(request, monkeypatch):
         make(error, *args)
 
     def declare_and_raises(expected_exception, *args, **kwargs):
-        expected.append(expected_exception)
+        kinds = (
+            expected_exception if isinstance(expected_exception, tuple) else (expected_exception,)
+        )
+        expected.extend(kind for kind in kinds if issubclass(kind, LockBugError))
         return real_raises(expected_exception, *args, **kwargs)
 
     monkeypatch.setattr(LockBugError, "__init__", record_and_make)

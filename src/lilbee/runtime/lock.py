@@ -135,11 +135,16 @@ class LockBugError(Exception):
     """Raised when the code uses the locks of a library wrongly: a bug, which no handler takes.
 
     Each one logs at error level, with the stack where it is made, when it is made.
+    A copy or an unpickled one does not log again.
     """
 
     def __init__(self, *args: object) -> None:
         super().__init__(*args)
         log.error(_LOCK_BUG, self, stack_info=True)
+
+    def __reduce__(self) -> tuple[object, ...]:
+        """Rebuild the error without ``__init__``, so it logs only where it is made."""
+        return (_rebuilt_lock_bug, (type(self), self.args), self.__dict__ or None)
 
 
 class LockOrderError(LockBugError):
@@ -148,6 +153,11 @@ class LockOrderError(LockBugError):
 
 class LibraryHoldEndedError(LockBugError):
     """Raised when a function uses the token of a library hold after the hold ended: a bug."""
+
+
+def _rebuilt_lock_bug(kind: type[LockBugError], args: tuple[object, ...]) -> LockBugError:
+    """A lock bug error of *kind* with *args*, made without the log of its ``__init__``."""
+    return kind.__new__(kind, *args)
 
 
 class _NoHardLinksError(OSError):
@@ -725,7 +735,7 @@ def _library_hold(
     the sync lock, or that is set when the records lock is taken, raises
     ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
     """
-    # circular: runtime.lock -> data.ingest.pipeline via skip_records_lock
+    # circular: data.ingest.skip_marker -> runtime.lock via records_lock_noted
     from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
 
     if kind is _HoldKind.RESET:
