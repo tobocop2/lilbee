@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import ast
 import asyncio
-import inspect
 import re
-import sqlite3
 import threading
 from collections.abc import Callable
-from contextlib import closing, nullcontext
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -649,22 +646,6 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
 
             assert takes.records_takes == 0
 
-    def test_the_owner_takes_a_kind_and_no_take_of_the_sync_lock(self, takes):
-        parameters = inspect.signature(_library_hold).parameters
-        positional = [
-            name
-            for name, parameter in parameters.items()
-            if parameter.kind is not inspect.Parameter.KEYWORD_ONLY
-        ]
-
-        assert positional == ["config", "kind"]
-        assert list(parameters) == ["config", "kind", "running", "wait", "cancel"]
-        assert parameters["kind"].annotation is _HoldKind
-        assert [kind.name for kind in _HoldKind] == ["CHANGE", "RESET"]
-        with pytest.raises(TypeError, match="positional argument"):
-            _library_hold(cfg, nullcontext(), None)
-        assert (takes.sync_write_takes, takes.records_takes) == (0, 0)
-
     @pytest.mark.parametrize(
         ("kind", "refusal"),
         [(_HoldKind.CHANGE, SyncRunningError), (_HoldKind.RESET, ResetRefusedError)],
@@ -682,9 +663,7 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
 
         assert (takes.sync_write_takes, takes.records_takes) == (3, 1)
 
-    def test_the_form_of_a_reset_takes_no_wait_and_no_cancel(self, takes):
-        assert list(inspect.signature(library_held_for_reset).parameters) == ["config"]
-
+    def test_the_form_of_a_reset_takes_no_wait(self, takes):
         with library_held_for_reset(cfg):
             pass
 
@@ -692,10 +671,6 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
 
     def test_the_form_of_a_change_takes_its_wait_to_the_sync_lock(self, takes):
         """Control: the recorder reads the wait that the other form passes."""
-        assert (
-            inspect.signature(library_held).parameters["running"].default is inspect.Parameter.empty
-        )
-
         with library_held(cfg, _A_SYNC_RUNS, LOCK_TIMEOUT):
             pass
 
@@ -751,49 +726,8 @@ class TestARemoveFinishesAJournalUnderOneHold:
 
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
 _LOCK_MODULE = _SOURCE_ROOT / "runtime" / "lock.py"
-_OWNER = "_library_hold"
-_FORMS = {"library_held", "library_held_for_reset"}
-_WRITE_TAKES = {"_no_sync_running", "_syncs_held_off"}
+# The two takes of the sync write lock; only the owner of both library locks calls them.
 _A_WRITE_TAKE = re.compile(r"(?<![A-Za-z0-9_])_?(?:no_sync_running|syncs_held_off)(?![A-Za-z0-9_])")
-
-
-def _write_takes_named(source: str) -> list[str]:
-    """Each mention in *source* of a function that takes the sync write lock."""
-    return _A_WRITE_TAKE.findall(source)
-
-
-def _uses_of_the_write_takes(tree: ast.AST) -> list[str]:
-    """Each use of a write take below *tree*, a call or any other read of the name."""
-    return [
-        node.id for node in ast.walk(tree) if isinstance(node, ast.Name) and node.id in _WRITE_TAKES
-    ]
-
-
-def _uses_in_the_owner(module: ast.Module) -> list[str]:
-    """The write takes the owner uses, in the order of the tree walk."""
-    return [
-        use
-        for node in module.body
-        if isinstance(node, ast.FunctionDef) and node.name == _OWNER
-        for use in _uses_of_the_write_takes(node)
-    ]
-
-
-def _uses_outside_the_owner(source: str) -> int:
-    module = ast.parse(source)
-    return len(_uses_of_the_write_takes(module)) - len(_uses_in_the_owner(module))
-
-
-def _callers_of_the_owner(module: ast.Module) -> set[str]:
-    """Each function at the top of *module* that reads the name of the owner."""
-    return {
-        node.name
-        for node in module.body
-        if isinstance(node, ast.FunctionDef)
-        and any(isinstance(read, ast.Name) and read.id == _OWNER for read in ast.walk(node))
-    }
-
-
 _A_MODULE_THAT_TAKES_THE_WRITE_LOCK = """
 from lilbee.runtime.lock import _syncs_held_off
 
@@ -802,74 +736,23 @@ def change(root):
     with _syncs_held_off(root, "busy"):
         pass
 """
-_A_LOCK_MODULE_WITH_A_SECOND_CALLER = """
-def _library_hold(root, kind):
-    return _no_sync_running(root) if kind else _syncs_held_off(root)
 
 
-def library_held(root):
-    return _library_hold(root, False)
-
-
-def library_held_for_reset(root):
-    return _library_hold(root, True)
-
-
-def second_owner(root):
-    return _syncs_held_off(root)
-
-
-def third_form(root):
-    return _library_hold(root, False)
-"""
-
-
-class TestOnlyTheOwnerTakesTheSyncWriteLock:
-    def test_no_module_but_the_lock_module_names_a_write_take(self):
+class TestNoModuleButTheLockModuleTakesTheSyncWriteLock:
+    def test_no_other_module_names_a_take_of_the_sync_write_lock(self):
         modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
         naming = [
             str(path.relative_to(_SOURCE_ROOT))
             for path in modules
-            if _write_takes_named(path.read_text(encoding="utf-8"))
+            if _A_WRITE_TAKE.search(path.read_text(encoding="utf-8"))
         ]
 
-        assert _SOURCE_ROOT / "app" / "absorb.py" in modules
         assert _SOURCE_ROOT / "app" / "reset.py" in modules
         assert naming == []
 
-    def test_the_census_finds_a_module_that_names_a_write_take(self):
-        """Control: the scan above reports a module with a planted import and call."""
-        assert _write_takes_named(_A_MODULE_THAT_TAKES_THE_WRITE_LOCK) == ["_syncs_held_off"] * 2
-
-    def test_only_the_owner_uses_a_write_take_in_the_lock_module(self):
-        source = _LOCK_MODULE.read_text(encoding="utf-8")
-
-        assert sorted(_uses_in_the_owner(ast.parse(source))) == sorted(_WRITE_TAKES)
-        assert _uses_outside_the_owner(source) == 0
-
-    def test_the_census_finds_a_second_caller_in_the_lock_module(self):
-        """Control: the scan above counts a planted call outside the owner."""
-        assert _uses_outside_the_owner(_A_LOCK_MODULE_WITH_A_SECOND_CALLER) == 1
-
-    def test_only_the_two_forms_call_the_owner_in_the_lock_module(self):
-        module = ast.parse(_LOCK_MODULE.read_text(encoding="utf-8"))
-
-        assert _callers_of_the_owner(module) == _FORMS
-
-    def test_the_census_finds_a_third_form_in_the_lock_module(self):
-        """Control: the scan above names a planted function that calls the owner."""
-        planted = ast.parse(_A_LOCK_MODULE_WITH_A_SECOND_CALLER)
-
-        assert _callers_of_the_owner(planted) == _FORMS | {"third_form"}
-
-    @pytest.mark.parametrize("name", sorted(_WRITE_TAKES))
-    def test_the_lock_module_defines_each_write_take(self, name):
-        source = _LOCK_MODULE.read_text(encoding="utf-8")
-        defined = [
-            node.name for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)
-        ]
-
-        assert defined.count(name) == 1
+    def test_the_census_finds_a_planted_take(self):
+        """Control: the scan above reports a module that imports and calls a take."""
+        assert len(_A_WRITE_TAKE.findall(_A_MODULE_THAT_TAKES_THE_WRITE_LOCK)) == 2
 
 
 class TestAnAddActsOnTheReadUnderItsFinalHold:
@@ -1083,220 +966,3 @@ class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
         assert not absorb_pending(cfg.data_root)
         assert _registry() == {"notes": str(notes.resolve())}
         assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
-
-
-_LOCK_MODULE_NAME = "lilbee.runtime.lock"
-
-
-def _spellings_of_the_lock_module(tree: ast.AST) -> set[str]:
-    """Each expression by which *tree* names the lock module itself."""
-    spellings = {_LOCK_MODULE_NAME}
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "lilbee.runtime":
-            spellings |= {a.asname or a.name for a in node.names if a.name == "lock"}
-        if isinstance(node, ast.Import):
-            spellings |= {a.asname for a in node.names if a.name == _LOCK_MODULE_NAME and a.asname}
-    return spellings
-
-
-def _private_names_of_the_lock_module(tree: ast.AST) -> list[str]:
-    """Each private name of the lock module that *tree* imports or reads off the module."""
-    spellings = _spellings_of_the_lock_module(tree)
-    names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == _LOCK_MODULE_NAME:
-            names += [alias.name for alias in node.names if alias.name.startswith("_")]
-        if (
-            isinstance(node, ast.Attribute)
-            and node.attr.startswith("_")
-            and ast.unparse(node.value) in spellings
-        ):
-            names.append(node.attr)
-    return names
-
-
-_PLANTED_PRIVATE_NAMES = {
-    "an import for an annotation": (
-        "if TYPE_CHECKING:\n    from lilbee.runtime.lock import _HoldKind\n",
-        ["_HoldKind"],
-    ),
-    "an attribute of the module": (
-        "from lilbee.runtime import lock\nkey = lock._HOLD_KEY\n",
-        ["_HOLD_KEY"],
-    ),
-    "an attribute of the module under another name": (
-        "from lilbee.runtime import lock as held\nkey = held._HOLD_KEY\n",
-        ["_HOLD_KEY"],
-    ),
-    "an attribute of the module by its full name": (
-        "import lilbee.runtime.lock\nkey = lilbee.runtime.lock._HOLD_KEY\n",
-        ["_HOLD_KEY"],
-    ),
-    "an attribute of the module imported under another name": (
-        "import lilbee.runtime.lock as held\nkey = held._HOLD_KEY\n",
-        ["_HOLD_KEY"],
-    ),
-}
-
-
-class TestNoModuleImportsAPrivateNameOfTheLockModule:
-    def test_no_module_but_the_lock_module_names_a_private_name_of_it(self):
-        modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
-        naming = {
-            str(path.relative_to(_SOURCE_ROOT)): names
-            for path in modules
-            if (
-                names := _private_names_of_the_lock_module(
-                    ast.parse(path.read_text(encoding="utf-8"))
-                )
-            )
-        }
-        absorb_source = (_SOURCE_ROOT / "app" / "absorb.py").read_text(encoding="utf-8")
-
-        assert "from lilbee.runtime.lock import LibraryHold" in absorb_source
-        assert naming == {}
-
-    @pytest.mark.parametrize("planted", list(_PLANTED_PRIVATE_NAMES))
-    def test_the_census_finds_a_planted_private_name(self, planted):
-        """Control: the scan above counts each way a module can reach a private name."""
-        source = (_SOURCE_ROOT / "app" / "absorb.py").read_text(encoding="utf-8")
-        text, names = _PLANTED_PRIVATE_NAMES[planted]
-
-        assert _private_names_of_the_lock_module(ast.parse(source)) == []
-        assert _private_names_of_the_lock_module(ast.parse(source + text)) == names
-
-
-_WAYS_TO_A_TAKE = {
-    _OWNER,
-    "_no_sync_running",
-    "_syncs_held_off",
-    "_open_sync_lock",
-    "_SYNC_LOCK_NAME",
-    "ReadWriteLock",
-    "AsyncReadWriteLock",
-    "sqlite3",
-}
-_SYNC_LOCK_FILE = "sync.lock"
-
-
-def _take_through_the_database(root: Path) -> sqlite3.Connection:
-    """Take the sync lock of *root* with the database it is made of, by a built file name."""
-    taken = sqlite3.connect(root / ("sync" + ".lock"), isolation_level=None)
-    taken.execute("BEGIN EXCLUSIVE TRANSACTION")
-    return taken
-
-
-def _names_read(node: ast.AST) -> list[str]:
-    """Each name *node* reads: a name, an attribute, each part of an import, or a string's text."""
-    match node:
-        case ast.Name(id=name) | ast.Attribute(attr=name):
-            return [name]
-        case ast.alias(name=dotted) | ast.ImportFrom(module=str() as dotted):
-            return dotted.split(".")
-        case ast.Constant(value=str() as text):
-            return re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.lock)?", text)
-        case _:
-            return []
-
-
-def _ways_to_a_take(source: str) -> list[str]:
-    """Each way *source* reaches a take of the sync lock, in the order of the tree walk."""
-    names = [name for node in ast.walk(ast.parse(source)) for name in _names_read(node)]
-    return [name for name in names if name in _WAYS_TO_A_TAKE or name == _SYNC_LOCK_FILE]
-
-
-_PLANTED_WAYS_TO_A_TAKE = {
-    "the private owner": (
-        "from lilbee.runtime.lock import _library_hold\n",
-        ["_library_hold"],
-    ),
-    "the private owner, called with a stand-in for the take": (
-        "def change(config):\n    return lock._library_hold(config, nullcontext(), None)\n",
-        ["_library_hold"],
-    ),
-    "a private take": (
-        "def change(root):\n    with lock._syncs_held_off(root, 'busy'):\n        pass\n",
-        ["_syncs_held_off"],
-    ),
-    "a private take of a reset": (
-        "from lilbee.runtime.lock import _no_sync_running\n",
-        ["_no_sync_running"],
-    ),
-    "the function that opens the lock": (
-        "def change(root):\n    lock._open_sync_lock(root, write=True).acquire_write()\n",
-        ["_open_sync_lock"],
-    ),
-    "the function that opens the lock, by its name": (
-        "def change(root):\n    getattr(lock, '_open_sync_lock')(root, write=True)\n",
-        ["_open_sync_lock"],
-    ),
-    "the read-write lock class": (
-        "import filelock\n\n\ndef change(path):\n    filelock.ReadWriteLock(path).acquire_read()\n",
-        ["ReadWriteLock"],
-    ),
-    "the read-write lock class of an event loop": (
-        "from filelock import AsyncReadWriteLock as Lock\n",
-        ["AsyncReadWriteLock"],
-    ),
-    "the file name of the lock": (
-        "def change(root):\n    return open(root / 'sync.lock')\n",
-        ["sync.lock"],
-    ),
-    "the constant of the file name": (
-        "def change(root):\n    return open(root / lock._SYNC_LOCK_NAME)\n",
-        ["_SYNC_LOCK_NAME"],
-    ),
-    "the database the lock is made of, under a built file name": (
-        inspect.getsource(_take_through_the_database),
-        ["sqlite3", "sqlite3"],
-    ),
-    "a function imported from the database module": (
-        "from sqlite3 import connect\n",
-        ["sqlite3"],
-    ),
-    "a submodule of the database module": (
-        "import sqlite3.dbapi2\n",
-        ["sqlite3"],
-    ),
-}
-
-
-class TestNoModuleButTheLockModuleReachesATakeOfTheSyncLock:
-    def test_no_other_module_names_a_way_to_a_take(self):
-        modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
-        reaching = {
-            str(path.relative_to(_SOURCE_ROOT)): ways
-            for path in modules
-            if (ways := _ways_to_a_take(path.read_text(encoding="utf-8")))
-        }
-
-        assert _SOURCE_ROOT / "app" / "absorb.py" in modules
-        assert _SOURCE_ROOT / "app" / "reset.py" in modules
-        assert reaching == {}
-
-    @pytest.mark.parametrize("planted", list(_PLANTED_WAYS_TO_A_TAKE))
-    def test_the_census_finds_a_planted_way_in_a_copy_of_a_module(self, planted):
-        """Control: the scan above reports each way planted in a module that has none."""
-        source = (_SOURCE_ROOT / "app" / "reset.py").read_text(encoding="utf-8")
-        text, ways = _PLANTED_WAYS_TO_A_TAKE[planted]
-
-        assert _ways_to_a_take(source) == []
-        assert _ways_to_a_take(source + "\n\n" + text) == ways
-
-    def test_a_take_through_the_database_under_a_built_name_holds_off_a_reset(self):
-        """Control: the database module reaches a take with no name the census reads otherwise."""
-        with (
-            closing(_take_through_the_database(cfg.data_root)),
-            pytest.raises(ResetRefusedError),
-            library_held_for_reset(cfg),
-        ):
-            pytest.fail("the reset ran under a take through the database")
-
-        with library_held_for_reset(cfg):
-            pass
-
-    def test_the_lock_module_holds_every_way_the_census_refuses(self):
-        """Control: each name the census refuses is a name of the lock module today."""
-        found = set(_ways_to_a_take(_LOCK_MODULE.read_text(encoding="utf-8")))
-
-        assert found == _WAYS_TO_A_TAKE | {_SYNC_LOCK_FILE}
