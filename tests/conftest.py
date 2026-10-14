@@ -51,7 +51,7 @@ from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
 from lilbee.runtime.absorb_journal import AbsorbJournal, absorb_pending, journal_path, write_journal
-from lilbee.runtime.lock import no_sync_running, sync_running
+from lilbee.runtime.lock import _no_sync_running, sync_running
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
@@ -753,7 +753,7 @@ def reset_held_on_a_thread(
     release = threading.Event()
 
     def _reset() -> None:
-        with no_sync_running(data_root):
+        with _no_sync_running(data_root):
             held.set()
             release.wait(ends_after_s)
 

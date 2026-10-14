@@ -16,6 +16,7 @@ from lilbee.app.services import set_services
 from lilbee.providers.base import (
     ChatResult,
     FinishReason,
+    ProviderError,
     ToolCall,
     ToolCallDelta,
 )
@@ -876,7 +877,7 @@ class TestNonStreamingCompletion:
         from lilbee.providers.roles import WorkerRole
 
         fleet = FleetProvider.__new__(FleetProvider)
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(ProviderError, match="vendor/Other-GGUF") as excinfo:
             fleet._require_configured_model(
                 INSTALLED_REF, "vendor/Other-GGUF/o.gguf", WorkerRole.CHAT
             )

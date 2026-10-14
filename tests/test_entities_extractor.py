@@ -6,6 +6,7 @@ from unittest import mock
 from unittest.mock import MagicMock
 
 import pytest
+from pydantic import ValidationError
 
 from lilbee.retrieval.entities import (
     EntitySchema,
@@ -260,7 +261,7 @@ class TestInduceSchemaEdges:
         assert [t.name for t in schema.types] == ["person"]
 
     def test_invalid_type_name_rejected(self):
-        with pytest.raises(Exception, match="alphanumeric"):
+        with pytest.raises(ValidationError, match="alphanumeric"):
             EntityType(name="bad!name", kind=ExtractorKind.REGEX, pattern="x")
 
 

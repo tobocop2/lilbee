@@ -405,12 +405,12 @@ def run_full_build(
     stats = BuildStats()
     entities: list[ExtractedEntity] = []
     pages: list[Path] = []
+    svc = get_services()
     with (
         suppress(SyncMarkWaitCancelledError),
         source_keys_in_use(config.data_root, cancel),
         WIKI_BUILD_LOCK,
     ):
-        svc = get_services()
         on_progress(EventType.WIKI_PHASE, WikiPhaseEvent(phase=WikiPhase.EXTRACT))
         extractor = get_entity_extractor(config.wiki_entity_mode, svc.provider, config)
         entities = extractor.extract(_corpus_chunks(svc.store))

@@ -261,7 +261,7 @@ _singleton_create_lock = threading.Lock()
 def get_services(cancel: CancelSignal | None = None) -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
 
-    Setting *cancel* ends the wait of the first call for the records lock, when
+    Setting *cancel* ends the wait of the call that builds for the records lock, when
     it finishes an interrupted add, with ``SkipRecordsWaitCancelledError``.
 
     Creates the singleton on first call (against the process-global cfg). A
@@ -275,24 +275,21 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
     if _state.singleton is not None:
         return _state.singleton
 
+    from lilbee.core.config import cfg
+
     with _singleton_create_lock:
         if _state.singleton is not None:
             return _state.singleton
 
         from lilbee.app.settings import reconcile_embedding_dim
-        from lilbee.core.config import cfg
         from lilbee.modelhub.registry import ModelRegistry
 
         registry = ModelRegistry(cfg.models_dir)
         # Pin the store width to the embedder before Store(); pass the registry so
         # resolution doesn't re-enter this half-built get_services.
         reconcile_embedding_dim(registry)
-        _state.singleton = build_services(cfg, registry=registry, interactive=_state.interactive)
-        if absorb_pending(cfg.data_root):
-            # heavy: the absorb loads the ingest pipeline
-            from lilbee.app.absorb import finish_pending_absorb_at_start
-
-            finish_pending_absorb_at_start(cfg, _state.singleton.store, cancel)
+        services = build_services(cfg, registry=registry, interactive=_state.interactive)
+        _state.singleton = services
         # Eager start is the default: pay the spawn cost per role server at TUI mount
         # so the first user action lands on a warm fleet. Roles whose model is unset
         # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -302,8 +299,15 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
             from contextlib import suppress
 
             with suppress(Exception):
-                _state.singleton.provider.warm_up_pool()
-        return _state.singleton
+                services.provider.warm_up_pool()
+    # Outside the creation lock: the finisher takes the sync lock and the records lock.
+    # Only the thread that built: two takes of the sync lock at once can refuse each other.
+    if absorb_pending(cfg.data_root):
+        # heavy: the absorb loads the ingest pipeline
+        from lilbee.app.absorb import finish_pending_absorb_at_start
+
+        finish_pending_absorb_at_start(cfg, services.store, cancel)
+    return services
 
 
 @contextmanager

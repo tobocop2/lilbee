@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import json
 import logging
 import shutil
 import sqlite3
 from collections import Counter
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import ClassVar
 from unittest import mock
@@ -20,6 +22,7 @@ from filelock import Timeout as FileLockTimeout
 
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
+from lilbee.app import ingest as ingest_mod
 from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN, finish_pending_absorb
 from lilbee.app.ingest import (
     forget_unfinished_on_cancel,
@@ -57,7 +60,8 @@ from lilbee.runtime.lock import (
     LockingUnsupportedError,
     ResetRefusedError,
     SyncRunningError,
-    no_sync_running,
+    _no_sync_running,
+    library_held,
     source_keys_in_use,
     sync_running,
 )
@@ -86,6 +90,14 @@ from tests.test_skip_marker import (
 )
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
 from tests.test_wiki_shared import leave_temp_of_a_dead_writer
+
+
+def _finish_as(names: list[str] | None, notes: Path, cancel) -> None:
+    """Finish an interrupted add as a remove or a sync does, or as the add of *notes* does."""
+    if names is None:
+        finish_pending_absorb(cancel=cancel)
+    else:
+        register_sources([notes], cancel=cancel)
 
 
 class _Killed(BaseException):
@@ -315,6 +327,8 @@ def _seeded_nested_children(store: Store, parent: Path) -> Path:
     _save_stub_index(store)
     return parent
 
+
+_LEFT_FOR_THE_NEXT_SYNC = "An interrupted add is not finished yet; the next sync finishes it."
 
 _NESTED_KEYS = [
     "notes/work/deep/a.md",
@@ -879,7 +893,7 @@ class TestTheCommonAddPaysNothing:
             return real_exists(path, **kwargs)
 
         with (
-            mock.patch.object(absorb_mod, "syncs_held_off") as held_off,
+            mock.patch.object(ingest_mod, "library_held") as held_off,
             mock.patch.object(absorb_mod, "write_journal") as journal,
             mock.patch.object(absorb_mod, "_rekey") as rekey,
             mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus") as rules,
@@ -895,7 +909,7 @@ class TestTheCommonAddPaysNothing:
         rekey.assert_not_called()
         rules.assert_not_called()
         # The add opened the sync lock to check it and left it free.
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
         assert library.store.get_sources() == []
 
@@ -933,16 +947,17 @@ class TestTheCommonAddPaysNothing:
     async def test_an_absorb_does_take_the_lock_and_write_the_journal(self, library, notes):
         """The control for the test above: the same probes fire when a child is there."""
         await _add(notes / "work")
-        real_held_off = absorb_mod.syncs_held_off
+        real_held_off = ingest_mod.library_held
         with (
-            mock.patch.object(absorb_mod, "syncs_held_off", side_effect=real_held_off) as held_off,
+            mock.patch.object(ingest_mod, "library_held", side_effect=real_held_off) as held_off,
             mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus", wraps=None) as rules,
         ):
             rules.return_value.excludes_entry.return_value = False
             register_sources([notes])
 
         held_off.assert_called_once()
-        rules.assert_called_once()
+        # Once to choose the hold and once under it.
+        assert rules.call_count == 2
 
     async def test_a_sync_without_a_journal_checks_once_and_finishes_nothing(self, library, notes):
         with mock.patch("lilbee.data.ingest.pipeline._finish_pending_absorb") as finish:
@@ -1248,7 +1263,7 @@ class TestInterruptedAbsorb:
         store = library.store
         _seeded_child(store, notes)
 
-        with mock.patch("lilbee.app.ingest.finish_pending_absorb") as finish:
+        with mock.patch("lilbee.app.ingest.finish_absorb") as finish:
             result = remove_documents_durably(["anything"], targets=["work/plan.md"])
 
         assert result.removed == ["work/plan.md"]
@@ -1343,7 +1358,7 @@ class TestInterruptedAbsorb:
         assert _keys(built) == ["notes/work/budget.md", "notes/work/plan.md"]
         assert _registry() == {"notes": str(notes.resolve())}
 
-    async def test_a_start_while_a_sync_runs_leaves_the_journal_and_warns(
+    async def test_a_start_while_a_sync_runs_leaves_the_journal_and_says_so_at_info(
         self, library, notes, caplog
     ):
         from lilbee.app.absorb import finish_pending_absorb_at_start
@@ -1352,11 +1367,34 @@ class TestInterruptedAbsorb:
         with self._kill_at("phase-write"), pytest.raises(_Killed):
             register_sources([notes])
 
-        async with sync_running(cfg.data_root):
+        with caplog.at_level("INFO", logger="lilbee.app.absorb"):
+            async with sync_running(cfg.data_root):
+                finish_pending_absorb_at_start(cfg, library.store)
+
+        assert absorb_pending(cfg.data_root)
+        assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+            ("INFO", _LEFT_FOR_THE_NEXT_SYNC)
+        ]
+
+    async def test_a_start_on_a_data_root_it_cannot_lock_warns_with_the_refusal(
+        self, library, notes, caplog
+    ):
+        from lilbee.app.absorb import finish_pending_absorb_at_start
+
+        await _add(notes / "work")
+        with self._kill_at("phase-write"), pytest.raises(_Killed):
+            register_sources([notes])
+
+        with (
+            caplog.at_level("INFO", logger="lilbee.app.absorb"),
+            _data_root_that_cannot_be_locked(UnfinishedAdd.UNLOCKABLE),
+        ):
             finish_pending_absorb_at_start(cfg, library.store)
 
         assert absorb_pending(cfg.data_root)
-        assert "An interrupted add is not finished yet" in caplog.text
+        [record] = caplog.records
+        assert record.levelname == "WARNING"
+        assert UNFINISHED_ADD_REFUSALS[UnfinishedAdd.UNLOCKABLE] in record.getMessage()
 
     async def test_a_process_that_starts_while_a_sync_runs_still_gets_its_services(
         self, library, notes, monkeypatch, caplog
@@ -1374,11 +1412,13 @@ class TestInterruptedAbsorb:
             mock.patch("lilbee.modelhub.registry.ModelRegistry"),
         ):
             cfg.worker_pool_eager_start = False
-            async with sync_running(cfg.data_root):
-                assert svc_mod.get_services() is built
+            with caplog.at_level("INFO", logger="lilbee.app.absorb"):
+                async with sync_running(cfg.data_root):
+                    # The process that starts holds no lock: a context of its own.
+                    assert contextvars.Context().run(svc_mod.get_services) is built
 
         assert absorb_pending(cfg.data_root)
-        assert "An interrupted add is not finished yet" in caplog.text
+        assert _LEFT_FOR_THE_NEXT_SYNC in caplog.text
 
     async def test_a_journal_another_process_finished_is_left_alone(self, library, notes):
         """The journal is read again under the lock, after the wait for it."""
@@ -1878,7 +1918,6 @@ class TestAnMcpSyncThatCannotFinishAnAdd:
 
     async def test_the_sync_inside_an_add_returns_an_error(self, library, tmp_path, cause):
         """Another process's add dies between this add's registration and its sync."""
-        from lilbee.app import ingest as ingest_mod
         from lilbee.mcp_server import add
 
         other = tmp_path / "src" / "other"
@@ -2437,22 +2476,22 @@ class TestDraftMarkers:
 
 class TestSyncsHeldOff:
     async def test_it_raises_the_text_it_was_given_while_a_sync_runs(self, tmp_path):
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         async with sync_running(tmp_path):
             with (
                 pytest.raises(SyncRunningError, match=r"^try later$"),
-                syncs_held_off(tmp_path, "try later"),
+                _syncs_held_off(tmp_path, "try later"),
             ):
                 pytest.fail("entered while a sync ran")
-        with syncs_held_off(tmp_path, "try later"):
+        with _syncs_held_off(tmp_path, "try later"):
             pass
 
     def test_a_sync_in_another_process_waits_until_the_block_ends(self, tmp_path):
         import subprocess
         import sys
 
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         script = (
             "import asyncio, sys\n"
@@ -2463,7 +2502,7 @@ class TestSyncsHeldOff:
             "        print('IN', flush=True)\n"
             "asyncio.run(main())\n"
         )
-        with syncs_held_off(tmp_path, "busy"):
+        with _syncs_held_off(tmp_path, "busy"):
             child = subprocess.Popen(
                 [sys.executable, "-c", script, str(tmp_path)],
                 stdout=subprocess.PIPE,
@@ -2477,7 +2516,7 @@ class TestSyncsHeldOff:
     def test_with_a_wait_it_takes_the_lock_when_the_sync_ends(self, tmp_path):
         import threading
 
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         held = threading.Event()
         release = threading.Event()
@@ -2492,31 +2531,31 @@ class TestSyncsHeldOff:
         assert held.wait(10)
         with (
             pytest.raises(SyncRunningError, match="busy"),
-            syncs_held_off(tmp_path, "busy", wait=0.2),
+            _syncs_held_off(tmp_path, "busy", wait=0.2),
         ):
             pytest.fail("entered while a sync ran")
         threading.Timer(0.3, release.set).start()
-        with syncs_held_off(tmp_path, "busy", wait=10):
+        with _syncs_held_off(tmp_path, "busy", wait=10):
             assert release.is_set()
         thread.join(10)
 
     def test_a_lock_that_cannot_be_taken_refuses_the_block(self, tmp_path):
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         with (
             _sync_lock_take_refused(),
             pytest.raises(LibraryUnlockableError, match="disk I/O error") as refused,
-            syncs_held_off(tmp_path, "busy"),
+            _syncs_held_off(tmp_path, "busy"),
         ):
             pytest.fail("entered without the lock")
 
         assert f"delete {tmp_path / 'sync.lock'}, and try again." in str(refused.value)
         assert "reset" not in str(refused.value)
-        with syncs_held_off(tmp_path, "busy"):
+        with _syncs_held_off(tmp_path, "busy"):
             pass
 
     def test_a_data_root_that_cannot_be_made_refuses_the_block_as_an_add(self, tmp_path):
-        from lilbee.runtime.lock import syncs_held_off
+        from lilbee.runtime.lock import _syncs_held_off
 
         not_a_folder = tmp_path / "a-file"
         not_a_folder.write_text("in the way", encoding="utf-8")
@@ -2524,7 +2563,7 @@ class TestSyncsHeldOff:
 
         with (
             pytest.raises(LibraryUnlockableError, match="cannot be locked") as refused,
-            syncs_held_off(data_root, "busy"),
+            _syncs_held_off(data_root, "busy"),
         ):
             pytest.fail("entered without the lock")
 
@@ -2579,7 +2618,7 @@ class TestSourceKeysInUse:
         assert ran == []
         assert str(refused.value) == _cannot_change(tmp_path)
         assert caplog.text == ""
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     def test_a_lock_file_that_cannot_be_opened_refuses_the_block(self, tmp_path, caplog):
@@ -2709,17 +2748,14 @@ class TestTheAddThatFinishesAnAbsorb:
     def test_an_add_that_waits_while_another_process_finishes_keeps_them(self, library, notes):
         from contextlib import contextmanager
 
-        import lilbee.app.ingest as ingest_mod
-
         self._killed_absorb(library, notes)
         real_lock = ingest_mod.skip_records_lock
 
         @contextmanager
         def _the_other_process_finishes_first(data_root, cancel):
+            with library_held(cfg, "a sync is running") as hold:
+                absorb_mod.finish_absorb(library.store, hold)
             with real_lock(data_root, cancel):
-                journal = read_journal(data_root)
-                if journal is not None:
-                    absorb_mod._roll_forward(cfg, library.store, journal)
                 yield
 
         with mock.patch.object(ingest_mod, "skip_records_lock", _the_other_process_finishes_first):
@@ -2731,8 +2767,6 @@ class TestTheAddThatFinishesAnAbsorb:
 
     def test_a_journal_left_after_the_add_arrived_is_finished_and_kept(self, library, notes):
         """The other process died while this add waited for the lock."""
-        import lilbee.app.ingest as ingest_mod
-
         self._killed_absorb(library, notes)
 
         with mock.patch.object(ingest_mod, "keys_of_pending_absorb", return_value=[]):
@@ -2833,12 +2867,12 @@ def _add_held_on_a_thread(data_root: Path):
     """Hold syncs off *data_root* on a thread, as an add that moves keys does, for the block."""
     import threading
 
-    from lilbee.runtime.lock import syncs_held_off
+    from lilbee.runtime.lock import _syncs_held_off
 
     held, release = threading.Event(), threading.Event()
 
     def _an_add() -> None:
-        with syncs_held_off(data_root, "held by an add"):
+        with _syncs_held_off(data_root, "held by an add"):
             held.set()
             release.wait(30)
 
@@ -2952,7 +2986,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         """The holder has not released: a reset of the data root is refused."""
         with (
             pytest.raises(ResetRefusedError, match="is running on this library"),
-            no_sync_running(cfg.data_root),
+            _no_sync_running(cfg.data_root),
         ):
             pytest.fail("the holder released before the writer returned")
 
@@ -2968,7 +3002,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             self._assert_still_held()
 
         assert set(threading.enumerate()) - before == set()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
@@ -2982,7 +3016,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             self._assert_still_held()
 
         assert f"Could not close {cfg.data_root / 'sync.lock'} (disk I/O error)." in caplog.text
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("writer", ["build", "synthesis", "page"])
@@ -3004,7 +3038,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
             assert run(cancel) == cancelled_result
 
         body.assert_not_called()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant", "after a wait"])
@@ -3043,7 +3077,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
         wiki_root = cfg.data_root / cfg.wiki_dir
         assert not (wiki_root / "index.md").exists()
         assert not (wiki_root / "log.md").exists()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("block_error", [None, ValueError("the block failed")])
@@ -3073,7 +3107,7 @@ class TestAWikiWriterCancelledWhileItWaitsForTheMark:
                     _block()
 
         assert f"Could not close {tmp_path / 'sync.lock'} (disk I/O error)." in caplog.text
-        with no_sync_running(tmp_path):
+        with _no_sync_running(tmp_path):
             pass
 
     def test_a_take_error_without_a_cancel_refuses_the_block(self, library, tmp_path):
@@ -3347,6 +3381,17 @@ _RESET_REFUSED = (
     "A sync, an import, an add or a wiki build is running on this library. "
     "Reset again when it finishes."
 )
+# Only a hang guard: no assertion reads a duration.
+_RESET_HANG_GUARD_S = 60.0
+
+
+def _refusal_of_a_reset_from_another_thread() -> str:
+    """The text a reset is refused with, run as work that holds no lock of the caller."""
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        reset = pool.submit(contextvars.Context().run, perform_reset)
+        with pytest.raises(ResetRefusedError) as caught:
+            reset.result(timeout=_RESET_HANG_GUARD_S)
+    return str(caught.value)
 
 
 class TestAResetAndAnAbsorb:
@@ -3356,9 +3401,7 @@ class TestAResetAndAnAbsorb:
         real_land = absorb_mod._land
 
         def _reset_then_land(*args, **kwargs):
-            with pytest.raises(ResetRefusedError) as caught:
-                perform_reset()
-            refused.append(str(caught.value))
+            refused.append(_refusal_of_a_reset_from_another_thread())
             return real_land(*args, **kwargs)
 
         with mock.patch.object(absorb_mod, "_land", side_effect=_reset_then_land):
@@ -3507,7 +3550,7 @@ class TestACancelAtTheRecordsLock:
         cancel = _SetOnSecondPoll()
 
         with _records_lock_held_elsewhere(), pytest.raises(SkipRecordsWaitCancelledError):
-            finish_pending_absorb(names, cancel)
+            _finish_as(names, notes, cancel)
 
         assert cancel.polls >= 2
         assert _everything(library.store) == before
@@ -3538,6 +3581,7 @@ class TestACancelAtTheRecordsLock:
 
         from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 
+        caplog.set_level("INFO", logger="lilbee.app.absorb")
         _add_that_died(library.store, notes)
         before = _everything(library.store)
         svc_mod.set_services(None)
@@ -3668,7 +3712,7 @@ class TestACancelAtTheWaitForARunningSync:
             with pytest.raises(SkipRecordsWaitCancelledError) as raised:
                 command(cancel)
             takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
                 pass
 
         assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
@@ -3695,14 +3739,14 @@ class TestACancelAtTheWaitForARunningSync:
             with pytest.raises(asyncio.CancelledError) as raised:
                 await sync(quiet=True, cancel=cancel)
             takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), no_sync_running(cfg.data_root):
+            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
                 pass
 
         assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
         assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
         assert _everything(library.store) == before
         assert before["journal"] is True
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("names", [None, ["notes"]], ids=["waits", "asks_again"])
@@ -3721,12 +3765,12 @@ class TestACancelAtTheWaitForARunningSync:
             _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
             pytest.raises(SkipRecordsWaitCancelledError),
         ):
-            finish_pending_absorb(names, cancel)
+            _finish_as(names, notes, cancel)
 
         assert takes == ["granted"]
         assert _everything(library.store) == before
         assert before["journal"] is True
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     def test_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(self, library, notes):
@@ -3749,7 +3793,7 @@ class TestACancelAtTheWaitForARunningSync:
         assert before["journal"] is False
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
         assert _records_lock_is_free(cfg.data_root)
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     def test_an_add_that_finishes_another_add_with_the_cancel_set_moves_no_key(
@@ -3781,9 +3825,9 @@ class TestACancelAtTheWaitForARunningSync:
 
         with (
             pytest.raises(SyncMarkWaitCancelledError),
-            absorb_mod._syncs_held_off(cfg, "a sync is running", 0.0, None),
+            library_held(cfg, "a sync is running"),
         ):
             raise SyncMarkWaitCancelledError
 
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass

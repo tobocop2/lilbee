@@ -16,7 +16,7 @@ from lilbee.app import services as svc_mod
 from lilbee.cli import app
 from lilbee.core.config import active_config, cfg
 from lilbee.data.store import Store
-from lilbee.runtime.lock import ResetRefusedError, no_sync_running
+from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
 from tests.conftest import make_mock_services, reset_held_on_a_thread
 
 runner = CliRunner()
@@ -205,7 +205,7 @@ class TestImportCommand:
             reset_still_held = resetter.is_alive()
             with (
                 pytest.raises(ResetRefusedError, match="is running on this library"),
-                no_sync_running(data_root),
+                _no_sync_running(data_root),
             ):
                 pytest.fail("the reset ended before the import did")
 
@@ -213,7 +213,7 @@ class TestImportCommand:
         assert reset_still_held, "the import ended only when the reset did"
         assert result.exit_code != 0, result.output
         assert target.get_page_texts("doc.pdf") == []
-        with no_sync_running(data_root):
+        with _no_sync_running(data_root):
             pass
 
     def test_import_embedder_mismatch_fails(self, store, tmp_path):

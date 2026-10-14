@@ -1483,7 +1483,7 @@ class TestSyncCancellation:
         from filelock import ReadWriteLock
 
         from lilbee.data.ingest import sync
-        from lilbee.runtime.lock import no_sync_running
+        from lilbee.runtime.lock import _no_sync_running
         from tests.conftest import reset_held_on_a_thread
 
         (isolated_env / "a.txt").write_text("file a", encoding="utf-8")
@@ -1506,7 +1506,7 @@ class TestSyncCancellation:
         assert reset_still_held, "the sync ended only when the reset did"
         assert mock_svc.store.method_calls == [], "the sync started under the held reset"
         mock_extract_file.assert_not_called()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     @pytest.mark.parametrize("cancel_set", ["before a free take", "at the grant"])
@@ -1514,7 +1514,7 @@ class TestSyncCancellation:
         self, mock_extract_file, isolated_env, mock_svc, cancel_set
     ):
         from lilbee.data.ingest import sync
-        from lilbee.runtime.lock import no_sync_running
+        from lilbee.runtime.lock import _no_sync_running
         from tests.conftest import cancel_set_when_the_sync_lock_is_granted
 
         (isolated_env / "a.txt").write_text("file a", encoding="utf-8")
@@ -1531,7 +1531,7 @@ class TestSyncCancellation:
         assert grants == ["granted"], "the sync never held the lock"
         mock_svc.store.drop_all.assert_not_called()
         mock_extract_file.assert_not_called()
-        with no_sync_running(cfg.data_root):
+        with _no_sync_running(cfg.data_root):
             pass
 
     async def test_cancel_during_ingest_stream(self, mock_extract_file, isolated_env, mock_svc):
@@ -5751,7 +5751,7 @@ class TestRemoveDropsFromWikiIndex:
         )
         monkeypatch.setattr(
             "lilbee.app.ingest.get_services",
-            lambda: mock.MagicMock(
+            lambda cancel=None: mock.MagicMock(
                 store=mock.MagicMock(
                     remove_documents=mock.MagicMock(
                         return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])

@@ -13,10 +13,9 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest.skip_marker import (
     SkipRecordsLockError,
     clear_skip_markers,
-    skip_records_lock,
 )
 from lilbee.runtime.absorb_journal import absorb_pending, delete_journal, journal_path
-from lilbee.runtime.lock import ResetRefusedError, no_sync_running
+from lilbee.runtime.lock import ResetRefusedError, library_held_for_reset
 
 
 class ResetResult(BaseModel):
@@ -79,7 +78,7 @@ def perform_reset() -> ResetResult:
     """
     skipped: list[str] = []
     try:
-        with no_sync_running(cfg.data_root), skip_records_lock(cfg.data_root):
+        with library_held_for_reset(cfg):
             _drop_pending_absorb(cfg.data_root, skipped)
             deleted_docs = _clear_dir(cfg.documents_dir, skipped)
             deleted_data = _clear_dir(cfg.data_dir, skipped)
