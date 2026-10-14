@@ -29,7 +29,7 @@ def test_a_config_a_test_builds_uses_a_temporary_library():
     _assert_temporary(Config().data_root)
 
 
-def test_a_setting_saved_after_a_test_ends_leaves_the_real_config_alone():
+def test_a_setting_saved_to_the_default_library_leaves_the_real_config_alone():
     real_config = _real_root() / "config.toml"
     before = real_config.stat().st_mtime_ns if real_config.exists() else None
     restored = Config().data_root
