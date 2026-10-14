@@ -13,6 +13,7 @@ from lilbee.core.config import Config, active_config
 from lilbee.data.ingest.skip_marker import (
     SkipKind,
     SkipRecords,
+    SkipRecordsLockError,
     load_skip_records,
     update_skip_records,
 )
@@ -28,7 +29,7 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.cancellation import CancelSignal
-from lilbee.runtime.lock import LOCK_TIMEOUT, library_held
+from lilbee.runtime.lock import LOCK_TIMEOUT, SyncRunningError, library_held
 
 if TYPE_CHECKING:
     from lilbee.runtime.lock import LibraryHold
@@ -286,5 +287,7 @@ def finish_pending_absorb_at_start(
     """
     try:
         _finish(config, store, 0.0, cancel)
+    except (SyncRunningError, SkipRecordsLockError):
+        log.info("An interrupted add is not finished yet; the next sync finishes it.")
     except (RuntimeError, OSError, ValueError) as exc:
         log.warning("An interrupted add is not finished yet: %s", exc)

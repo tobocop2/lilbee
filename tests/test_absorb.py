@@ -328,6 +328,8 @@ def _seeded_nested_children(store: Store, parent: Path) -> Path:
     return parent
 
 
+_LEFT_FOR_THE_NEXT_SYNC = "An interrupted add is not finished yet; the next sync finishes it."
+
 _NESTED_KEYS = [
     "notes/work/deep/a.md",
     "notes/work/deep/b.md",
@@ -1356,7 +1358,7 @@ class TestInterruptedAbsorb:
         assert _keys(built) == ["notes/work/budget.md", "notes/work/plan.md"]
         assert _registry() == {"notes": str(notes.resolve())}
 
-    async def test_a_start_while_a_sync_runs_leaves_the_journal_and_warns(
+    async def test_a_start_while_a_sync_runs_leaves_the_journal_and_says_so_at_info(
         self, library, notes, caplog
     ):
         from lilbee.app.absorb import finish_pending_absorb_at_start
@@ -1365,11 +1367,34 @@ class TestInterruptedAbsorb:
         with self._kill_at("phase-write"), pytest.raises(_Killed):
             register_sources([notes])
 
-        async with sync_running(cfg.data_root):
+        with caplog.at_level("INFO", logger="lilbee.app.absorb"):
+            async with sync_running(cfg.data_root):
+                finish_pending_absorb_at_start(cfg, library.store)
+
+        assert absorb_pending(cfg.data_root)
+        assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+            ("INFO", _LEFT_FOR_THE_NEXT_SYNC)
+        ]
+
+    async def test_a_start_on_a_data_root_it_cannot_lock_warns_with_the_refusal(
+        self, library, notes, caplog
+    ):
+        from lilbee.app.absorb import finish_pending_absorb_at_start
+
+        await _add(notes / "work")
+        with self._kill_at("phase-write"), pytest.raises(_Killed):
+            register_sources([notes])
+
+        with (
+            caplog.at_level("INFO", logger="lilbee.app.absorb"),
+            _data_root_that_cannot_be_locked(UnfinishedAdd.UNLOCKABLE),
+        ):
             finish_pending_absorb_at_start(cfg, library.store)
 
         assert absorb_pending(cfg.data_root)
-        assert "An interrupted add is not finished yet" in caplog.text
+        [record] = caplog.records
+        assert record.levelname == "WARNING"
+        assert UNFINISHED_ADD_REFUSALS[UnfinishedAdd.UNLOCKABLE] in record.getMessage()
 
     async def test_a_process_that_starts_while_a_sync_runs_still_gets_its_services(
         self, library, notes, monkeypatch, caplog
@@ -1387,12 +1412,13 @@ class TestInterruptedAbsorb:
             mock.patch("lilbee.modelhub.registry.ModelRegistry"),
         ):
             cfg.worker_pool_eager_start = False
-            async with sync_running(cfg.data_root):
-                # The process that starts holds no lock: a context of its own.
-                assert contextvars.Context().run(svc_mod.get_services) is built
+            with caplog.at_level("INFO", logger="lilbee.app.absorb"):
+                async with sync_running(cfg.data_root):
+                    # The process that starts holds no lock: a context of its own.
+                    assert contextvars.Context().run(svc_mod.get_services) is built
 
         assert absorb_pending(cfg.data_root)
-        assert "An interrupted add is not finished yet" in caplog.text
+        assert _LEFT_FOR_THE_NEXT_SYNC in caplog.text
 
     async def test_a_journal_another_process_finished_is_left_alone(self, library, notes):
         """The journal is read again under the lock, after the wait for it."""
@@ -3555,6 +3581,7 @@ class TestACancelAtTheRecordsLock:
 
         from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
 
+        caplog.set_level("INFO", logger="lilbee.app.absorb")
         _add_that_died(library.store, notes)
         before = _everything(library.store)
         svc_mod.set_services(None)

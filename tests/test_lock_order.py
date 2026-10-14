@@ -415,10 +415,10 @@ def _reset_from_a_settings_change() -> None:
 _RESETS = {"model bar": _reset_from_the_model_bar, "settings change": _reset_from_a_settings_change}
 
 
-class TestARebuildAfterAResetRunsNoFinisher:
+class TestARebuildAfterAReset:
     @pytest.mark.parametrize("reset", list(_RESETS))
-    def test_a_reset_during_a_wiki_build_rebuilds_and_the_build_finishes(
-        self, reset, notes, takes, builds
+    def test_a_reset_during_a_wiki_build_rebuilds_and_the_build_finishes_with_no_warning(
+        self, reset, notes, takes, builds, caplog
     ):
         def reset_at_the_index(event: EventType, data: Any) -> None:
             if event == EventType.WIKI_PHASE and data.phase == WikiPhase.INDEX:
@@ -426,13 +426,16 @@ class TestARebuildAfterAResetRunsNoFinisher:
                 _RESETS[reset]()
                 svc_mod.get_services()
 
-        summary = run_full_build(cfg, on_progress=reset_at_the_index)
+        with caplog.at_level("INFO", logger="lilbee.app.absorb"):
+            summary = run_full_build(cfg, on_progress=reset_at_the_index)
 
         assert summary["count"] == 0
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
         assert absorb_pending(cfg.data_root)
-        assert takes.sync_write_takes == 0
         assert takes.records_takes == 0
+        assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
+            ("INFO", "An interrupted add is not finished yet; the next sync finishes it.")
+        ]
 
     def test_a_rebuild_under_the_sync_lock_raises_nothing(self, takes, builds):
         svc_mod.get_services()
@@ -443,7 +446,7 @@ class TestARebuildAfterAResetRunsNoFinisher:
 
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
 
-    def test_a_rebuild_leaves_an_interrupted_add_for_the_next_process(self, notes, builds):
+    def test_a_rebuild_finishes_an_interrupted_add(self, notes, builds):
         svc_mod.get_services()
         _leave_journal(notes)
         svc_mod.reset_services()
@@ -451,7 +454,8 @@ class TestARebuildAfterAResetRunsNoFinisher:
         svc_mod.get_services()
 
         assert len(builds.held_at_build) == 2
-        assert absorb_pending(cfg.data_root)
+        assert not absorb_pending(cfg.data_root)
+        assert _registry() == {"notes": str(notes.resolve())}
 
 
 class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
@@ -476,7 +480,9 @@ class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
         assert not absorb_pending(cfg.data_root)
         assert _registry() == {"notes": str(notes.resolve())}
 
-    def test_a_rebuild_for_a_library_built_before_runs_no_finisher(self, vaults, notes, builds):
+    def test_a_library_opened_again_after_a_switch_has_its_add_finished(
+        self, vaults, notes, builds
+    ):
         first, second = vaults
         mcp_server.init(str(first))
         svc_mod.get_services()
@@ -488,30 +494,8 @@ class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
         svc_mod.get_services()
 
         assert len(builds.held_at_build) == 3
-        assert absorb_pending(cfg.data_root)
-
-
-class TestOneLibraryUnderTwoSpellings:
-    @pytest.fixture
-    def link(self, tmp_path) -> Path:
-        """A second spelling of the data root: a link to it."""
-        link = tmp_path / "link-to-library"
-        link.symlink_to(cfg.data_root, target_is_directory=True)
-        return link
-
-    def test_a_rebuild_under_a_second_spelling_runs_no_finisher(
-        self, link, notes, builds, monkeypatch
-    ):
-        svc_mod.get_services()
-        svc_mod.reset_services()
-        _leave_journal(notes)
-        # An assignment to the config canonicalizes the root; the second spelling goes in past it.
-        monkeypatch.setitem(cfg.__dict__, "data_root", link)
-
-        svc_mod.get_services()
-
-        assert len(builds.held_at_build) == 2
-        assert absorb_pending(cfg.data_root)
+        assert not absorb_pending(cfg.data_root)
+        assert _registry() == {"notes": str(notes.resolve())}
 
 
 def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
@@ -801,6 +785,7 @@ class TestTheStartFinisherRunsOutsideTheCreationLock:
     def test_two_threads_that_start_at_once_finish_a_journal_one_time(
         self, notes, takes, builds, monkeypatch, caplog
     ):
+        caplog.set_level("INFO", logger="lilbee.app.absorb")
         _leave_journal(notes)
         both_asked = threading.Event()
         second_returned = threading.Event()

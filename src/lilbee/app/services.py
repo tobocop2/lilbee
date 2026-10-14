@@ -30,12 +30,10 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from lilbee.core.system import canonical_data_root
 from lilbee.runtime.absorb_journal import absorb_pending
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
@@ -172,9 +170,6 @@ class _ServicesState:
         # for the session. Build-time intent only; the state that matters after
         # that lives on the provider itself.
         self.interactive: bool = False
-        # The data roots (canonical) a build of the singleton ran for in this
-        # process. Only the first build for a root runs the start finisher.
-        self.built_for: set[Path] = set()
 
 
 _state = _ServicesState()
@@ -266,7 +261,7 @@ _singleton_create_lock = threading.Lock()
 def get_services(cancel: CancelSignal | None = None) -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
 
-    Setting *cancel* ends the wait of the first call for the records lock, when
+    Setting *cancel* ends the wait of the call that builds for the records lock, when
     it finishes an interrupted add, with ``SkipRecordsWaitCancelledError``.
 
     Creates the singleton on first call (against the process-global cfg). A
@@ -282,54 +277,36 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
 
     from lilbee.core.config import cfg
 
-    services, first_build = _build_singleton(cfg)
+    with _singleton_create_lock:
+        if _state.singleton is not None:
+            return _state.singleton
+
+        from lilbee.app.settings import reconcile_embedding_dim
+        from lilbee.modelhub.registry import ModelRegistry
+
+        registry = ModelRegistry(cfg.models_dir)
+        # Pin the store width to the embedder before Store(); pass the registry so
+        # resolution doesn't re-enter this half-built get_services.
+        reconcile_embedding_dim(registry)
+        services = build_services(cfg, registry=registry, interactive=_state.interactive)
+        _state.singleton = services
+        # Eager start is the default: pay the spawn cost per role server at TUI mount
+        # so the first user action lands on a warm fleet. Roles whose model is unset
+        # are skipped, so a setup with only chat + embed never spawns rerank or
+        # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
+        # where mount time matters more than first-call latency.
+        if cfg.worker_pool_eager_start:
+            from contextlib import suppress
+
+            with suppress(Exception):
+                services.provider.warm_up_pool()
     # Outside the creation lock: the finisher takes the sync lock and the records lock.
     # Only the thread that built: two takes of the sync lock at once can refuse each other.
-    # A rebuild for a root built before runs no finisher: it can run under a sync hold.
-    if first_build and absorb_pending(cfg.data_root):
+    if absorb_pending(cfg.data_root):
         # heavy: the absorb loads the ingest pipeline
         from lilbee.app.absorb import finish_pending_absorb_at_start
 
         finish_pending_absorb_at_start(cfg, services.store, cancel)
-    return services
-
-
-def _build_singleton(config: Config) -> tuple[Services, bool]:
-    """Return the singleton, built here unless another thread built it first.
-
-    The flag is whether this call ran the first build for the library of *config*.
-    """
-    root = canonical_data_root(config.data_root)
-    with _singleton_create_lock:
-        if _state.singleton is not None:
-            return _state.singleton, False
-        first_build = root not in _state.built_for
-        services = _new_singleton(config)
-        _state.built_for.add(root)
-        return services, first_build
-
-
-def _new_singleton(config: Config) -> Services:
-    """Build the services for *config*, store them as the singleton, and warm the pool."""
-    from lilbee.app.settings import reconcile_embedding_dim
-    from lilbee.modelhub.registry import ModelRegistry
-
-    registry = ModelRegistry(config.models_dir)
-    # Pin the store width to the embedder before Store(); pass the registry so
-    # resolution doesn't re-enter this half-built get_services.
-    reconcile_embedding_dim(registry)
-    services = build_services(config, registry=registry, interactive=_state.interactive)
-    _state.singleton = services
-    # Eager start is the default: pay the spawn cost per role server at TUI mount
-    # so the first user action lands on a warm fleet. Roles whose model is unset
-    # are skipped, so a setup with only chat + embed never spawns rerank or
-    # vision. Set ``cfg.worker_pool_eager_start = false`` for headless scripts
-    # where mount time matters more than first-call latency.
-    if config.worker_pool_eager_start:
-        from contextlib import suppress
-
-        with suppress(Exception):
-            services.provider.warm_up_pool()
     return services
 
 
