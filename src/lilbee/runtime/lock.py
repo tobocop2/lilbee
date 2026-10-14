@@ -17,7 +17,13 @@ import threading
 import time
 import uuid
 from collections.abc import AsyncGenerator, Generator, Iterator
-from contextlib import ExitStack, asynccontextmanager, closing, contextmanager
+from contextlib import (
+    AbstractContextManager,
+    ExitStack,
+    asynccontextmanager,
+    closing,
+    contextmanager,
+)
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn, Self, overload
@@ -578,9 +584,9 @@ _HOLD_ENDED = "The hold of the library at {root} ended. Its token gives no confi
 
 
 class _LibraryHold:
-    """What ``library_held`` yields: its block has syncs off the library of its config.
+    """What a hold of a library yields: its block has syncs off the library of its config.
 
-    The block also holds the records lock of that library. Only ``library_held``
+    The block also holds the records lock of that library. Only ``_library_hold``
     makes one, and ends it when the block ends. Every path a function uses under
     the hold comes from ``config``.
     """
@@ -597,46 +603,58 @@ class _LibraryHold:
         return self._config
 
     def end(self) -> None:
-        """Make every later read of ``config`` raise; ``library_held`` calls it."""
+        """Make every later read of ``config`` raise; ``_library_hold`` calls it."""
         self._ended = True
 
 
 @contextmanager
-def library_held(
-    config: Config,
-    running: str | None = None,
-    wait: float = 0.0,
-    cancel: CancelSignal | None = None,
+def _library_hold(
+    config: Config, syncs_off: AbstractContextManager[None], cancel: CancelSignal | None
 ) -> Generator[_LibraryHold, None, None]:
-    """Keep syncs off the data root of *config*, then hold its records lock, for the block.
+    """Enter *syncs_off*, then hold the records lock of *config*'s data root, for the block.
 
-    The one take of both locks, the sync lock first. A sync that outlasts *wait*
-    raises ``SyncRunningError`` with the text *running*. With no *running* the hold
-    is the one of a reset: it does not wait, and it raises ``ResetRefusedError``.
-    A records lock that stays held raises ``SkipRecordsLockError``. A *cancel* that
-    is set during a wait, or when a lock is taken, raises
+    The one take of both locks, the sync lock first. A records lock that stays
+    held raises ``SkipRecordsLockError``. A *cancel* that ends the wait of
+    *syncs_off*, or that is set when the records lock is taken, raises
     ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
     """
     # circular: runtime.lock -> data.ingest.pipeline via skip_records_lock
     from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
 
-    data_root = config.data_root
-    if running is None:
-        syncs_off = _no_sync_running(data_root)
-    else:
-        syncs_off = _syncs_held_off(data_root, running, wait, cancel)
     with ExitStack() as held:
         try:
             held.enter_context(syncs_off)
         except SyncMarkWaitCancelledError:
             # No cause: a cancel that carries an error is reported as that error.
             raise SkipRecordsWaitCancelledError from None
-        held.enter_context(skip_records_lock(data_root, cancel))
+        held.enter_context(skip_records_lock(config.data_root, cancel))
         hold = _LibraryHold(config)
         try:
             yield hold
         finally:
             hold.end()
+
+
+def library_held(
+    config: Config, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
+) -> AbstractContextManager[_LibraryHold]:
+    """Keep syncs off the data root of *config*, then hold its records lock, for the block.
+
+    A sync that outlasts *wait* raises ``SyncRunningError`` with the text *running*.
+    A records lock that stays held raises ``SkipRecordsLockError``. A *cancel* that
+    is set during a wait, or when a lock is taken, raises
+    ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
+    """
+    return _library_hold(config, _syncs_held_off(config.data_root, running, wait, cancel), cancel)
+
+
+def library_held_for_reset(config: Config) -> AbstractContextManager[_LibraryHold]:
+    """Hold both locks of *config*'s data root for the block of a reset, with no wait.
+
+    A sync that runs, or a sync lock that cannot be taken, raises
+    ``ResetRefusedError``. A records lock that stays held raises ``SkipRecordsLockError``.
+    """
+    return _library_hold(config, _no_sync_running(config.data_root), None)
 
 
 @contextmanager

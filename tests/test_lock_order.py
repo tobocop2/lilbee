@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import inspect
 import re
 import threading
 from collections.abc import Callable
@@ -47,6 +48,7 @@ from lilbee.runtime.lock import (
     _no_sync_running,
     _syncs_held_off,
     library_held,
+    library_held_for_reset,
     refuse_where_a_sync_cannot_lock,
     source_keys_in_use,
     sync_running,
@@ -380,6 +382,10 @@ _PATHS_THAT_TAKE_BOTH_LOCKS = {
     "process start": _process_start,
 }
 _A_SYNC_RUNS = "A sync is running."
+_FORMS_OF_THE_OWNER = {
+    "a change": lambda: library_held(cfg, _A_SYNC_RUNS),
+    "a reset": lambda: library_held_for_reset(cfg),
+}
 
 
 class TestTheSyncLockIsTakenBeforeTheRecordsLock:
@@ -413,12 +419,12 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
 
         assert held_at_take == [[_RECORDS_LOCK]]
 
-    @pytest.mark.parametrize("running", [_A_SYNC_RUNS, None], ids=["a change", "a reset"])
-    def test_the_owner_holds_both_locks_for_its_block_and_frees_both(self, running, takes):
+    @pytest.mark.parametrize("form", list(_FORMS_OF_THE_OWNER))
+    def test_the_owner_holds_both_locks_for_its_block_and_frees_both(self, form, takes):
         held_at_take: list[list[str]] = []
         takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
 
-        with library_held(cfg, running) as hold:
+        with _FORMS_OF_THE_OWNER[form]() as hold:
             assert hold.config is cfg
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
 
@@ -427,18 +433,34 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         assert takes.held() == []
 
     @pytest.mark.parametrize(
-        ("running", "refusal"),
-        [(_A_SYNC_RUNS, SyncRunningError), (None, ResetRefusedError)],
-        ids=["a change", "a reset"],
+        ("form", "refusal"),
+        [("a change", SyncRunningError), ("a reset", ResetRefusedError)],
     )
-    def test_a_held_sync_lock_refuses_the_owner_before_the_records_lock(
-        self, running, refusal, takes
-    ):
+    def test_a_held_sync_lock_refuses_the_owner_before_the_records_lock(self, form, refusal, takes):
         with _syncs_held_off(cfg.data_root, _A_SYNC_RUNS):
-            with pytest.raises(refusal), library_held(cfg, running):
+            with pytest.raises(refusal), _FORMS_OF_THE_OWNER[form]():
                 pytest.fail("the block ran under a held sync lock")
 
             assert takes.records_takes == 0
+
+    def test_the_form_of_a_reset_takes_no_wait_and_no_cancel(self, takes):
+        assert list(inspect.signature(library_held_for_reset).parameters) == ["config"]
+
+        with library_held_for_reset(cfg):
+            pass
+
+        assert takes.sync_write_waits == [None]
+
+    def test_the_form_of_a_change_takes_its_wait_to_the_sync_lock(self, takes):
+        """Control: the recorder reads the wait that the other form passes."""
+        assert (
+            inspect.signature(library_held).parameters["running"].default is inspect.Parameter.empty
+        )
+
+        with library_held(cfg, _A_SYNC_RUNS, LOCK_TIMEOUT):
+            pass
+
+        assert takes.sync_write_waits == [LOCK_TIMEOUT]
 
 
 class TestARemoveFinishesAJournalUnderOneHold:
@@ -515,6 +537,9 @@ _TAKES_OF_THE_SYNC_LOCK = {
     "the hold of a reset": _enter(_no_sync_running),
     "the hold of a change": _enter(lambda root: _syncs_held_off(root, _A_SYNC_RUNS)),
     "the owner of both locks": _enter(lambda root: library_held(_config_of(root), _A_SYNC_RUNS)),
+    "the owner of both locks for a reset": _enter(
+        lambda root: library_held_for_reset(_config_of(root))
+    ),
 }
 _ORDER_ERROR = "holds the records lock of .*library"
 
@@ -582,7 +607,8 @@ class TestTheRecordsLockRefusesTheLocksBeforeIt:
 
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
 _LOCK_MODULE = _SOURCE_ROOT / "runtime" / "lock.py"
-_OWNER = "library_held"
+_OWNER = "_library_hold"
+_FORMS = {"library_held": "_syncs_held_off", "library_held_for_reset": "_no_sync_running"}
 _WRITE_TAKES = {"_no_sync_running", "_syncs_held_off"}
 _A_WRITE_TAKE = re.compile(r"(?<![A-Za-z0-9_])_?(?:no_sync_running|syncs_held_off)(?![A-Za-z0-9_])")
 
@@ -599,14 +625,19 @@ def _uses_of_the_write_takes(tree: ast.AST) -> list[str]:
     ]
 
 
-def _owner_of(module: ast.Module) -> ast.FunctionDef:
-    functions = [node for node in module.body if isinstance(node, ast.FunctionDef)]
-    return next(function for function in functions if function.name == _OWNER)
+def _uses_in_each_form(module: ast.Module) -> dict[str, list[str]]:
+    """The write takes each public form of the owner uses, by the name of the form."""
+    return {
+        node.name: _uses_of_the_write_takes(node)
+        for node in module.body
+        if isinstance(node, ast.FunctionDef) and node.name in _FORMS
+    }
 
 
-def _uses_outside_the_owner(source: str) -> int:
+def _uses_outside_the_forms(source: str) -> int:
     module = ast.parse(source)
-    return len(_uses_of_the_write_takes(module)) - len(_uses_of_the_write_takes(_owner_of(module)))
+    in_forms = sum(len(uses) for uses in _uses_in_each_form(module).values())
+    return len(_uses_of_the_write_takes(module)) - in_forms
 
 
 _A_MODULE_THAT_TAKES_THE_WRITE_LOCK = """
@@ -619,7 +650,11 @@ def change(root):
 """
 _A_LOCK_MODULE_WITH_A_SECOND_CALLER = """
 def library_held(root):
-    return _no_sync_running(root) or _syncs_held_off(root)
+    return _syncs_held_off(root)
+
+
+def library_held_for_reset(root):
+    return _no_sync_running(root)
 
 
 def second_owner(root):
@@ -647,12 +682,15 @@ class TestOnlyTheOwnerTakesTheSyncWriteLock:
     def test_only_the_owner_uses_a_write_take_in_the_lock_module(self):
         source = _LOCK_MODULE.read_text(encoding="utf-8")
 
-        assert set(_uses_of_the_write_takes(_owner_of(ast.parse(source)))) == _WRITE_TAKES
-        assert _uses_outside_the_owner(source) == 0
+        assert _uses_in_each_form(ast.parse(source)) == {
+            form: [take] for form, take in _FORMS.items()
+        }
+        assert set(_FORMS.values()) == _WRITE_TAKES
+        assert _uses_outside_the_forms(source) == 0
 
     def test_the_census_finds_a_second_caller_in_the_lock_module(self):
         """Control: the scan above counts a planted call outside the owner."""
-        assert _uses_outside_the_owner(_A_LOCK_MODULE_WITH_A_SECOND_CALLER) == 1
+        assert _uses_outside_the_forms(_A_LOCK_MODULE_WITH_A_SECOND_CALLER) == 1
 
     @pytest.mark.parametrize("name", sorted(_WRITE_TAKES))
     def test_the_lock_module_defines_each_write_take(self, name):
