@@ -20,7 +20,7 @@ from lilbee.app import ingest as ingest_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.reset import perform_reset
 from lilbee.core import settings
-from lilbee.core.config import cfg
+from lilbee.core.config import Config, cfg, config_scope
 from lilbee.data.ingest.pipeline import _finish_pending_absorb
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
@@ -38,7 +38,6 @@ from lilbee.runtime.absorb_journal import (
 )
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
-    LibraryHold,
     LockOrderError,
     ResetRefusedError,
     SyncRunningError,
@@ -416,8 +415,8 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         held_at_take: list[list[str]] = []
         takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
 
-        with library_held(cfg.data_root, running) as hold:
-            assert hold == LibraryHold(cfg.data_root)
+        with library_held(cfg, running) as hold:
+            assert hold.config is cfg
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
 
         assert held_at_take == [[]]
@@ -433,7 +432,7 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         self, running, refusal, takes
     ):
         with _syncs_held_off(cfg.data_root, _A_SYNC_RUNS):
-            with pytest.raises(refusal), library_held(cfg.data_root, running):
+            with pytest.raises(refusal), library_held(cfg, running):
                 pytest.fail("the block ran under a held sync lock")
 
             assert takes.records_takes == 0
@@ -494,6 +493,10 @@ def _enter(take: Callable[[Path], object]) -> Callable[[Path], None]:
     return entered
 
 
+def _config_of(root: Path) -> Config:
+    return cfg.model_copy(update={"data_root": root})
+
+
 def _mark_a_sync(root: Path) -> None:
     async def marked() -> None:
         async with sync_running(root):
@@ -508,7 +511,7 @@ _TAKES_OF_THE_SYNC_LOCK = {
     "the probe of an add": refuse_where_a_sync_cannot_lock,
     "the hold of a reset": _enter(_no_sync_running),
     "the hold of a change": _enter(lambda root: _syncs_held_off(root, _A_SYNC_RUNS)),
-    "the owner of both locks": _enter(lambda root: library_held(root, _A_SYNC_RUNS)),
+    "the owner of both locks": _enter(lambda root: library_held(_config_of(root), _A_SYNC_RUNS)),
 }
 _ORDER_ERROR = "holds the records lock of .*library"
 
@@ -570,7 +573,7 @@ class TestTheRecordsLockRefusesTheLocksBeforeIt:
         other_root = tmp_path / "other library"
         other_root.mkdir()
 
-        with skip_records_lock(other_root), library_held(cfg.data_root, _A_SYNC_RUNS):
+        with skip_records_lock(other_root), library_held(cfg, _A_SYNC_RUNS):
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
 
 
@@ -772,3 +775,45 @@ class _CountedLock:
 
     def locked(self) -> bool:
         return self._lock.locked()
+
+
+def _another_library(root: Path) -> Config:
+    """A config of the library at *root*, which holds nothing."""
+    root.mkdir()
+    return cfg.model_copy(
+        update={
+            "data_root": root,
+            "documents_dir": root / "documents",
+            "data_dir": root / "data",
+            "lancedb_dir": root / "data" / "lancedb",
+            "linked_roots": {},
+        }
+    )
+
+
+class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
+    def test_a_first_build_under_the_scope_of_another_library_changes_only_its_own(
+        self, tmp_path, notes, builds
+    ):
+        _leave_journal(notes)
+        other = _another_library(tmp_path / "other library")
+
+        with config_scope(other):
+            svc_mod.get_services()
+
+        assert not absorb_pending(cfg.data_root)
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert cfg.linked_roots == {"notes": str(notes.resolve())}
+        assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
+        assert list(other.data_root.iterdir()) == []
+        assert other.linked_roots == {}
+
+    def test_the_same_first_build_under_no_scope_finishes_the_journal(self, notes, builds):
+        """Control: the journal above is one the start finisher rolls forward."""
+        _leave_journal(notes)
+
+        svc_mod.get_services()
+
+        assert not absorb_pending(cfg.data_root)
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}

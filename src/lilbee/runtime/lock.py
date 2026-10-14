@@ -25,7 +25,7 @@ from typing import Literal, NoReturn, Self, overload
 from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
-from lilbee.core.config import cfg
+from lilbee.core.config import Config, cfg
 from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
@@ -572,19 +572,23 @@ def _syncs_held_off(
 
 @dataclass(frozen=True)
 class LibraryHold:
-    """What ``library_held`` yields: its block has syncs off *data_root* and its records lock."""
+    """What ``library_held`` yields: its block has syncs off the library of *config*.
 
-    data_root: Path
+    The block also holds the records lock of that library. Every path a function
+    uses under the hold comes from *config*.
+    """
+
+    config: Config
 
 
 @contextmanager
 def library_held(
-    data_root: Path,
+    config: Config,
     running: str | None = None,
     wait: float = 0.0,
     cancel: CancelSignal | None = None,
 ) -> Generator[LibraryHold, None, None]:
-    """Keep syncs off *data_root*, then hold its records lock, for the block.
+    """Keep syncs off the data root of *config*, then hold its records lock, for the block.
 
     The one take of both locks, the sync lock first. A sync that outlasts *wait*
     raises ``SyncRunningError`` with the text *running*. With no *running* the hold
@@ -596,6 +600,7 @@ def library_held(
     # circular: runtime.lock -> data.ingest.pipeline via skip_records_lock
     from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
 
+    data_root = config.data_root
     if running is None:
         syncs_off = _no_sync_running(data_root)
     else:
@@ -607,7 +612,7 @@ def library_held(
             # No cause: a cancel that carries an error is reported as that error.
             raise SkipRecordsWaitCancelledError from None
         held.enter_context(skip_records_lock(data_root, cancel))
-        yield LibraryHold(data_root)
+        yield LibraryHold(config)
 
 
 @contextmanager

@@ -321,7 +321,7 @@ def register_sources(
         config.linked_roots = before
         add = {label: target for label, target in roots.items() if before.get(label) != target}
         drop = [label for label in before if label not in roots]
-        return persisted, (result, new_journal(moves, add, drop))
+        return persisted, (result, new_journal(config.data_root, moves, add, drop))
 
     names = [p.name for p in paths]
     in_progress = keys_of_pending_absorb()
@@ -340,11 +340,11 @@ def register_sources(
     # here, with no library lock held; an add that registers above builds none.
     store = get_services(cancel).store
     running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    with library_held(config.data_root, running, 0.0, cancel) as hold:
+    with library_held(config, running, 0.0, cancel) as hold:
         taken = [*in_progress, *finish_absorb(store, hold)]
         result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
         if journal is not None:
-            absorb(journal, hold)
+            absorb(store, journal, hold)
             taken = [*taken, *journal.moves.values()]
         unmark_sources_under(paths, spared=taken)
     return result
@@ -524,7 +524,8 @@ def remove_documents_durably(
     before it finishes an absorb, with ``SkipRecordsWaitCancelledError`` and
     nothing removed.
     """
-    data_root = active_config().data_root
+    config = active_config()
+    data_root = config.data_root
     # Built before the first library lock.
     store = get_services(cancel).store
     with ExitStack() as locks:
@@ -535,14 +536,14 @@ def remove_documents_durably(
             # The records lock is free during the wait for a running sync.
             locks.close()
             hold = locks.enter_context(
-                library_held(data_root, UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
+                library_held(config, UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
             )
             finish_absorb(store, hold)
             targets = None
         if targets is None:
             targets = expand_remove_targets(names)
         result = store.remove_documents(targets)
-        failed = set(held_out_names(active_config().data_root))
+        failed = set(held_out_names(data_root))
         held = [name for name in result.not_found if name in failed]
         roots = forget_roots(names)
         _hold_out_removed([*result.removed, *held], roots)

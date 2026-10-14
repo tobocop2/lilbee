@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import secrets
+from pathlib import Path
 
 from lilbee.app.services import get_services
 from lilbee.core import settings
@@ -38,13 +39,15 @@ UNFINISHED_ADD_HELD = (
 _JOURNAL_ID_BYTES = 4
 
 
-def new_journal(moves: dict[str, str], add: dict[str, str], drop: list[str]) -> AbsorbJournal:
+def new_journal(
+    data_root: Path, moves: dict[str, str], add: dict[str, str], drop: list[str]
+) -> AbsorbJournal:
     """A journal for *moves* and the registry change, under an id no source key starts with.
 
-    The caller holds the records lock: the journal takes the records of the
-    sources that move as they are now.
+    The caller holds the records lock of *data_root*: the journal takes the
+    records of the sources that move as they are now.
     """
-    records = _records_after(load_skip_records(active_config().data_root), moves)
+    records = _records_after(load_skip_records(data_root), moves)
     return AbsorbJournal(
         id=secrets.token_hex(_JOURNAL_ID_BYTES), moves=moves, add=add, drop=drop, records=records
     )
@@ -199,36 +202,40 @@ def _sweep_wiki_temp_files(config: Config) -> None:
     remove_dead_temp_files(config.data_root / config.wiki_dir)
 
 
-def _roll_forward(config: Config, store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
-    """Finish the absorb *journal* records from its phase; each step is safe to run again."""
+def _roll_forward(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
+    """Finish the absorb *journal* records from its phase, on the library of *hold*.
+
+    Each step is safe to run again.
+    """
+    config = hold.config
     _sweep_wiki_temp_files(config)
     if journal.phase is AbsorbPhase.LIFT:
         _lift(config, store, journal)
         journal = journal.at(AbsorbPhase.LAND)
-        write_journal(hold.data_root, journal)
+        write_journal(config.data_root, journal)
     _land(config, store, journal)
     _write_records(config, journal)
     _refresh_wiki_index(config, journal)
     _write_registry(config, journal)
-    delete_journal(hold.data_root)
+    delete_journal(config.data_root)
 
 
-def absorb(journal: AbsorbJournal, hold: LibraryHold) -> None:
-    """Write the absorb *journal* and run what it records, under *hold*."""
-    write_journal(hold.data_root, journal)
-    _roll_forward(active_config(), get_services().store, journal, hold)
+def absorb(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
+    """Write the absorb *journal* and run what it records, on the library of *hold*."""
+    write_journal(hold.config.data_root, journal)
+    _roll_forward(store, journal, hold)
 
 
 def finish_absorb(store: Store, hold: LibraryHold) -> list[str]:
-    """Roll the journal of the active data root forward under *hold*.
+    """Roll the journal of the library of *hold* forward.
 
     Returns the keys the absorbed sources took, empty when no journal was left.
     """
-    journal = read_journal(hold.data_root)
+    journal = read_journal(hold.config.data_root)
     if journal is None:  # another process finished it while this one waited
         return []
     log.warning("Finishing an interrupted add: %s", ", ".join(journal.add))
-    _roll_forward(active_config(), store, journal, hold)
+    _roll_forward(store, journal, hold)
     return list(journal.moves.values())
 
 
@@ -247,7 +254,7 @@ def keys_of_pending_absorb() -> list[str]:
 
 def _finish(config: Config, store: Store, wait: float, cancel: CancelSignal | None) -> list[str]:
     """Finish the journal of *config*'s data root; a sync that outlasts *wait* refuses it."""
-    with library_held(config.data_root, UNFINISHED_ADD_HELD, wait, cancel) as hold:
+    with library_held(config, UNFINISHED_ADD_HELD, wait, cancel) as hold:
         return finish_absorb(store, hold)
 
 

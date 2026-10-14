@@ -56,7 +56,6 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.lock import (
-    LibraryHold,
     LibraryUnlockableError,
     LockingUnsupportedError,
     ResetRefusedError,
@@ -2727,10 +2726,9 @@ class TestTheAddThatFinishesAnAbsorb:
 
         @contextmanager
         def _the_other_process_finishes_first(data_root, cancel):
+            with library_held(cfg, "a sync is running") as hold:
+                absorb_mod.finish_absorb(library.store, hold)
             with real_lock(data_root, cancel):
-                journal = read_journal(data_root)
-                if journal is not None:
-                    absorb_mod._roll_forward(cfg, library.store, journal, LibraryHold(data_root))
                 yield
 
         with mock.patch.object(ingest_mod, "skip_records_lock", _the_other_process_finishes_first):
@@ -3799,7 +3797,7 @@ class TestACancelAtTheWaitForARunningSync:
 
         with (
             pytest.raises(SyncMarkWaitCancelledError),
-            library_held(cfg.data_root, "a sync is running"),
+            library_held(cfg, "a sync is running"),
         ):
             raise SyncMarkWaitCancelledError
 

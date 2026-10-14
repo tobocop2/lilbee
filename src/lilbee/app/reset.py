@@ -78,7 +78,7 @@ def perform_reset() -> ResetResult:
     """
     skipped: list[str] = []
     try:
-        with library_held(cfg.data_root):
+        with library_held(cfg):
             _drop_pending_absorb(cfg.data_root, skipped)
             deleted_docs = _clear_dir(cfg.documents_dir, skipped)
             deleted_data = _clear_dir(cfg.data_dir, skipped)
