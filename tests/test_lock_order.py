@@ -10,6 +10,7 @@ import threading
 from collections.abc import Callable
 from contextlib import closing, nullcontext
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 import pytest
@@ -54,6 +55,7 @@ from lilbee.runtime.lock import (
     _LibraryHold,
     _no_sync_running,
     _syncs_held_off,
+    held_config,
     library_held,
     library_held_for_reset,
     refuse_where_a_sync_cannot_lock,
@@ -433,7 +435,7 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         takes.on_sync_write_take.append(lambda: held_at_take.append(takes.held()))
 
         with _FORMS_OF_THE_OWNER[form]() as hold:
-            assert hold.config is cfg
+            assert held_config(hold) is cfg
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
 
         assert held_at_take == [[]]
@@ -649,6 +651,7 @@ class TestTheRecordsLockRefusesTheLocksBeforeIt:
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
 _LOCK_MODULE = _SOURCE_ROOT / "runtime" / "lock.py"
 _OWNER = "_library_hold"
+_READER = "held_config"
 _FORMS = {"library_held", "library_held_for_reset"}
 _WRITE_TAKES = {"_no_sync_running", "_syncs_held_off"}
 _A_WRITE_TAKE = re.compile(r"(?<![A-Za-z0-9_])_?(?:no_sync_running|syncs_held_off)(?![A-Za-z0-9_])")
@@ -965,11 +968,11 @@ class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
         other = _another_library(tmp_path / "other library")
 
         with library_held(other, _A_SYNC_RUNS) as hold:
-            assert hold.config is other
+            assert held_config(hold) is other
             assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
 
         with library_held_for_reset(other) as hold:
-            assert hold.config is other
+            assert held_config(hold) is other
 
     def test_the_same_first_build_under_no_scope_finishes_the_journal(self, notes, builds):
         """Control: the journal above is one the start finisher rolls forward."""
@@ -1022,6 +1025,12 @@ def _names_the_token(node: ast.AST) -> bool:
         or (isinstance(node, ast.alias) and node.name == _TOKEN)
         or (isinstance(node, ast.Constant) and node.value == _TOKEN)
     )
+
+
+def _token_calls(tree: ast.AST) -> int:
+    """How many times *tree* calls the token class."""
+    calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    return sum(_names_the_token(call.func) for call in calls)
 
 
 def _token_uses(tree: ast.AST) -> int:
@@ -1109,15 +1118,17 @@ class TestOnlyTheOwnerMakesAToken:
 
     def test_only_the_owner_makes_a_token_in_the_lock_module(self):
         module = ast.parse(_LOCK_MODULE.read_text(encoding="utf-8"))
-        makers = [function.name for function in _functions(module) if _token_uses(function)]
+        makers = [function.name for function in _functions(module) if _token_calls(function)]
+        users = {function.name: _token_uses(function) for function in _functions(module)}
 
         assert makers == [_OWNER]
-        assert _token_uses(module) == 1
+        assert {name: uses for name, uses in users.items() if uses} == {_OWNER: 1, _READER: 1}
+        assert _token_uses(module) == 2
 
 
 def _ended_hold() -> _LibraryHold:
     with library_held(cfg, _A_SYNC_RUNS) as hold:
-        assert hold.config is cfg
+        assert held_config(hold) is cfg
     return hold
 
 
@@ -1133,7 +1144,65 @@ def _roll_forward_again(store: Store, hold: _LibraryHold) -> None:
     absorb_mod._roll_forward(store, journal, hold)
 
 
+def _read_the_config(store: Store, hold: _LibraryHold) -> None:
+    held_config(hold)
+
+
+class _Duck:
+    """An object with every name a token has, and no hold behind it."""
+
+    def __init__(self, config: Config) -> None:
+        self._config_while_held = config
+        self.config = config
+
+    def end(self) -> None:
+        """Nothing to end."""
+
+
+class _TokenOfNoHold(_LibraryHold):
+    """A subclass of the token: it carries a config that no hold was taken for."""
+
+
+_FORGED_TOKENS: dict[str, Callable[[], Any]] = {
+    "a duck object": lambda: _Duck(cfg),
+    "a subclass of the token": lambda: _TokenOfNoHold(cfg),
+    "the config itself": lambda: cfg,
+}
+_TOKEN_STORAGE = "_config_while_held"
+
+
+def _carried(hold: _LibraryHold) -> list[object]:
+    """Each value the token *hold* stores; it has no other storage."""
+    assert not hasattr(hold, "__dict__")
+    return [getattr(hold, slot) for slot in type(hold).__slots__]
+
+
+def _reads_the_storage(function: ast.FunctionDef) -> bool:
+    """Whether *function* reads what a token carries, by attribute or by the name as text."""
+    return any(_is_a_read_of_the_storage(node) for node in ast.walk(function))
+
+
+def _is_a_read_of_the_storage(node: ast.AST) -> bool:
+    match node:
+        case ast.Attribute(attr=name, ctx=ast.Load()) | ast.Constant(value=name):
+            return bool(name == _TOKEN_STORAGE)
+        case _:
+            return False
+
+
+def _readers_of_the_storage(source: str) -> list[str]:
+    return [fn.name for fn in _functions(ast.parse(source)) if _reads_the_storage(fn)]
+
+
+_PLANTED_READS_OF_THE_STORAGE = {
+    "by attribute": "def peek(hold):\n    return hold._config_while_held\n",
+    "by name": "def peek(hold):\n    return getattr(hold, '_config_while_held')\n",
+    "from the instance": "def peek(hold):\n    return vars(hold)['_config_while_held']\n",
+}
+
+
 _FUNCTIONS_THAT_TAKE_A_TOKEN = {
+    _READER: _read_the_config,
     "absorb": _absorb_again,
     "finish_absorb": absorb_mod.finish_absorb,
     "_roll_forward": _roll_forward_again,
@@ -1157,12 +1226,75 @@ class TestATokenEndsWithItsHold:
         before = (_registry(), read_journal(cfg.data_root), load_skip_kinds(cfg.data_root))
         hold = _ended_hold()
 
-        with pytest.raises(LibraryHoldEndedError, match=r"hold of the library at .* ended"):
+        with pytest.raises(LibraryHoldEndedError, match="hold of a library ended"):
             _FUNCTIONS_THAT_TAKE_A_TOKEN[function](builds.services.store, hold)
 
         after = (_registry(), read_journal(cfg.data_root), load_skip_kinds(cfg.data_root))
         assert after == before
         assert before[1] is not None
+
+    @pytest.mark.parametrize("forged", list(_FORGED_TOKENS))
+    @pytest.mark.parametrize("function", list(_FUNCTIONS_THAT_TAKE_A_TOKEN))
+    def test_a_forged_token_raises_a_bug_error_with_nothing_changed(
+        self, function, forged, notes, builds
+    ):
+        svc_mod.get_services()
+        _leave_journal(notes)
+        before = (_registry(), read_journal(cfg.data_root), load_skip_kinds(cfg.data_root))
+        hold = _FORGED_TOKENS[forged]()
+
+        with pytest.raises(LockBugError, match="is not the token of a hold") as raised:
+            _FUNCTIONS_THAT_TAKE_A_TOKEN[function](builds.services.store, hold)
+
+        after = (_registry(), read_journal(cfg.data_root), load_skip_kinds(cfg.data_root))
+        assert type(raised.value) is LockBugError
+        assert after == before
+        assert before[1] is not None
+
+    @pytest.mark.parametrize("function", list(_FUNCTIONS_THAT_TAKE_A_TOKEN))
+    def test_the_same_function_runs_with_the_token_of_a_live_hold(self, function, notes, builds):
+        """Control: the token of a live hold is what the two refusals above lack."""
+        svc_mod.get_services()
+        _leave_journal(notes)
+
+        with library_held(cfg, _A_SYNC_RUNS) as hold:
+            _FUNCTIONS_THAT_TAKE_A_TOKEN[function](builds.services.store, hold)
+
+    def test_a_hold_that_ends_clears_what_its_token_carries(self):
+        with library_held(cfg, _A_SYNC_RUNS) as hold:
+            carried_in_the_hold = _carried(hold)
+
+        assert [value is cfg for value in carried_in_the_hold] == [True]
+        assert _carried(hold) == [None]
+
+    def test_a_hold_whose_block_raises_clears_what_its_token_carries(self):
+        holds: list[_LibraryHold] = []
+
+        with pytest.raises(ZeroDivisionError), library_held(cfg, _A_SYNC_RUNS) as hold:
+            holds.append(hold)
+            raise ZeroDivisionError
+
+        assert _carried(holds[0]) == [None]
+
+    def test_a_token_takes_no_other_storage(self):
+        with library_held(cfg, _A_SYNC_RUNS) as hold:
+            token: Any = hold
+            with pytest.raises(AttributeError, match="kept"):
+                token.kept = held_config(hold)
+
+    def test_one_function_reads_what_a_token_carries(self):
+        readers = {
+            str(path.relative_to(_SOURCE_ROOT)): names
+            for path in _SOURCE_ROOT.rglob("*.py")
+            if (names := _readers_of_the_storage(path.read_text(encoding="utf-8")))
+        }
+
+        assert readers == {str(_LOCK_MODULE.relative_to(_SOURCE_ROOT)): [_READER]}
+
+    @pytest.mark.parametrize("planted", list(_PLANTED_READS_OF_THE_STORAGE))
+    def test_the_census_finds_a_planted_read_of_the_storage(self, planted):
+        """Control: the scan above counts each way a function can read the storage."""
+        assert _readers_of_the_storage(_PLANTED_READS_OF_THE_STORAGE[planted]) == ["peek"]
 
     def test_a_hold_whose_block_raises_ends_its_token(self):
         holds: list[_LibraryHold] = []
@@ -1172,7 +1304,7 @@ class TestATokenEndsWithItsHold:
             raise ZeroDivisionError
 
         with pytest.raises(LibraryHoldEndedError, match="ended"):
-            _ = holds[0].config
+            held_config(holds[0])
 
     def test_the_start_finisher_does_not_report_an_ended_token_as_a_refusal(
         self, notes, builds, monkeypatch

@@ -585,7 +585,8 @@ def _syncs_held_off(
         yield
 
 
-_HOLD_ENDED = "The hold of the library at {root} ended. Its token gives no config."
+_HOLD_ENDED = "The hold of a library ended. Its token gives no config."
+_NOT_A_HOLD = "A {kind} is not the token of a hold of a library. Only a hold makes its token."
 
 
 class _HoldKind(StrEnum):
@@ -600,23 +601,31 @@ class _LibraryHold:
 
     The block also holds the records lock of that library. Only ``_library_hold``
     makes one, and ends it when the block ends. Every path a function uses under
-    the hold comes from ``config``.
+    the hold comes from ``held_config``.
     """
 
-    def __init__(self, config: Config) -> None:
-        self._config = config
-        self._ended = False
+    __slots__ = ("_config_while_held",)
 
-    @property
-    def config(self) -> Config:
-        """The config the hold was taken for; ``LibraryHoldEndedError`` after the hold."""
-        if self._ended:
-            raise LibraryHoldEndedError(_HOLD_ENDED.format(root=self._config.data_root))
-        return self._config
+    def __init__(self, config: Config) -> None:
+        self._config_while_held: Config | None = config
 
     def end(self) -> None:
-        """Make every later read of ``config`` raise; ``_library_hold`` calls it."""
-        self._ended = True
+        """Drop the config, so the token carries nothing; ``_library_hold`` calls it."""
+        self._config_while_held = None
+
+
+def held_config(hold: _LibraryHold) -> Config:
+    """The config the live hold of *hold* was taken for; the one read of a token.
+
+    Raises ``LockBugError`` when *hold* is not a token a hold made, and
+    ``LibraryHoldEndedError`` when its hold ended.
+    """
+    if type(hold) is not _LibraryHold:
+        raise LockBugError(_NOT_A_HOLD.format(kind=type(hold).__name__))
+    config = hold._config_while_held
+    if config is None:
+        raise LibraryHoldEndedError(_HOLD_ENDED)
+    return config
 
 
 @contextmanager
