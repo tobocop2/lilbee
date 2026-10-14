@@ -18,7 +18,10 @@ SUITE_DATA_ROOT = tempfile.TemporaryDirectory(prefix="lilbee-tests-", ignore_cle
 os.environ["LILBEE_DATA"] = SUITE_DATA_ROOT.name
 os.environ.pop("LILBEE_DATA_ROOT", None)
 os.environ["LILBEE_ENGINE_DIR"] = os.path.join(SUITE_DATA_ROOT.name, "engine-slot")
-os.environ["HF_HOME"] = os.path.join(SUITE_DATA_ROOT.name, "huggingface")
+# The agent-harnesses registry fetch is switched off, so a run writes no
+# .agent_harnesses.json into the real Hugging Face home; the home itself
+# stays put, keeping a saved token and the download cache visible.
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 # Imported after the environment above: lilbee's package init imports
 # huggingface_hub's constants, which read it.

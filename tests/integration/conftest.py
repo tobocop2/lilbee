@@ -8,10 +8,16 @@ import os
 from pathlib import Path
 
 import pytest
+from huggingface_hub import constants as hf_constants
 
 from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
+
+# The suite module switches the hub offline for unit runs; integration tests
+# make real hub requests by design, so the switch is undone here.
+os.environ.pop("HF_HUB_OFFLINE", None)
+hf_constants.HF_HUB_OFFLINE = False
 
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
