@@ -1317,8 +1317,6 @@ async def _sync_across_workers(
         )
         if cancel is not None and cancel.is_set():
             raise asyncio.CancelledError
-        if bug := next((v.lock_bug for v in verdicts if v.lock_bug is not None), None):
-            raise bug
         if failures := [verdict for verdict in verdicts if verdict.error is not None]:
             raise RuntimeError(_worker_failure_message(failures, specs))
     except BaseException:

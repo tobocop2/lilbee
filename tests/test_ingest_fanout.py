@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import pickle
 import queue as queue_mod
 import subprocess
 import sys
@@ -16,9 +15,7 @@ import rich.progress
 
 from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
-from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
-from lilbee.runtime.lock import LockBugError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -439,43 +436,6 @@ class TestRunShard:
         verdict = messages.get_nowait()
         assert verdict.result is None
         assert verdict.error == "RuntimeError: no embedding model"
-
-
-class _PicklingQueue(queue_mod.Queue):
-    """A local queue that pickles each message, as the queue between processes does."""
-
-    def put(self, item, block=True, timeout=None):
-        super().put(pickle.loads(pickle.dumps(item)), block, timeout)  # noqa: S301  # bytes made here
-
-
-class _PicklingContext(FakeContext):
-    """A fake context whose workers report through a queue that pickles."""
-
-    def Queue(self):
-        return _PicklingQueue()
-
-
-class TestALockBugInAWorker:
-    async def test_the_parent_raises_the_lock_bug_class_the_worker_reported(self, monkeypatch):
-        monkeypatch.setattr(fanout.multiprocessing, "get_context", lambda _kind: _PicklingContext())
-        monkeypatch.setattr(fanout, "_FINAL_DRAIN_S", 0.0)
-        monkeypatch.setattr(fanout, "_apply_shard_env", lambda spec: None)
-        monkeypatch.setattr("lilbee.app.ingest.forget_missing_from_wiki_index", lambda: None)
-
-        async def fake_sync(**_kwargs):
-            raise LockBugError("a take out of order")
-
-        monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
-
-        with pytest.raises(LockBugError, match="a take out of order"):
-            await pipeline_mod._sync_across_workers(
-                [_spec(0, count=1)],
-                store=None,
-                options=fanout.ShardOptions(parent_pid=os.getppid()),
-                quiet=True,
-                on_progress=lambda kind, data: None,
-                cancel=None,
-            )
 
 
 class TestRunWorkers:

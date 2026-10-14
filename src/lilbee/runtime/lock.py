@@ -97,7 +97,6 @@ _LOCAL_DISK = "a local disk"
 # The disk to move to, by sys.platform; every other platform gets _LOCAL_DISK.
 _HARD_LINK_DISKS = {"darwin": "a disk formatted as APFS"}
 _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
-_LOCK_BUG = "A bug in the use of the library locks: %s"
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -121,29 +120,6 @@ class SyncRunningError(RuntimeError):
 
 class LibraryUnlockableError(RuntimeError):
     """Raised when a sync or a change that keeps syncs off cannot lock the data root."""
-
-
-class LockBugError(Exception):
-    """Raised when the code uses the locks of a library wrongly: a bug.
-
-    It derives from ``Exception``, so a broad handler takes it. The handlers next
-    to the locks raise it again, and the test fence fails a test that hides one.
-    Each one logs at error level, with the stack where it is made, when it is made.
-    A copy or an unpickled one does not log again.
-    """
-
-    def __init__(self, *args: object) -> None:
-        super().__init__(*args)
-        log.error(_LOCK_BUG, self, stack_info=True)
-
-    def __reduce__(self) -> tuple[object, ...]:
-        """Rebuild the error without ``__init__``, so it logs only where it is made."""
-        return (_rebuilt_lock_bug, (type(self), self.args), self.__dict__ or None)
-
-
-def _rebuilt_lock_bug(kind: type[LockBugError], args: tuple[object, ...]) -> LockBugError:
-    """A lock bug error of *kind* with *args*, made without the log of its ``__init__``."""
-    return kind.__new__(kind, *args)
 
 
 class _NoHardLinksError(OSError):

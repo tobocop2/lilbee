@@ -46,7 +46,6 @@ from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     LibraryUnlockableError,
-    LockBugError,
     LockingUnsupportedError,
     SyncRunningError,
     library_held,
@@ -596,12 +595,7 @@ class AddRollback:
         return stopped if self.error is None else stopped + _ALSO_HIT_ERROR.format(error=self.error)
 
     def note_error(self, exc: BaseException) -> None:
-        """Log and name *exc*, raised once the add was stopped; a cancel names its cause.
-
-        Raises a ``LockBugError`` again: a bug is not an error of the stopped add.
-        """
-        if isinstance(exc, LockBugError):
-            raise exc
+        """Log and name *exc*, raised once the add was stopped; a cancel names its cause."""
         if isinstance(exc, _CANCEL_ERRORS):
             # A cancel that took a failed write carries that error as its cause.
             carried = exc.__cause__
@@ -734,8 +728,6 @@ def forget_removed_from_wiki_index(removed: list[str]) -> None:
 
     try:
         drop_sources_from_index(set(removed))
-    except LockBugError:
-        raise
     except Exception:
         log.warning("Failed to drop removed documents from the wiki index", exc_info=True)
 
@@ -753,8 +745,6 @@ def forget_missing_from_wiki_index() -> None:
 
     try:
         drop_removed_sources(get_services().store, config)
-    except LockBugError:
-        raise
     except Exception:
         log.warning("Failed to drop missing documents from the wiki index", exc_info=True)
 
