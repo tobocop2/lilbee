@@ -141,10 +141,6 @@ class LockBugError(Exception):
         return (_rebuilt_lock_bug, (type(self), self.args), self.__dict__ or None)
 
 
-class LibraryHoldEndedError(LockBugError):
-    """Raised when a function uses the token of a library hold after the hold ended: a bug."""
-
-
 def _rebuilt_lock_bug(kind: type[LockBugError], args: tuple[object, ...]) -> LockBugError:
     """A lock bug error of *kind* with *args*, made without the log of its ``__init__``."""
     return kind.__new__(kind, *args)
@@ -579,14 +575,6 @@ def _syncs_held_off(
         yield
 
 
-_HOLD_ENDED = "The hold of a library ended. Its token gives no config."
-_NOT_A_HOLD = "A {kind} is not the token of a hold of a library. Only a hold makes its token."
-_NOT_THE_OWNER = "Only a hold of a library makes its token; this call is not a hold."
-_NO_COPY = "The token of a hold of a library cannot be copied: a copy would outlive the hold."
-# The key only a hold passes to make its token.
-_HOLD_KEY = object()
-
-
 class _HoldKind(StrEnum):
     """What a hold of a library is for; the kind selects the take of the sync lock."""
 
@@ -594,43 +582,15 @@ class _HoldKind(StrEnum):
     RESET = "reset"
 
 
+@dataclass(frozen=True)
 class LibraryHold:
-    """What a hold of a library yields: its block has syncs off the library of its config.
+    """What a hold of a library yields: its block has syncs off and the records lock of *config*.
 
-    The block also holds the records lock of that library. Only ``_library_hold``
-    makes one, and ends it when the block ends. Every path a function uses under
-    the hold comes from ``held_config``. A construction without the key of the
-    lock module, a copy and a pickle each raise ``LockBugError``.
+    Only ``_library_hold`` makes one. Every path a function uses under the hold
+    comes from its *config*.
     """
 
-    __slots__ = ("_config_while_held",)
-
-    def __init__(self, config: Config, key: object = None) -> None:
-        if key is not _HOLD_KEY:
-            raise LockBugError(_NOT_THE_OWNER)
-        self._config_while_held: Config | None = config
-
-    def end(self) -> None:
-        """Drop the config, so the token carries nothing; ``_library_hold`` calls it."""
-        self._config_while_held = None
-
-    def __reduce__(self) -> NoReturn:
-        """Raise ``LockBugError``: a shallow copy, a deep copy and a pickle each call it."""
-        raise LockBugError(_NO_COPY)
-
-
-def held_config(hold: LibraryHold) -> Config:
-    """The config the live hold of *hold* was taken for; the one read of a token.
-
-    Raises ``LockBugError`` when *hold* is not a token a hold made, and
-    ``LibraryHoldEndedError`` when its hold ended.
-    """
-    if type(hold) is not LibraryHold:
-        raise LockBugError(_NOT_A_HOLD.format(kind=type(hold).__name__))
-    config = hold._config_while_held
-    if config is None:
-        raise LibraryHoldEndedError(_HOLD_ENDED)
-    return config
+    config: Config
 
 
 @contextmanager
@@ -664,11 +624,7 @@ def _library_hold(
             # No cause: a cancel that carries an error is reported as that error.
             raise SkipRecordsWaitCancelledError from None
         held.enter_context(skip_records_lock(config.data_root, cancel))
-        hold = LibraryHold(config, _HOLD_KEY)
-        try:
-            yield hold
-        finally:
-            hold.end()
+        yield LibraryHold(config)
 
 
 def library_held(

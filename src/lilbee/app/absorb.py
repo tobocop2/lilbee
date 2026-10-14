@@ -28,7 +28,7 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.cancellation import CancelSignal
-from lilbee.runtime.lock import LOCK_TIMEOUT, held_config, library_held
+from lilbee.runtime.lock import LOCK_TIMEOUT, library_held
 
 if TYPE_CHECKING:
     from lilbee.runtime.lock import LibraryHold
@@ -211,7 +211,7 @@ def _roll_forward(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> No
 
     Each step is safe to run again.
     """
-    config = held_config(hold)
+    config = hold.config
     _sweep_wiki_temp_files(config)
     if journal.phase is AbsorbPhase.LIFT:
         _lift(config, store, journal)
@@ -226,7 +226,7 @@ def _roll_forward(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> No
 
 def absorb(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
     """Write the absorb *journal* and run what it records, on the library of *hold*."""
-    write_journal(held_config(hold).data_root, journal)
+    write_journal(hold.config.data_root, journal)
     _roll_forward(store, journal, hold)
 
 
@@ -235,7 +235,7 @@ def finish_absorb(store: Store, hold: LibraryHold) -> list[str]:
 
     Returns the keys the absorbed sources took, empty when no journal was left.
     """
-    journal = read_journal(held_config(hold).data_root)
+    journal = read_journal(hold.config.data_root)
     if journal is None:  # another process finished it while this one waited
         return []
     log.warning("Finishing an interrupted add: %s", ", ".join(journal.add))
