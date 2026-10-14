@@ -133,8 +133,10 @@ class LibraryUnlockableError(RuntimeError):
 
 
 class LockBugError(Exception):
-    """Raised when the code uses the locks of a library wrongly: a bug, which no handler takes.
+    """Raised when the code uses the locks of a library wrongly: a bug.
 
+    It derives from ``Exception``, so a broad handler takes it. The handlers next
+    to the locks raise it again, and the test fence fails a test that hides one.
     Each one logs at error level, with the stack where it is made, when it is made.
     A copy or an unpickled one does not log again.
     """
