@@ -25,6 +25,7 @@ from contextlib import (
     contextmanager,
 )
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal, NoReturn, Self, overload
 
@@ -583,6 +584,13 @@ def _syncs_held_off(
 _HOLD_ENDED = "The hold of the library at {root} ended. Its token gives no config."
 
 
+class _HoldKind(StrEnum):
+    """What a hold of a library is for; the kind selects the take of the sync lock."""
+
+    CHANGE = "change"
+    RESET = "reset"
+
+
 class _LibraryHold:
     """What a hold of a library yields: its block has syncs off the library of its config.
 
@@ -609,18 +617,28 @@ class _LibraryHold:
 
 @contextmanager
 def _library_hold(
-    config: Config, syncs_off: AbstractContextManager[None], cancel: CancelSignal | None
+    config: Config,
+    kind: _HoldKind,
+    *,
+    running: str = _SYNC_RUNNING,
+    wait: float = 0.0,
+    cancel: CancelSignal | None = None,
 ) -> Generator[_LibraryHold, None, None]:
-    """Enter *syncs_off*, then hold the records lock of *config*'s data root, for the block.
+    """Keep syncs off *config*'s data root as *kind* does, then hold its records lock.
 
-    The one take of both locks, the sync lock first. A records lock that stays
-    held raises ``SkipRecordsLockError``. A *cancel* that ends the wait of
-    *syncs_off*, or that is set when the records lock is taken, raises
+    The one take of both locks, the sync lock first. A reset takes the sync lock
+    with no wait and reads no *running*, *wait* or *cancel*. A records lock that
+    stays held raises ``SkipRecordsLockError``. A *cancel* that ends the wait for
+    the sync lock, or that is set when the records lock is taken, raises
     ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
     """
     # circular: runtime.lock -> data.ingest.pipeline via skip_records_lock
     from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
 
+    if kind is _HoldKind.RESET:
+        syncs_off = _no_sync_running(config.data_root)
+    else:
+        syncs_off = _syncs_held_off(config.data_root, running, wait, cancel)
     with ExitStack() as held:
         try:
             held.enter_context(syncs_off)
@@ -645,7 +663,7 @@ def library_held(
     is set during a wait, or when a lock is taken, raises
     ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
     """
-    return _library_hold(config, _syncs_held_off(config.data_root, running, wait, cancel), cancel)
+    return _library_hold(config, _HoldKind.CHANGE, running=running, wait=wait, cancel=cancel)
 
 
 def library_held_for_reset(config: Config) -> AbstractContextManager[_LibraryHold]:
@@ -654,7 +672,7 @@ def library_held_for_reset(config: Config) -> AbstractContextManager[_LibraryHol
     A sync that runs, or a sync lock that cannot be taken, raises
     ``ResetRefusedError``. A records lock that stays held raises ``SkipRecordsLockError``.
     """
-    return _library_hold(config, _no_sync_running(config.data_root), None)
+    return _library_hold(config, _HoldKind.RESET)
 
 
 @contextmanager
