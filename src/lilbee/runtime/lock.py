@@ -679,6 +679,7 @@ def _syncs_held_off(
 _HOLD_ENDED = "The hold of a library ended. Its token gives no config."
 _NOT_A_HOLD = "A {kind} is not the token of a hold of a library. Only a hold makes its token."
 _NOT_THE_OWNER = "Only a hold of a library makes its token; this call is not a hold."
+_NO_COPY = "The token of a hold of a library cannot be copied: a copy would outlive the hold."
 # The key only a hold passes to make its token.
 _HOLD_KEY = object()
 
@@ -696,7 +697,7 @@ class LibraryHold:
     The block also holds the records lock of that library. Only ``_library_hold``
     makes one, and ends it when the block ends. Every path a function uses under
     the hold comes from ``held_config``. A construction without the key of the
-    lock module raises ``LockBugError``.
+    lock module, a copy and a pickle each raise ``LockBugError``.
     """
 
     __slots__ = ("_config_while_held",)
@@ -709,6 +710,10 @@ class LibraryHold:
     def end(self) -> None:
         """Drop the config, so the token carries nothing; ``_library_hold`` calls it."""
         self._config_while_held = None
+
+    def __reduce__(self) -> NoReturn:
+        """Raise ``LockBugError``: a shallow copy, a deep copy and a pickle each call it."""
+        raise LockBugError(_NO_COPY)
 
 
 def held_config(hold: LibraryHold) -> Config:

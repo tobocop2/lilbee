@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import inspect
 import pickle
 import re
@@ -1762,6 +1763,22 @@ _FUNCTIONS_THAT_TAKE_A_TOKEN = {
     "finish_absorb": absorb_mod.finish_absorb,
     "_roll_forward": _roll_forward_again,
 }
+
+
+_COPIES_OF_A_TOKEN = {"copy": copy.copy, "deepcopy": copy.deepcopy, "pickle": pickle.dumps}
+
+
+class TestATokenCannotBeCopied:
+    @pytest.mark.parametrize("copier", list(_COPIES_OF_A_TOKEN))
+    def test_a_copy_raises_a_bug_error_and_the_hold_ends_its_token(self, copier):
+        with library_held(cfg, _A_SYNC_RUNS) as hold:
+            with pytest.raises(LockBugError, match="cannot be copied") as raised:
+                _COPIES_OF_A_TOKEN[copier](hold)
+            assert held_config(hold) is cfg
+
+        assert type(raised.value) is LockBugError
+        with pytest.raises(LibraryHoldEndedError, match="hold of a library ended"):
+            held_config(hold)
 
 
 class TestATokenEndsWithItsHold:
