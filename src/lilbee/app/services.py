@@ -30,10 +30,12 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from lilbee.core.system import canonical_data_root
 from lilbee.runtime.absorb_journal import absorb_pending
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
     from lilbee.catalog.hf_client import HfClient
     from lilbee.core.config import Config
@@ -170,9 +172,10 @@ class _ServicesState:
         # for the session. Build-time intent only; the state that matters after
         # that lives on the provider itself.
         self.interactive: bool = False
-        # Whether a build of the singleton ran in this process. Only the first
-        # build runs the start finisher, so only the first build checks the locks.
-        self.built_once: bool = False
+        # The data roots (canonical) a build of the singleton ran for in this
+        # process. Only the first build for a root runs the start finisher, so
+        # only that build checks the locks.
+        self.built_for: set[Path] = set()
 
 
 _state = _ServicesState()
@@ -283,11 +286,12 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
     # circular: core.config -> catalog.picks -> app.services -> runtime.lock via cfg
     from lilbee.runtime.lock import refuse_a_build_of_the_services
 
-    if not _state.built_once:
+    root = canonical_data_root(cfg.data_root)
+    if root not in _state.built_for:
         refuse_a_build_of_the_services(cfg.data_root)
     with _singleton_create_lock:
         services = _state.singleton
-        first_build = services is None and not _state.built_once
+        first_build = services is None and root not in _state.built_for
         if services is None:
             from lilbee.app.settings import reconcile_embedding_dim
             from lilbee.modelhub.registry import ModelRegistry
@@ -298,7 +302,7 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
             reconcile_embedding_dim(registry)
             services = build_services(cfg, registry=registry, interactive=_state.interactive)
             _state.singleton = services
-            _state.built_once = True
+            _state.built_for.add(root)
             # Eager start is the default: pay the spawn cost per role server at TUI mount
             # so the first user action lands on a warm fleet. Roles whose model is unset
             # are skipped, so a setup with only chat + embed never spawns rerank or
@@ -311,7 +315,7 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
                     services.provider.warm_up_pool()
     # Outside the creation lock: the finisher takes the sync lock and the records lock.
     # Only the thread that built: two takes of the sync lock at once can refuse each other.
-    # A rebuild after reset_services runs no finisher: it can run under a sync hold.
+    # A rebuild for a root built before runs no finisher: it can run under a sync hold.
     if first_build and absorb_pending(cfg.data_root):
         # heavy: the absorb loads the ingest pipeline
         from lilbee.app.absorb import finish_pending_absorb_at_start

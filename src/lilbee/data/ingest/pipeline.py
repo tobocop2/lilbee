@@ -1366,7 +1366,7 @@ def _config_with_persisted_roots(shard: ShardId | None) -> Config:
 
 
 def _build_services(cancel: CancelSignal | None) -> None:
-    """Build the services of the process, which finishes an interrupted add the first time."""
+    """Build the services, which finishes an interrupted add at the first build for a library."""
     with _records_wait_ends_the_sync():
         get_services(cancel)
 

@@ -376,7 +376,7 @@ def _reset_services_after_test():
             svc.provider.shutdown()
     set_services(None)
     # Each test is a process that has built no services yet.
-    services_mod._state.built_once = False
+    services_mod._state.built_for.clear()
     # build_mcp_mount() flips this process-global True; clear it so a mount test
     # never leaves init/reset gated for an unrelated later test.
     set_http_mounted(False)

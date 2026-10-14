@@ -512,6 +512,54 @@ class TestARebuildAfterAResetRunsNoFinisher:
         assert absorb_pending(cfg.data_root)
 
 
+class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
+    @pytest.fixture
+    def vaults(self, tmp_path) -> tuple[Path, Path]:
+        first, second = tmp_path / "vault-a", tmp_path / "vault-b"
+        first.mkdir()
+        second.mkdir()
+        return first, second
+
+    def test_the_first_build_for_the_new_library_finishes_its_interrupted_add(
+        self, vaults, notes, builds
+    ):
+        first, second = vaults
+        mcp_server.init(str(first))
+        svc_mod.get_services()
+        mcp_server.init(str(second))
+        _leave_journal(notes)
+
+        svc_mod.get_services()
+
+        assert not absorb_pending(cfg.data_root)
+        assert _registry() == {"notes": str(notes.resolve())}
+
+    def test_a_rebuild_for_a_library_built_before_runs_no_finisher(self, vaults, notes, builds):
+        first, second = vaults
+        mcp_server.init(str(first))
+        svc_mod.get_services()
+        mcp_server.init(str(second))
+        svc_mod.get_services()
+        mcp_server.init(str(first))
+        _leave_journal(notes)
+
+        svc_mod.get_services()
+
+        assert len(builds.held_at_build) == 3
+        assert absorb_pending(cfg.data_root)
+
+    def test_the_first_build_for_the_new_library_checks_its_sync_lock(self, vaults, builds):
+        first, second = vaults
+        mcp_server.init(str(first))
+        svc_mod.get_services()
+        mcp_server.init(str(second))
+
+        with source_keys_in_use(cfg.data_root), pytest.raises(LockOrderError, match="sync lock"):
+            svc_mod.get_services()
+
+        assert len(builds.held_at_build) == 1
+
+
 def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
     register_sources([notes], cancel=cancel)
 
