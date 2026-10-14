@@ -6,7 +6,11 @@ imported under two names.
 """
 
 import os
+import sys
 import tempfile
+
+if "lilbee.core.config" in sys.modules:
+    raise ImportError("import tests._suite_data_root before lilbee.core.config builds cfg")
 
 SUITE_DATA_ROOT = tempfile.TemporaryDirectory(prefix="lilbee-tests-", ignore_cleanup_errors=True)
 os.environ["LILBEE_DATA"] = SUITE_DATA_ROOT.name
