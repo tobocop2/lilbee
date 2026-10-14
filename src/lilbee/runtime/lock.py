@@ -34,6 +34,7 @@ from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import Config, cfg
+from lilbee.core.system import canonical_data_root
 from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
@@ -190,10 +191,15 @@ _records_takes: _Takes = contextvars.ContextVar("lilbee_records_takes", default=
 _sync_takes: _Takes = contextvars.ContextVar("lilbee_sync_takes", default=())
 
 
+def library_root(data_root: Path) -> Path:
+    """The one spelling of the library at *data_root*; every note and check of a hold uses it."""
+    return canonical_data_root(data_root)
+
+
 @contextmanager
 def _noted(takes: _Takes, data_root: Path) -> Generator[None, None, None]:
     """Note in *takes* that the block holds a lock of *data_root*."""
-    take = _Take(data_root)
+    take = _Take(library_root(data_root))
     takes.set((*takes.get(), take))
     try:
         yield
@@ -204,7 +210,8 @@ def _noted(takes: _Takes, data_root: Path) -> Generator[None, None, None]:
 
 
 def _holds(takes: _Takes, data_root: Path) -> bool:
-    return any(take.live and take.data_root == data_root for take in takes.get())
+    root = library_root(data_root)
+    return any(take.live and take.data_root == root for take in takes.get())
 
 
 def records_lock_noted(data_root: Path) -> AbstractContextManager[None]:

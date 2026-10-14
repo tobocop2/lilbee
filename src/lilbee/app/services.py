@@ -30,7 +30,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from lilbee.core.system import canonical_data_root
 from lilbee.runtime.absorb_journal import absorb_pending
 
 if TYPE_CHECKING:
@@ -283,7 +282,7 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
 
     from lilbee.core.config import cfg
 
-    services, first_build = _build_singleton(cfg, canonical_data_root(cfg.data_root))
+    services, first_build = _build_singleton(cfg)
     # Outside the creation lock: the finisher takes the sync lock and the records lock.
     # Only the thread that built: two takes of the sync lock at once can refuse each other.
     # A rebuild for a root built before runs no finisher: it can run under a sync hold.
@@ -295,15 +294,16 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
     return services
 
 
-def _build_singleton(config: Config, root: Path) -> tuple[Services, bool]:
+def _build_singleton(config: Config) -> tuple[Services, bool]:
     """Return the singleton, built here unless another thread built it first.
 
-    The flag is whether this call ran the first build for the data root *root*.
-    That build first checks that the work which calls holds no lock of *root*.
+    The flag is whether this call ran the first build for the library of *config*.
+    That build first checks that the work which calls holds no lock of that library.
     """
     # circular: core.config -> catalog.picks -> app.services -> runtime.lock via cfg
-    from lilbee.runtime.lock import refuse_a_build_of_the_services
+    from lilbee.runtime.lock import library_root, refuse_a_build_of_the_services
 
+    root = library_root(config.data_root)
     if root not in _state.built_for:
         refuse_a_build_of_the_services(config.data_root)
     with _singleton_create_lock:

@@ -561,6 +561,47 @@ class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
         assert len(builds.held_at_build) == 1
 
 
+class TestOneLibraryUnderTwoSpellings:
+    @pytest.fixture
+    def link(self, tmp_path) -> Path:
+        """A second spelling of the data root: a link to it."""
+        link = tmp_path / "link-to-library"
+        link.symlink_to(cfg.data_root, target_is_directory=True)
+        return link
+
+    def test_a_records_lock_taken_through_a_link_is_held_under_the_real_root(self, link):
+        with skip_records_lock(link):
+            assert records_lock_held(cfg.data_root)
+
+    def test_a_sync_mark_taken_through_a_link_is_held_under_the_real_root(self, link):
+        with source_keys_in_use(link):
+            assert sync_lock_held(cfg.data_root)
+
+    def test_a_first_build_under_the_records_lock_of_a_link_raises(self, link, takes, builds):
+        with skip_records_lock(link), pytest.raises(LockOrderError, match="records lock"):
+            svc_mod.get_services()
+
+        assert builds.held_at_build == []
+
+    def test_a_records_lock_taken_under_the_real_root_is_held_through_a_link(self, link):
+        with skip_records_lock(cfg.data_root):
+            assert records_lock_held(link)
+
+    def test_a_rebuild_under_a_second_spelling_runs_no_finisher(
+        self, link, notes, builds, monkeypatch
+    ):
+        svc_mod.get_services()
+        svc_mod.reset_services()
+        _leave_journal(notes)
+        # An assignment to the config canonicalizes the root; the second spelling goes in past it.
+        monkeypatch.setitem(cfg.__dict__, "data_root", link)
+
+        svc_mod.get_services()
+
+        assert len(builds.held_at_build) == 2
+        assert absorb_pending(cfg.data_root)
+
+
 def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
     register_sources([notes], cancel=cancel)
 
