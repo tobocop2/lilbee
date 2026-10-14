@@ -31,7 +31,7 @@ from lilbee.runtime.cancellation import CancelSignal
 from lilbee.runtime.lock import LOCK_TIMEOUT, held_config, library_held
 
 if TYPE_CHECKING:
-    from lilbee.runtime.lock import _LibraryHold
+    from lilbee.runtime.lock import LibraryHold
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ def _sweep_wiki_temp_files(config: Config) -> None:
     remove_dead_temp_files(config.data_root / config.wiki_dir)
 
 
-def _roll_forward(store: Store, journal: AbsorbJournal, hold: _LibraryHold) -> None:
+def _roll_forward(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
     """Finish the absorb *journal* records from its phase, on the library of *hold*.
 
     Each step is safe to run again.
@@ -224,13 +224,13 @@ def _roll_forward(store: Store, journal: AbsorbJournal, hold: _LibraryHold) -> N
     delete_journal(config.data_root)
 
 
-def absorb(store: Store, journal: AbsorbJournal, hold: _LibraryHold) -> None:
+def absorb(store: Store, journal: AbsorbJournal, hold: LibraryHold) -> None:
     """Write the absorb *journal* and run what it records, on the library of *hold*."""
     write_journal(held_config(hold).data_root, journal)
     _roll_forward(store, journal, hold)
 
 
-def finish_absorb(store: Store, hold: _LibraryHold) -> list[str]:
+def finish_absorb(store: Store, hold: LibraryHold) -> list[str]:
     """Roll the journal of the library of *hold* forward.
 
     Returns the keys the absorbed sources took, empty when no journal was left.

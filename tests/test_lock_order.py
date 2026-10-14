@@ -56,6 +56,7 @@ from lilbee.runtime.absorb_journal import (
 from lilbee.runtime.daemon_call import DaemonCall
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
+    LibraryHold,
     LibraryHoldEndedError,
     LockBugError,
     LockOrderError,
@@ -63,7 +64,6 @@ from lilbee.runtime.lock import (
     SyncRunningError,
     _HoldKind,
     _library_hold,
-    _LibraryHold,
     _no_sync_running,
     _syncs_held_off,
     held_config,
@@ -1397,7 +1397,7 @@ class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
         assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
 
 
-_TOKEN = "_LibraryHold"
+_TOKEN = "LibraryHold"
 
 
 def _annotations(tree: ast.AST) -> list[ast.expr]:
@@ -1473,32 +1473,32 @@ def _functions_that_take_a_token(tree: ast.AST) -> list[str]:
 _PLANTED_USES_OF_THE_TOKEN = {
     "a construction": (
         """
-from lilbee.runtime.lock import _LibraryHold
+from lilbee.runtime.lock import LibraryHold
 
 
 def forged(store):
-    return finish_absorb(store, _LibraryHold(cfg))
+    return finish_absorb(store, LibraryHold(cfg))
 """,
         2,
     ),
     "an import under another name": (
         """
 if TYPE_CHECKING:
-    from lilbee.runtime.lock import _LibraryHold as Hold
+    from lilbee.runtime.lock import LibraryHold as Hold
 """,
         1,
     ),
     "an attribute of the lock module": (
         """
 def forged(store):
-    return finish_absorb(store, lock._LibraryHold(cfg))
+    return finish_absorb(store, lock.LibraryHold(cfg))
 """,
         1,
     ),
     "a lookup by name": (
         """
 def forged(store):
-    return finish_absorb(store, getattr(lock, "_LibraryHold")(cfg))
+    return finish_absorb(store, getattr(lock, "LibraryHold")(cfg))
 """,
         1,
     ),
@@ -1538,25 +1538,93 @@ class TestOnlyTheOwnerMakesAToken:
         assert _token_uses(module) == 2
 
 
-def _ended_hold() -> _LibraryHold:
+_NOT_THE_OWNER = "Only a hold of a library makes its token"
+
+
+class TestATokenIsMadeOnlyWithTheKeyOfTheLockModule:
+    @pytest.mark.parametrize(
+        "key", [pytest.param((), id="no key"), pytest.param((object(),), id="another object")]
+    )
+    def test_a_construction_without_the_key_raises_a_bug_error(self, key):
+        with pytest.raises(LockBugError, match=_NOT_THE_OWNER):
+            LibraryHold(cfg, *key)
+
+    def test_a_subclass_made_without_the_key_raises_a_bug_error(self):
+        with pytest.raises(LockBugError, match=_NOT_THE_OWNER):
+            _TokenOfNoHold(cfg)
+
+    def test_the_construction_with_the_key_makes_a_token_of_its_config(self):
+        """Control: the key is what the two refusals above lack."""
+        assert held_config(LibraryHold(cfg, lock_mod._HOLD_KEY)) is cfg
+
+
+def _private_names_of_the_lock_module(tree: ast.AST) -> list[str]:
+    """Each private name of the lock module that *tree* imports or reads off the module."""
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "lilbee.runtime.lock":
+            names += [alias.name for alias in node.names if alias.name.startswith("_")]
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "lock"
+            and node.attr.startswith("_")
+        ):
+            names.append(node.attr)
+    return names
+
+
+_PLANTED_PRIVATE_NAMES = {
+    "an import for an annotation": (
+        "if TYPE_CHECKING:\n    from lilbee.runtime.lock import _HoldKind\n",
+        ["_HoldKind"],
+    ),
+    "an attribute of the module": ("key = lock._HOLD_KEY\n", ["_HOLD_KEY"]),
+}
+
+
+class TestNoModuleImportsAPrivateNameOfTheLockModule:
+    def test_no_module_but_the_lock_module_names_a_private_name_of_it(self):
+        modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
+        naming = {
+            str(path.relative_to(_SOURCE_ROOT)): names
+            for path in modules
+            if (names := _private_names_of_the_lock_module(ast.parse(path.read_text("utf-8"))))
+        }
+        absorb_source = (_SOURCE_ROOT / "app" / "absorb.py").read_text(encoding="utf-8")
+
+        assert "from lilbee.runtime.lock import LibraryHold" in absorb_source
+        assert naming == {}
+
+    @pytest.mark.parametrize("planted", list(_PLANTED_PRIVATE_NAMES))
+    def test_the_census_finds_a_planted_private_name(self, planted):
+        """Control: the scan above counts each way a module can reach a private name."""
+        source = (_SOURCE_ROOT / "app" / "absorb.py").read_text(encoding="utf-8")
+        text, names = _PLANTED_PRIVATE_NAMES[planted]
+
+        assert _private_names_of_the_lock_module(ast.parse(source)) == []
+        assert _private_names_of_the_lock_module(ast.parse(source + text)) == names
+
+
+def _ended_hold() -> LibraryHold:
     with library_held(cfg, _A_SYNC_RUNS) as hold:
         assert held_config(hold) is cfg
     return hold
 
 
-def _absorb_again(store: Store, hold: _LibraryHold) -> None:
+def _absorb_again(store: Store, hold: LibraryHold) -> None:
     journal = read_journal(cfg.data_root)
     assert journal is not None
     absorb_mod.absorb(store, journal, hold)
 
 
-def _roll_forward_again(store: Store, hold: _LibraryHold) -> None:
+def _roll_forward_again(store: Store, hold: LibraryHold) -> None:
     journal = read_journal(cfg.data_root)
     assert journal is not None
     absorb_mod._roll_forward(store, journal, hold)
 
 
-def _read_the_config(store: Store, hold: _LibraryHold) -> None:
+def _read_the_config(store: Store, hold: LibraryHold) -> None:
     held_config(hold)
 
 
@@ -1571,19 +1639,19 @@ class _Duck:
         """Nothing to end."""
 
 
-class _TokenOfNoHold(_LibraryHold):
+class _TokenOfNoHold(LibraryHold):
     """A subclass of the token: it carries a config that no hold was taken for."""
 
 
 _FORGED_TOKENS: dict[str, Callable[[], Any]] = {
     "a duck object": lambda: _Duck(cfg),
-    "a subclass of the token": lambda: _TokenOfNoHold(cfg),
+    "a subclass of the token": lambda: _TokenOfNoHold(cfg, lock_mod._HOLD_KEY),
     "the config itself": lambda: cfg,
 }
 _TOKEN_STORAGE = "_config_while_held"
 
 
-def _carried(hold: _LibraryHold) -> list[object]:
+def _carried(hold: LibraryHold) -> list[object]:
     """Each value the token *hold* stores; it has no other storage."""
     assert not hasattr(hold, "__dict__")
     return [getattr(hold, slot) for slot in type(hold).__slots__]
@@ -1680,7 +1748,7 @@ class TestATokenEndsWithItsHold:
         assert _carried(hold) == [None]
 
     def test_a_hold_whose_block_raises_clears_what_its_token_carries(self):
-        holds: list[_LibraryHold] = []
+        holds: list[LibraryHold] = []
 
         with pytest.raises(ZeroDivisionError), library_held(cfg, _A_SYNC_RUNS) as hold:
             holds.append(hold)
@@ -1709,7 +1777,7 @@ class TestATokenEndsWithItsHold:
         assert _readers_of_the_storage(_PLANTED_READS_OF_THE_STORAGE[planted]) == ["peek"]
 
     def test_a_hold_whose_block_raises_ends_its_token(self):
-        holds: list[_LibraryHold] = []
+        holds: list[LibraryHold] = []
 
         with pytest.raises(ZeroDivisionError), library_held(cfg, _A_SYNC_RUNS) as hold:
             holds.append(hold)

@@ -661,6 +661,9 @@ def _syncs_held_off(
 
 _HOLD_ENDED = "The hold of a library ended. Its token gives no config."
 _NOT_A_HOLD = "A {kind} is not the token of a hold of a library. Only a hold makes its token."
+_NOT_THE_OWNER = "Only a hold of a library makes its token; this call is not a hold."
+# The key only a hold passes to make its token.
+_HOLD_KEY = object()
 
 
 class _HoldKind(StrEnum):
@@ -670,17 +673,20 @@ class _HoldKind(StrEnum):
     RESET = "reset"
 
 
-class _LibraryHold:
+class LibraryHold:
     """What a hold of a library yields: its block has syncs off the library of its config.
 
     The block also holds the records lock of that library. Only ``_library_hold``
     makes one, and ends it when the block ends. Every path a function uses under
-    the hold comes from ``held_config``.
+    the hold comes from ``held_config``. A construction without the key of the
+    lock module raises ``LockBugError``.
     """
 
     __slots__ = ("_config_while_held",)
 
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, key: object = None) -> None:
+        if key is not _HOLD_KEY:
+            raise LockBugError(_NOT_THE_OWNER)
         self._config_while_held: Config | None = config
 
     def end(self) -> None:
@@ -688,13 +694,13 @@ class _LibraryHold:
         self._config_while_held = None
 
 
-def held_config(hold: _LibraryHold) -> Config:
+def held_config(hold: LibraryHold) -> Config:
     """The config the live hold of *hold* was taken for; the one read of a token.
 
     Raises ``LockBugError`` when *hold* is not a token a hold made, and
     ``LibraryHoldEndedError`` when its hold ended.
     """
-    if type(hold) is not _LibraryHold:
+    if type(hold) is not LibraryHold:
         raise LockBugError(_NOT_A_HOLD.format(kind=type(hold).__name__))
     config = hold._config_while_held
     if config is None:
@@ -710,7 +716,7 @@ def _library_hold(
     running: str = _SYNC_RUNNING,
     wait: float = 0.0,
     cancel: CancelSignal | None = None,
-) -> Generator[_LibraryHold, None, None]:
+) -> Generator[LibraryHold, None, None]:
     """Keep syncs off *config*'s data root as *kind* does, then hold its records lock.
 
     The one take of both locks, the sync lock first. A reset takes the sync lock
@@ -733,7 +739,7 @@ def _library_hold(
             # No cause: a cancel that carries an error is reported as that error.
             raise SkipRecordsWaitCancelledError from None
         held.enter_context(skip_records_lock(config.data_root, cancel))
-        hold = _LibraryHold(config)
+        hold = LibraryHold(config, _HOLD_KEY)
         try:
             yield hold
         finally:
@@ -742,7 +748,7 @@ def _library_hold(
 
 def library_held(
     config: Config, running: str, wait: float = 0.0, cancel: CancelSignal | None = None
-) -> AbstractContextManager[_LibraryHold]:
+) -> AbstractContextManager[LibraryHold]:
     """Keep syncs off the data root of *config*, then hold its records lock, for the block.
 
     A sync that outlasts *wait* raises ``SyncRunningError`` with the text *running*.
@@ -753,7 +759,7 @@ def library_held(
     return _library_hold(config, _HoldKind.CHANGE, running=running, wait=wait, cancel=cancel)
 
 
-def library_held_for_reset(config: Config) -> AbstractContextManager[_LibraryHold]:
+def library_held_for_reset(config: Config) -> AbstractContextManager[LibraryHold]:
     """Hold both locks of *config*'s data root for the block of a reset, with no wait.
 
     A sync that runs, or a sync lock that cannot be taken, raises
