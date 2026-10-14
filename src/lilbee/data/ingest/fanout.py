@@ -28,6 +28,7 @@ from lilbee.data.types import ShardId, SyncResult
 from lilbee.runtime.console import PlainConsole
 from lilbee.runtime.cpu import available_cpu_count, cpu_quota
 from lilbee.runtime.engine_lock import ENGINE_DIR_ENV
+from lilbee.runtime.lock import LockBugError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -113,12 +114,16 @@ class ShardProgress:
 
 @dataclass(frozen=True)
 class ShardDone:
-    """A worker's verdict; *error* set means it did not finish its slice."""
+    """A worker's verdict; *error* set means it did not finish its slice.
+
+    *lock_bug* is the lock bug error that stopped it, sent whole so the parent raises its class.
+    """
 
     kind: Literal["done"]
     index: int
     result: SyncResult | None
     error: str | None
+    lock_bug: LockBugError | None = None
 
 
 ShardMessage = ShardProgress | ShardDone
@@ -463,5 +468,8 @@ def run_shard(
             )
         reporter.flush()
         messages.put(ShardDone(kind="done", index=index, result=result, error=None))
+    except LockBugError as exc:
+        error = error_reason(exc)
+        messages.put(ShardDone(kind="done", index=index, result=None, error=error, lock_bug=exc))
     except (Exception, asyncio.CancelledError) as exc:
         messages.put(ShardDone(kind="done", index=index, result=None, error=error_reason(exc)))
