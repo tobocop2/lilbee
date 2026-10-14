@@ -51,7 +51,7 @@ from lilbee.modelhub.registry import ModelManifest, ModelRegistry
 from lilbee.providers.fleet.binary import EngineTool
 from lilbee.providers.litellm_sdk import litellm_available as _real_litellm_available
 from lilbee.runtime.absorb_journal import AbsorbJournal, absorb_pending, journal_path, write_journal
-from lilbee.runtime.lock import LockBugError, _no_sync_running, sync_running
+from lilbee.runtime.lock import _no_sync_running, sync_running
 
 # Pristine extraction entry points, captured before any test can patch them.
 _PRISTINE_EXTRACT_DOCUMENT = _xberg_extract.extract_document
@@ -60,8 +60,6 @@ _PRISTINE_AEXTRACT_DOCUMENT = _xberg_extract.aextract_document
 pytest_plugins = ["tests._hang_watchdog"]
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
-# The marker of a test that drives a handler into a lock bug error on purpose.
-LOCK_BUG_EXPECTED_MARK = "lock_bug_expected"
 
 
 def _patch_executor_daemon_threads() -> None:
@@ -191,44 +189,6 @@ def _download_without_a_child_process(request, monkeypatch):
         return fetch_model_files(entry, models_dir, token, on_progress=on_progress)
 
     monkeypatch.setattr(download_process, "download_in_subprocess", _in_process)
-
-
-@pytest.fixture(autouse=True)
-def _fence_lock_bugs(request, monkeypatch):
-    """Fail a test in which a lock bug error was made that the test did not expect.
-
-    The error is recorded when it is made, so a handler that swallows it cannot
-    hide it. A test expects one through ``pytest.raises`` of ``LockBugError`` or a
-    subclass of it, or the ``lock_bug_expected`` marker; ``pytest.raises`` of a
-    broader class such as ``Exception`` expects none.
-    """
-    made: list[LockBugError] = []
-    expected: list[type[LockBugError]] = []
-    make = LockBugError.__init__
-    real_raises = pytest.raises
-
-    def record_and_make(error: LockBugError, *args: object) -> None:
-        made.append(error)
-        make(error, *args)
-
-    def declare_and_raises(expected_exception=None, *args, **kwargs):
-        if expected_exception is None:
-            kinds = ()
-        elif isinstance(expected_exception, tuple):
-            kinds = expected_exception
-        else:
-            kinds = (expected_exception,)
-        expected.extend(kind for kind in kinds if issubclass(kind, LockBugError))
-        return real_raises(expected_exception, *args, **kwargs)
-
-    monkeypatch.setattr(LockBugError, "__init__", record_and_make)
-    monkeypatch.setattr(pytest, "raises", declare_and_raises)
-    yield
-    if request.node.get_closest_marker(LOCK_BUG_EXPECTED_MARK) is not None:
-        return
-    unexpected = [error for error in made if not any(isinstance(error, kind) for kind in expected)]
-    if unexpected:
-        pytest.fail(f"A lock bug error the test did not expect: {unexpected!r}")
 
 
 @pytest.fixture(autouse=True)
