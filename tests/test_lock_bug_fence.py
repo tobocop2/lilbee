@@ -39,6 +39,11 @@ def test_broad(kind):
         raise LockOrderError("planted bug")
 
 
+def test_match_only():
+    with pytest.raises(match="planted bug"):
+        raise LockOrderError("planted bug")
+
+
 def test_base_class():
     with pytest.raises(LockBugError, match="planted bug"):
         raise LockOrderError("planted bug")
@@ -93,6 +98,7 @@ def outcomes(child_run) -> dict[str, set[str]]:
         "test_expected",
         "test_broad[Exception]",
         "test_broad[BaseException]",
+        "test_match_only",
         "test_base_class",
         "test_in_a_tuple",
         "test_marked",
@@ -114,6 +120,10 @@ def test_a_bug_error_the_test_expects_passes(outcomes):
 @pytest.mark.parametrize("kind", ["Exception", "BaseException"])
 def test_a_raises_of_a_broader_class_expects_no_bug_error(outcomes, kind):
     assert "ERROR" in outcomes[f"test_broad[{kind}]"]
+
+
+def test_a_raises_with_no_class_expects_no_bug_error(outcomes):
+    assert "ERROR" in outcomes["test_match_only"]
 
 
 def test_a_raises_of_the_base_class_expects_a_subclass(outcomes):

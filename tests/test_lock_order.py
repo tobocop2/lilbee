@@ -1559,17 +1559,31 @@ class TestATokenIsMadeOnlyWithTheKeyOfTheLockModule:
         assert held_config(LibraryHold(cfg, lock_mod._HOLD_KEY)) is cfg
 
 
+_LOCK_MODULE_NAME = "lilbee.runtime.lock"
+
+
+def _spellings_of_the_lock_module(tree: ast.AST) -> set[str]:
+    """Each expression by which *tree* names the lock module itself."""
+    spellings = {_LOCK_MODULE_NAME}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "lilbee.runtime":
+            spellings |= {a.asname or a.name for a in node.names if a.name == "lock"}
+        if isinstance(node, ast.Import):
+            spellings |= {a.asname for a in node.names if a.name == _LOCK_MODULE_NAME and a.asname}
+    return spellings
+
+
 def _private_names_of_the_lock_module(tree: ast.AST) -> list[str]:
     """Each private name of the lock module that *tree* imports or reads off the module."""
+    spellings = _spellings_of_the_lock_module(tree)
     names: list[str] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module == "lilbee.runtime.lock":
+        if isinstance(node, ast.ImportFrom) and node.module == _LOCK_MODULE_NAME:
             names += [alias.name for alias in node.names if alias.name.startswith("_")]
         if (
             isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "lock"
             and node.attr.startswith("_")
+            and ast.unparse(node.value) in spellings
         ):
             names.append(node.attr)
     return names
@@ -1580,7 +1594,22 @@ _PLANTED_PRIVATE_NAMES = {
         "if TYPE_CHECKING:\n    from lilbee.runtime.lock import _HoldKind\n",
         ["_HoldKind"],
     ),
-    "an attribute of the module": ("key = lock._HOLD_KEY\n", ["_HOLD_KEY"]),
+    "an attribute of the module": (
+        "from lilbee.runtime import lock\nkey = lock._HOLD_KEY\n",
+        ["_HOLD_KEY"],
+    ),
+    "an attribute of the module under another name": (
+        "from lilbee.runtime import lock as held\nkey = held._HOLD_KEY\n",
+        ["_HOLD_KEY"],
+    ),
+    "an attribute of the module by its full name": (
+        "import lilbee.runtime.lock\nkey = lilbee.runtime.lock._HOLD_KEY\n",
+        ["_HOLD_KEY"],
+    ),
+    "an attribute of the module imported under another name": (
+        "import lilbee.runtime.lock as held\nkey = held._HOLD_KEY\n",
+        ["_HOLD_KEY"],
+    ),
 }
 
 

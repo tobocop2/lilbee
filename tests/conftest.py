@@ -211,10 +211,13 @@ def _fence_lock_bugs(request, monkeypatch):
         made.append(error)
         make(error, *args)
 
-    def declare_and_raises(expected_exception, *args, **kwargs):
-        kinds = (
-            expected_exception if isinstance(expected_exception, tuple) else (expected_exception,)
-        )
+    def declare_and_raises(expected_exception=None, *args, **kwargs):
+        if expected_exception is None:
+            kinds = ()
+        elif isinstance(expected_exception, tuple):
+            kinds = expected_exception
+        else:
+            kinds = (expected_exception,)
         expected.extend(kind for kind in kinds if issubclass(kind, LockBugError))
         return real_raises(expected_exception, *args, **kwargs)
 
