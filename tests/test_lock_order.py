@@ -1590,7 +1590,11 @@ class TestNoModuleImportsAPrivateNameOfTheLockModule:
         naming = {
             str(path.relative_to(_SOURCE_ROOT)): names
             for path in modules
-            if (names := _private_names_of_the_lock_module(ast.parse(path.read_text("utf-8"))))
+            if (
+                names := _private_names_of_the_lock_module(
+                    ast.parse(path.read_text(encoding="utf-8"))
+                )
+            )
         }
         absorb_source = (_SOURCE_ROOT / "app" / "absorb.py").read_text(encoding="utf-8")
 
