@@ -21,6 +21,7 @@ import lilbee.app.services as svc_mod
 import lilbee.runtime.lock as lock_mod
 from lilbee import mcp_server
 from lilbee.app import absorb as absorb_mod
+from lilbee.app import dataset as dataset_mod
 from lilbee.app import ingest as ingest_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.reset import perform_reset
@@ -29,6 +30,7 @@ from lilbee.core.config import Config, cfg, config_scope
 from lilbee.data import offload
 from lilbee.data.extract import xberg as xberg_mod
 from lilbee.data.ingest.pipeline import _classify_pooled, _finish_pending_absorb, _PlanProgress
+from lilbee.data.ingest.pipeline import sync as pipeline_sync
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
     SkipKind,
@@ -71,7 +73,10 @@ from lilbee.runtime.lock import (
     sync_running,
 )
 from lilbee.server.handlers.ingest import _to_thread_unbroken
+from lilbee.wiki import lazy as wiki_lazy
 from lilbee.wiki import stubs as wiki_stubs
+from lilbee.wiki.generation import run_full_build, run_full_synthesize
+from lilbee.wiki.lazy import generate_stub_page
 from tests.conftest import make_mock_services
 
 _RECORDS_LOCK = "records"
@@ -201,6 +206,7 @@ class _Builds:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, takes: _Takes) -> None:
         self.held_at_build: list[list[str]] = []
+        self.sync_noted_at_build: list[bool] = []
         self.on_build: list[Callable[[], None]] = []
         self.services = make_mock_services(store=Store(cfg))
         self._takes = takes
@@ -212,6 +218,7 @@ class _Builds:
 
     def _build(self, config, provider=None, registry=None, interactive=False):
         self.held_at_build.append(self._takes.held())
+        self.sync_noted_at_build.append(sync_lock_held(cfg.data_root))
         for callback in self.on_build:
             callback()
         return self.services
@@ -328,6 +335,127 @@ class TestTheServicesAreBuiltUnderNoLibraryLock:
 
         assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
         assert _registry() == {"notes": str(notes.resolve())}
+
+
+def _full_wiki_build(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_full_build(cfg)
+
+
+def _synthesis(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_full_synthesize(cfg)
+
+
+def _single_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One indexed page, its chunks and its model call stood in for; the holds stay real."""
+    stub = mock.MagicMock(label="Plan", subdir="concepts", slug="plan")
+    monkeypatch.setattr(wiki_lazy, "load_stub_index", lambda config: {})
+    monkeypatch.setattr(wiki_lazy, "_resolve", lambda slug, stubs: stub)
+    monkeypatch.setattr(wiki_lazy, "_chunks_for_stub", lambda s, store: ({"plan.md": []}, 0))
+    monkeypatch.setattr(wiki_lazy, "truncate_chunks_to_budget", lambda chunks, config, n: chunks)
+    monkeypatch.setattr(wiki_lazy, "hash_existing_sources", lambda names: {})
+    monkeypatch.setattr(wiki_lazy, "generate_page", lambda **kwargs: None)
+    generate_stub_page("plan", Store(cfg))
+
+
+def _sync(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(pipeline_sync(quiet=True))
+
+
+def _rebuild(monkeypatch: pytest.MonkeyPatch) -> None:
+    asyncio.run(pipeline_sync(force_rebuild=True, quiet=True))
+
+
+def _import(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def imported(store, rows, on_progress):
+        return mock.MagicMock(sources=["plan.md"], pages=1, chunks=1)
+
+    monkeypatch.setattr(dataset_mod, "import_dataset", imported)
+    row = mock.MagicMock()
+    asyncio.run(dataset_mod._run_import([row], lambda *args: None))
+
+
+_PATHS_UNDER_THE_SYNC_LOCK = {
+    "full wiki build": _full_wiki_build,
+    "synthesis": _synthesis,
+    "single wiki page": _single_page,
+    "sync": _sync,
+    "rebuild": _rebuild,
+    "import": _import,
+}
+
+
+class TestTheServicesAreBuiltBeforeTheSyncLock:
+    @pytest.mark.parametrize("path", list(_PATHS_UNDER_THE_SYNC_LOCK))
+    def test_the_first_build_of_a_process_holds_no_side_of_the_sync_lock(
+        self, path, monkeypatch, takes, builds
+    ):
+        _PATHS_UNDER_THE_SYNC_LOCK[path](monkeypatch)
+
+        assert builds.held_at_build == [[]]
+        assert builds.sync_noted_at_build == [False]
+
+    def test_the_recorder_sees_a_build_under_the_sync_lock(self, takes, builds):
+        """Control: the recorder notes the sync lock when a build runs under it."""
+        with source_keys_in_use(cfg.data_root):
+            svc_mod.build_services(cfg)
+
+        assert builds.held_at_build == [[_SYNC_LOCK]]
+        assert builds.sync_noted_at_build == [True]
+
+    def test_a_full_wiki_build_first_in_a_process_finishes_an_interrupted_add(
+        self, notes, monkeypatch, takes, builds, caplog
+    ):
+        _leave_journal(notes)
+
+        with caplog.at_level("WARNING", logger="lilbee"):
+            run_full_build(cfg)
+
+        assert not absorb_pending(cfg.data_root)
+        assert _registry() == {"notes": str(notes.resolve())}
+        assert "holds this library" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "hold",
+    [
+        pytest.param(lambda root: source_keys_in_use(root), id="sync mark"),
+        pytest.param(lambda root: _syncs_held_off(root, "running"), id="syncs held off"),
+        pytest.param(lambda root: _no_sync_running(root), id="reset"),
+    ],
+)
+class TestAFirstBuildUnderTheSyncLockRaises:
+    def test_the_build_raises_before_it_runs(self, hold, takes, builds):
+        with hold(cfg.data_root), pytest.raises(LockOrderError, match="sync lock"):
+            svc_mod.get_services()
+
+        assert builds.held_at_build == []
+        assert svc_mod._state.singleton is None
+
+    def test_built_services_are_returned_under_the_sync_lock(self, hold, takes, builds):
+        built = svc_mod.get_services()
+
+        with hold(cfg.data_root):
+            assert svc_mod.get_services() is built
+
+    def test_the_sync_lock_of_another_library_refuses_nothing(self, hold, tmp_path, takes, builds):
+        other = tmp_path / "other"
+        other.mkdir()
+
+        with hold(other):
+            svc_mod.get_services()
+
+        assert builds.held_at_build == [[_SYNC_LOCK]]
+
+
+def test_a_first_build_under_the_mark_of_a_sync_raises(takes, builds):
+    async def build_under_the_mark() -> None:
+        async with sync_running(cfg.data_root):
+            svc_mod.get_services()
+
+    with pytest.raises(LockOrderError, match="sync lock"):
+        asyncio.run(build_under_the_mark())
+
+    assert builds.held_at_build == []
 
 
 def _cancelled_add(notes: Path, cancel: threading.Event) -> None:

@@ -1365,6 +1365,12 @@ def _config_with_persisted_roots(shard: ShardId | None) -> Config:
     return config
 
 
+def _build_services(cancel: CancelSignal | None) -> None:
+    """Build the services of the process, which finishes an interrupted add the first time."""
+    with _records_wait_ends_the_sync():
+        get_services(cancel)
+
+
 def _finish_pending_absorb(cancel: CancelSignal | None = None) -> None:
     """Finish an interrupted absorb, which needs every sync stopped."""
     # circular: lilbee.app.absorb imports lilbee.data.ingest for the skip records
@@ -1387,6 +1393,8 @@ def _marks_sync_running(
         data_root = active_config().data_root
         # ``cancel`` is keyword-only on a sync, so it is never in *args*.
         cancel = cast("CancelSignal | None", kwargs.get("cancel"))
+        # The services come before the mark.
+        await asyncio.to_thread(_build_services, cancel)
         while True:
             async with sync_running(data_root, cancel):
                 # An absorb writes its journal with every sync stopped, so none appears in here.

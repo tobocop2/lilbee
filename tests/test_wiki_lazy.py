@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from lilbee.app.services import services_scope
 from lilbee.core.config import cfg
 from lilbee.data.store import SearchChunk
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhase, WikiPhaseEvent
@@ -421,7 +422,10 @@ class TestGeneratingOnRequestEndToEnd:
         page_services.embedder.embed_batch.side_effect = lambda chunks: [
             [0.1] * cfg.embedding_dim for _ in chunks
         ]
+        # The chunker of the written page reads the embed cap from the services.
+        page_services.provider.embed_token_cap.return_value = None
         with (
+            services_scope(page_services),
             patch("lilbee.wiki.lazy.get_services", return_value=services),
             patch("lilbee.wiki.page.get_services", return_value=page_services),
             patch("lilbee.wiki.page.check_faithfulness", return_value=1.0),

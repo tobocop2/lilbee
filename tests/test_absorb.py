@@ -1388,7 +1388,8 @@ class TestInterruptedAbsorb:
         ):
             cfg.worker_pool_eager_start = False
             async with sync_running(cfg.data_root):
-                assert svc_mod.get_services() is built
+                # The process that starts holds no lock: a context of its own.
+                assert contextvars.Context().run(svc_mod.get_services) is built
 
         assert absorb_pending(cfg.data_root)
         assert "An interrupted add is not finished yet" in caplog.text

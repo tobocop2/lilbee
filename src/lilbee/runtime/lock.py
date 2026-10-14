@@ -78,6 +78,9 @@ _RECORDS_LOCK_HELD = (
     "This work holds the records lock of {root}. "
     "Build the services and take the sync lock before the records lock."
 )
+_SYNC_LOCK_HELD = (
+    "This work holds the sync lock of {root}. Build the services before the sync lock."
+)
 _DATA_ROOT_UNLOCKABLE = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error})."
 )
@@ -132,7 +135,7 @@ class LockBugError(Exception):
 
 
 class LockOrderError(LockBugError):
-    """Raised when work that holds the records lock asks for a lock before it: a bug."""
+    """Raised when work that holds a lock of a library asks for what comes before it: a bug."""
 
 
 class LibraryHoldEndedError(LockBugError):
@@ -349,6 +352,17 @@ def refuse_under_records_lock(data_root: Path) -> None:
     """
     if records_lock_held(data_root):
         raise LockOrderError(_RECORDS_LOCK_HELD.format(root=data_root))
+
+
+def refuse_a_build_of_the_services(data_root: Path) -> None:
+    """Raise ``LockOrderError`` when the work that calls holds a lock of *data_root*.
+
+    The services come before the sync lock and the records lock: a build under
+    either would run the finisher of an interrupted add behind its own hold.
+    """
+    refuse_under_records_lock(data_root)
+    if sync_lock_held(data_root):
+        raise LockOrderError(_SYNC_LOCK_HELD.format(root=data_root))
 
 
 def refuse_where_a_sync_cannot_lock(data_root: Path) -> None:

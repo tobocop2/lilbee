@@ -127,6 +127,7 @@ def generate_stub_page(
     """
     if config is None:
         config = cfg
+    provider = get_services().provider
     with (
         suppress(SyncMarkWaitCancelledError),
         source_keys_in_use(config.data_root, cancel),
@@ -173,7 +174,7 @@ def generate_stub_page(
             page_type=stub.subdir,
             slug=stub.slug,
             source_names=source_names,
-            provider=get_services().provider,
+            provider=provider,
             store=store,
             config=config,
             stats=stats,

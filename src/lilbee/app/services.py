@@ -278,9 +278,9 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
     from lilbee.core.config import cfg
 
     # circular: core.config -> catalog.picks -> app.services -> runtime.lock via cfg
-    from lilbee.runtime.lock import refuse_under_records_lock
+    from lilbee.runtime.lock import refuse_a_build_of_the_services
 
-    refuse_under_records_lock(cfg.data_root)
+    refuse_a_build_of_the_services(cfg.data_root)
     with _singleton_create_lock:
         services = _state.singleton
         built = services is None
