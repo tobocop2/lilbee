@@ -6,6 +6,7 @@ import ast
 import asyncio
 import inspect
 import re
+import sqlite3
 import threading
 from collections.abc import Awaitable, Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -1816,17 +1817,25 @@ _WAYS_TO_A_TAKE = {
     "_SYNC_LOCK_NAME",
     "ReadWriteLock",
     "AsyncReadWriteLock",
+    "sqlite3",
 }
 _SYNC_LOCK_FILE = "sync.lock"
 
 
+def _take_through_the_database(root: Path) -> sqlite3.Connection:
+    """Take the sync lock of *root* with the database it is made of, by a built file name."""
+    taken = sqlite3.connect(root / ("sync" + ".lock"), isolation_level=None)
+    taken.execute("BEGIN EXCLUSIVE TRANSACTION")
+    return taken
+
+
 def _names_read(node: ast.AST) -> list[str]:
-    """Each name *node* reads: a name, an attribute, an import, or the text of a string."""
+    """Each name *node* reads: a name, an attribute, each part of an import, or a string's text."""
     match node:
         case ast.Name(id=name) | ast.Attribute(attr=name):
             return [name]
-        case ast.alias(name=dotted):
-            return [dotted.rpartition(".")[2]]
+        case ast.alias(name=dotted) | ast.ImportFrom(module=str() as dotted):
+            return dotted.split(".")
         case ast.Constant(value=str() as text):
             return re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.lock)?", text)
         case _:
@@ -1880,6 +1889,18 @@ _PLANTED_WAYS_TO_A_TAKE = {
         "def change(root):\n    return open(root / lock._SYNC_LOCK_NAME)\n",
         ["_SYNC_LOCK_NAME"],
     ),
+    "the database the lock is made of, under a built file name": (
+        inspect.getsource(_take_through_the_database),
+        ["sqlite3", "sqlite3"],
+    ),
+    "a function imported from the database module": (
+        "from sqlite3 import connect\n",
+        ["sqlite3"],
+    ),
+    "a submodule of the database module": (
+        "import sqlite3.dbapi2\n",
+        ["sqlite3"],
+    ),
 }
 
 
@@ -1904,6 +1925,18 @@ class TestNoModuleButTheLockModuleReachesATakeOfTheSyncLock:
 
         assert _ways_to_a_take(source) == []
         assert _ways_to_a_take(source + "\n\n" + text) == ways
+
+    def test_a_take_through_the_database_under_a_built_name_holds_off_a_reset(self):
+        """Control: the database module reaches a take with no name the census reads otherwise."""
+        with (
+            closing(_take_through_the_database(cfg.data_root)),
+            pytest.raises(ResetRefusedError),
+            library_held_for_reset(cfg),
+        ):
+            pytest.fail("the reset ran under a take through the database")
+
+        with library_held_for_reset(cfg):
+            pass
 
     def test_the_lock_module_holds_every_way_the_census_refuses(self):
         """Control: each name the census refuses is a name of the lock module today."""
