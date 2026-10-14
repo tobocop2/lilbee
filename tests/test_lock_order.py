@@ -34,13 +34,16 @@ from lilbee.runtime.absorb_journal import (
     AbsorbJournal,
     HeldOut,
     absorb_pending,
+    read_journal,
     write_journal,
 )
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
+    LibraryHoldEndedError,
     LockOrderError,
     ResetRefusedError,
     SyncRunningError,
+    _LibraryHold,
     _no_sync_running,
     _syncs_held_off,
     library_held,
@@ -817,3 +820,209 @@ class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
         assert not absorb_pending(cfg.data_root)
         assert _registry() == {"notes": str(notes.resolve())}
         assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
+
+
+_TOKEN = "_LibraryHold"
+
+
+def _annotations(tree: ast.AST) -> list[ast.expr]:
+    """Each annotation below *tree*: of an argument, of a return and of a variable."""
+    found: list[ast.expr | None] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            found.append(node.returns)
+        if isinstance(node, ast.arg | ast.AnnAssign):
+            found.append(node.annotation)
+    return [annotation for annotation in found if annotation is not None]
+
+
+def _imports_for_annotations(tree: ast.AST) -> list[ast.alias]:
+    """Each import under its own name below an ``if TYPE_CHECKING:`` of *tree*."""
+    blocks = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name)
+        and node.test.id == "TYPE_CHECKING"
+    ]
+    return [
+        alias
+        for block in blocks
+        for statement in block.body
+        if isinstance(statement, ast.ImportFrom)
+        for alias in statement.names
+        if alias.asname is None
+    ]
+
+
+def _names_the_token(node: ast.AST) -> bool:
+    return (
+        (isinstance(node, ast.Name) and node.id == _TOKEN)
+        or (isinstance(node, ast.Attribute) and node.attr == _TOKEN)
+        or (isinstance(node, ast.alias) and node.name == _TOKEN)
+        or (isinstance(node, ast.Constant) and node.value == _TOKEN)
+    )
+
+
+def _token_uses(tree: ast.AST) -> int:
+    """How many times *tree* names the token outside an annotation and the import for one."""
+    for_annotations = {id(node) for part in _annotations(tree) for node in ast.walk(part)}
+    for_annotations |= {id(alias) for alias in _imports_for_annotations(tree)}
+    named = [node for node in ast.walk(tree) if _names_the_token(node)]
+    return sum(id(node) not in for_annotations for node in named)
+
+
+def _functions(tree: ast.AST) -> list[ast.FunctionDef]:
+    return [node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)]
+
+
+def _functions_that_take_a_token(tree: ast.AST) -> list[str]:
+    return [
+        function.name
+        for function in _functions(tree)
+        if any(
+            _names_the_token(node)
+            for argument in function.args.args
+            if argument.annotation is not None
+            for node in ast.walk(argument.annotation)
+        )
+    ]
+
+
+_PLANTED_USES_OF_THE_TOKEN = {
+    "a construction": (
+        """
+from lilbee.runtime.lock import _LibraryHold
+
+
+def forged(store):
+    return finish_absorb(store, _LibraryHold(cfg))
+""",
+        2,
+    ),
+    "an import under another name": (
+        """
+if TYPE_CHECKING:
+    from lilbee.runtime.lock import _LibraryHold as Hold
+""",
+        1,
+    ),
+    "an attribute of the lock module": (
+        """
+def forged(store):
+    return finish_absorb(store, lock._LibraryHold(cfg))
+""",
+        1,
+    ),
+    "a lookup by name": (
+        """
+def forged(store):
+    return finish_absorb(store, getattr(lock, "_LibraryHold")(cfg))
+""",
+        1,
+    ),
+}
+
+
+class TestOnlyTheOwnerMakesAToken:
+    def test_no_module_but_the_lock_module_names_the_token_outside_an_annotation(self):
+        modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
+        using = [
+            str(path.relative_to(_SOURCE_ROOT))
+            for path in modules
+            if _token_uses(ast.parse(path.read_text(encoding="utf-8")))
+        ]
+        absorb_source = (_SOURCE_ROOT / "app" / "absorb.py").read_text(encoding="utf-8")
+
+        assert _SOURCE_ROOT / "app" / "absorb.py" in modules
+        assert _TOKEN in absorb_source
+        assert using == []
+
+    @pytest.mark.parametrize("planted", list(_PLANTED_USES_OF_THE_TOKEN))
+    def test_the_census_finds_a_planted_use_in_a_copy_of_a_module(self, planted):
+        """Control: the scan above counts each way a module can reach the class."""
+        source = (_SOURCE_ROOT / "app" / "reset.py").read_text(encoding="utf-8")
+        text, uses = _PLANTED_USES_OF_THE_TOKEN[planted]
+
+        assert _token_uses(ast.parse(source)) == 0
+        assert _token_uses(ast.parse(source + text)) == uses
+
+    def test_only_the_owner_makes_a_token_in_the_lock_module(self):
+        module = ast.parse(_LOCK_MODULE.read_text(encoding="utf-8"))
+        makers = [function.name for function in _functions(module) if _token_uses(function)]
+
+        assert makers == [_OWNER]
+        assert _token_uses(module) == 1
+
+
+def _ended_hold() -> _LibraryHold:
+    with library_held(cfg, _A_SYNC_RUNS) as hold:
+        assert hold.config is cfg
+    return hold
+
+
+def _absorb_again(store: Store, hold: _LibraryHold) -> None:
+    journal = read_journal(cfg.data_root)
+    assert journal is not None
+    absorb_mod.absorb(store, journal, hold)
+
+
+def _roll_forward_again(store: Store, hold: _LibraryHold) -> None:
+    journal = read_journal(cfg.data_root)
+    assert journal is not None
+    absorb_mod._roll_forward(store, journal, hold)
+
+
+_FUNCTIONS_THAT_TAKE_A_TOKEN = {
+    "absorb": _absorb_again,
+    "finish_absorb": absorb_mod.finish_absorb,
+    "_roll_forward": _roll_forward_again,
+}
+
+
+class TestATokenEndsWithItsHold:
+    def test_each_function_that_takes_a_token_is_one_the_tests_below_call(self):
+        taking = [
+            name
+            for path in _SOURCE_ROOT.rglob("*.py")
+            for name in _functions_that_take_a_token(ast.parse(path.read_text(encoding="utf-8")))
+        ]
+
+        assert sorted(taking) == sorted(_FUNCTIONS_THAT_TAKE_A_TOKEN)
+
+    @pytest.mark.parametrize("function", list(_FUNCTIONS_THAT_TAKE_A_TOKEN))
+    def test_a_token_from_an_ended_hold_raises_with_nothing_changed(self, function, notes, builds):
+        svc_mod.get_services()
+        _leave_journal(notes)
+        before = (_registry(), read_journal(cfg.data_root), load_skip_kinds(cfg.data_root))
+        hold = _ended_hold()
+
+        with pytest.raises(LibraryHoldEndedError, match=r"hold of the library at .* ended"):
+            _FUNCTIONS_THAT_TAKE_A_TOKEN[function](builds.services.store, hold)
+
+        after = (_registry(), read_journal(cfg.data_root), load_skip_kinds(cfg.data_root))
+        assert after == before
+        assert before[1] is not None
+
+    def test_a_hold_whose_block_raises_ends_its_token(self):
+        holds: list[_LibraryHold] = []
+
+        with pytest.raises(ZeroDivisionError), library_held(cfg, _A_SYNC_RUNS) as hold:
+            holds.append(hold)
+            raise ZeroDivisionError
+
+        with pytest.raises(LibraryHoldEndedError, match="ended"):
+            _ = holds[0].config
+
+    def test_the_start_finisher_does_not_report_an_ended_token_as_a_refusal(
+        self, notes, builds, monkeypatch
+    ):
+        _leave_journal(notes)
+        ended = _ended_hold()
+        real_finish = absorb_mod.finish_absorb
+        monkeypatch.setattr(
+            absorb_mod, "finish_absorb", lambda store, hold: real_finish(store, ended)
+        )
+
+        with pytest.raises(LibraryHoldEndedError, match="ended"):
+            svc_mod.get_services()

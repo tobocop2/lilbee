@@ -123,6 +123,10 @@ class LockOrderError(RuntimeError):
     """Raised when a thread that holds the records lock asks for a lock that comes before it."""
 
 
+class LibraryHoldEndedError(Exception):
+    """Raised when a function uses the token of a library hold after the hold ended: a bug."""
+
+
 class _NoHardLinksError(OSError):
     """Raised by the lock probe on a filesystem that has no hard links."""
 
@@ -570,15 +574,31 @@ def _syncs_held_off(
         yield
 
 
-@dataclass(frozen=True)
-class LibraryHold:
-    """What ``library_held`` yields: its block has syncs off the library of *config*.
+_HOLD_ENDED = "The hold of the library at {root} ended. Its token gives no config."
 
-    The block also holds the records lock of that library. Every path a function
-    uses under the hold comes from *config*.
+
+class _LibraryHold:
+    """What ``library_held`` yields: its block has syncs off the library of its config.
+
+    The block also holds the records lock of that library. Only ``library_held``
+    makes one, and ends it when the block ends. Every path a function uses under
+    the hold comes from ``config``.
     """
 
-    config: Config
+    def __init__(self, config: Config) -> None:
+        self._config = config
+        self._ended = False
+
+    @property
+    def config(self) -> Config:
+        """The config the hold was taken for; ``LibraryHoldEndedError`` after the hold."""
+        if self._ended:
+            raise LibraryHoldEndedError(_HOLD_ENDED.format(root=self._config.data_root))
+        return self._config
+
+    def end(self) -> None:
+        """Make every later read of ``config`` raise; ``library_held`` calls it."""
+        self._ended = True
 
 
 @contextmanager
@@ -587,7 +607,7 @@ def library_held(
     running: str | None = None,
     wait: float = 0.0,
     cancel: CancelSignal | None = None,
-) -> Generator[LibraryHold, None, None]:
+) -> Generator[_LibraryHold, None, None]:
     """Keep syncs off the data root of *config*, then hold its records lock, for the block.
 
     The one take of both locks, the sync lock first. A sync that outlasts *wait*
@@ -612,7 +632,11 @@ def library_held(
             # No cause: a cancel that carries an error is reported as that error.
             raise SkipRecordsWaitCancelledError from None
         held.enter_context(skip_records_lock(data_root, cancel))
-        yield LibraryHold(config)
+        hold = _LibraryHold(config)
+        try:
+            yield hold
+        finally:
+            hold.end()
 
 
 @contextmanager
