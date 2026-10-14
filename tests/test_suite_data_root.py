@@ -1,4 +1,4 @@
-"""The suite's library, engine slot and Hugging Face home are temporary, never the developer's."""
+"""The suite's library, engine slot and cache are temporary, never the developer's."""
 
 import os
 import tempfile
@@ -9,7 +9,9 @@ from huggingface_hub import constants as hf_constants
 from lilbee.core import settings
 from lilbee.core.config import Config
 from lilbee.core.system import canonical_data_root, default_data_dir
+from lilbee.providers import gguf_meta
 from lilbee.runtime.engine_lock import machine_engine_dir
+from tests._suite_data_root import SUITE_DATA_ROOT
 
 _PROBE_KEY = "suite_data_root_probe"
 
@@ -34,6 +36,13 @@ def test_a_config_a_test_builds_uses_a_temporary_library():
 
 def test_the_machine_engine_slot_is_temporary():
     _assert_temporary(machine_engine_dir())
+
+
+def test_the_gguf_metadata_cache_is_temporary():
+    # The key feeds the digest; the model file never exists.
+    cache_file = gguf_meta._disk_cache_file(("/models/qwen.gguf", 0, 0))
+    assert cache_file is not None
+    assert cache_file.is_relative_to(Path(SUITE_DATA_ROOT.name)), cache_file
 
 
 def test_huggingface_hub_keeps_its_files_in_a_temporary_home():
