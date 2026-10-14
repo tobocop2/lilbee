@@ -16,6 +16,7 @@ import pytest
 from filelock import BaseFileLock, ReadWriteLock
 
 import lilbee.app.services as svc_mod
+from lilbee import mcp_server
 from lilbee.app import absorb as absorb_mod
 from lilbee.app import ingest as ingest_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
@@ -55,6 +56,7 @@ from lilbee.runtime.lock import (
     source_keys_in_use,
     sync_running,
 )
+from lilbee.wiki import stubs as wiki_stubs
 from tests.conftest import make_mock_services
 
 _RECORDS_LOCK = "records"
@@ -1121,3 +1123,81 @@ class TestATokenEndsWithItsHold:
 
         with pytest.raises(LibraryHoldEndedError, match="ended"):
             svc_mod.get_services()
+
+
+def _a_stub_index_that_names(source: str) -> dict[str, mock.Mock]:
+    return {"subject": mock.Mock(sources=[source])}
+
+
+def _the_start_finisher() -> None:
+    absorb_mod.finish_pending_absorb_at_start(_config_of(cfg.data_root), mock.Mock(spec=Store))
+
+
+def _the_stamps_of_a_stopped_add() -> None:
+    ingest_mod.AddRollback().registered(["notes"], _a_set_cancel())
+
+
+def _the_rollback_of_a_stopped_add() -> None:
+    ingest_mod.AddRollback(_roots=["notes"]).forget_unfinished()
+
+
+def _a_stopped_add_that_builds_the_services() -> None:
+    with ingest_mod.leave_as_cancel(ingest_mod.AddRollback(), _a_set_cancel(), lambda: False):
+        svc_mod.get_services()
+
+
+def _the_wiki_index_after_a_remove() -> None:
+    ingest_mod.forget_removed_from_wiki_index(["plan.md"])
+
+
+def _the_pre_warm_of_the_mcp_server() -> None:
+    with mock.patch.object(mcp_server, "build_mcp_server"):
+        mcp_server.main()
+
+
+def _a_set_cancel() -> threading.Event:
+    cancel = threading.Event()
+    cancel.set()
+    return cancel
+
+
+_HANDLERS_ON_THE_WAY_FROM_A_TAKE = {
+    "the start finisher": _the_start_finisher,
+    "the stamps of a stopped add": _the_stamps_of_a_stopped_add,
+    "the rollback of a stopped add": _the_rollback_of_a_stopped_add,
+    "a stopped add that builds the services": _a_stopped_add_that_builds_the_services,
+    "the wiki index after a remove": _the_wiki_index_after_a_remove,
+    "the wiki index after a fan-out": ingest_mod.forget_missing_from_wiki_index,
+    "the pre-warm of the MCP server": _the_pre_warm_of_the_mcp_server,
+}
+
+
+class TestNoHandlerTakesTheOrderError:
+    @pytest.fixture(autouse=True)
+    def a_wiki_that_lists_the_removed_source(self, monkeypatch):
+        monkeypatch.setattr(cfg, "wiki", True)
+        monkeypatch.setattr(
+            wiki_stubs, "load_stub_index", lambda config: _a_stub_index_that_names("plan.md")
+        )
+
+    def test_the_order_error_is_no_kind_of_refusal(self):
+        assert LockOrderError.__bases__ == (Exception,)
+        assert not issubclass(LockOrderError, ingest_mod.LIBRARY_REFUSALS)
+
+    @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
+    def test_a_handler_under_the_records_lock_raises_the_order_error(self, handler, takes, builds):
+        with (
+            skip_records_lock(cfg.data_root),
+            pytest.raises(LockOrderError, match=_ORDER_ERROR),
+        ):
+            _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
+
+        assert takes.sync_write_takes == 0
+        assert builds.held_at_build == []
+
+    @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
+    def test_the_same_handler_returns_with_no_records_lock_held(self, handler, takes, builds):
+        """Control: the records lock is what makes each handler above raise."""
+        _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
+
+        assert takes.held() == []

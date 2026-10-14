@@ -69,7 +69,7 @@ from lilbee.data.store import (
 )
 from lilbee.runtime.cancellation import TaskCancelledError
 from lilbee.runtime.hardware import FitLevel, available_memory_for_fit, make_fit_filter
-from lilbee.runtime.lock import ResetRefusedError
+from lilbee.runtime.lock import LockOrderError, ResetRefusedError
 from lilbee.sessions import (
     AGENT_SESSIONS_DISABLED_HINT,
     MessageRole,
@@ -1719,6 +1719,8 @@ def main() -> None:
     # the server before it attaches to stdio.
     try:
         get_services()
+    except LockOrderError:
+        raise
     except Exception:
         log.debug("MCP pre-warm failed; services will init on first call", exc_info=True)
 

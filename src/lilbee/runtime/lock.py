@@ -125,8 +125,8 @@ class LibraryUnlockableError(RuntimeError):
     """Raised when a sync or a change that keeps syncs off cannot lock the data root."""
 
 
-class LockOrderError(RuntimeError):
-    """Raised when a thread that holds the records lock asks for a lock that comes before it."""
+class LockOrderError(Exception):
+    """Raised when a thread that holds the records lock asks for a lock before it: a bug."""
 
 
 class LibraryHoldEndedError(Exception):
