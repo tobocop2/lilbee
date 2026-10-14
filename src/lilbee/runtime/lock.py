@@ -105,6 +105,7 @@ _LOCAL_DISK = "a local disk"
 # The disk to move to, by sys.platform; every other platform gets _LOCAL_DISK.
 _HARD_LINK_DISKS = {"darwin": "a disk formatted as APFS"}
 _PROBE_LEFT = "Could not delete the lock probe %s (%s); it is safe to delete by hand."
+_LOCK_BUG = "A bug in the use of the library locks: %s"
 # Minimum blocking wait granted to the in-process mutex even when the file lock
 # consumed the whole budget, so a deadline-edge acquire still gets a real attempt.
 _MUTEX_MIN_WAIT = 0.1
@@ -131,7 +132,14 @@ class LibraryUnlockableError(RuntimeError):
 
 
 class LockBugError(Exception):
-    """Raised when the code uses the locks of a library wrongly: a bug, which no handler takes."""
+    """Raised when the code uses the locks of a library wrongly: a bug, which no handler takes.
+
+    Each one logs at error level, with the stack where it is made, when it is made.
+    """
+
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
+        log.error(_LOCK_BUG, self, stack_info=True)
 
 
 class LockOrderError(LockBugError):

@@ -53,7 +53,6 @@ from lilbee.runtime.absorb_journal import (
     write_journal,
 )
 from lilbee.runtime.daemon_call import DaemonCall
-from lilbee.runtime.progress import EventType, WikiPhase
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     LibraryHoldEndedError,
@@ -75,6 +74,7 @@ from lilbee.runtime.lock import (
     sync_lock_held,
     sync_running,
 )
+from lilbee.runtime.progress import EventType, WikiPhase
 from lilbee.server.handlers.ingest import _to_thread_unbroken
 from lilbee.wiki import lazy as wiki_lazy
 from lilbee.wiki import stubs as wiki_stubs
@@ -1763,6 +1763,25 @@ class TestNoHandlerTakesABugError:
         assert type(raised.value) is _BUG_ERRORS[error]
         assert takes.sync_write_takes == 0
         assert builds.held_at_build == []
+
+    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
+    @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
+    def test_each_bug_error_is_logged_once_with_the_stack_of_its_raise(
+        self, handler, error, takes, builds, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(lock_mod, "LockOrderError", _BUG_ERRORS[error])
+
+        with (
+            caplog.at_level("ERROR"),
+            skip_records_lock(cfg.data_root),
+            pytest.raises(LockBugError, match=_ORDER_ERROR) as raised,
+        ):
+            _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
+
+        logged = [record for record in caplog.records if record.levelname == "ERROR"]
+        assert len(logged) == 1
+        assert str(raised.value) in logged[0].getMessage()
+        assert "in refuse_under_records_lock" in (logged[0].stack_info or "")
 
     @pytest.mark.parametrize("error", list(_BUG_ERRORS))
     def test_a_stopped_add_notes_no_bug_error(self, error):
