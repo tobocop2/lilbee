@@ -1201,3 +1201,98 @@ class TestNoHandlerTakesTheOrderError:
         _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
 
         assert takes.held() == []
+
+
+_WAYS_TO_A_TAKE = {
+    "_no_sync_running",
+    "_syncs_held_off",
+    "_open_sync_lock",
+    "_SYNC_LOCK_NAME",
+    "ReadWriteLock",
+    "AsyncReadWriteLock",
+}
+_SYNC_LOCK_FILE = "sync.lock"
+
+
+def _names_read(node: ast.AST) -> list[str]:
+    """Each name *node* reads: a name, an attribute, an import, or the text of a string."""
+    match node:
+        case ast.Name(id=name) | ast.Attribute(attr=name):
+            return [name]
+        case ast.alias(name=dotted):
+            return [dotted.rpartition(".")[2]]
+        case ast.Constant(value=str() as text):
+            return re.findall(r"[A-Za-z_][A-Za-z0-9_]*(?:\.lock)?", text)
+        case _:
+            return []
+
+
+def _ways_to_a_take(source: str) -> list[str]:
+    """Each way *source* reaches a take of the sync lock, in the order of the tree walk."""
+    names = [name for node in ast.walk(ast.parse(source)) for name in _names_read(node)]
+    return [name for name in names if name in _WAYS_TO_A_TAKE or name == _SYNC_LOCK_FILE]
+
+
+_PLANTED_WAYS_TO_A_TAKE = {
+    "a private take": (
+        "def change(root):\n    with lock._syncs_held_off(root, 'busy'):\n        pass\n",
+        ["_syncs_held_off"],
+    ),
+    "a private take of a reset": (
+        "from lilbee.runtime.lock import _no_sync_running\n",
+        ["_no_sync_running"],
+    ),
+    "the function that opens the lock": (
+        "def change(root):\n    lock._open_sync_lock(root, write=True).acquire_write()\n",
+        ["_open_sync_lock"],
+    ),
+    "the function that opens the lock, by its name": (
+        "def change(root):\n    getattr(lock, '_open_sync_lock')(root, write=True)\n",
+        ["_open_sync_lock"],
+    ),
+    "the read-write lock class": (
+        "import filelock\n\n\ndef change(path):\n    filelock.ReadWriteLock(path).acquire_read()\n",
+        ["ReadWriteLock"],
+    ),
+    "the read-write lock class of an event loop": (
+        "from filelock import AsyncReadWriteLock as Lock\n",
+        ["AsyncReadWriteLock"],
+    ),
+    "the file name of the lock": (
+        "def change(root):\n    return open(root / 'sync.lock')\n",
+        ["sync.lock"],
+    ),
+    "the constant of the file name": (
+        "def change(root):\n    return open(root / lock._SYNC_LOCK_NAME)\n",
+        ["_SYNC_LOCK_NAME"],
+    ),
+}
+
+
+class TestNoModuleButTheLockModuleReachesATakeOfTheSyncLock:
+    def test_no_other_module_names_a_way_to_a_take(self):
+        modules = [path for path in _SOURCE_ROOT.rglob("*.py") if path != _LOCK_MODULE]
+        reaching = {
+            str(path.relative_to(_SOURCE_ROOT)): ways
+            for path in modules
+            if (ways := _ways_to_a_take(path.read_text(encoding="utf-8")))
+        }
+
+        assert _SOURCE_ROOT / "app" / "absorb.py" in modules
+        assert _SOURCE_ROOT / "app" / "reset.py" in modules
+        assert reaching == {}
+
+    @pytest.mark.parametrize("planted", list(_PLANTED_WAYS_TO_A_TAKE))
+    def test_the_census_finds_a_planted_way_in_a_copy_of_a_module(self, planted):
+        """Control: the scan above reports each way planted in a module that has none."""
+        source = (_SOURCE_ROOT / "app" / "reset.py").read_text(encoding="utf-8")
+        text, ways = _PLANTED_WAYS_TO_A_TAKE[planted]
+
+        assert _ways_to_a_take(source) == []
+        assert _ways_to_a_take(source + "\n\n" + text) == ways
+
+    def test_the_lock_module_holds_every_way_the_census_refuses(self):
+        """Control: each name the census refuses is a name of the lock module today."""
+        found = set(_ways_to_a_take(_LOCK_MODULE.read_text(encoding="utf-8")))
+
+        assert found == _WAYS_TO_A_TAKE | {_SYNC_LOCK_FILE}
