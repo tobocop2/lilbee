@@ -21,7 +21,7 @@ from filelock import FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 from PIL import Image, ImageDraw
 
-import tests._suite_data_root  # noqa: F401  # must run before lilbee.core.config builds cfg
+import tests._suite_data_root  # noqa: F401  # must run before lilbee and huggingface_hub load
 
 # Opt tests out of the per-role catalog-task validator at import time so
 # the many ``cfg.chat_model = "test-model"``-style fixtures don't trip

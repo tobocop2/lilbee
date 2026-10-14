@@ -1,12 +1,15 @@
-"""The library the suite falls back to is a temporary folder, never the developer's own."""
+"""The suite's library, engine slot and Hugging Face home are temporary, never the developer's."""
 
 import os
 import tempfile
 from pathlib import Path
 
+from huggingface_hub import constants as hf_constants
+
 from lilbee.core import settings
 from lilbee.core.config import Config
 from lilbee.core.system import canonical_data_root, default_data_dir
+from lilbee.runtime.engine_lock import machine_engine_dir
 
 _PROBE_KEY = "suite_data_root_probe"
 
@@ -27,6 +30,15 @@ def test_the_library_the_environment_names_is_temporary():
 
 def test_a_config_a_test_builds_uses_a_temporary_library():
     _assert_temporary(Config().data_root)
+
+
+def test_the_machine_engine_slot_is_temporary():
+    _assert_temporary(machine_engine_dir())
+
+
+def test_huggingface_hub_keeps_its_files_in_a_temporary_home():
+    _assert_temporary(Path(hf_constants.HF_HOME))
+    _assert_temporary(Path(hf_constants.AGENT_HARNESSES_PATH))
 
 
 def test_a_setting_saved_to_the_default_library_leaves_the_real_config_alone():
