@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import contextvars
 import functools
 import logging
 import os
@@ -485,8 +484,7 @@ def _classify_pooled(
     for name, path in items:
         if cancel and cancel.is_set():
             break
-        # Each file is the caller's work, so it runs in a copy of the caller's context.
-        futures[pool.submit(contextvars.copy_context().run, classify, name, path)] = name
+        futures[pool.submit(classify, name, path)] = name
     for future in as_completed(futures):
         if cancel and cancel.is_set():
             # Drop queued-but-unstarted work; running tasks drain on their own.

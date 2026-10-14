@@ -10,8 +10,7 @@ import pickle
 import re
 import sqlite3
 import threading
-from collections.abc import Awaitable, Callable
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from contextlib import closing, nullcontext
 from pathlib import Path
 from typing import Any
@@ -32,9 +31,7 @@ from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui.widgets import model_bar as model_bar_mod
 from lilbee.core import settings
 from lilbee.core.config import Config, cfg, config_scope
-from lilbee.data import offload
-from lilbee.data.extract import xberg as xberg_mod
-from lilbee.data.ingest.pipeline import _classify_pooled, _finish_pending_absorb, _PlanProgress
+from lilbee.data.ingest.pipeline import _finish_pending_absorb
 from lilbee.data.ingest.pipeline import sync as pipeline_sync
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
@@ -44,9 +41,7 @@ from lilbee.data.ingest.skip_marker import (
     skip_records_lock,
     update_skip_records,
 )
-from lilbee.data.offload import to_executor, to_ingest_thread
 from lilbee.data.store import Store
-from lilbee.runtime import asyncio_loop
 from lilbee.runtime.absorb_journal import (
     AbsorbJournal,
     HeldOut,
@@ -55,32 +50,23 @@ from lilbee.runtime.absorb_journal import (
     read_journal,
     write_journal,
 )
-from lilbee.runtime.daemon_call import DaemonCall
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     LibraryHold,
     LibraryHoldEndedError,
     LockBugError,
-    LockOrderError,
     ResetRefusedError,
     SyncRunningError,
     _HoldKind,
     _library_hold,
-    _no_sync_running,
     _syncs_held_off,
     held_config,
     library_held,
     library_held_for_reset,
-    records_lock_held,
-    refuse_where_a_sync_cannot_lock,
     source_keys_in_use,
-    sync_lock_held,
-    sync_running,
 )
 from lilbee.runtime.progress import EventType, WikiPhase
-from lilbee.server.handlers.ingest import _to_thread_unbroken
 from lilbee.wiki import lazy as wiki_lazy
-from lilbee.wiki import stubs as wiki_stubs
 from lilbee.wiki.generation import run_full_build, run_full_synthesize
 from lilbee.wiki.lazy import generate_stub_page
 from tests.conftest import make_mock_services
@@ -201,6 +187,13 @@ class _Takes:
             name for (owner, name), count in self._open.items() if owner == thread and count
         )
 
+    def held_anywhere(self) -> list[str]:
+        """The library locks any thread holds now; an async take can change thread."""
+        counts: dict[str, int] = {}
+        for (_, name), count in self._open.items():
+            counts[name] = counts.get(name, 0) + count
+        return sorted(name for name, count in counts.items() if count)
+
 
 @pytest.fixture
 def takes(monkeypatch) -> _Takes:
@@ -212,7 +205,7 @@ class _Builds:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch, takes: _Takes) -> None:
         self.held_at_build: list[list[str]] = []
-        self.sync_noted_at_build: list[bool] = []
+        self.held_anywhere_at_build: list[list[str]] = []
         self.on_build: list[Callable[[], None]] = []
         self.services = make_mock_services(store=Store(cfg))
         self._takes = takes
@@ -224,7 +217,7 @@ class _Builds:
 
     def _build(self, config, provider=None, registry=None, interactive=False):
         self.held_at_build.append(self._takes.held())
-        self.sync_noted_at_build.append(sync_lock_held(cfg.data_root))
+        self.held_anywhere_at_build.append(self._takes.held_anywhere())
         for callback in self.on_build:
             callback()
         return self.services
@@ -398,7 +391,7 @@ class TestTheServicesAreBuiltBeforeTheSyncLock:
         _PATHS_UNDER_THE_SYNC_LOCK[path](monkeypatch)
 
         assert builds.held_at_build == [[]]
-        assert builds.sync_noted_at_build == [False]
+        assert builds.held_anywhere_at_build == [[]]
 
     def test_the_recorder_sees_a_build_under_the_sync_lock(self, takes, builds):
         """Control: the recorder notes the sync lock when a build runs under it."""
@@ -406,7 +399,7 @@ class TestTheServicesAreBuiltBeforeTheSyncLock:
             svc_mod.build_services(cfg)
 
         assert builds.held_at_build == [[_SYNC_LOCK]]
-        assert builds.sync_noted_at_build == [True]
+        assert builds.held_anywhere_at_build == [[_SYNC_LOCK]]
 
     def test_a_full_wiki_build_first_in_a_process_finishes_an_interrupted_add(
         self, notes, monkeypatch, takes, builds, caplog
@@ -419,49 +412,6 @@ class TestTheServicesAreBuiltBeforeTheSyncLock:
         assert not absorb_pending(cfg.data_root)
         assert _registry() == {"notes": str(notes.resolve())}
         assert "holds this library" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    "hold",
-    [
-        pytest.param(lambda root: source_keys_in_use(root), id="sync mark"),
-        pytest.param(lambda root: _syncs_held_off(root, "running"), id="syncs held off"),
-        pytest.param(lambda root: _no_sync_running(root), id="reset"),
-    ],
-)
-class TestAFirstBuildUnderTheSyncLockRaises:
-    def test_the_build_raises_before_it_runs(self, hold, takes, builds):
-        with hold(cfg.data_root), pytest.raises(LockOrderError, match="sync lock"):
-            svc_mod.get_services()
-
-        assert builds.held_at_build == []
-        assert svc_mod._state.singleton is None
-
-    def test_built_services_are_returned_under_the_sync_lock(self, hold, takes, builds):
-        built = svc_mod.get_services()
-
-        with hold(cfg.data_root):
-            assert svc_mod.get_services() is built
-
-    def test_the_sync_lock_of_another_library_refuses_nothing(self, hold, tmp_path, takes, builds):
-        other = tmp_path / "other"
-        other.mkdir()
-
-        with hold(other):
-            svc_mod.get_services()
-
-        assert builds.held_at_build == [[_SYNC_LOCK]]
-
-
-def test_a_first_build_under_the_mark_of_a_sync_raises(takes, builds):
-    async def build_under_the_mark() -> None:
-        async with sync_running(cfg.data_root):
-            svc_mod.get_services()
-
-    with pytest.raises(LockOrderError, match="sync lock"):
-        asyncio.run(build_under_the_mark())
-
-    assert builds.held_at_build == []
 
 
 def _reset_from_the_model_bar() -> None:
@@ -550,17 +500,6 @@ class TestASwitchOfLibraryRunsTheFirstBuildOfTheNewLibrary:
         assert len(builds.held_at_build) == 3
         assert absorb_pending(cfg.data_root)
 
-    def test_the_first_build_for_the_new_library_checks_its_sync_lock(self, vaults, builds):
-        first, second = vaults
-        mcp_server.init(str(first))
-        svc_mod.get_services()
-        mcp_server.init(str(second))
-
-        with source_keys_in_use(cfg.data_root), pytest.raises(LockOrderError, match="sync lock"):
-            svc_mod.get_services()
-
-        assert len(builds.held_at_build) == 1
-
 
 class TestOneLibraryUnderTwoSpellings:
     @pytest.fixture
@@ -569,24 +508,6 @@ class TestOneLibraryUnderTwoSpellings:
         link = tmp_path / "link-to-library"
         link.symlink_to(cfg.data_root, target_is_directory=True)
         return link
-
-    def test_a_records_lock_taken_through_a_link_is_held_under_the_real_root(self, link):
-        with skip_records_lock(link):
-            assert records_lock_held(cfg.data_root)
-
-    def test_a_sync_mark_taken_through_a_link_is_held_under_the_real_root(self, link):
-        with source_keys_in_use(link):
-            assert sync_lock_held(cfg.data_root)
-
-    def test_a_first_build_under_the_records_lock_of_a_link_raises(self, link, takes, builds):
-        with skip_records_lock(link), pytest.raises(LockOrderError, match="records lock"):
-            svc_mod.get_services()
-
-        assert builds.held_at_build == []
-
-    def test_a_records_lock_taken_under_the_real_root_is_held_through_a_link(self, link):
-        with skip_records_lock(cfg.data_root):
-            assert records_lock_held(link)
 
     def test_a_rebuild_under_a_second_spelling_runs_no_finisher(
         self, link, notes, builds, monkeypatch
@@ -833,274 +754,6 @@ class TestARemoveFinishesAJournalUnderOneHold:
         assert takes.sync_write_takes == 1
         assert absorb_pending(cfg.data_root)
         assert takes.held() == []
-
-
-def _enter(take: Callable[[Path], object]) -> Callable[[Path], None]:
-    def entered(root: Path) -> None:
-        with take(root):
-            pass
-
-    return entered
-
-
-def _config_of(root: Path) -> Config:
-    return cfg.model_copy(update={"data_root": root})
-
-
-def _mark_a_sync(root: Path) -> None:
-    async def marked() -> None:
-        async with sync_running(root):
-            pass
-
-    asyncio.run(marked())
-
-
-_TAKES_OF_THE_SYNC_LOCK = {
-    "the mark of a sync": _mark_a_sync,
-    "the mark of a wiki build": _enter(source_keys_in_use),
-    "the probe of an add": refuse_where_a_sync_cannot_lock,
-    "the hold of a reset": _enter(_no_sync_running),
-    "the hold of a change": _enter(lambda root: _syncs_held_off(root, _A_SYNC_RUNS)),
-    "the owner of both locks": _enter(lambda root: library_held(_config_of(root), _A_SYNC_RUNS)),
-    "the owner of both locks for a reset": _enter(
-        lambda root: library_held_for_reset(_config_of(root))
-    ),
-}
-_ORDER_ERROR = "holds the records lock of .*library"
-
-
-class TestTheRecordsLockRefusesTheLocksBeforeIt:
-    @pytest.mark.parametrize("take", list(_TAKES_OF_THE_SYNC_LOCK))
-    def test_a_take_of_the_sync_lock_under_the_records_lock_raises_before_any_take(
-        self, take, takes
-    ):
-        with (
-            skip_records_lock(cfg.data_root),
-            pytest.raises(LockOrderError, match=_ORDER_ERROR),
-        ):
-            _TAKES_OF_THE_SYNC_LOCK[take](cfg.data_root)
-
-        assert (takes.sync_write_takes, takes.sync_read_takes) == (0, 0)
-        assert takes.held() == []
-
-    @pytest.mark.parametrize("take", list(_TAKES_OF_THE_SYNC_LOCK))
-    def test_the_same_take_enters_with_no_records_lock_held(self, take, takes):
-        """Control: the records lock is what refuses each take above."""
-        _TAKES_OF_THE_SYNC_LOCK[take](cfg.data_root)
-
-        assert takes.sync_write_takes + takes.sync_read_takes == 1
-        assert takes.held() == []
-
-    def test_a_first_build_under_the_records_lock_raises_before_the_build(self, takes, builds):
-        with (
-            skip_records_lock(cfg.data_root),
-            pytest.raises(LockOrderError, match=_ORDER_ERROR),
-        ):
-            svc_mod.get_services()
-
-        assert builds.held_at_build == []
-        assert svc_mod.peek_services() is None
-        assert not svc_mod._singleton_create_lock.locked()
-
-    def test_built_services_are_returned_under_the_records_lock(self, takes, builds):
-        built = svc_mod.get_services()
-
-        with skip_records_lock(cfg.data_root):
-            assert svc_mod.get_services() is built
-
-    def test_the_hold_of_another_thread_refuses_nothing(self, takes):
-        entered: list[list[str]] = []
-
-        def take() -> None:
-            with source_keys_in_use(cfg.data_root):
-                entered.append(takes.held())
-
-        with skip_records_lock(cfg.data_root):
-            other = threading.Thread(target=take)
-            other.start()
-            other.join(_HANG_GUARD_S)
-
-        assert entered == [[_SYNC_LOCK]]
-
-    def test_the_records_lock_of_another_library_refuses_nothing(self, tmp_path, takes):
-        other_root = tmp_path / "other library"
-        other_root.mkdir()
-
-        with skip_records_lock(other_root), library_held(cfg, _A_SYNC_RUNS):
-            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
-
-
-_Work = Callable[[], None]
-
-
-def _on_a_loop(hand: Callable[[_Work], Awaitable[object]]) -> Callable[[_Work], None]:
-    def handed(work: _Work) -> None:
-        asyncio.run(hand(work))
-
-    return handed
-
-
-async def _to_an_executor(work: _Work) -> None:
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        await to_executor(pool, work)
-
-
-async def _to_the_loop_of_an_extraction(work: _Work) -> None:
-    async def extraction() -> None:
-        work()
-
-    xberg_mod._run(extraction())
-
-
-def _to_the_shared_loop(work: _Work) -> None:
-    async def on_the_loop() -> None:
-        work()
-
-    try:
-        asyncio_loop.run(on_the_loop())
-    finally:
-        asyncio_loop.shutdown()
-
-
-def _to_the_plan_pool(work: _Work) -> None:
-    def classify(name: str, path: Path) -> object:
-        work()
-        return mock.sentinel.verdict
-
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        _classify_pooled(pool, [("plan.md", Path("plan.md"))], classify, None, _PlanProgress(1))
-
-
-_HAND_OFFS: dict[str, Callable[[_Work], None]] = {
-    "the ingest pool": _on_a_loop(to_ingest_thread),
-    "an executor of the ingest": _on_a_loop(_to_an_executor),
-    "the thread of a route": _on_a_loop(_to_thread_unbroken),
-    "the loop of an extraction": _on_a_loop(_to_the_loop_of_an_extraction),
-    "the shared loop": _to_the_shared_loop,
-    "a daemon call": lambda work: DaemonCall(work, name="handed").result(),
-    "the plan pool": _to_the_plan_pool,
-}
-_HOLDS_OF_THE_SYNC_LOCK = {
-    "the mark of a wiki build": source_keys_in_use,
-    "the hold of a reset": _no_sync_running,
-    "the hold of a change": lambda root: _syncs_held_off(root, _A_SYNC_RUNS),
-}
-
-
-class TestTheOrderCheckFollowsTheWork:
-    @pytest.fixture(autouse=True)
-    def no_thread_of_the_shared_pool_is_left(self):
-        yield
-        offload._ingest_executor().shutdown()
-        offload._ingest_executor.cache_clear()
-
-    @pytest.fixture
-    def asked_on(self) -> list[int]:
-        return []
-
-    @pytest.fixture
-    def ask_for_the_sync_lock(self, library, asked_on) -> _Work:
-        def ask() -> None:
-            asked_on.append(threading.get_ident())
-            with source_keys_in_use(library):
-                pass
-
-        return ask
-
-    @pytest.mark.parametrize("helper", list(_HAND_OFFS))
-    def test_work_a_holder_hands_to_a_thread_raises_before_any_take(
-        self, helper, library, takes, asked_on, ask_for_the_sync_lock
-    ):
-        with (
-            skip_records_lock(library),
-            pytest.raises(LockOrderError, match=_ORDER_ERROR),
-        ):
-            _HAND_OFFS[helper](ask_for_the_sync_lock)
-
-        assert len(asked_on) == 1
-        assert asked_on != [threading.get_ident()]
-        assert (takes.sync_write_takes, takes.sync_read_takes) == (0, 0)
-
-    @pytest.mark.parametrize("helper", list(_HAND_OFFS))
-    def test_the_same_work_enters_when_no_holder_hands_it(
-        self, helper, takes, asked_on, ask_for_the_sync_lock
-    ):
-        """Control: the hold of the one that hands the work is what refuses it above."""
-        _HAND_OFFS[helper](ask_for_the_sync_lock)
-
-        assert len(asked_on) == 1
-        assert asked_on != [threading.get_ident()]
-        assert takes.sync_read_takes == 1
-
-    async def test_another_task_on_the_thread_of_the_holder_is_not_flagged(self, library, takes):
-        holding = asyncio.Event()
-        seen: list[bool] = []
-
-        async def other_work() -> None:
-            await holding.wait()
-            seen.append(records_lock_held(library))
-            async with sync_running(library):
-                seen.append(sync_lock_held(library))
-
-        other = asyncio.create_task(other_work())
-        with skip_records_lock(library):
-            holding.set()
-            await asyncio.wait_for(other, _HANG_GUARD_S)
-            held_by_the_holder = records_lock_held(library)
-
-        assert (held_by_the_holder, seen) == (True, [False, True])
-        assert takes.sync_read_takes == 1
-
-    def test_a_hold_under_a_hold_ends_with_the_outer_one(self, library, tmp_path):
-        with skip_records_lock(library):
-            with skip_records_lock(library):
-                pass
-            under_the_outer_hold = (records_lock_held(library), records_lock_held(tmp_path))
-
-        assert under_the_outer_hold == (True, False)
-        assert not records_lock_held(library)
-
-    @pytest.mark.parametrize("hold", list(_HOLDS_OF_THE_SYNC_LOCK))
-    def test_a_hold_of_the_sync_lock_is_seen_for_its_library_while_it_lasts(
-        self, hold, library, tmp_path
-    ):
-        before = sync_lock_held(library)
-        with _HOLDS_OF_THE_SYNC_LOCK[hold](library):
-            during = (sync_lock_held(library), sync_lock_held(tmp_path))
-
-        assert (before, during, sync_lock_held(library)) == (False, (True, False), False)
-
-    async def test_the_mark_of_a_sync_is_seen_by_the_work_started_inside_it(self, library):
-        seen: dict[str, list[bool]] = {}
-        looked = {name: asyncio.Event() for name in ("started before", "started inside")}
-        ended = asyncio.Event()
-
-        async def look(name: str) -> None:
-            await marked.wait()
-            seen[name] = [sync_lock_held(library)]
-            looked[name].set()
-            await ended.wait()
-            seen[name].append(sync_lock_held(library))
-
-        marked = asyncio.Event()
-        before = asyncio.create_task(look("started before"))
-        async with sync_running(library):
-            inside = asyncio.create_task(look("started inside"))
-            marked.set()
-            for event in looked.values():
-                await asyncio.wait_for(event.wait(), _HANG_GUARD_S)
-            seen["a thread of the ingest pool"] = [await to_ingest_thread(sync_lock_held, library)]
-            seen["the holder"] = [sync_lock_held(library)]
-        ended.set()
-        await asyncio.wait_for(asyncio.gather(before, inside), _HANG_GUARD_S)
-        seen["the holder"].append(sync_lock_held(library))
-
-        assert seen == {
-            "started before": [False, False],
-            "started inside": [True, False],
-            "a thread of the ingest pool": [True],
-            "the holder": [True, False],
-        }
 
 
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
@@ -1890,146 +1543,6 @@ class TestATokenEndsWithItsHold:
 
         with pytest.raises(LibraryHoldEndedError, match="ended"):
             svc_mod.get_services()
-
-
-def _a_stub_index_that_names(source: str) -> dict[str, mock.Mock]:
-    return {"subject": mock.Mock(sources=[source])}
-
-
-def _the_start_finisher() -> None:
-    absorb_mod.finish_pending_absorb_at_start(_config_of(cfg.data_root), mock.Mock(spec=Store))
-
-
-def _the_stamps_of_a_stopped_add() -> None:
-    ingest_mod.AddRollback().registered(["notes"], _a_set_cancel())
-
-
-def _the_rollback_of_a_stopped_add() -> None:
-    ingest_mod.AddRollback(_roots=["notes"]).forget_unfinished()
-
-
-def _a_stopped_add_that_builds_the_services() -> None:
-    with ingest_mod.leave_as_cancel(ingest_mod.AddRollback(), _a_set_cancel(), lambda: False):
-        svc_mod.get_services()
-
-
-def _the_wiki_index_after_a_remove() -> None:
-    ingest_mod.forget_removed_from_wiki_index(["plan.md"])
-
-
-def _the_pre_warm_of_the_mcp_server() -> None:
-    with mock.patch.object(mcp_server, "build_mcp_server"):
-        mcp_server.main()
-
-
-def _a_set_cancel() -> threading.Event:
-    cancel = threading.Event()
-    cancel.set()
-    return cancel
-
-
-_HANDLERS_ON_THE_WAY_FROM_A_TAKE = {
-    "the start finisher": _the_start_finisher,
-    "the stamps of a stopped add": _the_stamps_of_a_stopped_add,
-    "the rollback of a stopped add": _the_rollback_of_a_stopped_add,
-    "a stopped add that builds the services": _a_stopped_add_that_builds_the_services,
-    "the wiki index after a remove": _the_wiki_index_after_a_remove,
-    "the wiki index after a fan-out": ingest_mod.forget_missing_from_wiki_index,
-    "the pre-warm of the MCP server": _the_pre_warm_of_the_mcp_server,
-}
-
-
-_BUG_ERRORS = {"the order error": LockOrderError, "the ended-token error": LibraryHoldEndedError}
-
-
-class TestNoHandlerTakesABugError:
-    @pytest.fixture(autouse=True)
-    def a_wiki_that_lists_the_removed_source(self, monkeypatch):
-        monkeypatch.setattr(cfg, "wiki", True)
-        monkeypatch.setattr(
-            wiki_stubs, "load_stub_index", lambda config: _a_stub_index_that_names("plan.md")
-        )
-
-    def test_the_bug_errors_share_one_base_that_is_no_kind_of_refusal(self):
-        assert LockBugError.__bases__ == (Exception,)
-        assert {error.__bases__ for error in _BUG_ERRORS.values()} == {(LockBugError,)}
-        assert not issubclass(LockBugError, ingest_mod.LIBRARY_REFUSALS)
-
-    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
-    @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
-    def test_a_handler_under_the_records_lock_raises_each_bug_error(
-        self, handler, error, takes, builds, monkeypatch
-    ):
-        """The check under the records lock raises *error*, and no handler on the way takes it."""
-        monkeypatch.setattr(lock_mod, "LockOrderError", _BUG_ERRORS[error])
-
-        with (
-            skip_records_lock(cfg.data_root),
-            pytest.raises(LockBugError, match=_ORDER_ERROR) as raised,
-        ):
-            _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
-
-        assert type(raised.value) is _BUG_ERRORS[error]
-        assert takes.sync_write_takes == 0
-        assert builds.held_at_build == []
-
-    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
-    @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
-    def test_each_bug_error_is_logged_once_with_the_stack_of_its_raise(
-        self, handler, error, takes, builds, monkeypatch, caplog
-    ):
-        monkeypatch.setattr(lock_mod, "LockOrderError", _BUG_ERRORS[error])
-
-        with (
-            caplog.at_level("ERROR"),
-            skip_records_lock(cfg.data_root),
-            pytest.raises(LockBugError, match=_ORDER_ERROR) as raised,
-        ):
-            _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
-
-        logged = [record for record in caplog.records if record.levelname == "ERROR"]
-        assert len(logged) == 1
-        assert str(raised.value) in logged[0].getMessage()
-        assert "in refuse_under_records_lock" in (logged[0].stack_info or "")
-
-    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
-    def test_a_bug_error_logs_once_and_not_again_when_unpickled(self, error, caplog):
-        with caplog.at_level("ERROR"):
-            with pytest.raises(_BUG_ERRORS[error], match="planted") as raised:
-                raise _BUG_ERRORS[error]("planted", 7)
-            raised.value.add_note("a note")
-            copy = pickle.loads(pickle.dumps(raised.value))  # noqa: S301  # bytes made here
-
-        assert type(copy) is _BUG_ERRORS[error]
-        assert copy.args == ("planted", 7)
-        assert copy.__notes__ == ["a note"]
-        assert [record.getMessage() for record in caplog.records] == [
-            "A bug in the use of the library locks: (\x27planted\x27, 7)"
-        ]
-
-    @pytest.mark.parametrize("error", list(_BUG_ERRORS))
-    def test_a_stopped_add_notes_no_bug_error(self, error):
-        rollback = ingest_mod.AddRollback()
-
-        with pytest.raises(_BUG_ERRORS[error], match="ended"):
-            rollback.note_error(_BUG_ERRORS[error]("ended"))
-
-        assert rollback.error is None
-
-    def test_a_stopped_add_notes_an_error_that_is_no_bug(self):
-        """Control: the same call returns, and names the error, for an error of the add."""
-        rollback = ingest_mod.AddRollback()
-
-        rollback.note_error(OSError("ended"))
-
-        assert "ended" in str(rollback.error)
-
-    @pytest.mark.parametrize("handler", list(_HANDLERS_ON_THE_WAY_FROM_A_TAKE))
-    def test_the_same_handler_returns_with_no_records_lock_held(self, handler, takes, builds):
-        """Control: the records lock is what makes each handler above raise."""
-        _HANDLERS_ON_THE_WAY_FROM_A_TAKE[handler]()
-
-        assert takes.held() == []
 
 
 _WAYS_TO_A_TAKE = {

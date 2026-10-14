@@ -6,7 +6,6 @@ daemon flag, so a worker stuck in a network read holds the process open.
 
 from __future__ import annotations
 
-import contextvars
 import threading
 from collections.abc import Callable
 from typing import Generic, TypeVar, cast
@@ -19,8 +18,6 @@ class DaemonCall(Generic[T]):
 
     def __init__(self, fn: Callable[[], T], *, name: str) -> None:
         self._fn = fn
-        # The call is the caller's work, so it runs in a copy of the caller's context.
-        self._context = contextvars.copy_context()
         self._value: T | None = None
         self._error: BaseException | None = None
         self._thread = threading.Thread(target=self._run, name=name, daemon=True)
@@ -28,7 +25,7 @@ class DaemonCall(Generic[T]):
 
     def _run(self) -> None:
         try:
-            self._value = self._context.run(self._fn)
+            self._value = self._fn()
         except BaseException as exc:  # re-raised to the waiting caller by result()
             self._error = exc
 

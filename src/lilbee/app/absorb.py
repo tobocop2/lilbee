@@ -281,9 +281,8 @@ def finish_pending_absorb_at_start(
 ) -> None:
     """Finish an interrupted absorb when a process builds its services.
 
-    A sync or an add finishes what this leaves. Logs a refusal. Raises when
-    *cancel* ends the take of a lock, ``SkipRecordsWaitCancelledError``, and on
-    a bug such as a ``LockOrderError``.
+    A sync or an add finishes what this leaves. Raises only when *cancel* ends
+    the take of a lock: ``SkipRecordsWaitCancelledError``.
     """
     try:
         _finish(config, store, 0.0, cancel)

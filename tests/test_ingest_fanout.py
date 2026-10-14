@@ -18,7 +18,7 @@ from lilbee.core.config import cfg
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
 from lilbee.data.types import OcrReport, ShardId, SkippedSource, SyncResult
-from lilbee.runtime.lock import LockOrderError
+from lilbee.runtime.lock import LockBugError
 from lilbee.runtime.progress import (
     BatchProgressEvent,
     BatchStatus,
@@ -463,11 +463,11 @@ class TestALockBugInAWorker:
         monkeypatch.setattr("lilbee.app.ingest.forget_missing_from_wiki_index", lambda: None)
 
         async def fake_sync(**_kwargs):
-            raise LockOrderError("a take out of order")
+            raise LockBugError("a take out of order")
 
         monkeypatch.setattr("lilbee.data.ingest.pipeline.sync", fake_sync)
 
-        with pytest.raises(LockOrderError, match="a take out of order"):
+        with pytest.raises(LockBugError, match="a take out of order"):
             await pipeline_mod._sync_across_workers(
                 [_spec(0, count=1)],
                 store=None,

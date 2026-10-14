@@ -8,7 +8,6 @@ data dir.
 """
 
 import asyncio
-import contextvars
 import errno
 import json
 import logging
@@ -34,7 +33,6 @@ from filelock import AsyncReadWriteLock, FileLock, ReadWriteLock
 from filelock import Timeout as FileLockTimeout
 
 from lilbee.core.config import Config, cfg
-from lilbee.core.system import canonical_data_root
 from lilbee.runtime.cancellation import CancelSignal
 
 log = logging.getLogger(__name__)
@@ -75,13 +73,6 @@ _SYNC_LOCK_UNKNOWN = (
     "Stop every lilbee process, delete {path}, and {again}."
 )
 _SYNC_LOCK_NOT_CLOSED = "Could not close %s (%s)."
-_RECORDS_LOCK_HELD = (
-    "This work holds the records lock of {root}. "
-    "Build the services and take the sync lock before the records lock."
-)
-_SYNC_LOCK_HELD = (
-    "This work holds the sync lock of {root}. Build the services before the sync lock."
-)
 _DATA_ROOT_UNLOCKABLE = (
     "Cannot tell whether a sync or import is running: {path} cannot be locked ({error})."
 )
@@ -150,10 +141,6 @@ class LockBugError(Exception):
         return (_rebuilt_lock_bug, (type(self), self.args), self.__dict__ or None)
 
 
-class LockOrderError(LockBugError):
-    """Raised when work that holds a lock of a library asks for what comes before it: a bug."""
-
-
 class LibraryHoldEndedError(LockBugError):
     """Raised when a function uses the token of a library hold after the hold ended: a bug."""
 
@@ -177,62 +164,6 @@ _AGAIN = {ResetRefusedError: "reset again", LibraryUnlockableError: "try again"}
 
 # In-process write mutex: serializes writers within the same process
 _write_mutex = threading.Lock()
-
-
-@dataclass(eq=False)
-class _Take:
-    """One hold of a lock of a data root; ``live`` until the holder gives the lock back."""
-
-    data_root: Path
-    live: bool = True
-
-
-_Takes = contextvars.ContextVar[tuple[_Take, ...]]
-# The holds of the work that runs in this context, and in each copy of this context.
-_records_takes: _Takes = contextvars.ContextVar("lilbee_records_takes", default=())
-_sync_takes: _Takes = contextvars.ContextVar("lilbee_sync_takes", default=())
-
-
-def library_root(data_root: Path) -> Path:
-    """The one spelling of the library at *data_root*; every note and check of a hold uses it."""
-    return canonical_data_root(data_root)
-
-
-@contextmanager
-def _noted(takes: _Takes, data_root: Path) -> Generator[None, None, None]:
-    """Note in *takes* that the block holds a lock of *data_root*."""
-    take = _Take(library_root(data_root))
-    takes.set((*takes.get(), take))
-    try:
-        yield
-    finally:
-        # A copy of the context keeps its own tuple, so the take itself says the hold ended.
-        take.live = False
-        takes.set(tuple(kept for kept in takes.get() if kept is not take))
-
-
-def _holds(takes: _Takes, data_root: Path) -> bool:
-    root = library_root(data_root)
-    return any(take.live and take.data_root == root for take in takes.get())
-
-
-def records_lock_noted(data_root: Path) -> AbstractContextManager[None]:
-    """Note that the block holds the records lock of *data_root*; the take of that lock calls it."""
-    return _noted(_records_takes, data_root)
-
-
-def records_lock_held(data_root: Path) -> bool:
-    """Whether the work in this context holds the records lock of *data_root*.
-
-    Work that a holder hands to another thread with its context holds it too.
-    Other work on the thread of the holder does not.
-    """
-    return _holds(_records_takes, data_root)
-
-
-def sync_lock_held(data_root: Path) -> bool:
-    """Whether the work in this context holds a side of the sync lock of *data_root*."""
-    return _holds(_sync_takes, data_root)
 
 
 def _lock_path(lancedb_dir: Path | None) -> Path:
@@ -371,33 +302,11 @@ def _data_root_locks(
     return True
 
 
-def refuse_under_records_lock(data_root: Path) -> None:
-    """Raise ``LockOrderError`` when the work that calls holds the records lock of *data_root*.
-
-    The services and the sync lock come before the records lock. The check runs
-    before any wait and reads the holds of the calling context.
-    """
-    if records_lock_held(data_root):
-        raise LockOrderError(_RECORDS_LOCK_HELD.format(root=data_root))
-
-
-def refuse_a_build_of_the_services(data_root: Path) -> None:
-    """Raise ``LockOrderError`` when the work that calls holds a lock of *data_root*.
-
-    The services come before the sync lock and the records lock: a build under
-    either would run the finisher of an interrupted add behind its own hold.
-    """
-    refuse_under_records_lock(data_root)
-    if sync_lock_held(data_root):
-        raise LockOrderError(_SYNC_LOCK_HELD.format(root=data_root))
-
-
 def refuse_where_a_sync_cannot_lock(data_root: Path) -> None:
     """Raise the error a sync raises when it cannot open or take the sync lock of *data_root*.
 
     The lock is not held on return, and a busy lock is not waited for.
     """
-    refuse_under_records_lock(data_root)
     lock = _open_sync_lock(
         data_root, write=False, on_caller_thread=True, refused=LibraryUnlockableError
     )
@@ -571,7 +480,6 @@ async def sync_running(
     during that wait, or when the mark is taken, raises ``asyncio.CancelledError``:
     the block does not run and the mark is free.
     """
-    refuse_under_records_lock(data_root)
     # Opening the lock reads and writes files, so it runs off the event loop too.
     lock = await asyncio.to_thread(
         _open_sync_lock, data_root, write=False, refused=LibraryUnlockableError
@@ -588,8 +496,7 @@ async def sync_running(
             raise asyncio.CancelledError from None
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
-        with _noted(_sync_takes, data_root):
-            yield
+        yield
     finally:
         try:
             await lock.close()
@@ -611,7 +518,6 @@ def source_keys_in_use(
     set during that wait, or when the mark is taken, raises
     ``SyncMarkWaitCancelledError``: the block does not run and the mark is free.
     """
-    refuse_under_records_lock(data_root)
     lock = _open_sync_lock(
         data_root, write=False, on_caller_thread=True, refused=LibraryUnlockableError
     )
@@ -627,8 +533,7 @@ def source_keys_in_use(
             if _is_set(cancel):
                 raise SyncMarkWaitCancelledError from None
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError, reader=True)
-        with _noted(_sync_takes, data_root):
-            yield
+        yield
     finally:
         _close_sync_lock(lock)
 
@@ -636,7 +541,6 @@ def source_keys_in_use(
 @contextmanager
 def _no_sync_running(data_root: Path) -> Generator[None, None, None]:
     """Keep syncs off *data_root* for the block; raise ``ResetRefusedError`` unless it can."""
-    refuse_under_records_lock(data_root)
     try:
         lock = _open_sync_lock(data_root, write=True)
     except LockingUnsupportedError as exc:
@@ -648,8 +552,7 @@ def _no_sync_running(data_root: Path) -> Generator[None, None, None]:
             raise ResetRefusedError(f"{_SYNC_RUNNING} {_RESET_WHEN_DONE}") from None
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, ResetRefusedError)
-        with _noted(_sync_takes, data_root):
-            yield
+        yield
 
 
 @contextmanager
@@ -663,7 +566,6 @@ def _syncs_held_off(
     A *cancel* that is set during the wait, or when the lock is taken, raises
     ``SyncMarkWaitCancelledError``: the block does not run and the lock is free.
     """
-    refuse_under_records_lock(data_root)
     lock = _open_sync_lock(data_root, write=True, refused=LibraryUnlockableError)
     with closing(lock):
         try:
@@ -674,8 +576,7 @@ def _syncs_held_off(
             raise SyncRunningError(running) from None
         except _SYNC_LOCK_ERRORS as exc:
             _sync_lock_unavailable(Path(lock.lock_file), exc, LibraryUnlockableError)
-        with _noted(_sync_takes, data_root):
-            yield
+        yield
 
 
 _HOLD_ENDED = "The hold of a library ended. Its token gives no config."
@@ -749,7 +650,7 @@ def _library_hold(
     the sync lock, or that is set when the records lock is taken, raises
     ``SkipRecordsWaitCancelledError``: the block does not run and both locks are free.
     """
-    # circular: data.ingest.skip_marker -> runtime.lock via records_lock_noted
+    # circular: data.ingest -> data.ingest.pipeline -> runtime.lock
     from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError, skip_records_lock
 
     if kind is _HoldKind.RESET:

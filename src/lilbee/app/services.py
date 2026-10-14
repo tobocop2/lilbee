@@ -30,6 +30,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from lilbee.core.system import canonical_data_root
 from lilbee.runtime.absorb_journal import absorb_pending
 
 if TYPE_CHECKING:
@@ -172,8 +173,7 @@ class _ServicesState:
         # that lives on the provider itself.
         self.interactive: bool = False
         # The data roots (canonical) a build of the singleton ran for in this
-        # process. Only the first build for a root runs the start finisher, so
-        # only that build checks the locks.
+        # process. Only the first build for a root runs the start finisher.
         self.built_for: set[Path] = set()
 
 
@@ -298,14 +298,8 @@ def _build_singleton(config: Config) -> tuple[Services, bool]:
     """Return the singleton, built here unless another thread built it first.
 
     The flag is whether this call ran the first build for the library of *config*.
-    That build first checks that the work which calls holds no lock of that library.
     """
-    # circular: core.config -> catalog.picks -> app.services -> runtime.lock via cfg
-    from lilbee.runtime.lock import library_root, refuse_a_build_of_the_services
-
-    root = library_root(config.data_root)
-    if root not in _state.built_for:
-        refuse_a_build_of_the_services(config.data_root)
+    root = canonical_data_root(config.data_root)
     with _singleton_create_lock:
         if _state.singleton is not None:
             return _state.singleton, False

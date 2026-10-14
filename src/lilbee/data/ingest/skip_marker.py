@@ -30,7 +30,6 @@ from filelock import FileLock
 
 from lilbee.data.types import SkippedSource
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
-from lilbee.runtime.lock import records_lock_noted
 
 log = logging.getLogger(__name__)
 
@@ -286,11 +285,6 @@ def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
     return _load_records(data_root).kinds
 
 
-def _records_lock(data_root: Path) -> FileLock:
-    """The records lock of *data_root*: one object, with a hold count for each thread."""
-    return FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
-
-
 @contextlib.contextmanager
 def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> Iterator[None]:
     """Hold the cross-process lock on the records, or raise without entering.
@@ -302,7 +296,7 @@ def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> It
     back. Both raise ``SkipRecordsWaitCancelledError``. A take under the
     caller's own hold does not read *cancel*.
     """
-    lock = _records_lock(data_root)
+    lock = FileLock(str(data_root / SKIP_MARKER_FILENAME) + ".lock", is_singleton=True)
 
     def _cancelled() -> bool:
         return cancel is not None and cancel.is_set()
@@ -320,8 +314,7 @@ def skip_records_lock(data_root: Path, cancel: CancelSignal | None = None) -> It
         # entered already.
         if lock.lock_counter == 1 and _cancelled():
             raise SkipRecordsWaitCancelledError
-        with records_lock_noted(data_root):
-            yield
+        yield
     finally:
         lock.release()
 
