@@ -74,14 +74,33 @@ RETRY_STATUSES = {
     "/retry/busy": HTTPStatus.SERVICE_UNAVAILABLE,
 }
 SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
-# Links as a page writes them: a raw letter, a raw space, one already percent-encoded, a backslash.
-SPELL_LINKS = ("/spell/naïve", "/spell/raw space", "/spell/caf%C3%A9", "/spell/back\\slash")
-# The same four addresses as crawlberg reports and requests them.
+# Links as a page writes them: a raw letter, a raw space, one already percent-encoded, a
+# backslash, and a raw letter before an escaped slash and before a slash.
+SPELL_LINKS = (
+    "/spell/naïve",
+    "/spell/raw space",
+    "/spell/caf%C3%A9",
+    "/spell/back\\slash",
+    "/spell/naïve%2Fs",
+    "/spell/naïve/s",
+)
+# The same addresses as crawlberg reports and requests them.
 SPELL_REQUESTS = (
     "/spell/na%C3%AFve",
     "/spell/raw%20space",
     "/spell/caf%C3%A9",
     "/spell/back/slash",
+    "/spell/na%C3%AFve%2Fs",
+    "/spell/na%C3%AFve/s",
+)
+# The addresses lilbee saves them under: as written, except where crawlberg names the page apart.
+SPELL_SAVED = (
+    "/spell/naïve",
+    "/spell/raw space",
+    "/spell/caf%C3%A9",
+    "/spell/back/slash",
+    "/spell/naïve%2Fs",
+    "/spell/naïve/s",
 )
 # Pairs of links a server answers with two pages: a re-crawl keeps each pair as two pages.
 BACKSLASH_PAIR = ("/pair/b\\s", "/pair/b/s")
@@ -94,6 +113,8 @@ PAIR_LINKS = (
     ("/pair/d/%2e%2e/up", "/pair/up"),
     ("/pair/naïve", "/pair/na%C3%AFve"),
 )
+# A written link the crawl requests in another form: its own page names that request path.
+REQUESTED_AS = {"/pair/naïve": "/pair/na%C3%AFve"}
 # A link with an escaped hyphen, and the equivalent address a library holds for it.
 EQUIVALENT_LINK = "/same/x%2Dy"
 EQUIVALENT_STORED = "/same/x-y"
@@ -739,9 +760,22 @@ def _assert_each_pair_is_two_pages(library: list[tuple[Path, Path]]) -> None:
 def _own_pages(pair: tuple[str, str], texts: tuple[str, str]) -> bool:
     """Whether each text is the stale copy, or the page the site serves for its own address."""
     return all(
-        text.startswith(STALE_TEXT) or f"{FRESH_TEXT} {link}." in text
+        text.startswith(STALE_TEXT) or f"{FRESH_TEXT} {REQUESTED_AS.get(link, link)}." in text
         for link, text in zip(pair, texts, strict=True)
     )
+
+
+def _assert_saved_as_written(site: _Site) -> None:
+    """The ``/spell/`` pages were requested as crawlberg spells them and saved as SPELL_SAVED."""
+    assert set(site.paths_since(0, "/spell/")) == {"/spell/", *SPELL_REQUESTS}
+    meta = save.load_crawl_metadata()
+    saved = [site.url(path) for path in SPELL_SAVED]
+    assert set(meta) == {site.url("/spell/"), *saved}
+    files = [cfg.documents_dir / "_web" / meta[url].file for url in saved]
+    assert [meta[url].file for url in saved] == [save.url_to_filename(url) for url in saved]
+    assert len({file.as_posix().casefold() for file in files}) == len(saved)
+    assert [file for file in files if not file.is_file()] == []
+    assert files[SPELL_SAVED.index("/spell/naïve")].parent.name == "naïve"
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -779,10 +813,9 @@ class TestStoredSpellingOfAnAddress:
         assert backslash_copy.read_text(encoding="utf-8").startswith(STALE_TEXT)
         assert len(save.load_crawl_metadata()) >= 1 + 2 * len(PAIR_LINKS)
 
-    async def test_a_new_page_is_stored_as_crawlberg_reports_it(self, site):
+    async def test_a_new_page_is_stored_under_the_address_its_link_wrote(self, site):
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
-        reported = {site.url(path) for path in SPELL_REQUESTS}
-        assert set(save.load_crawl_metadata()) == {site.url("/spell/"), *reported}
+        _assert_saved_as_written(site)
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -1077,6 +1110,10 @@ class TestBrowserLaunch:
         library = _pair_library(site)
         self._crawl(site.url("/pair/"), depth=1, max_pages=0)
         _assert_each_pair_is_two_pages(library)
+
+    def test_a_new_page_is_stored_under_the_address_its_link_wrote(self, site):
+        self._crawl(site.url("/spell/"), depth=1, max_pages=0)
+        _assert_saved_as_written(site)
 
     def test_a_chrome_variable_that_names_no_binary_does_not_fail_the_crawl(
         self, site, monkeypatch, tmp_path
