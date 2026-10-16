@@ -56,7 +56,7 @@ _UNSET_PATH = Path()
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 
-# A character no HTTP header value may hold.
+# A control character, which the crawl user agent setting refuses.
 _CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
 
 # Model roles that can be off. An empty LILBEE_<FIELD> or config.toml value
