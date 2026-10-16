@@ -275,11 +275,6 @@ def _settle(data_root: Path) -> None:
         _apply(data_root, pending.after)
 
 
-def load_skip_records(data_root: Path) -> SkipRecords:
-    """The skip markers with the reason and the kind of each, as they are on disk."""
-    return _load_records(data_root)
-
-
 def load_skip_kinds(data_root: Path) -> dict[str, SkipKind]:
     """The kind of every marked file."""
     return _load_records(data_root).kinds
