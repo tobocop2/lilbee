@@ -253,7 +253,7 @@ class TestSecurity:
         meta: dict[str, CrawlMeta] = {}
         outcome = _save_single_result(result, meta)
         web_dir = cfg.documents_dir / "_web"
-        # url_to_filename neutralizes ".." segments, so the result MUST be a
+        # The address parser resolves ".." segments, so the result MUST be a
         # concrete path under _web/. A None return would indicate the helper
         # started rejecting the request at the hash/exists short-circuit, which
         # is the class of refactor we want to catch.
