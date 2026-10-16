@@ -14,11 +14,6 @@ from lilbee.catalog import CatalogModel
 from lilbee.core.config import cfg
 from lilbee.core.system import canonical_models_dir
 
-# The suite module switches the hub offline for unit runs; integration tests
-# make real hub requests by design, so the switch is undone here.
-os.environ.pop("HF_HUB_OFFLINE", None)
-hf_constants.HF_HUB_OFFLINE = False
-
 _DEFAULT_CHAT_REPO = "Qwen/Qwen3-0.6B-GGUF"
 _DEFAULT_CHAT_FILE = "Qwen3-0.6B-Q8_0.gguf"
 _CI_CHAT_REPO = os.environ.get("LILBEE_TEST_CHAT_MODEL", _DEFAULT_CHAT_REPO)
@@ -85,6 +80,19 @@ def pytest_collection_modifyitems(items):
         # marker and silently overrides every per-test opt-in.
         if item.get_closest_marker("timeout") is None:
             item.add_marker(pytest.mark.timeout(_INTEGRATION_TIMEOUT_SECONDS))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _hub_online():
+    """Switch the hub back on: the suite module sets it offline for unit runs.
+
+    A fixture, not an import-time write: pytest imports this conftest while it
+    collects a unit run too, and a write there turns the hub on for that run.
+    """
+    with pytest.MonkeyPatch.context() as patch:
+        patch.delenv("HF_HUB_OFFLINE", raising=False)
+        patch.setattr(hf_constants, "HF_HUB_OFFLINE", False)
+        yield
 
 
 @pytest.fixture(autouse=True)
