@@ -233,6 +233,24 @@ class TestSitemapFetch:
         monkeypatch.setattr("httpx.get", lambda *a, **kw: fake)
         assert _fetch_sitemap_text("https://example.com/start") == "<urlset></urlset>"
 
+    @pytest.mark.parametrize(
+        ("user_agent", "headers"),
+        [("Probe/1.0", {"User-Agent": "Probe/1.0"}), ("", None)],
+        ids=["override", "blank"],
+    )
+    def test_the_request_names_the_crawl_user_agent(self, monkeypatch, user_agent, headers):
+        sent: list[object] = []
+
+        def _get(url: str, **kwargs: object) -> MagicMock:
+            sent.append(kwargs["headers"])
+            return MagicMock(status_code=404, text="")
+
+        monkeypatch.setattr("httpx.get", _get)
+        _count_sitemap_urls(
+            "https://example.com/start", include_subdomains=False, user_agent=user_agent
+        )
+        assert sent == [headers]
+
     def test_does_not_follow_redirects(self, monkeypatch):
         """A 30x is not followed; an unfollowed redirect yields no sitemap (SSRF-safe)."""
         fake = MagicMock(status_code=301, text="<urlset></urlset>")
