@@ -2163,6 +2163,19 @@ class TestSettingsMcp:
         assert result["updated"] == ["crawl_browser_extra_args"]
         assert cfg.crawl_browser_extra_args == ["--lang=fr", "--mute-audio"]
 
+    def test_settings_set_stores_the_crawl_user_agent(self, isolated_env):
+        cfg.data_root = isolated_env
+        result = settings_set({"crawl_user_agent": "Probe/1.0"})
+        assert result["updated"] == ["crawl_user_agent"]
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+    def test_settings_set_refuses_a_crawl_user_agent_with_a_control_character(self, isolated_env):
+        cfg.data_root = isolated_env
+        before = cfg.crawl_user_agent
+        result = settings_set({"crawl_user_agent": "Probe\n1.0"})
+        assert "crawl_user_agent" in result["error"]
+        assert cfg.crawl_user_agent == before
+
     def test_settings_set_stores_a_flag_crawlberg_refuses(self, isolated_env):
         cfg.data_root = isolated_env
         result = settings_set({"crawl_browser_extra_args": ["--user-data-dir=/tmp/profile"]})
