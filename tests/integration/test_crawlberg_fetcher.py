@@ -170,6 +170,9 @@ OVERSIZED_TIMEOUT = 10**17
 OVERSIZED_REASON = "int too big to convert"
 # How the user agent of crawlberg's own HTTP client starts.
 CRAWLBERG_USER_AGENT_START = "crawlberg/"
+# The request a recursive crawl makes for its progress total, and how its client names itself.
+SITEMAP_PATH = "/sitemap.xml"
+HTTP_CLIENT_USER_AGENT_START = "python-httpx/"
 # A Chrome user agent set by the crawl_user_agent setting, and the Chrome release it names.
 OVERRIDE = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 OVERRIDE_MAJOR = "120"
@@ -1229,6 +1232,7 @@ class TestBrowserLaunch:
         paths = self._crawl(site.url("/hints/"), depth=1)
         assert len(paths) == 2
         assert set(site.agents_for("/hints/")) == {OVERRIDE}
+        assert site.agents_for(SITEMAP_PATH) == [OVERRIDE]
         hints = site.hints_for("/hints/")
         assert sorted(hints) == sorted(HINT_PAGES)
         brand = f'"Chromium";v="{OVERRIDE_MAJOR}"'
@@ -1244,6 +1248,9 @@ class TestUserAgent:
         agents = site.agents_for("/wide/")
         assert len(agents) >= 3
         assert all(agent.startswith(CRAWLBERG_USER_AGENT_START) for agent in agents), agents
+        sitemap_agents = site.agents_for(SITEMAP_PATH)
+        assert len(sitemap_agents) == 1
+        assert sitemap_agents[0].startswith(HTTP_CLIENT_USER_AGENT_START), sitemap_agents
 
     async def test_an_override_names_every_request_of_a_recursive_http_crawl(self, site):
         cfg.crawl_user_agent = OVERRIDE
@@ -1252,6 +1259,7 @@ class TestUserAgent:
         agents = site.agents_for("/wide/")
         assert len(agents) >= 3
         assert set(agents) == {OVERRIDE}
+        assert site.agents_for(SITEMAP_PATH) == [OVERRIDE]
 
     async def test_an_override_names_a_single_page_http_request(self, site):
         cfg.crawl_user_agent = OVERRIDE

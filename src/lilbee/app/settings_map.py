@@ -789,7 +789,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         help_text=(
             "User agent of every crawl request, for a site that answers some clients "
             "differently. Blank = no override: browser mode sends Chrome's own, "
-            "http mode sends crawlberg's. A Chrome user agent also sets the matching "
+            "http mode sends crawlberg's, and the sitemap lookup sends its HTTP "
+            "client's. A Chrome user agent also sets the matching "
             "client hints in browser mode."
         ),
     ),
