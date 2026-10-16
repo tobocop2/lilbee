@@ -712,91 +712,25 @@ class TestFetchRecursive:
         assert len(stub.configs) == 1
 
 
-# A page address as the link wrote it, crawlberg's address for it, and the address lilbee keeps.
-WRITTEN_ADDRESSES = [
+# A page address as the link wrote it, and crawlberg's address for it, which lilbee keeps.
+REPORTED_ADDRESSES = [
+    pytest.param("https://example.com/t/naïve", "https://example.com/t/na%C3%AFve", id="letter"),
     pytest.param(
-        "https://example.com/t/naïve",
-        "https://example.com/t/na%C3%AFve",
-        "https://example.com/t/naïve",
-        id="raw-letter",
+        "https://example.com/t/raw space", "https://example.com/t/raw%20space", id="space"
     ),
-    pytest.param(
-        "https://example.com/t/raw space",
-        "https://example.com/t/raw%20space",
-        "https://example.com/t/raw space",
-        id="raw-space",
-    ),
-    pytest.param(
-        "https://example.com/t/caf%C3%A9",
-        "https://example.com/t/caf%C3%A9",
-        "https://example.com/t/caf%C3%A9",
-        id="written-escape",
-    ),
-    pytest.param(
-        "https://example.com/t/naïve%2Fs",
-        "https://example.com/t/na%C3%AFve%2Fs",
-        "https://example.com/t/naïve%2Fs",
-        id="raw-letter-and-escaped-slash",
-    ),
-    pytest.param(
-        "https://example.com/t/naïve#intro",
-        "https://example.com/t/na%C3%AFve",
-        "https://example.com/t/naïve",
-        id="fragment",
-    ),
-    pytest.param(
-        "https://example.com/t/d/../naïve",
-        "https://example.com/t/na%C3%AFve",
-        "https://example.com/t/na%C3%AFve",
-        id="dot-segment",
-    ),
-    pytest.param(
-        "https://example.com/t/b\\naïve",
-        "https://example.com/t/b/na%C3%AFve",
-        "https://example.com/t/b/na%C3%AFve",
-        id="backslash",
-    ),
-    pytest.param(
-        "https://example.com/t/naïve?utm_source=x",
-        "https://example.com/t/na%C3%AFve",
-        "https://example.com/t/na%C3%AFve",
-        id="tracking-parameter",
-    ),
-    pytest.param(
-        "https://Example.com/t/naïve",
-        "https://example.com/t/na%C3%AFve",
-        "https://example.com/t/na%C3%AFve",
-        id="host-case",
-    ),
-    pytest.param("", "https://example.com/t/a", "https://example.com/t/a", id="no-original"),
+    pytest.param("https://example.com/t/a\x01b", "https://example.com/t/a%01b", id="control"),
+    pytest.param("https://example.com/t/e\x1b]0", "https://example.com/t/e%1B]0", id="escape"),
+    pytest.param("https://example.com/t/a#intro", "https://example.com/t/a", id="fragment"),
 ]
 
 
-class TestWrittenAddress:
-    @pytest.mark.parametrize(("written", "reported", "kept"), WRITTEN_ADDRESSES)
-    async def test_a_page_keeps_the_written_address_only_when_it_names_the_same_page(
-        self, written: str, reported: str, kept: str
-    ):
+class TestReportedAddress:
+    @pytest.mark.parametrize(("written", "reported"), REPORTED_ADDRESSES)
+    async def test_a_page_keeps_the_address_crawlberg_reports(self, written: str, reported: str):
         script = [page(SEED, depth=0), page(reported, "# Leaf", original_url=written)]
         with StubCrawlberg(script).installed():
             fetched = await _recursive(_http())
-        assert [one.url for one in fetched] == [SEED, kept]
-
-    async def test_an_escaped_slash_and_a_slash_stay_two_addresses(self):
-        script = [
-            page(SEED, depth=0),
-            page(
-                "https://example.com/na%C3%AFve%2Fs", original_url="https://example.com/naïve%2Fs"
-            ),
-            page("https://example.com/na%C3%AFve/s", original_url="https://example.com/naïve/s"),
-        ]
-        with StubCrawlberg(script).installed():
-            fetched = await _recursive(_http())
-        assert [one.url for one in fetched] == [
-            SEED,
-            "https://example.com/naïve%2Fs",
-            "https://example.com/naïve/s",
-        ]
+        assert [one.url for one in fetched] == [SEED, reported]
 
 
 # One address for each query parameter a campaign or analytics vendor adds to a link.

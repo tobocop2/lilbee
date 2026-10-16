@@ -18,8 +18,8 @@ from lilbee.crawler.models import CrawlResult
 
 log = logging.getLogger(__name__)
 
-# Maximum filename length before truncation (most filesystems cap at 255 bytes)
-_MAX_FILENAME_LEN = 200
+# Maximum UTF-8 length of a saved path before truncation (most filesystems cap a name at 255 bytes)
+_MAX_FILENAME_BYTES = 200
 
 # Sentinel for index pages (trailing slash or empty path)
 _INDEX_FILENAME = "index.md"
@@ -39,6 +39,20 @@ _PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _HEX = 16
 # Every printable ASCII character but the space: the encoded form leaves these as written.
 _URI_CHARACTERS = string.digits + string.ascii_letters + string.punctuation
+# A run of escapes, or one other character, of a path segment in its equivalent form.
+_SEGMENT_PART = re.compile(r"(?:%[0-9A-Fa-f]{2})+|.", re.DOTALL)
+_PERCENT = "%"
+_SPACE = " "
+# Characters a Windows file name may not hold; a segment never holds "/" or "?".
+_WINDOWS_RESERVED = frozenset('<>:"\\|*')
+# Characters Windows strips from the end of a file name.
+_WINDOWS_TRAILING = " ."
+# Names Windows gives to devices, with or without an extension, in any letter case.
+_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+    | {f"{port}{n}" for port in ("COM", "LPT") for n in [*string.digits, "¹", "²", "³"]}
+)
+_EXTENSION_MARK = "."
 
 
 def _normalized_escape(escape: re.Match[str]) -> str:
@@ -47,14 +61,55 @@ def _normalized_escape(escape: re.Match[str]) -> str:
     return char if char in _UNRESERVED else escape.group().upper()
 
 
-def encoded_form(url: str) -> str:
+def _encoded_form(url: str) -> str:
     """*url* with each space, control and non-ASCII character percent-encoded as UTF-8."""
     return quote(url, safe=_URI_CHARACTERS)
 
 
 def equivalent_form(url: str) -> str:
     """The encoded form of *url* with each escape normalized as RFC 3986 section 6.2.2 defines."""
-    return _PERCENT_ESCAPE.sub(_normalized_escape, encoded_form(url))
+    return _PERCENT_ESCAPE.sub(_normalized_escape, _encoded_form(url))
+
+
+def _escaped(text: str) -> str:
+    """*text* as upper-case percent escapes of its UTF-8 bytes, a byte that is not UTF-8 as is."""
+    return "".join(f"%{byte:02X}" for byte in text.encode("utf-8", errors="surrogateescape"))
+
+
+def _named_char(char: str) -> str:
+    """One character an escape names, as a file name holds it.
+
+    A space and a printable non-ASCII character read as written. The escape of a character
+    Windows refuses, or of a percent sign, escapes its own percent sign, so it never reads
+    like the escape a raw reserved character becomes.
+    """
+    if char == _SPACE or (not char.isascii() and char.isprintable()):
+        return char
+    if char in _WINDOWS_RESERVED or char == _PERCENT:
+        return _escaped(_PERCENT) + _escaped(char).removeprefix(_PERCENT)
+    return _escaped(char)
+
+
+def _named_part(part: str) -> str:
+    """One run of escapes, or one raw character, of a segment, as a file name holds it."""
+    if len(part) > 1:
+        named = bytes.fromhex(part.replace(_PERCENT, "")).decode("utf-8", "surrogateescape")
+        return "".join(map(_named_char, named))
+    return _escaped(part) if part in _WINDOWS_RESERVED else part
+
+
+def _segment_name(segment: str) -> str:
+    """The file name for one path segment of an address in its equivalent form.
+
+    The trailing spaces and dots Windows strips, and the first letter of a device name, become
+    escapes, so the name maps back to exactly one segment.
+    """
+    name = "".join(map(_named_part, _SEGMENT_PART.findall(segment)))
+    body = name.rstrip(_WINDOWS_TRAILING)
+    name = body + _escaped(name[len(body) :])
+    if name.split(_EXTENSION_MARK)[0].rstrip(_SPACE).upper() in _DEVICE_NAMES:
+        name = _escaped(name[0]) + name[1:]
+    return name
 
 
 def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, list[str]]:
@@ -76,17 +131,17 @@ def url_to_filename(url: str) -> str:
     A distinct query string folds a short hash of the query into the filename so
     two URLs differing only in their query do not map to the same file and
     overwrite each other. The fragment is client-side and intentionally ignored.
+    Every spelling of one address in :func:`equivalent_form` maps to one path, and each
+    segment is named by :func:`_segment_name`.
     """
-    parsed = urlparse(url)
-    host = parsed.hostname or "unknown"
-    path = parsed.path.strip("/")
+    canonical = equivalent_form(url)
+    parsed = urlparse(canonical)
+    host = _segment_name(parsed.hostname or "unknown")
+    path = "/".join(map(_segment_name, parsed.path.strip("/").split("/")))
 
     if not path:
         rel = _INDEX_FILENAME
     else:
-        # Neutralize path traversal segments and unsafe filesystem characters.
-        path = re.sub(r"\.\.+", "_", path)
-        path = re.sub(r'[<>:"|?*]', "_", path)
         last_segment = path.rsplit("/", 1)[-1]
         if re.search(r"\.[^./]+$", last_segment):
             rel = re.sub(r"\.[^./]+$", ".md", path)  # real extension: swap it for .md
@@ -102,9 +157,11 @@ def url_to_filename(url: str) -> str:
     full = f"{host}/{rel}"
 
     # Truncate if too long, preserving .md extension
-    if len(full) > _MAX_FILENAME_LEN:
-        url_hash = hashlib.sha256(url.encode()).hexdigest()[:12]
-        full = full[: _MAX_FILENAME_LEN - 16] + f"_{url_hash}.md"
+    encoded = full.encode()
+    if len(encoded) > _MAX_FILENAME_BYTES:
+        url_hash = hashlib.sha256(canonical.encode()).hexdigest()[:12]
+        head = encoded[: _MAX_FILENAME_BYTES - 16].decode(errors="ignore")
+        full = f"{head}_{url_hash}.md"
 
     return full
 
