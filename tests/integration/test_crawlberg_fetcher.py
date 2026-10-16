@@ -66,7 +66,7 @@ CANCEL_BOUND_S = 2.0
 LATE_START_MARGIN_S = 0.1
 SETTLE_S = 1.0
 RETRY_ATTEMPTS = 2
-# The most retries crawlberg 1.10.2 accepts.
+# The most retries crawlberg 1.11.1 accepts.
 CRAWLBERG_RETRY_LIMIT = 20
 RETRY_DELAY_S = 0.05
 RETRY_STATUSES = {
