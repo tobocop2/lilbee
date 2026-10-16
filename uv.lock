@@ -721,15 +721,15 @@ toml = [
 
 [[package]]
 name = "crawlberg"
-version = "1.10.2"
+version = "1.11.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/81/be/480384d0ef7af82636f88f4501930e01fc7b610d9edb9d7e78f2686affe8/crawlberg-1.10.2.tar.gz", hash = "sha256:1f22523adc217708e619bc4c8c899262fee3545367c9529482b4e7572e4153e3", size = 118449, upload-time = "2026-10-06T21:26:22.372Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/ba/196d8b3f42dbaf139a129b6313d0dc11e1c5ae467012a78124205628c5e9/crawlberg-1.11.1.tar.gz", hash = "sha256:d15f50d58591f0cea0a00b4a00973335d94f611ca8fd27b05bc958b898fd4258", size = 122440, upload-time = "2026-10-16T07:06:18.916Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dc/91/479683f3cc14450715f5128dcebc43549dedf26490d92faa04d666210bea/crawlberg-1.10.2-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:0f5bb5c55711615664a3dfbec6b9476cc167afb247d3266d7cacc86e266e81e5", size = 11418844, upload-time = "2026-10-06T21:26:10.094Z" },
-    { url = "https://files.pythonhosted.org/packages/40/b0/b76641dca43694df9c919ec7ae23a9bac9da0ae3e84c7260b167e14f4d05/crawlberg-1.10.2-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:8250e5e83635c2205531046c13d3aa631105205105f209e43481b08fa8479a0b", size = 11890016, upload-time = "2026-10-06T21:26:12.48Z" },
-    { url = "https://files.pythonhosted.org/packages/eb/70/eb5c30673dc73cdd0265b54dfdd9a511895b9ea5cb13426af0cd74a8960d/crawlberg-1.10.2-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:c8cfbe15b544cf679ee994f5ba38f2becd4bccfbc0b4c1c6de5b2d55f67a7462", size = 12529273, upload-time = "2026-10-06T21:26:14.815Z" },
-    { url = "https://files.pythonhosted.org/packages/11/f7/ab7532fb6faff494c5be955e81d5fa716f95e7355399a4405cb339d6fae4/crawlberg-1.10.2-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:77e59e1731ec260fc804a2045dd5d177ea8e9c80b6df8973f292d82180946086", size = 12485632, upload-time = "2026-10-06T21:26:17.231Z" },
-    { url = "https://files.pythonhosted.org/packages/14/c9/ecd5b926986a4c51b722db61ac5df733da9068cd3a8b2de6dee2c353e40a/crawlberg-1.10.2-cp310-abi3-win_amd64.whl", hash = "sha256:082dae1bdce7db3fce11133cc1ee5a1ea5ca48714e443dfc3e0782367016a482", size = 18683263, upload-time = "2026-10-06T21:26:20.334Z" },
+    { url = "https://files.pythonhosted.org/packages/88/30/8c69c227d150f2b7bdc37223f79ef21203cd9c696e80b477fdaa7408e08f/crawlberg-1.11.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:7e9bb24e960763c8d0dd954667c7b079c96204241582bffdcca5c169b96cf19a", size = 12746940, upload-time = "2026-10-16T07:06:04.613Z" },
+    { url = "https://files.pythonhosted.org/packages/6b/e4/7ddb95aa27c6dd6354fcde9cc4ebf52922026ca55c806001ff56133d9af6/crawlberg-1.11.1-cp310-abi3-macosx_11_0_x86_64.whl", hash = "sha256:1b2f0e66610afffad0b1a1f42cca74e9555746451f9934cda849dfc141cf0e9e", size = 13230257, upload-time = "2026-10-16T07:06:07.81Z" },
+    { url = "https://files.pythonhosted.org/packages/9a/ac/33264063b28452ff0a19b93a6b96f7d812642ad4d1d279219c2c8a0d7074/crawlberg-1.11.1-cp310-abi3-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:aa778ff084c8a03587fcc91af09c22fdc768363292f6d38fdd7e81b2123c5a0e", size = 14438861, upload-time = "2026-10-16T07:06:10.695Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/38/3972b895f25c00a576aa3991d5bc94b24d993ddac86480b6a830082ba090/crawlberg-1.11.1-cp310-abi3-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:a84eb6b6b4011098650c28aa8ee4c9c6364507e8795d4f7dd7784ef93260dde9", size = 13972906, upload-time = "2026-10-16T07:06:13.485Z" },
+    { url = "https://files.pythonhosted.org/packages/8d/55/21458ccf368aa5d29b16c0d923a4f099f92d634a39fc35cc5b8fa9b74e80/crawlberg-1.11.1-cp310-abi3-win_amd64.whl", hash = "sha256:620737cbf890ba9e0b13e1d00b82740ea440f388d5f8c8fb33b158ab6d283931", size = 19966949, upload-time = "2026-10-16T07:06:16.807Z" },
 ]
 
 [[package]]
@@ -1757,7 +1757,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cachetools", specifier = ">=7.1.4" },
-    { name = "crawlberg", marker = "extra == 'crawler'", specifier = ">=1.10.2" },
+    { name = "crawlberg", marker = "extra == 'crawler'", specifier = ">=1.11.1" },
     { name = "diskcache", specifier = ">=5.6.1" },
     { name = "filelock", specifier = ">=4.1.1,<4.2" },
     { name = "gguf", specifier = ">=0.19" },
