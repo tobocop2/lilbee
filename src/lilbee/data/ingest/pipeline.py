@@ -862,7 +862,7 @@ async def _absorb_plan_batch(
         await to_ingest_thread(moves.load, new_hashes)
     detected = _detect_moves(entries, plan.added, moves)
     if detected:
-        taken = await to_ingest_thread(_relocate_in_holds, store, detected)
+        taken = await to_ingest_thread(relocate_in_holds, store, detected)
         # A file whose candidates other writers all took is an add.
         entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
         for name in relocated:
@@ -2267,7 +2267,7 @@ def _retry_after_lock_timeout(write: Callable[[], _Written]) -> _Written:
         return write()
 
 
-def _relocate_in_holds(store: Store, moves: list[SourceMove]) -> dict[str, str]:
+def relocate_in_holds(store: Store, moves: list[SourceMove]) -> dict[str, str]:
     """Re-key *moves* one hold of the write lock at a time; the old name each new name took.
 
     Each hold takes the one-shot lock retry, so a timeout keeps what earlier
