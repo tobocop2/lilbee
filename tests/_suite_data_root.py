@@ -1,8 +1,7 @@
 """Point the test run's library, engine slot and cache at a temporary folder.
 
 Every test restores ``cfg`` to the root built here, and a thread that outlives
-its test writes there. A module of its own runs once, though ``conftest.py`` is
-imported under two names. It must run before lilbee builds ``cfg`` and before
+its test writes there. It must run before lilbee builds ``cfg`` and before
 huggingface_hub reads its constants, which both happen at import.
 """
 
@@ -36,7 +35,7 @@ def _run_cache_dir() -> Path:
     return _RUN_CACHE_DIR
 
 
-# lilbee has no environment variable for its cache location, so the run
+# lilbee has no variable of its own that moves its cache location alone, so the run
 # patches the one function that gives it; the platform original above stays
 # importable for the tests that check its formula.
 lilbee.core.system.default_cache_dir = _run_cache_dir

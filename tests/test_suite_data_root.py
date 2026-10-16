@@ -57,6 +57,7 @@ def test_a_saved_hugging_face_token_stays_readable(monkeypatch):
     monkeypatch.delenv("LILBEE_HF_TOKEN", raising=False)
     token_file = Path(hf_constants.HF_TOKEN_PATH)
     saved = token_file.read_text(encoding="utf-8").strip() if token_file.exists() else None
+    saved = saved or None
     assert hf_token() == saved
 
 
