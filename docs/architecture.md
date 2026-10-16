@@ -113,6 +113,18 @@ Documents are chunked, embedded, and stored as vectors for later retrieval.
 - **Wiki generation.** Wikification is explicit: `lilbee wiki build` (or the TUI Wikify action, or the HTTP/MCP build endpoints) issues one LLM call per source; `lilbee sync` only runs the capped `lilbee.wiki.ingest.incremental_update` hook when `wiki_auto_update` is enabled. Each call jointly identifies 3–5 concepts worth their own page and drafts a section for each. Sections are citation-verified and embedding-faithfulness-scored before landing in `concepts/`, `entities/`, or `drafts/`. See the [Wiki Layer](#wiki-layer) section.
 - **Storage.** LanceDB tables: chunks (with FTS index for hybrid retrieval), sources, citations, wiki chunks, concept graph nodes/edges, and chunk-to-concept mappings.
 
+### Saved names of web pages
+
+A crawled page is saved as `_web/<host>/<folders>/<name>~<hash>.md`. Three separate mechanisms give the name its three properties:
+
+- **Identity.** The canonical address is the key crawlberg gives the page: the WHATWG URL parse (ada-url), no fragment, the percent-escape forms of RFC 3986 section 6.2.2, and query parameters sorted by name. The crawl metadata in `crawl_meta.json` is keyed by this address.
+- **Uniqueness.** `<hash>` is the first 16 hex digits of the SHA-256 of the canonical address. Lower-case hex survives every case fold and Unicode normalization, so no two pages share a file on any disk.
+- **Legality and readability.** Each folder and `<name>` is a slug of one part of the address: decoded, NFC, letters, digits and `-_.` kept, other runs written as `-`, at most 80 bytes, and a `_` before a Windows device name. A trailing slash or an empty path gives the name `index`. The deepest folders are dropped until the path fits 200 bytes. A slug is lossy on purpose, because the hash carries the identity. A citation label shows the slug without the hash.
+
+A name never escapes anything, so no escaping rule has to be both legal and one-to-one.
+
+At the start of each crawl, one pass moves a library saved under an earlier rule. With syncs held off, it keeps the latest entry for each canonical address, gives a file that several entries share to the page whose text it holds, re-keys each moved file's index source to its new name, moves the file, and removes the folders the move empties. The pass never changes text, so a later write of new text is an ordinary update, and a second pass moves nothing.
+
 ### Planning: which files to ingest
 
 Before any embedding, sync diffs the corpus against the store to decide which files to process. That diff is a **stat-gated hash**, per file.
