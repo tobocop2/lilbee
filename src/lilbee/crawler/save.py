@@ -10,7 +10,7 @@ import string
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
@@ -37,6 +37,8 @@ METADATA_FLUSH_INTERVAL = 10
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 _PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _HEX = 16
+# Every printable ASCII character but the space: the encoded form leaves these as written.
+_URI_CHARACTERS = string.digits + string.ascii_letters + string.punctuation
 
 
 def _normalized_escape(escape: re.Match[str]) -> str:
@@ -45,9 +47,14 @@ def _normalized_escape(escape: re.Match[str]) -> str:
     return char if char in _UNRESERVED else escape.group().upper()
 
 
+def encoded_form(url: str) -> str:
+    """*url* with each space, control and non-ASCII character percent-encoded as UTF-8."""
+    return quote(url, safe=_URI_CHARACTERS)
+
+
 def equivalent_form(url: str) -> str:
-    """*url* with each percent escape normalized as RFC 3986 section 6.2.2 defines."""
-    return _PERCENT_ESCAPE.sub(_normalized_escape, url)
+    """The encoded form of *url* with each escape normalized as RFC 3986 section 6.2.2 defines."""
+    return _PERCENT_ESCAPE.sub(_normalized_escape, encoded_form(url))
 
 
 def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, list[str]]:

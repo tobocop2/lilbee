@@ -244,7 +244,7 @@ def _already_saved_under(web: Path, url: str) -> bool:
     return (web / url_to_filename(url)).exists()
 
 
-# Two spellings RFC 3986 section 6.2.2 calls equivalent: (one spelling, its equivalent form).
+# Two spellings of one request (RFC 3987 3.1, RFC 3986 6.2.2): (one spelling, its equivalent form).
 EQUIVALENT_SPELLINGS = [
     pytest.param("https://example.com/t/a%2Db", "https://example.com/t/a-b", id="hyphen"),
     pytest.param("https://example.com/t/a%2db", "https://example.com/t/a-b", id="lower-hex"),
@@ -259,6 +259,17 @@ EQUIVALENT_SPELLINGS = [
         "https://example.com/t/q?n=%61%2fb", "https://example.com/t/q?n=a%2Fb", id="query"
     ),
     pytest.param("https://example.com/t/%2e%2e/up", "https://example.com/t/../up", id="dots"),
+    pytest.param(
+        "https://example.com/t/naïve", "https://example.com/t/na%C3%AFve", id="raw-letter"
+    ),
+    pytest.param(
+        "https://example.com/t/raw space", "https://example.com/t/raw%20space", id="raw-space"
+    ),
+    pytest.param("https://example.com/t/a\x00b", "https://example.com/t/a%00b", id="raw-nul"),
+    pytest.param("https://example.com/t/a\x7fb", "https://example.com/t/a%7Fb", id="raw-del"),
+    pytest.param(
+        "https://example.com/t/na%c3%afve", "https://example.com/t/na%C3%AFve", id="escaped-letter"
+    ),
 ]
 # Two addresses a server can answer with two pages; no rule makes them one.
 DIFFERENT_PAGES = [
@@ -283,12 +294,6 @@ DIFFERENT_PAGES = [
     pytest.param("https://example.com/t/Case", "https://example.com/t/case", id="letter-case"),
     pytest.param("https://example.com:443/t/port", "https://example.com/t/port", id="default-port"),
     pytest.param("https://example.com/t/frag#one", "https://example.com/t/frag", id="fragment"),
-    pytest.param(
-        "https://example.com/t/naïve", "https://example.com/t/na%C3%AFve", id="raw-letter"
-    ),
-    pytest.param(
-        "https://example.com/t/raw space", "https://example.com/t/raw%20space", id="space"
-    ),
     pytest.param("https://example.com/t/a{b}", "https://example.com/t/a%7Bb%7D", id="braces"),
     pytest.param(
         "https://example.com/t/p%2541", "https://example.com/t/p%41", id="escaped-percent"
@@ -296,7 +301,8 @@ DIFFERENT_PAGES = [
     pytest.param("https://Example.com/t/host", "https://example.com/t/host", id="host-case"),
 ]
 
-# Each character that is not unreserved: its escape and the character itself are two addresses.
+# Each printable or non-ASCII character that is not unreserved: its escape and the character
+# itself are two addresses.
 _ESCAPED_CHARACTERS = {
     "slash": "/",
     "question-mark": "?",
@@ -317,7 +323,6 @@ _ESCAPED_CHARACTERS = {
     "semicolon": ";",
     "equals": "=",
     "percent": "%",
-    "space": " ",
     "double-quote": '"',
     "less-than": "<",
     "greater-than": ">",
@@ -327,8 +332,6 @@ _ESCAPED_CHARACTERS = {
     "left-brace": "{",
     "pipe": "|",
     "right-brace": "}",
-    "nul": "\x00",
-    "del": "\x7f",
     "non-ascii": "Ã",
 }
 # Addresses no rule makes one page: the escapes the standard keeps, and what no rule may do.
@@ -351,8 +354,6 @@ KEPT_ESCAPES = [
     pytest.param("https://example.com/t/x%zz", "https://example.com/t/x%ZZ", id="not-hex"),
     pytest.param("http://example.com/t/scheme", "https://example.com/t/scheme", id="scheme"),
 ]
-# A NUL byte is no file name, so the crawl cannot save a page at its address.
-SAVEABLE_KEPT_ESCAPES = [case for case in KEPT_ESCAPES if case.id != "escape-of-nul"]
 # An escape of each unreserved class and the character it names: one address.
 UNRESERVED_ESCAPES = [
     pytest.param(
@@ -1653,7 +1654,7 @@ class TestCrawlAndSave:
         assert meta[other].content_hash == "old"
 
     @pytest.mark.parametrize("fetched", [0, 1], ids=["first-fetched", "second-fetched"])
-    @pytest.mark.parametrize(("one", "other"), [*DIFFERENT_PAGES, *SAVEABLE_KEPT_ESCAPES])
+    @pytest.mark.parametrize(("one", "other"), [*DIFFERENT_PAGES, *KEPT_ESCAPES])
     @patch("lilbee.crawler.runner.crawl_recursive")
     async def test_a_fetched_page_never_replaces_the_stored_copy_of_a_different_page(
         self, mock_crawl_recursive, isolated_env, request, one: str, other: str, fetched: int
