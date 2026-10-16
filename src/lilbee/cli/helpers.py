@@ -182,8 +182,11 @@ def render_status(con: PlainConsole) -> None:
         con.print(renderable)
 
 
-NAME_TAKEN_WARNING = "The name {name} is taken by another source (use --force to overwrite)."
-"""Said when a label belongs to a different source, the one case --force fixes.
+NAME_TAKEN_WARNING = (
+    "The name {name} is taken by another source or by a source inside the folder "
+    "(--force replaces only another source)."
+)
+"""Said when a label belongs to another source, or to a source inside the folder.
 
 The TUI states the same thing in its own words (``messages.CMD_ADD_NAME_TAKEN``);
 the two surfaces do not share a string because ``cli.tui.messages`` pulls the

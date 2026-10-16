@@ -303,6 +303,13 @@ def _seeded_nested_children(store: Store, parent: Path) -> Path:
     return parent
 
 
+def _seeded_nested_inner_first(store: Store, parent: Path) -> Path:
+    """The nested pair of ``_seeded_nested_children``, with the inner source registered first."""
+    _seeded_nested_children(store, parent)
+    _register_as({"deep": parent / "work" / "deep", "work": parent / "work"})
+    return parent
+
+
 _NESTED_KEYS = [
     "notes/work/deep/a.md",
     "notes/work/deep/b.md",
@@ -733,6 +740,20 @@ class TestWhatIsNotAbsorbed:
         assert _keys(library) == ["notes/loose.md", "work/plan.md"]
         assert synced.added == ["notes/loose.md"]
 
+    async def test_an_absorbing_add_keeps_the_records_of_a_source_it_does_not_take_in(
+        self, library, notes
+    ):
+        _write(notes / ".hidden" / "other" / "x.md", "# X\n\nA page about the tide tables.\n")
+        await _add(notes / ".hidden" / "other")
+        await _add(notes / "work")
+        _hold_out("other/gone.md", SkipKind.REMOVED)
+        _hold_out("work/gone.md", SkipKind.REMOVED)
+
+        result = register_sources([notes])
+
+        assert result.absorbed == ["work"]
+        assert sorted(load_skip_markers(cfg.data_root)) == ["notes/work/gone.md", "other/gone.md"]
+
     async def test_a_child_below_an_ignored_folder_is_indexed_once_when_the_pattern_goes(
         self, library, tmp_path
     ):
@@ -1075,11 +1096,13 @@ class TestInterruptedAbsorb:
     _SHAPES: ClassVar[dict[str, tuple[Callable[[Store, Path], Path], dict[str, str]]]] = {
         "renamed": (_seeded_renamed_child, {"renamed": "work"}),
         "nested": (_seeded_nested_children, {"work": "work", "deep": "work/deep"}),
+        "inner-first": (_seeded_nested_inner_first, {"deep": "work/deep", "work": "work"}),
     }
     _SHAPE_POINTS = (
         ("renamed", "rekey", 1),
         ("renamed", "table", 4),
         *(("nested", "rekey", nth) for nth in (1, 2)),
+        *(("inner-first", "rekey", nth) for nth in (1, 2, 3)),
         ("nested", "table", 4),
         ("nested", "table", _TABLES + 4),
         ("nested", "clear", 1),

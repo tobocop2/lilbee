@@ -481,6 +481,21 @@ class TestAdd:
         assert "Warning" in result.output
         assert "is taken by another source" in result.output
 
+    @pytest.mark.parametrize("flags", [[], ["--force"]], ids=["plain", "force"])
+    def test_add_of_a_parent_named_like_its_source_says_force_does_not_help(
+        self, isolated_env, tmp_path, flags
+    ):
+        inner = tmp_path / "src" / "work" / "work"
+        inner.mkdir(parents=True)
+        (inner / "doc.txt").write_text("content", encoding="utf-8")
+        runner.invoke(app, ["add", str(inner)])
+
+        result = runner.invoke(app, ["add", *flags, str(inner.parent)])
+
+        said = " ".join(result.output.split())
+        assert "or by a source inside the folder (--force replaces only another source)" in said
+        assert "Registered 0 source(s)" in said
+
     def test_add_nonexistent_bracketed_path_prints_it_literally(self, tmp_path):
         """A bracketed path in the not-found error must not go through markup."""
         missing = tmp_path / "note[draft].txt"
