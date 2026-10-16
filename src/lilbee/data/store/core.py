@@ -262,6 +262,7 @@ _FLUSH_KEY_COLUMNS = (
     (CHUNKS_TABLE, _SOURCE_ID),
     (PAGE_TEXTS_TABLE, _SOURCE_ID),
     (SOURCES_TABLE, _PATH),
+    (SOURCES_TABLE, _SOURCE_ID),
 )
 
 # A filtered delete scans every row its key index does not cover. The index is
@@ -432,6 +433,17 @@ def _pathed(rows: Iterable[Mapping[str, Any]], key: str, paths: Mapping[str, str
     ]
 
 
+def _id_chunks(rows: list[dict[str, Any]]) -> list[SearchChunk]:
+    """Search results of chunk *rows* that name their source by id until the search ends."""
+    return [
+        SearchChunk(
+            **{name: value for name, value in row.items() if name != _SOURCE_ID},
+            source=row[_SOURCE_ID],
+        )
+        for row in rows
+    ]
+
+
 def _source_record(row: Mapping[str, Any]) -> SourceRecord:
     """The ``SourceRecord`` a ``_sources`` row shows: its path as ``filename``, no id."""
     shown = {name: value for name, value in row.items() if name not in (_SOURCE_ID, _HELD_OUT)}
@@ -503,13 +515,25 @@ def _keyed_by_path(db: LanceDBConnection) -> bool:
     )
 
 
+def _index_names(table: LanceTable) -> dict[str, list[str]]:
+    """The columns of each index of *table*, by index name; none when the listing fails."""
+    return {index.name: index.columns for index in _index_registry(table) or []}
+
+
 def _migrate_sources_table(table: LanceTable) -> None:
     """Give ``_sources`` an id per row, its path column, and every column it lacks. Lock held."""
+    from lancedb.index import BTree
+
     if _SOURCE_ID not in table.schema.names:
         table.add_columns({_SOURCE_ID: f"md5({_OLD_PATH})"})
     if _OLD_PATH in table.schema.names:
         # lancedb's stub types each alteration as an iterable; it takes one dict.
         table.alter_columns({"path": _OLD_PATH, "rename": _PATH})  # type: ignore[dict-item]
+    if f"{_OLD_PATH}_idx" in _index_names(table):
+        # A key index keeps its name through the rename; the flush refreshes it by the new one.
+        table.create_index(_PATH, config=BTree(), replace=True)
+        table.create_index(_SOURCE_ID, config=BTree(), replace=True)
+        table.drop_index(f"{_OLD_PATH}_idx")
     defaults = {name: f"CAST({SOURCE_STAT_UNKNOWN} AS BIGINT)" for name in _SOURCE_STAT_COLUMNS}
     defaults |= {name: _NULL_TEXT_SQL for name in (*_SOURCE_META_COLUMNS, _HELD_OUT)}
     missing = {name: sql for name, sql in defaults.items() if name not in table.schema.names}
@@ -975,6 +999,8 @@ class Store:
         A path no source row holds (a wiki page, a removed source a citation
         names) gets one first, so no path is lost when the column goes.
         """
+        from lancedb.index import BTree
+
         if column not in table.schema.names:
             return
         keys = {row[column] for row in table.search().select([column]).limit(None).to_list()}
@@ -985,6 +1011,9 @@ class Store:
             sources.add([self._placeholder_row(key, _md5(key)) for key in sorted(keys)])
         if _SOURCE_ID not in table.schema.names:
             table.add_columns({_SOURCE_ID: f"md5({column})"})
+        indexes = _index_names(table)
+        if [column] in indexes.values() and [_SOURCE_ID] not in indexes.values():
+            table.create_index(_SOURCE_ID, config=BTree())
         table.drop_columns([column])
 
     def open_table(self, name: str) -> LanceTable | None:
@@ -1405,7 +1434,9 @@ class Store:
         if not self._fts_ready:
             return []
         try:
-            results = self._search_chunks(_lexical_rows(table, query_text, top_k, chunk_type))
+            results = self._with_paths(
+                _id_chunks(_lexical_rows(table, query_text, top_k, chunk_type))
+            )
             norms = normalized_bm25([r.bm25_score or 0.0 for r in results])
             return [
                 r.model_copy(update={"score": norm}) for r, norm in zip(results, norms, strict=True)
@@ -1455,7 +1486,7 @@ class Store:
                 table, query_text, query_vector, top_k, max_distance, chunk_type
             )
             if hits is not None:
-                return hits
+                return self._with_paths(hits)
 
         try:
             rows = self._vector_arm(
@@ -1478,7 +1509,7 @@ class Store:
             r.model_copy(
                 update={"score": vector_similarity(r.distance) if r.distance is not None else 0.0}
             )
-            for r in results
+            for r in self._with_paths(results)
         ]
 
     def _keyword_arm(
@@ -1544,12 +1575,14 @@ class Store:
             query = query.refine_factor(_ANN_REFINE_FACTOR)
         if chunk_type:
             query = query.where(_chunk_type_predicate(chunk_type))
-        return self._search_chunks(query.to_list())
+        return _id_chunks(query.to_list())
 
-    def _search_chunks(self, rows: list[dict[str, Any]]) -> list[SearchChunk]:
-        """Search results of chunk *rows*, each with the path of its source."""
-        paths = self.source_paths(row[_SOURCE_ID] for row in rows)
-        return [SearchChunk(**row) for row in _pathed(rows, "source", paths)]
+    def _with_paths(self, results: list[SearchChunk]) -> list[SearchChunk]:
+        """*results* with the path of each source in place of its id, in one lookup."""
+        paths = self.source_paths({r.source for r in results})
+        return [
+            r.model_copy(update={"source": paths[r.source]}) for r in results if r.source in paths
+        ]
 
     def _fts_arm(
         self,
@@ -1559,7 +1592,7 @@ class Store:
         chunk_type: ChunkType | None,
     ) -> list[SearchChunk]:
         """BM25-arm candidates over the chunk text."""
-        return self._search_chunks(_lexical_rows(table, query_text, limit, chunk_type))
+        return _id_chunks(_lexical_rows(table, query_text, limit, chunk_type))
 
     def _title_arm(
         self,
@@ -1597,7 +1630,7 @@ class Store:
             except Exception:
                 log.debug("Title arm search failed; contributing no title rows", exc_info=True)
                 return []
-            rows = self._search_chunks(hits)
+            rows = _id_chunks(hits)
             best: dict[str, SearchChunk] = {}
             for row in rows:
                 seen = best.get(row.source)

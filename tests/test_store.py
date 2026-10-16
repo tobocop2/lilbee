@@ -1857,7 +1857,8 @@ class TestWriteChunksBatch:
         ]
         assert _warned() == once
         # The later failures are still logged, below the level a user sees.
-        assert sum("Key index refresh" in record.getMessage() for record in caplog.records) == 6
+        # Three key columns, three flushes; one warning a table, the rest at debug.
+        assert sum("Key index refresh" in record.getMessage() for record in caplog.records) == 9
 
     def test_a_refresh_that_fails_on_an_empty_table_is_not_a_warning(
         self, store, monkeypatch, caplog
@@ -3905,10 +3906,10 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("a.pdf", 5, title="zebra manifesto"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._title_arm(table, "zebra", 5, None)
+        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
         assert [(r.source, r.chunk_index) for r in rows] == [("a.pdf", 0)]
         # Deterministic across repeated calls (no implementation-defined tie order).
-        again = store._title_arm(table, "zebra", 5, None)
+        again = store._with_paths(store._title_arm(table, "zebra", 5, None))
         assert [(r.source, r.chunk_index) for r in again] == [("a.pdf", 0)]
 
     def test_title_arm_one_row_per_matched_document(self, store, test_config):
@@ -3919,7 +3920,7 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("safari.pdf", 4, title="zebra safari"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._title_arm(table, "zebra", 5, None)
+        rows = store._with_paths(store._title_arm(table, "zebra", 5, None))
         assert sorted(r.source for r in rows) == ["safari.pdf", "zebra.pdf"]
         assert all(r.chunk_index == 0 for r in rows)
 
@@ -3939,7 +3940,7 @@ class TestTitleSearch:
         store.add_chunks(_titled_records("note.pdf", 1, title="zebra safari park visit"))
         store.ensure_fts_index()
         table = store.open_table("chunks")
-        rows = store._title_arm(table, "zebra", 2, None)
+        rows = store._with_paths(store._title_arm(table, "zebra", 2, None))
         assert sorted(r.source for r in rows) == ["note.pdf", "tome.pdf"]
 
     def test_title_search_weight_reaches_fusion(self, store, test_config):
@@ -4072,10 +4073,8 @@ class TestTitleSearch:
         with caplog.at_level(logging.INFO):
             store.add_chunks(_titled_records("new.pdf", 1, title="fresh document"))
         assert any("lilbee rebuild" in r.message for r in caplog.records)
-        titles = {
-            r.source: r.title
-            for r in store._search_chunks(store.open_table("chunks").search().to_list())
-        }
+        batches = store.chunk_batches(["source", "title"], 100)
+        titles = {row["source"]: row["title"] for rows in batches for row in rows}
         assert titles["project_falcon_notes.pdf"] == "project falcon notes"
         assert titles["doc1.md"] is None  # junk counter stem stays NULL
 
@@ -5125,7 +5124,12 @@ class TestRelocateInOnePass:
 
 
 def _path_keyed_library(config):
-    """A Store over a library the layout before source ids wrote: every table keys by path.
+    """A Store over a library the layout before source ids wrote: every table keys by path."""
+    return _open_after(config, _path_keyed_tables(config))
+
+
+def _path_keyed_tables(config):
+    """The tables of a library that keys by path, by name.
 
     ``a.md`` and ``b.md`` are indexed; ``wiki/concepts/x.md`` has chunks and no source
     row; ``gone.md`` was removed and a citation still names it.
@@ -5143,7 +5147,7 @@ def _path_keyed_library(config):
         )
     ]
     cited = {**_citation("gone.md"), "wiki_source": "wiki/concepts/x.md"}
-    tables = {
+    return {
         SOURCES_TABLE: pa.Table.from_pylist(sources),
         CHUNKS_TABLE: pa.Table.from_pylist(chunks),
         PAGE_TEXTS_TABLE: pa.Table.from_pylist(
@@ -5155,7 +5159,6 @@ def _path_keyed_library(config):
             [{"chunk_source": "a.md", "chunk_index": 0, "concept": "roadmap"}]
         ),
     }
-    return _open_after(config, tables)
 
 
 def _untimed(dump):
@@ -5310,6 +5313,32 @@ class TestOpenTimeMigration:
         Store(test_config).get_db()
 
         assert taken[:1] == [test_config.lancedb_dir]
+
+    def test_a_key_index_moves_to_the_id_and_the_path(self, test_config):
+        import lancedb
+        from lancedb.index import BTree
+
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        for name, rows in _path_keyed_tables(test_config).items():
+            db.create_table(name, rows)
+        for name, column in (
+            ("chunks", "source"),
+            ("_page_texts", "source"),
+            (SOURCES_TABLE, "filename"),
+        ):
+            db.open_table(name).create_index(column, config=BTree())
+
+        db = Store(test_config).get_db()
+
+        def _indexes(name):
+            return {(i.name, tuple(i.columns)) for i in db.open_table(name).list_indices()}
+
+        assert ("source_id_idx", ("source_id",)) in _indexes("chunks")
+        assert ("source_id_idx", ("source_id",)) in _indexes("_page_texts")
+        assert _indexes(SOURCES_TABLE) == {
+            ("path_idx", ("path",)),
+            ("source_id_idx", ("source_id",)),
+        }
 
     def test_the_stamped_schema_version_is_three(self):
         from lilbee.data.store.types import META_SCHEMA_VERSION
