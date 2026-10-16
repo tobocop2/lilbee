@@ -115,27 +115,6 @@ _REFUSED_SETTING_MESSAGES = {
 }
 _NO_CONTENT = "No content extracted"
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
-# The Chrome release and the platform a browser crawl names, on every platform it runs on.
-_CHROME_MAJOR = 116
-_CHROME_PLATFORM = "Linux"
-# The user agent of every request in each render mode.
-_USER_AGENTS = {
-    CrawlRenderMode.HTTP: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    CrawlRenderMode.BROWSER: (
-        f"Mozilla/5.0 (X11; {_CHROME_PLATFORM} x86_64) AppleWebKit/537.36 "
-        f"Chrome/{_CHROME_MAJOR}.0.0.0 Safari/537.36"
-    ),
-}
-# The client hint a browser crawl adds to each request to the seed's host, and to no other host.
-_BRAND_HINT = {
-    "sec-ch-ua": (
-        f'"Chromium";v="{_CHROME_MAJOR}", "Not_A Brand";v="8", "Google Chrome";v="{_CHROME_MAJOR}"'
-    )
-}
-# The client hints Chrome sends only to a secure origin.
-_SECURE_ORIGIN_HINTS = {"sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": f'"{_CHROME_PLATFORM}"'}
-_SECURE_SCHEME = "https"
-_LOCALHOST = "localhost"
 
 
 class _EventKind(StrEnum):
@@ -305,33 +284,13 @@ def _browser_config(
     )
 
 
-def _is_loopback(host: str) -> bool:
-    """True when *host* is ``localhost``, a name under it, or a loopback address."""
-    if host == _LOCALHOST or host.endswith(f".{_LOCALHOST}"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def _client_hints(render_mode: CrawlRenderMode, seed_url: str) -> dict[str, str]:
-    """The client hint headers of a crawl from *seed_url*; an HTTP crawl sends none.
-
-    Chrome treats an https origin and a loopback host as secure.
-    """
-    if render_mode is not CrawlRenderMode.BROWSER:
-        return {}
-    seed = urlsplit(seed_url)
-    if seed.scheme == _SECURE_SCHEME or _is_loopback(seed.hostname or ""):
-        return _BRAND_HINT | _SECURE_ORIGIN_HINTS
-    return dict(_BRAND_HINT)
-
-
 def _crawl_config(
-    render_mode: CrawlRenderMode, spec: _CrawlSpec, chrome_args: Sequence[str], seed_url: str
+    render_mode: CrawlRenderMode, spec: _CrawlSpec, chrome_args: Sequence[str], user_agent: str
 ) -> crawlberg.CrawlConfig:
-    """The crawlberg config for one crawl, with every default lilbee depends on set."""
+    """The crawlberg config for one crawl, with every default lilbee depends on set.
+
+    A blank *user_agent* leaves the user agent to crawlberg: Chrome's own in browser mode.
+    """
     import crawlberg
 
     concurrency = spec.concurrency
@@ -350,8 +309,7 @@ def _crawl_config(
         strip_tracking_params=True,
         tracking_params=list(_TRACKING_PARAMS),
         request_timeout=timeout_ms,
-        user_agent=_USER_AGENTS[render_mode],
-        custom_headers=_client_hints(render_mode, seed_url),
+        user_agent=user_agent or None,
         rate_limit_ms=pacing.rate_limit_ms,
         rate_limit_jitter_ratio=pacing.jitter_ratio,
         max_redirects=_MAX_REDIRECTS,
@@ -542,9 +500,12 @@ class _ExcludedLinks:
 class CrawlbergFetcher:
     """:class:`WebFetcher` implementation backed by crawlberg."""
 
-    def __init__(self, *, render_mode: CrawlRenderMode, chrome_args: Sequence[str] = ()) -> None:
+    def __init__(
+        self, *, render_mode: CrawlRenderMode, chrome_args: Sequence[str] = (), user_agent: str = ""
+    ) -> None:
         self._render_mode = render_mode
         self._chrome_args = tuple(chrome_args)
+        self._user_agent = user_agent
 
     async def __aenter__(self) -> CrawlbergFetcher:
         return self
@@ -561,7 +522,7 @@ class CrawlbergFetcher:
         self, spec: _CrawlSpec, seed_url: str, cancel: CancelToken | None
     ) -> AsyncGenerator[_Event, None]:
         """This crawl's events; browser mode finds the headless shell before any engine starts."""
-        config = _crawl_config(self._render_mode, spec, self._chrome_args, seed_url)
+        config = _crawl_config(self._render_mode, spec, self._chrome_args, self._user_agent)
         return _events(config, seed_url, cancel)
 
     async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
