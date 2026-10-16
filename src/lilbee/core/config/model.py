@@ -700,7 +700,7 @@ class Config(BaseSettings):
     )
 
     # The user agent of every crawl request. Blank = no override: a browser crawl
-    # sends Chrome's own and an HTTP crawl sends crawlberg's.
+    # sends Chrome's own, an HTTP crawl crawlberg's, the sitemap lookup httpx's.
     crawl_user_agent: str = ConfigField(default="", writable=True)
 
     # Optional global ceilings. None = no ceiling.

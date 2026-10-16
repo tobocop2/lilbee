@@ -13,10 +13,14 @@ from lilbee.runtime.progress import CRAWL_TOTAL_UNKNOWN
 _SITEMAP_FETCH_TIMEOUT_SECONDS = 5.0
 _SITEMAP_MAX_URLS = 10_000
 _SITEMAP_URL_TAG_RE = re.compile(r"<loc>\s*([^<]+?)\s*</loc>", re.IGNORECASE)
+_USER_AGENT_HEADER = "User-Agent"
 
 
-def _fetch_sitemap_text(start_url: str) -> str | None:
-    """Return sitemap.xml body or None on any fetch/status failure."""
+def _fetch_sitemap_text(start_url: str, *, user_agent: str = "") -> str | None:
+    """Return sitemap.xml body or None on any fetch/status failure.
+
+    A blank *user_agent* leaves the user agent to the HTTP client.
+    """
     import httpx
 
     parsed = urlparse(start_url)
@@ -31,7 +35,10 @@ def _fetch_sitemap_text(start_url: str) -> str | None:
         return None
     try:
         resp = httpx.get(
-            sitemap_url, timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS, follow_redirects=False
+            sitemap_url,
+            headers={_USER_AGENT_HEADER: user_agent} if user_agent else None,
+            timeout=_SITEMAP_FETCH_TIMEOUT_SECONDS,
+            follow_redirects=False,
         )
     except (httpx.HTTPError, OSError):
         return None
@@ -42,7 +49,7 @@ def _fetch_sitemap_text(start_url: str) -> str | None:
     return resp.text
 
 
-def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
+def _count_sitemap_urls(start_url: str, *, include_subdomains: bool, user_agent: str = "") -> int:
     """Best-effort count of URLs in the host's /sitemap.xml that match the crawl scope.
 
     Returns ``CRAWL_TOTAL_UNKNOWN`` on any failure (missing sitemap, timeout,
@@ -55,7 +62,7 @@ def _count_sitemap_urls(start_url: str, *, include_subdomains: bool) -> int:
     host = (urlparse(start_url).hostname or "").lower()
     if not host:
         return CRAWL_TOTAL_UNKNOWN
-    text = _fetch_sitemap_text(start_url)
+    text = _fetch_sitemap_text(start_url, user_agent=user_agent)
     if text is None:
         return CRAWL_TOTAL_UNKNOWN
 
