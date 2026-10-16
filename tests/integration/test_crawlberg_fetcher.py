@@ -111,10 +111,12 @@ PAIR_LINKS = (
     ("/pair/a+b", "/pair/a%20b"),
     ("/pair/e%2Fs", "/pair/e/s"),
     ("/pair/d/%2e%2e/up", "/pair/up"),
-    ("/pair/naïve", "/pair/na%C3%AFve"),
 )
-# A written link the crawl requests in another form: its own page names that request path.
-REQUESTED_AS = {"/pair/naïve": "/pair/na%C3%AFve"}
+# Two listings that link one page twice, raw and encoded, in opposite orders.
+ORDER_LISTINGS = {
+    "/twice/": ("/twice/naïve", "/twice/na%C3%AFve"),
+    "/twice/again": ("/twice/na%C3%AFve", "/twice/naïve"),
+}
 # A link with an escaped hyphen, and the equivalent address a library holds for it.
 EQUIVALENT_LINK = "/same/x%2Dy"
 EQUIVALENT_STORED = "/same/x-y"
@@ -126,6 +128,7 @@ LINK_LISTINGS = {
     "/spell/": SPELL_LINKS,
     "/pair/": tuple(link for pair in PAIR_LINKS for link in pair),
     "/same/": (EQUIVALENT_LINK,),
+    **ORDER_LISTINGS,
 }
 # Flag lists crawlberg refuses, each with a part of the reason it gives.
 REFUSED_FLAGS: tuple[tuple[list[str], str], ...] = (
@@ -760,7 +763,7 @@ def _assert_each_pair_is_two_pages(library: list[tuple[Path, Path]]) -> None:
 def _own_pages(pair: tuple[str, str], texts: tuple[str, str]) -> bool:
     """Whether each text is the stale copy, or the page the site serves for its own address."""
     return all(
-        text.startswith(STALE_TEXT) or f"{FRESH_TEXT} {REQUESTED_AS.get(link, link)}." in text
+        text.startswith(STALE_TEXT) or f"{FRESH_TEXT} {link}." in text
         for link, text in zip(pair, texts, strict=True)
     )
 
@@ -816,6 +819,21 @@ class TestStoredSpellingOfAnAddress:
     async def test_a_new_page_is_stored_under_the_address_its_link_wrote(self, site):
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
         _assert_saved_as_written(site)
+
+    async def test_a_page_linked_raw_and_encoded_keeps_one_copy_in_either_link_order(self, site):
+        for listing in ORDER_LISTINGS:
+            await crawl_and_save(site.url(listing), depth=1, max_pages=0)
+        assert site.paths_since(0, "/twice/na").count("/twice/na%C3%AFve") == len(ORDER_LISTINGS)
+        meta = save.load_crawl_metadata()
+        assert set(meta) == {
+            *(site.url(listing) for listing in ORDER_LISTINGS),
+            site.url("/twice/naïve"),
+        }
+        leaf = cfg.documents_dir / "_web" / meta[site.url("/twice/naïve")].file
+        assert f"{FRESH_TEXT} /twice/na%C3%AFve." in leaf.read_text(encoding="utf-8")
+        order_dir = leaf.parent.parent
+        saved = sorted(path.relative_to(order_dir).as_posix() for path in order_dir.rglob("*.md"))
+        assert saved == ["again/index.md", "index.md", "naïve/index.md"]
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
