@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import os
 import time
 from dataclasses import dataclass, replace
@@ -12,16 +11,13 @@ from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.web_names import WEB_DIR
+from lilbee.crawler import save
 from lilbee.crawler.save import CrawlMeta, canonical_address, content_hash, page_name, web_dir
 from lilbee.data.store import Store
 from lilbee.data.store.types import SourceMove, SourceStat
 from lilbee.runtime.lock import LOCK_TIMEOUT, library_held
 
-log = logging.getLogger(__name__)
-
-CRAWL_MOVE_HELD = (
-    "A sync is running on this library. Start the crawl again when the sync ends."
-)
+CRAWL_MOVE_HELD = "A sync is running on this library. Start the crawl again when the sync ends."
 
 
 @dataclass(frozen=True)
@@ -67,20 +63,28 @@ def _owner(group: list[_SavedPage]) -> _SavedPage:
     latest = max(group, key=lambda page: page.entry.crawled_at)
     if len(group) == 1:
         return latest
-    held = content_hash((web_dir() / latest.entry.file).read_text(encoding="utf-8"))
+    text = (web_dir() / latest.entry.file).read_text(encoding="utf-8", errors="replace")
+    held = content_hash(text)
     owner = next((page for page in group if page.entry.content_hash == held), latest)
     names = tuple(dict.fromkeys(name for page in group for name in page.earlier_names))
     return replace(owner, entry=replace(owner.entry, content_hash=held), earlier_names=names)
 
 
+def _file_key(name: str, stat: os.stat_result) -> tuple[int, int | str]:
+    """What two names of one file share: its inode, or its resolved path where the disk has none."""
+    if stat.st_ino:
+        return stat.st_dev, stat.st_ino
+    return stat.st_dev, os.path.normcase((web_dir() / name).resolve())
+
+
 def _file_owners(pages: dict[str, CrawlMeta]) -> list[_SavedPage]:
     """The page that owns each file, as the disk resolves it; a page with no file is left out."""
-    sharing: dict[tuple[int, int], list[_SavedPage]] = {}
+    sharing: dict[tuple[int, int | str], list[_SavedPage]] = {}
     for address, entry in pages.items():
         stat = _file_stat(entry.file)
         if stat is not None:
             page = _SavedPage(address, entry, stat, (entry.file,))
-            sharing.setdefault((stat.st_dev, stat.st_ino), []).append(page)
+            sharing.setdefault(_file_key(entry.file, stat), []).append(page)
     return [_owner(group) for group in sharing.values()]
 
 
@@ -142,14 +146,30 @@ def _move_files(pages: list[_SavedPage], store: Store) -> list[tuple[str, CrawlM
     return kept + [(page.address, _move_file(page)) for page in moving]
 
 
-def move_saved_pages(meta: dict[str, CrawlMeta]) -> dict[str, CrawlMeta]:
-    """*meta* with one entry per canonical address, each saved page at the name it gives.
+def _plan() -> tuple[dict[str, CrawlMeta], list[_SavedPage]]:
+    """The stored crawl metadata and the page that owns each saved file in it."""
+    stored = save.load_crawl_metadata()
+    return stored, _file_owners(_latest_by_address(stored))
+
+
+def _written(stored: dict[str, CrawlMeta], meta: dict[str, CrawlMeta]) -> dict[str, CrawlMeta]:
+    """*meta*, written over *stored* when the two differ."""
+    if meta != stored:
+        save.save_crawl_metadata(meta)
+    return meta
+
+
+def move_saved_pages() -> dict[str, CrawlMeta]:
+    """The crawl metadata with one entry per canonical address, each page at the name it gives.
 
     A page whose file is gone, or whose file another page owns, loses its entry and is
-    saved afresh by the crawl. Text never changes here, so a second run moves nothing.
+    saved afresh by the crawl. Moves are planned again and written under the hold, so a
+    crawl that moved the pages first leaves this one nothing to move. Text never changes
+    here, so a second run moves nothing.
     """
-    pages = _file_owners(_latest_by_address(meta))
+    stored, pages = _plan()
     if all(page.entry.file == page.name for page in pages):
-        return {page.address: page.entry for page in pages}
+        return _written(stored, {page.address: page.entry for page in pages})
     with library_held(cfg, CRAWL_MOVE_HELD, LOCK_TIMEOUT):
-        return dict(_move_files(pages, get_services().store))
+        stored, pages = _plan()
+        return _written(stored, dict(_move_files(pages, get_services().store)))
