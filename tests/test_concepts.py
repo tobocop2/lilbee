@@ -547,9 +547,11 @@ class TestBoostResults:
             _make_result(chunk_index=1, score=0.95),
         ]
         mock_table = MagicMock()
+        # The concept rows name the source by its id, which is not its path.
+        mock_svc.store.source_ids.side_effect = lambda paths: {p: f"id of {p}" for p in paths}
         mock_table.search.return_value.where.return_value.to_list.return_value = [
-            _cc_row("test.pdf", 0, "python"),
-            _cc_row("test.pdf", 1, "python"),
+            _cc_row("id of test.pdf", 0, "python"),
+            _cc_row("id of test.pdf", 1, "python"),
         ]
         mock_svc.store.open_table.return_value = mock_table
         boosted = cg.boost_results(results, ["python"])
@@ -1569,9 +1571,10 @@ class TestGetClusterSources:
             return None
 
         mock_svc.store.open_table.side_effect = open_table
+        mock_svc.store.source_paths.side_effect = lambda ids: {i: f"docs/{i}" for i in ids}
         result = cg.get_cluster_sources(min_sources=3)
         assert 0 in result
-        assert result[0] == {"a.md", "b.md", "c.md"}
+        assert result[0] == {"docs/a.md", "docs/b.md", "docs/c.md"}
         assert 1 not in result
 
     def test_skips_orphan_concepts(self, cg, mock_svc):
