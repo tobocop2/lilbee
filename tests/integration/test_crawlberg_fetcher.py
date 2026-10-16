@@ -149,6 +149,15 @@ INLINE_IMAGE_PAYLOAD = (
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhf"
     "DwAChwGA60e6kgAAAABJRU5ErkJggg=="
 )
+# A page that links to a second page, each with text hidden three ways beside visible text.
+HIDDEN_PAGE = "/hidden/"
+HIDDEN_NEXT_PAGE = "/hidden/next"
+VISIBLE_TEXT = "Visible harbor words"
+HIDDEN_TEXTS = {
+    "display:none": "Styled away harbor words",
+    "hidden attribute": "Attribute hidden harbor words",
+    "aria-hidden": "Aria hidden harbor words",
+}
 
 
 QUERY_LINKS = (
@@ -228,6 +237,16 @@ def _scope_or_retry_page(path: str, filler: str) -> tuple[int, str]:
     return 200, _query_page(path, filler)
 
 
+def _hidden_page(link: str) -> str:
+    """A page with visible text, the three hidden texts, and *link*."""
+    hidden = (
+        f'<div style="display:none">{HIDDEN_TEXTS["display:none"]}</div>'
+        f"<div hidden>{HIDDEN_TEXTS['hidden attribute']}</div>"
+        f'<div aria-hidden="true">{HIDDEN_TEXTS["aria-hidden"]}</div>'
+    )
+    return f"<html><body><p>{VISIBLE_TEXT}</p>{hidden}{link}</body></html>"
+
+
 def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
     """The status and body, or redirect target, of each page served at one exact path."""
     image = f"data:image/png;base64,{INLINE_IMAGE_PAYLOAD}"
@@ -240,6 +259,8 @@ def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
             f"<html><body><h1>Index</h1>{defaults}{filler}</body></html>",
         ),
         "/moved": (HTTPStatus.MOVED_PERMANENTLY, "/query/target"),
+        HIDDEN_PAGE: (HTTPStatus.OK, _hidden_page(f'<a href="{HIDDEN_NEXT_PAGE}">next</a>')),
+        HIDDEN_NEXT_PAGE: (HTTPStatus.OK, _hidden_page("")),
         INLINE_IMAGE_PAGE: (
             HTTPStatus.OK,
             f"<html><body><h1>Logo</h1>{logo}{filler}</body></html>",
@@ -526,6 +547,27 @@ class TestCrawlAndSave:
         assert INLINE_IMAGE_ALT in text
         assert INLINE_IMAGE_PAYLOAD not in text
         assert "base64" not in text
+
+
+def _assert_hidden_text_kept(paths: list[Path], pages: int) -> None:
+    """Each saved page holds its visible text and each of its hidden texts."""
+    assert len(paths) == pages
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert VISIBLE_TEXT in text, text
+        for way, hidden in HIDDEN_TEXTS.items():
+            assert hidden in text, f"{way}: {text}"
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestHiddenText:
+    async def test_a_single_page_http_crawl_keeps_hidden_text(self, site):
+        paths = await crawl_and_save(site.url(HIDDEN_PAGE), depth=0, render_mode=HTTP)
+        _assert_hidden_text_kept(paths, 1)
+
+    async def test_a_recursive_http_crawl_keeps_hidden_text(self, site):
+        paths = await crawl_and_save(site.url(HIDDEN_PAGE), depth=1, render_mode=HTTP)
+        _assert_hidden_text_kept(paths, 2)
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
@@ -1069,6 +1111,12 @@ class TestBrowserLaunch:
         paths = self._crawl(site.url("/wide/"), depth=1, max_pages=BROWSER_CRAWL_PAGES)
         assert len(paths) == BROWSER_CRAWL_PAGES
         assert len(log.read_text(encoding="utf-8").splitlines()) == 1
+
+    def test_a_single_page_browser_crawl_keeps_hidden_text(self, site):
+        _assert_hidden_text_kept(self._crawl(site.url(HIDDEN_PAGE)), 1)
+
+    def test_a_recursive_browser_crawl_keeps_hidden_text(self, site):
+        _assert_hidden_text_kept(self._crawl(site.url(HIDDEN_PAGE), depth=1), 2)
 
     def test_browser_requests_carry_the_browser_user_agent(self, site):
         paths = self._crawl(site.url("/wiki/Home"))
