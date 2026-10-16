@@ -30,8 +30,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from lilbee.runtime.absorb_journal import absorb_pending
-
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -48,7 +46,6 @@ if TYPE_CHECKING:
     from lilbee.retrieval.embedder import Embedder
     from lilbee.retrieval.query import Searcher
     from lilbee.retrieval.reranker import Reranker
-    from lilbee.runtime.cancellation import CancelSignal
     from lilbee.runtime.ingest_lock import IngestLockRegistry
     from lilbee.sessions import SessionStore
 
@@ -258,11 +255,8 @@ def build_services(
 _singleton_create_lock = threading.Lock()
 
 
-def get_services(cancel: CancelSignal | None = None) -> Services:
+def get_services() -> Services:
     """Return the active container: a scoped override if set, else the cached singleton.
-
-    Setting *cancel* ends the wait of the call that builds for the records lock, when
-    it finishes an interrupted add, with ``SkipRecordsWaitCancelledError``.
 
     Creates the singleton on first call (against the process-global cfg). A
     config-file embedding_model with no embedding_dim would otherwise build the
@@ -300,14 +294,7 @@ def get_services(cancel: CancelSignal | None = None) -> Services:
 
             with suppress(Exception):
                 services.provider.warm_up_pool()
-    # Outside the creation lock: the finisher takes the sync lock and the records lock.
-    # Only the thread that built: two takes of the sync lock at once can refuse each other.
-    if absorb_pending(cfg.data_root):
-        # heavy: the absorb loads the ingest pipeline
-        from lilbee.app.absorb import finish_pending_absorb_at_start
-
-        finish_pending_absorb_at_start(cfg, services.store, cancel)
-    return services
+        return services
 
 
 @contextmanager

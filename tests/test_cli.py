@@ -33,8 +33,7 @@ from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
 from lilbee.modelhub.models import list_installed_models
-from lilbee.runtime.absorb_journal import absorb_pending
-from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
+from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     EventType,
@@ -46,9 +45,7 @@ from lilbee.runtime.progress import (
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
 from tests._mock_effects import repeat_last
-from tests._windows_loop import windows_proactor_loop
-from tests.conftest import UnfinishedAdd, leave_unfinished_add, reset_held_on_a_thread
-from tests.test_lock import _mark_held_on_a_thread, _sync_write_takes
+from tests.conftest import reset_held_on_a_thread
 
 runner = CliRunner()
 # How long a held reset lasts when a test hangs; no test waits for it.
@@ -3947,7 +3944,6 @@ class TestCrawlUrlsBlocking:
         assert call_kwargs["quiet"] is True
 
     def test_ctrl_c_during_the_first_url_exits_130_and_skips_the_next(self, isolated_env):
-        import signal
 
         crawled: list[str] = []
 
@@ -4624,9 +4620,8 @@ class TestSigintCancel:
     """Ctrl-C stops a build at a boundary instead of dropping it mid-page."""
 
     def test_the_token_is_set_when_sigint_arrives(self) -> None:
-        import signal
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         with sigint_cancel() as token:
             assert not token.is_set()
@@ -4635,9 +4630,8 @@ class TestSigintCancel:
 
     def test_a_second_sigint_is_left_to_the_default_handler(self) -> None:
         """A pass that ignores the token must still be interruptible."""
-        import signal
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
         with sigint_cancel():
@@ -4649,10 +4643,9 @@ class TestSigintCancel:
     def test_off_the_main_thread_it_installs_no_handler(self) -> None:
         """signal.signal raises off the main thread (xdist workers run there),
         so the token is simply never set and Ctrl-C keeps its default."""
-        import signal
         import threading as _threading
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         result: dict[str, object] = {}
 
@@ -4669,9 +4662,8 @@ class TestSigintCancel:
         assert result["handler_untouched"] is True
 
     def test_the_previous_handler_is_restored_on_exit(self) -> None:
-        import signal
 
-        from lilbee.cli.helpers import sigint_cancel
+        from lilbee.runtime.cancellation import sigint_cancel
 
         previous = signal.getsignal(signal.SIGINT)
         with sigint_cancel():
@@ -6062,7 +6054,6 @@ class TestSelfCheck:
         assert not work.exists()
 
     def test_sigterm_becomes_an_interrupt_and_the_handler_is_restored(self) -> None:
-        import signal
         import sys
 
         from lilbee.cli.commands import setup
@@ -6079,7 +6070,6 @@ class TestSelfCheck:
         """Windows registers the handler but never delivers SIGTERM, so the test
         above skips there and the handler body goes unexercised. Drive it directly
         so the conversion that makes teardown run is covered on every platform."""
-        import signal
 
         from lilbee.cli.commands import setup
 
@@ -7122,55 +7112,6 @@ class TestSyncCancelledExit:
         with _no_sync_running(cfg.data_root):
             pass
 
-    @pytest.mark.parametrize("command", [["sync"], ["rebuild"], ["--json", "sync"]])
-    def test_one_ctrl_c_ends_a_sync_that_waits_to_finish_an_add(
-        self, isolated_env, mock_svc, caplog, command
-    ):
-        leave_unfinished_add(cfg.data_root, UnfinishedAdd.HELD)
-        assert threading.current_thread() is threading.main_thread()
-
-        def _library() -> list[str]:
-            """Every name in the data root but the files of the sync lock itself."""
-            names = (path.name for path in cfg.data_root.iterdir())
-            return sorted(name for name in names if not name.startswith(("sync.", ".filelock-")))
-
-        before = _library()
-
-        def _ctrl_c_once(_outcome: str) -> None:
-            if len(takes) > 1:
-                return
-            # The main thread sleeps in its event loop: only a signal sent to it wakes it.
-            # On Windows the wakeup socket of the proactor loop does that.
-            if sys.platform == "win32":
-                _thread.interrupt_main()
-            else:
-                signal.pthread_kill(threading.main_thread().ident, signal.SIGINT)
-
-        # The other sync holds its mark until this block ends.
-        with (
-            caplog.at_level(logging.WARNING),
-            _mark_held_on_a_thread(cfg.data_root),
-            _sync_write_takes(after=_ctrl_c_once) as takes,
-            # The suite runs Windows on the selector loop, which no signal wakes.
-            windows_proactor_loop(),
-        ):
-            result = runner.invoke(app, command)
-            takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
-                pass
-
-        assert takes_of_the_wait, "the sync never waited for the other sync"
-        assert set(takes_of_the_wait) == {"busy"}, "the sync ended only when the other sync did"
-        assert result.exit_code == 130, result.output
-        if "--json" in command:
-            assert json.loads(result.output) == {"error": "Sync cancelled."}
-        else:
-            assert result.output.strip() == "Sync cancelled."
-        assert _cancel_error_records(caplog) == []
-        assert absorb_pending(cfg.data_root)
-        assert _library() == before
-        assert mock_svc.store.method_calls == [], "the sync started under the held mark"
-
     @staticmethod
     def _source(tmp_path: Path, name: str = "scan.txt") -> Path:
         src = tmp_path / "source" / name
@@ -7566,7 +7507,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _crawl_saves_a_page(*, ctrl_c: bool) -> contextlib.ExitStack:
         """Patch the crawler to save one page; with *ctrl_c* the Ctrl+C lands in the crawl."""
-        import signal
 
         async def _crawl(_url, **_kwargs):
             page = cfg.documents_dir / "_web" / "page.md"
@@ -7595,7 +7535,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _ctrl_c_as_registration_refuses() -> contextlib.ExitStack:
         """Patch registration so the Ctrl+C lands in it and no path reaches the corpus."""
-        import signal
 
         from lilbee.app.ingest import RegisterResult
 
@@ -7623,7 +7562,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _sync_recording_its_cancel(events: list[threading.Event], *, ctrl_c_after: bool):
         """Patch the real sync to record its cancel; with *ctrl_c_after* a Ctrl+C follows it."""
-        import signal
 
         from lilbee.data import ingest as ingest_mod
 
@@ -7641,7 +7579,6 @@ class TestSyncCancelledExit:
     @staticmethod
     def _ctrl_c_at(stage: str, events: list[threading.Event]):
         """Patch the real sync so the user's Ctrl+C lands at *stage*."""
-        import signal
 
         from lilbee.data.ingest import pipeline
 
@@ -7860,7 +7797,6 @@ class TestCtrlCAtTheRecordsLock:
 
     @staticmethod
     def _ctrl_c() -> None:
-        import signal
 
         signal.raise_signal(signal.SIGINT)
 

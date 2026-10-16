@@ -122,7 +122,6 @@ from lilbee.data.types import (
     SyncResult,
     _IngestResult,
 )
-from lilbee.runtime.absorb_journal import absorb_pending
 from lilbee.runtime.asyncio_loop import is_executor_shutdown
 from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
 from lilbee.runtime.console import PlainConsole
@@ -1363,21 +1362,6 @@ def _config_with_persisted_roots(shard: ShardId | None) -> Config:
     return config
 
 
-def _build_services(cancel: CancelSignal | None) -> None:
-    """Build the services; every build finishes an interrupted add of its library."""
-    with _records_wait_ends_the_sync():
-        get_services(cancel)
-
-
-def _finish_pending_absorb(cancel: CancelSignal | None = None) -> None:
-    """Finish an interrupted absorb, which needs every sync stopped."""
-    # circular: lilbee.app.absorb imports lilbee.data.ingest for the skip records
-    from lilbee.app.absorb import finish_pending_absorb
-
-    with _records_wait_ends_the_sync():
-        finish_pending_absorb(cancel=cancel)
-
-
 _SyncParams = ParamSpec("_SyncParams")
 
 
@@ -1392,13 +1376,9 @@ def _marks_sync_running(
         # ``cancel`` is keyword-only on a sync, so it is never in *args*.
         cancel = cast("CancelSignal | None", kwargs.get("cancel"))
         # The services come before the mark.
-        await asyncio.to_thread(_build_services, cancel)
-        while True:
-            async with sync_running(data_root, cancel):
-                # An absorb writes its journal with every sync stopped, so none appears in here.
-                if not absorb_pending(data_root):
-                    return await run(*args, **kwargs)
-            await to_ingest_thread(_finish_pending_absorb, cancel)
+        await asyncio.to_thread(get_services)
+        async with sync_running(data_root, cancel):
+            return await run(*args, **kwargs)
 
     return _marked
 

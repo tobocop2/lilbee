@@ -18,10 +18,11 @@ from lilbee.cli.app import (
     data_dir_option,
     global_option,
 )
-from lilbee.cli.helpers import json_output, print_prefixed, sigint_cancel
+from lilbee.cli.helpers import json_output, print_prefixed
 from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.security import PathTraversalError
+from lilbee.runtime.cancellation import sigint_cancel
 from lilbee.runtime.console import PlainConsole, styled
 from lilbee.runtime.progress import EventType, WikiPageEvent, WikiPhaseEvent
 from lilbee.wiki.shared import (

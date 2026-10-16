@@ -14,7 +14,7 @@ from textual.app import App, ComposeResult
 from textual.widgets import DataTable, Footer, Static
 from textual.widgets._tabbed_content import ContentTabs
 
-from conftest import TEST_EMBED_REF, TEST_LOCAL_REF, UnfinishedAdd, unfinished_add_refused
+from conftest import TEST_EMBED_REF, TEST_LOCAL_REF
 from lilbee.app.services import set_services
 from lilbee.app.settings_map import SettingGroup
 from lilbee.catalog import (
@@ -2881,26 +2881,6 @@ async def test_chat_slash_delete_reports_a_held_records_lock(mock_svc, held_reco
             await _pilot.pause()
         message, kwargs = mock_notify.call_args[0][0], mock_notify.call_args[1]
         assert "Could not lock" in message
-        assert kwargs == {"severity": "error"}
-        mock_svc.store.remove_documents.assert_not_called()
-
-
-@pytest.mark.parametrize("cause", list(UnfinishedAdd))
-async def test_chat_slash_delete_reports_an_add_it_cannot_finish(mock_svc, cause):
-    """A /delete that cannot finish an interrupted add shows the refusal and removes nothing."""
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "notes.md", "source": "notes.md"},
-    ]
-    app = ChatTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        set_services(mock_svc)
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            with patch.object(app.screen, "notify") as mock_notify:
-                app.screen._cmd_delete("notes.md")
-                await app.screen.workers.wait_for_complete()
-                await _pilot.pause()
-        message, kwargs = mock_notify.call_args[0][0], mock_notify.call_args[1]
-        assert text in message
         assert kwargs == {"severity": "error"}
         mock_svc.store.remove_documents.assert_not_called()
 

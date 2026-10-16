@@ -887,9 +887,13 @@ again when the other work ends. A
 source below a hidden folder, or one a `.lilbeeignore` pattern excludes, stays
 a source of its own.
 
-If the add is interrupted, lilbee finishes it the next time it starts, and
-before the next sync, add or remove. A `lilbee reset` drops it with the
-library.
+A folder cannot take in a source that has the same name as the folder:
+`lilbee add ~/work` after `lilbee add ~/work/work` reports the name `work` as
+taken, also with `--force`, and changes nothing.
+
+If the add is interrupted, run the same `lilbee add` again. It finishes what
+the first add started. Until then, search can return the new names of the
+documents that moved.
 
 ### Manage documents
 

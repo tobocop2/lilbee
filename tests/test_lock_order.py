@@ -15,35 +15,21 @@ import pytest
 from filelock import BaseFileLock, ReadWriteLock
 
 import lilbee.app.services as svc_mod
-from lilbee import mcp_server
-from lilbee.app import absorb as absorb_mod
 from lilbee.app import dataset as dataset_mod
-from lilbee.app import ingest as ingest_mod
 from lilbee.app.ingest import register_sources, remove_documents_durably
 from lilbee.app.reset import perform_reset
 from lilbee.app.settings import apply_settings_update
 from lilbee.cli.tui.widgets import model_bar as model_bar_mod
 from lilbee.core import settings
-from lilbee.core.config import Config, cfg, config_scope
-from lilbee.data.ingest.pipeline import _finish_pending_absorb
+from lilbee.core.config import cfg
 from lilbee.data.ingest.pipeline import sync as pipeline_sync
 from lilbee.data.ingest.skip_marker import (
     SKIP_MARKER_FILENAME,
-    SkipKind,
     SkipRecordsWaitCancelledError,
     load_skip_kinds,
     skip_records_lock,
-    update_skip_records,
 )
 from lilbee.data.store import Store
-from lilbee.runtime.absorb_journal import (
-    AbsorbJournal,
-    HeldOut,
-    absorb_pending,
-    delete_journal,
-    read_journal,
-    write_journal,
-)
 from lilbee.runtime.lock import (
     LOCK_TIMEOUT,
     ResetRefusedError,
@@ -237,24 +223,6 @@ def _register_work(notes: Path) -> None:
     cfg.linked_roots = roots
 
 
-def _leave_journal(notes: Path) -> None:
-    """The journal of an add of ``notes`` that died; it holds one removed file of ``work``."""
-    _register_work(notes)
-    journal = AbsorbJournal(
-        id="0a1b2c3d",
-        moves={"work": "notes/work"},
-        add={"notes": str(notes.resolve())},
-        drop=["work"],
-        records={"notes/work/gone.md": HeldOut(_GONE_HASH, None, True)},
-    )
-    write_journal(cfg.data_root, journal)
-
-
-def _add_with_a_journal(notes: Path) -> None:
-    _leave_journal(notes)
-    register_sources([notes])
-
-
 def _add_that_takes_a_source_in(notes: Path) -> None:
     _register_work(notes)
     register_sources([notes])
@@ -265,16 +233,9 @@ def _remove(notes: Path) -> None:
     remove_documents_durably(["work/plan.md"])
 
 
-def _remove_with_a_journal(notes: Path) -> None:
-    _leave_journal(notes)
-    remove_documents_durably(["notes/work/plan.md"])
-
-
 _PATHS_THAT_BUILD = {
-    "add with a journal pending": _add_with_a_journal,
     "add that takes a source in": _add_that_takes_a_source_in,
     "remove": _remove,
-    "remove with a journal pending": _remove_with_a_journal,
 }
 
 
@@ -285,7 +246,6 @@ class TestTheServicesAreBuiltUnderNoLibraryLock:
 
         assert builds.held_at_build == [[]]
         assert takes.records_takes > 0
-        assert not absorb_pending(cfg.data_root)
 
     def test_a_plain_add_builds_no_services(self, notes, takes, builds):
         register_sources([notes])
@@ -295,20 +255,16 @@ class TestTheServicesAreBuiltUnderNoLibraryLock:
         assert takes.sync_write_takes == 0
         assert _registry() == {"notes": str(notes.resolve())}
 
-    @pytest.mark.parametrize("path", ["add with a journal pending", "add that takes a source in"])
-    def test_an_add_that_needs_the_owner_builds_between_its_two_passes(
-        self, path, notes, takes, builds
-    ):
+    def test_an_add_that_needs_the_owner_builds_between_its_two_passes(self, notes, takes, builds):
         released_first: list[tuple[bool, int]] = []
         builds.on_build.append(
             lambda: released_first.append((takes.records_takes > 0, takes.sync_write_takes))
         )
 
-        _PATHS_THAT_BUILD[path](notes)
+        _add_that_takes_a_source_in(notes)
 
         assert released_first == [(True, 0)]
         assert builds.held_at_build == [[]]
-        assert not absorb_pending(cfg.data_root)
 
     def test_the_recorder_sees_a_build_under_the_records_lock(self, notes, takes, builds):
         """Control: the recorder names the records lock when a build runs under it."""
@@ -316,14 +272,6 @@ class TestTheServicesAreBuiltUnderNoLibraryLock:
             svc_mod.build_services(cfg)
 
         assert builds.held_at_build == [[_RECORDS_LOCK]]
-
-    def test_an_add_with_a_journal_pending_keeps_what_the_absorb_took_in(
-        self, notes, takes, builds
-    ):
-        _add_with_a_journal(notes)
-
-        assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
-        assert _registry() == {"notes": str(notes.resolve())}
 
 
 def _full_wiki_build(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -391,18 +339,6 @@ class TestTheServicesAreBuiltBeforeTheSyncLock:
         assert builds.held_at_build == [[_SYNC_LOCK]]
         assert builds.held_anywhere_at_build == [[_SYNC_LOCK]]
 
-    def test_a_full_wiki_build_first_in_a_process_finishes_an_interrupted_add(
-        self, notes, monkeypatch, takes, builds, caplog
-    ):
-        _leave_journal(notes)
-
-        with caplog.at_level("WARNING", logger="lilbee"):
-            run_full_build(cfg)
-
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
-        assert "holds this library" not in caplog.text
-
 
 def _reset_from_the_model_bar() -> None:
     model_bar_mod.reset_services()
@@ -422,20 +358,16 @@ class TestARebuildAfterAReset:
     ):
         def reset_at_the_index(event: EventType, data: Any) -> None:
             if event == EventType.WIKI_PHASE and data.phase == WikiPhase.INDEX:
-                _leave_journal(notes)
                 _RESETS[reset]()
                 svc_mod.get_services()
 
-        with caplog.at_level("INFO", logger="lilbee.app.absorb"):
+        with caplog.at_level("WARNING", logger="lilbee"):
             summary = run_full_build(cfg, on_progress=reset_at_the_index)
 
         assert summary["count"] == 0
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
-        assert absorb_pending(cfg.data_root)
         assert takes.records_takes == 0
-        assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
-            ("INFO", "An interrupted add is not finished yet; the next sync finishes it.")
-        ]
+        assert caplog.records == []
 
     def test_a_rebuild_under_the_sync_lock_raises_nothing(self, takes, builds):
         svc_mod.get_services()
@@ -445,57 +377,6 @@ class TestARebuildAfterAReset:
             svc_mod.get_services()
 
         assert builds.held_at_build == [[], [_SYNC_LOCK]]
-
-    def test_a_rebuild_finishes_an_interrupted_add(self, notes, builds):
-        svc_mod.get_services()
-        _leave_journal(notes)
-        svc_mod.reset_services()
-
-        svc_mod.get_services()
-
-        assert len(builds.held_at_build) == 2
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
-
-
-class TestEveryBuildAfterASwitchOfLibraryFinishesItsAdd:
-    @pytest.fixture
-    def vaults(self, tmp_path) -> tuple[Path, Path]:
-        first, second = tmp_path / "vault-a", tmp_path / "vault-b"
-        first.mkdir()
-        second.mkdir()
-        return first, second
-
-    def test_the_first_build_for_the_new_library_finishes_its_interrupted_add(
-        self, vaults, notes, builds
-    ):
-        first, second = vaults
-        mcp_server.init(str(first))
-        svc_mod.get_services()
-        mcp_server.init(str(second))
-        _leave_journal(notes)
-
-        svc_mod.get_services()
-
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
-
-    def test_a_library_opened_again_after_a_switch_has_its_add_finished(
-        self, vaults, notes, builds
-    ):
-        first, second = vaults
-        mcp_server.init(str(first))
-        svc_mod.get_services()
-        mcp_server.init(str(second))
-        svc_mod.get_services()
-        mcp_server.init(str(first))
-        _leave_journal(notes)
-
-        svc_mod.get_services()
-
-        assert len(builds.held_at_build) == 3
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
 
 
 def _cancelled_add(notes: Path, cancel: threading.Event) -> None:
@@ -511,14 +392,8 @@ _PATHS_THAT_TAKE_A_CANCEL = {"add": _cancelled_add, "remove": _cancelled_remove}
 
 class TestACancelSetAtTheFirstBuild:
     @pytest.mark.parametrize("path", list(_PATHS_THAT_TAKE_A_CANCEL))
-    @pytest.mark.parametrize("journal", [True, False], ids=["journal pending", "no journal"])
-    def test_the_cancel_is_reported_with_nothing_finished_or_changed(
-        self, path, journal, notes, takes, builds
-    ):
-        if journal:
-            _leave_journal(notes)
-        else:
-            _register_work(notes)
+    def test_the_cancel_is_reported_with_nothing_changed(self, path, notes, takes, builds):
+        _register_work(notes)
         cancel = threading.Event()
         builds.on_build.append(cancel.set)
 
@@ -526,47 +401,19 @@ class TestACancelSetAtTheFirstBuild:
             _PATHS_THAT_TAKE_A_CANCEL[path](notes, cancel)
 
         assert builds.held_at_build == [[]]
-        assert absorb_pending(cfg.data_root) is journal
         assert _registry() == {"work": str((notes / "work").resolve())}
         assert load_skip_kinds(cfg.data_root) == {}
         assert takes.held() == []
 
 
 def _reset(notes: Path) -> None:
-    _leave_journal(notes)
+    _register_work(notes)
     perform_reset()
-
-
-def _sync_finisher(notes: Path) -> None:
-    svc_mod.get_services()
-    _leave_journal(notes)
-    _finish_pending_absorb()
-
-
-def _process_start(notes: Path) -> None:
-    _leave_journal(notes)
-    svc_mod.get_services()
-
-
-def _add_that_finishes_a_journal(notes: Path) -> None:
-    """The process started before the journal was left, so the add finishes it."""
-    svc_mod.get_services()
-    _add_with_a_journal(notes)
-
-
-def _remove_that_finishes_a_journal(notes: Path) -> None:
-    """The process started before the journal was left, so the remove finishes it."""
-    svc_mod.get_services()
-    _remove_with_a_journal(notes)
 
 
 _PATHS_THAT_TAKE_BOTH_LOCKS = {
     "add that takes a source in": _add_that_takes_a_source_in,
-    "add with a journal pending": _add_that_finishes_a_journal,
-    "remove with a journal pending": _remove_that_finishes_a_journal,
     "reset": _reset,
-    "sync finisher": _sync_finisher,
-    "process start": _process_start,
 }
 _A_SYNC_RUNS = "A sync is running."
 _FORMS_OF_THE_OWNER = {
@@ -588,7 +435,6 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         assert held_at_take
         assert [held for held in held_at_take if _RECORDS_LOCK in held] == []
         assert takes.records_takes > 0
-        assert not absorb_pending(cfg.data_root)
         assert takes.held() == []
 
     def test_the_recorder_sees_a_take_of_the_sync_lock_under_the_records_lock(self, takes):
@@ -661,53 +507,6 @@ class TestTheSyncLockIsTakenBeforeTheRecordsLock:
         assert takes.sync_write_waits == [LOCK_TIMEOUT]
 
 
-class TestARemoveFinishesAJournalUnderOneHold:
-    def test_the_removal_runs_under_the_one_take_of_the_owner(
-        self, notes, takes, builds, monkeypatch
-    ):
-        svc_mod.get_services()
-        _leave_journal(notes)
-        store = builds.services.store
-        real_remove = store.remove_documents
-        held_at_removal: list[list[str]] = []
-
-        def remove_documents(names):
-            held_at_removal.append(takes.held())
-            return real_remove(names)
-
-        monkeypatch.setattr(store, "remove_documents", remove_documents)
-
-        remove_documents_durably(["notes/work/plan.md"])
-
-        assert held_at_removal == [[_RECORDS_LOCK, _SYNC_LOCK]]
-        assert takes.sync_write_waits == [LOCK_TIMEOUT]
-        assert not absorb_pending(cfg.data_root)
-        assert takes.held() == []
-
-    def test_a_finisher_that_leaves_the_journal_is_asked_one_time(
-        self, notes, takes, builds, monkeypatch
-    ):
-        svc_mod.get_services()
-        _leave_journal(notes)
-        held_at_finish: list[list[str]] = []
-
-        def leaves_the_journal(store, hold):
-            if held_at_finish:
-                raise AssertionError("the remove asked the finisher again")
-            held_at_finish.append(takes.held())
-            return []
-
-        monkeypatch.setattr(ingest_mod, "finish_absorb", leaves_the_journal)
-        monkeypatch.setattr(absorb_mod, "finish_absorb", leaves_the_journal)
-
-        remove_documents_durably(["notes/work/plan.md"])
-
-        assert held_at_finish == [[_RECORDS_LOCK, _SYNC_LOCK]]
-        assert takes.sync_write_takes == 1
-        assert absorb_pending(cfg.data_root)
-        assert takes.held() == []
-
-
 _SOURCE_ROOT = Path(svc_mod.__file__).parents[1]
 _LOCK_MODULE = _SOURCE_ROOT / "runtime" / "lock.py"
 # The two takes of the sync write lock; only the owner of both library locks calls them.
@@ -756,198 +555,3 @@ class TestAnAddActsOnTheReadUnderItsFinalHold:
         assert takes.sync_write_takes == 1
         assert (result.registered, result.absorbed) == (["notes"], [])
         assert _registry() == {"notes": str(notes.resolve())}
-        assert not absorb_pending(cfg.data_root)
-
-
-class TestTheStartFinisherRunsOutsideTheCreationLock:
-    def test_the_creation_lock_is_free_when_the_finisher_takes_the_sync_lock(
-        self, notes, takes, builds
-    ):
-        _leave_journal(notes)
-        creation_lock_held: list[bool] = []
-        takes.on_sync_write_take.append(
-            lambda: creation_lock_held.append(svc_mod._singleton_create_lock.locked())
-        )
-
-        assert svc_mod.get_services() is builds.services
-
-        assert creation_lock_held == [False]
-        assert not absorb_pending(cfg.data_root)
-
-    def test_a_first_build_warms_the_pool_one_time(self, builds):
-        cfg.worker_pool_eager_start = True
-
-        assert svc_mod.get_services() is builds.services
-        assert svc_mod.get_services() is builds.services
-
-        builds.services.provider.warm_up_pool.assert_called_once_with()
-
-    def test_two_threads_that_start_at_once_finish_a_journal_one_time(
-        self, notes, takes, builds, monkeypatch, caplog
-    ):
-        caplog.set_level("INFO", logger="lilbee.app.absorb")
-        _leave_journal(notes)
-        both_asked = threading.Event()
-        second_returned = threading.Event()
-        creation_lock = _CountedLock(svc_mod._singleton_create_lock, 2, both_asked)
-        monkeypatch.setattr(svc_mod, "_singleton_create_lock", creation_lock)
-        real_build = builds._build
-        real_roll = absorb_mod._roll_forward
-        rolls: list[int] = []
-
-        def build_when_both_asked(*args, **kwargs):
-            assert both_asked.wait(_HANG_GUARD_S)
-            return real_build(*args, **kwargs)
-
-        def roll_when_the_other_returned(*args, **kwargs):
-            # The other thread returns while this one holds the locks.
-            assert second_returned.wait(_HANG_GUARD_S)
-            rolls.append(threading.get_ident())
-            return real_roll(*args, **kwargs)
-
-        monkeypatch.setattr(svc_mod, "build_services", build_when_both_asked)
-        monkeypatch.setattr(absorb_mod, "_roll_forward", roll_when_the_other_returned)
-        results: dict[int, object] = {}
-
-        def start() -> None:
-            try:
-                results[threading.get_ident()] = svc_mod.get_services()
-            except BaseException as error:
-                results[threading.get_ident()] = error
-            if len(results) == 1:
-                second_returned.set()
-
-        threads = [threading.Thread(target=start) for _ in range(2)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(_HANG_GUARD_S)
-
-        assert [thread.is_alive() for thread in threads] == [False, False]
-        assert list(results.values()) == [builds.services, builds.services]
-        assert len(rolls) == 1
-        assert takes.sync_write_takes == 1
-        assert "not finished yet" not in caplog.text
-        assert len(builds.held_at_build) == 1
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
-
-
-class _CountedLock:
-    """A lock that sets *reached* when *count* threads have asked for it."""
-
-    def __init__(self, lock: threading.Lock, count: int, reached: threading.Event) -> None:
-        self._lock = lock
-        self._left = count
-        self._reached = reached
-        self._counting = threading.Lock()
-
-    def __enter__(self) -> None:
-        with self._counting:
-            self._left -= 1
-            if self._left == 0:
-                self._reached.set()
-        self._lock.acquire()
-
-    def __exit__(self, *_error: object) -> None:
-        self._lock.release()
-
-    def locked(self) -> bool:
-        return self._lock.locked()
-
-
-def _another_library(root: Path) -> Config:
-    """A config of the library at *root*, which holds nothing."""
-    root.mkdir()
-    return cfg.model_copy(
-        update={
-            "data_root": root,
-            "documents_dir": root / "documents",
-            "data_dir": root / "data",
-            "lancedb_dir": root / "data" / "lancedb",
-            "linked_roots": {},
-        }
-    )
-
-
-class TestAHoldRollsForwardOnTheLibraryItWasTakenFor:
-    def test_a_first_build_under_the_scope_of_another_library_changes_only_its_own(
-        self, tmp_path, notes, builds
-    ):
-        _leave_journal(notes)
-        other = _another_library(tmp_path / "other library")
-
-        with config_scope(other):
-            svc_mod.get_services()
-
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
-        assert cfg.linked_roots == {"notes": str(notes.resolve())}
-        assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}
-        assert list(other.data_root.iterdir()) == []
-        assert other.linked_roots == {}
-
-    def test_a_new_journal_takes_the_records_of_the_data_root_it_is_given(self, tmp_path):
-        update_skip_records(
-            cfg.data_root, lambda records: records.markers.update({"work/gone.md": _GONE_HASH})
-        )
-        other = _another_library(tmp_path / "other library")
-
-        with config_scope(other):
-            journal = absorb_mod.new_journal(cfg.data_root, {"work": "notes/work"}, {}, [])
-
-        assert list(journal.records) == ["notes/work/gone.md"]
-
-    def test_an_absorb_under_the_hold_asks_for_no_services(self, notes, takes, builds, monkeypatch):
-        _register_work(notes)
-        asked: list[list[str]] = []
-        real_get = svc_mod.get_services
-
-        def get_services(*args, **kwargs):
-            asked.append(takes.held())
-            return real_get(*args, **kwargs)
-
-        monkeypatch.setattr(absorb_mod, "get_services", get_services)
-        monkeypatch.setattr(ingest_mod, "get_services", get_services)
-
-        result = register_sources([notes])
-
-        assert result.absorbed == ["work"]
-        assert asked == [[]]
-
-    def test_an_absorb_under_the_scope_of_another_library_writes_only_its_own(
-        self, tmp_path, notes, builds
-    ):
-        svc_mod.get_services()
-        _leave_journal(notes)
-        journal = read_journal(cfg.data_root)
-        assert journal is not None
-        delete_journal(cfg.data_root)
-        other = _another_library(tmp_path / "other library")
-
-        with config_scope(other), library_held(cfg, _A_SYNC_RUNS) as hold:
-            absorb_mod.absorb(builds.services.store, journal, hold)
-
-        assert _registry() == {"notes": str(notes.resolve())}
-        assert not absorb_pending(cfg.data_root)
-        assert list(other.data_root.iterdir()) == []
-
-    def test_a_hold_of_another_library_gives_the_config_it_was_taken_for(self, tmp_path, takes):
-        other = _another_library(tmp_path / "other library")
-
-        with library_held(other, _A_SYNC_RUNS) as hold:
-            assert hold.config is other
-            assert takes.held() == [_RECORDS_LOCK, _SYNC_LOCK]
-
-        with library_held_for_reset(other) as hold:
-            assert hold.config is other
-
-    def test_the_same_first_build_under_no_scope_finishes_the_journal(self, notes, builds):
-        """Control: the journal above is one the start finisher rolls forward."""
-        _leave_journal(notes)
-
-        svc_mod.get_services()
-
-        assert not absorb_pending(cfg.data_root)
-        assert _registry() == {"notes": str(notes.resolve())}
-        assert load_skip_kinds(cfg.data_root) == {"notes/work/gone.md": SkipKind.REMOVED}

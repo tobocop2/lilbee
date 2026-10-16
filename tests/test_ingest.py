@@ -5751,7 +5751,7 @@ class TestRemoveDropsFromWikiIndex:
         )
         monkeypatch.setattr(
             "lilbee.app.ingest.get_services",
-            lambda cancel=None: mock.MagicMock(
+            lambda: mock.MagicMock(
                 store=mock.MagicMock(
                     remove_documents=mock.MagicMock(
                         return_value=mock.MagicMock(removed=["gone.txt"], not_found=[])

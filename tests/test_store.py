@@ -4692,6 +4692,40 @@ class TestRekeySourcesUnder:
         ]
 
 
+class TestClearRekeyTarget:
+    """Rows at the key a source moves to go, in each table that still holds the source."""
+
+    def test_stale_rows_at_and_below_the_new_key_go_and_a_neighbour_stays(self, store):
+        _seed_source(store, "work/a.md")
+        _seed_source(store, "notes/work/a.md")
+        _seed_source(store, "notes/work/deep/b.md")
+        _seed_source(store, "notes/workshop/x.md")
+
+        store.clear_rekey_target("work", "notes/work")
+
+        assert _holders(store, "notes/work/a.md") == set()
+        assert _holders(store, "notes/work/deep/b.md") == set()
+        assert _holders(store, "work/a.md") == _KEY_COLUMNS
+        assert _holders(store, "notes/workshop/x.md") == _KEY_COLUMNS
+
+    def test_rows_already_moved_stay_when_the_old_key_holds_none(self, store):
+        _seed_source(store, "notes/work/a.md")
+
+        store.clear_rekey_target("work", "notes/work")
+
+        assert _holders(store, "notes/work/a.md") == _KEY_COLUMNS
+
+    def test_a_store_without_the_optional_tables_is_cleared(self, store):
+        from lilbee.data.store import SourceType
+
+        store.upsert_source("work/a.md", "h", 0, SourceType.DOCUMENT)
+        store.upsert_source("notes/work/a.md", "h", 0, SourceType.DOCUMENT)
+
+        store.clear_rekey_target("work", "notes/work")
+
+        assert [s["filename"] for s in store.get_sources()] == ["work/a.md"]
+
+
 class TestMemberSources:
     def test_only_the_names_under_the_archive_are_its_members(self, store):
         names = (

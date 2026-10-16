@@ -7,18 +7,11 @@ import fnmatch
 import logging
 from collections import Counter
 from collections.abc import Callable, Generator, Iterable
-from contextlib import ExitStack, contextmanager
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from lilbee.app.absorb import (
-    SYNC_RUNNING_ADD_AGAIN,
-    UNFINISHED_ADD_HELD,
-    absorb,
-    finish_absorb,
-    keys_of_pending_absorb,
-    new_journal,
-)
+from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN, AbsorbPlan, absorb
 from lilbee.app.services import get_services
 from lilbee.core import settings
 from lilbee.core.config import active_config
@@ -41,10 +34,8 @@ from lilbee.data.ingest.skip_marker import (
 )
 from lilbee.data.store.types import RemoveResult
 from lilbee.data.types import is_under
-from lilbee.runtime.absorb_journal import AbsorbJournal, AbsorbJournalError, absorb_pending
-from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError
+from lilbee.runtime.cancellation import CancelSignal, TaskCancelledError, sigint_deferred
 from lilbee.runtime.lock import (
-    LOCK_TIMEOUT,
     LibraryUnlockableError,
     LockingUnsupportedError,
     SyncRunningError,
@@ -57,12 +48,11 @@ _ADD_CANCELLED_ONE = "Add cancelled. {name} was not added."
 _ADD_CANCELLED_MANY = "Add cancelled. {names} were not added."
 _ALSO_HIT_ERROR = " It also hit an error: {error}."
 _CANCEL_ERRORS = (asyncio.CancelledError, TaskCancelledError, KeyboardInterrupt)
-# What an add, a remove or a sync raises when another lilbee process, an add it
-# cannot finish, or a data root it cannot lock keeps it from starting.
+# What an add, a remove or a sync raises when another lilbee process or a data
+# root it cannot lock keeps it from starting.
 LIBRARY_REFUSALS = (
     SkipRecordsLockError,
     SyncRunningError,
-    AbsorbJournalError,
     LibraryUnlockableError,
     LockingUnsupportedError,
 )
@@ -221,7 +211,9 @@ def _classify(
             outside.setdefault(src, p.name)
             continue
         others = {name: target for name, target in roots.items() if name not in reached}
-        label = _resolve_label(src.name, others, docs_resolved, force=force)
+        # A parent never takes the label of a source it takes in: the key would move twice.
+        taken_in = src.name in reached and src.name in sources
+        label = None if taken_in else _resolve_label(src.name, others, docs_resolved, force=force)
         if label is None:
             result.name_taken.append(src.name)
             outside.setdefault(src, src.name)
@@ -307,7 +299,7 @@ def register_sources(
 
     def _mutate(
         persisted: dict[str, str] | None,
-    ) -> tuple[dict[str, str] | None, tuple[RegisterResult, AbsorbJournal | None]]:
+    ) -> tuple[dict[str, str] | None, tuple[RegisterResult, AbsorbPlan | None]]:
         # Read the registry from config.toml INSIDE the lock (not the possibly
         # stale in-memory copy) so two processes registering roots concurrently
         # cannot lose each other's entry.
@@ -321,33 +313,33 @@ def register_sources(
         config.linked_roots = before
         add = {label: target for label, target in roots.items() if before.get(label) != target}
         drop = [label for label in before if label not in roots]
-        return persisted, (result, new_journal(config.data_root, moves, add, drop))
+        return persisted, (result, AbsorbPlan(moves, add, drop))
 
-    names = [p.name for p in paths]
-    in_progress = keys_of_pending_absorb()
     # Taken before the registry changes, so a held lock refuses the add with nothing done.
     with skip_records_lock(config.data_root, cancel):
-        # An absorb writes its journal under the records lock, so none appears in here.
-        if not absorb_pending(config.data_root):
-            result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-            if journal is None:
-                unmark_sources_under(paths, spared=in_progress)
-                return result
-            # A source moves, so nothing is registered yet; the error names what takes it in.
-            names = list(result.absorbed_into)
-    # A source that moves and an unfinished add both need every sync stopped. The registry
-    # is read again under that hold: the read above only chose it. The services are built
-    # here, with no library lock held; an add that registers above builds none.
-    store = get_services(cancel).store
-    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(names))
-    with library_held(config, running, 0.0, cancel) as hold:
-        taken = [*in_progress, *finish_absorb(store, hold)]
-        result, journal = settings.mutate_value(config.data_root, "linked_roots", _mutate)
-        if journal is not None:
-            absorb(store, journal, hold)
-            taken = [*taken, *journal.moves.values()]
-        unmark_sources_under(paths, spared=taken)
+        result, plan = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+        if plan is None:
+            unmark_sources_under(paths, spared=_kept_sources(result))
+            return result
+    # A source that moves needs every sync stopped. The registry is read again under that
+    # hold: the read above only chose it. The services are built here, with no library
+    # lock held; an add that registers above builds none.
+    store = get_services().store
+    running = SYNC_RUNNING_ADD_AGAIN.format(names=", ".join(result.absorbed_into))
+    with library_held(config, running, 0.0, cancel) as hold, sigint_deferred():
+        result, plan = settings.mutate_value(config.data_root, "linked_roots", _mutate)
+        taken: list[str] = []
+        if plan is not None:
+            absorb(store, plan, hold)
+            taken = list(plan.moves.values())
+        unmark_sources_under(paths, spared=[*taken, *_kept_sources(result)])
     return result
+
+
+def _kept_sources(result: RegisterResult) -> list[str]:
+    """The label of each registered source the add did not name, whose records stay."""
+    named = {*result.registered, *result.tracked}
+    return [label for label in active_config().linked_roots if label not in named]
 
 
 def unmark_sources_under(paths: list[Path], *, spared: Iterable[str] = ()) -> None:
@@ -515,31 +507,15 @@ def remove_documents_durably(
     *targets* (the expanded names) is computed when not supplied; a caller that
     already expanded for a confirmation prompt passes it to avoid re-expanding.
 
-    An interrupted absorb is finished first, and the removal runs under the same
-    hold of the locks an absorb holds from start to end, so no removal runs on keys
-    that are part way through a move. The records lock is free during the wait for
-    a running sync. The names are then expanded at the keys the library holds. Raises one of
-    ``LIBRARY_REFUSALS`` with nothing removed when it cannot start. Setting
-    *cancel* ends the wait for the records lock, and the wait for a running sync
-    before it finishes an absorb, with ``SkipRecordsWaitCancelledError`` and
-    nothing removed.
+    Raises one of ``LIBRARY_REFUSALS`` with nothing removed when it cannot start.
+    Setting *cancel* ends the wait for the records lock with
+    ``SkipRecordsWaitCancelledError`` and nothing removed.
     """
-    config = active_config()
-    data_root = config.data_root
-    # Built before the first library lock.
-    store = get_services(cancel).store
-    with ExitStack() as locks:
-        # Taken before the index changes, so a held lock refuses the removal with nothing done.
-        locks.enter_context(skip_records_lock(data_root, cancel))
-        # An absorb writes its journal under the records lock, so none appears under a hold.
-        if absorb_pending(data_root):
-            # The records lock is free during the wait for a running sync.
-            locks.close()
-            hold = locks.enter_context(
-                library_held(config, UNFINISHED_ADD_HELD, LOCK_TIMEOUT, cancel)
-            )
-            finish_absorb(store, hold)
-            targets = None
+    data_root = active_config().data_root
+    # Built before the records lock.
+    store = get_services().store
+    # Taken before the index changes, so a held lock refuses the removal with nothing done.
+    with skip_records_lock(data_root, cancel):
         if targets is None:
             targets = expand_remove_targets(names)
         result = store.remove_documents(targets)

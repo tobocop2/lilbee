@@ -2504,6 +2504,18 @@ class Store:
                 table.update(where=where, values_sql={column: value})
         self._invalidate_source_cache()
 
+    def clear_rekey_target(self, old: str, new: str) -> None:
+        """Delete the rows at or below *new* in each table that holds a row at or below *old*."""
+        with self._write_lock():
+            for name, column in _REKEY_TABLES:
+                table = self.open_table(name)
+                at_new, _ = _rekey_sql(column, new, new)
+                if table is None or table.count_rows(_rekey_sql(column, old, old)[0]) == 0:
+                    continue
+                if table.count_rows(at_new):
+                    table.delete(at_new)
+        self._invalidate_source_cache()
+
     def drop_citations_repeated_under(self, repeat: str, kept: str) -> None:
         """Delete each citation at or below *repeat* that one at the same place below *kept* holds.
 

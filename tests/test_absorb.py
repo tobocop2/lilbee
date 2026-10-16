@@ -23,7 +23,7 @@ from filelock import Timeout as FileLockTimeout
 import lilbee.app.services as svc_mod
 from lilbee.app import absorb as absorb_mod
 from lilbee.app import ingest as ingest_mod
-from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN, finish_pending_absorb
+from lilbee.app.absorb import SYNC_RUNNING_ADD_AGAIN
 from lilbee.app.ingest import (
     forget_unfinished_on_cancel,
     register_sources,
@@ -45,16 +45,6 @@ from lilbee.data.ingest.skip_marker import (
     load_skip_reasons,
 )
 from lilbee.data.store import Store
-from lilbee.runtime.absorb_journal import (
-    AbsorbJournal,
-    AbsorbJournalError,
-    AbsorbPhase,
-    HeldOut,
-    absorb_pending,
-    journal_path,
-    read_journal,
-    write_journal,
-)
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
@@ -66,18 +56,13 @@ from lilbee.runtime.lock import (
     sync_running,
 )
 from tests.conftest import (
-    UNFINISHED_ADD_REFUSALS,
-    UnfinishedAdd,
     cancel_set_when_the_sync_lock_is_granted,
     filesystem_without_locking,
-    leave_unfinished_add,
     make_mock_services,
     reset_held_on_a_thread,
     sync_lock_not_a_lock_file,
-    unfinished_add_refused,
 )
 from tests.test_lock import (
-    _mark_held_on_a_thread,
     _reset_held_in_another_process,
     _sync_take_that_ends_busy,
     _sync_write_takes,
@@ -89,15 +74,6 @@ from tests.test_skip_marker import (
     record_file_reads,
 )
 from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
-from tests.test_wiki_shared import leave_temp_of_a_dead_writer
-
-
-def _finish_as(names: list[str] | None, notes: Path, cancel) -> None:
-    """Finish an interrupted add as a remove or a sync does, or as the add of *notes* does."""
-    if names is None:
-        finish_pending_absorb(cancel=cancel)
-    else:
-        register_sources([notes], cancel=cancel)
 
 
 class _Killed(BaseException):
@@ -272,7 +248,6 @@ def _everything(store: Store) -> dict[str, object]:
             if path.is_file()
         },
         "registry": sorted(_registry()),
-        "journal": absorb_pending(cfg.data_root),
     }
 
 
@@ -327,8 +302,6 @@ def _seeded_nested_children(store: Store, parent: Path) -> Path:
     _save_stub_index(store)
     return parent
 
-
-_LEFT_FOR_THE_NEXT_SYNC = "An interrupted add is not finished yet; the next sync finishes it."
 
 _NESTED_KEYS = [
     "notes/work/deep/a.md",
@@ -472,14 +445,14 @@ class TestTheParentTakesTheChild:
         _write(notes / "home" / "list.md", "# List\n\nThe list for the market.\n")
         register_sources([notes / "work", notes / "home"])
         await sync(quiet=True)
-        journals: list[AbsorbJournal] = []
-        real = absorb_mod.write_journal
+        plans: list[absorb_mod.AbsorbPlan] = []
+        real = absorb_mod.absorb
 
-        def _record(data_root, journal):
-            journals.append(journal)
-            real(data_root, journal)
+        def _record(store, plan, hold):
+            plans.append(plan)
+            real(store, plan, hold)
 
-        with mock.patch.object(absorb_mod, "write_journal", _record):
+        with mock.patch.object(ingest_mod, "absorb", _record):
             result = register_sources([notes])
 
         assert result.absorbed_into == {"notes": ["home", "work"]}
@@ -489,9 +462,7 @@ class TestTheParentTakesTheChild:
             "notes/work/budget.md",
             "notes/work/plan.md",
         ]
-        assert [journal.phase for journal in journals] == [AbsorbPhase.LIFT, AbsorbPhase.LAND]
-        assert journals[0].moves == {"work": "notes/work", "home": "notes/home"}
-        assert len({journal.id for journal in journals}) == 1
+        assert [plan.moves for plan in plans] == [{"work": "notes/work", "home": "notes/home"}]
 
     async def test_a_grandparent_carries_every_folder_between(self, library, notes):
         await _add(notes / "work")
@@ -655,16 +626,16 @@ class TestTheParentTakesTheChild:
         assert footnotes and len(footnotes) == len(set(footnotes))
         assert page.count("- source: notes/work/deep/a.md") == 1
 
-    def test_a_drop_after_the_land_finds_nothing_to_drop(self, library, notes):
-        """The wrong order: the outer source's entries have left the temporary keys."""
+    def test_a_drop_after_the_rekey_finds_nothing_to_drop(self, library, notes):
+        """The wrong order: the outer source's entries have left the keys the drop reads."""
         store = library.store
         _seeded_nested_children(store, notes)
         real_drop = absorb_mod._drop_shadows
-        journals: list[AbsorbJournal] = []
+        moved: list[dict[str, str]] = []
 
-        with mock.patch.object(absorb_mod, "_drop_shadows", lambda _s, j: journals.append(j)):
+        with mock.patch.object(absorb_mod, "_drop_shadows", lambda _s, moves: moved.append(moves)):
             register_sources([notes])
-        real_drop(store, journals[0])
+        real_drop(store, moved[0])
 
         assert "notes/work/deep/gone.md" in _keys(library)
 
@@ -761,7 +732,6 @@ class TestWhatIsNotAbsorbed:
         assert sorted(_registry()) == ["notes", "work"]
         assert _keys(library) == ["notes/loose.md", "work/plan.md"]
         assert synced.added == ["notes/loose.md"]
-        assert not absorb_pending(cfg.data_root)
 
     async def test_a_child_below_an_ignored_folder_is_indexed_once_when_the_pattern_goes(
         self, library, tmp_path
@@ -863,13 +833,13 @@ class TestWhatIsNotAbsorbed:
         assert _registry() == {"notes": str(notes.resolve())}
 
     async def test_a_child_named_beside_its_parent_was_never_a_source(self, library, notes):
-        with mock.patch.object(absorb_mod, "write_journal") as journal:
+        with mock.patch.object(ingest_mod, "absorb") as absorb:
             result = register_sources([notes / "work", notes])
 
         assert result.registered == ["notes"]
         assert result.absorbed_into == {}
         assert _registry() == {"notes": str(notes.resolve())}
-        journal.assert_not_called()
+        absorb.assert_not_called()
 
     async def test_a_registered_child_named_beside_its_parent_is_absorbed(self, library, notes):
         await _add(notes / "work")
@@ -883,30 +853,17 @@ class TestWhatIsNotAbsorbed:
 
 
 class TestTheCommonAddPaysNothing:
-    def test_no_child_means_no_journal_and_no_lock(self, library, notes):
-        opened: list[str] = []
-        real_exists = Path.exists
-
-        def _exists(path, **kwargs):
-            if path.name == "pending_absorb.json":
-                opened.append(path.name)
-            return real_exists(path, **kwargs)
-
+    def test_no_child_means_no_absorb_and_no_lock(self, library, notes):
         with (
             mock.patch.object(ingest_mod, "library_held") as held_off,
-            mock.patch.object(absorb_mod, "write_journal") as journal,
-            mock.patch.object(absorb_mod, "_rekey") as rekey,
+            mock.patch.object(ingest_mod, "absorb") as absorb,
             mock.patch("lilbee.app.ingest.IgnoreRules.for_corpus") as rules,
-            mock.patch.object(Path, "exists", _exists),
         ):
             result = register_sources([notes])
 
         assert result.registered == ["notes"] and result.absorbed == []
-        # Once when the add arrives and once under the records lock.
-        assert opened == ["pending_absorb.json"] * 2
         held_off.assert_not_called()
-        journal.assert_not_called()
-        rekey.assert_not_called()
+        absorb.assert_not_called()
         rules.assert_not_called()
         # The add opened the sync lock to check it and left it free.
         with _no_sync_running(cfg.data_root):
@@ -944,7 +901,7 @@ class TestTheCommonAddPaysNothing:
         }
         assert load_skip_kinds(cfg.data_root) == {"notes/loose.md": SkipKind.REMOVED}
 
-    async def test_an_absorb_does_take_the_lock_and_write_the_journal(self, library, notes):
+    async def test_an_absorb_does_take_the_lock(self, library, notes):
         """The control for the test above: the same probes fire when a child is there."""
         await _add(notes / "work")
         real_held_off = ingest_mod.library_held
@@ -958,12 +915,6 @@ class TestTheCommonAddPaysNothing:
         held_off.assert_called_once()
         # Once to choose the hold and once under it.
         assert rules.call_count == 2
-
-    async def test_a_sync_without_a_journal_checks_once_and_finishes_nothing(self, library, notes):
-        with mock.patch("lilbee.data.ingest.pipeline._finish_pending_absorb") as finish:
-            await _add(notes)
-
-        finish.assert_not_called()
 
 
 class TestASyncIsRunning:
@@ -996,7 +947,7 @@ class TestASyncIsRunning:
         assert result.registered == ["notes"] and result.absorbed == []
         assert _registry() == {"notes": str(notes.resolve())}
 
-    async def test_a_sync_mark_taken_during_the_absorb_waits_until_the_journal_is_gone(
+    async def test_a_sync_mark_taken_during_the_absorb_waits_until_the_absorb_ends(
         self, library, notes
     ):
         """A thread that takes the mark a sync takes gets it only when the absorb has ended."""
@@ -1009,41 +960,39 @@ class TestASyncIsRunning:
         def _second_sync() -> None:
             waiting.set()
             with source_keys_in_use(cfg.data_root):
-                states.append(absorb_pending(cfg.data_root))
+                states.append(sorted(_registry()))
 
-        real_land = absorb_mod._land
+        real_prune = absorb_mod._prune_records
 
-        def _land_while_a_sync_waits(config, store, journal):
+        def _prune_while_a_sync_waits(config, moves):
             thread = threading.Thread(target=_second_sync)
             thread.start()
             assert waiting.wait(5)
             thread.join(0.3)
             assert thread.is_alive(), "the sync started in the middle of the absorb"
-            real_land(config, store, journal)
+            real_prune(config, moves)
             threads.append(thread)
 
         threads: list[threading.Thread] = []
-        with mock.patch.object(absorb_mod, "_land", _land_while_a_sync_waits):
+        with mock.patch.object(absorb_mod, "_prune_records", _prune_while_a_sync_waits):
             register_sources([notes])
         threads[0].join(5)
 
-        assert states == [False]
+        assert states == [["notes"]]
 
 
 class TestInterruptedAbsorb:
+    """A kill at any step of an add, then the add again, gives what one whole add gives."""
+
     _KILL_POINTS = (
-        "journal-written",
-        "lift-third-table",
-        "lift-wiki-pages",
-        "clear-targets",
-        "phase-write",
-        "land-start",
-        "land-third-table",
-        "land-wiki-pages",
-        "skip-records",
+        "copy-records",
+        "shadows",
+        "rekey",
+        "third-table",
+        "wiki-pages",
         "wiki-index",
+        "prune-records",
         "registry",
-        "journal-delete",
     )
 
     @staticmethod
@@ -1060,26 +1009,26 @@ class TestInterruptedAbsorb:
 
         return mock.patch.object(target, attribute, _dies)
 
-    def _kill_at(self, point: str):
+    def _kill_nth(self, step: str, nth: int):
         from lancedb.table import LanceTable
 
         import lilbee.wiki.rekey as wiki_rekey_mod
+        import lilbee.wiki.stubs as wiki_stubs_mod
 
-        tables = len(_KEY_COLUMNS)
-        return {
-            "journal-written": lambda: self._nth_call(Store, "rekey_sources_under", 1),
-            "lift-third-table": lambda: self._nth_call(LanceTable, "update", 4),
-            "lift-wiki-pages": lambda: self._nth_call(wiki_rekey_mod, "rekey_wiki_pages", 1),
-            "clear-targets": lambda: self._nth_call(absorb_mod, "_clear_targets", 1),
-            "phase-write": lambda: self._nth_call(absorb_mod, "write_journal", 2),
-            "land-start": lambda: self._nth_call(absorb_mod, "_land", 1),
-            "land-third-table": lambda: self._nth_call(LanceTable, "update", tables + 4),
-            "skip-records": lambda: self._nth_call(absorb_mod, "_write_records", 1),
-            "land-wiki-pages": lambda: self._nth_call(wiki_rekey_mod, "rekey_wiki_pages", 2),
-            "wiki-index": lambda: self._nth_call(absorb_mod, "_refresh_wiki_index", 1),
-            "registry": lambda: self._nth_call(absorb_mod, "_write_registry", 1),
-            "journal-delete": lambda: self._nth_call(absorb_mod, "delete_journal", 1),
-        }[point]()
+        target, attribute = {
+            "copy-records": (absorb_mod, "_copy_records"),
+            "shadows": (absorb_mod, "_drop_shadows"),
+            "rekey": (Store, "rekey_sources_under"),
+            "third-table": (LanceTable, "update"),
+            "table": (LanceTable, "update"),
+            "wiki-pages": (wiki_rekey_mod, "rekey_wiki_pages"),
+            "wiki-index": (wiki_stubs_mod, "refresh_sources_under"),
+            "prune-records": (absorb_mod, "_prune_records"),
+            "registry": (absorb_mod, "_write_registry"),
+            "clear": (Store, "remove_documents"),
+            "citations": (Store, "drop_citations_repeated_under"),
+        }[step]
+        return self._nth_call(target, attribute, 4 if step == "third-table" else nth)
 
     def _clean_absorb(self, tmp_path, label="notes", child="work", seed=None) -> dict[str, object]:
         """The state a whole absorb leaves, built in a second library."""
@@ -1103,25 +1052,23 @@ class TestInterruptedAbsorb:
         return state
 
     @pytest.mark.parametrize("point", _KILL_POINTS)
-    def test_a_kill_after_each_step_ends_in_the_new_state(self, library, notes, tmp_path, point):
+    def test_a_kill_at_each_step_then_the_add_again_ends_in_the_new_state(
+        self, library, notes, tmp_path, point
+    ):
         store = library.store
         _seeded_child(store, notes)
         before = _everything(store)
 
-        with self._kill_at(point), pytest.raises(_Killed):
+        with self._kill_nth(point, 1), pytest.raises(_Killed):
             register_sources([notes])
 
-        assert absorb_pending(cfg.data_root)
-        killed = _everything(store)
-        cfg.linked_roots = {"work": str((notes / "work").resolve())}  # what a new process loads
-        finish_pending_absorb()
+        assert _registry() == {"work": str((notes / "work").resolve())}
+        assert not list(cfg.data_root.glob("*absorb*"))
+        register_sources([notes])
 
         clean = self._clean_absorb(tmp_path)
-        finished = _everything(store)
-        assert finished["tables"] == clean["tables"]
-        assert finished == clean
+        assert _everything(store) == clean
         assert clean != before and clean["registry"] == ["notes"]
-        assert killed != clean
         assert cfg.linked_roots == {"notes": str(notes.resolve())}
 
     _TABLES = len(_KEY_COLUMNS)
@@ -1129,315 +1076,103 @@ class TestInterruptedAbsorb:
         "renamed": (_seeded_renamed_child, {"renamed": "work"}),
         "nested": (_seeded_nested_children, {"work": "work", "deep": "work/deep"}),
     }
-    # One source moves three times (lift, the lift again, land) and two sources six.
     _SHAPE_POINTS = (
-        *(("renamed", "rekey", nth) for nth in (1, 2)),
-        ("renamed", "records", 1),
+        ("renamed", "rekey", 1),
         ("renamed", "table", 4),
-        ("renamed", "table", _TABLES + 6),
-        *(("nested", "rekey", nth) for nth in range(1, 5)),
-        ("nested", "records", 1),
+        *(("nested", "rekey", nth) for nth in (1, 2)),
         ("nested", "table", 4),
         ("nested", "table", _TABLES + 4),
-        ("nested", "table", 2 * _TABLES + 4),
-        *(("nested", "clear", nth) for nth in (1, 2)),
+        ("nested", "clear", 1),
         ("nested", "citations", 1),
-        *((shape, step, 1) for shape in _SHAPES for step in ("wiki-index", "registry", "delete")),
-        *((shape, "phase", 2) for shape in _SHAPES),
+        *(
+            (shape, step, 1)
+            for shape in _SHAPES
+            for step in ("copy-records", "wiki-index", "prune-records", "registry")
+        ),
     )
 
-    def _kill_nth(self, step: str, nth: int):
-        from lancedb.table import LanceTable
-
-        target, attribute = {
-            "rekey": (Store, "rekey_sources_under"),
-            "table": (LanceTable, "update"),
-            "records": (absorb_mod, "_write_records"),
-            "clear": (absorb_mod, "_clear_targets"),
-            "citations": (Store, "drop_citations_repeated_under"),
-            "phase": (absorb_mod, "write_journal"),
-            "wiki-index": (absorb_mod, "_refresh_wiki_index"),
-            "registry": (absorb_mod, "_write_registry"),
-            "delete": (absorb_mod, "delete_journal"),
-        }[step]
-        return self._nth_call(target, attribute, nth)
-
     @pytest.mark.parametrize(("shape", "step", "nth"), _SHAPE_POINTS)
-    def test_a_kill_in_a_renamed_or_nested_absorb_ends_in_the_new_state(
+    def test_a_kill_in_a_renamed_or_nested_absorb_then_the_add_again_ends_in_the_new_state(
         self, library, notes, tmp_path, shape, step, nth
     ):
         store = library.store
-        seed, roots = self._SHAPES[shape]
+        seed, _roots = self._SHAPES[shape]
         seed(store, notes)
         before = _everything(store)
 
         with self._kill_nth(step, nth), pytest.raises(_Killed):
             register_sources([notes])
-
-        assert absorb_pending(cfg.data_root)
-        killed = _everything(store)
-        cfg.linked_roots = {label: str((notes / below).resolve()) for label, below in roots.items()}
-        finish_pending_absorb()
-        finish_pending_absorb()
+        register_sources([notes])
 
         clean = self._clean_absorb(tmp_path, seed=seed)
-        finished = _everything(store)
-        assert finished["tables"] == clean["tables"]
-        assert finished == clean
+        assert _everything(store) == clean
         assert clean != before and clean["registry"] == ["notes"]
-        assert killed != clean
         keys = _keys(library)
         assert len(keys) == len(set(keys)) and "notes/work/plan.md" in keys
-        assert cfg.linked_roots == {"notes": str(notes.resolve())}
 
-    @pytest.mark.parametrize("point", _KILL_POINTS)
-    def test_parent_and_child_with_one_label_are_rekeyed_once(self, library, tmp_path, point):
+    @pytest.mark.parametrize("shape", ["one", "renamed", "nested"])
+    def test_every_step_run_again_on_a_finished_absorb_changes_nothing(self, library, notes, shape):
+        store = library.store
+        if shape == "one":
+            _seeded_child(store, notes)
+        else:
+            self._SHAPES[shape][0](store, notes)
+        plans: list[absorb_mod.AbsorbPlan] = []
+        real = absorb_mod.absorb
+
+        def _kept(store_, plan, hold):
+            plans.append(plan)
+            real(store_, plan, hold)
+
+        with mock.patch.object(ingest_mod, "absorb", _kept):
+            register_sources([notes])
+        finished = _everything(store)
+
+        with library_held(cfg, "busy") as hold:
+            absorb_mod.absorb(store, plans[0], hold)
+
+        assert plans[0].moves and _everything(store) == finished
+
+    def test_a_parent_named_like_a_source_it_would_take_in_is_refused(self, library, tmp_path):
         store = library.store
         parent = tmp_path / "src" / "project"
         _write(parent / "project" / "plan.md", "# Plan\n\nThe plan.\n")
-        _write(parent / "project" / "project" / "deep.md", "# Deep\n\nA deep page.\n")
         _seeded_child(store, parent, "project")
-        _seed(store, "project/project/deep.md")
+        before = _everything(store)
 
-        with self._kill_at(point), pytest.raises(_Killed):
-            register_sources([parent])
-        finish_pending_absorb()
-        finish_pending_absorb()
+        result = register_sources([parent], force=True)
 
-        keys = sorted(source["filename"] for source in store.get_sources())
-        assert keys == [
-            "project/project/budget.md",
-            "project/project/plan.md",
-            "project/project/project/deep.md",
-            "workshop/x.md",
-        ]
-        assert _holders(store, "project/project/plan.md") == _KEY_COLUMNS
-        assert _holders(store, "project/project/project/plan.md") == set()
-        assert sorted(load_skip_markers(cfg.data_root)) == [
-            "project/project/broken.md",
-            "project/project/gone.md",
-        ]
-        page = cfg.data_root / cfg.wiki_dir / "entities" / "boeing.md"
-        text = page.read_text(encoding="utf-8")
-        assert "project/project/plan.md" in text and "project/project/project" not in text
-        assert _registry() == {"project": str(parent.resolve())}
+        assert result.name_taken == ["project"]
+        assert result.registered == [] and result.absorbed == []
+        assert _everything(store) == before
 
-    def test_a_remove_finishes_an_interrupted_absorb_before_it_removes(self, library, tmp_path):
-        """A process that was running when another one's add died removes on the moved keys."""
-        store = library.store
-        parent = tmp_path / "src" / "project"
-        _write(parent / "project" / "budget.md", "# Budget\n\nThe budget.\n")
-        _seeded_child(store, parent, "project")
-        with self._kill_at("journal-written"), pytest.raises(_Killed):
-            register_sources([parent])
-
-        stale = remove_documents_durably(["project/budget.md"])
-
-        assert not absorb_pending(cfg.data_root)
-        assert stale.removed == [] and stale.not_found == ["project/budget.md"]
-        assert _keys(library) == [
-            "project/project/budget.md",
-            "project/project/plan.md",
-            "workshop/x.md",
-        ]
-
-        moved = remove_documents_durably(["project/project/budget.md"])
-
-        assert moved.removed == ["project/project/budget.md"]
-        assert _keys(library) == ["project/project/plan.md", "workshop/x.md"]
-        assert load_skip_kinds(cfg.data_root)["project/project/budget.md"] is SkipKind.REMOVED
-
-    def test_a_remove_expands_its_names_again_after_it_finished_an_absorb(self, library, notes):
-        store = library.store
-        _seeded_child(store, notes)
-        with self._kill_at("land-start"), pytest.raises(_Killed):
-            register_sources([notes])
-
-        result = remove_documents_durably(["work"], targets=["work/plan.md", "work/budget.md"])
-
-        assert result.removed == [] and result.not_found == ["work"]
-        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md", "workshop/x.md"]
-        assert _registry() == {"notes": str(notes.resolve())}
-
-    def test_a_remove_without_a_journal_uses_the_names_it_was_given(self, library, notes):
-        store = library.store
-        _seeded_child(store, notes)
-
-        with mock.patch("lilbee.app.ingest.finish_absorb") as finish:
-            result = remove_documents_durably(["anything"], targets=["work/plan.md"])
-
-        assert result.removed == ["work/plan.md"]
-        finish.assert_not_called()
-
-    def test_a_single_phase_rekey_would_double_the_prefix(self, library):
-        """The control for the test above: the store method alone, run twice, doubles it."""
-        store = library.store
-        _seed(store, "project/plan.md")
-
-        store.rekey_sources_under("project", "project/project")
-        store.rekey_sources_under("project", "project/project")
-
-        assert _holders(store, "project/project/project/plan.md") == _KEY_COLUMNS
-
-    def test_a_root_named_like_the_temporary_prefix_keeps_its_keys(self, library, notes):
-        store = library.store
-        _seeded_child(store, notes)
-        _seed(store, ".absorb-00000000/work/plan.md")
-        _seed(store, ".absorb/plan.md")
-
-        register_sources([notes])
-
-        assert _holders(store, ".absorb-00000000/work/plan.md") == _KEY_COLUMNS
-        assert _holders(store, ".absorb/plan.md") == _KEY_COLUMNS
-        assert _holders(store, "notes/work/plan.md") == _KEY_COLUMNS
-
-    async def test_a_sync_finishes_an_interrupted_absorb_before_it_walks(self, library, notes):
-        await _add(notes / "work")
-        with self._kill_at("phase-write"), pytest.raises(_Killed):
-            register_sources([notes])
-        assert absorb_pending(cfg.data_root)
-        assert [key for key in _keys(library) if key.startswith(".absorb-")]
-
-        synced = await sync(quiet=True)
-
-        assert not absorb_pending(cfg.data_root)
-        assert _keys(library) == ["notes/loose.md", "notes/work/budget.md", "notes/work/plan.md"]
-        assert synced.added == ["notes/loose.md"]
-        assert synced.unchanged == 2
-
-    async def test_the_next_add_finishes_an_interrupted_absorb_first(
+    def test_a_ctrl_c_during_the_steps_ends_the_add_after_its_registry_write(
         self, library, notes, tmp_path
     ):
-        await _add(notes / "work")
-        with self._kill_at("clear-targets"), pytest.raises(_Killed):
-            register_sources([notes])
-        other = _write(tmp_path / "other" / "o.md", "# O\n\nAnother page.\n").parent
+        import signal
+        import threading
 
-        result = register_sources([other])
-
-        assert result.registered == ["other"]
-        assert not absorb_pending(cfg.data_root)
-        assert sorted(_registry()) == ["notes", "other"]
-        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
-
-    async def test_the_next_add_is_refused_while_a_sync_runs_on_a_journal(
-        self, library, notes, tmp_path
-    ):
-        await _add(notes / "work")
-        with self._kill_at("phase-write"), pytest.raises(_Killed):
-            register_sources([notes])
-        other = _write(tmp_path / "other" / "o.md", "# O\n\nAnother page.\n").parent
-
-        async with sync_running(cfg.data_root):
-            with pytest.raises(SyncRunningError, match="Add other again when it ends"):
-                register_sources([other])
-
-        assert absorb_pending(cfg.data_root)
-        assert "other" not in _registry()
-
-    async def test_a_new_process_finishes_an_interrupted_absorb_when_it_starts(
-        self, library, notes, monkeypatch
-    ):
-        await _add(notes / "work")
-        with self._kill_at("land-start"), pytest.raises(_Killed):
-            register_sources([notes])
+        assert threading.current_thread() is threading.main_thread()
+        handler = signal.getsignal(signal.SIGINT)
         store = library.store
-        svc_mod.set_services(None)
-        monkeypatch.setattr(svc_mod._state, "singleton", None)
-        built = make_mock_services(store=store)
+        _seeded_child(store, notes)
+        real = absorb_mod._copy_records
+        reached: list[str] = []
+
+        def _ctrl_c_then_copy(config, moves):
+            signal.raise_signal(signal.SIGINT)
+            reached.append("after the signal")
+            real(config, moves)
 
         with (
-            mock.patch.object(svc_mod, "build_services", return_value=built),
-            mock.patch("lilbee.app.settings.reconcile_embedding_dim"),
-            mock.patch("lilbee.modelhub.registry.ModelRegistry"),
+            mock.patch.object(absorb_mod, "_copy_records", _ctrl_c_then_copy),
+            pytest.raises(KeyboardInterrupt),
         ):
-            cfg.worker_pool_eager_start = False
-            assert svc_mod.get_services() is built
-
-        assert not absorb_pending(cfg.data_root)
-        assert _keys(built) == ["notes/work/budget.md", "notes/work/plan.md"]
-        assert _registry() == {"notes": str(notes.resolve())}
-
-    async def test_a_start_while_a_sync_runs_leaves_the_journal_and_says_so_at_info(
-        self, library, notes, caplog
-    ):
-        from lilbee.app.absorb import finish_pending_absorb_at_start
-
-        await _add(notes / "work")
-        with self._kill_at("phase-write"), pytest.raises(_Killed):
             register_sources([notes])
 
-        with caplog.at_level("INFO", logger="lilbee.app.absorb"):
-            async with sync_running(cfg.data_root):
-                finish_pending_absorb_at_start(cfg, library.store)
-
-        assert absorb_pending(cfg.data_root)
-        assert [(r.levelname, r.getMessage()) for r in caplog.records] == [
-            ("INFO", _LEFT_FOR_THE_NEXT_SYNC)
-        ]
-
-    async def test_a_start_on_a_data_root_it_cannot_lock_warns_with_the_refusal(
-        self, library, notes, caplog
-    ):
-        from lilbee.app.absorb import finish_pending_absorb_at_start
-
-        await _add(notes / "work")
-        with self._kill_at("phase-write"), pytest.raises(_Killed):
-            register_sources([notes])
-
-        with (
-            caplog.at_level("INFO", logger="lilbee.app.absorb"),
-            _data_root_that_cannot_be_locked(UnfinishedAdd.UNLOCKABLE),
-        ):
-            finish_pending_absorb_at_start(cfg, library.store)
-
-        assert absorb_pending(cfg.data_root)
-        [record] = caplog.records
-        assert record.levelname == "WARNING"
-        assert UNFINISHED_ADD_REFUSALS[UnfinishedAdd.UNLOCKABLE] in record.getMessage()
-
-    async def test_a_process_that_starts_while_a_sync_runs_still_gets_its_services(
-        self, library, notes, monkeypatch, caplog
-    ):
-        await _add(notes / "work")
-        with self._kill_at("phase-write"), pytest.raises(_Killed):
-            register_sources([notes])
-        svc_mod.set_services(None)
-        monkeypatch.setattr(svc_mod._state, "singleton", None)
-        built = make_mock_services(store=library.store)
-
-        with (
-            mock.patch.object(svc_mod, "build_services", return_value=built),
-            mock.patch("lilbee.app.settings.reconcile_embedding_dim"),
-            mock.patch("lilbee.modelhub.registry.ModelRegistry"),
-        ):
-            cfg.worker_pool_eager_start = False
-            with caplog.at_level("INFO", logger="lilbee.app.absorb"):
-                async with sync_running(cfg.data_root):
-                    # The process that starts holds no lock: a context of its own.
-                    assert contextvars.Context().run(svc_mod.get_services) is built
-
-        assert absorb_pending(cfg.data_root)
-        assert _LEFT_FOR_THE_NEXT_SYNC in caplog.text
-
-    async def test_a_journal_another_process_finished_is_left_alone(self, library, notes):
-        """The journal is read again under the lock, after the wait for it."""
-        await _add(notes / "work")
-        with self._kill_at("phase-write"), pytest.raises(_Killed):
-            register_sources([notes])
-        real_read = absorb_mod.read_journal
-
-        def _finished_meanwhile(data_root):
-            journal_path(data_root).unlink()
-            return real_read(data_root)
-
-        with (
-            mock.patch.object(absorb_mod, "read_journal", _finished_meanwhile),
-            mock.patch.object(absorb_mod, "_roll_forward") as roll_forward,
-        ):
-            finish_pending_absorb()
-
-        roll_forward.assert_not_called()
+        assert reached == ["after the signal"]
+        assert _everything(store) == self._clean_absorb(tmp_path)
+        assert signal.getsignal(signal.SIGINT) is handler
 
     async def test_a_stale_process_sync_does_not_move_keys_back(self, library, notes):
         await _add(notes / "work")
@@ -1464,95 +1199,6 @@ class TestInterruptedAbsorb:
         assert "notes/elsewhere.md" in keys
         row = next(s for s in library.store.get_sources() if s["filename"] == "notes/work/plan.md")
         assert row["file_hash"] != "hash of notes/work/plan.md"
-
-
-class TestTheJournal:
-    def test_it_round_trips(self, tmp_path):
-        journal = AbsorbJournal(
-            id="ab12cd34",
-            moves={"work": "notes/work"},
-            add={"notes": "/x/notes"},
-            drop=["work"],
-            records={
-                "notes/work/gone.md": HeldOut("h1", "removed", removed=True),
-                "notes/work/bad.pdf": HeldOut("h2", None, removed=False),
-            },
-            phase=AbsorbPhase.LAND,
-        )
-
-        write_journal(tmp_path, journal)
-
-        assert read_journal(tmp_path) == journal
-        assert journal.lifted("work") == ".absorb-ab12cd34/work"
-        assert not (tmp_path / "pending_absorb.json.tmp").exists()
-
-    def test_none_without_a_file(self, tmp_path):
-        assert read_journal(tmp_path) is None
-        assert not absorb_pending(tmp_path)
-
-    @pytest.mark.parametrize(
-        "text",
-        [
-            "",
-            "{not json",
-            "[]",
-            '{"id": "a"}',
-            '{"id": "a", "moves": [], "add": {}, "drop": []}',
-            '{"id": "a", "moves": {}, "add": {}, "drop": [], "phase": "lift"}',
-            '{"id": "a", "moves": {}, "add": {}, "drop": [], "phase": "lift", "records": {"k": 1}}',
-        ],
-        ids=[
-            "empty",
-            "not-json",
-            "a-list",
-            "keys-missing",
-            "moves-not-a-table",
-            "no-records",
-            "a-record-without-its-hash",
-        ],
-    )
-    def test_an_unreadable_journal_raises_and_names_the_file(self, tmp_path, text):
-        journal_path(tmp_path).write_text(text, encoding="utf-8")
-
-        with pytest.raises(AbsorbJournalError, match=r"pending_absorb\.json") as raised:
-            read_journal(tmp_path)
-
-        assert "delete that file and run `lilbee rebuild`" in str(raised.value)
-
-    def test_an_unknown_phase_raises(self, tmp_path):
-        journal_path(tmp_path).write_text(
-            json.dumps(
-                {"id": "a", "moves": {}, "add": {}, "drop": [], "records": {}, "phase": "undo"}
-            ),
-            encoding="utf-8",
-        )
-
-        with pytest.raises(AbsorbJournalError, match="undo"):
-            read_journal(tmp_path)
-
-    def test_a_journal_that_cannot_be_written_moves_no_key(self, library, notes):
-        store = library.store
-        _seeded_child(store, notes)
-        before = _everything(store)
-
-        with (
-            mock.patch(
-                "lilbee.runtime.absorb_journal.os.replace", side_effect=OSError("disk full")
-            ),
-            pytest.raises(OSError, match="disk full"),
-        ):
-            register_sources([notes])
-
-        assert _everything(store) == before
-
-    async def test_a_sync_refuses_to_run_on_a_journal_it_cannot_read(self, library, notes):
-        await _add(notes / "work")
-        journal_path(cfg.data_root).write_text("{not json", encoding="utf-8")
-
-        with pytest.raises(AbsorbJournalError):
-            await sync(quiet=True)
-
-        assert _keys(library) == ["work/budget.md", "work/plan.md"]
 
 
 class TestACancelledAdd:
@@ -1789,184 +1435,41 @@ class TestEveryEntryPoint:
         }
 
 
-_UNFINISHED_ADD_ERRORS = {
-    UnfinishedAdd.HELD: SyncRunningError,
-    UnfinishedAdd.UNREADABLE: AbsorbJournalError,
-    UnfinishedAdd.UNLOCKABLE: LibraryUnlockableError,
-    UnfinishedAdd.NO_LOCKING: LockingUnsupportedError,
-}
 _SEEDED_KEYS = ["work/budget.md", "work/plan.md", "workshop/x.md"]
 
 
-def _add_that_died(store: Store, parent: Path) -> None:
-    """Leave the journal of an add of *parent* that died before it moved a key."""
-    _seeded_child(store, parent)
-    with (
-        mock.patch.object(Store, "rekey_sources_under", side_effect=_Killed),
-        pytest.raises(_Killed),
-    ):
-        register_sources([parent])
-    assert absorb_pending(cfg.data_root)
+# Each way a data root cannot be locked: what makes it so, what an add raises, and what it says.
+_CANNOT_BE_LOCKED = {
+    "unlockable": (
+        sync_lock_not_a_lock_file,
+        LibraryUnlockableError,
+        "Stop every lilbee process, delete",
+    ),
+    "no-locking": (
+        lambda _root: filesystem_without_locking(),
+        LockingUnsupportedError,
+        "is on a filesystem that does not support file locking",
+    ),
+}
 
 
-@pytest.mark.parametrize("cause", list(UnfinishedAdd))
-class TestARemoveThatCannotFinishAnAdd:
-    """Each surface a remove comes through refuses in its own shape and removes nothing."""
-
-    async def test_the_library_call_raises_the_refusal(self, library, notes, cause):
-        from lilbee import Lilbee
-
-        bee = Lilbee(config=cfg, provider=MagicMock())
-        _add_that_died(library.store, notes)
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            with pytest.raises(_UNFINISHED_ADD_ERRORS[cause], match=text):
-                bee.remove("work/plan.md")
-
-        assert _keys(library) == _SEEDED_KEYS
-
-    async def test_the_cli_prints_one_error_line(self, library, notes, cause):
-        from typer.testing import CliRunner
-
-        from lilbee.cli.app import app
-
-        _add_that_died(library.store, notes)
-        command = ["remove", "--data-dir", str(cfg.data_root), "work/plan.md"]
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            outcome = CliRunner().invoke(app, command)
-
-        assert outcome.exit_code == 1 and isinstance(outcome.exception, SystemExit)
-        printed = " ".join(outcome.output.split())
-        assert printed.startswith("Error: ") and printed.count("Error: ") == 1
-        assert text in printed and "Traceback" not in printed
-        assert _keys(library) == _SEEDED_KEYS
-
-    async def test_the_cli_in_json_mode_prints_one_error_object(self, library, notes, cause):
-        from typer.testing import CliRunner
-
-        from lilbee.cli.app import app
-
-        _add_that_died(library.store, notes)
-        command = ["--json", "remove", "--data-dir", str(cfg.data_root), "work/plan.md"]
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            outcome = CliRunner().invoke(app, command)
-
-        assert outcome.exit_code == 1 and isinstance(outcome.exception, SystemExit)
-        payload = json.loads(outcome.output.strip().splitlines()[-1])
-        assert list(payload) == ["error"] and text in payload["error"]
-        assert _keys(library) == _SEEDED_KEYS
-
-    async def test_the_mcp_tool_returns_an_error(self, library, notes, cause):
-        from lilbee.mcp_server import remove
-
-        _add_that_died(library.store, notes)
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            result = await remove(["work/plan.md"])
-
-        assert list(result) == ["error"] and text in result["error"]
-        assert _keys(library) == _SEEDED_KEYS
-
-    async def test_the_http_route_answers_409_with_the_refusal(self, library, notes, cause):
-        from litestar.exceptions import ClientException
-
-        from lilbee.server.handlers.documents import delete_documents
-
-        _add_that_died(library.store, notes)
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            with pytest.raises(ClientException) as refused:
-                await delete_documents(["work/plan.md"])
-
-        assert refused.value.status_code == 409 and text in refused.value.detail
-        assert _keys(library) == _SEEDED_KEYS
+def _data_root_that_cannot_be_locked(cause: str):
+    return _CANNOT_BE_LOCKED[cause][0](cfg.data_root)
 
 
-class TestARemoveAfterTheLibraryIsFree:
-    async def test_the_mcp_tool_finishes_the_add_and_removes_at_the_new_key(self, library, notes):
-        from lilbee.mcp_server import remove
-
-        _add_that_died(library.store, notes)
-        async with unfinished_add_refused(cfg.data_root, UnfinishedAdd.HELD):
-            refused = await remove(["work/plan.md"])
-
-        result = await remove(["notes/work/plan.md"])
-
-        assert list(refused) == ["error"]
-        assert result["removed"] == ["notes/work/plan.md"]
-        assert _keys(library) == ["notes/work/budget.md", "workshop/x.md"]
-
-
-@pytest.mark.parametrize("cause", list(UnfinishedAdd))
-class TestAnMcpSyncThatCannotFinishAnAdd:
-    async def test_the_sync_tool_returns_an_error(self, library, notes, cause):
-        from lilbee.mcp_server import sync as mcp_sync
-
-        _add_that_died(library.store, notes)
-        async with unfinished_add_refused(cfg.data_root, cause) as text:
-            result = await mcp_sync()
-
-        assert list(result) == ["error"] and text in result["error"]
-        assert _keys(library) == _SEEDED_KEYS
-
-    async def test_an_add_refused_at_its_registration_returns_an_error(self, library, notes, cause):
-        from lilbee.mcp_server import add
-
-        _add_that_died(library.store, notes)
-        async with unfinished_add_refused(cfg.data_root, cause):
-            result = await add([str(notes / "loose.md")])
-
-        assert list(result) == ["error"]
-        assert sorted(_registry()) == ["work"]
-
-    async def test_the_sync_inside_an_add_returns_an_error(self, library, tmp_path, cause):
-        """Another process's add dies between this add's registration and its sync."""
-        from lilbee.mcp_server import add
-
-        other = tmp_path / "src" / "other"
-        _write(other / "page.md", "# Page\n\nA page about the ferry.\n")
-        real_register = ingest_mod.register_sources
-
-        def _then_another_add_dies(paths, **kwargs):
-            registered = real_register(paths, **kwargs)
-            leave_unfinished_add(cfg.data_root, cause)
-            return registered
-
-        async with unfinished_add_refused(cfg.data_root, cause, journal=False) as text:
-            with mock.patch.object(ingest_mod, "register_sources", _then_another_add_dies):
-                result = await add([str(other)])
-
-        assert list(result) == ["error"] and text in result["error"]
-        assert _keys(library) == []
-        # A data root that cannot lock refuses the add at its registration.
-        refused_first = (UnfinishedAdd.NO_LOCKING, UnfinishedAdd.UNLOCKABLE)
-        registered = [] if cause in refused_first else ["other"]
-        assert sorted(_registry()) == registered
-
-
-@contextlib.contextmanager
-def _data_root_that_cannot_be_locked(cause: UnfinishedAdd):
-    with (
-        sync_lock_not_a_lock_file(cfg.data_root)
-        if cause is UnfinishedAdd.UNLOCKABLE
-        else filesystem_without_locking()
-    ):
-        yield
-
-
-_CANNOT_BE_LOCKED = [UnfinishedAdd.UNLOCKABLE, UnfinishedAdd.NO_LOCKING]
-
-
-@pytest.mark.parametrize("cause", _CANNOT_BE_LOCKED)
+@pytest.mark.parametrize("cause", list(_CANNOT_BE_LOCKED))
 class TestAnAddThatTakesASourceInOnADataRootItCannotLock:
     """Each surface refuses in its own shape, with a text about the add, and moves nothing."""
 
     @staticmethod
-    def _assert_about_the_add(text: str, cause: UnfinishedAdd) -> None:
-        assert UNFINISHED_ADD_REFUSALS[cause] in text
+    def _assert_about_the_add(text: str, cause: str) -> None:
+        assert _CANNOT_BE_LOCKED[cause][2] in text
         assert "reset" not in text.lower() and "Traceback" not in text
 
     @staticmethod
     def _assert_nothing_moved(library) -> None:
         assert _keys(library) == _SEEDED_KEYS
-        assert sorted(_registry()) == ["work"] and not absorb_pending(cfg.data_root)
+        assert sorted(_registry()) == ["work"]
 
     def test_the_library_call_raises_the_refusal(self, library, notes, cause):
         from lilbee import Lilbee
@@ -1976,7 +1479,7 @@ class TestAnAddThatTakesASourceInOnADataRootItCannotLock:
         _seeded_child(library.store, notes)
         with (
             _data_root_that_cannot_be_locked(cause),
-            pytest.raises(_UNFINISHED_ADD_ERRORS[cause]) as refused,
+            pytest.raises(_CANNOT_BE_LOCKED[cause][1]) as refused,
         ):
             bee.add([notes])
 
@@ -2039,7 +1542,7 @@ class TestAnAddThatTakesASourceInOnADataRootItCannotLock:
             mock.patch("lilbee.cli.tui.screens.chat.call_from_thread"),
             mock.patch("lilbee.runtime.asyncio_loop.run") as run,
             _data_root_that_cannot_be_locked(cause),
-            pytest.raises(_UNFINISHED_ADD_ERRORS[cause]) as refused,
+            pytest.raises(_CANNOT_BE_LOCKED[cause][1]) as refused,
         ):
             screen._do_add([notes], reporter)
 
@@ -2098,7 +1601,7 @@ async def _nested(parent: Path) -> None:
 
 async def _nested_and_renamed(parent: Path) -> None:
     _write(parent / "work" / "deep" / "a.md", "# A\n\nA deep page.\n")
-    _register_as({"outer": parent / "work", "notes": parent / "work" / "deep"})
+    _register_as({"outer": parent / "work", "inner": parent / "work" / "deep"})
     await sync(quiet=True)
 
 
@@ -2680,8 +2183,7 @@ class TestRecordsChangeTogether:
 
         with self._dies_replacing(filename), pytest.raises(_Killed):
             register_sources([notes])
-        cfg.linked_roots = {"work": str((notes / "work").resolve())}  # what a new process loads
-        finish_pending_absorb()
+        register_sources([notes])
 
         assert _record_of("notes/work/gone.md") == self._REMOVED
         assert _record_of("notes/work/broken.md") == (
@@ -2710,156 +2212,18 @@ class TestRecordsChangeTogether:
         assert _record_of("notes/work/bare.md") == ("h", SkipKind.FAILED, None)
 
     def test_the_records_stay_at_the_old_keys_until_the_keys_have_moved(self, library, notes):
-        """The journal holds them from its first write; the files change after the keys."""
+        """The copies at the new keys come first; the records at the old keys go last."""
         _seeded_child(library.store, notes)
 
         with (
-            mock.patch.object(absorb_mod, "_write_records", side_effect=_Killed),
+            mock.patch.object(absorb_mod, "_prune_records", side_effect=_Killed),
             pytest.raises(_Killed),
         ):
             register_sources([notes])
 
         assert _record_of("work/gone.md") == self._REMOVED
+        assert _record_of("notes/work/gone.md") == self._REMOVED
         assert "notes/work/plan.md" in _keys(library)
-        journal = read_journal(cfg.data_root)
-        assert journal is not None
-        assert journal.records["notes/work/gone.md"] == HeldOut(
-            "hash of work/gone.md", REMOVED_SKIP_REASON, removed=True
-        )
-
-
-class TestTheAddThatFinishesAnAbsorb:
-    def _killed_absorb(self, library, notes) -> None:
-        _seeded_child(library.store, notes)
-        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
-            register_sources([notes])
-        assert absorb_pending(cfg.data_root)
-        cfg.linked_roots = {"work": str((notes / "work").resolve())}
-
-    def test_adding_the_parent_again_keeps_what_the_absorb_took_in(self, library, notes):
-        self._killed_absorb(library, notes)
-
-        result = register_sources([notes])
-
-        assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
-        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
-        assert _record_of("notes/work/broken.md")[1] is SkipKind.FAILED
-
-    def test_an_add_that_waits_while_another_process_finishes_keeps_them(self, library, notes):
-        from contextlib import contextmanager
-
-        self._killed_absorb(library, notes)
-        real_lock = ingest_mod.skip_records_lock
-
-        @contextmanager
-        def _the_other_process_finishes_first(data_root, cancel):
-            with library_held(cfg, "a sync is running") as hold:
-                absorb_mod.finish_absorb(library.store, hold)
-            with real_lock(data_root, cancel):
-                yield
-
-        with mock.patch.object(ingest_mod, "skip_records_lock", _the_other_process_finishes_first):
-            result = register_sources([notes])
-
-        assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
-        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
-        assert _record_of("notes/work/broken.md")[1] is SkipKind.FAILED
-
-    def test_a_journal_left_after_the_add_arrived_is_finished_and_kept(self, library, notes):
-        """The other process died while this add waited for the lock."""
-        self._killed_absorb(library, notes)
-
-        with mock.patch.object(ingest_mod, "keys_of_pending_absorb", return_value=[]):
-            result = register_sources([notes])
-
-        assert result.tracked == ["notes"] and not absorb_pending(cfg.data_root)
-        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
-
-    def test_a_journal_that_ends_before_it_is_read_names_no_key(self, library, notes):
-        self._killed_absorb(library, notes)
-
-        with mock.patch.object(absorb_mod, "read_journal", return_value=None):
-            assert absorb_mod.keys_of_pending_absorb() == []
-
-    def test_an_add_of_the_tracked_parent_after_the_absorb_drops_them(self, library, notes):
-        """The rule every add of a tracked folder follows, with no absorb to finish."""
-        _seeded_child(library.store, notes)
-        register_sources([notes])
-        assert _record_of("notes/work/gone.md")[1] is SkipKind.REMOVED
-        _write(notes / "work" / "gone.md", "# Gone\n")
-
-        result = register_sources([notes])
-
-        assert result.tracked == ["notes"]
-        assert load_skip_markers(cfg.data_root) == {}
-
-
-class TestWrittenBetweenThePhases:
-    def _killed_before_the_land(self, library, notes) -> AbsorbJournal:
-        _seeded_child(library.store, notes)
-        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
-            register_sources([notes])
-        journal = read_journal(cfg.data_root)
-        assert journal is not None
-        return journal
-
-    def test_the_journals_records_alone_reach_the_record_files(self, library, notes):
-        self._killed_before_the_land(library, notes)
-        _hold_out("work/since.md", SkipKind.REMOVED)
-
-        finish_pending_absorb()
-
-        assert load_skip_markers(cfg.data_root) == {
-            "notes/work/broken.md": "hash of work/broken.md",
-            "notes/work/gone.md": "hash of work/gone.md",
-        }
-
-    def test_a_row_written_below_the_old_key_is_left_there(self, library, notes):
-        store = library.store
-        self._killed_before_the_land(library, notes)
-        _seed(store, "work/since.md")
-
-        finish_pending_absorb()
-
-        assert _holders(store, "work/since.md") == _KEY_COLUMNS
-        assert _holders(store, "notes/work/since.md") == set()
-
-    def test_a_removed_file_that_is_indexed_again_stays_indexed(self, library, notes):
-        from lilbee.data.store import SourceType
-
-        store = library.store
-        journal = self._killed_before_the_land(library, notes)
-        again = f"{journal.lifted('work')}/gone.md"
-        store.upsert_source(again, "hash of work/gone.md", 1, SourceType.DOCUMENT)
-
-        finish_pending_absorb()
-
-        assert "notes/work/gone.md" in _keys(library)
-
-    def test_a_rekey_replaces_no_row_at_the_key_it_takes(self, library):
-        store = library.store
-        _seed(store, "old/x.md")
-        _seed(store, "new/x.md")
-
-        store.rekey_sources_under("old", "new")
-
-        assert len(store.get_chunks_by_source("new/x.md")) == 2
-
-    def test_a_subject_listed_under_a_key_of_the_lift_takes_the_final_key(self, library, notes):
-        """A wiki build of a process that was running aggregates the index from the lifted rows."""
-        from lilbee.wiki.stubs import load_stub_index
-
-        journal = self._killed_before_the_land(library, notes)
-        _save_stub_index(library.store)
-        assert f"{journal.lifted('work')}/plan.md" in load_stub_index(cfg)["boeing"].sources
-
-        finish_pending_absorb()
-
-        assert load_stub_index(cfg)["boeing"].sources == (
-            "notes/work/budget.md",
-            "notes/work/plan.md",
-            "workshop/x.md",
-        )
 
 
 @contextlib.contextmanager
@@ -3191,7 +2555,7 @@ class TestAWikiBuildAndAnAbsorb:
 
         text = "A sync or a wiki build is running. Add notes again when it ends."
         assert refused == [text] * reads
-        assert sorted(_registry()) == ["work"] and not absorb_pending(cfg.data_root)
+        assert sorted(_registry()) == ["work"]
         assert register_sources([notes]).absorbed == ["work"]
 
     @pytest.mark.parametrize("writer", ["_full_build", "_synthesis", "_one_page"])
@@ -3236,56 +2600,6 @@ class TestAWikiBuildAndAnAbsorb:
             control.start()
             control.join()
         assert free == [True, False]
-
-
-class TestTempFilesOfAKilledWriter:
-    """What a wiki writer leaves when its process dies before the rename."""
-
-    @staticmethod
-    def _left(wiki_root: Path) -> tuple[list[Path], Path]:
-        """Temp files of a dead writer beside a page and the subject index, and another tool's."""
-        dead = [
-            leave_temp_of_a_dead_writer(wiki_root / "entities"),
-            leave_temp_of_a_dead_writer(wiki_root),
-        ]
-        other = wiki_root / "entities" / "boeing.md.tmp"
-        other.write_text("another tool's", encoding="utf-8")
-        return dead, other
-
-    def test_an_absorb_removes_them_and_leaves_another_tools_file(self, library, notes):
-        _seeded_child(library.store, notes)
-        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
-
-        assert register_sources([notes]).absorbed == ["work"]
-
-        assert [path for path in dead if path.exists()] == [] and other.exists()
-
-    def test_the_finish_of_an_interrupted_absorb_removes_them(self, library, notes):
-        _seeded_child(library.store, notes)
-        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
-            register_sources([notes])
-        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
-
-        assert finish_pending_absorb() == ["notes/work"]
-
-        assert [path for path in dead if path.exists()] == [] and other.exists()
-
-    def test_a_build_removes_them_and_leaves_another_tools_file(self, library):
-        from lilbee.wiki import generation
-
-        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
-
-        assert generation.build_wiki([], library.provider, library.store, cfg) == []
-
-        assert [path for path in dead if path.exists()] == [] and other.exists()
-
-    def test_an_add_that_takes_nothing_in_leaves_them(self, library, notes):
-        """The control: only an absorb or a build walks the wiki for them."""
-        dead, other = self._left(cfg.data_root / cfg.wiki_dir)
-
-        assert register_sources([notes]).absorbed == []
-
-        assert [path for path in dead if not path.exists()] == [] and other.exists()
 
 
 class TestACancelledJsonAdd:
@@ -3398,13 +2712,13 @@ class TestAResetAndAnAbsorb:
     async def test_a_reset_during_an_absorb_is_refused_and_the_absorb_ends(self, library, notes):
         await _add(notes / "work")
         refused: list[str] = []
-        real_land = absorb_mod._land
+        real_prune = absorb_mod._prune_records
 
-        def _reset_then_land(*args, **kwargs):
+        def _reset_then_prune(*args, **kwargs):
             refused.append(_refusal_of_a_reset_from_another_thread())
-            return real_land(*args, **kwargs)
+            return real_prune(*args, **kwargs)
 
-        with mock.patch.object(absorb_mod, "_land", side_effect=_reset_then_land):
+        with mock.patch.object(absorb_mod, "_prune_records", side_effect=_reset_then_prune):
             register_sources([notes])
 
         assert refused == [_RESET_REFUSED]
@@ -3417,40 +2731,23 @@ class TestAResetAndAnAbsorb:
 
         assert str(refused.value) == _RESET_REFUSED
 
-    async def test_a_reset_after_a_killed_absorb_leaves_nothing_to_finish(self, library, notes):
+    async def test_a_reset_after_a_killed_absorb_leaves_nothing_behind(self, library, notes):
         await _add(notes / "work")
         remove_documents_durably(["work/plan.md"])
-        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
+        with (
+            mock.patch.object(absorb_mod, "_prune_records", side_effect=_Killed),
+            pytest.raises(_Killed),
+        ):
             register_sources([notes])
-        assert absorb_pending(cfg.data_root)
 
         perform_reset()
         svc_mod.set_services(make_mock_services(store=Store(cfg)))
         result = await sync(quiet=True)
 
-        assert not absorb_pending(cfg.data_root)
         assert result.added == []
         assert _registry() == {}
         assert _keys(svc_mod.get_services()) == []
         assert load_skip_markers(cfg.data_root) == {}
-
-    async def test_a_journal_a_reset_cannot_delete_is_reported(self, library, notes):
-        await _add(notes / "work")
-        with mock.patch.object(absorb_mod, "_land", side_effect=_Killed), pytest.raises(_Killed):
-            register_sources([notes])
-        real_unlink = Path.unlink
-
-        def _unlink(path, *args, **kwargs):
-            if path == journal_path(cfg.data_root):
-                raise PermissionError("Access is denied")
-            real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(Path, "unlink", _unlink):
-            result = perform_reset()
-
-        assert result.skipped == [str(journal_path(cfg.data_root))]
-        assert _registry() == {}
-        assert not cfg.lancedb_dir.exists()
 
 
 @contextlib.contextmanager
@@ -3541,72 +2838,6 @@ class TestACancelAtTheRecordsLock:
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
         assert _records_lock_is_free(cfg.data_root)
 
-    @pytest.mark.parametrize("names", [None, ["notes"]], ids=["waits", "asks_again"])
-    def test_finishing_an_add_stops_before_it_moves_a_key(self, library, notes, names):
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(SkipRecordsWaitCancelledError):
-            _finish_as(names, notes, cancel)
-
-        assert cancel.polls >= 2
-        assert _everything(library.store) == before
-        assert before["journal"] is True
-
-    async def test_a_sync_stops_before_it_finishes_an_add(self, library, notes):
-        import asyncio
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        cancel = _SetOnSecondPoll()
-
-        with _records_lock_held_elsewhere(), pytest.raises(asyncio.CancelledError) as raised:
-            await sync(quiet=True, cancel=cancel)
-
-        assert cancel.polls >= 2
-        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
-        assert _everything(library.store) == before
-        assert before["journal"] is True
-
-    async def test_a_sync_that_builds_the_services_stops_before_it_finishes_an_add(
-        self, library, notes, monkeypatch, caplog
-    ):
-        """The first sync of a process builds the services; that finish gets the cancel too."""
-        import asyncio
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        caplog.set_level("INFO", logger="lilbee.app.absorb")
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        svc_mod.set_services(None)
-        monkeypatch.setattr(svc_mod._state, "singleton", None)
-        built = make_mock_services(store=library.store)
-        cfg.worker_pool_eager_start = False
-        cancel = _SetOnSecondPoll()
-
-        with (
-            mock.patch.object(svc_mod, "build_services", return_value=built),
-            mock.patch("lilbee.app.settings.reconcile_embedding_dim"),
-            mock.patch("lilbee.modelhub.registry.ModelRegistry"),
-            _records_lock_held_elsewhere(),
-            pytest.raises(asyncio.CancelledError) as raised,
-        ):
-            await sync(quiet=True, cancel=cancel)
-
-        assert cancel.polls >= 2
-        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
-        # No take ran without the cancel: none ended in the lock error that the start logs.
-        assert "An interrupted add is not finished yet" not in caplog.text
-        assert svc_mod.peek_services() is built
-        assert _everything(built.store) == before
-        assert before["journal"] is True
-
     async def test_a_retry_stops_before_it_clears_a_failure(self, library, notes):
         import asyncio
 
@@ -3684,95 +2915,6 @@ class TestACancelAtTheRecordsLock:
 class TestACancelAtTheWaitForARunningSync:
     """A cancel set while a call waits for a running sync ends the call with nothing changed."""
 
-    @pytest.mark.parametrize(
-        "command",
-        [
-            pytest.param(lambda cancel: finish_pending_absorb(cancel=cancel), id="finish"),
-            pytest.param(
-                lambda cancel: remove_documents_durably(["work/plan.md", "work"], cancel=cancel),
-                id="remove",
-            ),
-        ],
-    )
-    def test_a_call_that_finishes_an_add_stops_while_the_sync_still_runs(
-        self, library, notes, command
-    ):
-        import threading
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        cancel = threading.Event()
-
-        with (
-            _mark_held_on_a_thread(cfg.data_root),
-            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
-        ):
-            with pytest.raises(SkipRecordsWaitCancelledError) as raised:
-                command(cancel)
-            takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
-                pass
-
-        assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
-        assert raised.value.__cause__ is None
-        assert _everything(library.store) == before
-        assert before["journal"] is True
-        assert _records_lock_is_free(cfg.data_root)
-        assert finish_pending_absorb() == ["notes/work"]
-
-    async def test_a_sync_stops_while_the_other_sync_still_runs(self, library, notes):
-        import asyncio
-        import threading
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        cancel = threading.Event()
-
-        with (
-            _mark_held_on_a_thread(cfg.data_root),
-            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
-        ):
-            with pytest.raises(asyncio.CancelledError) as raised:
-                await sync(quiet=True, cancel=cancel)
-            takes_of_the_wait = list(takes)
-            with pytest.raises(ResetRefusedError), _no_sync_running(cfg.data_root):
-                pass
-
-        assert takes_of_the_wait == ["busy"], "the wait tried again after the cancel"
-        assert isinstance(raised.value.__cause__, SkipRecordsWaitCancelledError)
-        assert _everything(library.store) == before
-        assert before["journal"] is True
-        with _no_sync_running(cfg.data_root):
-            pass
-
-    @pytest.mark.parametrize("names", [None, ["notes"]], ids=["waits", "asks_again"])
-    def test_finishing_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(
-        self, library, notes, names
-    ):
-        import threading
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        cancel = threading.Event()
-
-        with (
-            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
-            pytest.raises(SkipRecordsWaitCancelledError),
-        ):
-            _finish_as(names, notes, cancel)
-
-        assert takes == ["granted"]
-        assert _everything(library.store) == before
-        assert before["journal"] is True
-        with _no_sync_running(cfg.data_root):
-            pass
-
     def test_an_add_granted_the_lock_with_the_cancel_set_moves_no_key(self, library, notes):
         import threading
 
@@ -3790,33 +2932,10 @@ class TestACancelAtTheWaitForARunningSync:
 
         assert takes == ["granted"]
         assert _everything(library.store) == before
-        assert before["journal"] is False
         assert cfg.linked_roots == {"work": str((notes / "work").resolve())}
         assert _records_lock_is_free(cfg.data_root)
         with _no_sync_running(cfg.data_root):
             pass
-
-    def test_an_add_that_finishes_another_add_with_the_cancel_set_moves_no_key(
-        self, library, notes
-    ):
-        import threading
-
-        from lilbee.data.ingest.skip_marker import SkipRecordsWaitCancelledError
-
-        _add_that_died(library.store, notes)
-        before = _everything(library.store)
-        cancel = threading.Event()
-
-        with (
-            _sync_write_takes(after=lambda _outcome: cancel.set()) as takes,
-            pytest.raises(SkipRecordsWaitCancelledError),
-        ):
-            register_sources([notes], cancel=cancel)
-
-        assert takes == ["granted"]
-        assert _everything(library.store) == before
-        assert before["journal"] is True
-        assert _records_lock_is_free(cfg.data_root)
 
     def test_a_cancel_of_the_sync_lock_that_the_block_raises_is_not_the_cancel_of_the_wait(
         self, library
