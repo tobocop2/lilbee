@@ -120,6 +120,7 @@ class TestCrawlConfig:
             "exclude_selectors": [],
             "preprocessing_preset": "minimal",
             "extract_metadata": False,
+            "keep_hidden": True,
         }
         assert config["browser"].kwargs == {
             "mode": "never",

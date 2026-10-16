@@ -225,7 +225,10 @@ def _ssrf_policy() -> crawlberg.SsrfPolicy:
 
 
 def _content_config() -> crawlberg.ContentConfig:
-    """Markdown output with no frontmatter that keeps navigation, forms and all page text."""
+    """Markdown output with no frontmatter that keeps navigation, forms and all page text.
+
+    All page text includes the text of hidden elements.
+    """
     import crawlberg
 
     return crawlberg.ContentConfig(
@@ -234,6 +237,7 @@ def _content_config() -> crawlberg.ContentConfig:
         exclude_selectors=[],
         preprocessing_preset="minimal",
         extract_metadata=False,
+        keep_hidden=True,
     )
 
 
