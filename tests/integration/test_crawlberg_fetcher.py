@@ -135,6 +135,12 @@ OVERRIDE = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 
 OVERRIDE_MAJOR = "120"
 # The Chrome release headless Chrome names in its own user agent.
 HEADLESS_CHROME_RELEASE = re.compile(r"HeadlessChrome/(\d+)\.")
+# The headers a browser sends with a page request that an HTTP crawl sends too.
+BROWSER_ACCEPT_HEADERS = {
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.5",
+    "upgrade-insecure-requests": "1",
+}
 # A page with a script and a link, the script, and the linked page.
 HINT_PAGES = ("/hints/", "/hints/app.js", "/hints/next")
 # Pages in the recursive browser crawl that must start Chromium once.
@@ -277,6 +283,7 @@ class _Site:
         self.requests: list[tuple[float, str]] = []
         self.agents: list[tuple[str, str]] = []
         self.hints: list[tuple[str, dict[str, str]]] = []
+        self.accept_headers: list[tuple[str, dict[str, str]]] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._server.daemon_threads = True
@@ -303,6 +310,11 @@ class _Site:
                 if path.startswith(prefix):
                     found.setdefault(path, []).append(hints)
             return found
+
+    def accept_headers_for(self, prefix: str) -> list[dict[str, str]]:
+        """The headers of :data:`BROWSER_ACCEPT_HEADERS` each request under *prefix* carried."""
+        with self._lock:
+            return [sent for path, sent in self.accept_headers if path.startswith(prefix)]
 
     def close(self) -> None:
         self._server.shutdown()
@@ -344,6 +356,12 @@ class _Site:
                         if name.lower().startswith("sec-ch-")
                     }
                     site.hints.append((self.path, hints))
+                    sent = {
+                        name.lower(): value
+                        for name, value in self.headers.items()
+                        if name.lower() in BROWSER_ACCEPT_HEADERS
+                    }
+                    site.accept_headers.append((self.path, sent))
                 status, body = site._body(self.path)
                 if status == HTTPStatus.MOVED_PERMANENTLY:
                     self.send_response(status)
@@ -1128,6 +1146,13 @@ class TestBrowserLaunch:
         for page in HINT_PAGES:
             assert all(brand in sent["sec-ch-ua"] for sent in hints[page]), (page, hints[page])
 
+    def test_a_browser_page_request_carries_chromes_own_accept_header(self, site):
+        paths = self._crawl(site.url("/wiki/Home"))
+        assert len(paths) == 1
+        (sent,) = site.accept_headers_for("/wiki/Home")
+        assert sent["accept"] != BROWSER_ACCEPT_HEADERS["accept"]
+        assert sent["accept"].startswith("text/html,")
+
     def test_an_override_names_every_browser_request_and_its_hints_follow(self, site):
         cfg.crawl_user_agent = OVERRIDE
         paths = self._crawl(site.url("/hints/"), depth=1)
@@ -1161,6 +1186,19 @@ class TestUserAgent:
         cfg.crawl_user_agent = OVERRIDE
         await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
         assert site.agents_for("/wiki/Home") == [OVERRIDE]
+
+    async def test_each_request_of_a_recursive_http_crawl_carries_the_browser_accept_headers(
+        self, site
+    ):
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert len(paths) == 3
+        sent = site.accept_headers_for("/wide/")
+        assert len(sent) >= 3
+        assert sent == [BROWSER_ACCEPT_HEADERS] * len(sent)
+
+    async def test_a_single_page_http_request_carries_the_browser_accept_headers(self, site):
+        await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
+        assert site.accept_headers_for("/wiki/Home") == [BROWSER_ACCEPT_HEADERS]
 
     async def test_http_requests_carry_no_client_hints(self, site):
         cfg.crawl_user_agent = OVERRIDE
