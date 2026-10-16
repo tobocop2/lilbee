@@ -39,7 +39,7 @@ log = logging.getLogger(__name__)
 
 _Network = TypeVar("_Network", ipaddress.IPv4Network, ipaddress.IPv6Network)
 
-# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.9.0, DEFAULT_DENY_NET_CIDRS).
+# The networks crawlberg's ``deny_private`` refuses (crawlberg 1.11.1, DEFAULT_DENY_NET_CIDRS).
 CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -103,12 +103,12 @@ _TILDE_ENCODED = "%7E"
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
 _RATE_LIMIT_STATUSES = (429, 503)
-# The most retries crawlberg 1.10.2 accepts; it refuses a config with more.
+# The most retries crawlberg 1.11.1 accepts; it refuses a config with more.
 _MAX_RETRIES = 20
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
-# How crawlberg 1.9.0 starts its refusal of a setting, and the message that names that setting.
+# How crawlberg 1.11.1 starts its refusal of a setting, and the message that names that setting.
 _REFUSED_SETTING_MESSAGES = {
     "invalid_config: browser.chrome_args": BROWSER_FLAGS_REFUSED_MESSAGE,
     "invalid_config: invalid exclude_path regex": EXCLUDE_PATTERN_REFUSED_MESSAGE,
