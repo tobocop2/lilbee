@@ -1690,6 +1690,49 @@ class TestCrawlAndSave:
         assert meta[kept] == before[kept]
         assert kept_file.read_bytes() == b"# Stored"
 
+    @pytest.mark.parametrize(
+        ("others", "earlier_kept"),
+        [({}, False), ({"https://example.com/t/Special_Random": True}, True)],
+        ids=["own-copy", "shared-copy"],
+    )
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_a_page_saved_under_an_earlier_name_moves_to_its_name(
+        self, mock_crawl_single, isolated_env, others: dict[str, bool], earlier_kept: bool
+    ):
+        url = "https://example.com/t/Special:Random"
+        earlier = "example.com/t/Special_Random/index.md"
+        web = cfg.documents_dir / "_web"
+        (web / earlier).parent.mkdir(parents=True)
+        (web / earlier).write_text("# Old", encoding="utf-8")
+        stored = {u: CrawlMeta(file=earlier, content_hash="old", crawled_at="x") for u in others}
+        save_crawl_metadata(
+            {url: CrawlMeta(file=earlier, content_hash="old", crawled_at="x")} | stored
+        )
+        mock_crawl_single.return_value = CrawlResult(url=url, markdown="# New")
+        paths = await crawl_and_save(url, depth=0)
+        assert [path.relative_to(web).as_posix() for path in paths] == [
+            "example.com/t/Special%3ARandom/index.md"
+        ]
+        assert paths[0].read_text(encoding="utf-8") == "# New"
+        assert (web / earlier).exists() is earlier_kept
+        assert load_crawl_metadata()[url].file == "example.com/t/Special%3ARandom/index.md"
+
+    @patch("lilbee.crawler.runner.crawl_single")
+    async def test_an_earlier_name_outside_the_web_folder_is_left_alone(
+        self, mock_crawl_single, isolated_env
+    ):
+        url = "https://example.com/t/page"
+        outside = cfg.documents_dir / "outside.md"
+        outside.parent.mkdir(parents=True, exist_ok=True)
+        outside.write_text("# Mine", encoding="utf-8")
+        meta = CrawlMeta(file="../outside.md", content_hash="old", crawled_at="x")
+        save_crawl_metadata({url: meta})
+        mock_crawl_single.return_value = CrawlResult(url=url, markdown="# New")
+        paths = await crawl_and_save(url, depth=0)
+        assert len(paths) == 1
+        assert paths[0].read_text(encoding="utf-8") == "# New"
+        assert outside.read_text(encoding="utf-8") == "# Mine"
+
     @patch("lilbee.crawler.runner.crawl_single")
     async def test_single_page(self, mock_crawl_single, isolated_env):
         mock_crawl_single.return_value = CrawlResult(url="https://example.com", markdown="# Hello")

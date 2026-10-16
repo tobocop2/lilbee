@@ -283,7 +283,23 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
         return None
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(markdown, encoding="utf-8")
+    _retire_earlier_copy(result.url, file_path, meta)
     return SaveOutcome(path=file_path, filename=filename, content_hash=new_hash)
+
+
+def _retire_earlier_copy(url: str, file_path: Path, meta: dict[str, CrawlMeta]) -> None:
+    """Remove the copy of *url* saved under an earlier name, unless another address holds it."""
+    prev = meta.get(url)
+    if prev is None or any(m.file == prev.file for other, m in meta.items() if other != url):
+        return
+    web_dir = _web_dir()
+    try:
+        earlier = validate_path_within(web_dir / prev.file, web_dir.resolve())
+    except ValueError:
+        return
+    if earlier.is_file() and not earlier.samefile(file_path):
+        earlier.unlink()
+        log.info("Removed the copy of %s saved under its earlier name %s", url, prev.file)
 
 
 def _update_single_metadata(
