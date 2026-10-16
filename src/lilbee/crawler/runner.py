@@ -197,7 +197,10 @@ async def crawl_recursive(
     # denominator instead of [n/-1]. Falls back to CRAWL_TOTAL_UNKNOWN on any
     # failure; off the hot path so a slow/missing sitemap never blocks the crawl.
     sitemap_total = await asyncio.to_thread(
-        sitemap._count_sitemap_urls, url, include_subdomains=include_subdomains
+        sitemap._count_sitemap_urls,
+        url,
+        include_subdomains=include_subdomains,
+        user_agent=cfg.crawl_user_agent,
     )
 
     concurrency = build_concurrency_spec()

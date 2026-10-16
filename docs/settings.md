@@ -232,7 +232,7 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 | `crawl_safety_max_pages` | `LILBEE_CRAWL_SAFETY_MAX_PAGES` | `int` | `5000` | yes | yes | yes | no | Default page bound for an unbounded crawl, so a hostile site cannot exhaust the disk. An explicit max-pages overrides it; raise this to crawl larger sites unbounded. |
 | `crawl_sync_interval` | `LILBEE_CRAWL_SYNC_INTERVAL` | `int` | `30` | yes | yes | yes | no | Seconds between periodic re-syncs during a crawl (0 = sync only at end). |
 | `crawl_timeout` | `LILBEE_CRAWL_TIMEOUT` | `int` | `30` | yes | yes | yes | no | Per-page fetch timeout in seconds. |
-| `crawl_user_agent` | `LILBEE_CRAWL_USER_AGENT` | `str` | *(empty)* | yes | yes | yes | no | User agent of every crawl request, for a site that answers some clients differently. Blank = no override: browser mode sends Chrome's own, http mode sends crawlberg's. A Chrome user agent also sets the matching client hints in browser mode. |
+| `crawl_user_agent` | `LILBEE_CRAWL_USER_AGENT` | `str` | *(empty)* | yes | yes | yes | no | User agent of every crawl request, for a site that answers some clients differently. Blank = no override: browser mode sends Chrome's own, http mode sends crawlberg's, and the sitemap lookup sends its HTTP client's. A Chrome user agent also sets the matching client hints in browser mode. |
 
 ## Local-Servers
 
