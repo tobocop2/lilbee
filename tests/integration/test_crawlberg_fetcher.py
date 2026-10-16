@@ -6,6 +6,7 @@ import asyncio
 import ipaddress
 import json
 import os
+import re
 import stat
 import threading
 import time
@@ -127,17 +128,13 @@ NO_SETTING = "crawlberg refuses to start this crawl: "
 # A timeout in seconds whose milliseconds pass crawlberg's integer width, and what it raises.
 OVERSIZED_TIMEOUT = 10**17
 OVERSIZED_REASON = "int too big to convert"
-# The user agents lilbee sent in each render mode before crawlberg, on every platform.
-HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
-)
-# The client hints lilbee sent with that browser user agent to a loopback site.
-CLIENT_HINTS = {
-    "sec-ch-ua": '"Chromium";v="116", "Not_A Brand";v="8", "Google Chrome";v="116"',
-    "sec-ch-ua-mobile": "?0",
-    "sec-ch-ua-platform": '"Linux"',
-}
+# How the user agent of crawlberg's own HTTP client starts.
+CRAWLBERG_USER_AGENT_START = "crawlberg/"
+# A Chrome user agent set by the crawl_user_agent setting, and the Chrome release it names.
+OVERRIDE = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+OVERRIDE_MAJOR = "120"
+# The Chrome release headless Chrome names in its own user agent.
+HEADLESS_CHROME_RELEASE = re.compile(r"HeadlessChrome/(\d+)\.")
 # A page with a script and a link, the script, and the linked page.
 HINT_PAGES = ("/hints/", "/hints/app.js", "/hints/next")
 # Pages in the recursive browser crawl that must start Chromium once.
@@ -1118,34 +1115,55 @@ class TestBrowserLaunch:
     def test_a_recursive_browser_crawl_keeps_hidden_text(self, site):
         _assert_hidden_text_kept(self._crawl(site.url(HIDDEN_PAGE), depth=1), 2)
 
-    def test_browser_requests_carry_the_browser_user_agent(self, site):
-        paths = self._crawl(site.url("/wiki/Home"))
-        assert len(paths) == 1
-        assert set(site.agents_for("/wiki/Home")) == {BROWSER_USER_AGENT}
-
-    def test_a_page_its_script_and_a_followed_page_carry_the_client_hints(self, site):
+    def test_with_no_override_chrome_names_itself_and_its_hints_agree(self, site):
         paths = self._crawl(site.url("/hints/"), depth=1)
         assert len(paths) == 2
+        agents = set(site.agents_for("/hints/"))
+        assert len(agents) == 1, agents
+        release = HEADLESS_CHROME_RELEASE.search(agents.pop())
+        assert release is not None
         hints = site.hints_for("/hints/")
         assert sorted(hints) == sorted(HINT_PAGES)
+        brand = f'"Chromium";v="{release.group(1)}"'
         for page in HINT_PAGES:
-            assert hints[page] == [CLIENT_HINTS] * len(hints[page]), page
+            assert all(brand in sent["sec-ch-ua"] for sent in hints[page]), (page, hints[page])
+
+    def test_an_override_names_every_browser_request_and_its_hints_follow(self, site):
+        cfg.crawl_user_agent = OVERRIDE
+        paths = self._crawl(site.url("/hints/"), depth=1)
+        assert len(paths) == 2
+        assert set(site.agents_for("/hints/")) == {OVERRIDE}
+        hints = site.hints_for("/hints/")
+        assert sorted(hints) == sorted(HINT_PAGES)
+        brand = f'"Chromium";v="{OVERRIDE_MAJOR}"'
+        for page in HINT_PAGES:
+            assert all(brand in sent["sec-ch-ua"] for sent in hints[page]), (page, hints[page])
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestUserAgent:
-    async def test_http_requests_carry_the_http_user_agent(self, site):
+    async def test_with_no_override_http_requests_name_crawlberg(self, site):
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
         assert len(paths) == 3
         agents = site.agents_for("/wide/")
         assert len(agents) >= 3
-        assert set(agents) == {HTTP_USER_AGENT}
+        assert all(agent.startswith(CRAWLBERG_USER_AGENT_START) for agent in agents), agents
 
-    async def test_a_single_page_request_carries_the_http_user_agent(self, site):
+    async def test_an_override_names_every_request_of_a_recursive_http_crawl(self, site):
+        cfg.crawl_user_agent = OVERRIDE
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=3, render_mode=HTTP)
+        assert len(paths) == 3
+        agents = site.agents_for("/wide/")
+        assert len(agents) >= 3
+        assert set(agents) == {OVERRIDE}
+
+    async def test_an_override_names_a_single_page_http_request(self, site):
+        cfg.crawl_user_agent = OVERRIDE
         await crawl_and_save(site.url("/wiki/Home"), depth=0, render_mode=HTTP)
-        assert site.agents_for("/wiki/Home") == [HTTP_USER_AGENT]
+        assert site.agents_for("/wiki/Home") == [OVERRIDE]
 
     async def test_http_requests_carry_no_client_hints(self, site):
+        cfg.crawl_user_agent = OVERRIDE
         await crawl_and_save(site.url("/hints/"), depth=1, render_mode=HTTP)
         assert site.hints_for("/hints/") == {"/hints/": [{}], "/hints/next": [{}]}
-        assert set(site.agents_for("/hints/")) == {HTTP_USER_AGENT}
+        assert set(site.agents_for("/hints/")) == {OVERRIDE}
