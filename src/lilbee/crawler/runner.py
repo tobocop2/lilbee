@@ -273,15 +273,6 @@ async def _maybe_periodic_sync(tasks: set[asyncio.Task[None]], cancel: CancelTok
     task.add_done_callback(tasks.discard)
 
 
-def _saved_pages_moved() -> dict[str, CrawlMeta]:
-    """The crawl metadata, each saved page moved to its name and the result written back."""
-    stored = save.load_crawl_metadata()
-    meta = migrate.move_saved_pages(stored)
-    if meta != stored:
-        save.save_crawl_metadata(meta)
-    return meta
-
-
 @dataclass
 class _FlushCounter:
     """Tracks metadata writes pending since the last sidecar flush."""
@@ -422,7 +413,7 @@ async def crawl_and_save(
             start_depth = depth if depth is not None else 0
             on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
 
-        meta = await asyncio.to_thread(_saved_pages_moved)
+        meta = await asyncio.to_thread(migrate.move_saved_pages)
         written_paths: list[Path] = []
         counter = _FlushCounter()
         flush_page = _make_flush_page(meta, written_paths, counter)
