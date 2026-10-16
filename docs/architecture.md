@@ -440,38 +440,35 @@ on the laptop 0.08 s and 0.09 s against 0.11 s and 0.20 s.
 **A renamed file.** The old name can belong to another worker's slice. A worker looks up
 the content hash of each new file in the source table as the sync found it. That gives
 the old names the file can take, in name order. Under the write lock the store gives the
-file the first of them that still holds a source row, and re-keys it in the same hold.
+file the first of them that still holds a source row, and moves it in the same hold.
 So no two workers take one old name. A file is an add only when every old name of its
 content is taken, so no old name stays while a file of its content is added.
 
-**A renamed folder.** Files that swap the same leading text of their name, as every file
-of a renamed folder does, take one update of each table together. So a renamed folder is
-one pass over each table. The source rows change in one merge. The vectors are not read
-or embedded again.
+**A renamed file or folder.** Every table names a source by its `source_id`; only the
+`_sources` row holds its path. A move changes that path, the title when the title came
+from the old file name, and the file's stat, in one merge of the source table. The chunk
+table takes an update only for the files whose title changes, one update a title. The
+sources inside a moved archive move with it. The vectors are not read or embedded again.
 
-**Other renames.** Fewer than 256 files that swap one leading text, and files moved to
-unrelated names, share updates too: one update maps each old name to its new one. The
-store library builds that map once for each row it updates, so an update takes files
-only while the names in its maps times the chunk rows it re-keys stay under 500,000:
-about 700 files of one chunk, or about 220 files of ten chunks. Files that also take a
-new title, because the title came from the old file name, count three times, and at most
-256 of them share an update.
+**One hold of the write lock** moves at most 2,000 files. The sync pauses for 0.1 s
+between two holds, so other writers get a turn. A sync that stops between two holds
+leaves the remaining files under their old names, and the next sync moves them.
 
-**One hold of the write lock** re-keys at most 2,000 files with at most 16 updates of the
-chunk table. The sync pauses for 0.1 s between two holds, so other writers get a turn. A
-sync that stops between two holds leaves the remaining files under their old names, and
-the next sync moves them.
+**Source ids.** A source that a library held before ids existed takes the md5 of its
+path; a new source takes a random id, so a new file at a path that a moved file left
+gets an id of its own. A flush writes the row of a new source before its chunks, so a
+flush that stops between them leaves rows the next flush of that file finds and deletes.
+A removed source that a wiki citation names keeps its row, held out of every listing, so
+the citation still shows its path. An indexed wiki page has a row of type `wiki` that no
+listing shows.
 
-A hold has a bound in files and in updates, not in time. The time of one update follows
-the size of the index. Holds for renamed files, 1024-dimension vectors, one chunk a file,
-two runs each, on a rented 16-core Linux machine while other tenants loaded it:
-
-| Renamed files | 100,000 rows in the index | 250,000 rows in the index |
-|---|---|---|
-| A renamed folder, 512 files | 1 hold of 0.28 s and 0.30 s | 1 hold of 0.49 s and 0.47 s |
-| A new file name for each of 512 files | 1 hold of 0.54 s and 0.60 s | 1 hold of 1.18 s and 1.07 s |
-| Unrelated names, 512 files | 1 hold of 0.50 s and 0.52 s | 1 hold of 0.86 s and 0.83 s |
-| Unrelated names, 1,500 files | 1 hold of 1.39 s and 1.34 s | 1 hold of 2.57 s and 2.63 s |
+**The first open of an older library** keys it in place under the write lock. Each table
+gains `source_id` as the md5 of its path, takes the BTREE index of the path column when
+it had one, and loses the path column; `_sources.filename` becomes `path`. Each step reads
+the table's columns, so an open that stops part way is finished by the next. Measured at
+200,000 chunks of 768 dimensions and 20,000 sources: 0.39 s and 4.5 MB, with the full-text,
+vector and bitmap indexes kept. An older lilbee then fails on the renamed column
+(`KeyError: 'filename'`) and changes nothing.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
