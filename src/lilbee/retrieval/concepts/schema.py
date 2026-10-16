@@ -28,7 +28,7 @@ def _concept_edges_schema() -> pa.Schema:
 def _chunk_concepts_schema() -> pa.Schema:
     return pa.schema(
         [
-            pa.field("chunk_source", pa.utf8()),
+            pa.field("source_id", pa.utf8()),
             pa.field("chunk_index", pa.int32()),
             pa.field("concept", pa.utf8()),
         ]

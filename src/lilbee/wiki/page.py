@@ -18,14 +18,13 @@ from pathlib import Path
 from typing import Any
 
 from lilbee.app.services import get_services
-from lilbee.core.config import CHUNKS_TABLE, DEFAULT_NUM_CTX, Config
+from lilbee.core.config import DEFAULT_NUM_CTX, Config
 from lilbee.data.extract.chunk import chunk_text
 from lilbee.data.store import (
     ChunkType,
     CitationRecord,
     SearchChunk,
     Store,
-    escape_sql_string,
 )
 from lilbee.providers.base import LLMProvider
 from lilbee.retrieval.reasoning import strip_reasoning
@@ -340,12 +339,10 @@ def index_wiki_page(
     if subdir not in WIKI_CONTENT_SUBDIRS:
         return 0
 
-    predicate = f"source = '{escape_sql_string(wiki_source)}' AND chunk_type = '{ChunkType.WIKI}'"
     if chunks is None:
         chunks = indexable_chunks(content)
     if not chunks:
-        store.clear_table(CHUNKS_TABLE, predicate)
-        return 0
+        return store.replace_chunks(wiki_source, ChunkType.WIKI, [])
 
     vectors = get_services().embedder.embed_batch(chunks)
     records = [
@@ -363,7 +360,7 @@ def index_wiki_page(
         }
         for idx, (text, vector) in enumerate(zip(chunks, vectors, strict=True))
     ]
-    return store.replace_chunks(records, predicate)
+    return store.replace_chunks(wiki_source, ChunkType.WIKI, records)
 
 
 def generate_page(

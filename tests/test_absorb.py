@@ -692,14 +692,17 @@ class TestAMovedFolderWithASourceInside:
         assert len(store.get_chunks_by_source("after/work/deep/a.md")) == 1
         assert synced.added == [] and synced.updated == []
 
-    async def test_without_the_drop_the_outer_entry_lands_beside_it(self, library, tmp_path):
-        """The control for the test above."""
+    async def test_without_the_drop_the_outer_entry_folds_into_the_inner_one(
+        self, library, tmp_path
+    ):
+        """The re-key of the source table keeps the inner source when the drop is gone."""
         after = await _moved_folder_with_a_source_inside(tmp_path)
 
         with mock.patch.object(absorb_mod, "_drop_shadows"):
             register_sources([after.parent])
 
-        assert _keys(library).count("after/work/deep/a.md") == 2
+        # The source table holds one row a path: the outer entry folds into the inner one.
+        assert _keys(library).count("after/work/deep/a.md") == 1
 
     async def test_a_removal_of_the_outer_entry_does_not_hold_the_file_out(self, library, tmp_path):
         after = await _moved_folder_with_a_source_inside(tmp_path)
@@ -1009,7 +1012,7 @@ class TestInterruptedAbsorb:
         "copy-records",
         "shadows",
         "rekey",
-        "third-table",
+        "source-update",
         "wiki-pages",
         "wiki-index",
         "prune-records",
@@ -1040,7 +1043,7 @@ class TestInterruptedAbsorb:
             "copy-records": (absorb_mod, "_copy_records"),
             "shadows": (absorb_mod, "_drop_shadows"),
             "rekey": (Store, "rekey_sources_under"),
-            "third-table": (LanceTable, "update"),
+            "source-update": (LanceTable, "update"),
             "table": (LanceTable, "update"),
             "wiki-pages": (wiki_rekey_mod, "rekey_wiki_pages"),
             "wiki-index": (wiki_stubs_mod, "refresh_sources_under"),
@@ -1049,7 +1052,7 @@ class TestInterruptedAbsorb:
             "clear": (Store, "remove_documents"),
             "citations": (Store, "drop_citations_repeated_under"),
         }[step]
-        return self._nth_call(target, attribute, 4 if step == "third-table" else nth)
+        return self._nth_call(target, attribute, nth)
 
     def _clean_absorb(self, tmp_path, label="notes", child="work", seed=None) -> dict[str, object]:
         """The state a whole absorb leaves, built in a second library."""
@@ -1092,7 +1095,6 @@ class TestInterruptedAbsorb:
         assert clean != before and clean["registry"] == ["notes"]
         assert cfg.linked_roots == {"notes": str(notes.resolve())}
 
-    _TABLES = len(_KEY_COLUMNS)
     _SHAPES: ClassVar[dict[str, tuple[Callable[[Store, Path], Path], dict[str, str]]]] = {
         "renamed": (_seeded_renamed_child, {"renamed": "work"}),
         "nested": (_seeded_nested_children, {"work": "work", "deep": "work/deep"}),
@@ -1100,11 +1102,10 @@ class TestInterruptedAbsorb:
     }
     _SHAPE_POINTS = (
         ("renamed", "rekey", 1),
-        ("renamed", "table", 4),
+        ("renamed", "table", 1),
         *(("nested", "rekey", nth) for nth in (1, 2)),
         *(("inner-first", "rekey", nth) for nth in (1, 2, 3)),
-        ("nested", "table", 4),
-        ("nested", "table", _TABLES + 4),
+        *(("nested", "table", nth) for nth in (1, 2)),
         ("nested", "clear", 1),
         ("nested", "citations", 1),
         *(

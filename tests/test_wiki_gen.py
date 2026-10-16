@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from lilbee.core.config import CHUNKS_TABLE, cfg
+from lilbee.core.config import cfg
 from lilbee.core.text import make_slug
 from lilbee.data.store import ChunkType, CitationRecord, SearchChunk, Store
 from lilbee.data.store.core import _check_vector_dims
@@ -125,7 +125,7 @@ def _orthogonal_body_vector() -> list[float]:
 
 def _mock_store() -> MagicMock:
     store = MagicMock(spec=Store)
-    store.replace_chunks.side_effect = lambda records, predicate: len(records)
+    store.replace_chunks.side_effect = lambda source, chunk_type, records: len(records)
     return store
 
 
@@ -1590,11 +1590,7 @@ def _assert_no_store_writes(store: MagicMock) -> None:
 
 def _assert_cleared(store: MagicMock, wiki_source: str) -> None:
     """Assert the page's rows were cleared once, with no replacement written."""
-    store.clear_table.assert_called_once()
-    table, predicate = store.clear_table.call_args.args
-    assert table == CHUNKS_TABLE
-    assert wiki_source in predicate
-    assert ChunkType.WIKI in predicate
+    store.replace_chunks.assert_called_once_with(wiki_source, ChunkType.WIKI, [])
 
 
 class TestWikiIndexing:
@@ -1645,9 +1641,9 @@ class TestWikiIndexing:
 
         store.clear_table.assert_not_called()
         store.replace_chunks.assert_called_once()
-        records, predicate = store.replace_chunks.call_args.args
-        assert target.wiki_source in predicate
-        assert ChunkType.WIKI in predicate
+        source, chunk_type, records = store.replace_chunks.call_args.args
+        assert source == target.wiki_source
+        assert chunk_type == ChunkType.WIKI
         assert len(records) == 1
         rec = records[0]
         assert rec["chunk_type"] == ChunkType.WIKI
@@ -1688,8 +1684,8 @@ class TestWikiIndexing:
             index_wiki_page(self._content("body"), wiki_source, store, config)
 
         store.replace_chunks.assert_called_once()
-        _records, predicate = store.replace_chunks.call_args.args
-        assert wiki_source in predicate
+        source, _chunk_type, _records = store.replace_chunks.call_args.args
+        assert source == wiki_source
 
     def test_malformed_wiki_source_logs_warning_and_skips(self, caplog: pytest.LogCaptureFixture):
         """A ``wiki_source`` without a subdir component is logged and
@@ -1724,7 +1720,6 @@ class TestWikiIndexing:
 
         _assert_cleared(store, target.wiki_source)
         chunker.assert_not_called()
-        store.replace_chunks.assert_not_called()
 
     def test_chunker_returns_empty_skips_add(self):
         """If chunk_text returns no chunks, invalidate stale rows and return."""
@@ -1738,12 +1733,11 @@ class TestWikiIndexing:
             index_wiki_page(self._content("some body"), target.wiki_source, store, cfg)
 
         _assert_cleared(store, target.wiki_source)
-        store.replace_chunks.assert_not_called()
 
     def test_wrong_dimension_vectors_hit_the_store_dimension_gate(self):
         """Wiki rows embedded at the wrong width fail loudly instead of being written."""
         store = MagicMock(spec=Store)
-        store.replace_chunks.side_effect = lambda records, predicate: _check_vector_dims(
+        store.replace_chunks.side_effect = lambda source, chunk_type, records: _check_vector_dims(
             records, cfg.embedding_dim
         )
         target = self._target()

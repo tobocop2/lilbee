@@ -14,10 +14,10 @@ from __future__ import annotations
 
 import math
 from collections import Counter
+from collections.abc import Mapping
 
 import numpy as np
 
-from lilbee.core.config import CHUNKS_TABLE
 from lilbee.data.store import Store
 from lilbee.retrieval.clustering import SourceCluster
 from lilbee.retrieval.clustering_embedding.types import ClusterChunk
@@ -30,6 +30,8 @@ _BLOCK_SIZE = 1024
 # Caps the transient working set at ~25 MB (1024 rows x 768 dims), whatever
 # the corpus size.
 _SCAN_BATCH_ROWS = 1024
+# The chunk columns a cluster scan reads.
+_SCAN_COLUMNS = ["source", "chunk", "chunk_index", "vector"]
 
 # Label Propagation hard iteration cap. Convergence is typically reached
 # in well under 10 passes on real corpora.
@@ -67,7 +69,7 @@ def auto_k(n: int) -> int:
 
 
 def _parse_chunk_row(
-    row: dict[str, object],
+    row: Mapping[str, object],
 ) -> tuple[ClusterChunk, list[float] | tuple[float, ...]] | None:
     """Extract a chunk record + vector from a raw Arrow row, or None on invalid."""
     vector = row.get("vector")
@@ -101,15 +103,11 @@ def _load_chunk_records(
     float lists) is one batch, not the whole table. Only the compact matrix
     and the text records scale with corpus size.
     """
-    table = store.open_table(CHUNKS_TABLE)
-    if table is None:
-        return [], np.zeros((0, 0), dtype=np.float32)
-
     records: list[ClusterChunk] = []
     blocks: list[np.ndarray] = []
-    for batch in table.to_arrow().to_batches(max_chunksize=_SCAN_BATCH_ROWS):
+    for rows in store.chunk_batches(_SCAN_COLUMNS, _SCAN_BATCH_ROWS):
         batch_vectors: list[list[float] | tuple[float, ...]] = []
-        for row in batch.to_pylist():
+        for row in rows:
             pair = _parse_chunk_row(row)
             if pair is None:
                 continue

@@ -174,8 +174,8 @@ class TestWhereTheWorkIs:
         monkeypatch.setattr(
             Store,
             "_batch_source_rows",
-            lambda store, items: [
-                row for row in real_rows(store, items) if row["filename"] != "note3.txt"
+            lambda store, items, ids: [
+                row for row in real_rows(store, items, ids) if row["path"] != "note3.txt"
             ],
         )
         real_ingest = pipeline_mod.ingest_document
@@ -426,32 +426,27 @@ class TestEqualToOneProcess:
         assert [name for name in fanned.sources() if name.startswith("moved/")] == moved
         _assert_equal_to_one_process(fanned, single)
 
-    async def test_a_renamed_folder_costs_one_update_of_each_table_not_one_for_each_file(
-        self, tmp_path
-    ):
+    async def test_a_renamed_folder_costs_one_commit_of_the_source_table(self, tmp_path):
         from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
 
         library = Library(tmp_path / "lib", 1)
         for number in range(14):
             library.write(f"bulk/part_{number}.txt", f"Part {number} of the folder.")
         await library.sync()
         (library.documents / "bulk").rename(library.documents / "moved")
-        real = LanceTable.update
-        with mock.patch.object(LanceTable, "update", autospec=True, side_effect=real) as updates:
+        real = LanceTable.merge_insert
+        with mock.patch.object(
+            LanceTable, "merge_insert", autospec=True, side_effect=real
+        ) as merges:
             result = await library.sync()
 
         assert len(result.relocated) == 14
-        rekeys = [call for call in updates.call_args_list if "bulk/" in str(call.kwargs)]
-        assert 1 <= len(rekeys) <= len(_RELOCATABLE_TABLES)
+        assert [call.args[0].name for call in merges.call_args_list] == ["_sources"]
 
     async def test_files_moved_to_unrelated_names_share_updates_and_nothing_is_embedded_again(
         self, tmp_path
     ):
         from lancedb.table import LanceTable
-
-        from lilbee.data.store.core import _RELOCATABLE_TABLES
 
         counts, results = [], []
         olds = [f"bulk/ledger_{number}.txt" for number in range(14)]
@@ -467,21 +462,22 @@ class TestEqualToOneProcess:
             for old, new in zip(olds, news, strict=True):
                 (library.documents / new).parent.mkdir(exist_ok=True)
                 (library.documents / old).rename(library.documents / new)
-            real = LanceTable.update
+            real = LanceTable.merge_insert
             with mock.patch.object(
-                LanceTable, "update", autospec=True, side_effect=real
-            ) as updates:
+                LanceTable, "merge_insert", autospec=True, side_effect=real
+            ) as merges:
                 results.append(await library.sync())
-            counts.append(sum("ledger_" in str(call.kwargs) for call in updates.call_args_list))
+            counts.append([call.args[0].name for call in merges.call_args_list])
             await library.sync()
 
         fanned, single = await _play(tmp_path, history)
         for result in results:
             assert sorted(result.relocated) == sorted(news)
             assert result.added == []
-        # One process: one update of each table. Two workers: one each, at most.
-        assert 1 <= counts[1] <= len(_RELOCATABLE_TABLES)
-        assert 1 <= counts[0] <= 2 * len(_RELOCATABLE_TABLES)
+        # One process: one commit of the source table. Two workers: one each, at most.
+        assert counts[1] == ["_sources"]
+        assert 1 <= len(counts[0]) <= 2
+        assert set(counts[0]) == {"_sources"}
         assert [name for name in fanned.sources() if name.startswith("bulk/")] == []
         _assert_equal_to_one_process(fanned, single)
 

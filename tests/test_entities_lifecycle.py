@@ -390,20 +390,15 @@ class TestChunkScanProjection:
     def test_full_pass_projects_the_needed_columns(self):
         from lilbee.retrieval.entities.lifecycle import _full_pass
 
-        batch = mock.MagicMock()
-        batch.to_pylist.return_value = [
-            {"chunk": "part PX4471", "source": "a.txt", "chunk_index": 0, "page_start": 1}
-        ]
-        table = self._projecting_table([batch])
+        rows = [{"chunk": "part PX4471", "source": "a.txt", "chunk_index": 0, "page_start": 1}]
         store = mock.MagicMock()
-        store.open_table.return_value = table
+        store.chunk_batches.return_value = iter([rows])
         store.add_entities.return_value = 1
 
         assert _full_pass(store, _part_schema(), None) is True
-        table.search.return_value.select.assert_called_once_with(
-            ["chunk", "source", "chunk_index", "page_start"]
-        )
-        table.to_arrow.assert_not_called()
+        columns, _batch_rows = store.chunk_batches.call_args.args
+        assert columns == ["chunk", "source", "chunk_index", "page_start"]
+        assert store.add_entities.call_args.args[0][0]["source"] == "a.txt"
 
 
 class TestSchemaEvolution:

@@ -56,7 +56,7 @@ def _distinct_chunk_count(cc_table: Any) -> int:
     keys: set[tuple[str, int]] = set()
     for rows in _iter_row_batches(cc_table):
         for row in rows:
-            keys.add((row["chunk_source"], row["chunk_index"]))
+            keys.add((row["source_id"], row["chunk_index"]))
     return len(keys)
 
 
@@ -185,8 +185,18 @@ class ConceptGraph:
 
     def write_concept_records(self, records: ConceptRecords) -> None:
         """Write batched concept rows: one lock acquisition, at most one add per table."""
+        ids = self._store.source_ids({row["chunk_source"] for row in records.chunk_concepts})
+        chunk_concepts = [
+            {
+                "source_id": ids[row["chunk_source"]],
+                "chunk_index": row["chunk_index"],
+                "concept": row["concept"],
+            }
+            for row in records.chunk_concepts
+            if row["chunk_source"] in ids
+        ]
+        db = self._store.get_db()  # opens the library, and so migrates it, outside the lock
         with lock.write_lock(self._config.lancedb_dir):
-            db = self._store.get_db()
             # Always create tables so get_graph() returns True even when
             # concept extraction yields no results for the current corpus.
             nodes_tbl = data_store.ensure_table(db, CONCEPT_NODES_TABLE, _concept_nodes_schema())
@@ -196,8 +206,8 @@ class ConceptGraph:
                 nodes_tbl.add(records.nodes)
             if records.edges:
                 edges_tbl.add(records.edges)
-            if records.chunk_concepts:
-                cc_tbl.add(records.chunk_concepts)
+            if chunk_concepts:
+                cc_tbl.add(chunk_concepts)
 
     def boost_results(self, results: list[Any], query_concepts: list[str]) -> list[Any]:
         """Boost search results whose chunks overlap with query concepts.
@@ -212,12 +222,14 @@ class ConceptGraph:
         if table is None:
             return results
         query_set = set(query_concepts)
+        ids = self._store.source_ids({r.source for r in results})
         concepts_by_chunk = self._chunk_concepts_batch(
-            table, {(r.source, r.chunk_index) for r in results}
+            table, {(ids[r.source], r.chunk_index) for r in results if r.source in ids}
         )
         boosted: list[Any] = []
         for r in results:
-            chunk_concepts = concepts_by_chunk.get((r.source, r.chunk_index), set())
+            key = (ids.get(r.source, ""), r.chunk_index)
+            chunk_concepts = concepts_by_chunk.get(key, set())
             overlap = len(query_set & chunk_concepts)
             if overlap > 0:
                 boost = (overlap / len(query_set)) * self._config.concept_boost_weight
@@ -234,13 +246,13 @@ class ConceptGraph:
     def get_chunk_concepts(self, source: str, chunk_index: int) -> list[str]:
         """Get concepts associated with a specific chunk."""
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
-        if table is None:
+        source_id = self._store.source_ids([source]).get(source)
+        if table is None or source_id is None:
             return []
-        escaped = escape_sql_string(source)
         try:
             rows = (
                 table.search()
-                .where(f"chunk_source = '{escaped}' AND chunk_index = {int(chunk_index)}")
+                .where(f"source_id = '{source_id}' AND chunk_index = {int(chunk_index)}")
                 .to_list()
             )
         except Exception:
@@ -263,7 +275,7 @@ class ConceptGraph:
         try:
             rows = (
                 table.search()
-                .where(f"chunk_source IN ({sources}) AND chunk_index IN ({indexes})")
+                .where(f"source_id IN ({sources}) AND chunk_index IN ({indexes})")
                 .to_list()
             )
         except Exception:
@@ -271,7 +283,7 @@ class ConceptGraph:
             return {}
         concepts_by_chunk: dict[tuple[str, int], set[str]] = {}
         for row in rows:
-            key = (row["chunk_source"], row["chunk_index"])
+            key = (row["source_id"], row["chunk_index"])
             if key in chunks:
                 concepts_by_chunk.setdefault(key, set()).add(row["concept"])
         return concepts_by_chunk
@@ -386,7 +398,7 @@ class ConceptGraph:
         per_chunk: dict[tuple[str, int], set[str]] = {}
         for rows in _iter_row_batches(table):
             for row in rows:
-                key = (row["chunk_source"], row["chunk_index"])
+                key = (row["source_id"], row["chunk_index"])
                 per_chunk.setdefault(key, set()).add(row["concept"])
         for concepts in per_chunk.values():
             ordered = sorted(concepts)
@@ -424,7 +436,7 @@ class ConceptGraph:
         cc_table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if cc_table is None:
             return True
-        touched = self._touched_concepts(cc_table, changed)
+        touched = self._touched_concepts(cc_table, set(self._store.source_ids(changed).values()))
         if touched and not self._recluster_affected(cc_table, node_rows, touched):
             return False
         if sweep_orphans:
@@ -433,8 +445,10 @@ class ConceptGraph:
 
     @staticmethod
     def _touched_concepts(cc_table: Any, changed: set[str]) -> set[str]:
-        """Distinct concepts the changed sources' chunks currently carry."""
-        rows = cc_table.search().where(f"chunk_source IN ({_quoted(changed)})").to_list()
+        """Distinct concepts the chunks of the sources *changed* (ids) currently carry."""
+        if not changed:
+            return set()
+        rows = cc_table.search().where(f"source_id IN ({_quoted(changed)})").to_list()
         return {row["concept"] for row in rows}
 
     def _recluster_affected(
@@ -480,7 +494,7 @@ class ConceptGraph:
         means the batch lookup failed and the caller must run a full pass.
         """
         chunk_rows = cc_table.search().where(f"concept IN ({_quoted(affected)})").to_list()
-        chunk_keys = {(row["chunk_source"], row["chunk_index"]) for row in chunk_rows}
+        chunk_keys = {(row["source_id"], row["chunk_index"]) for row in chunk_rows}
         concepts_by_chunk = self._chunk_concepts_batch(cc_table, chunk_keys)
         if chunk_keys and not concepts_by_chunk:
             # No rows for existing keys means the lookup failed; an empty
@@ -508,7 +522,7 @@ class ConceptGraph:
         count_rows = cc_table.search().where(f"concept IN ({_quoted(neighbors)})").to_list()
         seen: dict[str, set[tuple[str, int]]] = {}
         for row in count_rows:
-            seen.setdefault(row["concept"], set()).add((row["chunk_source"], row["chunk_index"]))
+            seen.setdefault(row["concept"], set()).add((row["source_id"], row["chunk_index"]))
         return {concept: len(keys) for concept, keys in seen.items()}
 
     def _sweep_orphan_concepts(self, cc_table: Any, node_rows: list[dict[str, Any]]) -> None:
@@ -593,6 +607,7 @@ class ConceptGraph:
 
     def compact_tables(self) -> None:
         """Compact the concept tables; per-file adds otherwise accrete tiny versions."""
+        self._store.get_db()  # opens the library, and so migrates it, outside the lock
         with lock.write_lock(self._config.lancedb_dir):
             for name in _CONCEPT_TABLES:
                 table = self._store.open_table(name)
@@ -606,7 +621,7 @@ class ConceptGraph:
     def get_cluster_sources(self, min_sources: int = 3) -> dict[int, set[str]]:
         """Return clusters that span at least *min_sources* distinct sources.
         Joins concept_nodes (concept -> cluster_id) with chunk_concepts
-        (concept -> chunk_source) to find which document sources each
+        (concept -> source_id) to find which document sources each
         cluster touches.
         """
         nodes_table = self._store.open_table(CONCEPT_NODES_TABLE)
@@ -625,11 +640,11 @@ class ConceptGraph:
                 cid = concept_to_cluster.get(row["concept"])
                 if cid is None:
                     continue
-                cluster_sources.setdefault(cid, set()).add(row["chunk_source"])
+                cluster_sources.setdefault(cid, set()).add(row["source_id"])
 
-        return {
-            cid: sources for cid, sources in cluster_sources.items() if len(sources) >= min_sources
-        }
+        wide = {cid: ids for cid, ids in cluster_sources.items() if len(ids) >= min_sources}
+        paths = self._store.source_paths({i for ids in wide.values() for i in ids})
+        return {cid: {paths[i] for i in ids if i in paths} for cid, ids in wide.items()}
 
     def get_cluster_label(self, cluster_id: int) -> str:
         """Return a human-readable label for *cluster_id* (highest-degree concept)."""

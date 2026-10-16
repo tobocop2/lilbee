@@ -30,7 +30,8 @@ def _entity_schema_state_schema() -> pa.Schema:
 def _sources_schema() -> pa.Schema:
     return pa.schema(
         [
-            pa.field("filename", pa.utf8()),
+            pa.field("source_id", pa.utf8()),
+            pa.field("path", pa.utf8()),
             pa.field("file_hash", pa.utf8()),
             pa.field("ingested_at", pa.utf8()),
             pa.field("chunk_count", pa.int32()),
@@ -41,6 +42,7 @@ def _sources_schema() -> pa.Schema:
             pa.field("title", pa.utf8()),
             pa.field("authors", pa.utf8()),
             pa.field("created_at", pa.utf8()),
+            pa.field("held_out", pa.utf8()),
         ]
     )
 
@@ -48,7 +50,7 @@ def _sources_schema() -> pa.Schema:
 def _page_texts_schema() -> pa.Schema:
     return pa.schema(
         [
-            pa.field("source", pa.utf8()),
+            pa.field("source_id", pa.utf8()),
             pa.field("page", pa.int32()),
             pa.field("text", pa.utf8()),
             pa.field("content_type", pa.utf8()),
@@ -63,7 +65,7 @@ def _citations_schema() -> pa.Schema:
             pa.field("wiki_chunk_index", pa.int32()),
             pa.field("citation_key", pa.utf8()),
             pa.field("claim_type", pa.utf8()),
-            pa.field("source_filename", pa.utf8()),
+            pa.field("source_id", pa.utf8()),
             pa.field("source_hash", pa.utf8()),
             pa.field("page_start", pa.int32()),
             pa.field("page_end", pa.int32()),
@@ -85,7 +87,7 @@ def _wiki_mentions_schema() -> pa.Schema:
             pa.field("label", pa.utf8()),
             pa.field("kind", pa.utf8()),
             pa.field("type_hint", pa.utf8()),
-            pa.field("source", pa.utf8()),
+            pa.field("source_id", pa.utf8()),
             pa.field("mention_count", pa.int32()),
             pa.field("chunk_indices", pa.list_(pa.int32())),
         ]
