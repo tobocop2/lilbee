@@ -35,6 +35,11 @@ from tests._crawlberg_stub import (
 
 SEED = "https://example.com/"
 OVERRIDE = "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36"
+BROWSER_ACCEPT_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Upgrade-Insecure-Requests": "1",
+}
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
 
 
@@ -142,7 +147,15 @@ class TestCrawlConfig:
             await _recursive(_browser())
             await _browser().fetch_single(SEED, timeout=5)
         assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
-        assert not any("custom_headers" in config.kwargs for config in stub.configs)
+        assert [config.kwargs["custom_headers"] for config in stub.configs] == [{}, {}]
+
+    async def test_http_mode_sends_the_browser_accept_headers(self):
+        stub = StubCrawlberg([page(SEED, depth=0)])
+        with stub.installed():
+            await _recursive(_http())
+            await _http().fetch_single(SEED, timeout=5)
+        sent = [config.kwargs["custom_headers"] for config in stub.configs]
+        assert sent == [BROWSER_ACCEPT_HEADERS] * 2
 
     @pytest.mark.parametrize("mode", list(CrawlRenderMode), ids=str)
     async def test_an_override_names_every_request_in_each_mode(

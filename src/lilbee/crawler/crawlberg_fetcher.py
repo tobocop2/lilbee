@@ -115,6 +115,14 @@ _REFUSED_SETTING_MESSAGES = {
 }
 _NO_CONTENT = "No content extracted"
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
+# The headers a browser sends with a page request, which crawlberg's HTTP client does not send.
+# Browser mode sends none: crawlberg adds custom headers to Chrome's requests too.
+_BROWSER_ACCEPT_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+    "Upgrade-Insecure-Requests": "1",
+}
+_CUSTOM_HEADERS = {CrawlRenderMode.HTTP: _BROWSER_ACCEPT_HEADERS, CrawlRenderMode.BROWSER: {}}
 
 
 class _EventKind(StrEnum):
@@ -310,6 +318,7 @@ def _crawl_config(
         tracking_params=list(_TRACKING_PARAMS),
         request_timeout=timeout_ms,
         user_agent=user_agent or None,
+        custom_headers=dict(_CUSTOM_HEADERS[render_mode]),
         rate_limit_ms=pacing.rate_limit_ms,
         rate_limit_jitter_ratio=pacing.jitter_ratio,
         max_redirects=_MAX_REDIRECTS,
