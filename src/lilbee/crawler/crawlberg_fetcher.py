@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import parse_qsl, quote_plus, urlsplit, urlunsplit
 
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import bootstrap, save, url_filter
+from lilbee.crawler import bootstrap, url_filter
 from lilbee.crawler.bootstrap import (
     BROWSER_FLAGS_REFUSED_MESSAGE,
     CHROMIUM_MISSING_MESSAGE,
@@ -99,7 +99,6 @@ _PREFIX_MARK = "*"
 _FORM_SAFE = "*"
 _TILDE = "~"
 _TILDE_ENCODED = "%7E"
-_FRAGMENT_MARK = "#"
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
@@ -366,12 +365,6 @@ def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle
         raise CrawlEngineRefusedError(_refusal_message(str(exc))) from exc
 
 
-def _written_address(url: str, original_url: str) -> str:
-    """*original_url* without its fragment when *url* is its encoded form, else *url*."""
-    written, _, _ = original_url.partition(_FRAGMENT_MARK)
-    return written if save.encoded_form(written) == url else url
-
-
 def _parse_event(raw: object) -> _Event | None:
     """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds."""
     payload: dict[str, Any] = json.loads(str(raw))
@@ -384,7 +377,7 @@ def _parse_event(raw: object) -> _Event | None:
     markdown: dict[str, Any] = result.get("markdown") or {}
     return _Event(
         kind,
-        _written_address(result["url"], result["original_url"]),
+        result["url"],
         depth=result.get("depth", _SEED_DEPTH),
         markdown=markdown.get("content") or "",
         links=tuple(link["url"] for link in result.get("links") or ()),

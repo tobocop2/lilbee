@@ -1629,7 +1629,7 @@ class TestCrawlAndSave:
         assert meta[stored].file == url_to_filename(stored)
 
     @patch("lilbee.crawler.runner.crawl_recursive")
-    async def test_a_page_stored_under_several_equivalent_addresses_is_rewritten_under_each(
+    async def test_a_page_stored_under_several_equivalent_addresses_refreshes_each_in_one_file(
         self, mock_crawl_recursive, isolated_env
     ):
         reported = "https://example.com/t/tri%2db"
@@ -1646,7 +1646,8 @@ class TestCrawlAndSave:
         paths = await crawl_and_save("https://example.com/", depth=1)
         web = cfg.documents_dir / "_web"
         assert paths == [web / url_to_filename(url) for url in spellings]
-        assert len({path.as_posix() for path in paths}) == len(spellings)
+        assert len(paths) == len(spellings)
+        assert len({path.as_posix() for path in paths}) == 1
         assert [path.read_text(encoding="utf-8") for path in paths] == ["# Tri"] * len(spellings)
         meta = load_crawl_metadata()
         assert set(meta) == {*spellings, other}
