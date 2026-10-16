@@ -24,6 +24,7 @@ from lilbee.cli.app import app
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.core.system import canonical_models_dir
+from lilbee.core.web_names import page_stem
 from lilbee.crawler import (
     chromium_installed,
     crawler_available,
@@ -452,14 +453,21 @@ def require_chromium() -> None:
 
 
 def saved_pages(root: Path, host: str = LOOPBACK) -> dict[str, str]:
-    """Saved markdown under the documents ``_web`` dir for *host*, keyed by relative name."""
-    host_dir = root / "documents" / "_web" / host
-    if not host_dir.is_dir():
-        return {}
+    """Saved markdown under the documents ``_web`` dir for *host* on any port, keyed by the
+    page's readable name under the host's folder (``a/b/index``, ``rel/child.html``)."""
+    web = root / "documents" / "_web"
+    folders = [d for d in web.iterdir() if _is_host_folder(d.name, host)] if web.is_dir() else []
     return {
-        p.relative_to(host_dir).as_posix(): p.read_text(encoding="utf-8")
-        for p in sorted(host_dir.rglob("*.md"))
+        (p.parent.relative_to(folder) / page_stem(p.name)).as_posix(): p.read_text(encoding="utf-8")
+        for folder in folders
+        for p in sorted(folder.rglob("*.md"))
     }
+
+
+def _is_host_folder(name: str, host: str) -> bool:
+    """Whether the saved folder *name* is the folder of *host*, with or without a port."""
+    port = name.removeprefix(f"{host}-")
+    return name == host or (port != name and port.isdigit())
 
 
 def all_saved_text(root: Path) -> str:

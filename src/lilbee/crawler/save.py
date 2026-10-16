@@ -1,4 +1,4 @@
-"""URL-to-filename mapping, metadata I/O, and per-page save-to-disk."""
+"""Page addresses and saved names, metadata I/O, and per-page save-to-disk."""
 
 from __future__ import annotations
 
@@ -8,25 +8,22 @@ import logging
 import re
 import string
 import tempfile
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from typing import TYPE_CHECKING
+from urllib.parse import unquote
 
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
+from lilbee.core.web_names import INDEX_STEM, PAGE_HASH_MARK, PAGE_SUFFIX, WEB_DIR
 from lilbee.crawler.models import CrawlResult
 
+# ada-url is in the optional ``crawler`` extra, so each function that needs it imports it on call.
+if TYPE_CHECKING:
+    import ada_url
+
 log = logging.getLogger(__name__)
-
-# Maximum UTF-8 length of a saved path before truncation (most filesystems cap a name at 255 bytes)
-_MAX_FILENAME_BYTES = 200
-
-# Sentinel for index pages (trailing slash or empty path)
-_INDEX_FILENAME = "index.md"
-
-# Length of the query-string hash folded into a filename to keep distinct
-# queries on the same path from mapping to (and overwriting) the same file.
-_QUERY_HASH_LEN = 8
 
 # How often the crawl metadata JSON is rewritten during a streaming crawl.
 # Markdown files are durable per-page; metadata batches to keep write volume
@@ -37,22 +34,43 @@ METADATA_FLUSH_INTERVAL = 10
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
 _PERCENT_ESCAPE = re.compile(r"%([0-9A-Fa-f]{2})")
 _HEX = 16
-# Every printable ASCII character but the space: the encoded form leaves these as written.
-_URI_CHARACTERS = string.digits + string.ascii_letters + string.punctuation
-# A run of escapes, or one other character, of a path segment in its equivalent form.
-_SEGMENT_PART = re.compile(r"(?:%[0-9A-Fa-f]{2})+|.", re.DOTALL)
-_PERCENT = "%"
-_SPACE = " "
-# Characters a Windows file name may not hold; a segment never holds "/" or "?".
-_WINDOWS_RESERVED = frozenset('<>:"\\|*')
-# Characters Windows strips from the end of a file name.
-_WINDOWS_TRAILING = " ."
+# A WHATWG parser escapes a raw "^" in a path; the url crate 2.5.8 crawlberg 1.11.1 uses keeps it.
+_CARET = "^"
+_CARET_ESCAPE = "%5E"
+_CARET_ESCAPE_LOWER = "%5e"
+_ANY_CARET_ESCAPE = re.compile(_CARET_ESCAPE, re.IGNORECASE)
+_QUERY_MARK = "?"
+_QUERY_SEPARATOR = "&"
+_QUERY_VALUE_MARK = "="
+# Hex digits of the sha256 of a page's canonical address in its file name: 64 bits.
+_HASH_HEX_DIGITS = 16
+_MAX_SLUG_BYTES = 80
+_MAX_PATH_BYTES = 200
+# A slug keeps letters, digits and these; every other run of characters becomes one fill.
+_SLUG_KEPT = frozenset("-_.")
+_SLUG_FILL = "-"
+_SLUG_FILL_RUN = re.compile(f"{_SLUG_FILL}{{2,}}")
+_SLUG_ENDS = ".- "
+_EMPTY_SLUG = "_"
+_DEVICE_MARK = "_"
+_EXTENSION_MARK = "."
+_PORT_MARK = ":"
+_UNKNOWN_HOST = "unknown"
 # Names Windows gives to devices, with or without an extension, in any letter case.
 _DEVICE_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
     | {f"{port}{n}" for port in ("COM", "LPT") for n in [*string.digits, "¹", "²", "³"]}
 )
-_EXTENSION_MARK = "."
+
+
+def _parsed(url: str) -> ada_url.URL | None:
+    """*url* parsed by the WHATWG URL standard, or None when it does not parse."""
+    import ada_url
+
+    try:
+        return ada_url.URL(url)
+    except ValueError:
+        return None
 
 
 def _normalized_escape(escape: re.Match[str]) -> str:
@@ -61,114 +79,87 @@ def _normalized_escape(escape: re.Match[str]) -> str:
     return char if char in _UNRESERVED else escape.group().upper()
 
 
-def _encoded_form(url: str) -> str:
-    """*url* with each space, control and non-ASCII character percent-encoded as UTF-8."""
-    return quote(url, safe=_URI_CHARACTERS)
+def _parameter_name(parameter: str) -> str:
+    """The name of one query parameter: the text before its first ``=``."""
+    return parameter.partition(_QUERY_VALUE_MARK)[0]
 
 
-def equivalent_form(url: str) -> str:
-    """The encoded form of *url* with each escape normalized as RFC 3986 section 6.2.2 defines."""
-    return _PERCENT_ESCAPE.sub(_normalized_escape, _encoded_form(url))
+def _sorted_query(address: str) -> str:
+    """*address* with its query parameters sorted by name, stable, each written as it was."""
+    before, mark, query = address.partition(_QUERY_MARK)
+    if not mark:
+        return address
+    parameters = sorted(query.split(_QUERY_SEPARATOR), key=_parameter_name)
+    return f"{before}{_QUERY_MARK}{_QUERY_SEPARATOR.join(parameters)}"
 
 
-def _escaped(text: str) -> str:
-    """*text* as upper-case percent escapes of its UTF-8 bytes, a byte that is not UTF-8 as is."""
-    return "".join(f"%{byte:02X}" for byte in text.encode("utf-8", errors="surrogateescape"))
+def canonical_address(url: str) -> str:
+    """The key crawlberg 1.11.1 gives the page at *url*, or *url* when it does not parse.
 
-
-def _named_char(char: str) -> str:
-    """One character an escape names, as a file name holds it.
-
-    A space and a printable non-ASCII character read as written. The escape of a character
-    Windows refuses, or of a percent sign, escapes its own percent sign, so it never reads
-    like the escape a raw reserved character becomes.
+    The steps of crawlberg's ``normalize_url`` (``normalize.rs`` at v1.11.1): the WHATWG
+    parse, no fragment, the escapes of RFC 3986 section 6.2.2, the query sorted by name.
     """
-    if char == _SPACE or (not char.isascii() and char.isprintable()):
-        return char
-    if char in _WINDOWS_RESERVED or char == _PERCENT:
-        return _escaped(_PERCENT) + _escaped(char).removeprefix(_PERCENT)
-    return _escaped(char)
+    parsed = _parsed(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
+    if parsed is None:
+        return url
+    parsed.hash = ""
+    address = parsed.href.replace(_CARET_ESCAPE, _CARET)
+    return _sorted_query(_PERCENT_ESCAPE.sub(_normalized_escape, address))
 
 
-def _named_part(part: str) -> str:
-    """One run of escapes, or one raw character, of a segment, as a file name holds it."""
-    if len(part) > 1:
-        named = bytes.fromhex(part.replace(_PERCENT, "")).decode("utf-8", "surrogateescape")
-        return "".join(map(_named_char, named))
-    return _escaped(part) if part in _WINDOWS_RESERVED else part
+def _cut(text: str, limit: int) -> str:
+    """*text* cut to at most *limit* UTF-8 bytes, on a character boundary."""
+    return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 
 
-def _segment_name(segment: str) -> str:
-    """The file name for one path segment of an address in its equivalent form.
+def _slug(part: str) -> str:
+    """A legal, readable file name for one escaped part of an address; lossy by design."""
+    text = unicodedata.normalize("NFC", unquote(part, errors="replace"))
+    kept = "".join(c if c.isalnum() or c in _SLUG_KEPT else _SLUG_FILL for c in text)
+    slug = _cut(_SLUG_FILL_RUN.sub(_SLUG_FILL, kept), _MAX_SLUG_BYTES).strip(_SLUG_ENDS)
+    slug = slug or _EMPTY_SLUG
+    if slug.split(_EXTENSION_MARK)[0].upper() in _DEVICE_NAMES:
+        return _DEVICE_MARK + slug
+    return slug
 
-    The trailing spaces and dots Windows strips, and the first letter of a device name, become
-    escapes, so the name maps back to exactly one segment.
+
+def _address_parts(address: str) -> tuple[str, list[str]]:
+    """The host, in Unicode and with any port, and the path segments of *address*."""
+    import ada_url
+
+    parsed = _parsed(address)
+    if parsed is None:
+        return _UNKNOWN_HOST, [""]
+    host = ada_url.idna_to_unicode(parsed.hostname)
+    if parsed.port:
+        host = f"{host}{_PORT_MARK}{parsed.port}"
+    return host, parsed.pathname.removeprefix("/").split("/")
+
+
+def page_name(address: str) -> str:
+    """The path under ``_web`` of the page at canonical *address*.
+
+    Readable folders, then the page's readable name, ``~`` and the start of the sha256 of
+    *address*. The hash keeps every page in a file of its own on any disk.
     """
-    name = "".join(map(_named_part, _SEGMENT_PART.findall(segment)))
-    body = name.rstrip(_WINDOWS_TRAILING)
-    name = body + _escaped(name[len(body) :])
-    if name.split(_EXTENSION_MARK)[0].rstrip(_SPACE).upper() in _DEVICE_NAMES:
-        name = _escaped(name[0]) + name[1:]
-    return name
-
-
-def stored_spellings(meta: dict[str, CrawlMeta]) -> dict[str, list[str]]:
-    """The URLs *meta* holds, grouped by their equivalent form."""
-    spellings: dict[str, list[str]] = {}
-    for url in meta:
-        spellings.setdefault(equivalent_form(url), []).append(url)
-    return spellings
+    host, segments = _address_parts(address)
+    *folders, last = segments
+    digest = hashlib.sha256(address.encode("utf-8")).hexdigest()[:_HASH_HEX_DIGITS]
+    file_name = f"{_slug(last) if last else INDEX_STEM}{PAGE_HASH_MARK}{digest}{PAGE_SUFFIX}"
+    head = [_slug(host), *(_slug(folder) for folder in folders if folder)]
+    while len("/".join([*head, file_name]).encode("utf-8")) > _MAX_PATH_BYTES:
+        head.pop()
+    return "/".join([*head, file_name])
 
 
 def url_to_filename(url: str) -> str:
-    """Convert a URL to a safe filesystem path ending in .md.
-
-    Examples:
-        https://docs.python.org/3/tutorial/ → docs.python.org/3/tutorial/index.md
-        https://example.com/page?q=1        → example.com/page/index_q<hash>.md
-        https://example.com/                → example.com/index.md
-
-    A distinct query string folds a short hash of the query into the filename so
-    two URLs differing only in their query do not map to the same file and
-    overwrite each other. The fragment is client-side and intentionally ignored.
-    Every spelling of one address in :func:`equivalent_form` maps to one path, and each
-    segment is named by :func:`_segment_name`.
-    """
-    canonical = equivalent_form(url)
-    parsed = urlparse(canonical)
-    host = _segment_name(parsed.hostname or "unknown")
-    path = "/".join(map(_segment_name, parsed.path.strip("/").split("/")))
-
-    if not path:
-        rel = _INDEX_FILENAME
-    else:
-        last_segment = path.rsplit("/", 1)[-1]
-        if re.search(r"\.[^./]+$", last_segment):
-            rel = re.sub(r"\.[^./]+$", ".md", path)  # real extension: swap it for .md
-        else:
-            # No real extension (incl. a bare "." segment) -> treat as a directory.
-            # This guarantees rel ends in .md so the query suffix below always applies.
-            rel = f"{path}/{_INDEX_FILENAME}"
-
-    if parsed.query:
-        query_hash = hashlib.sha256(parsed.query.encode()).hexdigest()[:_QUERY_HASH_LEN]
-        rel = re.sub(r"\.md$", f"_q{query_hash}.md", rel)
-
-    full = f"{host}/{rel}"
-
-    # Truncate if too long, preserving .md extension
-    encoded = full.encode()
-    if len(encoded) > _MAX_FILENAME_BYTES:
-        url_hash = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-        head = encoded[: _MAX_FILENAME_BYTES - 16].decode(errors="ignore")
-        full = f"{head}_{url_hash}.md"
-
-    return full
+    """The path under ``_web`` that the page at *url* is saved under."""
+    return page_name(canonical_address(url))
 
 
-def _web_dir() -> Path:
-    """Return the _web/ subdirectory under documents."""
-    return cfg.documents_dir / "_web"
+def web_dir() -> Path:
+    """The folder under the documents directory that holds every crawled page."""
+    return cfg.documents_dir / WEB_DIR
 
 
 def _crawl_meta_path() -> Path:
@@ -250,9 +241,10 @@ def normalize_crawled_markdown(markdown: str) -> str:
 
 @dataclass(frozen=True)
 class SaveOutcome:
-    """Return value of ``_save_single_result``: written path and the hash/filename used."""
+    """What ``_save_single_result`` wrote: the path, the page's key, its file name and hash."""
 
     path: Path
+    address: str
     filename: str
     content_hash: str
 
@@ -267,49 +259,28 @@ def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> Save
     if result.failure_reason() is not None:
         return None
     markdown = normalize_crawled_markdown(result.markdown)
-    filename = url_to_filename(result.url)
-    web_dir = _web_dir()
-    file_path = web_dir / filename
-    resolved_web_dir = web_dir.resolve()
+    address = canonical_address(result.url)
+    filename = page_name(address)
+    root = web_dir()
+    file_path = root / filename
     try:
-        validate_path_within(file_path, resolved_web_dir)
+        validate_path_within(file_path, root.resolve())
     except ValueError:
         log.warning("Path traversal blocked: %s -> %s", result.url, file_path)
         return None
     new_hash = content_hash(markdown)
-    prev = meta.get(result.url)
+    prev = meta.get(address)
     if prev is not None and prev.content_hash == new_hash and file_path.exists():
         log.info("Content unchanged, skipping save: %s", result.url)
         return None
     file_path.parent.mkdir(parents=True, exist_ok=True)
     file_path.write_text(markdown, encoding="utf-8")
-    _retire_earlier_copy(result.url, file_path, meta)
-    return SaveOutcome(path=file_path, filename=filename, content_hash=new_hash)
+    return SaveOutcome(path=file_path, address=address, filename=filename, content_hash=new_hash)
 
 
-def _retire_earlier_copy(url: str, file_path: Path, meta: dict[str, CrawlMeta]) -> None:
-    """Remove the copy of *url* saved under an earlier name, unless another address holds it."""
-    prev = meta.get(url)
-    if prev is None or any(m.file == prev.file for other, m in meta.items() if other != url):
-        return
-    web_dir = _web_dir()
-    try:
-        earlier = validate_path_within(web_dir / prev.file, web_dir.resolve())
-    except ValueError:
-        return
-    if earlier.is_file() and not earlier.samefile(file_path):
-        earlier.unlink()
-        log.info("Removed the copy of %s saved under its earlier name %s", url, prev.file)
-
-
-def _update_single_metadata(
-    meta: dict[str, CrawlMeta],
-    url: str,
-    outcome: SaveOutcome,
-    now: str,
-) -> None:
-    """Update the metadata dict in place with a previously-computed outcome."""
-    meta[url] = CrawlMeta(
+def _update_single_metadata(meta: dict[str, CrawlMeta], outcome: SaveOutcome, now: str) -> None:
+    """Record *outcome* in *meta* under the page's canonical address."""
+    meta[outcome.address] = CrawlMeta(
         file=outcome.filename,
         content_hash=outcome.content_hash,
         crawled_at=now,

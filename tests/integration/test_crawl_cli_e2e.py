@@ -39,30 +39,30 @@ MIN_PAGES_BEYOND_SEED = 2
 
 # Pages a depth-2 crawl of the home page saves, by name under the host's ``_web`` dir.
 HOME_DEPTH_2_PAGES = {
-    "index.md",
-    "a/index.md",
-    "a/b/index.md",
-    "rel/child.md",
-    "rel/sibling.md",
-    "docs/base/page.md",
-    "other/leaf.md",
-    "redirect-me/index.md",
-    "landing/next.md",
+    "index",
+    "a/index",
+    "a/b/index",
+    "rel/child.html",
+    "rel/sibling.html",
+    "docs/base/page.html",
+    "other/leaf.html",
+    "redirect-me",
+    "landing/next.html",
 }
 BEYOND_DEPTH_2_PREFIX = "a/b/c/"
-TREE_DEPTH_2_PAGES = {"a/index.md", "a/b/index.md", "a/b/c/index.md"}
+TREE_DEPTH_2_PAGES = {"a/index", "a/b/index", "a/b/c/index"}
 
 KEY_TEXT = [
-    ("index.md", site_mod.HOME_TEXT),
-    ("index.md", site_mod.NAV_TEXT),
-    ("a/index.md", site_mod.TREE_TEXT.format(path="/a/")),
-    ("a/b/index.md", site_mod.TREE_TEXT.format(path="/a/b/")),
-    ("rel/child.md", site_mod.CHILD_TEXT),
-    ("rel/sibling.md", site_mod.SIBLING_TEXT),
-    ("docs/base/page.md", site_mod.BASE_TEXT),
-    ("other/leaf.md", site_mod.LEAF_TEXT),
-    ("redirect-me/index.md", site_mod.TARGET_TEXT),
-    ("landing/next.md", site_mod.NEXT_TEXT),
+    ("index", site_mod.HOME_TEXT),
+    ("index", site_mod.NAV_TEXT),
+    ("a/index", site_mod.TREE_TEXT.format(path="/a/")),
+    ("a/b/index", site_mod.TREE_TEXT.format(path="/a/b/")),
+    ("rel/child.html", site_mod.CHILD_TEXT),
+    ("rel/sibling.html", site_mod.SIBLING_TEXT),
+    ("docs/base/page.html", site_mod.BASE_TEXT),
+    ("other/leaf.html", site_mod.LEAF_TEXT),
+    ("redirect-me", site_mod.TARGET_TEXT),
+    ("landing/next.html", site_mod.NEXT_TEXT),
 ]
 
 NOT_SAVED_TEXT = [
@@ -137,30 +137,30 @@ class TestRecursiveCrawl:
 
     def test_table_cells_stay_on_one_row(self, http_crawl: MainCrawl) -> None:
         row = rf"{site_mod.TABLE_CELL_NAME}\s*\|\s*{site_mod.TABLE_CELL_VALUE}"
-        assert re.search(row, http_crawl.first.pages["index.md"])
+        assert re.search(row, http_crawl.first.pages["index"])
 
     def test_code_block_is_fenced(self, http_crawl: MainCrawl) -> None:
-        fenced = re.findall(r"```[^\n]*\n(.*?)```", http_crawl.first.pages["index.md"], re.S)
+        fenced = re.findall(r"```[^\n]*\n(.*?)```", http_crawl.first.pages["index"], re.S)
         assert any(site_mod.CODE_LINE in block for block in fenced)
 
     def test_base_href_page_links_resolve_against_the_base(
         self, http_crawl: MainCrawl, crawl_site: CrawlSite
     ) -> None:
-        page = http_crawl.first.pages["docs/base/page.md"]
+        page = http_crawl.first.pages["docs/base/page.html"]
         assert crawl_site.url("/other/leaf.html") in page
         assert crawl_site.url("/docs/base/leaf.html") not in page
 
     def test_redirected_page_links_resolve_against_the_final_url(
         self, http_crawl: MainCrawl, crawl_site: CrawlSite
     ) -> None:
-        page = http_crawl.first.pages["redirect-me/index.md"]
+        page = http_crawl.first.pages["redirect-me"]
         assert crawl_site.url("/landing/next.html") in page
         assert crawl_site.url("/next.html") not in page
 
     def test_relative_links_resolve_against_the_page(
         self, http_crawl: MainCrawl, crawl_site: CrawlSite
     ) -> None:
-        assert crawl_site.url("/rel/sibling.html") in http_crawl.first.pages["rel/child.md"]
+        assert crawl_site.url("/rel/sibling.html") in http_crawl.first.pages["rel/child.html"]
 
     def test_recrawl_writes_nothing_new(self, http_crawl: MainCrawl) -> None:
         assert http_crawl.recrawl.report["crawled"] == 0
@@ -168,7 +168,9 @@ class TestRecursiveCrawl:
 
     def test_search_returns_the_crawled_page(self, http_crawl: MainCrawl) -> None:
         top_hit, *_rest = http_crawl.search_sources
-        assert top_hit.endswith(f"_web/{LOOPBACK}/rel/child.md"), http_crawl.search_sources
+        assert re.search(
+            rf"_web/{re.escape(LOOPBACK)}-\d+/rel/child\.html~[0-9a-f]{{16}}\.md$", top_hit
+        ), http_crawl.search_sources
 
 
 class TestCrawlLimits:
@@ -191,7 +193,7 @@ class TestCrawlLimits:
     ) -> None:
         with crawl_sandbox(tmp_path) as root:
             run = run_add(root, crawl_site.url("/"))
-        assert set(run.pages) == {"index.md"}
+        assert set(run.pages) == {"index"}
 
 
 class TestRedirectedSeed:
@@ -200,8 +202,8 @@ class TestRedirectedSeed:
     ) -> None:
         with crawl_sandbox(tmp_path) as root:
             run = run_add(root, crawl_site.url("/seed-redirect"))
-        assert set(run.pages) == {"seed-redirect/index.md"}
-        page = run.pages["seed-redirect/index.md"]
+        assert set(run.pages) == {"seed-redirect"}
+        page = run.pages["seed-redirect"]
         assert site_mod.TARGET_TEXT in page
         assert crawl_site.url("/landing/next.html") in page
 
@@ -221,10 +223,10 @@ class TestSubdomains:
             depth = ("--crawl", "--depth", str(SUBDOMAIN_CRAWL_DEPTH))
             run = run_add(root, seed, *depth, *flags, host=NAMED_HOST)
             sub_pages = saved_pages(root, SUB_HOST)
-        assert "index.md" in run.pages
-        assert ("index.md" in sub_pages) is expect_sub
+        assert "index" in run.pages
+        assert ("index" in sub_pages) is expect_sub
         if expect_sub:
-            assert site_mod.SUB_TEXT in sub_pages["index.md"]
+            assert site_mod.SUB_TEXT in sub_pages["index"]
 
 
 @full_crawl_only
@@ -250,4 +252,4 @@ class TestBrowserModeCrawl:
         require_chromium()
         with windows_proactor_loop(), crawl_sandbox(tmp_path, CrawlRenderMode.BROWSER) as root:
             run = run_add(root, crawl_site.url("/js/"))
-        assert site_mod.SCRIPT_TEXT in run.pages["js/index.md"]
+        assert site_mod.SCRIPT_TEXT in run.pages["js/index"]

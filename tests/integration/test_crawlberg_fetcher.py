@@ -24,6 +24,7 @@ crawlberg = pytest.importorskip("crawlberg")
 from lilbee.cli.app import app  # noqa: E402
 from lilbee.core.config import Config, cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
+from lilbee.core.web_names import page_stem  # noqa: E402
 from lilbee.crawler import CrawlMeta, bootstrap, crawl_and_save, save, url_filter  # noqa: E402
 from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
@@ -104,29 +105,27 @@ SPELL_REQUESTS = (
     "/spell/Special:Random",
     "/spell/con",
 )
-# The folders lilbee saves them in: spaces and letters read as written, each a legal Windows name.
+# The readable names lilbee saves them under: letters read as written, each a legal Windows name.
 SPELL_FOLDERS = (
     "spell/naïve",
-    "spell/raw space",
+    "spell/raw-space",
     "spell/café",
     "spell/back/slash",
-    "spell/naïve%2Fs",
+    "spell/naïve-s",
     "spell/naïve/s",
-    "spell/a%01b",
-    "spell/e%1B]0",
-    "spell/tail%20/x",
-    "spell/Special%3ARandom",
-    "spell/%63on",
+    "spell/a-b",
+    "spell/e-0",
+    "spell/tail/x",
+    "spell/Special-Random",
+    "spell/_con",
 )
 # Pairs of links a server answers with two pages: a re-crawl keeps each pair as two pages.
-BACKSLASH_PAIR = ("/pair/b\\s", "/pair/b/s")
 PAIR_LINKS = (
-    BACKSLASH_PAIR,
     ("/pair/ca^ret", "/pair/ca%5Eret"),
     ("/pair/pi|pe", "/pair/pi%7Cpe"),
     ("/pair/a+b", "/pair/a%20b"),
     ("/pair/e%2Fs", "/pair/e/s"),
-    ("/pair/d/%2e%2e/up", "/pair/up"),
+    ("/pair/Case", "/pair/case"),
 )
 # Two listings that link one page twice, raw and encoded, in opposite orders.
 ORDER_LISTINGS = {
@@ -593,7 +592,7 @@ class TestCrawlAndSave:
         """``/wiki/Special:`` is a default pattern that is not a regex anchor or digit class."""
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=0)
         saved = {p.relative_to(cfg.documents_dir).as_posix() for p in paths}
-        assert any(name.endswith("wiki/Home/index.md") for name in saved), saved
+        assert f"_web/{save.url_to_filename(site.url('/wiki/Home'))}" in saved, saved
         assert not any("Special" in name for name in saved), saved
 
     async def test_an_inline_image_is_saved_as_its_alt_text_without_its_encoded_data(self, site):
@@ -795,8 +794,8 @@ def _assert_saved_in_readable_folders(site: _Site) -> None:
     assert set(meta) == {site.url("/spell/"), *stored}
     web = cfg.documents_dir / "_web"
     files = [web / meta[url].file for url in stored]
-    folders = [file.parent.relative_to(web).as_posix().split("/", 1)[1] for file in files]
-    assert folders == list(SPELL_FOLDERS)
+    readable = [file.parent.relative_to(web) / page_stem(file.name) for file in files]
+    assert [name.as_posix().split("/", 1)[1] for name in readable] == list(SPELL_FOLDERS)
     assert [file for file in files if not file.is_file()] == []
 
 
@@ -813,27 +812,24 @@ class TestStoredSpellingOfAnAddress:
         assert meta[stored].content_hash != "stale"
         assert len(list((cfg.documents_dir / "_web").rglob("*.md"))) == len(meta)
 
-    async def test_a_page_stored_under_two_equivalent_addresses_refreshes_both(self, site):
+    async def test_a_page_stored_under_two_equivalent_addresses_keeps_one_entry(self, site):
         stored, as_written = site.url(EQUIVALENT_STORED), site.url(EQUIVALENT_LINK)
         other = site.url("/elsewhere/page")
         plain_copy, escaped_copy, other_copy = _library_with(stored, as_written, other)
         assert plain_copy == escaped_copy
         await crawl_and_save(site.url("/same/"), depth=1, max_pages=0)
-        for copy in (plain_copy, escaped_copy):
-            assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in copy.read_text(encoding="utf-8")
+        assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in plain_copy.read_text(encoding="utf-8")
         assert other_copy.read_text(encoding="utf-8") == f"{STALE_TEXT} of {other}"
         meta = save.load_crawl_metadata()
-        assert meta[stored].content_hash == meta[as_written].content_hash != "stale"
+        assert set(meta) == {site.url("/same/"), stored, other}
+        assert meta[stored].content_hash != "stale"
         assert meta[other].content_hash == "stale"
 
-    @posix_only
     async def test_two_stored_pages_stay_two_pages_after_an_http_recrawl(self, site):
         library = _pair_library(site)
         await crawl_and_save(site.url("/pair/"), depth=1, max_pages=0)
         _assert_each_pair_is_two_pages(library)
-        backslash_copy, _slash_copy = library[PAIR_LINKS.index(BACKSLASH_PAIR)]
-        assert backslash_copy.read_text(encoding="utf-8").startswith(STALE_TEXT)
-        assert len(save.load_crawl_metadata()) >= 1 + 2 * len(PAIR_LINKS)
+        assert len(save.load_crawl_metadata()) == 1 + 2 * len(PAIR_LINKS)
 
     async def test_a_new_page_is_saved_in_a_folder_that_reads_as_its_link(self, site):
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
@@ -850,9 +846,8 @@ class TestStoredSpellingOfAnAddress:
         }
         leaf = cfg.documents_dir / "_web" / meta[site.url("/twice/na%C3%AFve")].file
         assert f"{FRESH_TEXT} /twice/na%C3%AFve." in leaf.read_text(encoding="utf-8")
-        order_dir = leaf.parent.parent
-        saved = sorted(path.relative_to(order_dir).as_posix() for path in order_dir.rglob("*.md"))
-        assert saved == ["again/index.md", "index.md", "naïve/index.md"]
+        saved = sorted(page_stem(path.name) for path in leaf.parent.rglob("*.md"))
+        assert saved == ["again", "index", "naïve"]
 
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
