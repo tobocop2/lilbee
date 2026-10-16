@@ -9,16 +9,15 @@ import ipaddress
 import json
 import logging
 import re
-import string
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-from urllib.parse import parse_qsl, quote, quote_plus, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote_plus, urlsplit, urlunsplit
 
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import bootstrap, url_filter
+from lilbee.crawler import bootstrap, save, url_filter
 from lilbee.crawler.bootstrap import (
     BROWSER_FLAGS_REFUSED_MESSAGE,
     CHROMIUM_MISSING_MESSAGE,
@@ -100,9 +99,6 @@ _PREFIX_MARK = "*"
 _FORM_SAFE = "*"
 _TILDE = "~"
 _TILDE_ENCODED = "%7E"
-# Every printable ASCII character but the space: encoding a written address with these left as
-# they are escapes only its spaces and non-ASCII letters, as crawlberg does.
-_PRINTABLE_ASCII = string.digits + string.ascii_letters + string.punctuation
 _FRAGMENT_MARK = "#"
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
@@ -373,7 +369,7 @@ def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle
 def _written_address(url: str, original_url: str) -> str:
     """*original_url* without its fragment when *url* is its encoded form, else *url*."""
     written, _, _ = original_url.partition(_FRAGMENT_MARK)
-    return written if quote(written, safe=_PRINTABLE_ASCII) == url else url
+    return written if save.encoded_form(written) == url else url
 
 
 def _parse_event(raw: object) -> _Event | None:
