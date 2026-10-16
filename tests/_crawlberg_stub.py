@@ -26,11 +26,22 @@ def _link(url: str) -> Payload:
 
 
 def page(
-    url: str, markdown: str | None = "# Page", *, depth: int = 1, links: Iterable[str] = ()
+    url: str,
+    markdown: str | None = "# Page",
+    *,
+    depth: int = 1,
+    links: Iterable[str] = (),
+    original_url: str | None = None,
 ) -> Payload:
     """A ``page`` event payload; ``markdown=None`` is a page with no markdown output."""
     content = None if markdown is None else {"content": markdown}
-    result = {"url": url, "depth": depth, "markdown": content, "links": [_link(u) for u in links]}
+    result = {
+        "url": url,
+        "depth": depth,
+        "markdown": content,
+        "links": [_link(u) for u in links],
+        "original_url": url if original_url is None else original_url,
+    }
     return {"type": "page", "result": result}
 
 

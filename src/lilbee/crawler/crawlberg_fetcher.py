@@ -9,12 +9,13 @@ import ipaddress
 import json
 import logging
 import re
+import string
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any, TypeVar, cast
-from urllib.parse import parse_qsl, quote_plus, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, quote_plus, urlsplit, urlunsplit
 
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import bootstrap, url_filter
@@ -99,6 +100,10 @@ _PREFIX_MARK = "*"
 _FORM_SAFE = "*"
 _TILDE = "~"
 _TILDE_ENCODED = "%7E"
+# Every printable ASCII character but the space: encoding a written address with these left as
+# they are escapes only its spaces and non-ASCII letters, as crawlberg does.
+_PRINTABLE_ASCII = string.digits + string.ascii_letters + string.punctuation
+_FRAGMENT_MARK = "#"
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
@@ -365,6 +370,12 @@ def _create_engine(config: crawlberg.CrawlConfig) -> crawlberg.CrawlEngineHandle
         raise CrawlEngineRefusedError(_refusal_message(str(exc))) from exc
 
 
+def _written_address(url: str, original_url: str) -> str:
+    """*original_url* without its fragment when *url* is its encoded form, else *url*."""
+    written, _, _ = original_url.partition(_FRAGMENT_MARK)
+    return written if quote(written, safe=_PRINTABLE_ASCII) == url else url
+
+
 def _parse_event(raw: object) -> _Event | None:
     """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds."""
     payload: dict[str, Any] = json.loads(str(raw))
@@ -377,7 +388,7 @@ def _parse_event(raw: object) -> _Event | None:
     markdown: dict[str, Any] = result.get("markdown") or {}
     return _Event(
         kind,
-        result["url"],
+        _written_address(result["url"], result["original_url"]),
         depth=result.get("depth", _SEED_DEPTH),
         markdown=markdown.get("content") or "",
         links=tuple(link["url"] for link in result.get("links") or ()),
