@@ -241,14 +241,27 @@ class TestFormatSource:
         assert result.startswith("[notes/readme.md](file://")
         assert result.endswith(".md)")
 
-    def test_web_source_gets_a_readable_host_slug_label(self):
-        r = _make_result(source="_web/www.example.com/how-to-foo/index.md", content_type="text")
-        assert format_source(r).startswith("[example.com · how-to-foo](file://")
+    @pytest.mark.parametrize(
+        ("source", "label"),
+        [
+            ("_web/www.example.com/how-to-foo~0123456789abcdef.md", "example.com · how-to-foo"),
+            (
+                "_web/www.example.com/how-to-foo/index~0123456789abcdef.md",
+                "example.com · how-to-foo",
+            ),
+            ("_web/www.example.com/index~0123456789abcdef.md", "example.com"),
+            ("_web/example.com/guide.html.md", "example.com · guide.html"),
+        ],
+        ids=["page", "index-shows-folder", "host-root", "no-hash"],
+    )
+    def test_web_source_gets_a_readable_host_slug_label(self, source: str, label: str):
+        r = _make_result(source=source, content_type="text")
+        assert format_source(r).startswith(f"[{label}](file://")
 
     def test_degenerate_web_path_keeps_raw_source_label(self):
-        # Nothing left after dropping index.md: fall back to the stored path.
-        r = _make_result(source="_web/index.md", content_type="text")
-        assert format_source(r).startswith("[_web/index.md](file://")
+        # Nothing left after dropping the index page: fall back to the stored path.
+        r = _make_result(source="_web/index~0123456789abcdef.md", content_type="text")
+        assert format_source(r).startswith("[_web/index~0123456789abcdef.md](file://")
 
     def test_unresolvable_path_renders_plain_label_without_link(self, monkeypatch):
         # A source that can't resolve to a file URL degrades to bare text. The

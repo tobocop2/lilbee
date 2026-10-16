@@ -81,7 +81,7 @@ class TestPageAndDepthLimits:
         with crawl_sandbox(tmp_path) as root:
             cfg.crawl_max_depth = CONFIG_MAX_DEPTH
             run = run_add(root, crawl_site.url("/a/"), "--crawl")
-        assert set(run.pages) == {"a/index.md", "a/b/index.md"}
+        assert set(run.pages) == {"a/index", "a/b/index"}
 
     @pytest.mark.parametrize("setting", ["crawl_max_pages", "crawl_safety_max_pages"])
     def test_config_page_cap_applies_without_a_flag(
@@ -99,7 +99,7 @@ class TestRenderMode:
     ) -> None:
         with crawl_sandbox(tmp_path) as root:
             run = run_add(root, crawl_site.url("/js/"))
-        assert site_mod.SCRIPT_TEXT not in run.pages["js/index.md"]
+        assert site_mod.SCRIPT_TEXT not in run.pages["js/index"]
 
 
 class TestTimeout:
@@ -110,9 +110,9 @@ class TestTimeout:
             cfg.crawl_timeout = TIMEOUT_S
             run = run_add(root, crawl_site.url("/timeout/"), *ONE_LEVEL)
         assert set(run.pages) == {
-            "timeout/index.md",
-            "timeout/fast-a/index.md",
-            "timeout/fast-b/index.md",
+            "timeout/index",
+            "timeout/fast-a",
+            "timeout/fast-b",
         }
         assert run.report["crawled"] == len(run.pages)
 
