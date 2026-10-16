@@ -1348,6 +1348,18 @@ class TestConfigUpdateRoute:
         assert resp.json()["updated"] == ["crawl_browser_extra_args"]
         assert cfg.crawl_browser_extra_args == ["--headless=new"]
 
+    def test_crawl_user_agent_is_stored(self, client):
+        resp = client.patch("/api/config", json={"crawl_user_agent": "Probe/1.0"})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_user_agent"]
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+    def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
+        before = cfg.crawl_user_agent
+        resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})
+        assert (resp.status_code, cfg.crawl_user_agent) == (400, before)
+        assert "crawl_user_agent" in resp.text
+
     def test_crawl_browser_extra_args_accepts_launch_flags(self, client):
         resp = client.patch("/api/config", json={"crawl_browser_extra_args": ["--lang=fr"]})
         assert resp.status_code == 200

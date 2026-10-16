@@ -34,14 +34,8 @@ from tests._crawlberg_stub import (
 )
 
 SEED = "https://example.com/"
-HTTP_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-BROWSER_USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/116.0.0.0 Safari/537.36"
-)
+OVERRIDE = "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0 Safari/537.36"
 LOOPBACK = (ipaddress.ip_network("127.0.0.0/8"), ipaddress.ip_network("::1/128"))
-# The client hints that belong to the browser user agent above.
-BRAND_HINT = {"sec-ch-ua": '"Chromium";v="116", "Not_A Brand";v="8", "Google Chrome";v="116"'}
-SECURE_ORIGIN_HINTS = {"sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"Linux"'}
 
 
 @pytest.fixture(autouse=True)
@@ -131,68 +125,38 @@ class TestCrawlConfig:
             "chrome_args": [],
         }
 
-    async def test_http_mode_names_the_http_user_agent(self):
+    async def test_no_override_leaves_the_user_agent_to_crawlberg_in_http_mode(self):
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_http())
             await _http().fetch_single(SEED, timeout=5)
-        assert [config.kwargs["user_agent"] for config in stub.configs] == [HTTP_USER_AGENT] * 2
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
 
-    async def test_browser_mode_names_the_browser_user_agent(self, monkeypatch, tmp_path):
+    async def test_no_override_leaves_the_user_agent_to_chrome_in_browser_mode(
+        self, monkeypatch, tmp_path
+    ):
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
             await _recursive(_browser())
             await _browser().fetch_single(SEED, timeout=5)
-        assert [config.kwargs["user_agent"] for config in stub.configs] == [BROWSER_USER_AGENT] * 2
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [None, None]
+        assert not any("custom_headers" in config.kwargs for config in stub.configs)
 
-    @pytest.mark.parametrize(
-        "seed",
-        [
-            SEED,
-            "http://127.0.0.1:8000/docs",
-            "http://localhost:8000/",
-            "http://docs.localhost/",
-            "http://[::1]:8000/",
-        ],
-        ids=["https", "loopback-v4", "localhost", "localhost-subdomain", "loopback-v6"],
-    )
-    async def test_a_browser_crawl_of_a_secure_origin_sends_three_client_hints(
-        self, monkeypatch, tmp_path, seed: str
+    @pytest.mark.parametrize("mode", list(CrawlRenderMode), ids=str)
+    async def test_an_override_names_every_request_in_each_mode(
+        self, monkeypatch, tmp_path, mode: CrawlRenderMode
     ):
         shell = tmp_path / "chrome-headless-shell"
         monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
-        stub = StubCrawlberg([page(seed, depth=0)])
-        with stub.installed():
-            await _recursive(_browser(), seed=seed)
-            await _browser().fetch_single(seed, timeout=5)
-        sent = [config.kwargs["custom_headers"] for config in stub.configs]
-        assert sent == [{**BRAND_HINT, **SECURE_ORIGIN_HINTS}] * 2
-
-    @pytest.mark.parametrize(
-        "seed",
-        ["http://example.com/", "http://192.168.1.5/", "http://notlocalhost/"],
-        ids=["http", "private-address", "name-that-ends-like-localhost"],
-    )
-    async def test_a_browser_crawl_of_any_other_origin_sends_the_brand_hint_alone(
-        self, monkeypatch, tmp_path, seed: str
-    ):
-        shell = tmp_path / "chrome-headless-shell"
-        monkeypatch.setattr(fetcher_mod.bootstrap, "headless_shell_executable", lambda: shell)
-        stub = StubCrawlberg([page(seed, depth=0)])
-        with stub.installed():
-            await _recursive(_browser(), seed=seed)
-            await _browser().fetch_single(seed, timeout=5)
-        assert [config.kwargs["custom_headers"] for config in stub.configs] == [BRAND_HINT] * 2
-
-    async def test_http_mode_sends_no_client_hints(self):
         stub = StubCrawlberg([page(SEED, depth=0)])
         with stub.installed():
-            await _recursive(_http())
-            await _http().fetch_single(SEED, timeout=5)
-        assert [config.kwargs["custom_headers"] for config in stub.configs] == [{}, {}]
-        assert [config.kwargs["user_agent"] for config in stub.configs] == [HTTP_USER_AGENT] * 2
+            await _recursive(CrawlbergFetcher(render_mode=mode, user_agent=OVERRIDE))
+            await CrawlbergFetcher(render_mode=mode, user_agent=OVERRIDE).fetch_single(
+                SEED, timeout=5
+            )
+        assert [config.kwargs["user_agent"] for config in stub.configs] == [OVERRIDE] * 2
 
     async def test_whole_urls_are_matched_and_query_urls_kept_apart_and_stripped_of_tracking(self):
         stub = StubCrawlberg()

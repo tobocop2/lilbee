@@ -1314,6 +1314,21 @@ async def test_settings_browser_flags_editor_stores_a_flag_crawlberg_refuses():
         assert "(3 lines)" in title
 
 
+async def test_settings_crawl_user_agent_editor_saves_the_override():
+    """The crawl user agent editor stores the text it holds."""
+    from textual.widgets import Input
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        cfg.crawl_user_agent = ""
+        editor = app.screen.query_one("#ed-crawl_user_agent", Input)
+        editor.focus()
+        editor.value = "Probe/1.0"
+        await pilot.press("enter")
+        await pump_until(pilot, lambda: cfg.crawl_user_agent == "Probe/1.0")
+        assert cfg.crawl_user_agent == "Probe/1.0"
+
+
 async def test_settings_list_editor_restore_defaults():
     """Pressing Restore resets both cfg and the TextArea to the defaults."""
     from textual.widgets import Button

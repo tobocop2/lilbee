@@ -1901,6 +1901,35 @@ class TestCrawlBrowserExtraArgs:
             assert loaded.chat_model == "ollama/keep:latest"
 
 
+class TestCrawlUserAgent:
+    def test_default_is_no_override(self):
+        assert Config().crawl_user_agent == ""
+
+    def test_env_var_sets_the_override(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_USER_AGENT"] = "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_user_agent == "Mozilla/5.0 (X11; Linux x86_64) Chrome/120.0.0.0"
+
+    def test_config_toml_sets_the_override(self, tmp_path):
+        (tmp_path / "config.toml").write_text('crawl_user_agent = "Probe/1.0"\n', encoding="utf-8")
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_user_agent == "Probe/1.0"
+
+    @pytest.mark.parametrize(
+        ("value", "stored"), [("  Probe/1.0  ", "Probe/1.0"), ("   ", "")], ids=["padded", "blank"]
+    )
+    def test_surrounding_whitespace_is_dropped(self, value: str, stored: str):
+        assert Config(crawl_user_agent=value).crawl_user_agent == stored
+
+    @pytest.mark.parametrize("value", ["Probe\n1.0", "Probe\r1.0", "Probe\x001.0", "Probe\x7f"])
+    def test_a_control_character_is_refused_with_the_setting_named(self, value: str):
+        with pytest.raises(ValidationError, match="crawl_user_agent holds a control character"):
+            Config(crawl_user_agent=value)
+
+
 class TestPlainEnvSourceSkipsEmpty:
     def test_empty_chat_model_uses_default(self, tmp_path):
         env = clean_env(tmp_path)

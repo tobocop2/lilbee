@@ -790,6 +790,17 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Defaults trim shared-memory and GPU use."
         ),
     ),
+    "crawl_user_agent": SettingDef(
+        str,
+        nullable=False,
+        group=SettingGroup.CRAWLING,
+        help_text=(
+            "User agent of every crawl request, for a site that answers some clients "
+            "differently. Blank = no override: browser mode sends Chrome's own, "
+            "http mode sends crawlberg's. A Chrome user agent also sets the matching "
+            "client hints in browser mode."
+        ),
+    ),
     "crawl_max_pages": SettingDef(
         int,
         nullable=True,

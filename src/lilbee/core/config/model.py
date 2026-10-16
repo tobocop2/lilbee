@@ -56,6 +56,9 @@ _UNSET_PATH = Path()
 # (eng, en, chi_sim, jpn_vert). xberg rejects anything else before extracting.
 _TESSERACT_LANGUAGE_CODE = re.compile(r"[a-z]{2,3}(?:_[a-z]+)*")
 
+# A character no HTTP header value may hold.
+_CONTROL_CHARACTER = re.compile(r"[\x00-\x1f\x7f]")
+
 # Model roles that can be off. An empty LILBEE_<FIELD> or config.toml value
 # clears one of these; on every other field an empty value counts as unset.
 CLEARABLE_MODEL_FIELDS = frozenset({"vision_model", "reranker_model"})
@@ -679,6 +682,10 @@ class Config(BaseSettings):
         default_factory=lambda: ["--disable-dev-shm-usage", "--disable-gpu"],
         writable=True,
     )
+
+    # The user agent of every crawl request. Blank = no override: a browser crawl
+    # sends Chrome's own and an HTTP crawl sends crawlberg's.
+    crawl_user_agent: str = ConfigField(default="", writable=True)
 
     # Optional global ceilings. None = no ceiling.
     crawl_max_depth: int | None = ConfigField(default=None, ge=0, writable=True)
@@ -1326,6 +1333,15 @@ class Config(BaseSettings):
         if isinstance(v, str):
             return [a.strip() for a in v.splitlines() if a.strip()]
         return v
+
+    @field_validator("crawl_user_agent", mode="after")
+    @classmethod
+    def _validate_crawl_user_agent(cls, v: str) -> str:
+        """The user agent without surrounding whitespace; a control character is refused."""
+        user_agent = v.strip()
+        if _CONTROL_CHARACTER.search(user_agent):
+            raise ValueError("crawl_user_agent holds a control character")
+        return user_agent
 
     @field_validator("crawl_exclude_patterns", mode="before")
     @classmethod

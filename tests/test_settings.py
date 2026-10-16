@@ -5,7 +5,7 @@ from unittest import mock
 
 import pytest
 
-from lilbee.app.settings_map import SETTINGS_MAP, get_default
+from lilbee.app.settings_map import SETTINGS_MAP, SettingGroup, get_default
 from lilbee.config_meta import WRITABLE_CONFIG_FIELDS
 from lilbee.core import settings
 
@@ -614,6 +614,27 @@ class TestMemoryTuningSettingsMap:
         appset.cfg.crawl_browser_extra_args = []
         settings.overlay_persisted_settings(tmp_path)
         assert appset.cfg.crawl_browser_extra_args == ["--headless=new", "gpu"]
+
+    def test_the_user_agent_is_a_writable_crawl_setting_with_no_override_by_default(self):
+        user_agent = SETTINGS_MAP["crawl_user_agent"]
+        assert user_agent.writable is True
+        assert user_agent.type is str
+        assert user_agent.group is SettingGroup.CRAWLING
+        assert "crawl_user_agent" in WRITABLE_CONFIG_FIELDS
+        assert get_default("crawl_user_agent") == ""
+
+    def test_the_user_agent_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_user_agent", "")
+        appset.apply_settings_update({"crawl_user_agent": "Probe/1.0"})
+        assert settings.load(tmp_path)["crawl_user_agent"] == "Probe/1.0"
+
+        appset.cfg.crawl_user_agent = ""
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_user_agent == "Probe/1.0"
 
     def test_browser_launch_flags_are_a_writable_list_setting(self):
         extra = SETTINGS_MAP["crawl_browser_extra_args"]
