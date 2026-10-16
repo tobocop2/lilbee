@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from lilbee.app.services import set_services
-from lilbee.core.config import cfg
+from lilbee.core.config import Config, cfg
 from lilbee.crawler import migrate
 from lilbee.crawler.migrate import move_saved_pages
 from lilbee.crawler.save import (
@@ -106,10 +106,12 @@ def test_a_crawl_that_moved_the_pages_first_leaves_this_one_nothing_to_move(
     save_crawl_metadata({_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
     held = migrate.library_held
 
-    def held_after_another_crawl(*args: object) -> AbstractContextManager[object]:
+    def held_after_another_crawl(
+        config: Config, running: str, wait: float
+    ) -> AbstractContextManager[object]:
         monkeypatch.setattr("lilbee.crawler.migrate.library_held", held)
         move_saved_pages()
-        return held(*args)  # type: ignore[arg-type]
+        return held(config, running, wait)
 
     monkeypatch.setattr("lilbee.crawler.migrate.library_held", held_after_another_crawl)
     name = url_to_filename(_PAGE)
