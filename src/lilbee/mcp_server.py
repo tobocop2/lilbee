@@ -65,6 +65,8 @@ from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
+    DOCUMENTS_PAGE_DEFAULT,
+    DOCUMENTS_PAGE_MAX,
     EmbeddingModelMismatchError,
     MemoryKind,
     MemorySource,
@@ -606,14 +608,21 @@ async def remove(names: list[str]) -> dict[str, Any]:
 
 
 @_tool
-def list_documents() -> dict[str, Any]:
-    """List all indexed documents with their chunk counts."""
-    sources = get_services().store.get_sources()
+def list_documents(limit: int = DOCUMENTS_PAGE_DEFAULT, offset: int = 0) -> dict[str, Any]:
+    """List indexed documents with chunk counts, paged (limit 1-1000)."""
+    if not 1 <= limit <= DOCUMENTS_PAGE_MAX:
+        return _error(f"limit must be from 1 to {DOCUMENTS_PAGE_MAX}")
+    if offset < 0:
+        return _error("offset must be 0 or more")
+    store = get_services().store
+    page = store.get_sources(limit=limit, offset=offset)
+    total = store.count_sources()
     return {
         "documents": [
-            {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in sources
+            {"filename": s["filename"], "chunk_count": s.get("chunk_count", 0)} for s in page
         ],
-        "total": len(sources),
+        "total": total,
+        "has_more": len(page) > 0 and (offset + len(page)) < total,
     }
 
 
