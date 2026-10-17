@@ -221,7 +221,6 @@ class TestCrawlConfig:
             "partner",
             "srsltid",
             "replytocom",
-            "ref",
         ]
 
     async def test_pacing_and_retries_map_to_crawlberg(self):
@@ -822,7 +821,6 @@ TRACKED_ADDRESSES = [
         "partner",
         "srsltid",
         "replytocom",
-        "ref",
     )
 ]
 
@@ -836,13 +834,22 @@ class TestQueuedUrl:
         "link",
         [
             "https://x.dev/p?share=twitter",
+            "https://x.dev/p?ref=main",
             "https://x.dev/p?reference=1",
             "https://x.dev/p?traffic=1",
             "https://x.dev/p?UTM_SOURCE=1",
             "https://x.dev/p?id=1&lang=en",
             "https://x.dev/p",
         ],
-        ids=["share", "longer-name", "name-that-starts-like-trk", "other-case", "plain", "bare"],
+        ids=[
+            "share",
+            "ref",
+            "longer-name",
+            "name-that-starts-like-trk",
+            "other-case",
+            "plain",
+            "bare",
+        ],
     )
     def test_any_other_address_is_kept_as_written(self, link: str):
         assert _queued_url(link) == link
