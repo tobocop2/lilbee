@@ -894,7 +894,7 @@ class Store:
         upgrade = self._upgrade
         if upgrade is None:
             return []
-        remedy = "Requests that need the library wait until it finishes."
+        remedy = "Server requests answer 503 after 10 s. Try again when it ends."
         return [
             HealthWarning(code=WarningCode.LIBRARY_UPGRADING, message=upgrade.text, remedy=remedy)
         ]
@@ -1044,10 +1044,15 @@ class Store:
             return
         threading.Thread(target=self._open_then_release, name="library-open", daemon=True).start()
 
-    def wait_for_open(self) -> None:
-        """Block while another thread opens the library."""
-        with self._open_lock:
-            pass
+    def wait_for_open(self, timeout: float) -> bool:
+        """Wait up to *timeout* seconds for another thread to open the library.
+
+        Return False when the open is still running at the deadline.
+        """
+        if not self._open_lock.acquire(timeout=timeout):
+            return False
+        self._open_lock.release()
+        return True
 
     def _open_then_release(self) -> None:
         """Open the library, then free the open lock ``open_in_background`` took."""

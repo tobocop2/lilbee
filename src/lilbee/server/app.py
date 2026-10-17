@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import anyio.to_thread
 from litestar import Litestar, MediaType, Request, Response
@@ -17,11 +17,14 @@ from litestar.middleware import ASGIMiddleware
 from litestar.middleware.base import DefineMiddleware
 from litestar.openapi import OpenAPIConfig
 
+from lilbee.app.endpoints import MCP_PATH
 from lilbee.app.services import get_services, peek_services
 from lilbee.app.version import get_version
 from lilbee.core.config import cfg
+from lilbee.server.anthropic_api.errors import anthropic_error_body, anthropic_error_type
 from lilbee.server.anthropic_api.routes import anthropic_router
 from lilbee.server.auth import AuthMiddleware, session_manager
+from lilbee.server.chat_completions_api.errors import CompletionsErrorCode, completions_error_body
 from lilbee.server.chat_completions_api.routes import completions_router
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.mcp_mount import build_mcp_mount
@@ -218,18 +221,55 @@ def _log_embedding_model_state(embedder: Embedder) -> None:
     # Unconfigured: validate_model already logged the one INFO line.
 
 
-class _LibraryOpenWait(ASGIMiddleware):
-    """Hold a request until the library is open, off the loop, so an upgrade never blocks it.
+_UPGRADE_WAIT_SECONDS = 10.0
+_UPGRADE_RETRY_AFTER_SECONDS = 10
+_UPGRADING_MESSAGE = "lilbee is upgrading the library. Try again in a few seconds."
 
-    Health, the warm stream and shutdown pass at once: health reports the upgrade.
+
+def _upgrading_response(path: str) -> Response:
+    """The 503 for a request that waited out the limit, in the error shape of its API."""
+    code = CompletionsErrorCode.INTERNAL_ERROR
+    body: dict[str, Any]
+    if path.startswith("/v1/messages"):
+        body = anthropic_error_body(anthropic_error_type(code), _UPGRADING_MESSAGE)
+    elif path.startswith("/v1/"):
+        body = completions_error_body(code, _UPGRADING_MESSAGE)
+    else:
+        body = {"status_code": 503, "detail": _UPGRADING_MESSAGE}
+    return Response(
+        body,
+        status_code=503,
+        headers={"Retry-After": str(_UPGRADE_RETRY_AFTER_SECONDS)},
+        media_type=MediaType.JSON,
+    )
+
+
+class _LibraryOpenWait(ASGIMiddleware):
+    """Hold a request up to 10 s for the library to open, then answer 503 with Retry-After.
+
+    The wait runs off the loop, so an upgrade never blocks it. The limit sits under the
+    15 s timeout of the Obsidian plugin, so the plugin shows the reason. Health, the warm
+    stream and shutdown pass at once: health reports the upgrade. MCP tool calls wait
+    for the library where they use it.
     """
 
-    exclude_path_pattern = ("^/api/health$", "^/api/warm/stream$", "^/api/shutdown$")
+    exclude_path_pattern = (
+        "^/api/health$",
+        "^/api/warm/stream$",
+        "^/api/shutdown$",
+        f"^{MCP_PATH}(/.*)?$",
+    )
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
         store = get_services().store
-        if not store.is_open:
-            await asyncio.to_thread(store.wait_for_open)
+        if not store.is_open and not await asyncio.to_thread(
+            store.wait_for_open, _UPGRADE_WAIT_SECONDS
+        ):
+            response = _upgrading_response(scope["path"])
+            await response.to_asgi_response(None, Request(scope, receive, send))(
+                scope, receive, send
+            )
+            return
         await next_app(scope, receive, send)
 
 

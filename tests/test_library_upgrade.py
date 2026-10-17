@@ -149,7 +149,9 @@ class TestStoreReportsTheUpgrade:
         assert [(w.code, w.message) for w in warnings] == [
             (WarningCode.LIBRARY_UPGRADING, f"{_UPGRADING}: sources 1/6, 2 rows...")
         ]
-        assert warnings[0].remedy == "Requests that need the library wait until it finishes."
+        assert (
+            warnings[0].remedy == "Server requests answer 503 after 10 s. Try again when it ends."
+        )
         assert is_open is False
 
     def test_the_health_of_a_library_not_open_opens_nothing(self, library):
@@ -257,10 +259,22 @@ class TestOthersWaitForTheUpgrade:
             store.open_in_background()
             assert store.is_open is False
             threading.Timer(0.3, release.set).start()
-            store.wait_for_open()
+            assert store.wait_for_open(30) is True
 
         assert store.is_open is True
         assert events[-1].phase is UpgradePhase.DONE
+
+    def test_a_wait_that_outlasts_the_open_reports_it_is_still_running(self, library):
+        store = Store(library)
+        release = threading.Event()
+
+        with _upgrade_held(release):
+            store.open_in_background()
+            assert store.wait_for_open(0.2) is False
+            release.set()
+            assert store.wait_for_open(30) is True
+
+        assert store.is_open is True
 
     def test_a_background_open_while_one_runs_leaves_it_to_finish(self, library):
         store = Store(library)
@@ -274,7 +288,7 @@ class TestOthersWaitForTheUpgrade:
             store.open_in_background()
             returned_after = time.monotonic() - started
             release.set()
-            store.wait_for_open()
+            assert store.wait_for_open(30) is True
             opener.join(10)
 
         assert returned_after < _SHORT_LOCK_S
@@ -287,7 +301,7 @@ class TestOthersWaitForTheUpgrade:
 
         with mock.patch.object(core_mod, "_migrate_sources_table", side_effect=OSError("disk")):
             store.open_in_background()
-            store.wait_for_open()
+            assert store.wait_for_open(30) is True
 
         assert store.is_open is False
         assert [type(f.exc_value) for f in failures] == [OSError]
@@ -553,6 +567,71 @@ class TestServerShowsTheUpgrade:
 
         assert reached[0] > 3
         assert store.is_open is True
+
+    async def test_a_request_past_the_limit_answers_503_with_retry_after(self):
+        from lilbee.server import app as app_mod
+        from tests.conftest import make_mock_services
+
+        store = mock.MagicMock(is_open=False)
+        store.wait_for_open.return_value = False
+        services_mod.set_services(make_mock_services(store=store))
+        sent: list[dict] = []
+        reached: list[int] = []
+
+        async def _send(message):
+            sent.append(message)
+
+        async def _next_app(scope, receive, send):
+            reached.append(1)
+
+        scope = {"type": "http", "path": "/api/status", "headers": []}
+        await app_mod._LibraryOpenWait().handle(scope, None, _send, _next_app)
+
+        store.wait_for_open.assert_called_once_with(10.0)
+        assert reached == []
+        start = sent[0]
+        assert start["status"] == 503
+        assert dict(start["headers"])[b"retry-after"] == b"10"
+        assert b"upgrading the library" in sent[1]["body"]
+
+    async def test_a_request_past_the_limit_is_answered_in_the_error_shape_of_its_api(
+        self, library, monkeypatch
+    ):
+        from lilbee.server import app as app_mod
+        from lilbee.server.app import create_app
+        from tests.conftest import make_mock_services
+
+        monkeypatch.setattr(app_mod, "_UPGRADE_WAIT_SECONDS", 0.2)
+        store = Store(library)
+        services_mod.set_services(make_mock_services(store=store))
+        release = threading.Event()
+        with _upgrade_held(release):
+            async with AsyncTestClient(create_app()) as client:
+                for _ in range(200):
+                    if (await client.get("/api/health", headers=_headers())).json()["warnings"]:
+                        break
+                    await asyncio.sleep(0.05)
+                plugin = await client.get("/api/status", headers=_headers())
+                openai = await client.get("/v1/models", headers=_headers())
+                anthropic = await client.post(
+                    "/v1/messages/count_tokens",
+                    json={"model": "m", "messages": []},
+                    headers=_headers(),
+                )
+                health = await client.get("/api/health", headers=_headers())
+                release.set()
+                store.wait_for_open(30)
+                after = await client.get("/api/status", headers=_headers())
+
+        for response in (plugin, openai, anthropic):
+            assert response.status_code == 503
+            assert response.headers["retry-after"] == "10"
+        assert "upgrading the library" in plugin.json()["detail"]
+        assert "upgrading the library" in openai.json()["error"]["message"]
+        assert anthropic.json()["type"] == "error"
+        assert "upgrading the library" in anthropic.json()["error"]["message"]
+        assert health.status_code == 200
+        assert after.status_code == 200
 
     async def test_an_open_library_passes_a_request_straight_on(self):
         from lilbee.server.app import _LibraryOpenWait
