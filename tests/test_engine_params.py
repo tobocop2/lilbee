@@ -215,7 +215,7 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == (18 / 32, 18 / 32)
+        assert ep.chat_kv_elem_bytes() == 18 / 32
 
     def test_q8_0_costs_more_than_a_byte(self, monkeypatch) -> None:
         # 34-byte block per 32 elements: rounding down to 1 over-grants.
@@ -223,17 +223,16 @@ class TestChatKvElemBytes:
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
         monkeypatch.setattr(cfg, "flash_attention", True)
-        assert ep.chat_kv_elem_bytes() == (34 / 32, 34 / 32)
+        assert ep.chat_kv_elem_bytes() == 34 / 32
 
-    def test_v_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
-        """The launch leaves V at f16 without flash attention (llama.cpp refuses
-        a quantized V cache there); budgeting V at the quantized cost would
-        grant a window the card cannot hold."""
+    def test_kv_cache_charged_f16_when_flash_attention_is_off(self, monkeypatch) -> None:
+        """The launch sends f16 for K and V without flash attention; budgeting
+        the quantized cost would grant a window the card cannot hold."""
         from lilbee.core.config.enums import KvCacheType
 
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q4_0)
         monkeypatch.setattr(cfg, "flash_attention", False)
-        assert ep.chat_kv_elem_bytes() == (18 / 32, 2.0)
+        assert ep.chat_kv_elem_bytes() == 2.0
 
 
 class TestChatCtxCeiling:

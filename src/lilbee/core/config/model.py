@@ -835,7 +835,8 @@ class Config(BaseSettings):
 
     # KV cache element type. q8_0 (default) halves cache memory vs f16
     # with no measurable quality loss for chat; q4_0 quarters it with a
-    # small quality cost. Both require flash attention to be enabled.
+    # small quality cost. Both apply to K and V together, and only where
+    # flash attention is on; elsewhere the cache is f16.
     kv_cache_type: KvCacheType = ConfigField(default=KvCacheType.Q8_0, writable=True)
 
     # Number of model layers to offload to GPU. None (default) = all

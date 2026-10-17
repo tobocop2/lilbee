@@ -462,11 +462,10 @@ class TestProjectorCorrection:
         assert est.per_device_vram == (3_000 + 4096, 3_000)
 
 
-def test_the_v_cache_type_reaches_the_estimator_command_line(monkeypatch, tmp_path) -> None:
-    """K and V differ wherever flash attention is left to the engine.
-
-    An estimate that reuses K for V sizes a cache the server will not allocate.
-    """
+def test_one_kv_cache_type_reaches_k_and_v_on_the_estimator_command_line(
+    monkeypatch, tmp_path
+) -> None:
+    """The estimate sizes the cache the launch asks for: one type for K and V."""
     from lilbee.core.config.enums import KvCacheType
     from lilbee.providers.fleet import vram as vram_mod
 
@@ -490,9 +489,8 @@ def test_the_v_cache_type_reaches_the_estimator_command_line(monkeypatch, tmp_pa
         gpu_layers=-1,
         flash_attn=False,
         kv_cache_type=KvCacheType.Q8_0,
-        kv_cache_type_v=KvCacheType.F16,
     )
 
     (argv,) = captured
     assert argv[argv.index("--cache-type-k") + 1] == "q8_0"
-    assert argv[argv.index("--cache-type-v") + 1] == "f16"
+    assert argv[argv.index("--cache-type-v") + 1] == "q8_0"

@@ -447,7 +447,6 @@ def _fit_slots(
                 gpu_layers=_role_gpu_layers(role),
                 flash_attn=_role_flash(role, rerank_mode),
                 kv_cache_type=_role_kv_cache_type(role),
-                kv_cache_type_v=_role_kv_cache_type_v(role),
                 mmproj_path=mmproj_path,
                 expert_offload=_role_expert_offload(model_path),
             )
@@ -487,7 +486,6 @@ def fit_chat_ctx(
             gpu_layers=gpu_layers,
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             unified=plan_sizing_is_unified(),
             ctx_ceiling=ctx_ceiling,
             expert_offload=_role_expert_offload(model_path),
@@ -781,10 +779,18 @@ def _role_flash(role: WorkerRole, rerank_mode: RerankMode | None = None) -> bool
 
 
 def _role_kv_cache_type(role: WorkerRole) -> KvCacheType:
-    """Chat honors ``cfg.kv_cache_type``; embed/rerank/vision run f16 KV."""
+    """The one KV cache type *role* launches with, for both K and V.
+
+    Chat carries ``cfg.kv_cache_type`` only under flash attention ``on``; every
+    other role, and chat under ``auto`` or ``off``, is f16. llama-server refuses
+    K != V on MLA models, forces flash attention on for a quantized V under
+    ``auto``, and refuses a quantized V under ``off``.
+    """
     from lilbee.core.config import cfg
 
-    return cfg.kv_cache_type if role is WorkerRole.CHAT else KvCacheType.F16
+    if role is WorkerRole.CHAT and flash_attn_flag() == _FLASH_ON:
+        return cfg.kv_cache_type
+    return KvCacheType.F16
 
 
 def _replica_count(role: WorkerRole, device_count: int) -> int:
@@ -792,29 +798,10 @@ def _replica_count(role: WorkerRole, device_count: int) -> int:
     return resolve_replica_count(role, device_count)
 
 
-def _role_kv_cache_type_v(role: WorkerRole) -> KvCacheType:
-    """The V cache type for *role*: the configured one only when flash attention is on.
-
-    llama.cpp refuses a quantized V cache without flash attention ("V cache
-    quantization requires flash_attn") and the server never starts, while a
-    quantized K cache needs nothing. So V follows the setting only where flash
-    attention is certain, and is f16 under ``auto`` or ``off``. That costs memory
-    rather than a launch, and the estimate moves with it.
-    """
-    from lilbee.core.config.enums import KvCacheType
-
-    configured = _role_kv_cache_type(role)
-    return configured if flash_attn_flag() == _FLASH_ON else KvCacheType.F16
-
-
-def chat_cache_type_flags() -> tuple[str | None, str | None]:
-    """``(--cache-type-k, --cache-type-v)`` for chat; ``None`` leaves the f16 default."""
-    from lilbee.core.config.enums import KvCacheType
-
-    def flag(kind: KvCacheType) -> str | None:
-        return None if kind is KvCacheType.F16 else kind.value
-
-    return flag(_role_kv_cache_type(WorkerRole.CHAT)), flag(_role_kv_cache_type_v(WorkerRole.CHAT))
+def chat_cache_type_flag() -> str | None:
+    """``--cache-type-k`` and ``--cache-type-v`` for chat; ``None`` leaves the f16 default."""
+    kind = _role_kv_cache_type(WorkerRole.CHAT)
+    return None if kind is KvCacheType.F16 else kind.value
 
 
 def _vision_mmproj(model_ref: str) -> Path | None:
@@ -872,7 +859,6 @@ def _estimate_role(
         gpu_layers=_role_gpu_layers(role),
         flash_attn=_role_flash(role, rerank_mode),
         kv_cache_type=_role_kv_cache_type(role),
-        kv_cache_type_v=_role_kv_cache_type_v(role),
         mmproj_path=mmproj,
         batch_size=_pooled_batch_size(role, rerank_mode, ctx),
         expert_offload=_role_expert_offload(path),
@@ -974,7 +960,6 @@ def _peak_estimator(model_refs: dict[WorkerRole, str]) -> PeakEstimator:
             gpu_layers=_role_gpu_layers(role),
             flash_attn=_role_flash(role, rerank_mode),
             kv_cache_type=_role_kv_cache_type(role),
-            kv_cache_type_v=_role_kv_cache_type_v(role),
             mmproj_path=mmproj,
             tensor_split=ratio,
             batch_size=_pooled_batch_size(role, rerank_mode, ctx),
@@ -1012,7 +997,6 @@ def _chat_split_ctx_objective(
             gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
             flash_attn=_role_flash(WorkerRole.CHAT),
             kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
             ctx_ceiling=target,
             expert_offload=_role_expert_offload(path),
         )
@@ -1251,7 +1235,7 @@ def _analytic_footprint_floor(
         model_cache.kv_bytes_per_token(
             meta,
             KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
-            KV_CACHE_TYPE_BYTES[_role_kv_cache_type_v(role)],
+            KV_CACHE_TYPE_BYTES[_role_kv_cache_type(role)],
         )
         * ctx
         * max(slots, 1)
@@ -1724,7 +1708,6 @@ def _launch_for(
                 gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
                 flash_attn=_role_flash(WorkerRole.CHAT),
                 kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-                kv_cache_type_v=_role_kv_cache_type_v(WorkerRole.CHAT),
                 ctx_ceiling=_placement_estimate_ctx(WorkerRole.CHAT, model_path, meta),
                 expert_offload=_role_expert_offload(model_path),
             )
@@ -1768,7 +1751,6 @@ def _launch_for(
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
-    cache_type_k, cache_type_v = chat_cache_type_flags() if is_chat else (None, None)
     argv = build_server_argv(
         binary=binary,
         spec=spec,
@@ -1780,8 +1762,7 @@ def _launch_for(
         tensor_split=plan.tensor_split,
         mmproj=mmproj,
         flash_attn=flash_attn_flag() if _role_launches_with_flash(plan.role, rerank_mode) else None,
-        cache_type_k=cache_type_k,
-        cache_type_v=cache_type_v,
+        cache_type=chat_cache_type_flag() if is_chat else None,
         batch_size=_pooled_batch_size(plan.role, rerank_mode, ctx),
         no_mmap=is_chat and _chat_no_mmap(weights_bytes, on_network_fs=chat_on_network_fs),
         cpu_moe=expert_offload_all(meta),

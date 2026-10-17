@@ -374,8 +374,9 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.GENERATION,
         help_text=(
-            "KV cache element type. q8_0 / q4_0 halve or quarter cache memory "
-            "but require flash attention to be enabled."
+            "KV cache element type for both K and V. q8_0 / q4_0 halve or quarter "
+            "cache memory and apply only where flash attention is on; elsewhere the "
+            "cache is f16."
         ),
     ),
     "n_gpu_layers": SettingDef(

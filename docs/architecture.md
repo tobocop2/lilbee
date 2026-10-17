@@ -893,10 +893,13 @@ touching the running fleet.
   replica is. Replicas are ingest-only and reclaimed after ingest completes.
 - **Loader flags** (`adapters.build_server_argv`): each server's flags derive from
   cfg and the model's GGUF metadata for that role and config. Chat carries
-  `--jinja`, `--flash-attn` (on unless `flash_attention` is disabled) and
-  `--cache-type-k/-v` from `kv_cache_type` -- but a quantized KV type needs flash
-  attention, so with it disabled the launch falls back to f16 (and the estimate
-  sizes against f16 to match). A mixture-of-experts model also offloads its expert
+  `--jinja`, `--flash-attn` (on, or `auto` on Vulkan and SYCL, unless
+  `flash_attention` is disabled) and
+  `--cache-type-k/-v` from `kv_cache_type`. K and V always carry the same type,
+  because llama-server refuses different ones on MLA models. A quantized type is
+  sent only with flash attention `on`: under `auto` it would force flash attention
+  on, and under `off` the server refuses it, so both fall back to f16 there (and
+  the estimate sizes against f16 to match). A mixture-of-experts model also offloads its expert
   weights to system memory when `cpu_moe`/`n_cpu_moe` is set (`--cpu-moe`/
   `--n-cpu-moe`, gated on the GGUF declaring routed experts), and the VRAM estimate
   charges the same tensors to the host so the plan matches the launch. Chat also

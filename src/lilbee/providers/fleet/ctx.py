@@ -58,7 +58,6 @@ def fit_single_ctx(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: KvCacheType,
-    kv_cache_type_v: KvCacheType,
     unified: bool,
     ctx_ceiling: int,
     expert_offload: tuple[str, ...],
@@ -88,7 +87,6 @@ def fit_single_ctx(
             gpu_layers=gpu_layers,
             flash_attn=flash_attn,
             kv_cache_type=kv_cache_type,
-            kv_cache_type_v=kv_cache_type_v,
             expert_offload=expert_offload,
         )
         return est.footprint(unified=unified) <= available_bytes
@@ -106,7 +104,6 @@ def fit_split_ctx(
     gpu_layers: int,
     flash_attn: bool,
     kv_cache_type: KvCacheType,
-    kv_cache_type_v: KvCacheType,
     ctx_ceiling: int,
     expert_offload: tuple[str, ...],
 ) -> int:
@@ -155,7 +152,6 @@ def fit_split_ctx(
             gpu_layers=gpu_layers,
             flash_attn=flash_attn,
             kv_cache_type=kv_cache_type,
-            kv_cache_type_v=kv_cache_type_v,
             tensor_split=ratio,
             expert_offload=expert_offload,
         )

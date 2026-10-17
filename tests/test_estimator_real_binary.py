@@ -120,7 +120,6 @@ def test_the_single_device_fit_lands_on_the_last_window_that_fits(parser, tiny_g
         gpu_layers=-1,
         flash_attn=False,
         kv_cache_type=KvCacheType.F16,
-        kv_cache_type_v=KvCacheType.F16,
         unified=False,
         ctx_ceiling=4096,
         expert_offload=(),

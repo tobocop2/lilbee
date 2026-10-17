@@ -179,17 +179,16 @@ def expert_offload_patterns(*, cpu_moe: bool, n_cpu_moe: int | None) -> tuple[st
     return (EXPERT_TENSOR_REGEX,) if cpu_moe else ()
 
 
-def _attention_args(
-    flash_attn: str | None, cache_type_k: str | None, cache_type_v: str | None
-) -> list[str]:
-    """Flash-attention and KV cache flags; each stays absent to keep the engine default."""
+def _attention_args(flash_attn: str | None, cache_type: str | None) -> list[str]:
+    """Flash-attention and KV cache flags; each stays absent to keep the engine default.
+
+    One *cache_type* goes to both K and V: llama-server refuses K != V on MLA models.
+    """
     args: list[str] = []
     if flash_attn is not None:
         args += ["--flash-attn", flash_attn]
-    if cache_type_k is not None:
-        args += ["--cache-type-k", cache_type_k]
-    if cache_type_v is not None:
-        args += ["--cache-type-v", cache_type_v]
+    if cache_type is not None:
+        args += ["--cache-type-k", cache_type, "--cache-type-v", cache_type]
     return args
 
 
@@ -247,8 +246,7 @@ def build_server_argv(
     tensor_split: tuple[int, ...] = (),
     mmproj: Path | None = None,
     flash_attn: str | None = None,
-    cache_type_k: str | None = None,
-    cache_type_v: str | None = None,
+    cache_type: str | None = None,
     batch_size: int | None = None,
     no_mmap: bool = False,
     cpu_moe: bool = False,
@@ -280,7 +278,7 @@ def build_server_argv(
     ]
     argv += _main_gpu_args(devices)
     argv += _thread_args()
-    argv += _attention_args(flash_attn, cache_type_k, cache_type_v)
+    argv += _attention_args(flash_attn, cache_type)
     if batch_size is not None:
         argv += [FLAG_BATCH_SIZE, str(batch_size), FLAG_UBATCH_SIZE, str(batch_size)]
     if mmproj is not None:  # vision: the CLIP/mtmd projector sidecar

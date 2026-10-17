@@ -188,24 +188,18 @@ def resolve_model_path(model: str, registry: ModelRegistry | None = None) -> Pat
     )
 
 
-def chat_kv_elem_bytes() -> tuple[float, float]:
-    """Per-element (K, V) byte costs of the KV cache a chat launch allocates.
+def chat_kv_elem_bytes() -> float:
+    """Per-element byte cost of the K and V cache a chat launch allocates.
 
-    Reads the same flags the launch passes
-    (:func:`lilbee.providers.fleet.planning.chat_cache_type_flags`): K carries
-    ``cfg.kv_cache_type``, while V carries it only when flash attention is
-    certain to be on, because llama.cpp refuses a quantized V cache without it
-    and the launch then leaves V at f16. Budgeting from the launch flags keeps
-    the granted window in step with the cache the engine actually allocates.
+    Reads the flag the launch passes for both K and V
+    (:func:`lilbee.providers.fleet.planning.chat_cache_type_flag`), so the
+    granted window stays in step with the cache the engine allocates.
     """
     # call-time import: planning imports this module at load
-    from lilbee.providers.fleet.planning import chat_cache_type_flags
+    from lilbee.providers.fleet.planning import chat_cache_type_flag
 
-    def elem_bytes(flag: str | None) -> float:
-        return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
-
-    k_flag, v_flag = chat_cache_type_flags()
-    return elem_bytes(k_flag), elem_bytes(v_flag)
+    flag = chat_cache_type_flag()
+    return KV_CACHE_TYPE_BYTES[KvCacheType(flag) if flag else KvCacheType.F16]
 
 
 def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
@@ -289,7 +283,8 @@ def _header_math_chat_ctx(
     """Window from GGUF header arithmetic: weights plus a dense-attention cache."""
     try:
         model_bytes = model_path.stat().st_size
-        kv_per_tok = kv_bytes_per_token(meta, *chat_kv_elem_bytes())
+        elem_bytes = chat_kv_elem_bytes()
+        kv_per_tok = kv_bytes_per_token(meta, elem_bytes, elem_bytes)
         return compute_dynamic_ctx(
             model_bytes=model_bytes,
             available_bytes=available_bytes,

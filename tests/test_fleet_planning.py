@@ -427,41 +427,33 @@ def test_resolve_vision_slots_ceiling_one_short_circuits(monkeypatch) -> None:
     assert planning_mod._resolve_vision_slots(Path("/m/v.gguf"), 16384, device=_card(10**12)) == 1
 
 
-def test_cache_type_flags_are_absent_for_f16(monkeypatch) -> None:
+def test_cache_type_flag_is_absent_for_f16(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.F16)
 
-    assert planning_mod.chat_cache_type_flags() == (None, None)
+    assert planning_mod.chat_cache_type_flag() is None
 
 
-def test_cache_type_flags_use_the_enum_value(monkeypatch) -> None:
+def test_cache_type_flag_uses_the_enum_value(monkeypatch) -> None:
     from lilbee.core.config.enums import KvCacheType
 
+    monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: "CUDA")
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", None)
 
-    assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+    assert planning_mod.chat_cache_type_flag() == "q8_0"
 
 
-def test_only_the_v_cache_falls_back_without_flash_attention(monkeypatch) -> None:
-    # llama.cpp refuses a quantized V cache without flash attention; K needs nothing.
+def test_the_kv_cache_falls_back_to_f16_without_flash_attention(monkeypatch) -> None:
+    # llama.cpp refuses a quantized V cache without flash attention, and K follows V.
     from lilbee.core.config.enums import KvCacheType
 
     monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
     monkeypatch.setattr(cfg, "flash_attention", False)
 
-    assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
-
-
-def test_estimator_kv_type_matches_the_launch_without_flash_attention(monkeypatch) -> None:
-    # The estimate must match the KV type actually launched.
-    from lilbee.core.config.enums import KvCacheType
-
-    monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
-    monkeypatch.setattr(cfg, "flash_attention", False)
-    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.Q8_0
-    assert planning_mod._role_kv_cache_type_v(WorkerRole.CHAT) is KvCacheType.F16
+    assert planning_mod.chat_cache_type_flag() is None
+    assert planning_mod._role_kv_cache_type(WorkerRole.CHAT) is KvCacheType.F16
 
 
 def test_server_model_inputs_filters_to_requested_roles(monkeypatch) -> None:
@@ -2005,8 +1997,8 @@ class TestEstimateLaunchParity:
         monkeypatch.setattr(cfg, "num_ctx", 4096)
         monkeypatch.setattr(cfg, "vision_ocr_concurrency", 1)
         monkeypatch.setattr(cfg, "kv_cache_type", KvCacheType.Q8_0)
-        # Vulkan leaves V unquantized, so K and V differ; the estimate has to
-        # carry that difference or it sizes a cache the launch will not allocate.
+        # Vulkan leaves the KV cache unquantized; the estimate has to carry the
+        # same type or it sizes a cache the launch will not allocate.
         monkeypatch.setattr(planning_mod, "_fleet_backend", lambda: backend)
         monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
         mmproj = Path("/m/mmproj.gguf") if role is WorkerRole.VISION else None
@@ -2038,7 +2030,6 @@ class TestEstimateLaunchParity:
             gpu_layers=captured["gpu_layers"],  # type: ignore[arg-type]
             flash_attn=captured["flash_attn"],  # type: ignore[arg-type]
             kv_cache_type=captured["kv_cache_type"].value,  # type: ignore[union-attr]
-            kv_cache_type_v=captured["kv_cache_type_v"].value,  # type: ignore[union-attr]
             mmproj=str(captured["mmproj_path"]) if captured.get("mmproj_path") else None,
             tensor_split=captured.get("tensor_split", ()),  # type: ignore[arg-type]
             batch_size=captured.get("batch_size"),  # type: ignore[arg-type]
@@ -2110,7 +2101,6 @@ class TestEstimateLaunchParity:
             gpu_layers=captured["gpu_layers"],  # type: ignore[arg-type]
             flash_attn=captured["flash_attn"],  # type: ignore[arg-type]
             kv_cache_type=captured["kv_cache_type"].value,  # type: ignore[union-attr]
-            kv_cache_type_v=captured["kv_cache_type_v"].value,  # type: ignore[union-attr]
             mmproj=None,
             tensor_split=(),
             batch_size=captured.get("batch_size"),  # type: ignore[arg-type]
@@ -2595,7 +2585,6 @@ class TestSlotsAreChargedOnce:
             gpu_layers=-1,
             flash_attn=True,
             kv_cache_type="q8_0",
-            kv_cache_type_v="q8_0",
             mmproj=None,
             tensor_split=(),
             batch_size=None,
@@ -3062,7 +3051,6 @@ def test_estimator_argv_has_no_override_tensor_without_offload(monkeypatch) -> N
         gpu_layers=-1,
         flash_attn=True,
         kv_cache_type="q8_0",
-        kv_cache_type_v="q8_0",
         mmproj=None,
         tensor_split=(),
         batch_size=None,
@@ -3085,7 +3073,6 @@ def test_estimator_argv_charges_offloaded_experts_to_cpu(monkeypatch) -> None:
         gpu_layers=-1,
         flash_attn=True,
         kv_cache_type="q8_0",
-        kv_cache_type_v="q8_0",
         mmproj=None,
         tensor_split=(),
         batch_size=None,
@@ -3390,8 +3377,8 @@ class TestFlashAttentionIsBackendAware:
 
     llama.cpp's Vulkan flash-attn coverage lags CUDA's and has been incomplete on
     Intel's mesa driver, which is what a Tiger Lake laptop reported as a chat
-    slowdown. But 'auto' cannot be passed alone: llama.cpp refuses a quantized V
-    cache without flash attention and the server never starts.
+    slowdown. Under 'auto' a quantized V cache makes llama.cpp force flash
+    attention on, so the KV cache stays f16 there.
     """
 
     def _on_backend(self, monkeypatch, backend: str | None) -> None:
@@ -3404,21 +3391,21 @@ class TestFlashAttentionIsBackendAware:
         """Every host that works today must keep the argv it has now."""
         self._on_backend(monkeypatch, backend)
         assert planning_mod.flash_attn_flag() == "on"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+        assert planning_mod.chat_cache_type_flag() == "q8_0"
 
     def test_an_unknown_backend_keeps_todays_behaviour(self, monkeypatch) -> None:
         self._on_backend(monkeypatch, None)
         assert planning_mod.flash_attn_flag() == "on"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", "q8_0")
+        assert planning_mod.chat_cache_type_flag() == "q8_0"
 
     @pytest.mark.parametrize("backend", ["Vulkan", "SYCL"])
-    def test_lagging_backends_defer_to_the_engine_and_leave_v_unquantized(
+    def test_lagging_backends_defer_to_the_engine_and_leave_the_cache_unquantized(
         self, monkeypatch, backend: str
     ) -> None:
-        """K quantization needs nothing; only V requires flash attention."""
+        """A quantized V would make the engine force flash attention on under auto."""
         self._on_backend(monkeypatch, backend)
         assert planning_mod.flash_attn_flag() == "auto"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+        assert planning_mod.chat_cache_type_flag() is None
 
     def test_explicit_off_no_longer_asks_for_an_impossible_v_cache(self, monkeypatch) -> None:
         """flash_attention=false with a quantized KV type asked llama-server for
@@ -3426,7 +3413,7 @@ class TestFlashAttentionIsBackendAware:
         self._on_backend(monkeypatch, "CUDA")
         monkeypatch.setattr(cfg, "flash_attention", False)
         assert planning_mod.flash_attn_flag() == "off"
-        assert planning_mod.chat_cache_type_flags() == ("q8_0", None)
+        assert planning_mod.chat_cache_type_flag() is None
 
     def test_the_estimate_does_not_assume_flash_attention_under_auto(self, monkeypatch) -> None:
         """The engine decides at load; assuming it would size KV below what the
