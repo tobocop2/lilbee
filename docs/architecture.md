@@ -504,9 +504,15 @@ arm per folder from the same ordered list. The store reads the registry again wh
 stores the location of each row a registered label still names, one commit per label,
 deepest folder first; a row an outer folder kept for a file of an inner folder folds
 into the inner folder's row. Only a document is stored at its location; a wiki page and
-an imported source keep their own names. Every writer of a source row states the type of
-its source. A write finds the row of that type at its stored path or at the label form of
-its name and keeps that row's id, so a write never adds a second row for one source. A
+an imported source keep their own names. Every write of a source row by name states the
+type of its source. A write finds the row of that type at its stored path or at the label
+form of its name and keeps that row's id, so a write never adds a second row for one
+source. A removal, a deletion and the wiki mentions of a source find its ids at the key of
+its type, and a name a person removes is a document. Three writers change rows without a
+name: a folder move carries document rows to their new locations by id and deletes the rows
+they land on; a prefix rewrite folds each landing row into the row already at the new place
+before it moves the rest; a drop or a release changes the rows of ids it read. None of them
+gives a source a second row or a second id. A
 record imported from the older files lands on the row the first open gave a removed source
 that a citation names, and an import that runs again writes the same rows. When a folder
 leaves the registry, the rows it keeps for citations are stored by their names again, as a
@@ -519,8 +525,9 @@ Three limits of stored locations remain:
   document keeps the title it had under the old label.
 - **A folder named like the wiki folder.** Its documents and the wiki pages share names
   that start with `wiki/`. A document and a wiki page with the same name are two sources
-  with two ids. A name that a person types, such as the source of a citation lookup,
-  finds the wiki page.
+  with two ids. A citation lookup, a page text lookup and a removal by name find the
+  document. A name that a reader gives with no type, such as the source of a chunk
+  lookup, finds the wiki page.
 - **An add that stops before the move.** A folder added again at a new place, or a
   label forced onto another folder, moves its rows after the registry write. If the
   add stops between the two, the next sync pairs the documents with their files by
