@@ -466,8 +466,6 @@ async def add(
     # Crawl URLs
     crawled_count = 0
     if urls:
-        from lilbee.crawler import crawler_available
-
         if not crawler_available():
             return _error(CRAWLER_MISSING_MESSAGE)
         crawled_count, url_errors = await _crawl_add_urls(urls, render_mode)
@@ -515,8 +513,6 @@ async def crawl(
     """Start a non-blocking crawl; poll via ``crawl_status(task_id)``.
     ``depth=0`` (default) = single URL, ``N`` = follow links N levels,
     ``null`` = whole site. ``render_mode``: "http"/"browser"."""
-    from lilbee.crawler import crawler_available
-
     if not crawler_available():
         return _error(CRAWLER_MISSING_MESSAGE)
     # Mirror the REST CrawlRequest bounds so a negative value is a clean error,
