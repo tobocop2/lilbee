@@ -270,7 +270,7 @@ class TestTheOpenStoresLocations:
         ):
             Store(config).get_db()
         half = Store(config.model_copy(update={"linked_roots": {}}))
-        assert any(path.startswith("/") for path in _paths(half))
+        assert any(Path(path).is_absolute() for path in _paths(half))
         assert any(path.startswith(("notes", "other/")) for path in _paths(half))
 
         store = Store(config)
