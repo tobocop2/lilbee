@@ -34,10 +34,12 @@ def _isolated_cfg(tmp_path):
 
 
 @pytest.fixture(autouse=True)
-def _mock_services():
+def _mock_services(tmp_path):
     from lilbee.app.services import set_services
+    from lilbee.data.store import Store
 
     mock_svc = mock.MagicMock()
+    mock_svc.store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
     mock_svc.provider.list_models.return_value = []
     mock_svc.searcher._embedder.embedding_available.return_value = True
     set_services(mock_svc)

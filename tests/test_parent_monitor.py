@@ -262,11 +262,13 @@ class TestMcpMainIntegration:
         monkeypatch.setenv(PARENT_PID_ENV, "888888")
         with (
             mock.patch.object(mcp_mod, "get_services"),
-            mock.patch.object(mcp_mod, "build_mcp_server"),
+            mock.patch.object(mcp_mod, "build_mcp_server") as build,
             mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher,
         ):
+            build.return_value.run_stdio_async = mock.AsyncMock()
             mcp_mod.main()
         watcher.assert_called_once()
+        build.return_value.run_stdio_async.assert_awaited_once()
 
     def test_main_skips_watcher_when_env_unset(self, monkeypatch):
         from lilbee import mcp_server as mcp_mod
@@ -274,11 +276,13 @@ class TestMcpMainIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services"),
-            mock.patch.object(mcp_mod, "build_mcp_server"),
+            mock.patch.object(mcp_mod, "build_mcp_server") as build,
             mock.patch("lilbee.parent_monitor.watch_parent_thread") as watcher,
         ):
+            build.return_value.run_stdio_async = mock.AsyncMock()
             mcp_mod.main()
         watcher.assert_not_called()
+        build.return_value.run_stdio_async.assert_awaited_once()
 
     def test_main_logs_when_pre_warm_fails(self, monkeypatch, caplog):
         from lilbee import mcp_server as mcp_mod
@@ -286,11 +290,13 @@ class TestMcpMainIntegration:
         monkeypatch.delenv(PARENT_PID_ENV, raising=False)
         with (
             mock.patch.object(mcp_mod, "get_services", side_effect=RuntimeError("no provider")),
-            mock.patch.object(mcp_mod, "build_mcp_server"),
+            mock.patch.object(mcp_mod, "build_mcp_server") as build,
             caplog.at_level("DEBUG", logger="lilbee.mcp_server"),
         ):
+            build.return_value.run_stdio_async = mock.AsyncMock()
             mcp_mod.main()
         assert "MCP pre-warm failed" in caplog.text
+        build.return_value.run_stdio_async.assert_awaited_once()
 
 
 def test_mcp_parent_death_releases_services_before_hard_exit(monkeypatch):
