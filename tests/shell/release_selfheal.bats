@@ -6,7 +6,10 @@ setup() {
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   SCRIPT="${REPO_ROOT}/scripts/release_selfheal.sh"
   FIXTURE="${BATS_TEST_TMPDIR}/fx"
-  mkdir -p "${FIXTURE}/runs" "${FIXTURE}/attempts" "${FIXTURE}/conclusions" "${FIXTURE}/bin"
+  mkdir -p "${FIXTURE}/runs" "${FIXTURE}/attempts" "${FIXTURE}/conclusions" "${FIXTURE}/bin" \
+    "${FIXTURE}/heads" "${FIXTURE}/commits"
+  echo "v1.0.0 built" > "${FIXTURE}/heads/900"
+  echo built > "${FIXTURE}/commits/v1.0.0"
   : > "${FIXTURE}/actions.log"
   echo "[]" > "${FIXTURE}/empty.json"
   echo false > "${FIXTURE}/prerelease"
@@ -102,4 +105,36 @@ summary() { cat "${FIXTURE}/summary.md"; }
   [ "$status" -eq 1 ]
   [ ! -s "${FIXTURE}/actions.log" ]
   [[ "$output" == *"reached the bound"* ]]
+}
+
+@test "a failed cell beside a cell a person cancelled heals nothing" {
+  rc_jobs "build-binaries (ubuntu):failure" "build-binaries (compat-windows):cancelled:user"
+  run heal
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  [[ "$output" == *"a person cancelled this run"* ]]
+}
+
+@test "a force-cancel is a person's cancel too" {
+  rc_jobs "build-binaries (ubuntu):failure" "build-binaries (macos):cancelled:force"
+  run heal
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  [[ "$output" == *"a person cancelled this run"* ]]
+}
+
+@test "a time-out beside a cell a person cancelled heals nothing" {
+  rc_jobs "build-binaries (ubuntu):cancelled:timeout" "build-binaries (compat-windows):cancelled:user"
+  run heal
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+}
+
+@test "a run whose tag moved to another commit is not rerun" {
+  rc_jobs "build-binaries (ubuntu):failure"
+  echo moved > "${FIXTURE}/commits/v1.0.0"
+  run heal
+  [ "$status" -eq 0 ]
+  [ ! -s "${FIXTURE}/actions.log" ]
+  [[ "$output" == *"not healing a superseded run"* ]]
 }
