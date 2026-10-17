@@ -73,11 +73,12 @@ jobs:
           set -euo pipefail
           SHA=$(git rev-parse HEAD)
           echo "${TAG} -> ${SHA}"
-          # Latest *completed* push-triggered RC run (any conclusion -- that's
+          # Latest *completed* push-triggered RC run by creation time, which a re-run
+          # never moves (any conclusion -- that's
           # the point of this lane). If its default-wheels build was incomplete,
           # the PyPI upload below ships a partial set; look at the RC run first.
           RC_ID=$(gh api "repos/${REPO}/actions/workflows/release-candidate.yml/runs?head_sha=${SHA}&event=push&status=completed&per_page=50" \
-            --jq '.workflow_runs | sort_by(.run_started_at) | last | .id // empty')
+            --jq '.workflow_runs | sort_by(.created_at) | last | .id // empty')
           if [ -z "${RC_ID}" ]; then
             echo "no completed 'Release candidate' run for ${SHA}; push the tag first" >&2
             exit 1
