@@ -85,6 +85,15 @@ class TestGenerateStubPage:
         assert kwargs["source_names"] == ["a.md", "b.md"]
         assert {c.source for c in kwargs["chunks"]} == {"a.md", "b.md"}
 
+    def test_a_source_named_by_id_is_read_and_cited_by_its_path(self):
+        save_stub_index({"ford": _stub("ford", (("id-a", 0), ("gone-id", 0)))})
+        store = _store_with({"a.md": [make_search_chunk(source="a.md", chunk_index=0)]})
+        store.source_paths.side_effect = lambda ids: {i: "a.md" for i in ids if i == "id-a"}
+        with patch("lilbee.wiki.lazy.generate_page", return_value=Path("p.md")) as gen:
+            generate_stub_page("ford", store, cfg)
+        assert gen.call_args.kwargs["source_names"] == ["a.md"]
+        store.get_chunks_by_source.assert_called_once_with("a.md")
+
     @pytest.mark.parametrize(
         ("kind", "subdir"),
         [

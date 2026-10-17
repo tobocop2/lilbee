@@ -257,12 +257,12 @@ class TestAnIndexOfAnOlderVersion:
             assert load_stub_index() == {}
         assert stub_index_path().read_text(encoding="utf-8") == before
 
-    def test_a_sync_refresh_with_no_extractor_still_takes_it_to_this_version(self):
+    def test_a_first_sync_refresh_with_no_extractor_still_takes_it_to_this_version(self):
+        """With no record a refresh gives the whole corpus, which reads no index on its own."""
         self._write_v3("acme", "notes/a.md")
         store = _SourceTableStore({"doc-id": []}, version=2)
         store.paths = {"doc-id": "notes/a.md"}
         store._mentions = {"doc-id": [_mention("acme", "doc-id")]}
-        store.record = SourcesCheckpoint("time-1", 1)
         extractor = MagicMock()
         extractor.available.return_value = False
         with (
