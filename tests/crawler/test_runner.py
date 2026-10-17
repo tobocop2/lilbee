@@ -94,7 +94,7 @@ class FakeFetcher:
     ) -> None:
         self._pages = pages or []
         self._cancel_on_iter = cancel_on_iter
-        self.single_calls: list[tuple[str, float]] = []
+        self.single_calls: list[tuple[str, float, ConcurrencySpec]] = []
         self.recursive_calls: list[dict[str, Any]] = []
         self.closed = False
 
@@ -104,8 +104,10 @@ class FakeFetcher:
     async def __aexit__(self, *args: Any) -> None:
         self.closed = True
 
-    async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
-        self.single_calls.append((url, timeout))
+    async def fetch_single(
+        self, url: str, *, timeout: float, concurrency: ConcurrencySpec
+    ) -> FetchedPage:
+        self.single_calls.append((url, timeout, concurrency))
         if self._pages:
             return self._pages[0]
         return FetchedPage(url=url, markdown="# Fake", success=True)

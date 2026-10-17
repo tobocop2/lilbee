@@ -96,7 +96,9 @@ def backend(request) -> Backend:
 async def _single(backend: Backend, *specs: Spec) -> FetchedPage:
     with backend.stub(_specs(*specs), single=True):
         async with backend.make() as fetcher:
-            return await fetcher.fetch_single("https://example.com", timeout=30.0)
+            return await fetcher.fetch_single(
+                "https://example.com", timeout=30.0, concurrency=ConcurrencySpec()
+            )
 
 
 async def _recursive(
