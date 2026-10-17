@@ -2965,6 +2965,27 @@ class TestRetireEarlier:
         assert copy.read_text(encoding="utf-8") == "# Shared"
         remove_sources.assert_not_called()
 
+    def test_one_file_under_two_same_text_entries_goes_once_both_pages_have_their_names(
+        self, isolated_env
+    ):
+        upper = _write_web("old/A.md", "# Same")
+        lower = cfg.documents_dir / "_web" / "old" / "a.md"
+        if not lower.exists():
+            os.link(upper, lower)
+        entry_hash = content_hash("# Same")
+        write_crawl_metadata(
+            {
+                "https://example.com/A": CrawlMeta("old/A.md", entry_hash, "t"),
+                "https://example.com/a": CrawlMeta("old/a.md", entry_hash, "t"),
+            }
+        )
+        record = load_crawl_record()
+        remove_sources = MagicMock()
+        for url in ("https://example.com/a", "https://example.com/A"):
+            save_page(CrawlResult(url=url, markdown=f"# {url}"), record, remove_sources)
+        assert not upper.exists()
+        assert remove_sources.call_count == 1
+
     def test_an_earlier_copy_that_is_not_utf_8_is_kept(self, isolated_env):
         copy = cfg.documents_dir / "_web" / self.EARLIER
         copy.parent.mkdir(parents=True)
