@@ -377,10 +377,11 @@ def _title_after_move(
 ) -> str | None:
     """The title the source *row* takes when *old* becomes *new*, or ``_KEEP_TITLE``.
 
-    A title that came from the old name follows the new one; any other title stays.
+    A title that came from the old name follows the new one; any other title stays,
+    and so does a title the new name derives again, so that no row is written for it.
     """
     stored = row[_TITLE_COLUMN] or ""
-    if stored != (derive(old) or ""):
+    if stored != (derive(old) or "") or stored == (derive(new) or ""):
         return _KEEP_TITLE
     return derive(new) or None
 
@@ -983,7 +984,9 @@ class Store:
         """Key every table by ``source_id``. Caller holds the write lock.
 
         Each step reads the table's columns, so a run that was killed is finished
-        by the next one. An existing source takes the md5 of its path as its id.
+        by the next one. An existing source takes the md5 of its path as its id. A
+        store stamped 2 or later is stamped 3 at the end; a store stamped 1 predates
+        the document prefix, and keeps 1 so that the stale-prefix warning still names it.
         """
         names = table_names(db)
         if SOURCES_TABLE in names:
@@ -991,6 +994,10 @@ class Store:
         for name, column in _PATH_KEY_COLUMNS:
             if name in names:
                 self._migrate_keyed_table(db, db.open_table(name), column)
+        if META_TABLE in names:
+            db.open_table(META_TABLE).update(
+                where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}
+            )
         log.info("Keyed the library at %s by source id", self._config.lancedb_dir)
 
     def _migrate_keyed_table(self, db: LanceDBConnection, table: LanceTable, column: str) -> None:

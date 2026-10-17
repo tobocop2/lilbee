@@ -4282,6 +4282,34 @@ class TestRelocateTitles:
         chunks = store.get_chunks_by_source("annual_summary.md")
         assert all(c.title == "annual summary" for c in chunks)
 
+    def test_a_folder_move_of_files_with_the_same_title_writes_no_chunk_row(self, store):
+        from lilbee.data.store import SourceMeta, SourceType
+        from lilbee.data.title import derive_title
+
+        moves = []
+        for number in range(3):
+            old, new = f"old/report_{number}.md", f"new/report_{number}.md"
+            title = derive_title(old)
+            store.add_chunks(_titled_records(old, 2, title=title))
+            store.upsert_source(
+                old, f"h{number}", 2, SourceType.DOCUMENT, meta=SourceMeta(title=title)
+            )
+            moves.append(SourceMove((old,), new, None))
+        store.ensure_fts_index()
+        chunks = store.open_table(CHUNKS_TABLE)
+        version = chunks.version
+        index = next(i.name for i in chunks.list_indices() if i.columns == ["chunk"])
+
+        store.relocate_sources(moves)
+
+        assert sorted(row["filename"] for row in store.get_sources()) == [
+            move.new for move in moves
+        ]
+        chunks = store.open_table(CHUNKS_TABLE)
+        assert chunks.version == version
+        assert chunks.index_stats(index).num_unindexed_rows == 0
+        assert len(store.get_chunks_by_source("new/report_1.md")) == 2
+
     def test_extraction_title_survives_the_move(self, store):
         from lilbee.data.store import SourceMeta, SourceType
 
@@ -5284,7 +5312,7 @@ class TestOpenTimeMigration:
 
         assert _untimed(_dump(Store(test_config))) == _untimed(clean)
 
-    def test_two_stores_that_open_at_once_agree(self, test_config):
+    def test_two_stores_that_open_one_after_the_other_agree(self, test_config):
         _path_keyed_library(test_config)
 
         first, second = Store(test_config), Store(test_config)
@@ -5339,6 +5367,27 @@ class TestOpenTimeMigration:
             ("path_idx", ("path",)),
             ("source_id_idx", ("source_id",)),
         }
+
+    @pytest.mark.parametrize(("stamped", "after"), [(2, 3), (1, 1)])
+    def test_a_migrated_library_reads_schema_version_three(self, test_config, stamped, after):
+        from lilbee.data.store.schema import _meta_schema
+
+        tables = _path_keyed_tables(test_config)
+        tables["_meta"] = pa.Table.from_pylist(
+            [
+                {
+                    "embedding_model": test_config.embedding_model,
+                    "embedding_dim": test_config.embedding_dim,
+                    "schema_version": stamped,
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                }
+            ],
+            schema=_meta_schema(),
+        )
+
+        store = _open_after(test_config, tables)
+
+        assert store.get_meta()["schema_version"] == after
 
     def test_the_stamped_schema_version_is_three(self):
         from lilbee.data.store.types import META_SCHEMA_VERSION

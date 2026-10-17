@@ -468,7 +468,8 @@ it had one, and loses the path column; `_sources.filename` becomes `path`. Each 
 the table's columns, so an open that stops part way is finished by the next. Measured at
 200,000 chunks of 768 dimensions and 20,000 sources: 0.39 s and 4.5 MB, with the full-text,
 vector and bitmap indexes kept. An older lilbee then fails on the renamed column
-(`KeyError: 'filename'`) and changes nothing.
+(`KeyError: 'filename'`) in every command that reads the index, and changes nothing.
+`lilbee rebuild` of the older version works and starts the library again.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.
