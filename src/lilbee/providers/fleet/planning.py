@@ -1573,9 +1573,10 @@ def _chat_fit_target_mib(
     """Memory, in MiB, the engine's fit leaves free on each of chat's cards.
 
     The share placement never charges plus what the card holds back for the
-    other roles placed on it; empty for an engine without ``--fit-target``.
+    other roles placed on it. Empty for an engine without ``--fit-target`` and
+    on shared memory, where a layer moved off the device frees nothing.
     """
-    if not engine_advertises(binary, FLAG_FIT_TARGET):
+    if any(device.unified for device in chosen) or not engine_advertises(binary, FLAG_FIT_TARGET):
         return ()
     headroom = 1.0 - usable_vram_fraction()
     return tuple(

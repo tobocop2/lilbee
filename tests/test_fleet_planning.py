@@ -1112,6 +1112,23 @@ class TestBuildFleetWiring:
         slots = int(launch.argv[launch.argv.index("--parallel") + 1])
         assert launch.argv[launch.argv.index("--ctx-size") + 1] == str(12288 * slots)
 
+    def test_launch_for_chat_on_shared_memory_leaves_the_fit_target_alone(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(cfg, "n_gpu_layers", None)
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "engine_advertises", lambda _b, _flag: True)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_chat_ctx", lambda *a, **k: 8192)
+        monkeypatch.setattr(cfg, "num_ctx", None)
+        device = FleetDevice("Metal", 0, "M3", 24 * _GB, 24 * _GB, unified=True)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        assert "--fit-target" not in launch.argv
+        assert "--kv-unified" in launch.argv
+
     def test_launch_for_chat_on_an_engine_without_the_flags_sends_neither(
         self, tmp_path, monkeypatch
     ) -> None:
@@ -2418,12 +2435,9 @@ class TestChatWindowLeftToTheEngineFit:
         self.meta = {"block_count": "28"}
         self.needed = planning_mod.engine_params.min_usable_chat_ctx()
 
-    def _window(self, ctx_ceiling: int = 16384, meta: dict | None = None) -> int:
+    def _window(self, ctx_ceiling: int = 16384) -> int:
         return planning_mod.fit_chat_ctx(
-            self.model,
-            self.meta if meta is None else meta,
-            available_bytes=2 * _GB,
-            ctx_ceiling=ctx_ceiling,
+            self.model, self.meta, available_bytes=2 * _GB, ctx_ceiling=ctx_ceiling
         )
 
     def test_a_short_window_is_raised_to_a_grounded_prompt(self, monkeypatch) -> None:
@@ -2447,7 +2461,14 @@ class TestChatWindowLeftToTheEngineFit:
         # dense layers on the card and spills experts, so the window is served.
         fit, _probed = self._fit(512)
         monkeypatch.setattr(planning_mod.fleet_ctx, "fit_single_ctx", fit)
-        assert self._window(meta={"architecture": "qwen3moe"}) >= self.needed
+        weights = self.model.stat().st_size
+        window = planning_mod.fit_chat_ctx(
+            self.model,
+            {"architecture": "qwen3moe", "expert_count": "128"},
+            available_bytes=weights // 2,
+            ctx_ceiling=16384,
+        )
+        assert window >= self.needed
 
     def test_a_window_the_user_capped_below_the_minimum_is_not_raised(self, monkeypatch) -> None:
         fit, _probed = self._fit(512)
