@@ -5114,12 +5114,12 @@ class TestOpenTimeMigration:
         from lilbee.data.store.core import _keys_missing_from
 
         chunks = {
-            "source": ["wiki/p.md", "wiki/p.md", "wiki/q.md", "wiki/q.md", "d.md", "e.md"],
-            "chunk_type": ["wiki", "raw", "wiki", "raw", "raw", None],
+            "source": ["wiki/p.md", "wiki/p.md", "wiki/q.md", "wiki/q.md", "d.md", "e.md", "f.md"],
+            "chunk_type": ["wiki", "raw", "wiki", "raw", "raw", None, "raw"],
         }
         held = {
-            "path": ["wiki/p.md", "wiki/q.md", "d.md"],
-            "source_type": [SourceType.DOCUMENT, SourceType.WIKI, SourceType.WIKI],
+            "path": ["wiki/p.md", "wiki/q.md", "d.md", "f.md"],
+            "source_type": [SourceType.DOCUMENT, SourceType.WIKI, SourceType.WIKI, None],
         }
         db = lancedb.connect(str(tmp_path))
         table = db.create_table(CHUNKS_TABLE, pa.table(chunks))

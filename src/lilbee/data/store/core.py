@@ -273,11 +273,15 @@ _DOCUMENT = f"{_SOURCE_TYPE} = '{SourceType.DOCUMENT}'"
 _WIKI = f"{_SOURCE_TYPE} = '{SourceType.WIKI}'"
 # The chunks of wiki pages; an upgrade gives them the id of a page, never of a document.
 _WIKI_CHUNK = f"{_CHUNK_TYPE} = '{ChunkType.WIKI}'"
+# Every other chunk, whose key names a document.
+_NOT_WIKI_CHUNK = f"({_CHUNK_TYPE} IS NULL OR NOT ({_WIKI_CHUNK}))"
 # What a wiki page's key is joined with before its md5 gives the page its id at an upgrade.
 _WIKI_ID_SUFFIX = "wiki"
 _WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
 # The source rows a move found by a sync carries: every row but a wiki page's.
 _MOVABLE = f"NOT ({_WIKI})"
+# The source rows an upgrade compares a document key with: any row whose type is not wiki.
+_NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR {_MOVABLE})"
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
@@ -729,17 +733,10 @@ def _index_names(table: LanceTable) -> dict[str, list[str]]:
     return {index.name: index.columns for index in _index_registry(table) or []}
 
 
-def _key_column(table: LanceTable, column: str, type_column: str | None = None) -> pa.Table:
-    """*column* of every row of *table*, with *type_column* beside it, read as Arrow."""
-    columns = [column] if type_column is None else [column, type_column]
-    return table.search().select(columns).limit(None).to_arrow()
-
-
-def _wiki_mask(read: pa.Table, type_column: str | None, wiki: str) -> pa.ChunkedArray:
-    """Whether *type_column* of each row of *read* is *wiki*; with no column, no row is."""
-    if type_column is None:
-        return pa.chunked_array([pa.repeat(pa.scalar(False), read.num_rows)])
-    return pc.fill_null(pc.equal(read.column(type_column), wiki), False)
+def _key_column(table: LanceTable, column: str, where: str | None) -> pa.ChunkedArray:
+    """*column* of each row of *table* that *where* selects, or of every row, read as Arrow."""
+    query = table.search() if where is None else table.search().where(where)
+    return query.select([column]).limit(None).to_arrow().column(column)
 
 
 def _keys_missing_from(
@@ -747,22 +744,19 @@ def _keys_missing_from(
 ) -> list[tuple[str, SourceType]]:
     """Each distinct key in *column* of *table* that no ``_sources`` row of its class holds.
 
-    A wiki chunk names a wiki page; every other key names a document. Arrow
-    compares the key columns, so no row becomes a Python object.
+    A wiki chunk names a wiki page; every other key names a document. Each class
+    reads only its own keys and its own source paths, and Arrow compares them,
+    so no row becomes a Python object and one key column is held at a time.
     """
-    type_column = _CHUNK_TYPE if table.name == CHUNKS_TABLE else None
-    read = _key_column(table, column, type_column)
-    held = _key_column(sources, _PATH, _SOURCE_TYPE)
-    pages = _wiki_mask(read, type_column, ChunkType.WIKI)
-    wiki_rows = _wiki_mask(held, _SOURCE_TYPE, SourceType.WIKI)
-    keys, paths = read.column(column), held.column(_PATH).cast(read.column(column).type)
+    typed = table.name == CHUNKS_TABLE
+    classes = [(SourceType.DOCUMENT, _NOT_WIKI_CHUNK if typed else None, _NOT_WIKI_SOURCE)]
+    if typed:
+        classes.insert(0, (SourceType.WIKI, _WIKI_CHUNK, _WIKI))
     missing: list[tuple[str, SourceType]] = []
-    for source_type, mine, theirs in (
-        (SourceType.WIKI, pages, wiki_rows),
-        (SourceType.DOCUMENT, pc.invert(pages), pc.invert(wiki_rows)),
-    ):
-        wanted = pc.filter(keys, mine)
-        absent = pc.filter(wanted, pc.invert(pc.is_in(wanted, value_set=pc.filter(paths, theirs))))
+    for source_type, mine, theirs in classes:
+        keys = _key_column(table, column, mine)
+        held = _key_column(sources, _PATH, theirs).cast(keys.type)
+        absent = pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held)))
         missing += [(key, source_type) for key in sorted(pc.unique(absent).to_pylist())]
     return missing
 
