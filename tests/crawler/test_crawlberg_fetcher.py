@@ -112,6 +112,7 @@ class TestCrawlConfig:
         assert config["max_concurrent"] == 4
         assert config["max_redirects"] == 10
         assert config["respect_robots_txt"] is True
+        assert config["cookies_enabled"] is True
         assert config["soft_http_errors"] is False
         assert config["download_documents"] is False
         assert config["request_timeout"] == 12500
