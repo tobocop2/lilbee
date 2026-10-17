@@ -1594,7 +1594,7 @@ class TestRobotsTxt:
         assert "The site's robots.txt could not be read (" in result["error"], result
         assert "crawl_respect_robots_txt" in result["error"], result
 
-    async def test_a_site_that_does_not_answer_is_named_and_robots_txt_is_not_blamed(self):
+    async def test_a_site_that_does_not_answer_gets_the_robots_txt_message_with_the_reason(self):
         events: list[tuple[EventType, object]] = []
         paths = await crawl_and_save(
             f"http://127.0.0.1:{_closed_port()}/page",
@@ -1607,9 +1607,8 @@ class TestRobotsTxt:
         reasons = [*_failure_reasons(events), result["error"]]
         assert len(reasons) == 2
         for reason in reasons:
-            assert "The site did not answer (connection: " in reason, reason
-            assert "robots.txt could not be read" not in reason, reason
-            assert "crawl_respect_robots_txt" not in reason, reason
+            assert "The site's robots.txt could not be read (connection: " in reason, reason
+            assert "Set crawl_respect_robots_txt to false" in reason, reason
 
 
 @full_crawl_only
