@@ -6,7 +6,7 @@ import json
 import re
 from collections.abc import Iterator
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from litestar import Litestar
@@ -19,7 +19,6 @@ from lilbee.server.anthropic_api.routes import COUNT_ACCURACY_HEADER, anthropic_
 from lilbee.server.chat_dispatch.canonical import (
     IMAGES_DROPPED_HEADER,
     IMAGES_ONLY_MESSAGE,
-    IMAGES_UNSUPPORTED_MESSAGE,
     TokenCountAccuracy,
 )
 from lilbee.server.chat_dispatch.concurrency import chat_gate
@@ -208,7 +207,21 @@ class TestValidation:
         assert resp.status_code == 400
         assert resp.json()["error"]["message"] == IMAGES_ONLY_MESSAGE
 
-    async def test_image_to_a_model_that_reads_images_is_400(
+    async def test_dropped_image_is_logged_once_by_the_route(
+        self, services_with_chat_model, _auth_token
+    ):
+        body = _body(
+            messages=[{"role": "user", "content": [_IMAGE, {"type": "text", "text": "q"}]}]
+        )
+        # The Litestar app reconfigures logging, which detaches caplog's handler.
+        with patch("lilbee.server.chat_dispatch.dispatch.log") as log:
+            async with AsyncTestClient(_build_app()) as client:
+                resp = await client.post("/v1/messages", json=body, headers=_h())
+        assert resp.status_code == 200
+        log.warning.assert_called_once()
+        assert log.warning.call_args.args[1:] == (1, INSTALLED_REF)
+
+    async def test_image_to_a_vision_tagged_model_is_dropped_and_reported(
         self, services_with_chat_model, _auth_token
     ):
         services_with_chat_model.provider.get_capabilities.return_value = ["completion", "vision"]
@@ -217,9 +230,9 @@ class TestValidation:
         )
         async with AsyncTestClient(_build_app()) as client:
             resp = await client.post("/v1/messages", json=body, headers=_h())
-        assert resp.status_code == 400
-        assert resp.json()["error"]["message"] == IMAGES_UNSUPPORTED_MESSAGE
-        services_with_chat_model.provider.chat.assert_not_called()
+        assert resp.status_code == 200
+        assert resp.headers[IMAGES_DROPPED_HEADER] == "1"
+        services_with_chat_model.provider.chat.assert_called_once()
 
     async def test_unknown_model_is_404_not_found_error(
         self, services_with_chat_model, _auth_token

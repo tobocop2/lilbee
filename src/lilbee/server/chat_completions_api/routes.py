@@ -87,6 +87,14 @@ def _build_models_list_payload() -> ModelsListResponse:
     # A remote-configured chat model has no registry entry but is still listed,
     # configured model first (the launcher's picker order).
     listed = with_configured_remote_chat(sorted(installed), cfg.chat_model)
+    # A path-configured chat model is in no registry either; the chat routes
+    # serve whatever the known-model lookup resolves, so the list asks it too.
+    if (
+        cfg.chat_model
+        and cfg.chat_model not in listed
+        and services.known_models.resolve(cfg.chat_model) is not None
+    ):
+        listed = [cfg.chat_model, *listed]
     refs = default_first(listed, cfg.chat_model)
     # A ref without a registry entry carries the newest native timestamp so a
     # client sorting by created desc does not bury the model lilbee serves.
