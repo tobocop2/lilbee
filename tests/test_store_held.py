@@ -13,6 +13,7 @@ from lilbee.data.store import (
     HeldOut,
     HeldRecord,
     SourceMove,
+    SourceType,
     Store,
     held_import,
 )
@@ -117,10 +118,10 @@ class TestHoldFailed:
 
     def test_an_ingest_of_a_held_path_clears_its_record_and_keeps_its_id(self, store):
         store.hold_failed({"a.md": _failed("h1")})
-        before = store.source_ids(["a.md"])
+        before = store.source_ids(["a.md"], SourceType.DOCUMENT)
         _index(store, "a.md", file_hash="h2")
         assert store.held_records() == {}
-        assert store.source_ids(["a.md"]) == before
+        assert store.source_ids(["a.md"], SourceType.DOCUMENT) == before
         assert _listed(store) == ["a.md"]
 
 
@@ -137,7 +138,7 @@ class TestRemoveWithRecords:
         _index(store, "a.md")
         store.remove_documents(["a.md"])
         assert store.held_records() == {}
-        assert store.source_ids(["a.md"]) == {}
+        assert store.source_ids(["a.md"], SourceType.DOCUMENT) == {}
 
     def test_a_held_failure_named_by_a_removal_becomes_a_removal(self, store):
         store.hold_failed({"scan.pdf": _failed("h1")})
@@ -151,7 +152,7 @@ class TestRelease:
         store.hold_failed({"scan.pdf": _failed("h1")})
         store.release_held(["scan.pdf"])
         assert store.held_records() == {}
-        assert store.source_ids(["scan.pdf"]) == {}
+        assert store.source_ids(["scan.pdf"], SourceType.DOCUMENT) == {}
 
     def test_a_released_failed_edit_keeps_its_document(self, store):
         _index(store, "a.md", file_hash="old")
@@ -167,7 +168,7 @@ class TestRelease:
         store.release_held(["a.md"])
         assert store.held_records() == {}
         assert _listed(store) == []
-        assert set(store.source_ids(["a.md"])) == {"a.md"}
+        assert set(store.source_ids(["a.md"], SourceType.DOCUMENT)) == {"a.md"}
 
     def test_releasing_nothing_takes_no_lock(self, store):
         store.release_held([])

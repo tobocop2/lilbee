@@ -114,9 +114,9 @@ class TestWhatIsStored:
 
         assert _paths(store) == sorted([(tmp_path / "notes" / "a.md").as_posix(), "loose.md"])
         assert _names(store) == ["loose.md", "notes/a.md"]
-        assert store.source_paths(store.source_ids(["notes/a.md"]).values()) == {
-            store.source_ids(["notes/a.md"])["notes/a.md"]: "notes/a.md"
-        }
+        assert store.source_paths(
+            store.source_ids(["notes/a.md"], SourceType.DOCUMENT).values()
+        ) == {store.source_ids(["notes/a.md"], SourceType.DOCUMENT)["notes/a.md"]: "notes/a.md"}
 
     def test_adding_a_parent_changes_no_row_and_every_name(self, config, tmp_path):
         config.linked_roots = {"work": str(tmp_path / "notes" / "work")}
@@ -146,13 +146,13 @@ class TestAFolderNamedLikeTheWikiFolder:
         store.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
         store.replace_chunks("wiki/concepts/b.md", ChunkType.WIKI, [])
         pages = ["wiki/summaries/a.md", "wiki/concepts/b.md"]
-        ids = store.source_ids(pages)
+        ids = store.source_ids(pages, SourceType.WIKI)
 
         config.linked_roots = {}
 
         assert set(pages) <= set(_paths(store))
         assert (tmp_path / "home" / "wiki" / "notes.md").as_posix() in _paths(store)
-        assert store.source_ids(pages) == ids
+        assert store.source_ids(pages, SourceType.WIKI) == ids
         assert len(ids) == 2
 
     def test_the_open_leaves_a_wiki_page_under_its_key(self, config, tmp_path):
@@ -169,7 +169,7 @@ class TestAFolderNamedLikeTheWikiFolder:
             [(root / "notes.md").as_posix(), "wiki/summaries/a.md"]
         )
         assert _names(store) == ["wiki/notes.md"]
-        assert len(store.source_ids(["wiki/summaries/a.md"])) == 1
+        assert len(store.source_ids(["wiki/summaries/a.md"], SourceType.WIKI)) == 1
 
     def test_the_open_folds_no_wiki_page_into_a_document(self, config, tmp_path):
         root = tmp_path / "home" / "wiki"
@@ -179,7 +179,7 @@ class TestAFolderNamedLikeTheWikiFolder:
         old = Store(config)
         old.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
         _seed_source(old, "wiki/notes.md")
-        page = old.source_ids(["wiki/summaries/a.md"])["wiki/summaries/a.md"]
+        page = old.source_ids(["wiki/summaries/a.md"], SourceType.WIKI)["wiki/summaries/a.md"]
         old.close()
         config.linked_roots = {"wiki": str(root)}
 
@@ -274,13 +274,13 @@ class TestTheOpenStoresLocations:
         _seed_source(old, "work/deep/a.md")
         _seed_source(old, "deep/a.md")
         _seed_source(old, "work/deep/only.md")
-        inner_id = old.source_ids(["deep/a.md"])["deep/a.md"]
+        inner_id = old.source_ids(["deep/a.md"], SourceType.DOCUMENT)["deep/a.md"]
         config.linked_roots = {"work": str(outer), "deep": str(inner)}
 
         store = Store(config)
 
         assert _names(store) == ["deep/a.md", "deep/only.md"]
-        assert store.source_ids(["deep/a.md"]) == {"deep/a.md": inner_id}
+        assert store.source_ids(["deep/a.md"], SourceType.DOCUMENT) == {"deep/a.md": inner_id}
         assert len(store.get_chunks_by_source("deep/a.md")) == 1
         cited = store.open_table(CITATIONS_TABLE).search().limit(None).to_list()
         assert sorted(row["source_id"] for row in cited).count(inner_id) == 2
@@ -336,7 +336,7 @@ class TestTheRegistryIsReadAgain:
             settings.set_value(config.data_root, "linked_roots", {"notes": str(root)})
             config.linked_roots = {"notes": str(root)}
             assert _names(store) == ["work/a.md"]
-            assert store.source_ids(["work/a.md"])
+            assert store.source_ids(["work/a.md"], SourceType.DOCUMENT)
 
         assert _names(store) == ["notes/work/a.md"]
 
@@ -347,13 +347,13 @@ class TestARootThatMoves:
         config.linked_roots = {"notes": str(before)}
         store = Store(config)
         _seed_source(store, "notes/a.md")
-        source_id = store.source_ids(["notes/a.md"])["notes/a.md"]
+        source_id = store.source_ids(["notes/a.md"], SourceType.DOCUMENT)["notes/a.md"]
 
         store.relocate_root(str(before), str(after))
         config.linked_roots = {"notes": str(after)}
 
         assert _paths(store) == [(after / "a.md").as_posix()]
-        assert store.source_ids(["notes/a.md"]) == {"notes/a.md": source_id}
+        assert store.source_ids(["notes/a.md"], SourceType.DOCUMENT) == {"notes/a.md": source_id}
 
     def test_a_row_already_at_the_new_place_keeps_it(self, config, tmp_path):
         before, after = tmp_path / "before" / "work", tmp_path / "after" / "work"
@@ -361,13 +361,13 @@ class TestARootThatMoves:
         store = Store(config)
         _seed_source(store, "work/deep/a.md")
         _seed_source(store, "deep/a.md")
-        inner_id = store.source_ids(["deep/a.md"])["deep/a.md"]
+        inner_id = store.source_ids(["deep/a.md"], SourceType.DOCUMENT)["deep/a.md"]
 
         store.relocate_root(str(before), str(after))
         config.linked_roots = {"work": str(after), "deep": str(after / "deep")}
 
         assert _names(store) == ["deep/a.md"]
-        assert store.source_ids(["deep/a.md"]) == {"deep/a.md": inner_id}
+        assert store.source_ids(["deep/a.md"], SourceType.DOCUMENT) == {"deep/a.md": inner_id}
 
     def test_a_root_that_did_not_move_writes_nothing(self, config, tmp_path):
         config.linked_roots = {"notes": str(tmp_path)}
@@ -396,7 +396,7 @@ class TestARootThatLeaves:
         _seed_source(store, "outer/x.md")
         _seed_source(store, "inner/y.md")
         store.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
-        cited = store.source_ids(["outer/x.md"])["outer/x.md"]
+        cited = store.source_ids(["outer/x.md"], SourceType.DOCUMENT)["outer/x.md"]
 
         store.name_by_label(["outer", "home"])
         config.linked_roots = {"inner": str(inner)}

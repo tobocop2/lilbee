@@ -29,7 +29,7 @@ from lilbee.core.config import active_config, cfg
 from lilbee.core.config.model import Config
 from lilbee.data.ingest import fanout
 from lilbee.data.ingest import pipeline as pipeline_mod
-from lilbee.data.store import CitationRecord, Store
+from lilbee.data.store import CitationRecord, SourceType, Store
 from lilbee.data.store.core import _WIKI_REFRESHED_NAME, _WIKI_REFRESHED_UNREADABLE
 from lilbee.data.types import ShardId, SyncResult
 from lilbee.wiki import stubs as stubs_mod
@@ -1097,7 +1097,9 @@ class TestARemovedFileInTheWiki:
         library.remove("note0.txt")
 
         library.use()
-        assert Store(cfg).source_ids(["note0.txt"]), "the cited file kept no row: nothing proven"
+        assert Store(cfg).source_ids(["note0.txt"], SourceType.DOCUMENT), (
+            "the cited file kept no row: nothing proven"
+        )
         assert "note0.txt" not in library.sources()
         assert "note0.txt" not in _shown_subjects().get("experiments", ())
         assert "about-note0.txt" not in _shown_subjects()

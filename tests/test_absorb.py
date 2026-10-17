@@ -20,7 +20,7 @@ from lilbee.app.ingest import (
 from lilbee.core import settings
 from lilbee.core.config import cfg
 from lilbee.data.ingest import sync
-from lilbee.data.store import REMOVED_REASON, HeldOut, Store
+from lilbee.data.store import REMOVED_REASON, HeldOut, SourceType, Store
 from lilbee.runtime.lock import (
     LibraryUnlockableError,
     LockingUnsupportedError,
@@ -100,7 +100,7 @@ def _citation_key(key: str) -> str:
 
 def _seed(store: Store, key: str) -> None:
     """Write one row for *key* into every table that holds a source key, by the store's writers."""
-    from lilbee.data.store import ConceptRecords, SourceType
+    from lilbee.data.store import ConceptRecords
     from lilbee.retrieval.concepts.graph import ConceptGraph
     from tests.test_store import _titled_records
 
@@ -161,7 +161,7 @@ def _write_wiki_page(store: Store, keys: list[str], subdir: str = "entities") ->
         render_citation_block(records),
     )
     wiki_root = cfg.data_root / cfg.wiki_dir
-    source_ids = store.source_ids(keys)
+    source_ids = store.source_ids(keys, SourceType.DOCUMENT)
     return write_page(
         wiki_root, subdir, "boeing", content, 1.0, keys, "entities", source_ids=source_ids
     )
@@ -604,14 +604,16 @@ class TestAParentNamedLikeItsSource:
         _write(outer / "README.md", "# Outer\n\nThe outer readme about the harbour schedule.\n")
         await _add(inner)
         store = library.store
-        inner_id = store.source_ids(["work/README.md"])["work/README.md"]
+        inner_id = store.source_ids(["work/README.md"], SourceType.DOCUMENT)["work/README.md"]
         store.add_citations([_citation("work/README.md")])
         library.embedder.embed_batch.reset_mock()
 
         result = register_sources([outer])
 
         assert result.registered == ["work"]
-        assert store.source_ids(["work/work/README.md"]) == {"work/work/README.md": inner_id}
+        assert store.source_ids(["work/work/README.md"], SourceType.DOCUMENT) == {
+            "work/work/README.md": inner_id
+        }
         stored = (inner / "README.md").resolve().as_posix()
         assert store.source_paths([inner_id]) == {inner_id: "work/work/README.md"}
         assert _holders(store, stored) == {("_sources", "path")}
@@ -619,7 +621,9 @@ class TestAParentNamedLikeItsSource:
         synced = await sync(quiet=True)
 
         assert synced.added == ["work/README.md"]
-        assert store.source_ids(["work/work/README.md"]) == {"work/work/README.md": inner_id}
+        assert store.source_ids(["work/work/README.md"], SourceType.DOCUMENT) == {
+            "work/work/README.md": inner_id
+        }
         cited = store.get_citations_for_source("work/work/README.md")
         assert [row["citation_key"] for row in cited] == ["src1"]
         assert store.get_citations_for_source("work/README.md") == []
@@ -635,14 +639,14 @@ class TestAParentNamedLikeItsSource:
         _write(new / "x.md", "# X\n\nThe new copy about bananas.\n")
         await _add(old)
         store = library.store
-        old_id = store.source_ids(["work/x.md"])["work/x.md"]
+        old_id = store.source_ids(["work/x.md"], SourceType.DOCUMENT)["work/x.md"]
 
         register_sources([new], force=True)
         synced = await sync(quiet=True)
 
         assert _keys(library) == ["work/x.md"]
         assert synced.updated == ["work/x.md"]
-        assert store.source_ids(["work/x.md"]) == {"work/x.md": old_id}
+        assert store.source_ids(["work/x.md"], SourceType.DOCUMENT) == {"work/x.md": old_id}
 
 
 class TestAMovedFolderAddedAgain:
@@ -692,7 +696,7 @@ class TestACitedSourceOfARemovedFolder:
     async def test_it_shows_its_name_and_takes_its_folder_again_on_a_new_add(self, library, notes):
         await _add(notes)
         store = library.store
-        cited_id = store.source_ids(["notes/loose.md"])["notes/loose.md"]
+        cited_id = store.source_ids(["notes/loose.md"], SourceType.DOCUMENT)["notes/loose.md"]
         store.add_citations([_citation("notes/loose.md")])
 
         remove_documents_durably(["notes"])
@@ -705,7 +709,9 @@ class TestACitedSourceOfARemovedFolder:
 
         register_sources([notes])
 
-        assert store.source_ids(["notes/loose.md"]) == {"notes/loose.md": cited_id}
+        assert store.source_ids(["notes/loose.md"], SourceType.DOCUMENT) == {
+            "notes/loose.md": cited_id
+        }
         stored = (notes / "loose.md").resolve().as_posix()
         assert _holders(store, stored) == {("_sources", "path")}
 

@@ -432,7 +432,7 @@ class TestWikiMentions:
         store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
         (row,) = store.wiki_mention_rows()
         assert row["source"] == "a.md"
-        assert row["source_id"] == store.source_ids(["a.md"])["a.md"]
+        assert row["source_id"] == store.source_ids(["a.md"], SourceType.DOCUMENT)["a.md"]
 
     def test_round_trips_rows(self, store):
         store.replace_wiki_mentions_for_source("a.md", [_mention("boeing", "a.md", 2, [0, 1])])
@@ -2039,7 +2039,7 @@ class TestWriteChunksBatch:
         ) as spy:
             store.write_chunks_batch(items)
         assert spy.call_count == 1
-        ids = store.source_ids(f"f{i}.md" for i in range(total))
+        ids = store.source_ids((f"f{i}.md" for i in range(total)), SourceType.DOCUMENT)
         assert sorted(spy.call_args.args[1]) == sorted(ids.values())
         # End state matches the per-item behavior: replaced rows, no orphans.
         for i in range(total):
@@ -3866,7 +3866,7 @@ class TestDeleteBySourceConceptRows:
         from lilbee.retrieval.concepts.schema import _chunk_concepts_schema
 
         store.add_chunks(_records_for("doc.md", 2))
-        doc = store.source_ids(["doc.md"])["doc.md"]
+        doc = store.source_ids(["doc.md"], SourceType.DOCUMENT)["doc.md"]
         cc_table = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
         cc_table.add(
             [
@@ -4423,7 +4423,7 @@ def _seed_source(store, key, *, title=None):
     store.add_chunks(_titled_records(key, 1, title=title, dim=store._config.embedding_dim))
     store.add_page_texts([{"source": key, "page": 1, "text": "t", "content_type": "text"}])
     concepts = ensure_table(store.get_db(), CHUNK_CONCEPTS_TABLE, _chunk_concepts_schema())
-    source_id = store.source_ids([key])[key]
+    source_id = store.source_ids([key], SourceType.DOCUMENT)[key]
     concepts.add([{"source_id": source_id, "chunk_index": 0, "concept": "roadmap"}])
     store.add_entities(
         [
@@ -4652,7 +4652,7 @@ def _relocate_one_update_for_each_move(store, moves):
         row = {"path": move.new}
         if title is not _KEEP_TITLE:
             row["title"] = title
-            source_id = store.source_ids([old])[old]
+            source_id = store.source_ids([old], SourceType.DOCUMENT)[old]
             chunks = store.open_table(CHUNKS_TABLE)
             chunks.update(where=f"source_id = '{source_id}'", values={"title": title})
         if move.stat is not None:
@@ -4964,7 +4964,10 @@ class TestOpenTimeMigration:
     def test_an_existing_source_takes_the_md5_of_its_path(self, test_config):
         store = _path_keyed_library(test_config)
 
-        assert store.source_ids(["a.md", "b.md"]) == {"a.md": _md5("a.md"), "b.md": _md5("b.md")}
+        assert store.source_ids(["a.md", "b.md"], SourceType.DOCUMENT) == {
+            "a.md": _md5("a.md"),
+            "b.md": _md5("b.md"),
+        }
 
     def test_what_a_reader_sees_is_unchanged(self, test_config):
         store = _path_keyed_library(test_config)
@@ -5114,7 +5117,7 @@ class TestOpenTimeMigration:
         rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
 
         assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
-        assert store.source_ids(["wiki/concepts/x.md"]) == {
+        assert store.source_ids(["wiki/concepts/x.md"], SourceType.WIKI) == {
             "wiki/concepts/x.md": _md5("wiki/concepts/x.md")
         }
 
@@ -5477,7 +5480,7 @@ class TestATableAnotherProcessIsCreating:
         store = half_made("_sources")
 
         assert store.open_table("_sources") is None
-        assert store.source_ids(["a.md"]) == {}
+        assert store.source_ids(["a.md"], SourceType.DOCUMENT) == {}
 
     def test_the_store_identity_reads_as_unset(self, half_made):
         assert half_made(META_TABLE).get_meta() is None

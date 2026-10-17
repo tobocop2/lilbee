@@ -43,7 +43,7 @@ def mock_svc():
     mock_store.get_sources.return_value = []
     mock_store.open_table.return_value = None
     # The stand-in store names each source by its path.
-    mock_store.source_ids.side_effect = lambda paths: {path: path for path in paths}
+    mock_store.source_ids.side_effect = lambda paths, source_type: {path: path for path in paths}
     mock_store.source_paths.side_effect = lambda ids: {i: i for i in ids}
     concepts = ConceptGraph(cfg, mock_store)
     services = make_mock_services(store=mock_store, concepts=concepts)
@@ -548,7 +548,9 @@ class TestBoostResults:
         ]
         mock_table = MagicMock()
         # The concept rows name the source by its id, which is not its path.
-        mock_svc.store.source_ids.side_effect = lambda paths: {p: f"id of {p}" for p in paths}
+        mock_svc.store.source_ids.side_effect = lambda paths, source_type: {
+            p: f"id of {p}" for p in paths
+        }
         mock_table.search.return_value.where.return_value.to_list.return_value = [
             _cc_row("id of test.pdf", 0, "python"),
             _cc_row("id of test.pdf", 1, "python"),

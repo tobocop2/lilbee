@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from lilbee.core.config import cfg
-from lilbee.data.store import SearchChunk
+from lilbee.data.store import SearchChunk, SourceType
 from lilbee.wiki.drafts import (
     AcceptResult,
     DraftInfo,
@@ -1057,7 +1057,7 @@ class TestADraftWrittenBeforeIds:
             diff = diff_draft("roadmap", wiki_root, store)
 
         recorded = recorded_source_ids(draft.read_text(encoding="utf-8"))
-        assert recorded == {"a.md": store.source_ids(["a.md"])["a.md"]}
+        assert recorded == {"a.md": store.source_ids(["a.md"], SourceType.DOCUMENT)["a.md"]}
         assert "never.md" in caplog.text and "a.md," not in caplog.text
         assert '+sources: ["a.md", "never.md"]' in diff
         assert draft.stat().st_mtime_ns == stamp

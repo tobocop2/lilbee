@@ -21,7 +21,7 @@ from lilbee.core.config import (
     Config,
 )
 from lilbee.data import store as data_store
-from lilbee.data.store import ConceptRecords, Store, escape_sql_string
+from lilbee.data.store import ConceptRecords, SourceType, Store, escape_sql_string
 from lilbee.retrieval.concepts.community import Community, _compute_pmi, _leiden_partition
 from lilbee.retrieval.concepts.nlp import _ensure_spacy_model, _filter_noun_chunks
 from lilbee.retrieval.concepts.schema import (
@@ -185,7 +185,8 @@ class ConceptGraph:
 
     def write_concept_records(self, records: ConceptRecords) -> None:
         """Write batched concept rows: one lock acquisition, at most one add per table."""
-        ids = self._store.source_ids({row["chunk_source"] for row in records.chunk_concepts})
+        sources = {row["chunk_source"] for row in records.chunk_concepts}
+        ids = self._store.source_ids(sources, SourceType.DOCUMENT)
         chunk_concepts = [
             {
                 "source_id": ids[row["chunk_source"]],
@@ -222,7 +223,7 @@ class ConceptGraph:
         if table is None:
             return results
         query_set = set(query_concepts)
-        ids = self._store.source_ids({r.source for r in results})
+        ids = self._store.source_ids({r.source for r in results}, None)
         concepts_by_chunk = self._chunk_concepts_batch(
             table, {(ids[r.source], r.chunk_index) for r in results if r.source in ids}
         )
@@ -246,7 +247,7 @@ class ConceptGraph:
     def get_chunk_concepts(self, source: str, chunk_index: int) -> list[str]:
         """Get concepts associated with a specific chunk."""
         table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
-        source_id = self._store.source_ids([source]).get(source)
+        source_id = self._store.source_ids([source], None).get(source)
         if table is None or source_id is None:
             return []
         try:
@@ -436,7 +437,9 @@ class ConceptGraph:
         cc_table = self._store.open_table(CHUNK_CONCEPTS_TABLE)
         if cc_table is None:
             return True
-        touched = self._touched_concepts(cc_table, set(self._store.source_ids(changed).values()))
+        touched = self._touched_concepts(
+            cc_table, set(self._store.source_ids(changed, SourceType.DOCUMENT).values())
+        )
         if touched and not self._recluster_affected(cc_table, node_rows, touched):
             return False
         if sweep_orphans:

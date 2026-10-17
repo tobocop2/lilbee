@@ -2386,7 +2386,7 @@ class Store:
     def _chunks_of(self, source: str, predicate: str) -> list[SearchChunk]:
         """*source*'s chunk rows that *predicate* also matches."""
         table = self.open_table(CHUNKS_TABLE)
-        source_id = self.source_ids([source]).get(source)
+        source_id = self.source_ids([source], None).get(source)
         if table is None or source_id is None:
             return []
         query = table.search().where(f"{_SOURCE_ID} = '{source_id}' AND {predicate}")
@@ -2793,14 +2793,12 @@ class Store:
             query = table.search().where(f"{column} IN ({batch})").select([column, *others])
             yield from query.limit(None).to_list()
 
-    def source_ids(
-        self, paths: Iterable[str], source_type: SourceType | None = None
-    ) -> dict[str, str]:
+    def source_ids(self, paths: Iterable[str], source_type: SourceType | None) -> dict[str, str]:
         """The id of each of the names *paths* that a source row of *source_type* holds.
 
         A name finds its source at the key of each type of the class of *source_type*
-        (a wiki page, or not), the class a write keeps one row per name in. A reader
-        that does not know the type finds a wiki page first.
+        (a wiki page, or not), the class a write keeps one row per name in. With
+        *source_type* None, a name finds a wiki page first.
         """
         names = list(paths)
         types = [

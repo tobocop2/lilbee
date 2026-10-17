@@ -5,11 +5,18 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from pathlib import Path
+from unittest.mock import patch
 
 import pyarrow as pa
 import pytest
 
-from lilbee.core.config import CHUNKS_TABLE, CITATIONS_TABLE, SOURCES_TABLE, cfg
+from lilbee.core.config import (
+    CHUNK_CONCEPTS_TABLE,
+    CHUNKS_TABLE,
+    CITATIONS_TABLE,
+    SOURCES_TABLE,
+    cfg,
+)
 from lilbee.data.store import (
     REMOVED_REASON,
     ChunkType,
@@ -21,7 +28,11 @@ from lilbee.data.store import (
     SourceType,
     Store,
 )
+from lilbee.retrieval.concepts import ConceptGraph
+from tests.test_concepts import _connected_components
 from tests.test_store import _axis_record, _citation, _early_source, _md5, _mention
+
+_LEIDEN = "lilbee.retrieval.concepts.graph._leiden_partition"
 
 _OLD_REMOVED = "removed via remove (re-add the source or run retry-skipped to restore)"
 _FAILED = HeldRecord(HeldOut.FAILED, "hf", "no text extracted (0 chunks)")
@@ -156,7 +167,9 @@ class TestTheWriterStatesTheType:
 
         [row] = _rows(store)
         assert (row["path"], row["source_type"]) == ((root / "notes.md").as_posix(), "document")
-        assert store.source_ids(["wiki/notes.md"]) == {"wiki/notes.md": row["source_id"]}
+        assert store.source_ids(["wiki/notes.md"], SourceType.DOCUMENT) == {
+            "wiki/notes.md": row["source_id"]
+        }
 
     def test_a_wiki_page_and_a_document_of_one_name_have_two_ids(self, config, tmp_path):
         root = tmp_path / "home" / "wiki"
@@ -171,7 +184,7 @@ class TestTheWriterStatesTheType:
         assert rows["document"]["path"] == (root / "summaries" / "a.md").as_posix()
         assert rows["wiki"]["path"] == "wiki/summaries/a.md"
         assert rows["document"]["source_id"] != rows["wiki"]["source_id"]
-        assert store.source_ids(["wiki/summaries/a.md"]) == {
+        assert store.source_ids(["wiki/summaries/a.md"], None) == {
             "wiki/summaries/a.md": rows["wiki"]["source_id"]
         }
 
@@ -182,7 +195,7 @@ class TestTheWriterStatesTheType:
         store = Store(config)
         _batch(store, "wiki/summaries/a.md", SourceType.DOCUMENT)
         _replace(store, "wiki/summaries/a.md", SourceType.WIKI)
-        page = store.source_ids(["wiki/summaries/a.md"])["wiki/summaries/a.md"]
+        page = store.source_ids(["wiki/summaries/a.md"], SourceType.WIKI)["wiki/summaries/a.md"]
 
         store.name_by_label(["wiki"])
 
@@ -191,7 +204,7 @@ class TestTheWriterStatesTheType:
             ("wiki/summaries/a.md", "wiki"),
         ]
         assert len(store.get_chunks_by_source("wiki/summaries/a.md")) == 1
-        assert store.source_ids(["wiki/summaries/a.md"]) == {"wiki/summaries/a.md": page}
+        assert store.source_ids(["wiki/summaries/a.md"], None) == {"wiki/summaries/a.md": page}
 
 
 class TestAWriteFindsTheLabelKeyedRow:
@@ -378,7 +391,7 @@ class TestANameOfADocumentAndAWikiPage:
         found = shared.search([0.1] * cfg.embedding_dim, max_distance=0)
         assert [(chunk.source, chunk.chunk_type) for chunk in found] == [(_SHARED, "wiki")]
         assert shared.get_sources() == []
-        assert shared.source_ids([_SHARED]) == {_SHARED: page}
+        assert shared.source_ids([_SHARED], SourceType.WIKI) == {_SHARED: page}
         assert shared.held_records() == {_SHARED: HeldRecord(HeldOut.REMOVED, "h", REMOVED_REASON)}
 
     def test_deleting_the_document_record_keeps_the_page_record(self, shared):
@@ -431,6 +444,48 @@ class TestANameOfADocumentAndAWikiPage:
 
         assert shared.held_records() == {}
         assert sorted(_ids(shared)) == ["document", "wiki"]
+
+
+def _concept_ids(store: Store) -> set[str]:
+    """The source id of every chunk concept row."""
+    rows = store.open_table(CHUNK_CONCEPTS_TABLE).search().limit(None).to_list()
+    return {row["source_id"] for row in rows}
+
+
+class TestTheConceptsOfADocumentNamedLikeAPage:
+    def _graph(self, config, shared: Store) -> ConceptGraph:
+        graph = ConceptGraph(config, shared)
+        chunks = [(_SHARED, 0), (_SHARED, 1)]
+        graph.write_concept_records(
+            graph.build_concept_records(chunks, [["alpha", "beta"], ["alpha", "beta"]])
+        )
+        return graph
+
+    def test_its_concept_rows_belong_to_the_document(self, config, shared):
+        self._graph(config, shared)
+
+        assert _concept_ids(shared) == {_ids(shared)["document"]}
+
+    def test_removing_the_document_removes_its_concept_rows(self, config, shared):
+        self._graph(config, shared)
+
+        shared.remove_documents([_SHARED])
+
+        assert _concept_ids(shared) == set()
+
+    def test_a_changed_document_reclusters_its_concepts(self, config, shared):
+        graph = self._graph(config, shared)
+        _batch(shared, "b.md", SourceType.DOCUMENT)
+        other = graph.build_concept_records([("b.md", 0), ("b.md", 1)], [["gamma", "delta"]] * 2)
+        graph.write_concept_records(other)
+        with patch(_LEIDEN, side_effect=_connected_components) as leiden:
+            graph.rebuild_clusters()
+            leiden.reset_mock()
+
+            graph.rebuild_clusters(added=[_SHARED])
+
+        edges = leiden.call_args.args[0]
+        assert {c for row in edges for c in (row["source"], row["target"])} == {"alpha", "beta"}
 
 
 class TestAWriteOntoAFoundRow:
