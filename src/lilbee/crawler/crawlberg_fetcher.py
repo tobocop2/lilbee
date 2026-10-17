@@ -61,7 +61,8 @@ CRAWLBERG_DENIED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, 
 )
 _MAX_REDIRECTS = 10
 # Tracking query parameters stripped from a discovered link before it is queued, so the page
-# is fetched once at its plain address. A trailing ``*`` matches by prefix.
+# is fetched once at its plain address. A trailing ``*`` matches by prefix. ``ref`` is not one:
+# it names content on docs and forum sites, such as a branch, though crawlberg's default strips it.
 _TRACKING_PARAMS = (
     "utm_*",
     "fbclid",
@@ -91,7 +92,6 @@ _TRACKING_PARAMS = (
     "partner",
     "srsltid",
     "replytocom",
-    "ref",
 )
 _PREFIX_MARK = "*"
 # What crawlberg's query encoder leaves as is besides letters, digits and ``-._``, and the one

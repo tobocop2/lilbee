@@ -220,6 +220,7 @@ QUERY_LINKS = (
     "/query/promo?utm_source=news",
     "/query/ad?gclid=abc&utm_term=spring",
     "/query/blog?p=42",
+    "/query/branch?ref=main",
     "/moved",
 )
 
@@ -735,6 +736,11 @@ class TestQueryUrlsAndRedirects:
         saved = await self._saved_text(site)
         assert "Served /query/ad." in saved
         assert site.paths_since(0, "/query/ad") == ["/query/ad"]
+
+    async def test_a_ref_parameter_is_kept_in_the_fetch(self, site):
+        saved = await self._saved_text(site)
+        assert "Served /query/branch?ref=main." in saved
+        assert site.paths_since(0, "/query/branch") == ["/query/branch?ref=main"]
 
     async def test_exclude_patterns_see_the_query(self, site):
         saved = await self._saved_text(site)
