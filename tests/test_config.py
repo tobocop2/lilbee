@@ -1871,6 +1871,26 @@ class TestCrawlBrowserExtraArgs:
             assert loaded.chat_model == "ollama/keep:latest"
 
 
+class TestCrawlRespectRobotsTxt:
+    def test_default_honours_robots_txt(self):
+        assert Config().crawl_respect_robots_txt is True
+
+    def test_env_var_turns_it_off(self, tmp_path):
+        env = clean_env(tmp_path)
+        env["LILBEE_CRAWL_RESPECT_ROBOTS_TXT"] = "false"
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_respect_robots_txt is False
+
+    def test_config_toml_turns_it_off(self, tmp_path):
+        (tmp_path / "config.toml").write_text(
+            "crawl_respect_robots_txt = false\n", encoding="utf-8"
+        )
+        env = clean_env()
+        env["LILBEE_DATA"] = str(tmp_path)
+        with mock.patch.dict(os.environ, env, clear=True):
+            assert Config().crawl_respect_robots_txt is False
+
+
 class TestCrawlUserAgent:
     def test_default_is_no_override(self):
         assert Config().crawl_user_agent == ""

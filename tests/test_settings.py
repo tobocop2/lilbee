@@ -623,6 +623,27 @@ class TestMemoryTuningSettingsMap:
         assert "crawl_user_agent" in WRITABLE_CONFIG_FIELDS
         assert get_default("crawl_user_agent") == ""
 
+    def test_robots_txt_is_a_writable_crawl_setting_honoured_by_default(self):
+        robots = SETTINGS_MAP["crawl_respect_robots_txt"]
+        assert robots.writable is True
+        assert robots.type is bool
+        assert robots.group is SettingGroup.CRAWLING
+        assert "crawl_respect_robots_txt" in WRITABLE_CONFIG_FIELDS
+        assert get_default("crawl_respect_robots_txt") is True
+
+    def test_robots_txt_off_persists_and_reloads(self, tmp_path, monkeypatch):
+        from lilbee.app import settings as appset
+
+        monkeypatch.delenv("LILBEE_SKIP_TOML_CONFIG", raising=False)
+        monkeypatch.setattr(appset.cfg, "data_root", tmp_path)
+        monkeypatch.setattr(appset.cfg, "crawl_respect_robots_txt", True)
+        appset.apply_settings_update({"crawl_respect_robots_txt": False})
+        assert settings.load(tmp_path)["crawl_respect_robots_txt"] is False
+
+        appset.cfg.crawl_respect_robots_txt = True
+        settings.overlay_persisted_settings(tmp_path)
+        assert appset.cfg.crawl_respect_robots_txt is False
+
     def test_the_user_agent_persists_and_reloads(self, tmp_path, monkeypatch):
         from lilbee.app import settings as appset
 
