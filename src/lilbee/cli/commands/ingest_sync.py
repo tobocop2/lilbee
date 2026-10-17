@@ -523,6 +523,15 @@ def _validate_file_paths(file_paths: list[Path]) -> None:
         raise SystemExit(1)
 
 
+def _refuse_crawl(message: str) -> NoReturn:
+    """Print the refusal of a crawl, as a JSON error in JSON mode, and exit 1."""
+    if cfg.json_mode:
+        json_output({"error": message})
+    else:
+        console.print(message, style=theme.ERROR, soft_wrap=True)
+    raise SystemExit(1)
+
+
 def _crawl_urls_step(
     urls: list[str],
     *,
@@ -535,23 +544,21 @@ def _crawl_urls_step(
     """Crawl URLs (or fail fast when crawler extra is missing). Returns saved paths."""
     if not urls:
         return []
-    from lilbee.crawler import crawler_available
+    from lilbee.crawler import CRAWLER_MISSING_MESSAGE, crawler_available
 
     if not crawler_available():
-        console.print(
-            "Web crawling requires: pip install 'lilbee[crawler]'",
-            style=theme.ERROR,
-            soft_wrap=True,
+        _refuse_crawl(CRAWLER_MISSING_MESSAGE)
+    try:
+        crawled_paths = _crawl_urls_blocking(
+            urls,
+            crawl=crawl,
+            depth=depth,
+            max_pages=max_pages,
+            cancel_event=cancel_event,
+            include_subdomains=include_subdomains,
         )
-        raise SystemExit(1)
-    crawled_paths = _crawl_urls_blocking(
-        urls,
-        crawl=crawl,
-        depth=depth,
-        max_pages=max_pages,
-        cancel_event=cancel_event,
-        include_subdomains=include_subdomains,
-    )
+    except ValueError as exc:
+        _refuse_crawl(str(exc))
     if not cfg.json_mode:
         console.print(
             f"Crawled {len(crawled_paths)} page(s) from {len(urls)} URL(s)",

@@ -109,6 +109,7 @@ _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
 # The modules of the crawler extra a crawl imports: the crawler, and the URL parser of saved names.
 _CRAWLER_MODULES = ("crawlberg", "ada_url")
+CRAWLER_MISSING_MESSAGE = "Web crawling requires: pip install 'lilbee[crawler]'"
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
 # How crawlberg 1.11.1 starts its refusal of a setting, and the message that names that setting.
 _REFUSED_SETTING_MESSAGES = {
