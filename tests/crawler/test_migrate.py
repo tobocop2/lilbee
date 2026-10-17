@@ -186,6 +186,7 @@ def test_a_page_that_lost_a_shared_file_keeps_its_copy_at_its_own_name(store: Ma
     }
     assert (_web() / own).read_text(encoding="utf-8") == "# Own"
     assert _moved_sources(store) == [((f"_web/{_SHARED}",), f"_web/{url_to_filename(_UNDERSCORE)}")]
+    store.remove_documents.assert_not_called()
 
 
 def test_a_file_that_is_not_utf_8_goes_to_the_latest_page(store: MagicMock):
