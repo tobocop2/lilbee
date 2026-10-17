@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.core import settings
 from lilbee.core.config import CITATIONS_TABLE, SOURCES_TABLE, cfg
-from lilbee.data.store import Store
+from lilbee.data.store import SourceType, Store
 from lilbee.data.store.locations import SourceLocations, root_location
 from tests.test_store import _citation, _holders, _seed_source
 
@@ -134,6 +134,72 @@ class TestWhatIsStored:
         ]
         assert store.get_citations_for_source("work/a.md") == []
         assert list(store.held_records()) == []
+
+
+class TestAFolderNamedLikeTheWikiFolder:
+    """Only a document source is stored at its location; a wiki page keeps its key."""
+
+    def test_a_wiki_page_keeps_its_key_and_is_found_after_the_folder_goes(self, config, tmp_path):
+        config.linked_roots = {"wiki": str(tmp_path / "home" / "wiki")}
+        store = Store(config)
+        _seed_source(store, "wiki/notes.md")
+        store.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
+        store.add_citations([_citation("wiki/concepts/b.md")])
+        pages = ["wiki/summaries/a.md", "wiki/concepts/b.md"]
+        ids = store.source_ids(pages)
+
+        config.linked_roots = {}
+
+        assert set(pages) <= set(_paths(store))
+        assert (tmp_path / "home" / "wiki" / "notes.md").as_posix() in _paths(store)
+        assert store.source_ids(pages) == ids
+        assert len(ids) == 2
+        assert len(store.get_citations_for_source("wiki/concepts/b.md")) == 1
+
+    def test_the_open_leaves_a_wiki_page_under_its_key(self, config, tmp_path):
+        old = Store(config)
+        _seed_source(old, "wiki/notes.md")
+        old.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
+        old.close()
+        root = tmp_path / "home" / "wiki"
+        config.linked_roots = {"wiki": str(root)}
+
+        store = Store(config)
+
+        assert sorted(_paths(store)) == sorted(
+            [(root / "notes.md").as_posix(), "wiki/summaries/a.md"]
+        )
+        assert _names(store) == ["wiki/notes.md"]
+        assert len(store.source_ids(["wiki/summaries/a.md"])) == 1
+
+    def test_the_open_folds_no_wiki_page_into_a_document(self, config, tmp_path):
+        root = tmp_path / "home" / "wiki"
+        config.linked_roots = {"wiki": str(root)}
+        _seed_source(Store(config), "wiki/summaries/a.md")
+        config.linked_roots = {}
+        old = Store(config)
+        old.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
+        _seed_source(old, "wiki/notes.md")
+        page = old.source_ids(["wiki/summaries/a.md"])["wiki/summaries/a.md"]
+        old.close()
+        config.linked_roots = {"wiki": str(root)}
+
+        store = Store(config)
+
+        assert (root / "notes.md").as_posix() in _paths(store)
+        assert {"wiki/summaries/a.md", (root / "summaries" / "a.md").as_posix()} <= set(
+            _paths(store)
+        )
+        assert page in store.source_paths([page])
+
+    def test_an_open_with_only_wiki_pages_under_the_label_upgrades_nothing(self, config, tmp_path):
+        Store(config).upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
+        config.linked_roots = {"wiki": str(tmp_path / "home" / "wiki")}
+        events: list[object] = []
+
+        Store(config, on_upgrade=lambda _kind, event: events.append(event)).get_db()
+
+        assert events == []
 
 
 def _label_keyed_library(config, tmp_path) -> Path:

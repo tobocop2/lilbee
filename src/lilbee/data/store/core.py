@@ -263,6 +263,8 @@ _LISTED = (
     f"source_type != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
     f" OR {_HELD_OUT} = '{HeldOut.FAILED}' AND file_hash IS NOT NULL)"
 )
+# The source rows stored at their location; every other source is stored by its key.
+_DOCUMENT = f"source_type = '{SourceType.DOCUMENT}'"
 # The source rows a move found by a sync carries: the listed ones and every failure.
 _MOVABLE = (
     f"source_type != '{SourceType.WIKI}'"
@@ -485,12 +487,17 @@ def _source_record(row: Mapping[str, Any], locations: SourceLocations) -> Source
     return cast("SourceRecord", shown)
 
 
+def _stored_path(name: str, source_type: str, locations: SourceLocations) -> str:
+    """What ``_sources.path`` holds for *name*: a document's location, any other source's key."""
+    return locations.location(name) if source_type == SourceType.DOCUMENT else name
+
+
 def _stored_row(
     record: Mapping[str, Any], source_id: str, locations: SourceLocations
 ) -> dict[str, Any]:
     """The ``_sources`` row of a ``SourceRecord`` that *source_id* names."""
     row = {name: value for name, value in record.items() if name != _OLD_PATH}
-    path = locations.location(record[_OLD_PATH])
+    path = _stored_path(record[_OLD_PATH], record["source_type"], locations)
     return {_SOURCE_ID: source_id, _PATH: path, **row, **dict.fromkeys(_HELD_COLUMNS)}
 
 
@@ -696,8 +703,9 @@ def _migrate_sources_table(table: LanceTable) -> None:
 
 
 def _label_keyed(locations: SourceLocations) -> str:
-    """The source rows still named by a registered label in place of their location."""
-    return " OR ".join(_rekey_sql(_PATH, label, label)[0] for label in locations.roots)
+    """The document rows still named by a registered label in place of their location."""
+    labels = " OR ".join(_rekey_sql(_PATH, label, label)[0] for label in locations.roots)
+    return f"{_DOCUMENT} AND ({labels})"
 
 
 def _holds_label_keys(db: LanceDBConnection, locations: SourceLocations) -> bool:
@@ -713,7 +721,8 @@ def _merge_landing(db: LanceDBConnection, sources: LanceTable, old: str, new: st
 
     The citations of the folded row cite the row it lands on; its own rows go.
     """
-    under_old = sources.search().where(_rekey_sql(_PATH, old, old)[0]).limit(None).to_list()
+    under = f"{_DOCUMENT} AND ({_rekey_sql(_PATH, old, old)[0]})"
+    under_old = sources.search().where(under).limit(None).to_list()
     landing = {new + row[_PATH][len(old) :]: row[_SOURCE_ID] for row in under_old}
     query = sources.search().where(f"{_PATH} IN ({_in_list(landing)})").select([_PATH, _SOURCE_ID])
     held = {
@@ -746,7 +755,8 @@ def _fill_locations(db: LanceDBConnection, locations: SourceLocations) -> None:
     if sources is None or not _holds_label_keys(db, locations):
         return
     for root, label in locations.deepest_first:
-        where, value = _rekey_sql(_PATH, label, root)
+        under, value = _rekey_sql(_PATH, label, root)
+        where = f"{_DOCUMENT} AND ({under})"
         if sources.count_rows(where):
             _merge_landing(db, sources, label, root)
             sources.update(where=where, values_sql={_PATH: value})
@@ -2616,7 +2626,7 @@ class Store:
         meta = meta or SourceMeta()
         return {
             _SOURCE_ID: source_id,
-            _PATH: self._locations().location(path),
+            _PATH: _stored_path(path, source_type, self._locations()),
             "file_hash": file_hash,
             # Stamped under the write lock that commits the row: sources_checkpoint relies on it.
             "ingested_at": datetime.now(UTC).isoformat(),
@@ -2653,25 +2663,37 @@ class Store:
                     db.drop_table(name)
         return ensure_table(db, SOURCES_TABLE, _sources_schema())
 
-    def _lookup(self, column: str, values: Iterable[str], other: str) -> dict[str, str]:
-        """``{value: other}`` for the source rows whose *column* holds one of *values*."""
+    def _lookup(
+        self, column: str, values: Iterable[str], other: str, among: str = "true"
+    ) -> dict[str, str]:
+        """``{value: other}`` for the source rows *among* selects whose *column* holds a value."""
         table = self.open_table(SOURCES_TABLE)
         wanted = sorted(set(values))
         found: dict[str, str] = {}
         if table is None:
             return found
         for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
-            where = f"{column} IN ({_in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])})"
+            batch = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
+            where = f"{column} IN ({batch}) AND {among}"
             for row in table.search().where(where).select([column, other]).limit(None).to_list():
                 found[row[column]] = row[other]
         return found
 
     def source_ids(self, paths: Iterable[str]) -> dict[str, str]:
-        """The id of each of the names *paths* that a source row holds."""
+        """The id of each of the names *paths* that a source row holds.
+
+        A document is found at its location, any other source at its key; a name
+        that both hold finds the source that is not a document.
+        """
         location = self._locations().location
         at = {path: location(path) for path in paths}
-        found = self._lookup(_PATH, at.values(), _SOURCE_ID)
-        return {path: found[place] for path, place in at.items() if place in found}
+        keyed = self._lookup(_PATH, at, _SOURCE_ID, f"NOT {_DOCUMENT}")
+        found = self._lookup(_PATH, at.values(), _SOURCE_ID, _DOCUMENT)
+        return {
+            path: keyed.get(path) or found[place]
+            for path, place in at.items()
+            if path in keyed or place in found
+        }
 
     def source_paths(self, source_ids: Iterable[str]) -> dict[str, str]:
         """The shown name of each of *source_ids* that a source row holds."""
