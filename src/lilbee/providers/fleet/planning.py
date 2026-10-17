@@ -68,6 +68,8 @@ if TYPE_CHECKING:
 
 # Fleet-only concurrency: continuous-batching slots (--parallel) per server.
 _CHAT_SLOTS = 4
+# The free memory llama-server's own fit leaves on a card when ``--fit-target`` is not given.
+ENGINE_FIT_MARGIN_MIB = 1024
 # Stand-in in the launch log for a host whose devices could not be read.
 _NO_DEVICES = "none"
 
@@ -1573,16 +1575,14 @@ def _chat_fit_target_mib(
 ) -> tuple[int, ...]:
     """Memory, in MiB, the engine's fit leaves free on each of chat's cards.
 
-    The share placement never charges plus what the card holds back for the
-    other roles placed on it. Empty for an engine without ``--fit-target`` and
-    on shared memory, where a layer moved off the device frees nothing.
+    The engine's own margin plus what the card holds back for the other roles
+    placed on it. Empty for an engine without ``--fit-target`` and on shared
+    memory, where a layer moved off the device frees nothing.
     """
     if any(device.unified for device in chosen) or not engine_advertises(binary, FLAG_FIT_TARGET):
         return ()
-    headroom = 1.0 - usable_vram_fraction()
     return tuple(
-        -(-(int(device.total_bytes * headroom) + reserved.get(device.index, 0)) // MIB)
-        for device in chosen
+        ENGINE_FIT_MARGIN_MIB + -(-reserved.get(device.index, 0) // MIB) for device in chosen
     )
 
 

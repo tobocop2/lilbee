@@ -743,7 +743,7 @@ flowchart LR
   `engine_params.resolve_chat_ctx`), so both paths price the cache the model's
   architecture holds. **llama-server's own fit places the layers** (`--n-gpu-layers -1`):
   lilbee keeps the window, the slot count and the cross-card placement, and sends
-  `--fit-target` per card, the share placement never charges plus the memory held for the
+  `--fit-target` per card: the engine's own 1024 MiB margin plus the memory held for the
   other roles on that card. When full offload leaves KV room for less than a grounded
   prompt (`planning.fit_chat_ctx`), the window is raised to the smallest one that answers
   and the fit moves dense layers or MoE experts to system memory to hold it. That needs
