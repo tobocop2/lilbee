@@ -2878,6 +2878,22 @@ async def test_chat_slash_delete_with_match(mock_svc):
         mock_svc.store.remove_documents.assert_called_once_with(["notes.md"], {})
 
 
+async def test_chat_slash_delete_where_the_library_cannot_lock_files(mock_svc):
+    from lilbee.runtime.lock import LockingUnsupportedError
+
+    refused = "/data is on a filesystem that does not support file locking."
+    mock_svc.store.get_sources.return_value = [{"filename": "notes.md", "source": "notes.md"}]
+    mock_svc.store.remove_documents.side_effect = LockingUnsupportedError(refused)
+    app = ChatTestApp()
+    async with app.run_test(size=(120, 40)) as _pilot:
+        set_services(mock_svc)
+        with patch.object(app.screen, "notify") as mock_notify:
+            app.screen._cmd_delete("notes.md")
+            await app.screen.workers.wait_for_complete()
+            await wait_until(_pilot, lambda: mock_notify.called)
+            mock_notify.assert_called_once_with(refused, severity="error")
+
+
 async def test_chat_slash_delete_not_found(mock_svc):
     mock_svc.store.get_sources.return_value = [
         {"filename": "notes.md", "source": "notes.md"},
