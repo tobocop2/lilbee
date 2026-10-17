@@ -1070,6 +1070,28 @@ class TestExcludedLinks:
             await _recursive(_http(), filters=EXCLUDES, seed=FEED)
         assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
 
+    @pytest.mark.parametrize(
+        ("seed", "pattern", "named"),
+        [
+            ("HTTPS://Example.COM:443", r"\.com/$", "https://example.com/"),
+            ("https://example.com/a^b", r"/a\^b$", "https://example.com/a^b"),
+        ],
+        ids=["no-path", "raw-caret"],
+    )
+    async def test_a_seed_is_matched_as_crawlberg_parses_it(
+        self, caplog, seed: str, pattern: str, named: str
+    ):
+        with StubCrawlberg([complete(0)]).installed():
+            await _recursive(_http(), filters=FilterSpec([pattern]), seed=seed)
+        assert _named(caplog) == [_left_out(named, pattern)]
+
+    async def test_a_seed_the_url_parser_refuses_is_matched_by_no_pattern(self, caplog):
+        every_address = FilterSpec([r"."])
+        for seed in ("http://exa mple.com/", "http://example.com/parsed"):
+            with StubCrawlberg([complete(0)]).installed():
+                await _recursive(_http(), filters=every_address, seed=seed)
+        assert _named(caplog) == [_left_out("http://example.com/parsed", r".")]
+
     async def test_a_crawl_that_excludes_nothing_logs_no_warning(self, caplog):
         script = [page(SEED, depth=0, links=["https://example.com/a"]), complete(1)]
         with StubCrawlberg(script).installed():
