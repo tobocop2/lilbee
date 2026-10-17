@@ -1438,6 +1438,19 @@ class TestDocumentsRemoveRoute:
         assert resp.status_code == 201
         assert resp.json()["removed"] == ["a.md"]
 
+    def test_a_library_that_cannot_lock_files_is_a_conflict(self, client):
+        from lilbee.runtime.lock import LockingUnsupportedError
+
+        refused = "/data is on a filesystem that does not support file locking."
+        with mock.patch(
+            "lilbee.app.ingest.remove_documents_durably",
+            side_effect=LockingUnsupportedError(refused),
+        ):
+            resp = client.post("/api/documents/remove", json={"names": ["a.md"]})
+
+        assert resp.status_code == 409
+        assert resp.json()["detail"] == refused
+
 
 SSE_ROUTES = [
     ("get", "/api/warm/stream"),
