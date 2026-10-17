@@ -47,6 +47,8 @@ from lilbee.runtime.progress import (
 )
 from lilbee.wiki.lint import IssueSeverity, IssueType, LintIssue, LintReport
 from lilbee.wiki.stats import BuildStats
+from tests._crawlberg_stub import StubCrawlberg, complete
+from tests._crawlberg_stub import error as crawlberg_error
 from tests._held import held_kinds, hold_failed
 from tests._mock_effects import repeat_last
 from tests.conftest import make_mock_services, reset_held_on_a_thread, summary_of
@@ -3886,10 +3888,11 @@ class TestAddWithUrls:
             result = runner.invoke(app, [*flags, "add", "http://127.0.0.1:9/", "--crawl"])
         assert result.exit_code == 1
         assert not isinstance(result.exception, ValueError)
+        named = f"http://127.0.0.1:9/: {refusal}"
         if json_mode:
-            assert json.loads(result.stdout)["error"] == str(refusal)
+            assert json.loads(result.stdout)["error"] == named
         else:
-            assert str(refusal) in result.output
+            assert named in result.output
 
     @pytest.mark.parametrize("json_mode", [True, False])
     def test_a_crawl_that_saves_no_page_prints_each_reason_and_exits_1(self, json_mode):
@@ -3964,7 +3967,8 @@ class TestAddWithUrls:
         assert result.exit_code == 1, result.output
         data = json.loads(result.stdout)
         assert data["copied"] == ["note.md"]
-        assert data["failed"] == [{"url": "http://127.0.0.1:9/", "reason": str(refusal)}]
+        reason = f"http://127.0.0.1:9/: {refusal}"
+        assert data["failed"] == [{"url": "http://127.0.0.1:9/", "reason": reason}]
 
     def test_a_refused_address_does_not_stop_the_next_url(self, tmp_path):
         saved = tmp_path / "page.md"
@@ -4058,7 +4062,80 @@ class TestAddWithUrls:
         assert "secret" not in result.stdout
         data = json.loads(result.stdout)
         assert data["failed"] == [
-            {"url": "http://example.com:80a/", "reason": "URL has an invalid port: example.com:80a"}
+            {
+                "url": "http://example.com:80a/",
+                "reason": "http://example.com:80a/: URL has an invalid port",
+            }
+        ]
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_seed_whose_host_does_not_parse_is_refused_by_name(self, json_mode):
+        flags = ["--json"] if json_mode else []
+        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+            result = runner.invoke(app, [*flags, "add", "http://alice:cret@[::1/a"])
+        assert result.exit_code == 1
+        assert "http://[::1/a: Invalid IPv6 URL" in result.output
+        assert "cret" not in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_refused_seed_is_named_without_its_userinfo(self, json_mode):
+        seed = "http://alice:se/cret@example.com/"
+        flags = ["--json"] if json_mode else []
+        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+            result = runner.invoke(app, [*flags, "add", seed])
+        assert result.exit_code == 1
+        assert "http://example.com/: URL has an invalid port" in result.output
+        assert "alice" not in result.output
+        assert "cret" not in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_credentialed_seed_whose_page_fails_prints_no_password(self, json_mode, monkeypatch):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        shown = "https://dead.example/page"
+        reason = f"not_found: HTTP 404 for {shown}"
+        flags = ["--json"] if json_mode else []
+        stub = StubCrawlberg([crawlberg_error(shown, reason), complete(0)])
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.runner._require_crawler_extra"),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+            stub.installed(),
+        ):
+            result = runner.invoke(
+                app, [*flags, "add", "https://alice:s3cr%3At!@dead.example/page"]
+            )
+        assert stub.seeds == ["https://alice:s3cr%3At!@dead.example/page"]
+        assert result.exit_code == 1
+        assert f"{shown}: {reason}" in result.output
+        assert "s3cr" not in result.output
+        assert "alice" not in result.output
+        if json_mode:
+            data = json.loads(result.stdout)
+            assert data["failed"] == [{"url": shown, "reason": f"{shown}: {reason}"}]
+
+    def test_two_dead_urls_each_carry_only_their_own_reasons(self):
+        first = "https://one.example/"
+        second = "https://two.example/"
+
+        async def dead(url, *, on_progress, **_kwargs):
+            failed = CrawlPageFailedEvent(url=url, reason="not_found: HTTP 404")
+            on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=0))
+            return []
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=dead),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", first, second])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout)["failed"] == [
+            {"url": first, "reason": f"{first}: not_found: HTTP 404"},
+            {"url": second, "reason": f"{second}: not_found: HTTP 404"},
         ]
 
     def test_a_crawl_that_saves_a_page_and_fails_another_exits_0(self, tmp_path):
@@ -4101,7 +4178,7 @@ class TestAddWithUrls:
             result = runner.invoke(app, ["--json", "add", seed, *crawl])
         assert result.exit_code == 1
         assert json.loads(result.stdout)["error"] == (
-            "URL has an invalid port: example.com:8080\\path"
+            "http://example.com:8080\\path: URL has an invalid port"
         )
 
     def test_add_nonexistent_path_fails(self, tmp_path):

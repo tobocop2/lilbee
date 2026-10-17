@@ -877,6 +877,62 @@ TRACKED_ADDRESSES = [
     )
 ]
 
+CREDENTIALED_SEED = "https://alice:s3cr%3At!@example.com/"
+
+
+class TestNoUserinfoLeavesTheFetcher:
+    """crawlberg gets the seed with its password; every page lilbee reads names it without."""
+
+    async def test_a_failed_single_page_is_named_without_the_password(self):
+        stub = StubCrawlberg([error(SEED, "not_found: HTTP 404 for " + SEED), complete(0)])
+        with stub.installed():
+            fetched = await _http().fetch_single(
+                CREDENTIALED_SEED, timeout=3, concurrency=NO_PACING
+            )
+        assert stub.seeds == [CREDENTIALED_SEED]
+        assert fetched == FetchedPage(
+            url=SEED, success=False, error="not_found: HTTP 404 for " + SEED
+        )
+
+    async def test_a_single_page_with_no_event_is_named_without_the_password(self):
+        stub = StubCrawlberg([complete(0)])
+        with stub.installed():
+            fetched = await _http().fetch_single(
+                CREDENTIALED_SEED, timeout=3, concurrency=NO_PACING
+            )
+        assert fetched.url == SEED
+        assert fetched.success is False
+
+    async def test_a_saved_single_page_is_named_without_the_password(self):
+        stub = StubCrawlberg([page(SEED, "# Home", depth=0), complete(1)])
+        with stub.installed():
+            fetched = await _http().fetch_single(
+                CREDENTIALED_SEED, timeout=3, concurrency=NO_PACING
+            )
+        assert fetched == FetchedPage(url=SEED, markdown="# Home")
+
+    async def test_the_seed_page_of_a_crawl_is_named_without_the_password(self):
+        stub = StubCrawlberg([page(SEED, "# Home", depth=0), complete(1)])
+        with stub.installed():
+            fetched = await _recursive(_http(), seed=CREDENTIALED_SEED)
+        assert stub.seeds == [CREDENTIALED_SEED]
+        assert [one.url for one in fetched] == [SEED]
+
+    async def test_an_address_crawlberg_reports_with_userinfo_is_read_without_it(self):
+        script = [
+            page(SEED, depth=0),
+            page("https://bob:pw@example.com/leaf", "# Leaf"),
+            error("https://bob:pw@example.com/gone", "not_found: HTTP 404"),
+            complete(2),
+        ]
+        with StubCrawlberg(script).installed():
+            fetched = await _recursive(_http())
+        assert [one.url for one in fetched] == [
+            SEED,
+            "https://example.com/leaf",
+            "https://example.com/gone",
+        ]
+
 
 class TestQueuedUrl:
     @pytest.mark.parametrize("link", TRACKED_ADDRESSES)
