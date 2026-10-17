@@ -5071,6 +5071,61 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     assert stopped == [machine]
 
 
+def _hold_reporting(last: bool) -> MagicMock:
+    """A user-lock stand-in whose release reports whether this user was the last."""
+    hold = MagicMock()
+    hold.release_and_check_last.return_value = last
+    return hold
+
+
+@pytest.mark.parametrize(
+    ("last", "peer_keeps_warm", "expect_watch"),
+    [(False, False, True), (False, True, False), (True, False, False)],
+    ids=["peers-remain", "peer-still-wants-warm", "last-user-out"],
+)
+def test_withdrawing_keep_warm_makes_sure_the_remaining_users_have_a_reaper(
+    monkeypatch,
+    tmp_path: Path,
+    reaper_ensures: list[Path],
+    last: bool,
+    peer_keeps_warm: bool,
+    expect_watch: bool,
+) -> None:
+    """A user that drops its opt-in and leaves must not strand a detached engine.
+
+    While opted in, the engine had no reaper. Once the opt-in is withdrawn and
+    peers remain, nothing else would stop the engine when they die.
+    """
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    request_keep_warm(tmp_path, prov_mod.cfg.data_root)
+    if peer_keeps_warm:
+        request_keep_warm(tmp_path, tmp_path / "peer-install")
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: _hold_reporting(last)}
+
+    p.shutdown()
+
+    assert reaper_ensures == ([tmp_path] if expect_watch else [])
+
+
+def test_a_config_change_that_keeps_peers_does_not_start_a_reaper(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """Only a withdrawn opt-in changes who watches the engine; a restart does not."""
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: _hold_reporting(False)}
+
+    p._release_engines(config_changed=True)
+
+    assert reaper_ensures == []
+
+
 def test_ttl_applies_with_warm_off(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)

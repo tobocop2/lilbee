@@ -1050,9 +1050,12 @@ flowchart TD
 
 A SIGKILLed last user cannot run its exit hook, so the reaper stops the
 engine within about a second of the death. A reaper killed while its engine
-serves is replaced at the next bind; if every user then dies before any user
-binds again, the engine lingers until the next lilbee run cleans it. The only
-processes that can outlive a session are the engine's own, because another
+serves is replaced at the next bind. A user that withdraws `keep_engine_warm`
+while other users are bound makes sure a reaper watches the engine in the same
+way. The remaining gap is a killed reaper when every user then dies before
+any user binds again: the engine keeps running with nobody watching. The next
+lilbee run adopts that same engine and starts a reaper for it, and the engine
+ends when that run's users end. The only processes that can outlive a session are the engine's own, because another
 lilbee still uses them or because the user opted into warm, and the reaper of
 a shared engine. The reaper exits with the engine.
 
