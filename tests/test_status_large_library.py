@@ -298,3 +298,43 @@ class TestSourceSummary:
             "corpus/doc-000002997.txt",
         ]
         assert summary.document_count == 3_000
+
+
+class TestListSourcesStreams:
+    def test_each_batch_is_printed_before_the_next_is_read(self, small_store):
+        _use_store(small_store)
+        events: list[str] = []
+        read_batches = Store._iter_source_batches
+
+        def spy(self, columns):
+            for batch in read_batches(self, columns):
+                events.append("batch")
+                yield batch
+
+        with (
+            patch("lilbee.data.store.core._SOURCE_SCAN_BATCH_ROWS", 500),
+            patch.object(Store, "_iter_source_batches", spy),
+            patch(
+                "lilbee.cli.helpers.print", create=True, side_effect=lambda _: events.append("line")
+            ),
+        ):
+            result = CliRunner().invoke(app, ["status", "--list-sources"])
+
+        assert result.exit_code == 0, result.output
+        assert events == (["batch"] + ["line"] * 500) * 6
+
+    def test_the_listing_never_asks_the_store_for_a_whole_list(self, small_store):
+        _use_store(small_store)
+
+        def refuse(*_args, **_kwargs):
+            raise AssertionError("the listing read every source at once")
+
+        with (
+            patch.object(Store, "get_sources", refuse),
+            patch.object(Store, "get_sources_where", refuse),
+            patch.object(Store, "source_summary", refuse),
+        ):
+            result = CliRunner().invoke(app, ["status", "--list-sources"])
+
+        assert result.exit_code == 0, result.output
+        assert len(result.output.splitlines()) == 3_000
