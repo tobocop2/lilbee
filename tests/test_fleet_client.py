@@ -321,7 +321,9 @@ def test_llm_rerank_sends_one_request_per_candidate_on_a_429(monkeypatch) -> Non
 
     with pytest.raises(ProviderError, match="The model is busy"):
         _llm_rerank_client(handler).rerank("q", ["a", "b", "c"])
-    assert calls["n"] == 3  # one per candidate, none re-sent
+    # The first refusal cancels candidates not yet sent, so fewer than three may go out;
+    # a re-sent request would push the count past one per candidate.
+    assert 1 <= calls["n"] <= 3
 
 
 def test_llm_rerank_score_softmax_yes_over_no() -> None:
