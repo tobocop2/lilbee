@@ -44,7 +44,15 @@ from hypothesis import strategies as st
 
 from lilbee.app.services import set_services
 from lilbee.core.config import cfg
-from lilbee.crawler import CrawlMeta, CrawlResult, content_hash, crawl_and_save, url_to_filename
+from lilbee.crawler import (
+    CrawlMeta,
+    CrawlResult,
+    content_hash,
+    crawl_and_save,
+    load_crawl_metadata,
+    save_crawl_metadata,
+    url_to_filename,
+)
 from lilbee.data.ingest import sync
 from lilbee.data.store import Store
 from lilbee.retrieval.query.formatting import source_label
@@ -490,25 +498,28 @@ def library(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Store]:
         setattr(cfg, name, getattr(snapshot, name))
 
 
-def _write_earlier_library() -> None:
-    """Save every page of the earlier library under its earlier name, with its metadata."""
-    from lilbee.crawler import save_crawl_metadata
-
+def _write_earlier_library(
+    site: str = _SITE,
+    pages: list[tuple[str, str]] = _EARLIER_LIBRARY,
+    version: str = "1",
+    crawled_at: str = "2026-01-01T00:00:00+00:00",
+) -> None:
+    """Save each of *pages* of *site* under its earlier name, as main does, with its entry."""
     web = cfg.documents_dir / "_web"
-    meta = {}
-    for path, earlier in _EARLIER_LIBRARY:
-        text = _text(path, "1")
+    meta = load_crawl_metadata()
+    for path, earlier in pages:
+        text = _text(path, version)
         (web / earlier).parent.mkdir(parents=True, exist_ok=True)
         (web / earlier).write_text(text, encoding="utf-8")
-        meta[_SITE + path] = CrawlMeta(earlier, content_hash(text), "2026-01-01T00:00:00+00:00")
+        meta[site + path] = CrawlMeta(earlier, content_hash(text), crawled_at)
     save_crawl_metadata(meta)
 
 
-async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
-    """Crawl the site again, the crawler reporting every page with the text of *version*."""
-    results = [
-        CrawlResult(url=_SITE + path, markdown=_text(path, version)) for path, _ in _EARLIER_LIBRARY
-    ]
+async def _crawl(
+    monkeypatch: pytest.MonkeyPatch, site: str, paths: list[str], version: str
+) -> None:
+    """Crawl *site*, the crawler reporting each of *paths* with the text of *version*."""
+    results = [CrawlResult(url=site + path, markdown=_text(path, version)) for path in paths]
 
     async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
         for result in results:
@@ -516,49 +527,90 @@ async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
         return results
 
     monkeypatch.setattr("lilbee.crawler.runner.crawl_recursive", crawl)
-    await crawl_and_save(_SITE, depth=1)
+    await crawl_and_save(site, depth=1)
+
+
+async def _recrawl(monkeypatch: pytest.MonkeyPatch, version: str) -> None:
+    """Crawl the site again, the crawler reporting every page with the text of *version*."""
+    await _crawl(monkeypatch, _SITE, [path for path, _ in _EARLIER_LIBRARY], version)
+
+
+def _library_state(store: Store, versions: dict[str, str]) -> dict[str, object]:
+    """Files, index entries and crawl metadata, against pages *versions* (path -> text version)."""
+    web = cfg.documents_dir / "_web"
+    files = sorted(
+        p.relative_to(cfg.documents_dir).as_posix() for p in web.rglob("*.md") if p.is_file()
+    )
+    sources = sorted(s["filename"] for s in store.get_sources())
+    texts = {f: (cfg.documents_dir / f).read_text(encoding="utf-8") for f in files}
+    lost = [
+        path
+        for path, version in versions.items()
+        if sum(f"Body of {path} in version {version}." in t for t in texts.values()) != 1
+    ]
+    empty = sorted(
+        d.relative_to(web).as_posix() for d in web.rglob("*") if d.is_dir() and not any(d.iterdir())
+    )
+    recorded = {f"_web/{entry.file}" for entry in load_crawl_metadata().values()}
+    return {
+        "files": len(files),
+        "index entries": len(sources),
+        "sources without a file": sorted(set(sources) - set(files)),
+        "files without a source": sorted(set(files) - set(sources)),
+        "files without a crawl entry": sorted(set(files) - recorded),
+        "pages not in exactly one file": lost,
+        "empty folders": empty,
+    }
+
+
+def _clean(pages: int) -> dict[str, object]:
+    """The library state of *pages* pages, each in one file with one index and one crawl entry."""
+    return {
+        "files": pages,
+        "index entries": pages,
+        "sources without a file": [],
+        "files without a source": [],
+        "files without a crawl entry": [],
+        "pages not in exactly one file": [],
+        "empty folders": [],
+    }
 
 
 class TestRecrawledLibrary:
     @pytest.mark.timeout(300)
     @pytest.mark.parametrize("version", ["1", "2"], ids=["same-text", "changed-text"])
-    @pytest.mark.parametrize("earlier", ["main", "ac2dcae13"])
     async def test_every_page_keeps_one_file_and_one_index_entry(
-        self, library: Store, monkeypatch: pytest.MonkeyPatch, earlier: str, version: str
+        self, library: Store, monkeypatch: pytest.MonkeyPatch, version: str
     ):
         _write_earlier_library()
         await sync(quiet=True)
         await _recrawl(monkeypatch, version)
         await sync(quiet=True)
-        web = cfg.documents_dir / "_web"
-        files = sorted(p.relative_to(cfg.documents_dir).as_posix() for p in web.rglob("*.md"))
-        sources = sorted(s["filename"] for s in library.get_sources())
-        texts = {f: (cfg.documents_dir / f).read_text(encoding="utf-8") for f in files}
-        lost = [
-            path
-            for path, _ in _EARLIER_LIBRARY
-            if sum(f"Body of {path} in version {version}." in t for t in texts.values()) != 1
-        ]
-        empty = sorted(
-            d.relative_to(web).as_posix()
-            for d in web.rglob("*")
-            if d.is_dir() and not any(d.iterdir())
-        )
-        assert {
-            "files": len(files),
-            "index entries": len(sources),
-            "sources without a file": sorted(set(sources) - set(files)),
-            "files without a source": sorted(set(files) - set(sources)),
-            "pages not in exactly one file": lost,
-            "empty folders": empty,
-        } == {
-            "files": len(_EARLIER_LIBRARY),
-            "index entries": len(_EARLIER_LIBRARY),
-            "sources without a file": [],
-            "files without a source": [],
-            "pages not in exactly one file": [],
-            "empty folders": [],
-        }
+        versions = {path: version for path, _ in _EARLIER_LIBRARY}
+        assert _library_state(library, versions) == _clean(len(_EARLIER_LIBRARY))
+
+
+# main saved /s/a.html as the file a.md, and /s/a.md%3F/z under the folder a.md%3F, whose slug
+# is a.md: a folder of the new rule with the name of a file of the old one.
+_CLASH_SITE = "http://clash.test/s/"
+_CLASH_LIBRARY = [
+    ("a.md%3F/z", "clash.test/s/a.md%3F/z/index.md"),
+    ("a.html", "clash.test/s/a.md"),
+    ("b", "clash.test/s/b/index.md"),
+]
+
+
+@pytest.mark.timeout(300)
+async def test_a_folder_never_takes_the_name_of_an_earlier_saved_file(
+    library: Store, monkeypatch: pytest.MonkeyPatch
+):
+    _write_earlier_library(_CLASH_SITE, _CLASH_LIBRARY)
+    await sync(quiet=True)
+    for _ in range(2):
+        await _crawl(monkeypatch, _CLASH_SITE, [path for path, _ in _CLASH_LIBRARY], "1")
+        await sync(quiet=True)
+    versions = {path: "1" for path, _ in _CLASH_LIBRARY}
+    assert _library_state(library, versions) == _clean(len(_CLASH_LIBRARY))
 
 
 class _CountingMeta(dict):
