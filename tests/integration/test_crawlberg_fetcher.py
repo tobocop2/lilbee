@@ -37,6 +37,7 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl  # noqa: E402
+from tests._crawl_meta import write_crawl_metadata  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
 from tests._windows_loop import windows_proactor_loop  # noqa: E402
 from tests.integration._crawl_site import (  # noqa: E402
@@ -759,7 +760,7 @@ def _library_with(*urls: str) -> list[Path]:
             file=name, content_hash=save.content_hash(text), crawled_at="2026-01-01T00:00:00+00:00"
         )
         paths.append(path)
-    save.save_crawl_metadata(entries)
+    write_crawl_metadata(entries)
     return paths
 
 
