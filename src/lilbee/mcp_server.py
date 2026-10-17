@@ -593,9 +593,7 @@ async def remove(names: list[str]) -> dict[str, Any]:
     from lilbee.app.ingest import LIBRARY_REFUSALS, remove_documents_durably
 
     try:
-        result = await anyio.to_thread.run_sync(
-            remove_documents_durably, names, abandon_on_cancel=True
-        )
+        result = await anyio.to_thread.run_sync(remove_documents_durably, names)
     except LIBRARY_REFUSALS as exc:
         return _error(str(exc))
     return {"command": "remove", "removed": result.removed, "not_found": result.not_found}
