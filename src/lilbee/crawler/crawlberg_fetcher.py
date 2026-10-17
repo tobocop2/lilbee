@@ -107,6 +107,8 @@ _RATE_LIMIT_STATUSES = (429, 503)
 _MAX_RETRIES = 20
 _MS_PER_SECOND = 1000
 _SEED_DEPTH = 0
+# The modules of the crawler extra a crawl imports: the crawler, and the URL parser of saved names.
+_CRAWLER_MODULES = ("crawlberg", "ada_url")
 _SSRF_ERROR_CODE = "ssrf_policy_violation"
 # How crawlberg 1.11.1 starts its refusal of a setting, and the message that names that setting.
 _REFUSED_SETTING_MESSAGES = {
@@ -578,5 +580,5 @@ if TYPE_CHECKING:
 
 @functools.cache
 def crawler_available() -> bool:
-    """Whether the crawlberg backend is installed, checked without importing it."""
-    return importlib.util.find_spec("crawlberg") is not None
+    """Whether every module of the crawler extra is installed, checked without importing one."""
+    return all(importlib.util.find_spec(module) is not None for module in _CRAWLER_MODULES)

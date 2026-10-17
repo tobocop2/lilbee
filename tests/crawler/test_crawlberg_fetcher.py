@@ -1002,3 +1002,14 @@ class TestCrawlerAvailable:
         finally:
             crawler_available.cache_clear()
         assert seen == ["crawlberg"]
+
+    def test_crawlberg_without_ada_url_is_not_a_crawler(self, monkeypatch):
+        def find_spec(name: str) -> object | None:
+            return None if name == "ada_url" else object()
+
+        crawler_available.cache_clear()
+        monkeypatch.setattr(fetcher_mod.importlib.util, "find_spec", find_spec)
+        try:
+            assert crawler_available() is False
+        finally:
+            crawler_available.cache_clear()
