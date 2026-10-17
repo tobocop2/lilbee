@@ -10,12 +10,14 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager, ExitStack, suppress
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any, Final, Literal, cast
 
 import pyarrow as pa
+import pyarrow.compute as pc
 
 from lilbee.core.config import (
     CHUNK_CONCEPTS_TABLE,
@@ -215,6 +217,8 @@ _TITLE_COLUMN = "title"
 
 # The column that names a source in every table; ``_sources`` alone maps it to a path.
 _SOURCE_ID = "source_id"
+# The name of each thread an upgrade adds a table's id column on.
+_UPGRADE_THREAD_PREFIX = "library-upgrade"
 # The ``_sources`` column that holds a source's path.
 _PATH = "path"
 # The ``_sources`` column that keeps a row out of every listing.
@@ -565,8 +569,6 @@ def _paths_missing_from(sources: LanceTable, table: LanceTable, column: str) -> 
 
     Arrow compares the two key columns, so no row becomes a Python object.
     """
-    import pyarrow.compute as pc
-
     keys = _key_column(table, column)
     held = _key_column(sources, _PATH).cast(keys.type)
     missing = pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held)))
@@ -1137,14 +1139,12 @@ class Store:
         store stamped 2 or later is stamped 3 at the end; a store stamped 1 predates
         the document prefix, and keeps 1 so that the stale-prefix warning still names it.
         """
-        from concurrent.futures import ThreadPoolExecutor
-
         names = table_names(db)
         steps = _upgrade_steps(db, names)
         keyed = [(name, _PATH_KEY_BY_TABLE[name]) for name, _ in steps if name != SOURCES_TABLE]
         # LanceDB adds a column one fragment at a time: each table's runs on its own thread
         # from the start, and its path column goes once its every path has a source row.
-        with ThreadPoolExecutor(max_workers=len(_PATH_KEY_COLUMNS)) as pool:
+        with ThreadPoolExecutor(len(_PATH_KEY_COLUMNS), _UPGRADE_THREAD_PREFIX) as pool:
             added = [pool.submit(_add_source_id, db, name, column) for name, column in keyed]
             for step, (name, table) in enumerate(steps, start=1):
                 shown = name.strip("_").replace("_", " ")
@@ -2161,7 +2161,6 @@ class Store:
         whole set in Arrow (no per-row Python objects) from read through file
         write. Empty with the canonical schema when the table or *source* is empty.
         """
-        import pyarrow.compute as pc
 
         table = self.open_table(PAGE_TEXTS_TABLE)
         source_id = None if source is None else self.source_ids([source]).get(source, "")
@@ -2186,7 +2185,6 @@ class Store:
         than the text being exported.
         """
         import pyarrow as pa
-        import pyarrow.compute as pc
 
         table = self.open_table(SOURCES_TABLE)
         columns = ["source", *SourceMeta._fields]
