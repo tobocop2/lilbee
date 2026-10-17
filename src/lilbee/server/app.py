@@ -250,7 +250,8 @@ class _LibraryOpenWait(ASGIMiddleware):
     The wait runs off the loop, so an upgrade never blocks it. The limit sits under the
     15 s timeout of the Obsidian plugin, so the plugin shows the reason. Health, the warm
     stream and shutdown pass at once: health reports the upgrade. MCP tool calls wait
-    for the library where they use it.
+    for the library where they use it. A process with no services has no open to wait
+    for, and the request passes without building them.
     """
 
     exclude_path_pattern = (
@@ -261,9 +262,12 @@ class _LibraryOpenWait(ASGIMiddleware):
     )
 
     async def handle(self, scope: Scope, receive: Receive, send: Send, next_app: ASGIApp) -> None:
-        store = get_services().store
-        if not store.is_open and not await asyncio.to_thread(
-            store.wait_for_open, _UPGRADE_WAIT_SECONDS
+        services = peek_services()
+        store = None if services is None else services.store
+        if (
+            store is not None
+            and not store.is_open
+            and not await asyncio.to_thread(store.wait_for_open, _UPGRADE_WAIT_SECONDS)
         ):
             response = _upgrading_response(scope["path"])
             await response.to_asgi_response(None, Request(scope, receive, send))(

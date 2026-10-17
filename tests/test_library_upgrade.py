@@ -572,6 +572,21 @@ class TestServerShowsTheUpgrade:
         assert reached[0] > 3
         assert store.is_open is True
 
+    async def test_a_request_before_any_services_exist_builds_none(self):
+        from lilbee.server.app import _LibraryOpenWait
+
+        services_mod.set_services(None)
+        reached: list[int] = []
+
+        async def _next_app(scope, receive, send):
+            reached.append(1)
+
+        scope = {"type": "http", "path": "/api/config", "headers": []}
+        await _LibraryOpenWait().handle(scope, None, None, _next_app)
+
+        assert reached == [1]
+        assert services_mod.peek_services() is None
+
     async def test_a_request_past_the_limit_answers_503_with_retry_after(self):
         from lilbee.server import app as app_mod
         from tests.conftest import make_mock_services
