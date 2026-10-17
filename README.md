@@ -437,35 +437,37 @@ Placement reads what the engine reports about your hardware, and every backend w
 lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model built on one of the architectures below. The list comes from the bundled engine itself and grows with every engine update.
 
 <details>
-<summary><b>All 152 supported model architectures. Click to expand.</b></summary>
+<summary><b>All 161 supported model architectures. Click to expand.</b></summary>
 
 | | | | |
 |---|---|---|---|
 | `afmoe` | `apertus` | `arcee` | `arctic` |
 | `arwkv7` | `baichuan` | `bailingmoe` | `bailingmoe2` |
-| `bailingmoe3` | `bert` | `bitnet` | `bloom` |
-| `chameleon` | `chatglm` | `clip` | `codeshell` |
-| `cogvlm` | `cohere2` | `cohere2moe` | `command-r` |
-| `dbrx` | `deci` | `deepseek` | `deepseek2` |
-| `deepseek2-ocr` | `deepseek32` | `deepseek4` | `dflash` |
-| `dots1` | `dots3note` | `dream` | `eagle3` |
-| `ernie4_5` | `ernie4_5-moe` | `eurobert` | `exaone` |
-| `exaone-moe` | `exaone4` | `falcon` | `falcon-h1` |
-| `gemma` | `gemma-embedding` | `gemma2` | `gemma3` |
-| `gemma3n` | `gemma4` | `gemma4-assistant` | `glm-dsa` |
-| `glm4` | `glm4moe` | `gpt-oss` | `gpt2` |
+| `bailingmoe3` | `beam` | `bert` | `bitnet` |
+| `bloom` | `chameleon` | `chatglm` | `clef` |
+| `clip` | `codeshell` | `cogvlm` | `cohere2` |
+| `cohere2moe` | `command-r` | `dbrx` | `deci` |
+| `deepseek` | `deepseek2` | `deepseek2-ocr` | `deepseek32` |
+| `deepseek4` | `dflash` | `dots1` | `dots3note` |
+| `dream` | `eagle3` | `ernie4_5` | `ernie4_5-moe` |
+| `eurobert` | `exaone` | `exaone-moe` | `exaone4` |
+| `falcon` | `falcon-h1` | `gemma` | `gemma-embedding` |
+| `gemma-embedding2` | `gemma2` | `gemma3` | `gemma3n` |
+| `gemma4` | `gemma4-assistant` | `glm-dsa` | `glm4` |
+| `glm4moe` | `glm5-next` | `gpt-oss` | `gpt2` |
 | `gptj` | `gptneox` | `granite` | `granite_swa` |
 | `granitehybrid` | `granitemoe` | `graniteswitch` | `grok` |
 | `grovemoe` | `hrm_text` | `hunyuan-dense` | `hunyuan-moe` |
 | `hunyuan_vl` | `hy_v3` | `hy_v4` | `internlm2` |
 | `jais` | `jais2` | `jamba` | `jina-bert-v2` |
-| `jina-bert-v3` | `kimi-k3` | `kimi-linear` | `laguna` |
-| `lfm2` | `lfm2moe` | `llada` | `llada-moe` |
-| `llama` | `llama-embed` | `llama4` | `maincoder` |
-| `mamba` | `mamba2` | `maple` | `mellum` |
-| `mimo2` | `minicpm` | `minicpm3` | `minimax-01` |
-| `minimax-m2` | `minimax-m3` | `mistral3` | `mistral4` |
-| `modern-bert` | `mpt` | `muse-glimmer` | `nanbeige` |
+| `jina-bert-v3` | `k2-horizon` | `kimi-k3` | `kimi-linear` |
+| `kolibri1` | `laguna` | `lfm2` | `lfm2moe` |
+| `llada` | `llada-moe` | `llama` | `llama-embed` |
+| `llama4` | `maincoder` | `maion-coder` | `mamba` |
+| `mamba2` | `maple` | `mellum` | `mimo2` |
+| `minicpm` | `minicpm3` | `minimax-01` | `minimax-m2` |
+| `minimax-m3` | `mistral3` | `mistral4` | `modern-bert` |
+| `mpt` | `muse-glimmer` | `muse-spark` | `nanbeige` |
 | `nemotron` | `nemotron_h` | `nemotron_h_moe` | `neo-bert` |
 | `nomic-bert` | `nomic-bert-moe` | `olmo` | `olmo2` |
 | `olmoe` | `openelm` | `orion` | `paddleocr` |
@@ -478,7 +480,8 @@ lilbee's engine is llama.cpp, so lilbee runs what llama.cpp runs: any GGUF model
 | `rwkv6` | `rwkv6qwen2` | `rwkv7` | `seed_oss` |
 | `smallthinker` | `smollm3` | `spark2_5` | `stablelm` |
 | `starcoder` | `starcoder2` | `step35` | `t5` |
-| `t5encoder` | `talkie` | `wavtokenizer-dec` | `xverse` |
+| `t5encoder` | `talkie` | `vllm-decision2` | `wavtokenizer-dec` |
+| `xverse` |  |  |  |
 
 </details>
 <!-- supported-archs:end -->
