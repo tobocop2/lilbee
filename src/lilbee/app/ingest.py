@@ -510,7 +510,8 @@ def remove_documents_durably(
     failed = held_failures()
     linked = active_config().linked_roots
     going = [label for label in (name.strip("/") for name in names) if label in linked]
-    holds = _removal_holds([name for name in targets if name in set(known)], going, failed)
+    removable = set(known)
+    holds = _removal_holds([name for name in targets if name in removable], going, failed)
     result = store.remove_documents(targets, holds)
     held = [name for name in result.not_found if name in failed]
     roots = forget_roots(names)
