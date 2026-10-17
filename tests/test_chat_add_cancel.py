@@ -95,6 +95,30 @@ class TestDoAddCancelCleanup:
     """When the sync under /add raises (cancel or crash), the root it registered
     must be un-registered so the next sync does not silently re-ingest it."""
 
+    def test_a_registration_that_fails_after_a_cancel_ends_as_the_cancel(
+        self, isolated_documents, tmp_path
+    ):
+        from unittest.mock import MagicMock, patch
+
+        from lilbee.cli.tui.screens.chat import ChatScreen
+
+        screen = ChatScreen.__new__(ChatScreen)
+        reporter = MagicMock()
+        reporter.is_set.return_value = True
+        reporter.cancelled_by_user.return_value = True
+        source = tmp_path / "corpus"
+        source.mkdir()
+
+        with (
+            patch("lilbee.app.ingest.register_sources", side_effect=OSError("disk gone")),
+            patch("lilbee.runtime.asyncio_loop.run") as synced,
+            pytest.raises(TaskCancelledError, match="disk gone"),
+        ):
+            screen._do_add([source], reporter)
+
+        synced.assert_not_called()
+        assert "corpus" not in cfg.linked_roots
+
     def test_a_failing_sync_drops_the_root(self, isolated_documents, tmp_path):
         from unittest.mock import MagicMock, patch
 
