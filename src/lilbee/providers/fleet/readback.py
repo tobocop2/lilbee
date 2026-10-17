@@ -35,7 +35,7 @@ import re
 from pathlib import Path
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
-from lilbee.providers.fleet.binary import engine_help
+from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
@@ -429,6 +429,11 @@ def supports_memory_readback(binary: Path) -> bool:
     reads as unsupported, which degrades to the log path rather than a failed launch.
     """
     return bool(_HELP_MEMORY_RE.search(engine_help(binary)))
+
+
+def engine_advertises(binary: Path, flag: str) -> bool:
+    """Whether an option line of *binary*'s ``--help`` names *flag*."""
+    return help_lists_option(engine_help(binary), flag)
 
 
 # The per-device byte fields of one GET /memory row. Summed because the total

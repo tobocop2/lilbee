@@ -436,6 +436,31 @@ def test_build_argv_layer_count_wins_over_offload_everything() -> None:
     assert argv[argv.index("--n-cpu-moe") + 1] == "8"
 
 
+def test_build_argv_sends_one_fit_target_per_device_in_mib() -> None:
+    argv = _chat_argv(fit_target_mib=(2458, 3482))
+    assert argv[argv.index("--fit-target") + 1] == "2458,3482"
+
+
+def test_build_argv_leaves_the_fit_target_to_the_engine_by_default() -> None:
+    assert "--fit-target" not in _chat_argv()
+
+
+def test_build_argv_shares_one_kv_pool_capped_at_the_window_per_slot() -> None:
+    # An explicit --parallel turns unified KV off unless it is asked for, and the
+    # per-slot cap keeps one slot from taking the whole pool.
+    argv = _chat_argv(kv_unified_per_slot=4096)
+    assert "--kv-unified" in argv
+    assert argv[argv.index("--kv-unified-per-slot") + 1] == "4096"
+    assert argv[argv.index("--parallel") + 1] == "4"
+    assert argv[argv.index("--ctx-size") + 1] == "16384"
+
+
+def test_build_argv_keeps_per_slot_kv_by_default() -> None:
+    argv = _chat_argv()
+    assert "--kv-unified" not in argv
+    assert "--kv-unified-per-slot" not in argv
+
+
 def test_expert_offload_patterns_empty_when_not_configured() -> None:
     assert expert_offload_patterns(cpu_moe=False, n_cpu_moe=None) == ()
 

@@ -21,6 +21,9 @@ _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
 FLAG_BATCH_SIZE = "--batch-size"
 FLAG_UBATCH_SIZE = "--ubatch-size"
+FLAG_FIT_TARGET = "--fit-target"
+FLAG_KV_UNIFIED = "--kv-unified"
+FLAG_KV_UNIFIED_PER_SLOT = "--kv-unified-per-slot"
 
 
 @dataclass(frozen=True)
@@ -189,6 +192,18 @@ def _attention_args(flash_attn: str | None, cache_type: str | None) -> list[str]
     return args
 
 
+def _fit_and_kv_pool_args(
+    fit_target_mib: tuple[int, ...], kv_unified_per_slot: int | None
+) -> list[str]:
+    """``--fit-target`` per device and the shared KV pool flags, each only when given."""
+    args: list[str] = []
+    if fit_target_mib:
+        args += [FLAG_FIT_TARGET, ",".join(str(mib) for mib in fit_target_mib)]
+    if kv_unified_per_slot is not None:
+        args += [FLAG_KV_UNIFIED, FLAG_KV_UNIFIED_PER_SLOT, str(kv_unified_per_slot)]
+    return args
+
+
 def _thread_args() -> list[str]:
     """``--threads`` when a CPU cap applies to this process, else empty.
 
@@ -237,6 +252,8 @@ def build_server_argv(
     cpu_moe: bool = False,
     n_cpu_moe: int | None = None,
     memory_endpoint: bool = False,
+    fit_target_mib: tuple[int, ...] = (),
+    kv_unified_per_slot: int | None = None,
 ) -> list[str]:
     """Assemble the llama-server command line for one instance, minus ``--port``.
 
@@ -246,7 +263,11 @@ def build_server_argv(
     ``memory_endpoint`` is set only for a binary whose ``--help`` advertises
     ``--memory`` (readback.supports_memory_readback): a stock engine dies at
     launch on the unknown flag. ``no_mmap`` sends the no-mmap flag the binary's
-    ``--help`` lists, or nothing when it lists neither.
+    ``--help`` lists, or nothing when it lists neither. ``fit_target_mib`` is
+    the memory the engine's own fit leaves free on each device, in
+    ``--device`` order.
+    ``kv_unified_per_slot`` makes the slots share one KV pool, each slot capped
+    at that window.
     """
     argv = [
         str(binary),
@@ -290,6 +311,7 @@ def build_server_argv(
         argv += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
         argv += ["--cpu-moe"]
+    argv += _fit_and_kv_pool_args(fit_target_mib, kv_unified_per_slot)
     if memory_endpoint:
         from lilbee.providers.fleet.readback import MEMORY_FLAG
 

@@ -741,12 +741,17 @@ flowchart LR
   overflow device 0 even when the cards are unequal. A chat on one card searches the
   same grid against one device (`ctx.fit_single_ctx`, entered through
   `engine_params.resolve_chat_ctx`), so both paths price the cache the model's
-  architecture holds. On one card the search covers the **offload as well as the window**
-(`planning.fit_chat_ctx`): when full offload leaves KV room for less than a grounded
-prompt, layers move to system memory until the window is usable and the launch runs at
-that reduced `--n-gpu-layers`, so a small model on a small card is served instead of
-refused. The trade needs the weights alone to fit the budget; past that the model would
-answer out of host RAM, which is the unusable load `plan_launches` refuses on purpose.
+  architecture holds. **llama-server's own fit places the layers** (`--n-gpu-layers -1`):
+  lilbee keeps the window, the slot count and the cross-card placement, and sends
+  `--fit-target` per card, the share placement never charges plus the memory held for the
+  other roles on that card. When full offload leaves KV room for less than a grounded
+  prompt (`planning.fit_chat_ctx`), the window is raised to the smallest one that answers
+  and the fit moves dense layers or MoE experts to system memory to hold it. That needs
+  the fit to run: an auto layer count, no expert overrides, and a card with memory of its
+  own. The fit reads free memory at load, so roles that share a card warm one at a time,
+  chat last (`provider._warm_chains`). Chat slots share one KV pool (`--kv-unified
+  --kv-unified-per-slot <window>`), sized at slots x window as before, on an engine whose
+  `--help` lists the per-slot cap.
 Header math (`model_cache.compute_dynamic_ctx`) is the fallback
   for when gguf-parser cannot answer; it charges every layer as dense attention over
   the whole window, which under-grants linear-attention, sliding-window and MLA models. On a
