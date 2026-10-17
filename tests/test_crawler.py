@@ -27,7 +27,6 @@ from lilbee.crawler import (
     load_crawl_metadata,
     require_valid_crawl_url,
     save,
-    save_crawl_metadata,
     url_to_filename,
     validate_crawl_url,
 )
@@ -40,6 +39,7 @@ from lilbee.crawler.runner import (
 from lilbee.crawler.save import (
     CrawlRecord,
     _claim,
+    _replace_atomically,
     canonical_address,
     load_crawl_record,
     normalize_crawled_markdown,
@@ -48,6 +48,7 @@ from lilbee.crawler.save import (
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
+from tests._crawl_meta import write_crawl_metadata
 from tests._mock_effects import repeat_last
 from tests._private_mode import posix_only
 from tests.conftest import make_mock_services
@@ -254,7 +255,7 @@ class TestCrawlMetadata:
                 crawled_at="2026-01-01T00:00:00+00:00",
             )
         }
-        save_crawl_metadata(meta)
+        write_crawl_metadata(meta)
         loaded = load_crawl_metadata()
         assert loaded["https://example.com"].file == "example.com/index.md"
         assert loaded["https://example.com"].content_hash == "abc123"
@@ -277,31 +278,22 @@ class TestCrawlMetadata:
         meta = load_crawl_metadata()
         assert meta == {}
 
-    def test_save_atomic_write_cleans_up_on_error(self, isolated_env):
+    def test_atomic_write_cleans_up_on_error(self, isolated_env):
         """If the atomic write fails, the tmp file is removed and error re-raised."""
-        meta = {
-            "https://example.com": CrawlMeta(
-                file="example.com/index.md",
-                content_hash="abc",
-                crawled_at="2026-01-01T00:00:00+00:00",
-            )
-        }
         with (
             patch("lilbee.crawler.save.Path.replace", side_effect=OSError("disk full")),
             pytest.raises(OSError, match="disk full"),
         ):
-            save_crawl_metadata(meta)
-        tmp_path = cfg.data_dir / "crawl_meta.tmp"
-        assert not tmp_path.exists()
+            _replace_atomically(cfg.data_dir / "crawl_pages.jsonl", "{}\n")
+        assert list(cfg.data_dir.iterdir()) == []
 
-    def test_save_error_before_the_temporary_file_exists_is_raised(self, isolated_env):
-        """A failure to make the temporary file leaves the sidecar untouched and re-raises."""
-        meta = {"https://example.com": CrawlMeta("example.com/index.md", "abc", "t")}
+    def test_atomic_write_error_before_the_temporary_file_exists_is_raised(self, isolated_env):
+        """A failure to make the temporary file leaves the target untouched and re-raises."""
         with (
             patch("lilbee.crawler.save.tempfile.NamedTemporaryFile", side_effect=OSError("full")),
             pytest.raises(OSError, match="full"),
         ):
-            save_crawl_metadata(meta)
+            _replace_atomically(cfg.data_dir / "crawl_pages.jsonl", "{}\n")
         assert list(cfg.data_dir.iterdir()) == []
 
 
@@ -1561,7 +1553,7 @@ class TestCrawlAndSave:
         same = "https://example.com/t/caf%C3%A9"
         new = "https://example.com/t/new%2Fpage"
         before = _stored(stored, same)
-        save_crawl_metadata(before)
+        write_crawl_metadata(before)
         _save_files(before)
         web = cfg.documents_dir / "_web"
         reported = [
@@ -1593,7 +1585,7 @@ class TestCrawlAndSave:
         spellings = ["https://example.com/t/tri-b", "https://example.com/t/tri%2Db", reported]
         other = "https://example.com/t/other"
         before = _stored(*spellings, other)
-        save_crawl_metadata(before)
+        write_crawl_metadata(before)
         _save_files(before)
 
         async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
@@ -1621,7 +1613,7 @@ class TestCrawlAndSave:
         pair = (one, other)
         reported, kept = pair[fetched], pair[1 - fetched]
         before = {canonical_address(kept): CrawlMeta(url_to_filename(kept), "old", "t")}
-        save_crawl_metadata(before)
+        write_crawl_metadata(before)
         _save_files(before)
 
         async def crawl(url: str, **kwargs: object) -> list[CrawlResult]:
@@ -1646,7 +1638,7 @@ class TestCrawlAndSave:
         earlier = "example.com/t/Special_Random/index.md"
         web = cfg.documents_dir / "_web"
         _write_web(earlier, "# Old")
-        save_crawl_metadata({url: CrawlMeta(earlier, content_hash("# Old"), "x")})
+        write_crawl_metadata({url: CrawlMeta(earlier, content_hash("# Old"), "x")})
         mock_crawl_single.return_value = CrawlResult(url=url, markdown="# New")
         paths = await crawl_and_save(url, depth=0)
         assert paths == [web / url_to_filename(url)]
@@ -1664,7 +1656,7 @@ class TestCrawlAndSave:
         outside.parent.mkdir(parents=True, exist_ok=True)
         outside.write_text("# Mine", encoding="utf-8")
         meta = CrawlMeta(file="../outside.md", content_hash=content_hash("# Mine"), crawled_at="x")
-        save_crawl_metadata({url: meta})
+        write_crawl_metadata({url: meta})
         mock_crawl_single.return_value = CrawlResult(url=url, markdown="# New")
         paths = await crawl_and_save(url, depth=0)
         assert len(paths) == 1
@@ -2661,7 +2653,7 @@ class TestCrawlRecord:
 
     def test_earlier_metadata_is_carried_as_copies_by_canonical_address(self, isolated_env):
         earlier = CrawlMeta("example.com/t/page/index.md", "h", "t")
-        save_crawl_metadata({"https://EXAMPLE.com/t/pag%65#top": earlier})
+        write_crawl_metadata({"https://EXAMPLE.com/t/pag%65#top": earlier})
         page = CrawlMeta("example.com/x~1.md", "x", "t")
         _pages_file().write_text(_record_lines(("https://example.com/x", page)), encoding="utf-8")
         record = load_crawl_record()
@@ -2680,7 +2672,7 @@ class TestRetireEarlier:
         """A record whose earlier copy of URL holds *text*, its entry the hash of *entry_text*."""
         _write_web(self.EARLIER, text)
         entry_hash = content_hash(text if entry_text is None else entry_text)
-        save_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, entry_hash, "t")})
+        write_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, entry_hash, "t")})
         return load_crawl_record()
 
     def test_a_first_save_with_the_same_text_removes_the_index_source(self, isolated_env):
@@ -2734,7 +2726,7 @@ class TestRetireEarlier:
     def test_an_earlier_copy_shared_with_another_pages_same_text_entry_is_kept(self, isolated_env):
         _write_web(self.EARLIER, "# Shared")
         entry = CrawlMeta(self.EARLIER, content_hash("# Shared"), "t")
-        save_crawl_metadata({self.URL: entry, "https://example.com/t/other": entry})
+        write_crawl_metadata({self.URL: entry, "https://example.com/t/other": entry})
         record = load_crawl_record()
         remove_sources = MagicMock()
         save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
@@ -2743,7 +2735,7 @@ class TestRetireEarlier:
         remove_sources.assert_not_called()
 
     def test_a_missing_earlier_copy_is_skipped(self, isolated_env):
-        save_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, content_hash("# Old"), "t")})
+        write_crawl_metadata({self.URL: CrawlMeta(self.EARLIER, content_hash("# Old"), "t")})
         remove_sources = MagicMock()
         path = save_page(
             CrawlResult(url=self.URL, markdown="# New"), load_crawl_record(), remove_sources
@@ -3114,7 +3106,7 @@ class TestStreamingFlush:
         """The crawl removes an earlier copy's index source through the store."""
         earlier = "example.com/old/p1.md"
         _write_web(earlier, "# Old")
-        save_crawl_metadata(
+        write_crawl_metadata(
             {"https://example.com/p1": CrawlMeta(earlier, content_hash("# Old"), "t")}
         )
 

@@ -29,7 +29,6 @@ from lilbee.crawler.save import (
     CrawlMeta,
     content_hash,
     load_crawl_metadata,
-    save_crawl_metadata,
     url_to_filename,
 )
 from lilbee.crawler.url_filter import (
@@ -61,7 +60,6 @@ __all__ = [
     "is_url",
     "load_crawl_metadata",
     "require_valid_crawl_url",
-    "save_crawl_metadata",
     "url_to_filename",
     "validate_crawl_url",
 ]
