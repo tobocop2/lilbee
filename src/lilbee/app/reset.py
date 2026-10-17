@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from lilbee.core import settings
 from lilbee.core.config import cfg
+from lilbee.data.store.held_import import remove_legacy_files
 from lilbee.runtime.lock import library_held_for_reset
 
 
@@ -71,6 +72,9 @@ def perform_reset() -> ResetResult:
         # reset deletes data, not configuration.
         settings.delete_value(cfg.data_root, "linked_roots")
         cfg.linked_roots = {}
+        # The held-out record files of an older lilbee sit at data_root too; left
+        # there, the next open would import them into the emptied index.
+        remove_legacy_files(cfg.data_root)
 
     return ResetResult(
         deleted_docs=deleted_docs,

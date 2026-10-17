@@ -90,6 +90,18 @@ def test_reset_clears_held_out_records(isolated_cfg: Path) -> None:
     assert held_hashes(Store(cfg)) == {}
 
 
+def test_reset_drops_the_held_out_files_of_an_older_lilbee(isolated_cfg: Path) -> None:
+    """Reset before the first open deletes the older record files, so none comes back."""
+    (isolated_cfg / "skipped_sources.json").write_text('{"gone.md": "abc"}', encoding="utf-8")
+    (isolated_cfg / "skip_reasons.json").write_text('{"gone.md": "bad"}', encoding="utf-8")
+
+    perform_reset()
+
+    assert not (isolated_cfg / "skipped_sources.json").exists()
+    assert not (isolated_cfg / "skip_reasons.json").exists()
+    assert held_hashes(Store(cfg)) == {}
+
+
 def test_reset_keeps_other_settings(isolated_cfg: Path) -> None:
     """Reset deletes data, not configuration: other config.toml keys survive."""
     settings.set_value(cfg.data_root, "chat_model", "qwen3:8b")
