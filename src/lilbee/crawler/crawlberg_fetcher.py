@@ -100,8 +100,6 @@ _PREFIX_MARK = "*"
 _FORM_SAFE = "*"
 _TILDE = "~"
 _TILDE_ENCODED = "%7E"
-# The mark that ends a username and password in the host part of an address.
-_USERINFO_END = "@"
 # A browser fetch as a whole (launch, navigation, render, close) may take this many page timeouts.
 _BROWSER_OVERALL_TIMEOUTS = 2
 _BROWSER_SHUTDOWN_TIMEOUT_MS = 5000
@@ -504,12 +502,6 @@ def _queued_url(link: str) -> str:
     return urlunsplit(parts._replace(query=query, fragment=""))
 
 
-def _pattern_text(url: str) -> str:
-    """*url* as crawlberg matches an exclude pattern against it: without a username or password."""
-    parts = urlsplit(url)
-    return urlunsplit(parts._replace(netloc=parts.netloc.rpartition(_USERINFO_END)[2]))
-
-
 class _ExcludedLinks:
     """The addresses one crawl leaves out because an exclude pattern matches them.
 
@@ -556,7 +548,8 @@ class _ExcludedLinks:
         )
 
     def _check(self, url: str) -> None:
-        text = _pattern_text(url)
+        # crawlberg matches an exclude pattern against the address without its userinfo.
+        text = url_filter.without_userinfo(url)
         matched = next((p.pattern for p in self._patterns if p.search(text)), None)
         if matched is not None:
             log.warning(
