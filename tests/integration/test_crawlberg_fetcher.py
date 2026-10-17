@@ -632,6 +632,15 @@ class TestCrawlAndSave:
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=5)
         assert len(paths) == 5
 
+    async def test_a_one_page_crawl_requests_its_page_and_no_sitemap(self, site):
+        paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=1)
+        one_page = [path for path in site.paths_since(0, "/") if path != "/robots.txt"]
+        two_pages_from = time.monotonic()
+        await crawl_and_save(site.url("/wide/"), depth=1, max_pages=2)
+        assert "/sitemap.xml" in site.paths_since(two_pages_from, "/")
+        assert one_page == ["/wide/"]
+        assert len(paths) == 1
+
     async def test_default_exclude_patterns_all_apply(self, site):
         """``/wiki/Special:`` is a default pattern that is not a regex anchor or digit class."""
         paths = await crawl_and_save(site.url("/wide/"), depth=1, max_pages=0)
