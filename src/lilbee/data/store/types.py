@@ -246,6 +246,13 @@ class SourceSummary:
     newest: list[SourceHead]
 
 
+DOCUMENTS_PAGE_DEFAULT = 50
+"""Rows in one page of the document listing when the caller names no limit."""
+
+DOCUMENTS_PAGE_MAX = 1000
+"""The most rows one page of the document listing may hold."""
+
+
 # Sentinel for the stat columns on rows written before they existed (or for
 # detached imports with no backing file). Planning treats it as "unknown: re-hash".
 SOURCE_STAT_UNKNOWN = -1

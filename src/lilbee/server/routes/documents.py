@@ -21,6 +21,7 @@ from litestar.types import Receive
 from pydantic import BaseModel, Field
 
 from lilbee.core.config import validate_ocr_timeout
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX
 from lilbee.server import handlers
 from lilbee.server.content_disposition import CONTENT_DISPOSITION
 from lilbee.server.handlers.sse import SSE_MEDIA_TYPE
@@ -151,7 +152,7 @@ async def add_upload_route(
 @get("/api/documents")
 async def documents_list_route(
     search: FromQuery[str] = "",
-    limit: Annotated[int, QueryParameter(ge=1, le=1000)] = 50,
+    limit: Annotated[int, QueryParameter(ge=1, le=DOCUMENTS_PAGE_MAX)] = DOCUMENTS_PAGE_DEFAULT,
     offset: Annotated[int, QueryParameter(ge=0)] = 0,
 ) -> DocumentListResponse:
     """List indexed documents with metadata, paginated and searchable."""
