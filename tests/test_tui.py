@@ -700,6 +700,63 @@ class TestStatusScreenAsync:
         finally:
             set_services(None)
 
+    @mock.patch("lilbee.cli.tui.screens.catalog.get_catalog")
+    async def test_status_screen_lists_the_newest_sources_and_the_rest_count(
+        self,
+        mock_catalog: mock.MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """The Documents table shows the stored newest rows, not the load-failed note."""
+        import pyarrow as pa
+
+        from lilbee.app.services import set_services
+        from lilbee.app.status import STATUS_RECENT_LIMIT
+        from lilbee.cli.tui import messages as msg
+        from lilbee.cli.tui.app import LilbeeApp
+        from lilbee.cli.tui.screens.status import StatusScreen
+        from tests._async_wait import wait_until
+
+        mock_catalog.return_value = _EMPTY_CATALOG
+        total = STATUS_RECENT_LIMIT + 2
+        store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
+        table = store._sources_table()
+        ids = range(total)
+        table.add(
+            pa.table(
+                {
+                    "filename": [f"doc-{i:03d}.txt" for i in ids],
+                    "file_hash": [f"{i:064x}" for i in ids],
+                    "ingested_at": [f"2026-01-01T00:00:{i:02d}+00:00" for i in ids],
+                    "chunk_count": pa.array([i + 1 for i in ids], pa.int32()),
+                    "source_type": ["text" if i % 2 else "pdf" for i in ids],
+                    "size_bytes": pa.array(list(ids), pa.int64()),
+                    "mtime_ns": pa.array(list(ids), pa.int64()),
+                    "stat_captured_ns": pa.array(list(ids), pa.int64()),
+                    "title": pa.array([None for _ in ids], pa.utf8()),
+                    "authors": pa.array([None for _ in ids], pa.utf8()),
+                    "created_at": pa.array([None for _ in ids], pa.utf8()),
+                },
+                schema=table.schema,
+            )
+        )
+        mock_svc = mock.MagicMock()
+        mock_svc.store = store
+        set_services(mock_svc)
+        try:
+            app = LilbeeApp()
+            async with app.run_test() as pilot:
+                await await_chat(app, pilot)
+                app.push_screen(StatusScreen())
+                await pump_until(pilot, lambda: isinstance(app.screen, StatusScreen))
+                docs = app.screen.query_one("#docs-table")
+                await wait_until(pilot, lambda: docs.row_count == STATUS_RECENT_LIMIT + 1)
+                rows = [[str(cell) for cell in docs.get_row_at(i)] for i in range(docs.row_count)]
+        finally:
+            set_services(None)
+        newest = [[f"doc-{total - 1 - n:03d}.txt", str(total - n)] for n in range(10)]
+        assert rows[:-1] == newest
+        assert rows[-1] == [msg.STATUS_DOCS_MORE.format(count=2), ""]
+
 
 class TestCLIIntegration:
     def test_chat_non_tty_exits_with_error(self) -> None:

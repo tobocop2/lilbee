@@ -15923,6 +15923,7 @@ async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable(
     from textual.widgets._select import InvalidSelectValueError
 
     from lilbee.cli.tui.screens.settings import SettingsScreen
+    from tests._async_wait import wait_until
 
     app = SettingsTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
@@ -15932,7 +15933,7 @@ async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable(
         before = cfg.chat_mode
         with pytest.raises(InvalidSelectValueError):
             select.value = Select.NULL
-        await pilot.pause()
+        await wait_until(pilot, lambda: select.value == before)
         assert select.value == before
 
 

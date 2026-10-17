@@ -6823,6 +6823,7 @@ class TestModelGridCardRendering:
         from textual.containers import VerticalScroll
 
         from lilbee.cli.tui.widgets.model_grid import ModelGrid
+        from tests._async_wait import wait_until
 
         grid = ModelGrid([_vgrid_row(f"model-{i}") for i in range(3)], id="mg-foreground")
 
@@ -6832,14 +6833,17 @@ class TestModelGridCardRendering:
             def compose(self) -> ComposeResult:
                 yield VerticalScroll(grid)
 
-        async with _GridApp().run_test(size=(80, 20)) as pilot:
-            await pilot.pause()
-            text = [
+        def card_text() -> list:
+            return [
                 segment
                 for y in range(8)
                 for segment in grid.render_line(y)
                 if segment.text.strip(" ─│╭╮╰╯")
             ]
+
+        async with _GridApp().run_test(size=(80, 20)) as pilot:
+            await wait_until(pilot, lambda: any("model-0" in s.text for s in card_text()))
+            text = card_text()
             assert any("model-0" in segment.text for segment in text)
             bare = [segment.text for segment in text if segment.style.color is None]
             assert bare == []
