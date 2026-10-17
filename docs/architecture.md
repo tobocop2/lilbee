@@ -1019,10 +1019,20 @@ reaper reports running, the engine is bound to its builder. On a filesystem
 without kernel-arbitrated locks the users cannot be counted, so the engine is
 bound to its builder (PDEATHSIG, a kill-on-close job object, or a death pipe).
 `keep_engine_warm` opts the engine into outliving lilbee: it is spawned
-detached, and no reaper watches it. The idle TTL (`engine_idle_ttl_minutes`,
-default five minutes) applies in every mode. Only an engine bound to its
-builder takes the TUI's and a bulk ingest's no-unload hold, because llama-swap
-fixes the TTL at launch and a shared engine outlives the holder. The command
+detached, and its weights stay loaded while any lilbee process holds a user
+lock. Each opt-in is a marker file that holds that installation's
+`engine_idle_ttl_minutes`. When the last user leaves, the reaper counts that
+idle time (the longest marker wins; 0 never unloads) and then calls llama-swap's
+`POST /api/models/unload` on each recorded proxy port, under the build lock and
+after it checks for users again. The engine process stays up, so the next
+launch binds at once and its first request reloads the weights. To keep the
+weights loaded while users remain, a build that is kept warm (by its own
+setting or by any marker) starts llama-swap with TTL 0, but only where kernel
+locks let a reaper count users. llama-swap fixes the TTL at launch, so a change
+to either setting applies at the next engine start. Every other engine
+unloads on the idle TTL (default five minutes) after its last request. Only an
+engine bound to its builder takes the TUI's and a bulk ingest's no-unload hold,
+because a shared engine outlives the holder. The command
 `lilbee engine stop` frees everything now, whoever started it. Reaping never
 disagrees with binding: an engine answering on its proxy is spared, anything
 else is stopped through its state record.
@@ -1045,7 +1055,8 @@ flowchart TD
     BU --> X
     PR --> X
     X -- "yes, warm off" --> STOP["stop engine<br/>machine clean"]
-    X -- "no, or warm on" --> LEAVE["engine keeps serving;<br/>idle weights nap after the ttl"]
+    X -- "no" --> LEAVE["engine keeps serving<br/>its other users"]
+    X -- "yes, warm on" --> WARM["engine stays up;<br/>reaper unloads the weights<br/>after the idle time"]
 ```
 
 A SIGKILLed last user cannot run its exit hook, so the reaper stops the
@@ -1053,7 +1064,8 @@ engine within about a second of the death. A reaper killed while its engine
 serves is replaced at the next bind. A user that withdraws `keep_engine_warm`
 while other users are bound makes sure a reaper watches the engine in the same
 way. The remaining gap is a killed reaper when every user then dies before
-any user binds again: the engine keeps running with nobody watching. The next
+any user binds again: the engine keeps running with nobody watching, and a
+kept-warm engine keeps its weights loaded. The next
 lilbee run adopts that same engine and starts a reaper for it, and the engine
 ends when that run's users end. The only processes that can outlive a session are the engine's own, because another
 lilbee still uses them or because the user opted into warm, and the reaper of

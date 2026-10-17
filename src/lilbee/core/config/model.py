@@ -26,6 +26,7 @@ from .defaults import (
     DEFAULT_GENERAL_SYSTEM_PROMPT,
     DEFAULT_IGNORE_DIRS,
     DEFAULT_RAG_SYSTEM_PROMPT,
+    ENGINE_IDLE_TTL_MINUTES_DEFAULT,
 )
 from .enums import (
     ChatMode,
@@ -770,11 +771,11 @@ class Config(BaseSettings):
     # for headless / scripted use where the first call doesn't need to be fast.
     worker_pool_eager_start: bool = ConfigField(default=True, writable=True)
 
-    # Leave the engine fleet running on quit so the next launch adopts it warm.
-    # On keeps the engine process alive across app close so the next launch
-    # binds instantly; its weights still follow engine_idle_ttl_minutes. Off
-    # (default): the engine stops when the last lilbee process exits, leaving
-    # the machine clean.
+    # On: weights stay loaded while any lilbee process holds the engine, and
+    # unload engine_idle_ttl_minutes after the last one exits; the engine process
+    # stays up so the next launch binds instantly. Off (default): the engine
+    # stops when the last lilbee process exits. A change applies at the next
+    # engine start.
     keep_engine_warm: bool = ConfigField(default=False, writable=True)
 
     # Hugging Face's high-performance transfer mode: more connections and much
@@ -782,10 +783,12 @@ class Config(BaseSettings):
     # rather than a laptop also holding a model in memory.
     fast_model_downloads: bool = ConfigField(default=False, writable=True)
 
-    # Idle minutes before the engine unloads its weights (llama-swap ttl), in
-    # every mode: even a persistent engine naps when unused. 0 keeps weights
+    # Idle minutes before the engine unloads its weights: llama-swap's ttl, or
+    # with keep_engine_warm the time after the last lilbee exit. 0 keeps weights
     # loaded until the engine stops.
-    engine_idle_ttl_minutes: int = ConfigField(default=5, writable=True)
+    engine_idle_ttl_minutes: int = ConfigField(
+        default=ENGINE_IDLE_TTL_MINUTES_DEFAULT, writable=True
+    )
 
     # Working n_ctx the dynamic picker aims for. Default scales with
     # total host RAM (see core.system.chat_ctx_target_for_total_bytes):

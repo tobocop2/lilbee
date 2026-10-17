@@ -93,6 +93,8 @@ _CONFIG_FLAG = "-config"
 _LISTEN_FLAG = "-listen"
 _HEALTH_PATH = "/health"
 _RUNNING_PATH = "/running"
+# Stops every upstream llama-server; llama-swap itself keeps listening.
+_UNLOAD_PATH = "/api/models/unload"
 _HTTP_TIMEOUT_S = 10.0
 # llama-swap's own proxy answers within a second; upstream model loads have their
 # own (longer) budget inside llama-swap, so this only covers the proxy coming up.
@@ -188,7 +190,7 @@ class EngineLifetime(StrEnum):
 
     BUILDER = "builder"  # the process that spawned it exits or dies
     USERS = "users"  # the dir's reaper, once no user lock and no keep-warm opt-in is left
-    DETACHED = "detached"  # nothing; the next launch's reap is the only cleanup
+    DETACHED = "detached"  # nothing; the dir's reaper only unloads its weights
 
 
 @dataclass(frozen=True)
@@ -907,6 +909,29 @@ def stop_engine(data_dir: Path) -> list[str]:
                 stopped.append(group)
         state_path.unlink(missing_ok=True)
     return stopped
+
+
+def unload_engine_models(data_dir: Path) -> bool:
+    """Unload the models of every engine *data_dir* records; False when any proxy refused.
+
+    The llama-swap processes stay up, so the next request reloads on demand.
+    """
+    states = (_load_state(path) for path in sorted(data_dir.glob(_STATE_FILE_GLOB)))
+    ports = [state.proxy_port for state in states if state and state.proxy_port is not None]
+    return all([_unload_models(port) for port in ports])
+
+
+def _unload_models(proxy_port: int) -> bool:
+    url = f"http://{_HOST}:{proxy_port}{_UNLOAD_PATH}"
+    try:
+        resp = _probe_client().post(url, timeout=_HTTP_TIMEOUT_S)
+    except (OSError, httpx.HTTPError) as exc:
+        log.warning("Could not unload the models at %s: %s", url, exc)
+        return False
+    if resp.status_code >= httpx.codes.BAD_REQUEST:
+        log.warning("The engine at %s refused the unload: HTTP %d", url, resp.status_code)
+        return False
+    return True
 
 
 def ensure_engine_reaper(data_dir: Path) -> bool:

@@ -42,6 +42,9 @@ DEFAULT_HTTP_TIMEOUT = 30.0
 
 # Safe default + cap for chat-mode n_ctx; full 128K+ training contexts OOM laptops.
 DEFAULT_NUM_CTX = 8192
+
+# Idle minutes before the engine unloads its weights; also read by the engine reaper.
+ENGINE_IDLE_TTL_MINUTES_DEFAULT = 5
 CONFIG_FILE_NAME = "config.toml"
 
 CHUNKS_TABLE = "chunks"

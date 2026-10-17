@@ -53,3 +53,13 @@ def test_negative_ttl_is_rejected():
     """A negative idle ttl has no meaning; the update must refuse it."""
     with pytest.raises(ValueError, match="engine_idle_ttl_minutes"):
         apply_settings_update({"engine_idle_ttl_minutes": -5})
+
+
+def test_keep_warm_help_names_residency_and_the_unload_after_exit():
+    """The setting promises what the reaper does, and when a change takes effect."""
+    help_text = SETTINGS_MAP["keep_engine_warm"].help_text
+    assert "loaded while lilbee runs" in help_text
+    assert "after every lilbee process has exited" in help_text
+    assert "idle time" in help_text
+    assert "next engine start" in help_text
+    assert "last lilbee exit" in SETTINGS_MAP["engine_idle_ttl_minutes"].help_text

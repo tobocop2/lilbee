@@ -271,9 +271,9 @@ There is no general `lilbee set` command. From a shell, set the environment vari
 |---|---|---|---|---|---|---|---|---|
 | `agent_mcp_enabled` | `LILBEE_AGENT_MCP_ENABLED` | `bool` | `true` | yes | yes | yes | no | Register lilbee's MCP search tool into agent launchers (opencode, hermes). Disable to bring your own MCP servers; lilbee stays the model provider. |
 | `documents_dir` | `LILBEE_DOCUMENTS_DIR` | `str` | *(computed)* | yes | yes | yes | no | Local documents root that lilbee sync ingests (blank = data_root/documents). |
-| `engine_idle_ttl_minutes` | `LILBEE_ENGINE_IDLE_TTL_MINUTES` | `int` | `5` | yes | yes | yes | no | Idle minutes before the engine unloads its weights; 0 keeps them loaded. |
+| `engine_idle_ttl_minutes` | `LILBEE_ENGINE_IDLE_TTL_MINUTES` | `int` | `5` | yes | yes | yes | no | Idle minutes before the engine unloads its weights; with keep_engine_warm, counted from the last lilbee exit; 0 keeps them loaded. |
 | `hf_token` | `LILBEE_HF_TOKEN` | `str` | *(empty)* | yes | write-only | write-only | no | HuggingFace access token. Avoids the unauthenticated download rate limit and unlocks gated repos. Stored in plain text in config.toml. Env vars (LILBEE_HF_TOKEN, HF_TOKEN) override. |
-| `keep_engine_warm` | `LILBEE_KEEP_ENGINE_WARM` | `bool` | `false` | yes | yes | yes | no | Let the engine outlive lilbee for warm launches; off stops it on last exit unless another lilbee sharing the engine asked to keep it. |
+| `keep_engine_warm` | `LILBEE_KEEP_ENGINE_WARM` | `bool` | `false` | yes | yes | yes | no | Keep models loaded while lilbee runs and the engine up for warm launches; after every lilbee process has exited, models unload after the idle time. Off stops the engine on last exit unless another lilbee asked to keep it. A change applies at the next engine start. |
 | `sse_heartbeat_interval` | `LILBEE_SSE_HEARTBEAT_INTERVAL` | `float` | `30.0` | no | yes | yes | no | Seconds between SSE keep-alive frames sent to idle HTTP stream clients. |
 | `vault_base` | `LILBEE_VAULT_BASE` | `str|null` | *(none)* | yes | yes | yes | no | Markdown vault root; results carry a vault-relative path (blank = none). |
 

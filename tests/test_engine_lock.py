@@ -338,7 +338,7 @@ def test_a_restart_reclaims_its_own_prior_keep_warm(monkeypatch, tmp_path: Path)
     )
 
     engine, root = tmp_path / "engine", tmp_path / "cfgroot"
-    request_keep_warm(engine, root)  # run 1: warm on
+    request_keep_warm(engine, root, 5)  # run 1: warm on
     assert keep_warm_requested(engine) is True
     restarted_pid = os.getpid() + 4242
     monkeypatch.setattr(os, "getpid", lambda: restarted_pid)  # run 2 is a new process
@@ -355,8 +355,8 @@ def test_withdrawing_leaves_another_installs_optin_intact(tmp_path: Path) -> Non
     )
 
     engine = tmp_path / "engine"
-    request_keep_warm(engine, tmp_path / "mine")
-    request_keep_warm(engine, tmp_path / "peer")
+    request_keep_warm(engine, tmp_path / "mine", 5)
+    request_keep_warm(engine, tmp_path / "peer", 5)
     withdraw_keep_warm(engine, tmp_path / "mine")
     assert keep_warm_requested(engine) is True
     withdraw_keep_warm(engine, tmp_path / "peer")

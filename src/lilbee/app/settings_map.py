@@ -1026,15 +1026,20 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.SYSTEM,
         help_text=(
-            "Let the engine outlive lilbee for warm launches; off stops it on last "
-            "exit unless another lilbee sharing the engine asked to keep it"
+            "Keep models loaded while lilbee runs and the engine up for warm launches; "
+            "after every lilbee process has exited, models unload after the idle time. "
+            "Off stops the engine on last exit unless another lilbee asked to keep it. "
+            "A change applies at the next engine start"
         ),
     ),
     "engine_idle_ttl_minutes": SettingDef(
         int,
         nullable=False,
         group=SettingGroup.SYSTEM,
-        help_text="Idle minutes before the engine unloads its weights; 0 keeps them loaded",
+        help_text=(
+            "Idle minutes before the engine unloads its weights; with keep_engine_warm, "
+            "counted from the last lilbee exit; 0 keeps them loaded"
+        ),
     ),
     "agent_mcp_enabled": SettingDef(
         bool,

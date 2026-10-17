@@ -2388,16 +2388,23 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     [(False, EngineLifetime.USERS), (True, EngineLifetime.DETACHED)],
 )
 def test_a_build_on_kernel_locks_hands_the_engine_to_its_users_unless_kept_warm(
-    monkeypatch, tmp_path: Path, keep_warm: bool, expected: EngineLifetime
+    monkeypatch,
+    tmp_path: Path,
+    reaper_ensures: list[Path],
+    keep_warm: bool,
+    expected: EngineLifetime,
 ) -> None:
-    """The reaper ends a shared engine; a keep-warm engine is detached with no reaper."""
+    """The reaper ends a shared engine; a keep-warm engine is detached and the reaper unloads it."""
     monkeypatch.setattr(cfg, "keep_engine_warm", keep_warm)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
     swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
 
     FleetProvider()._ensure_fleet()
 
     assert swap.started
     assert swap.lifetime is expected
+    assert swap.ttl_seconds == (0 if keep_warm else 900)
+    assert reaper_ensures == [prov_mod.machine_engine_dir()]
 
 
 @pytest.mark.parametrize(
@@ -4889,10 +4896,10 @@ def test_a_bind_makes_sure_a_reaper_watches_the_engine(
     assert reaper_ensures == [machine]
 
 
-def test_a_bind_to_a_kept_warm_engine_starts_no_reaper(
+def test_a_bind_to_a_kept_warm_engine_makes_sure_a_reaper_watches_it(
     monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
 ) -> None:
-    """A kept-warm engine outlives its users, so a reaper beside it would never stop it."""
+    """The reaper unloads a kept-warm engine's weights once its last user leaves."""
     from lilbee.runtime.engine_lock import request_keep_warm
 
     swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
@@ -4900,12 +4907,12 @@ def test_a_bind_to_a_kept_warm_engine_starts_no_reaper(
         prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
     )
     _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
-    request_keep_warm(machine, tmp_path / "other-install")
+    request_keep_warm(machine, tmp_path / "other-install", 5)
 
     assert FleetProvider()._ensure_fleet() is True
 
     assert len(swap.binds) == 1
-    assert reaper_ensures == []
+    assert reaper_ensures == [machine]
 
 
 def test_a_bind_without_kernel_locks_starts_no_reaper(
@@ -5045,7 +5052,7 @@ def test_a_default_config_peer_leaving_last_keeps_a_warm_users_engine(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
 
     # The warm user is a sibling installation, seeded under its own config root.
-    request_keep_warm(_machine, tmp_path / "peer-install")
+    request_keep_warm(_machine, tmp_path / "peer-install", 5)
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     plain = FleetProvider()
     assert plain._ensure_fleet() is True
@@ -5068,7 +5075,7 @@ def test_a_warm_peer_leaving_first_still_keeps_the_engine(monkeypatch, tmp_path:
     assert plain._ensure_fleet() is True
     # A sibling installation opted in and has already left: only its mark
     # remains, which is exactly what "outlive me" means.
-    request_keep_warm(_machine, tmp_path / "peer-install")
+    request_keep_warm(_machine, tmp_path / "peer-install", 5)
 
     plain.shutdown()  # last out, reading a config that says stop
     assert stopped == []
@@ -5129,7 +5136,7 @@ def test_stopping_an_engine_forgets_its_keep_warm_optin(tmp_path: Path) -> None:
     from lilbee.providers.fleet.swap_manager import stop_engine
     from lilbee.runtime.engine_lock import keep_warm_requested, request_keep_warm
 
-    request_keep_warm(tmp_path, tmp_path / "cfgroot")
+    request_keep_warm(tmp_path, tmp_path / "cfgroot", 5)
     assert keep_warm_requested(tmp_path) is True
     stop_engine(tmp_path)
     assert keep_warm_requested(tmp_path) is False
@@ -5180,7 +5187,7 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
     monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     # An earlier run of this same installation opted in, then exited.
-    request_keep_warm(machine, prov_mod.cfg.data_root)
+    request_keep_warm(machine, prov_mod.cfg.data_root, 5)
     # A restarted run binds and releases under one pid, so the patch covers the
     # whole run. filelock 3.30+ no-ops release() when the pid moved mid-hold.
     restarted_pid = os.getpid() + 4242
@@ -5200,7 +5207,7 @@ def _hold_reporting(last: bool) -> MagicMock:
 
 @pytest.mark.parametrize(
     ("last", "peer_keeps_warm", "expect_watch"),
-    [(False, False, True), (False, True, False), (True, False, False)],
+    [(False, False, True), (False, True, True), (True, False, False)],
     ids=["peers-remain", "peer-still-wants-warm", "last-user-out"],
 )
 def test_withdrawing_keep_warm_makes_sure_the_remaining_users_have_a_reaper(
@@ -5211,25 +5218,38 @@ def test_withdrawing_keep_warm_makes_sure_the_remaining_users_have_a_reaper(
     peer_keeps_warm: bool,
     expect_watch: bool,
 ) -> None:
-    """A user that drops its opt-in and leaves must not strand a detached engine.
-
-    While opted in, the engine had no reaper. Once the opt-in is withdrawn and
-    peers remain, nothing else would stop the engine when they die.
-    """
+    """A user that drops its opt-in and leaves must not strand a detached engine."""
     from lilbee.runtime.engine_lock import request_keep_warm
 
     monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
     monkeypatch.setattr(prov_mod, "stop_engine", lambda _d: None)
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
-    request_keep_warm(tmp_path, prov_mod.cfg.data_root)
+    request_keep_warm(tmp_path, prov_mod.cfg.data_root, 5)
     if peer_keeps_warm:
-        request_keep_warm(tmp_path, tmp_path / "peer-install")
+        request_keep_warm(tmp_path, tmp_path / "peer-install", 5)
     p = FleetProvider()
     p._engine_holds = {tmp_path: _hold_reporting(last)}
 
     p.shutdown()
 
     assert reaper_ensures == ([tmp_path] if expect_watch else [])
+
+
+def test_the_last_user_out_of_a_keep_warm_engine_leaves_a_reaper_to_unload_it(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """The engine stays up for the next launch; its reaper unloads the weights when idle."""
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", True, raising=False)
+    p = FleetProvider()
+    p._engine_holds = {tmp_path: _hold_reporting(True)}
+
+    p.shutdown()
+
+    assert stopped == []
+    assert reaper_ensures == [tmp_path]
 
 
 def test_a_config_change_that_keeps_peers_does_not_start_a_reaper(
@@ -5246,10 +5266,10 @@ def test_a_config_change_that_keeps_peers_does_not_start_a_reaper(
     assert reaper_ensures == []
 
 
-def test_ttl_applies_with_warm_off(monkeypatch) -> None:
+def test_ttl_applies_with_warm_off(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
-    assert prov_mod._warm_ttl_seconds(EngineLifetime.BUILDER) == 420
+    assert prov_mod._warm_ttl_seconds(EngineLifetime.BUILDER, tmp_path) == 420
 
 
 def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> None:
