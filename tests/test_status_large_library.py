@@ -338,3 +338,18 @@ class TestListSourcesStreams:
 
         assert result.exit_code == 0, result.output
         assert len(result.output.splitlines()) == 3_000
+
+
+class TestMcpListingPagesARealStore:
+    def test_pages_cover_every_source_once_and_say_when_to_stop(self, small_store):
+        from lilbee.mcp_server import list_documents
+
+        _use_store(small_store)
+
+        pages = [list_documents(limit=1000, offset=offset) for offset in (0, 1000, 2000)]
+
+        assert [len(page["documents"]) for page in pages] == [1000, 1000, 1000]
+        assert [page["has_more"] for page in pages] == [True, True, False]
+        assert {page["total"] for page in pages} == {3_000}
+        names = [doc["filename"] for page in pages for doc in page["documents"]]
+        assert len(set(names)) == 3_000
