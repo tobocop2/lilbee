@@ -38,6 +38,7 @@ from lilbee.runtime.lock import ResetRefusedError, _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
     EventType,
+    FileStartEvent,
     WikiPageEvent,
     WikiPhase,
     WikiPhaseEvent,
@@ -2890,6 +2891,47 @@ class TestSyncJson:
         assert data["added"] == ["new.txt"]
         assert data["removed"] == ["old.txt"]
         assert data["unchanged"] == 2
+
+
+class TestSyncProgressWhenPiped:
+    """Output with no live bar (a pipe or a file) gets one line as each file starts."""
+
+    @staticmethod
+    def _announcing_sync(files: list[str]):
+        async def _sync(*, on_progress, **_kwargs):
+            for number, name in enumerate(files, start=1):
+                on_progress(
+                    EventType.FILE_START,
+                    FileStartEvent(file=name, total_files=len(files), current_file=number),
+                )
+            return SyncResult(added=files)
+
+        return _sync
+
+    @pytest.mark.parametrize("command", ["sync", "rebuild"])
+    def test_a_piped_run_prints_a_line_per_file(self, command):
+        with mock.patch("lilbee.data.ingest.sync", self._announcing_sync(["a.txt", "b.txt"])):
+            result = runner.invoke(app, [command])
+        assert result.exit_code == 0
+        lines = result.output.splitlines()
+        assert "Syncing [1/2]: a.txt" in lines
+        assert "Syncing [2/2]: b.txt" in lines
+
+    def test_a_terminal_keeps_to_the_live_bar(self):
+        from lilbee.cli.app import console
+
+        with (
+            mock.patch("lilbee.data.ingest.sync", self._announcing_sync(["a.txt"])),
+            mock.patch.object(type(console), "is_terminal", True),
+        ):
+            result = runner.invoke(app, ["sync"])
+        assert result.exit_code == 0
+        assert "Syncing [" not in result.output
+
+    def test_json_output_stays_one_document(self):
+        with mock.patch("lilbee.data.ingest.sync", self._announcing_sync(["a.txt"])):
+            result = runner.invoke(app, ["--json", "sync"])
+        assert json.loads(result.output.strip())["added"] == ["a.txt"]
 
 
 class TestRebuildJson:
