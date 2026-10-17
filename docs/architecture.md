@@ -449,14 +449,19 @@ content is taken, so no old name stays while a file of its content is added.
 `_sources` row holds its path. A move changes that path, the title when the title came
 from the old file name, and the file's stat, in one merge of the source table. The chunk
 table takes an update only for the files whose title changes, one update a title. The
-sources inside a moved archive move with it. The vectors are not read or embedded again.
+sources inside a moved archive move with it. The vectors are not read or embedded again. A held-out file moves too, at the hash it is
+held out at, and stays held out. A removed file moves only to a path whose part below its
+folder ends its old path, since a removal holds while the name below the folder stays: a
+folder moved on disk and pointed at in `config.toml` keeps its removals, and a copy
+under another name is indexed.
 
 **One hold of the write lock** moves at most 2,000 files. The sync pauses for 0.1 s
 between two holds, so other writers get a turn. A sync that stops between two holds
 leaves the remaining files under their old names, and the next sync moves them.
 
 **Source ids.** A source that a library held before ids existed takes the md5 of its
-path; a new source takes a random id, so a new file at a path that a moved file left
+path, and a wiki page the md5 of its path joined with a NUL and `wiki`, so a page and a
+document of one path keep two ids; a new source takes a random id, so a new file at a path that a moved file left
 gets an id of its own. A flush writes the row of a new source before its chunks, so a
 flush that stops between them leaves rows the next flush of that file finds and deletes.
 A removed source that a wiki citation names keeps its row, held out of every listing, so
@@ -482,13 +487,13 @@ paths they were written with; nothing restores them. A subject index of an older
 again from the mention rows the first time it is read, with no extraction.
 
 **The first open of an older library** keys it in place under the write lock. Each table
-gains `source_id` as the md5 of its path, takes the BTREE index of the path column when
+gains `source_id` as the md5 of its path (a wiki chunk takes the id of its page), takes the BTREE index of the path column when
 it had one, and loses the path column; `_sources.filename` becomes `path`. Each step reads
 the table's columns, and the schema stamp reads `_meta`, so an open that stops part way is
 finished by the next, also when it stops after the last column drop. LanceDB adds
 a column one fragment at a time, so each table gains its id column on a thread of its own
 from the start of the open. A path column goes only after every path in it has a source
-row, and the key comparison runs in Arrow. Measured on a library of 8.8 million chunks of
+row of its type, and the key comparison runs in Arrow. Measured on a library of 8.8 million chunks of
 4096 dimensions, 4,425 fragments per table, on an 8-core host: 34 s and 2.4 GiB at most,
 with the full-text, vector and bitmap indexes kept. An older lilbee then fails on the renamed column
 (`KeyError: 'filename'`) in every command that reads the index, and changes nothing.
@@ -501,8 +506,10 @@ folder that holds the path, then the rest. Every other path (an owned file, a cr
 page, a wiki page, an imported source) shows itself. The listing search builds one SQL
 arm per folder from the same ordered list. The store reads the registry again when
 `config.toml` changes, and a sync holds the registry it started with. The first open
-stores the location of each row a registered label still names, one commit per label,
-deepest folder first; a row an outer folder kept for a file of an inner folder folds
+stores the location of each row a registered label still names, deepest folder first. It
+reads the rows in batches of 8192 from the source table held at one version and updates
+each batch by its row addresses, one commit a batch, so its memory does not follow the
+number of rows; a row an outer folder kept for a file of an inner folder folds
 into the inner folder's row. Only a document is stored at its location; a wiki page and
 an imported source keep their own names. Every write of a source row by name states the
 type of its source. A write finds the row of that type at its stored path or at the label
@@ -518,7 +525,7 @@ that a citation names, and an import that runs again writes the same rows. When 
 leaves the registry, the rows it keeps for citations are stored by their names again, as a
 label with no folder keeps them; a row that lands on a name another row holds folds into it.
 
-Three limits of stored locations remain:
+Two limits of stored locations remain:
 
 - **A file added under another label.** The add labels a file by its file name. If you
   give it another label by an edit of `config.toml` and then add a parent folder, the
@@ -528,10 +535,6 @@ Three limits of stored locations remain:
   with two ids. A citation lookup, a page text lookup, a removal by name, the concept
   rows and the concept boost of a search find the document. A name that a reader gives
   with no type, such as the source of a chunk lookup, finds the wiki page.
-- **An add that stops before the move.** A folder added again at a new place, or a
-  label forced onto another folder, moves its rows after the registry write. If the
-  add stops between the two, the next sync pairs the documents with their files by
-  content hash, but a file you removed from that folder is indexed again.
 
 **Where the work is skipped.** Workers build no search indexes and run no corpus-wide
 passes. The parent builds ANN and BM25 once, after the last worker.

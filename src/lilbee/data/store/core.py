@@ -259,17 +259,18 @@ _OLD_PATH = "filename"
 # The ``_meta`` rows an upgrade has yet to stamp; a store stamped 1 keeps 1.
 _UNSTAMPED = f"schema_version >= 2 AND schema_version < {META_SCHEMA_VERSION}"
 
+# The type column of ``_sources``, and of the chunks table.
+_SOURCE_TYPE = "source_type"
+_CHUNK_TYPE = "chunk_type"
 # The source rows a listing shows: each that holds a document, failed at a later edit or not.
 _LISTED = (
-    f"source_type != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
+    f"{_SOURCE_TYPE} != '{SourceType.WIKI}' AND ({_HELD_OUT} IS NULL"
     f" OR {_HELD_OUT} = '{HeldOut.FAILED}' AND file_hash IS NOT NULL)"
 )
 # The source rows stored at their location; every other source is stored by its key.
-_DOCUMENT = f"source_type = '{SourceType.DOCUMENT}'"
+_DOCUMENT = f"{_SOURCE_TYPE} = '{SourceType.DOCUMENT}'"
 # The source rows of wiki pages, which share no row with a source of another type.
-_WIKI = f"source_type = '{SourceType.WIKI}'"
-_SOURCE_TYPE = "source_type"
-_CHUNK_TYPE = "chunk_type"
+_WIKI = f"{_SOURCE_TYPE} = '{SourceType.WIKI}'"
 # The chunks of wiki pages; an upgrade gives them the id of a page, never of a document.
 _WIKI_CHUNK = f"{_CHUNK_TYPE} = '{ChunkType.WIKI}'"
 # What a wiki page's key is joined with before its md5 gives the page its id at an upgrade.
@@ -575,7 +576,7 @@ def _found_rows(
     for start in range(0, len(paths), _SOURCE_STAT_BATCH_ROWS):
         where = f"{_PATH} IN ({_in_list(paths[start : start + _SOURCE_STAT_BATCH_ROWS])})"
         for row in sources.search().where(where).limit(None).to_list():
-            held[row[_PATH], _is_wiki(row["source_type"])] = row
+            held[row[_PATH], _is_wiki(row[_SOURCE_TYPE])] = row
     found: dict[str, dict[str, Any]] = {}
     for write in writes:
         wiki = _is_wiki(write.source_type)
@@ -1096,7 +1097,7 @@ class Store:
             [
                 pa.field(_SOURCE_ID, pa.utf8()),
                 pa.field("content_type", pa.utf8()),
-                pa.field("chunk_type", pa.utf8()),
+                pa.field(_CHUNK_TYPE, pa.utf8()),
                 pa.field("page_start", pa.int32()),
                 pa.field("page_end", pa.int32()),
                 pa.field("line_start", pa.int32()),
@@ -1778,7 +1779,7 @@ class Store:
     # chunk_concepts serves the concept boost (ConceptGraph._chunk_concepts_from);
     # without its index every boosted query full-scans the table.
     _SCALAR_TARGETS: tuple[tuple[str, tuple[tuple[str, ScalarIndexType], ...]], ...] = (
-        (CHUNKS_TABLE, ((_SOURCE_ID, "BTREE"), ("chunk_type", "BITMAP"))),
+        (CHUNKS_TABLE, ((_SOURCE_ID, "BTREE"), (_CHUNK_TYPE, "BITMAP"))),
         (CHUNK_CONCEPTS_TABLE, ((_SOURCE_ID, "BTREE"),)),
     )
 
@@ -1949,7 +1950,7 @@ class Store:
             return 0
         _check_vector_dims(records, embedding_dim)
         ids = self._ensure_ids_unlocked(
-            (record["source"], _source_type_of(record["chunk_type"])) for record in records
+            (record["source"], _source_type_of(record[_CHUNK_TYPE])) for record in records
         )
         table = self._chunks_table()
         table.add(_keyed(records, "source", ids))
@@ -2627,13 +2628,7 @@ class Store:
         table = self.open_table(CHUNKS_TABLE)
         if table is None:
             return set()
-        rows = (
-            table.search()
-            .where(f"chunk_type = '{ChunkType.WIKI}'")
-            .select([_SOURCE_ID])
-            .limit(None)
-            .to_list()
-        )
+        rows = table.search().where(_WIKI_CHUNK).select([_SOURCE_ID]).limit(None).to_list()
         return set(self.source_paths(row[_SOURCE_ID] for row in rows).values())
 
     def wiki_pages_citing(self, paths: Iterable[str]) -> set[str]:
@@ -2733,7 +2728,7 @@ class Store:
             return found
         table.checkout(version)
         name = self._locations().name
-        documents = f"source_type != '{SourceType.IMPORTED}' AND {_LISTED}"
+        documents = f"{_SOURCE_TYPE} != '{SourceType.IMPORTED}' AND {_LISTED}"
         held = f"{_HELD_OUT} IN ('{HeldOut.FAILED}', '{HeldOut.REMOVED}')"
         for start in range(0, len(hashes), _SOURCE_STAT_BATCH_ROWS):
             quoted = _in_list(hashes[start : start + _SOURCE_STAT_BATCH_ROWS])
@@ -2821,7 +2816,7 @@ class Store:
             # Stamped under the write lock that commits the row: sources_checkpoint relies on it.
             "ingested_at": datetime.now(UTC).isoformat(),
             "chunk_count": chunk_count,
-            "source_type": source_type,
+            _SOURCE_TYPE: source_type,
             "size_bytes": stat.size_bytes if stat else SOURCE_STAT_UNKNOWN,
             "mtime_ns": stat.mtime_ns if stat else SOURCE_STAT_UNKNOWN,
             "stat_captured_ns": stat.captured_ns if stat else SOURCE_STAT_UNKNOWN,
@@ -2928,8 +2923,8 @@ class Store:
         ]
         key = self._locations().key
         wanted = [((key(name, kind), kind), name) for kind in types for name in names]
-        rows = self._rows_where(_PATH, {at[0] for at, _ in wanted}, ["source_type", _SOURCE_ID])
-        held = {(row[_PATH], row["source_type"]): row[_SOURCE_ID] for row in rows}
+        rows = self._rows_where(_PATH, {at[0] for at, _ in wanted}, [_SOURCE_TYPE, _SOURCE_ID])
+        held = {(row[_PATH], row[_SOURCE_TYPE]): row[_SOURCE_ID] for row in rows}
         found: dict[str, str] = {}
         for at, name in wanted:
             if at in held:
@@ -3442,7 +3437,7 @@ class Store:
         mentions, so wiping it empties those tables outright. All deletes run
         before the results combine.
         """
-        chunks_cleared = self.clear_table(CHUNKS_TABLE, f"chunk_type = '{ChunkType.WIKI}'")
+        chunks_cleared = self.clear_table(CHUNKS_TABLE, _WIKI_CHUNK)
         citations_cleared = self.clear_table(CITATIONS_TABLE, "1 = 1")
         mentions_cleared = self.clear_wiki_mentions()
         return chunks_cleared and citations_cleared and mentions_cleared
