@@ -567,9 +567,22 @@ def _paths_missing_from(sources: LanceTable, table: LanceTable, column: str) -> 
     """
     import pyarrow.compute as pc
 
-    keys = pc.unique(_key_column(table, column))
+    keys = _key_column(table, column)
     held = _key_column(sources, _PATH).cast(keys.type)
-    return sorted(pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held))).to_pylist())
+    missing = pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held)))
+    return sorted(pc.unique(missing).to_pylist())
+
+
+def _key_by_source_id(table: LanceTable, column: str) -> None:
+    """Key *table* by ``source_id`` in place of the path in *column*. Lock held."""
+    from lancedb.index import BTree
+
+    if _SOURCE_ID not in table.schema.names:
+        table.add_columns({_SOURCE_ID: f"md5({column})"})
+    indexes = _index_names(table)
+    if [column] in indexes.values() and [_SOURCE_ID] not in indexes.values():
+        table.create_index(_SOURCE_ID, config=BTree())
+    table.drop_columns([column])
 
 
 def _migrate_sources_table(table: LanceTable) -> None:
@@ -1124,47 +1137,48 @@ class Store:
         store stamped 2 or later is stamped 3 at the end; a store stamped 1 predates
         the document prefix, and keeps 1 so that the stale-prefix warning still names it.
         """
+        from concurrent.futures import ThreadPoolExecutor
+
         names = table_names(db)
         steps = _upgrade_steps(db, names)
-        for step, (name, table) in enumerate(steps, start=1):
-            shown = name.strip("_").replace("_", " ")
-            self._report_upgrade(
-                LibraryUpgradeEvent(
-                    phase=UpgradePhase.TABLE,
-                    table=shown,
-                    step=step,
-                    total_steps=len(steps),
-                    rows=table.count_rows(),
+        # LanceDB adds a column one fragment at a time, so each table's runs on its own thread.
+        with ThreadPoolExecutor(max_workers=len(_PATH_KEY_COLUMNS)) as pool:
+            keyed = []
+            for step, (name, table) in enumerate(steps, start=1):
+                shown = name.strip("_").replace("_", " ")
+                self._report_upgrade(
+                    LibraryUpgradeEvent(
+                        phase=UpgradePhase.TABLE,
+                        table=shown,
+                        step=step,
+                        total_steps=len(steps),
+                        rows=table.count_rows(),
+                    )
                 )
-            )
-            if name == SOURCES_TABLE:
-                _migrate_sources_table(table)
-            else:
-                self._migrate_keyed_table(db, table, _PATH_KEY_BY_TABLE[name])
+                if name == SOURCES_TABLE:
+                    _migrate_sources_table(table)
+                else:
+                    column = _PATH_KEY_BY_TABLE[name]
+                    self._hold_missing_paths(db, table, column)
+                    keyed.append(pool.submit(_key_by_source_id, table, column))
+            for done in keyed:
+                done.result()
         if META_TABLE in names:
             db.open_table(META_TABLE).update(
                 where="schema_version >= 2", values={"schema_version": META_SCHEMA_VERSION}
             )
         log.info("Keyed the library at %s by source id", self._config.lancedb_dir)
 
-    def _migrate_keyed_table(self, db: LanceDBConnection, table: LanceTable, column: str) -> None:
-        """Key *table* by ``source_id`` in place of the path in *column*. Lock held.
+    def _hold_missing_paths(self, db: LanceDBConnection, table: LanceTable, column: str) -> None:
+        """Give each path in *column* of *table* that no source row holds a row. Lock held.
 
-        A path no source row holds (a wiki page, a removed source a citation
-        names) gets one first, so no path is lost when the column goes.
+        A wiki page, or a removed source a citation names, gets one, so no path
+        is lost when the column goes.
         """
-        from lancedb.index import BTree
-
         sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
         missing = _paths_missing_from(sources, table, column)
         if missing:
             sources.add([self._placeholder_row(key, _md5(key)) for key in missing])
-        if _SOURCE_ID not in table.schema.names:
-            table.add_columns({_SOURCE_ID: f"md5({column})"})
-        indexes = _index_names(table)
-        if [column] in indexes.values() and [_SOURCE_ID] not in indexes.values():
-            table.create_index(_SOURCE_ID, config=BTree())
-        table.drop_columns([column])
 
     def open_table(self, name: str) -> LanceTable | None:
         """Open a table if it exists, otherwise return None."""

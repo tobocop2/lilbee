@@ -5348,6 +5348,35 @@ class TestOpenTimeMigration:
         rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
         assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
 
+    def test_a_table_gains_its_id_column_while_the_next_table_is_compared(
+        self, test_config, monkeypatch
+    ):
+        from lancedb.table import LanceTable
+
+        import lilbee.data.store.core as core_mod
+
+        store = _path_keyed_library(test_config)
+        compared, overlapped = threading.Event(), []
+        real_add, real_missing = LanceTable.add_columns, core_mod._paths_missing_from
+
+        def _add(self, *args, **kwargs):
+            if self.name == CHUNKS_TABLE:
+                overlapped.append(compared.wait(timeout=5))
+            return real_add(self, *args, **kwargs)
+
+        def _missing(sources, table, column):
+            if table.name == PAGE_TEXTS_TABLE:
+                compared.set()
+            return real_missing(sources, table, column)
+
+        monkeypatch.setattr(LanceTable, "add_columns", _add)
+        monkeypatch.setattr(core_mod, "_paths_missing_from", _missing)
+
+        store.get_db()
+
+        assert overlapped == [True]
+        assert "source_id" in store.open_table(CHUNKS_TABLE).schema.names
+
     @pytest.mark.parametrize("key_type", [pa.string(), pa.large_string()])
     def test_the_missing_paths_are_the_keys_no_source_row_holds(self, tmp_path, key_type):
         import lancedb
