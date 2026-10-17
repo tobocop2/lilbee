@@ -18,6 +18,8 @@ from lilbee.providers import engine_params, model_cache
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import ctx as fleet_ctx
 from lilbee.providers.fleet.adapters import (
+    FLAG_FIT_TARGET,
+    FLAG_KV_UNIFIED_PER_SLOT,
     LLM_RERANK_CONCURRENCY,
     ROLE_SPECS,
     RoleServerSpec,
@@ -33,6 +35,7 @@ from lilbee.providers.fleet.binary import (
     resolve_llama_server,
 )
 from lilbee.providers.fleet.devices import (
+    MIB,
     VULKAN_BACKEND,
     FleetDevice,
     host_lacks_nvlink,
@@ -50,7 +53,7 @@ from lilbee.providers.fleet.placement import (
     plan_placement,
 )
 from lilbee.providers.fleet.placement_spec import PlacementError, PlacementSpec
-from lilbee.providers.fleet.readback import supports_memory_readback
+from lilbee.providers.fleet.readback import engine_advertises, supports_memory_readback
 from lilbee.providers.fleet.replicas import resolve_replica_count
 from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import free_system_memory, total_system_memory
@@ -156,9 +159,6 @@ _SPLIT_CHAT_SLOTS = 1
 # its floor after the forced split is refused by plan_launches
 # (_unusable_chat_ctx_reason).
 _MIN_USABLE_CHAT_CTX = 8192
-# Offload-search upper bound meaning "no reduced offload is worth probing": the
-# search runs 0..upper, so a negative bound skips it.
-_NO_OFFLOAD_PROBE = -1
 # Embed and cross-encoder rerank serve one request at a time. Raising it was
 # tried and measured worse: on 8xA40 with an 8B Q8 embedder and one ~100-token
 # passage per request, --parallel 1 gave 133 docs/sec at 81% SM while
@@ -464,115 +464,46 @@ def fit_chat_ctx(
     *,
     available_bytes: int,
     ctx_ceiling: int,
-) -> engine_params.ChatFit:
-    """The offload and chat window gguf-parser says *available_bytes* backs.
+) -> int:
+    """The chat window gguf-parser says *available_bytes* backs at the configured offload.
 
-    Sizes one slot at the configured offload, as :func:`_slots_for` then grows
-    the slot count against what the window leaves. A window that cannot hold a
-    grounded prompt buys KV room by leaving layers in system memory, and the
-    largest offload whose window reaches ``min_usable_chat_ctx`` wins; the
-    alternative for those models is no service at all
-    (:func:`_unusable_chat_ctx_reason`). Raises when the estimator cannot
-    answer, which sends :func:`engine_params.resolve_chat_fit` to its
+    Sizes one slot, as :func:`_slots_for` then grows the slot count against
+    what the window leaves. A window below a grounded prompt is raised to one
+    when the engine's own fit will move layers and experts off the card to
+    hold it (:func:`_engine_fits_chat_offload`). Raises when the estimator
+    cannot answer, which sends :func:`engine_params.resolve_chat_ctx` to its
     header-math fallback.
     """
-
-    def fit_at(gpu_layers: int) -> int:
-        return fleet_ctx.fit_single_ctx(
-            model_path,
-            meta=meta,
-            slots=1,
-            available_bytes=available_bytes,
-            gpu_layers=gpu_layers,
-            flash_attn=_role_flash(WorkerRole.CHAT),
-            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
-            unified=plan_sizing_is_unified(),
-            ctx_ceiling=ctx_ceiling,
-            expert_offload=_role_expert_offload(model_path),
-        )
-
-    configured = _role_gpu_layers(WorkerRole.CHAT)
-    fit = engine_params.ChatFit(configured, fit_at(configured))
-    needed = engine_params.min_usable_chat_ctx()
-    if fit.ctx >= needed or not _chat_offload_is_tradable(
+    ctx = fleet_ctx.fit_single_ctx(
         model_path,
         meta=meta,
+        slots=1,
         available_bytes=available_bytes,
+        gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+        flash_attn=_role_flash(WorkerRole.CHAT),
+        kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+        unified=plan_sizing_is_unified(),
         ctx_ceiling=ctx_ceiling,
-        needed=needed,
-    ):
-        return fit
-    traded = _traded_chat_fit(
-        fit_at, upper=_chat_offload_probe_ceiling(meta, configured), needed=needed
+        expert_offload=_role_expert_offload(model_path),
     )
-    return traded or fit
+    needed = engine_params.min_usable_chat_ctx()
+    if ctx >= needed or ctx_ceiling < needed or not _engine_fits_chat_offload(model_path):
+        return ctx
+    quantum = model_cache._DYNAMIC_CTX_QUANTUM
+    return min(ctx_ceiling, -(-needed // quantum) * quantum)
 
 
-# Architectures whose head scores every position it proposes. Their compute
-# buffer grows with the window, and the estimator prices it by the physical
-# batch instead, so the estimate falls further behind the longer the window
-# gets. The trade maximises exactly that window, which turns a fixed
-# under-estimate into an unbounded one: measured on a 1 GiB card, the trade
-# granted gemma-4-26B-A4B-eagle3 59648 tokens against a real 1413 MiB.
-_NON_TRADABLE_ARCHITECTURES = frozenset({"eagle3"})
+def _engine_fits_chat_offload(model_path: Path) -> bool:
+    """Whether llama-server's own fit places the chat layers at load.
 
-
-def _chat_offload_is_tradable(
-    model_path: Path,
-    *,
-    meta: dict[str, str] | None,
-    available_bytes: int,
-    ctx_ceiling: int,
-    needed: int,
-) -> bool:
-    """Whether a too-small chat window may buy KV room by moving layers off the card.
-
-    Only while the weights alone fit *available_bytes*. Past that the layers the
-    trade leaves behind are served from system memory, and a model that answers
-    from host RAM is the unusable load :func:`_unusable_chat_ctx_reason` refuses
-    on purpose. A window the user capped below *needed* is their choice, and the
-    refusal already honours it, so nothing is bought by trading for it either.
-
-    Never for a speculator head. The estimate the search reads is not sound over
-    the window for those, so the search optimises a number that grows wrong.
+    It does for an auto layer count with no expert overrides, on a card with
+    memory of its own; a numeric ``n_gpu_layers`` or tensor override stops it.
     """
-    if (meta or {}).get("architecture") in _NON_TRADABLE_ARCHITECTURES:
-        return False
-    return ctx_ceiling >= needed and _weights_bytes(model_path) <= available_bytes
-
-
-def _chat_offload_probe_ceiling(meta: dict[str, str] | None, configured: int) -> int:
-    """Highest layer count the offload search probes, below *configured*.
-
-    ``_NO_OFFLOAD_PROBE`` when the architecture does not report a layer count,
-    which leaves no grid to search.
-    """
-    try:
-        layers = int((meta or {})["block_count"])
-    except (KeyError, ValueError):
-        return _NO_OFFLOAD_PROBE
-    if configured == engine_params.N_GPU_LAYERS_AUTO:
-        return layers
-    return min(configured - 1, layers)
-
-
-def _traded_chat_fit(
-    fit_at: Callable[[int], int], *, upper: int, needed: int
-) -> engine_params.ChatFit | None:
-    """Largest offload at or below *upper* whose window reaches *needed*, or ``None``.
-
-    Binary search: the estimate charges less VRAM the fewer layers the card
-    holds, so the fitted window is monotone in the offload.
-    """
-    lo, hi, best = 0, upper, None
-    while lo <= hi:
-        mid = (lo + hi) // 2
-        ctx = fit_at(mid)
-        if ctx >= needed:
-            best, lo = engine_params.ChatFit(mid, ctx), mid + 1
-        else:
-            hi = mid - 1
-    return best
+    return (
+        _role_gpu_layers(WorkerRole.CHAT) == engine_params.N_GPU_LAYERS_AUTO
+        and not _role_expert_offload(model_path)
+        and not plan_sizing_is_unified()
+    )
 
 
 def _role_ctx(
@@ -1636,6 +1567,28 @@ def _charge_by_device(
     }
 
 
+def _chat_fit_target_mib(
+    binary: Path, chosen: tuple[FleetDevice, ...], reserved: Mapping[int, int]
+) -> tuple[int, ...]:
+    """Memory, in MiB, the engine's fit leaves free on each of chat's cards.
+
+    The share placement never charges plus what the card holds back for the
+    other roles placed on it; empty for an engine without ``--fit-target``.
+    """
+    if not engine_advertises(binary, FLAG_FIT_TARGET):
+        return ()
+    headroom = 1.0 - usable_vram_fraction()
+    return tuple(
+        -(-(int(device.total_bytes * headroom) + reserved.get(device.index, 0)) // MIB)
+        for device in chosen
+    )
+
+
+def _engine_shares_kv(binary: Path) -> bool:
+    """Whether *binary* can give its slots one KV pool with a per-slot cap."""
+    return engine_advertises(binary, FLAG_KV_UNIFIED_PER_SLOT)
+
+
 def _launch_for(
     plan: InstancePlan,
     model_ref: str,
@@ -1688,12 +1641,8 @@ def _launch_for(
             list(plan.devices),
         )
     split_slots = _SPLIT_CHAT_SLOTS
-    # A single-card chat is the one launch whose offload its own window fit can
-    # lower; the split and pinned paths never run that fit.
-    fit_offload = is_chat and not multi_card_chat and cfg.num_ctx is None
-    n_gpu_layers = _role_gpu_layers(plan.role)
+    reserved = reserved_by_device or {}
     if split_chat:
-        reserved = reserved_by_device or {}
         # Headroom left after the embed/rerank servers on each shared card, not the
         # card's raw free VRAM, so the chat KV doesn't over-commit.
         per_device_free = [max(0, d.free_bytes - reserved.get(d.index, 0)) for d in chosen]
@@ -1713,15 +1662,6 @@ def _launch_for(
             )
 
         split_slots, ctx = _resolve_split_chat_slots(_split_fit)
-    elif fit_offload:
-        # One call answers both halves. The window was sized against the memory
-        # this offload leaves free, so a second call for the offload could pair a
-        # window with an offload that never fitted it.
-        chat_fit = engine_params.resolve_chat_fit(
-            model_path, meta, available_bytes=plan_sizing_budget(placed_device)
-        )
-        n_gpu_layers = chat_fit.gpu_layers
-        ctx = apply_ctx_downshift(plan.role, chat_fit.ctx)
     else:
         # Downshifted here and not only in the estimate: the role resolvers are
         # pure functions of model and config, so without this the retry after a
@@ -1756,7 +1696,7 @@ def _launch_for(
         spec=spec,
         model_path=model_path,
         devices=plan.devices,
-        n_gpu_layers=n_gpu_layers,
+        n_gpu_layers=_role_gpu_layers(plan.role),
         slots=slots,
         ctx_per_slot=ctx,
         tensor_split=plan.tensor_split,
@@ -1769,6 +1709,8 @@ def _launch_for(
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
         memory_endpoint=supports_memory_readback(binary),
+        fit_target_mib=_chat_fit_target_mib(binary, chosen, reserved) if is_chat else (),
+        kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary) else None,
     )
     return InstanceLaunch(
         role=plan.role,

@@ -9,7 +9,6 @@ provider compute them identically. No native binding.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -210,33 +209,18 @@ def chat_ctx_ceiling(meta: dict[str, str] | None, model_path: Path) -> int:
     return training_ctx
 
 
-@dataclass(frozen=True)
-class ChatFit:
-    """The GPU offload and per-slot window one chat launch runs with.
-
-    The pair is inseparable: the window was sized against the memory this
-    offload leaves free, so serving it at any other offload overruns the card.
-    """
-
-    gpu_layers: int
-    ctx: int
-
-
-def resolve_chat_fit(
+def resolve_chat_ctx(
     model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
-) -> ChatFit:
-    """Pick a single-GPU offload and n_ctx aiming for ``cfg.chat_n_ctx_target``,
-    clamped to model + host.
+) -> int:
+    """Pick a single-GPU chat n_ctx aiming for ``cfg.chat_n_ctx_target``, clamped to model + host.
 
     A gguf-parser fit answers first
     (:func:`lilbee.providers.fleet.planning.fit_chat_ctx`), because it prices the
-    cache each layer of this architecture holds, and it may leave layers in
-    system memory to free the KV room a usable window needs. Header math takes
-    over when the estimator cannot answer; it charges every layer as dense
-    attention over the whole window at the configured offload, which
-    under-grants linear-attention, sliding-window and MLA models. Either way the
-    window stops at the smallest of the trained context, ``cfg.num_ctx_max`` and
-    the target.
+    cache each layer of this architecture holds. Header math takes over when the
+    estimator cannot answer; it charges every layer as dense attention over the
+    whole window, which under-grants linear-attention, sliding-window and MLA
+    models. Either way the window stops at the smallest of the trained context,
+    ``cfg.num_ctx_max`` and the target.
 
     A multi-GPU tensor-split chat is sized separately by the fleet against its
     per-device headroom (see :func:`lilbee.providers.fleet.ctx.fit_split_ctx`).
@@ -260,15 +244,12 @@ def resolve_chat_fit(
         return fit_chat_ctx(model_path, meta, available_bytes=available_bytes, ctx_ceiling=upper)
     except (ProviderError, OSError, ValueError):
         log.debug("gguf-parser ctx fit failed for %s, using header math", model_path, exc_info=True)
-    return ChatFit(
-        resolve_n_gpu_layers(embedding=False),
-        _header_math_chat_ctx(
-            model_path,
-            meta,
-            available_bytes=available_bytes,
-            training_ctx=training_ctx,
-            ceiling=ceiling,
-        ),
+    return _header_math_chat_ctx(
+        model_path,
+        meta,
+        available_bytes=available_bytes,
+        training_ctx=training_ctx,
+        ceiling=ceiling,
     )
 
 
@@ -296,14 +277,6 @@ def _header_math_chat_ctx(
     except (OSError, ValueError):
         log.debug("dynamic ctx sizing failed for %s, using static cap", model_path, exc_info=True)
         return min(training_ctx, cfg.chat_n_ctx_target)
-
-
-def resolve_chat_ctx(
-    model_path: Path, meta: dict[str, str] | None, *, available_bytes: int | None = None
-) -> int:
-    """The window half of :func:`resolve_chat_fit`, for callers that only serve
-    or advertise the context."""
-    return resolve_chat_fit(model_path, meta, available_bytes=available_bytes).ctx
 
 
 # Tokens the minimum grounded prompt allows for the question plus the context

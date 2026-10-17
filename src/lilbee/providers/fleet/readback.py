@@ -426,15 +426,8 @@ _HELP_PROBE_TIMEOUT_S = 15.0
 
 
 @functools.lru_cache(maxsize=8)
-def supports_memory_readback(binary: Path) -> bool:
-    """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
-
-    Read from the binary's own ``--help``, once per path: a stock llama-server
-    exits with "unknown argument" when handed a flag it lacks, so the launch
-    must never carry it on advertisement it did not see. Any failure to run or
-    to answer reads as unsupported, which degrades to the log path rather than
-    a failed launch.
-    """
+def _engine_help(binary: Path) -> str:
+    """*binary*'s ``--help`` output, read once per path; empty when it cannot answer."""
     try:
         done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
             [str(binary), "--help"],
@@ -445,8 +438,24 @@ def supports_memory_readback(binary: Path) -> bool:
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
-        return False
-    return bool(_HELP_MEMORY_RE.search(f"{done.stdout}\n{done.stderr}"))
+        return ""
+    return f"{done.stdout}\n{done.stderr}"
+
+
+def supports_memory_readback(binary: Path) -> bool:
+    """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
+
+    A stock llama-server exits with "unknown argument" when handed a flag it
+    lacks, so the launch never carries it on advertisement it did not see. A
+    binary that cannot answer reads as unsupported, which degrades to the log
+    path rather than a failed launch.
+    """
+    return bool(_HELP_MEMORY_RE.search(_engine_help(binary)))
+
+
+def engine_advertises(binary: Path, flag: str) -> bool:
+    """Whether *binary*'s ``--help`` lists *flag* exactly, not as a prefix of a longer one."""
+    return re.search(rf"(?<![\w-]){re.escape(flag)}(?![\w-])", _engine_help(binary)) is not None
 
 
 # The per-device byte fields of one GET /memory row. Summed because the total

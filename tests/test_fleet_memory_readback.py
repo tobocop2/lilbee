@@ -156,7 +156,7 @@ class TestCheckMemoryReport:
 
 class TestSupportsMemoryReadback:
     def setup_method(self) -> None:
-        supports_memory_readback.cache_clear()
+        readback._engine_help.cache_clear()
 
     def _binary_with_help(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> Path:
         class _Done:
@@ -203,6 +203,48 @@ class TestSupportsMemoryReadback:
         assert supports_memory_readback(binary)
         assert supports_memory_readback(binary)
         assert len(calls) == 1
+
+
+class TestEngineAdvertises:
+    """A launch flag goes out only on the binary's own --help listing it."""
+
+    _HELP = (
+        "-fitt, --fit-target MiB0,MiB1   target margin per device\n"
+        "-kvu,  --kv-unified, -no-kvu, --no-kv-unified\n"
+    )
+
+    def setup_method(self) -> None:
+        readback._engine_help.cache_clear()
+
+    def _binary(self, monkeypatch: pytest.MonkeyPatch, help_text: str) -> Path:
+        class _Done:
+            stdout = help_text
+            stderr = ""
+
+        monkeypatch.setattr(readback.subprocess, "run", lambda *a, **k: _Done())
+        return Path("/fake/llama-server")
+
+    def test_a_listed_flag_is_advertised(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        binary = self._binary(monkeypatch, self._HELP)
+        assert readback.engine_advertises(binary, "--fit-target")
+        assert readback.engine_advertises(binary, "--kv-unified")
+
+    def test_a_longer_flag_does_not_advertise_its_prefix(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # b9665, the cu121 cell's engine, has --kv-unified but not the per-slot cap.
+        binary = self._binary(monkeypatch, self._HELP)
+        assert not readback.engine_advertises(binary, "--kv-unified-per-slot")
+        assert not readback.engine_advertises(binary, "--fit")
+
+    def test_a_binary_that_cannot_run_advertises_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def _boom(*a, **k):
+            raise OSError("no such file")
+
+        monkeypatch.setattr(readback.subprocess, "run", _boom)
+        assert not readback.engine_advertises(Path("/missing/llama-server"), "--fit-target")
 
 
 class TestArgvAndSwapConfig:

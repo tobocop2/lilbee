@@ -3,9 +3,8 @@
 :func:`fit_single_ctx` sizes one device against the budget the planner scaled;
 :func:`fit_split_ctx` sizes a tensor split against the busiest card's headroom
 rather than the summed pool. Both bisect the same quantized grid.
-``engine_params.resolve_chat_fit`` is the entry point for the single-device fit
-and holds the header-math fallback; ``planning.fit_chat_ctx`` searches the offload
-around this window search. See docs/architecture.md (VRAM estimation).
+``engine_params.resolve_chat_ctx`` is the entry point for the single-device fit
+and holds the header-math fallback. See docs/architecture.md (VRAM estimation).
 """
 
 from __future__ import annotations
@@ -18,14 +17,6 @@ from lilbee.providers.engine_params import chat_ctx_ceiling
 from lilbee.providers.fleet.placement import _vram_proportional_split
 from lilbee.providers.fleet.vram import estimate_instance_footprint, usable_vram_fraction
 from lilbee.providers.model_cache import _DYNAMIC_CTX_FLOOR, _DYNAMIC_CTX_QUANTUM
-
-# Extra VRAM held back on the busiest card on top of the gguf-parser estimate.
-# In --split-mode layer, gguf-parser ignores --main-gpu and so under-models the
-# compute graph + logits that real llama.cpp concentrates on the main device.
-# Measured on 2x4090 (70B Q4_K_M, ctx 5888): the main device lands 0.26 GiB over
-# its estimate, an order of magnitude inside the usable_vram_fraction already held
-# back per card, so the reserve stays 0.
-_MAIN_GPU_SKEW_RESERVE_BYTES = 0
 
 
 def _largest_fitting_ctx(upper: int, fits: Callable[[int], bool]) -> int:
@@ -127,10 +118,7 @@ def fit_split_ctx(
     signal, so size against a headroom-proportional one here: without it
     gguf-parser reports the whole model as a single card and nothing fits.
     """
-    headrooms = [
-        int(free * usable_vram_fraction()) - _MAIN_GPU_SKEW_RESERVE_BYTES
-        for free in per_device_free_bytes
-    ]
+    headrooms = [int(free * usable_vram_fraction()) for free in per_device_free_bytes]
     if min(headrooms) <= 0:
         return _DYNAMIC_CTX_FLOOR
     if not ratio and len(per_device_free_bytes) > 1:
