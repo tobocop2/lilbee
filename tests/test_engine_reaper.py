@@ -248,6 +248,38 @@ def test_a_user_who_joins_mid_count_cancels_the_unload_and_resets_the_count(
     assert stops == []
 
 
+def test_a_user_who_binds_while_the_unload_waits_for_the_lock_restarts_the_count(
+    tmp_path: Path, stops, monkeypatch: pytest.MonkeyPatch, unload_server: HTTPServer
+) -> None:
+    """A bind between the unlocked poll and the build lock beats an idle time that just ran out."""
+    request_keep_warm(tmp_path, tmp_path / "install", 1)
+    real = reaper_mod.build_lock
+    entries: list[int] = []
+    joined: list[UserLockHold] = []
+
+    def _binder_joins_second_entry(engine_dir: Path):
+        entries.append(1)
+        if len(entries) == 2:
+            joined.append(hold_user_lock(engine_dir, pid=727272))
+        return real(engine_dir)
+
+    monkeypatch.setattr(reaper_mod, "build_lock", _binder_joins_second_entry)
+
+    seen = _watch_keep_warm(
+        tmp_path,
+        monkeypatch,
+        unload_server,
+        _wait(61),  # the idle time is over at the next entry, where the binder is first
+        lambda _c: joined[0].release_and_check_last(),
+        _wait(59),
+        _wait(1),
+        lambda _c: _engine_gone(tmp_path)(),
+    )
+
+    assert seen == [0, 0, 0, 0, 1]  # a whole idle time after the binder left, not at once
+    assert stops == []
+
+
 def test_a_zero_marker_never_unloads(
     tmp_path: Path, stops, monkeypatch: pytest.MonkeyPatch, unload_server: HTTPServer
 ) -> None:
