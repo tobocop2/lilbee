@@ -163,7 +163,8 @@ def _crawl_urls_blocking(
 ) -> list[Path]:
     """Crawl each URL in turn and return the pages saved; a set *cancel_event* raises a cancel.
 
-    When no page is saved and a page failed, ValueError carries each failed page's reason.
+    When no page is saved and every crawled page failed, ValueError carries each failed
+    page's reason.
     """
     from rich.progress import Progress, SpinnerColumn, TaskID
 
@@ -184,6 +185,7 @@ def _crawl_urls_blocking(
     err_console = PlainConsole(stderr=True)
     all_paths: list[Path] = []
     failures: list[str] = []
+    pages_seen = 0
     with Progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
@@ -226,6 +228,7 @@ def _crawl_urls_blocking(
                 include_subdomains=include_subdomains,
             )
             all_paths.extend(paths)
+            pages_seen += crawled.get("n", 0)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
             # No explicit cap given and the crawl filled the protective default:
             # tell the user how to go unlimited without editing settings.
@@ -235,7 +238,7 @@ def _crawl_urls_blocking(
                     f"Stopped at the default {default_cap}-page limit; "
                     f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap).",
                 )
-    if failures and not all_paths:
+    if failures and not all_paths and len(failures) >= pages_seen:
         raise ValueError("\n".join(failures))
     return all_paths
 
