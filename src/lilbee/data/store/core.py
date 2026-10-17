@@ -110,6 +110,7 @@ from .types import (
 
 if TYPE_CHECKING:
     from lancedb.db import LanceDBConnection
+    from lancedb.expr import Expr
     from lancedb.index import FTS, IndexConfig
     from lancedb.query import LanceFtsQueryBuilder
     from lancedb.table import LanceTable
@@ -733,17 +734,17 @@ def _index_names(table: LanceTable) -> dict[str, list[str]]:
     return {index.name: index.columns for index in _index_registry(table) or []}
 
 
-def _key_column(table: LanceTable, column: str, kind: str | None = None) -> pa.Table:
-    """*column* of every row of *table*, with *kind* beside it, read as Arrow."""
-    columns = [column] if kind is None else [column, kind]
+def _key_column(table: LanceTable, column: str, type_column: str | None = None) -> pa.Table:
+    """*column* of every row of *table*, with *type_column* beside it, read as Arrow."""
+    columns = [column] if type_column is None else [column, type_column]
     return table.search().select(columns).limit(None).to_arrow()
 
 
-def _wiki_mask(read: pa.Table, kind: str | None, wiki: str) -> pa.ChunkedArray:
-    """Whether the *kind* of each row of *read* is *wiki*; with no *kind*, no row is."""
-    if kind is None:
+def _wiki_mask(read: pa.Table, type_column: str | None, wiki: str) -> pa.ChunkedArray:
+    """Whether *type_column* of each row of *read* is *wiki*; with no column, no row is."""
+    if type_column is None:
         return pa.chunked_array([pa.repeat(pa.scalar(False), read.num_rows)])
-    return pc.fill_null(pc.equal(read.column(kind), wiki), False)
+    return pc.fill_null(pc.equal(read.column(type_column), wiki), False)
 
 
 def _keys_missing_from(
@@ -754,10 +755,10 @@ def _keys_missing_from(
     A wiki chunk names a wiki page; every other key names a document. Arrow
     compares the key columns, so no row becomes a Python object.
     """
-    kind = _CHUNK_TYPE if table.name == CHUNKS_TABLE else None
-    read = _key_column(table, column, kind)
+    type_column = _CHUNK_TYPE if table.name == CHUNKS_TABLE else None
+    read = _key_column(table, column, type_column)
     held = _key_column(sources, _PATH, _SOURCE_TYPE)
-    pages = _wiki_mask(read, kind, ChunkType.WIKI)
+    pages = _wiki_mask(read, type_column, ChunkType.WIKI)
     wiki_rows = _wiki_mask(held, _SOURCE_TYPE, SourceType.WIKI)
     keys, paths = read.column(column), held.column(_PATH).cast(read.column(column).type)
     missing: list[tuple[str, SourceType]] = []
@@ -822,7 +823,7 @@ def _holds_label_keys(db: LanceDBConnection, locations: SourceLocations) -> bool
 
 def _pinned(db: LanceDBConnection, table: LanceTable) -> LanceTable:
     """*table* held at its version now, read while later commits go to *table*."""
-    pinned = db.open_table(table.name)
+    pinned: LanceTable = db.open_table(table.name)
     pinned.checkout(table.version)
     return pinned
 
@@ -882,8 +883,13 @@ def _fill_pairs(
     from lancedb.index import BTree
 
     old, new = heads
-    pairs = db.create_table(_FILL_PAIRS_TABLE, schema=_FILL_PAIRS_SCHEMA, mode="overwrite")
-    labelled = {_PATH: _swap_head_sql(_PATH, new, old), _LANDING_ID: _SOURCE_ID}
+    pairs: LanceTable = db.create_table(
+        _FILL_PAIRS_TABLE, schema=_FILL_PAIRS_SCHEMA, mode="overwrite"
+    )
+    labelled: dict[str, str | Expr] = {
+        _PATH: _swap_head_sql(_PATH, new, old),
+        _LANDING_ID: _SOURCE_ID,
+    }
     for batch in (
         sources.search().where(landed).select(labelled).limit(None).to_batches(_FILL_BATCH_ROWS)
     ):
