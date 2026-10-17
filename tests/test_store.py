@@ -5337,6 +5337,52 @@ class TestOpenTimeMigration:
         assert store.count_sources() == 2
         assert store.missing_sources(["gone.md", "a.md"]) == {"gone.md"}
 
+    def test_the_key_comparison_makes_no_row_a_python_object(self, test_config):
+        from lancedb.query import LanceQueryBuilder
+
+        store = _path_keyed_library(test_config)
+
+        with mock.patch.object(LanceQueryBuilder, "to_list", side_effect=AssertionError):
+            store.get_db()
+
+        rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
+        assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
+
+    @pytest.mark.parametrize("key_type", [pa.string(), pa.large_string()])
+    def test_the_missing_paths_are_the_keys_no_source_row_holds(self, tmp_path, key_type):
+        import lancedb
+
+        from lilbee.data.store.core import _paths_missing_from
+
+        keys = ["a.md", "a.md", "", "it's.md", "日本/文書.md", "held.md", "wiki/p.md", "b.md"]
+        held = ["a.md", "held.md", "c.md", ""]
+        db = lancedb.connect(str(tmp_path))
+        table = db.create_table("t", pa.table({"source": pa.array(keys, key_type)}))
+        sources = db.create_table("s", pa.table({"path": held}))
+
+        missing = _paths_missing_from(sources, table, "source")
+
+        assert missing == sorted(set(keys) - set(held))
+        assert missing == ["b.md", "it's.md", "wiki/p.md", "日本/文書.md"]
+
+    def test_a_path_in_many_rows_of_several_tables_gets_one_source_row(self, test_config):
+        tables = _path_keyed_tables(test_config)
+        pages = [
+            {"source": "wiki/concepts/x.md", "page": number, "text": "t", "content_type": "text"}
+            for number in range(3)
+        ]
+        tables[PAGE_TEXTS_TABLE] = pa.Table.from_pylist(
+            tables[PAGE_TEXTS_TABLE].to_pylist() + pages
+        )
+        store = _open_after(test_config, tables)
+
+        rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
+
+        assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
+        assert store.source_ids(["wiki/concepts/x.md"]) == {
+            "wiki/concepts/x.md": _md5("wiki/concepts/x.md")
+        }
+
     def test_a_second_open_changes_nothing(self, test_config):
         from lilbee.data.store.lance_helpers import table_names
 

@@ -555,6 +555,23 @@ def _index_names(table: LanceTable) -> dict[str, list[str]]:
     return {index.name: index.columns for index in _index_registry(table) or []}
 
 
+def _key_column(table: LanceTable, column: str) -> pa.ChunkedArray:
+    """Every value of *column* in *table*, read as Arrow."""
+    return table.search().select([column]).limit(None).to_arrow().column(column)
+
+
+def _paths_missing_from(sources: LanceTable, table: LanceTable, column: str) -> list[str]:
+    """The distinct paths in *column* of *table* that no ``_sources`` row holds, sorted.
+
+    Arrow compares the two key columns, so no row becomes a Python object.
+    """
+    import pyarrow.compute as pc
+
+    keys = pc.unique(_key_column(table, column))
+    held = _key_column(sources, _PATH).cast(keys.type)
+    return sorted(pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held))).to_pylist())
+
+
 def _migrate_sources_table(table: LanceTable) -> None:
     """Give ``_sources`` an id per row, its path column, and every column it lacks. Lock held."""
     from lancedb.index import BTree
@@ -1138,12 +1155,10 @@ class Store:
         """
         from lancedb.index import BTree
 
-        keys = {row[column] for row in table.search().select([column]).limit(None).to_list()}
         sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
-        query = sources.search().select([_PATH]).limit(None)
-        keys.difference_update(row[_PATH] for row in query.to_list())
-        if keys:
-            sources.add([self._placeholder_row(key, _md5(key)) for key in sorted(keys)])
+        missing = _paths_missing_from(sources, table, column)
+        if missing:
+            sources.add([self._placeholder_row(key, _md5(key)) for key in missing])
         if _SOURCE_ID not in table.schema.names:
             table.add_columns({_SOURCE_ID: f"md5({column})"})
         indexes = _index_names(table)
