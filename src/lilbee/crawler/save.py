@@ -34,6 +34,7 @@ _CRAWL_PAGES_FILE = "crawl_pages.jsonl"
 # The field of a page record line that holds the page's canonical address.
 _RECORD_ADDRESS_FIELD = "url"
 _RECORD_LOCK_TIMEOUT_S = 10.0
+_NOT_SAVED = "Page %s is not saved: %s holds a file or folder of its own; move or delete it"
 
 # The characters RFC 3986 section 2.3 calls unreserved: an escape of one names the character.
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
@@ -193,6 +194,8 @@ class CrawlMeta:
     file: str
     content_hash: str
     crawled_at: str
+    # The hash of the text the file held when this entry was recorded; empty for a new file.
+    replaces: str = ""
 
 
 def load_crawl_metadata() -> dict[str, CrawlMeta]:
@@ -217,12 +220,14 @@ def load_crawl_metadata() -> dict[str, CrawlMeta]:
 
 
 def _replace_atomically(path: Path, text: str) -> None:
-    """Write *text* to a temporary file beside *path*, then put it in place of *path*."""
+    """Write *text* to a temporary file beside *path*, sync it, then put it in place of *path*."""
     tmp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as tmp:
             tmp_name = tmp.name
             tmp.write(text.encode("utf-8"))
+            tmp.flush()
+            os.fsync(tmp.fileno())
         Path(tmp_name).replace(path)
     except BaseException:
         if tmp_name is not None:
@@ -315,11 +320,13 @@ def load_crawl_record() -> CrawlRecord:
 
 
 def _claim(address: str, entry: CrawlMeta, record: CrawlRecord) -> None:
-    """Append *entry* to the page record before its file is written; a cut line stays alone."""
+    """Append *entry* to the page record and sync it to disk; a cut line stays alone."""
     path = _pages_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S), path.open("a", encoding="utf-8") as out:
         out.write(f"\n{_record_line(address, entry)}\n")
+        out.flush()
+        os.fsync(out.fileno())
     record.pages[address] = entry
     record.claimed.add(entry.file)
 
@@ -390,9 +397,60 @@ def _page_path(result: CrawlResult, address: str, record: CrawlRecord) -> Path |
     except ValueError:
         log.warning("Path traversal blocked: %s -> %s", result.url, path)
         return None
-    if os.path.lexists(path) and (address not in record.pages or not path.is_file()):
-        log.warning("Page %s is not saved: %s holds a file or folder of its own", result.url, path)
+    if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
+        log.warning(_NOT_SAVED, result.url, path)
         return None
+    return path
+
+
+def _held_text(path: Path) -> str | None:
+    """The hash of the text the file at *path* holds, or None when there is no file."""
+    if not path.is_file():
+        return None
+    return content_hash(path.read_bytes().decode("utf-8", errors="replace"))
+
+
+def _may_write(address: str, held: str | None, new_hash: str, record: CrawlRecord) -> bool:
+    """Whether the file at the page's name holds nothing, the new text, or a text it recorded."""
+    entry = record.pages.get(address)
+    owned = {new_hash} if entry is None else {new_hash, entry.content_hash, entry.replaces}
+    return held is None or held in owned
+
+
+def _owns_name(address: str, held: str | None, new_hash: str, record: CrawlRecord) -> bool:
+    """Whether the page may write at its name; a refusal first reads the record from disk again."""
+    if _may_write(address, held, new_hash, record):
+        return True
+    latest = _load_pages().get(address)
+    if latest is None:
+        return False
+    record.pages[address] = latest
+    record.claimed.add(latest.file)
+    return _may_write(address, held, new_hash, record)
+
+
+def _write(
+    result: CrawlResult,
+    address: str,
+    path: Path,
+    markdown: str,
+    held: str | None,
+    record: CrawlRecord,
+) -> Path | None:
+    """Record and write *markdown* at *path*, whose file holds *held*; None when it holds it."""
+    new_hash = content_hash(markdown)
+    prev = record.pages.get(address)
+    if held == new_hash and prev is not None and prev.content_hash == new_hash:
+        log.info("Content unchanged, skipping save: %s", result.url)
+        return None
+    now = datetime.now(UTC).isoformat()
+    replaces = "" if held is None else held
+    _claim(address, CrawlMeta(page_name(address), new_hash, now, replaces), record)
+    if held == new_hash:
+        log.info("Recorded the page %s at %s, which already holds its text", result.url, path)
+        return None
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _replace_atomically(path, markdown)
     return path
 
 
@@ -407,16 +465,10 @@ def save_page(
     if path is None:
         return None
     markdown = normalize_crawled_markdown(result.markdown)
-    new_hash = content_hash(markdown)
-    prev = record.pages.get(address)
-    written: Path | None = None
-    if prev is None or prev.content_hash != new_hash or not path.is_file():
-        now = datetime.now(UTC).isoformat()
-        _claim(address, CrawlMeta(page_name(address), new_hash, now), record)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(markdown, encoding="utf-8")
-        written = path
-    else:
-        log.info("Content unchanged, skipping save: %s", result.url)
+    held = _held_text(path)
+    if not _owns_name(address, held, content_hash(markdown), record):
+        log.warning(_NOT_SAVED, result.url, path)
+        return None
+    written = _write(result, address, path, markdown, held, record)
     _retire_earlier(address, record, remove_sources)
     return written
