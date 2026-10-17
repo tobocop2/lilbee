@@ -223,7 +223,6 @@ class TestHostSpillWarning:
         spills = [r for r in caplog.records if "system memory" in r.getMessage()]
         assert len(spills) == 1
 
-
     def test_a_log_mode_spill_is_said_from_the_engine_log(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog
     ) -> None:
