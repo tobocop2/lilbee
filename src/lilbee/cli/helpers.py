@@ -150,13 +150,13 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
         )
         yield ""
 
-    if not status.sources:
+    if not status.document_count:
         yield (
             "No documents indexed. Drop files into the documents directory and run 'lilbee sync'."
         )
         return
 
-    table = Table(title="Indexed Documents")
+    table = Table(title="Newest Documents")
     table.add_column("File", style=theme.ACCENT)
     table.add_column("Hash", style=theme.MUTED, max_width=12)
     table.add_column("Chunks", justify="right")
@@ -166,11 +166,26 @@ def render_status_result(status: StatusResult) -> Generator[RenderableType, None
     yield table
     yield styled(
         "\n",
-        (str(len(status.sources)), theme.LABEL),
+        (str(status.document_count), theme.LABEL),
         " documents, ",
         (str(status.total_chunks), theme.LABEL),
         " chunks",
     )
+    if status.source_kinds:
+        kinds = ", ".join(f"{kind} {count}" for kind, count in sorted(status.source_kinds.items()))
+        yield _label_line("Kinds", kinds)
+    yield styled(
+        f"Showing the newest {len(status.sources)}. ",
+        "Run 'lilbee status --list-sources' to list every document.",
+    )
+
+
+def print_source_listing() -> None:
+    """Print every indexed document, one line each, holding one batch in memory at most."""
+    from lilbee.app.services import get_services
+
+    for head in get_services().store.iter_source_heads():
+        print(json.dumps(head) if cfg.json_mode else head["filename"])
 
 
 def render_status(con: PlainConsole) -> None:

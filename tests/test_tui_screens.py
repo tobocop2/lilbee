@@ -92,12 +92,14 @@ def _isolated_cfg(tmp_path):
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Inject mock Services so TUI screens never touch real backends."""
+    from lilbee.data.store import SourceSummary
     from tests.conftest import make_mock_services
 
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []
     store.get_sources.return_value = []
+    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.count_sources.return_value = 0
     store.add_chunks.side_effect = len
     store.delete_by_source.return_value = None
@@ -2208,10 +2210,18 @@ async def test_status_screen_config_pills_render(mock_svc):
         assert "loaded" in rendered or "not set" in rendered
 
 
-async def test_status_screen_shows_documents(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"source": "notes.md", "chunk_count": 5, "content_type": "text/markdown"},
+def _summary(*names: str, total: int | None = None):
+    from lilbee.data.store import SourceSummary
+
+    heads = [
+        {"filename": n, "file_hash": "h", "chunk_count": 5, "ingested_at": "2026-01-01"}
+        for n in names
     ]
+    return SourceSummary(len(heads) if total is None else total, 5 * len(heads), {}, heads)
+
+
+async def test_status_screen_shows_documents(mock_svc):
+    mock_svc.store.source_summary.return_value = _summary("notes.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import DataTable
@@ -2221,7 +2231,7 @@ async def test_status_screen_shows_documents(mock_svc):
 
 
 async def test_status_screen_store_error(mock_svc):
-    mock_svc.store.get_sources.side_effect = Exception("no table")
+    mock_svc.store.source_summary.side_effect = Exception("no table")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         table = app.screen.query_one("#docs-table", DataTable)
@@ -2237,28 +2247,24 @@ async def _wait_for_row_count(pilot, table, expected: int, *, tries: int = 200) 
     assert table.row_count == expected
 
 
-async def test_status_screen_streams_documents_in_batches(mock_svc):
-    """A whole wiki's worth of sources streams into the table without freezing.
-
-    Before this, a per-source ``add_row`` loop on the UI thread softlocked
-    the status tab once thousands of files were ingested. The renderer now
-    appends a bounded batch per refresh, so the screen stays responsive and
-    every row eventually shows up to be scrolled through.
-    """
+async def test_status_screen_shows_the_newest_sources_and_the_count_not_shown(mock_svc):
+    """A library of millions shows a few rows and says how many are left out."""
     from textual.widgets import DataTable
 
-    from lilbee.cli.tui.screens.status import _DOC_RENDER_BATCH
+    from lilbee.app.status import STATUS_RECENT_LIMIT
 
-    total = _DOC_RENDER_BATCH * 3 + 11
-    mock_svc.store.get_sources.return_value = [
-        {"filename": f"doc_{i}.md", "chunk_count": i, "content_type": "text/markdown"}
-        for i in range(total)
-    ]
+    names = [f"doc_{i}.md" for i in range(STATUS_RECENT_LIMIT)]
+    mock_svc.store.source_summary.return_value = _summary(*names, total=8_800_000)
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as pilot:
         table = app.screen.query_one("#docs-table", DataTable)
-        # Every row arrives within a bounded number of refreshes.
-        await _wait_for_row_count(pilot, table, total)
+        await _wait_for_row_count(pilot, table, STATUS_RECENT_LIMIT + 1)
+        last = " ".join(str(cell) for cell in table.get_row_at(STATUS_RECENT_LIMIT))
+        storage = str(app.screen.query_one("#storage-info", Static).render())
+    assert "8799990 older not shown" in last
+    assert "lilbee status --list-sources" in last
+    assert "8800000" in storage.replace(",", "")
+    mock_svc.store.get_sources.assert_not_called()
 
 
 async def test_status_screen_lists_held_out_files(mock_svc, monkeypatch):
@@ -2288,9 +2294,7 @@ async def test_status_screen_renders_bracketed_held_out_and_doc_names_as_written
     from lilbee.cli.tui.screens import status as status_screen
     from lilbee.data.types import SkippedSource
 
-    mock_svc.store.get_sources.return_value = [
-        {"filename": "doc[/x].md", "chunk_count": 1, "content_type": "text/markdown"}
-    ]
+    mock_svc.store.source_summary.return_value = _summary("doc[/x].md")
     held = [SkippedSource(filename="scan[red].pdf", reason="bad [/x] header")]
     monkeypatch.setattr(status_screen, "held_out_sources", lambda: (held, 1))
     app = StatusTestApp()
@@ -2320,9 +2324,7 @@ async def test_status_screen_keeps_the_held_out_section_closed_when_empty(mock_s
 
 
 async def test_status_screen_storage_section(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-    ]
+    mock_svc.store.source_summary.return_value = _summary("a.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         info = app.screen.query_one("#storage-info", Static)
@@ -2362,10 +2364,7 @@ async def test_status_screen_arch_with_vision(mock_svc):
 
 
 async def test_status_screen_vim_keys(mock_svc):
-    mock_svc.store.get_sources.return_value = [
-        {"source": "a.md", "chunk_count": 1, "content_type": "text/markdown"},
-        {"source": "b.md", "chunk_count": 2, "content_type": "text/markdown"},
-    ]
+    mock_svc.store.source_summary.return_value = _summary("a.md", "b.md")
     app = StatusTestApp()
     async with app.run_test(size=(120, 40)) as _pilot:
         from textual.widgets import DataTable
@@ -15569,7 +15568,7 @@ def test_status_worker_state_changed_dispatches_when_sections_mounted():
     screen._load_held_out = lambda _docs: None
     screen._load_arch = loaded_arch.append
 
-    docs_result = _DocsResult(sources=[{"a": 1}, {"b": 2}], load_failed=False)
+    docs_result = _DocsResult(sources=[], load_failed=False, document_count=2)
     sources_event = type(
         "Ev",
         (),

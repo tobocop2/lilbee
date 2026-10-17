@@ -62,6 +62,7 @@ from lilbee.runtime.progress import EmbedEvent, EventType, FileStartEvent, noop_
 from lilbee.wiki.shared import WIKI_DISABLED_ERROR
 from tests._held import held_kinds, hold_failed
 from tests._mcp_client import mcp_client
+from tests.conftest import summary_of
 
 
 @pytest.fixture(autouse=True)
@@ -272,14 +273,16 @@ class TestStatus:
         assert result["total_chunks"] == 0
 
     def test_with_sources(self, mock_svc):
-        mock_svc.store.get_sources.return_value = [
-            {
-                "filename": "test.pdf",
-                "file_hash": "abc123",
-                "chunk_count": 10,
-                "ingested_at": "2026-01-01T00:00:00",
-            }
-        ]
+        mock_svc.store.source_summary.return_value = summary_of(
+            [
+                {
+                    "filename": "test.pdf",
+                    "file_hash": "abc123",
+                    "chunk_count": 10,
+                    "ingested_at": "2026-01-01T00:00:00",
+                }
+            ]
+        )
         result = status()
         assert len(result["sources"]) == 1
         assert result["sources"][0]["filename"] == "test.pdf"

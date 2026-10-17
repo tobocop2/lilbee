@@ -125,12 +125,14 @@ class _FakeIndex:
 @pytest.fixture(autouse=True)
 def mock_svc():
     """Provide a mock Services container for all ingest tests."""
+    from lilbee.data.store import SourceSummary
     from tests.conftest import make_mock_services
 
     index = _FakeIndex()
     store = MagicMock()
     store.search.return_value = []
     store.bm25_probe.return_value = []
+    store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     store.get_sources.side_effect = lambda: list(index.sources.values())
     store.add_chunks.side_effect = len
     store.upsert_source.side_effect = index.upsert

@@ -216,6 +216,9 @@ class StatusResponse(BaseModel):
     command: str = "status"
     config: StatusConfigInfo
     sources: list[StatusSourceInfo]
+    """The newest sources, capped; ``document_count`` is the real count."""
+    source_kinds: dict[str, int] = {}
+    """How many sources each kind holds, over the whole library."""
     document_count: int
     total_chunks: int
     index: StatusIndexInfo | None = None
