@@ -393,18 +393,16 @@ def removable_names(indexed: list[str] | None = None) -> list[str]:
     return indexed + [name for name in held_failures() if name not in seen]
 
 
-def expand_remove_targets(names: list[str], known: list[str] | None = None) -> list[str]:
+def expand_remove_targets(names: list[str], known: list[str]) -> list[str]:
     """Expand folder names and glob patterns to the known sources they cover.
 
     An exact source name is kept. A folder name (a parent directory of known
     sources) expands to every source beneath it. A glob (a name containing
     ``* ? [``) expands to every source it fnmatches. A name matching none of
     these is kept unchanged so the caller reports it not-found. Order and
-    de-duplication are preserved. *known* is ``removable_names()`` when not
-    supplied; a caller that already has it passes it to avoid a second read.
+    de-duplication are preserved. *known* is what a remove can name,
+    ``removable_names()``.
     """
-    if known is None:
-        known = removable_names()
     known_set = set(known)
     expanded: list[str] = []
     seen: set[str] = set()
