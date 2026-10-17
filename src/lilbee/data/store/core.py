@@ -278,10 +278,13 @@ _NOT_WIKI_CHUNK = f"({_CHUNK_TYPE} IS NULL OR NOT ({_WIKI_CHUNK}))"
 # What a wiki page's key is joined with before its md5 gives the page its id at an upgrade.
 _WIKI_ID_SUFFIX = "wiki"
 _WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
-# The source rows a move found by a sync carries: every row but a wiki page's.
-_MOVABLE = f"NOT ({_WIKI})"
+# The source rows a move found by a sync carries: the listed ones and every failure.
+_MOVABLE = (
+    f"{_SOURCE_TYPE} != '{SourceType.WIKI}'"
+    f" AND ({_HELD_OUT} IS NULL OR {_HELD_OUT} = '{HeldOut.FAILED}')"
+)
 # The source rows an upgrade compares a document key with: any row whose type is not wiki.
-_NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR {_MOVABLE})"
+_NOT_WIKI_SOURCE = f"({_SOURCE_TYPE} IS NULL OR NOT ({_WIKI}))"
 
 # Sentinel: relocation must leave the stored title untouched (extraction-derived).
 _KEEP_TITLE = "\x00keep"
@@ -382,30 +385,16 @@ def _in_list(names: Iterable[str]) -> str:
     return ", ".join(f"'{escape_sql_string(name)}'" for name in names)
 
 
-def _claimed_names(
-    moves: Sequence[SourceMove],
-    unclaimed: set[str],
-    removed: set[str],
-    carries: Callable[[str, str], bool],
-) -> list[str | None]:
+def _claimed_names(moves: Sequence[SourceMove], unclaimed: set[str]) -> list[str | None]:
     """The old name each of *moves* takes out of *unclaimed*: its first candidate still there.
 
-    A move takes a candidate of *removed* first, and only one that *carries* says
-    moves with the file, given the old and the new location. Moves that share one
-    candidates tuple share one cursor into it, so files of one content cost one
-    pass over their old names and not one for each file.
+    Moves that share one candidates tuple share one cursor into it, so files
+    of one content cost one pass over their old names and not one for each file.
     """
     cursors: dict[int, int] = {}
-    removed_in: dict[int, list[str]] = {}
     claimed: list[str | None] = []
     for move in moves:
         pool = move.candidates
-        held = removed_in.setdefault(id(pool), [name for name in pool if name in removed])
-        kept = next((name for name in held if carries(name, move.new)), None)
-        if kept is not None:
-            held.remove(kept)
-            claimed.append(kept)
-            continue
         at = cursors.get(id(pool), 0)
         while at < len(pool) and pool[at] not in unclaimed:
             at += 1
@@ -620,17 +609,15 @@ def _members_by_archive(names: Iterable[str], filenames: Iterable[str]) -> dict[
     return members
 
 
-def _held_sources(sources: LanceTable, names: Iterable[str]) -> tuple[set[str], set[str]]:
-    """The *names* that hold a row a move carries in the source table: kept, then removed."""
+def _held_sources(sources: LanceTable, names: Iterable[str]) -> set[str]:
+    """The *names* that hold a row a move carries in the source table."""
     wanted = sorted(names)
-    kept: set[str] = set()
-    removed: set[str] = set()
+    held: set[str] = set()
     for start in range(0, len(wanted), _SOURCE_STAT_BATCH_ROWS):
         quoted = _in_list(wanted[start : start + _SOURCE_STAT_BATCH_ROWS])
-        query = sources.search().where(f"{_PATH} IN ({quoted}) AND {_MOVABLE}")
-        for row in query.select([_PATH, _HELD_OUT]).limit(None).to_list():
-            (removed if row[_HELD_OUT] == HeldOut.REMOVED else kept).add(row[_PATH])
-    return kept, removed
+        query = sources.search().where(f"{_PATH} IN ({quoted}) AND {_MOVABLE}").select([_PATH])
+        held.update(row[_PATH] for row in query.limit(None).to_list())
+    return held
 
 
 def _source_rows(sources: LanceTable, names: list[str]) -> dict[str, dict[str, Any]]:
@@ -2707,7 +2694,7 @@ class Store:
     def sources_by_hash(self, hashes: Sequence[str], *, version: int) -> dict[str, list[str]]:
         """Document sources at *version* of the source table, by content hash, for *hashes*.
 
-        A failed or removed file counts at the hash it is held out at.
+        A failed file counts at the hash it failed at.
         """
         found: dict[str, list[str]] = {}
         table = self.open_table(SOURCES_TABLE)
@@ -2716,10 +2703,10 @@ class Store:
         table.checkout(version)
         name = self._locations().name
         documents = f"{_SOURCE_TYPE} != '{SourceType.IMPORTED}' AND {_LISTED}"
-        held = f"{_HELD_OUT} IN ('{HeldOut.FAILED}', '{HeldOut.REMOVED}')"
+        failed = f"{_HELD_OUT} = '{HeldOut.FAILED}'"
         for start in range(0, len(hashes), _SOURCE_STAT_BATCH_ROWS):
             quoted = _in_list(hashes[start : start + _SOURCE_STAT_BATCH_ROWS])
-            for column, where in (("file_hash", documents), (_HELD_HASH, held)):
+            for column, where in (("file_hash", documents), (_HELD_HASH, failed)):
                 query = table.search().where(f"{column} IN ({quoted}) AND {where}")
                 for row in query.select([_PATH, column]).limit(None).to_list():
                     found.setdefault(row[column], []).append(name(row[_PATH]))
@@ -3219,11 +3206,10 @@ class Store:
         sources = self.open_table(SOURCES_TABLE)
         if sources is None:
             return SourceRelocation({}, len(moves))
-        locations = self._locations()
-        moves, names = _located_moves(moves, locations)
+        moves, names = _located_moves(moves, self._locations())
         pools = {id(move.candidates): move.candidates for move in moves}.values()
-        unclaimed, removed = _held_sources(sources, {name for pool in pools for name in pool})
-        claimed = _claimed_names(moves, unclaimed, removed, locations.left_with_its_root)
+        unclaimed = _held_sources(sources, {name for pool in pools for name in pool})
+        claimed = _claimed_names(moves, unclaimed)
         rows = _source_rows(sources, [old for old in claimed if old is not None])
         taken = {move.new: old for move, old in zip(moves, claimed, strict=True) if old}
         titles = {

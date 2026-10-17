@@ -4859,7 +4859,7 @@ class TestRelocateInOnePass:
         names = Counted(f"old{number:03d}.md" for number in range(200))
         moves = [SourceMove(names, f"new{number}.md", None) for number in range(200)]
 
-        claimed = _claimed_names(moves, set(names[100:]), set(), lambda old, new: False)
+        claimed = _claimed_names(moves, set(names[100:]))
 
         assert claimed == [*names[100:], *([None] * 100)]
         assert Counted.reads <= 4 * len(names)

@@ -22,10 +22,6 @@ from lilbee.data.store.lance_helpers import ensure_table
 from lilbee.data.store.schema import _sources_schema
 
 _REASON = "no text extracted (0 chunks)"
-_NOTES = {"notes": "before/notes"}
-_NESTED = {"work": "work", "notes": "work/notes"}
-_LEFT = {"notes": "old/notes", "work": "work"}
-_TWO = {"notes": "a/notes", "other": "b/notes"}
 
 
 @pytest.fixture()
@@ -188,7 +184,7 @@ class TestRelease:
         assert store.release_failed() == []
 
 
-class TestMovesCarryHeldRecords:
+class TestMovesCarryFailures:
     def test_a_moved_failure_keeps_its_record_at_the_new_path(self, store):
         store.hold_failed({"a/empty.md": _failed("e")})
         step = store.relocate_sources([SourceMove(("a/empty.md",), "c/empty.md", None)])
@@ -201,109 +197,13 @@ class TestMovesCarryHeldRecords:
         assert step.taken == {}
         assert store.held_records() == {"a/gone.md": _removed("g")}
 
-    def test_sources_by_hash_offers_a_failure_and_a_removal_at_their_hashes(self, store):
+    def test_sources_by_hash_offers_a_failure_at_the_hash_it_failed_at(self, store):
         _index(store, "a.md", file_hash="old")
         store.hold_failed({"a.md": _failed("new"), "b.pdf": _failed("hb")})
-        store.remove_documents([], {"gone.md": _removed("hg")})
         version = store.sources_version()
         assert version is not None
-        found = store.sources_by_hash(["old", "new", "hb", "hg"], version=version)
-        assert found == {"old": ["a.md"], "new": ["a.md"], "hb": ["b.pdf"], "hg": ["gone.md"]}
-
-    @pytest.mark.parametrize(
-        ("new", "moves"),
-        [("notes/a/gone.md", True), ("notes/b/gone.md", False), ("loose/a/gone.md", False)],
-    )
-    def test_a_removal_moves_only_with_its_name_below_a_root_that_moved(
-        self, store, tmp_path, new, moves
-    ):
-        before, after = tmp_path / "before" / "notes", tmp_path / "after" / "notes"
-        store._config.linked_roots = {"notes": str(before)}
-        store.remove_documents([], {"notes/a/gone.md": _removed("g")})
-        store._config.linked_roots = {"notes": str(after)}
-        old = (before / "a" / "gone.md").as_posix()
-
-        step = store.relocate_sources([SourceMove((old,), new, None)])
-
-        assert step.taken == ({new: old} if moves else {})
-        assert store.held_records() == {new if moves else old: _removed("g")}
-
-    @pytest.mark.parametrize(
-        ("before", "removed", "after", "new", "stays_removed"),
-        [
-            (_NOTES, "notes/a/gone.md", {"notes": "after/notes"}, "notes/a/gone.md", True),
-            (_NOTES, "notes/a/gone.md", {"notes": "after/archive"}, "notes/a/gone.md", True),
-            (_NOTES, "notes/a/gone.md", {"notes": "after/notes"}, "notes/a/kept.md", False),
-            (_NOTES, "notes/a/gone.md", {"notes": "after/notes"}, "notes/gone.md", False),
-            (_NOTES, "notes/a/gone.md", _NOTES, "notes/gone.md", False),
-            (_NOTES, "notes/a/gone.md", {**_NOTES, "work": "work"}, "work/a/gone.md", False),
-            (_NOTES, "notes/a/gone.md", {**_NOTES, "work": "work"}, "work/gone.md", False),
-            (_NOTES, "notes/a/gone.md", _NOTES, "notes/a/x/gone.md", False),
-            (
-                _NESTED,
-                "notes/a/gone.md",
-                {"work": "work", "notes": "notes"},
-                "notes/a/gone.md",
-                True,
-            ),
-            (_LEFT, "notes/a/gone.md", {"work": "work"}, "work/a/gone.md", False),
-            (_NOTES, "notes/notes/a/gone.md", _NOTES, "notes/a/gone.md", False),
-            (_TWO, "other/a/gone.md", _TWO, "notes/a/gone.md", False),
-            (
-                {"docs": "before/notes"},
-                "docs/a/gone.md",
-                {"docs": "after/notes"},
-                "docs/a/gone.md",
-                False,
-            ),
-            (_NOTES, "notes/notes/a/gone.md", {"notes": "after/notes"}, "notes/a/gone.md", True),
-        ],
-        ids=[
-            "same-name-root-moved",
-            "root-moved-to-a-folder-of-another-name",
-            "renamed-root-moved",
-            "up-one-root-moved",
-            "up-one-root-unmoved",
-            "other-root-same-tail",
-            "other-root-up-one",
-            "down-one-root-unmoved",
-            "nested-root-moved-out-of-its-parent",
-            "root-left-other-root-same-tail",
-            "up-one-out-of-a-folder-named-like-the-label-root-unmoved",
-            "other-root-of-a-folder-named-like-the-label",
-            "label-not-its-folder-name-limit",
-            "up-one-out-of-a-folder-named-like-the-label-root-moved-limit",
-        ],
-    )
-    def test_a_removal_moves_only_with_its_own_root_pointed_elsewhere(
-        self, store, tmp_path, before, removed, after, new, stays_removed
-    ):
-        store._config.linked_roots = {label: str(tmp_path / at) for label, at in before.items()}
-        store.remove_documents([], {removed: _removed("g")})
-        label, _, rest = removed.partition("/")
-        old = (tmp_path / before[label] / rest).as_posix()
-        store._config.linked_roots = {label: str(tmp_path / at) for label, at in after.items()}
-
-        step = store.relocate_sources([SourceMove((old,), new, None)])
-
-        assert step.taken == ({new: old} if stays_removed else {})
-        assert (new in store.held_records()) is stays_removed
-
-    def test_a_move_takes_the_removal_of_its_name_before_a_listed_file(self, store, tmp_path):
-        before, after = tmp_path / "before" / "notes", tmp_path / "after" / "notes"
-        store._config.linked_roots = {"notes": str(before)}
-        _index(store, "notes/a/kept.md", file_hash="g")
-        store.remove_documents([], {"notes/b/gone.md": _removed("g")})
-        store._config.linked_roots = {"notes": str(after)}
-        pool = tuple(sorted((before / name).as_posix() for name in ("a/kept.md", "b/gone.md")))
-
-        step = store.relocate_sources(
-            [SourceMove(pool, "notes/b/gone.md", None), SourceMove(pool, "notes/c.md", None)]
-        )
-
-        assert step.taken == {"notes/b/gone.md": pool[1], "notes/c.md": pool[0]}
-        assert store.held_records() == {"notes/b/gone.md": _removed("g")}
-        assert _listed(store) == ["notes/c.md"]
+        found = store.sources_by_hash(["old", "new", "hb"], version=version)
+        assert found == {"old": ["a.md"], "new": ["a.md"], "hb": ["b.pdf"]}
 
 
 def _write_legacy(root, markers, reasons=None, kinds=None):
