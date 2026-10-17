@@ -2925,29 +2925,41 @@ class TestRetireEarlier:
         assert present_at_removal == [True]
         remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
 
-    def test_the_copy_is_deleted_while_another_crawl_waits_on_the_record(self, isolated_env):
+    def test_the_copy_is_deleted_while_another_crawl_waits_on_the_record(
+        self, isolated_env, monkeypatch
+    ):
         record = self._record_with_copy("# Old")
+        copy = cfg.documents_dir / "_web" / self.EARLIER
         other_crawl = FileLock(f"{_pages_file()}.lock")
-        record_free: list[bool] = []
+        record_free: dict[str, bool] = {}
 
-        def other_crawl_tries_the_record(_: list[str]) -> None:
+        def other_crawl_finds_the_record_free() -> bool:
             try:
                 other_crawl.acquire(timeout=0)
             except Timeout:
-                record_free.append(False)
-            else:
-                other_crawl.release()
-                record_free.append(True)
+                return False
+            other_crawl.release()
+            return True
 
+        unlink = Path.unlink
+
+        def unlink_while_watching_the_record(path: Path, missing_ok: bool = False) -> None:
+            if path == copy:
+                record_free["file delete"] = other_crawl_finds_the_record_free()
+            unlink(path, missing_ok=missing_ok)
+
+        def remove_sources(_: list[str]) -> None:
+            record_free["index removal"] = other_crawl_finds_the_record_free()
+
+        monkeypatch.setattr(Path, "unlink", unlink_while_watching_the_record)
         save_page(
             CrawlResult(url=self.URL, markdown="# New"),
             record,
-            MagicMock(side_effect=other_crawl_tries_the_record),
+            MagicMock(side_effect=remove_sources),
         )
-        assert record_free == [False]
-        assert not (cfg.documents_dir / "_web" / self.EARLIER).exists()
-        other_crawl.acquire(timeout=0)
-        other_crawl.release()
+        assert record_free == {"index removal": False, "file delete": False}
+        assert not copy.exists()
+        assert other_crawl_finds_the_record_free()
 
     def test_an_unchanged_page_is_not_rewritten_but_its_earlier_copy_is_retired(self, isolated_env):
         page = _write_web(url_to_filename(self.URL), "# Page")
