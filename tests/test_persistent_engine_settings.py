@@ -62,4 +62,6 @@ def test_keep_warm_help_names_residency_and_the_unload_after_exit():
     assert "after every lilbee process has exited" in help_text
     assert "idle time" in help_text
     assert "next engine start" in help_text
-    assert "last lilbee exit" in SETTINGS_MAP["engine_idle_ttl_minutes"].help_text
+    ttl_help = SETTINGS_MAP["engine_idle_ttl_minutes"].help_text
+    assert "last lilbee exit" in ttl_help
+    assert "next engine start" in ttl_help

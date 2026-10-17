@@ -1038,7 +1038,8 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         group=SettingGroup.SYSTEM,
         help_text=(
             "Idle minutes before the engine unloads its weights; with keep_engine_warm, "
-            "counted from the last lilbee exit; 0 keeps them loaded"
+            "counted from the last lilbee exit; 0 keeps them loaded. "
+            "A change applies at the next engine start"
         ),
     ),
     "agent_mcp_enabled": SettingDef(

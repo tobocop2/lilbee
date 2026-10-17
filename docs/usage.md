@@ -387,14 +387,19 @@ when the last lilbee process exits, so the machine is left clean by default; no
 VRAM, RAM, or stray processes are held while nothing is running. Two knobs
 adjust that:
 
-- **Keep engine warm** lets the engine outlive lilbee entirely, so the next
-  session's first answer skips the load. Recommended if you relaunch often or
-  use lilbee mainly through coding agents, whose sessions come and go.
-- **Engine idle ttl minutes** bounds how long idle weights stay in memory in
-  every mode, warm included, five minutes by default (the same idea as Ollama's
-  keep_alive). The memory frees itself after that many idle minutes; a small
-  proxy process stays behind, a few tens of MB and no VRAM. `0` keeps weights
-  loaded until the engine stops.
+- **Keep engine warm** keeps the weights loaded while any lilbee process runs,
+  so a relaunch or a second client skips the load. After every lilbee process
+  has exited, the weights unload after the idle time and a small proxy process
+  stays behind. Recommended if you relaunch often or use lilbee mainly through
+  coding agents, whose sessions come and go.
+- **Engine idle ttl minutes** sets that idle time, five minutes by default (the
+  same idea as Ollama's keep_alive). With keep engine warm off, it bounds how
+  long idle weights stay in memory while lilbee runs. With keep engine warm on,
+  it counts from the exit of the last lilbee process. The memory frees itself;
+  the proxy process is a few tens of MB and no VRAM. `0` keeps weights loaded
+  until the engine stops.
+- A change to either setting applies at the next engine start. Run
+  `lilbee engine stop` to apply it now.
 - **`lilbee engine stop`** frees the shared engine immediately from any
   terminal, no TUI needed, whichever process started it. It reaches the machine
   slot and this project root's own overflow engine; a private overflow engine
