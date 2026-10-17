@@ -27,6 +27,7 @@ from lilbee.providers.fleet.client import LlamaServerClient
 from lilbee.providers.fleet.groups import SwapGroup
 from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.provider import FleetProvider, _least_in_flight
+from lilbee.providers.fleet.swap_manager import EngineLifetime
 from lilbee.providers.roles import RerankMode, WorkerRole
 from tests._exit_probe import assert_probe_exits
 
@@ -73,7 +74,7 @@ class _FakeSwap:
         self.ready: set[WorkerRole] = set()
         self.running = True
         self.bound = False  # bound to a shared engine (set by the adopt/bind path)
-        self.bound_lifetime = True  # spawned with the crash-orphan death binding
+        self.lifetime: EngineLifetime | None = None  # set by start()
         self.log_path = Path("/engine/logs/llama-swap-fake.log")
 
     def reap_stale(self) -> None:
@@ -81,7 +82,7 @@ class _FakeSwap:
 
     def start(self, launches: list, **kwargs: object) -> None:
         self.started.append(launches)
-        self.bound_lifetime = bool(kwargs.get("bind_lifetime", True))
+        self.lifetime = kwargs.get("lifetime")
         self.running = True
 
     def endpoint(self) -> str:
@@ -2327,18 +2328,63 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     p = FleetProvider()
     assert p.chat([{"role": "user", "content": "hi"}]).text == "ok"
     assert len(swap.started) == 1  # routing the first chat started the swap
-    assert swap.bound_lifetime is True  # bound by default so a crash cannot orphan it
+    # The machine slot has kernel locks, so the engine belongs to all its users.
+    assert swap.lifetime is EngineLifetime.USERS
 
 
-def test_keep_engine_warm_starts_the_swap_unbound(monkeypatch, tmp_path: Path) -> None:
-    """A warm engine must outlive lilbee, so it is spawned without the death binding."""
-    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+@pytest.mark.parametrize("keep_warm", [False, True])
+def test_a_build_on_kernel_locks_hands_the_engine_to_its_users(
+    monkeypatch, tmp_path: Path, keep_warm: bool
+) -> None:
+    """With kernel-arbitrated user locks the reaper ends the engine, keep-warm or not."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", keep_warm)
     swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
 
     FleetProvider()._ensure_fleet()
 
-    assert swap.started  # the fleet was built
-    assert swap.bound_lifetime is False  # keep_engine_warm: not bound to this process
+    assert swap.started
+    assert swap.lifetime is EngineLifetime.USERS
+
+
+@pytest.mark.parametrize(
+    ("keep_warm", "expected"),
+    [(False, EngineLifetime.BUILDER), (True, EngineLifetime.DETACHED)],
+)
+def test_a_build_without_kernel_locks_keeps_the_engine_with_its_builder(
+    monkeypatch, tmp_path: Path, keep_warm: bool, expected: EngineLifetime
+) -> None:
+    """Without trustworthy user locks nothing can count users, so the builder owns the engine."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", keep_warm)
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+    monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: tmp_path / "private")
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.started
+    assert swap.lifetime is expected
+
+
+def test_a_reload_restart_hands_the_engine_to_its_users(monkeypatch, tmp_path: Path) -> None:
+    """A group restarted by a reload is owned the same way a fresh build is."""
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
+    fresh = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: fresh)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
+    p = FleetProvider()
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+    p._reload_pass()
+
+    assert len(fresh.started) == 1
+    assert fresh.lifetime is EngineLifetime.USERS
 
 
 def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:

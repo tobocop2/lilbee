@@ -59,6 +59,7 @@ from lilbee.providers.fleet.launch import InstanceLaunch
 from lilbee.providers.fleet.readback import engine_log_path, writes_engine_log
 from lilbee.providers.fleet.swap_config import cold_load_timeout_s
 from lilbee.providers.fleet.swap_manager import (
+    EngineLifetime,
     SwapManager,
     SwapState,
     engine_record_exists,
@@ -881,6 +882,17 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
     return True
 
 
+def _engine_lifetime(engine_dir: Path) -> EngineLifetime:
+    """What ends an engine this process builds in *engine_dir*.
+
+    Shared ownership needs kernel-arbitrated user locks; without them the engine
+    dies with its builder unless keep-warm asks it to outlive lilbee.
+    """
+    if kernel_arbitrates_locks(engine_dir):
+        return EngineLifetime.USERS
+    return EngineLifetime.DETACHED if cfg.keep_engine_warm else EngineLifetime.BUILDER
+
+
 def _warm_ttl_seconds(*, hold_warm_for_session: bool = False) -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
@@ -1238,7 +1250,7 @@ class FleetProvider:
                     ttl_seconds=_warm_ttl_seconds(
                         hold_warm_for_session=self._hold_warm_for_session
                     ),
-                    bind_lifetime=not cfg.keep_engine_warm,
+                    lifetime=_engine_lifetime(data_dir),
                 )
                 started[group] = swap
         except BaseException:
@@ -2633,7 +2645,7 @@ class FleetProvider:
                         ttl_seconds=_warm_ttl_seconds(
                             hold_warm_for_session=self._hold_warm_for_session
                         ),
-                        bind_lifetime=not cfg.keep_engine_warm,
+                        lifetime=_engine_lifetime(reload_dir),
                     )
                     with self._lock:
                         self._adopt_group(group, swap, group_launches)

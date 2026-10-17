@@ -1006,7 +1006,15 @@ through the same ladder, under a cross-process build lock:
    exist exactly while two different model setups run at once.
 
 Lifetime is kernel-refcounted membership: each process holds a user lock the
-OS releases on any death, and the last clean exit stops the engine.
+OS releases on any death. The engine belongs to that set of users, not to the
+process that built it: it ends when no user lock and no keep-warm opt-in is
+left, judged under the build lock. The last clean exit applies that rule
+itself. For deaths with no exit hook, every build starts one engine reaper per
+engine dir (`providers/fleet/engine_reaper.py`, a detached `python -m`
+process holding `engine-reaper.lock`), which polls the user locks once a
+second and applies the same rule. On a filesystem without kernel-arbitrated
+locks the users cannot be counted, so the engine is bound to its builder
+instead (PDEATHSIG, a kill-on-close job object, or a death pipe).
 `keep_engine_warm` opts the engine into outliving lilbee; the idle TTL
 (`engine_idle_ttl_minutes`, default five minutes) applies in every mode;
 `lilbee engine stop` frees everything now, whoever started it. Reaping never
@@ -1034,11 +1042,11 @@ flowchart TD
     X -- "no, or warm on" --> LEAVE["engine keeps serving;<br/>idle weights nap after the ttl"]
 ```
 
-A SIGKILLed last user cannot run its exit hook: the engine lingers, its models
-nap on the ttl, and the next lilbee run binds to it or cleans it. There is no
-background daemon; the only processes that can outlive a session are the
-engine's own, either because another lilbee still uses them or because the
-user opted into warm.
+A SIGKILLed last user cannot run its exit hook, so the reaper stops the
+engine within about a second of the death. The only processes that can
+outlive a session are the engine's own and its reaper, either because another
+lilbee still uses them or because the user opted into warm. The reaper exits
+with the engine.
 
 ### Chat context-window management
 

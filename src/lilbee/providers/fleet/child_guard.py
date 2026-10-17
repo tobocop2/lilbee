@@ -241,8 +241,8 @@ def spawn_bound_child(
 ) -> subprocess.Popen[Any]:
     """Spawn *argv*, by default bound to this process's lifetime.
 
-    ``bind_lifetime`` is False when the child is meant to outlive this process
-    (``keep_engine_warm``); the next-launch reap is then the only cleanup.
+    ``bind_lifetime`` is False when something other than this process ends the
+    child (the engine reaper, or nothing for a keep-warm engine).
 
     ``death_pipe`` is False for a short-lived child: the pipe's watcher lives until
     we die, so binding a child that outlives neither costs a process and an fd for
