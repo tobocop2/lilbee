@@ -7,7 +7,6 @@ import time
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
-from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.security import validate_path_within
 from lilbee.core.web_names import WEB_DIR
@@ -159,7 +158,7 @@ def _written(stored: dict[str, CrawlMeta], meta: dict[str, CrawlMeta]) -> dict[s
     return meta
 
 
-def move_saved_pages() -> dict[str, CrawlMeta]:
+def move_saved_pages(store: Store) -> dict[str, CrawlMeta]:
     """The crawl metadata with one entry per canonical address, each page at the name it gives.
 
     A page whose file is gone, or whose file another page owns, loses its entry and is
@@ -172,4 +171,4 @@ def move_saved_pages() -> dict[str, CrawlMeta]:
         return _written(stored, {page.address: page.entry for page in pages})
     with library_held(cfg, CRAWL_MOVE_HELD, LOCK_TIMEOUT):
         stored, pages = _plan()
-        return _written(stored, dict(_move_files(pages, get_services().store)))
+        return _written(stored, dict(_move_files(pages, store)))
