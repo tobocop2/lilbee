@@ -1599,3 +1599,22 @@ def test_a_file_lock_error_other_than_enolck_propagates(tmp_path: Path) -> None:
         pass
 
     assert caught.value is refused
+
+
+def test_a_wiki_writer_whose_take_fails_after_its_cancel_is_cancelled(tmp_path: Path) -> None:
+    """A cancel set before a failed take ends the writer as cancelled, not as a refusal."""
+    cancel = threading.Event()
+    cancel.set()
+    ran: list[str] = []
+
+    def _refused(lock: ReadWriteLock, *args, **kwargs) -> None:
+        raise sqlite3.OperationalError("disk I/O error")
+
+    with (
+        mock.patch.object(ReadWriteLock, "acquire_read", _refused),
+        pytest.raises(SyncMarkWaitCancelledError),
+        source_keys_in_use(tmp_path, cancel),
+    ):
+        ran.append("wiki")
+
+    assert ran == []
