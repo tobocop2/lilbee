@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import datetime
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 import re
 import socket
@@ -18,6 +20,7 @@ from collections.abc import Iterator
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 import pytest
 from click.testing import Result
@@ -25,11 +28,14 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from litestar.testing import TestClient
 from typer.testing import CliRunner
 
 crawlberg = pytest.importorskip("crawlberg")
 
+import lilbee.server.auth as auth_mod  # noqa: E402
 from lilbee.cli.app import app  # noqa: E402
+from lilbee.cli.commands.serve_logging import setup_server_log_file  # noqa: E402
 from lilbee.core.config import Config, cfg  # noqa: E402
 from lilbee.core.config.enums import CrawlRenderMode  # noqa: E402
 from lilbee.core.web_names import page_stem  # noqa: E402
@@ -44,9 +50,11 @@ from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     admitted_networks,
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
-from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl  # noqa: E402
+from lilbee.crawler.task import CrawlTask, TaskStatus, get_task, run_crawl  # noqa: E402
 from lilbee.mcp_server import add as mcp_add  # noqa: E402
+from lilbee.mcp_server import crawl as mcp_crawl  # noqa: E402
 from lilbee.runtime.progress import CrawlPageFailedEvent, EventType  # noqa: E402
+from lilbee.server.app import create_app  # noqa: E402
 from tests._crawl_meta import write_crawl_metadata  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
 from tests._windows_loop import windows_proactor_loop  # noqa: E402
@@ -195,6 +203,10 @@ CRAWLBERG_USER_AGENT_START = "crawlberg/"
 # The request a recursive crawl makes for its progress total, and how its client names itself.
 SITEMAP_PATH = "/sitemap.xml"
 HTTP_CLIENT_USER_AGENT_START = "python-httpx/"
+# The username and password of a credentialed seed, and the header that carries them.
+SEED_USER = "alice"
+SEED_PASSWORD = "Sitemap-pw-7Kq"
+SEED_BASIC_AUTH = "Basic " + base64.b64encode(f"{SEED_USER}:{SEED_PASSWORD}".encode()).decode()
 # A Chrome user agent set by the crawl_user_agent setting, and the Chrome release it names.
 OVERRIDE = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
 OVERRIDE_MAJOR = "120"
@@ -373,6 +385,9 @@ class _Site:
         self.hints: list[tuple[str, dict[str, str]]] = []
         self.accept_headers: list[tuple[str, dict[str, str]]] = []
         self.cookies: list[tuple[str, str]] = []
+        self.authorizations: list[tuple[str, str]] = []
+        # The Authorization header the sitemap needs; blank serves no sitemap.
+        self.sitemap_authorization = ""
         self.robots_status = HTTPStatus.OK
         self._answered: set[str] = set()
         self._lock = threading.Lock()
@@ -416,13 +431,27 @@ class _Site:
         with self._lock:
             return [cookie for at, cookie in self.cookies if at == path]
 
-    def reply(self, path: str, cookie: str) -> tuple[int, str]:
+    def authorizations_for(self, path: str) -> list[str]:
+        """The Authorization header of each request for exactly *path*."""
+        with self._lock:
+            return [sent for at, sent in self.authorizations if at == path]
+
+    def reply(self, path: str, cookie: str, authorization: str = "") -> tuple[int, str]:
         """The status and body for *path*; the cookie page refuses a request without the cookie."""
+        if path == SITEMAP_PATH and self.sitemap_authorization:
+            return self._sitemap(authorization)
         if path == COOKIE_NEED and SESSION_COOKIE not in cookie:
             return HTTPStatus.FORBIDDEN, "<h1>forbidden</h1>"
         if path == RATE_LIMITED_ONCE and self._first_request(path):
             return HTTPStatus.TOO_MANY_REQUESTS, "<h1>slow down</h1>"
         return self._body(path)
+
+    def _sitemap(self, authorization: str) -> tuple[int, str]:
+        """A sitemap of the wide listing behind basic auth."""
+        if authorization != self.sitemap_authorization:
+            return HTTPStatus.UNAUTHORIZED, "<h1>log in</h1>"
+        locs = "".join(f"<url><loc>{self.url(f'/wide/p{n}')}</loc></url>" for n in range(3))
+        return HTTPStatus.OK, f"<urlset>{locs}</urlset>"
 
     def _first_request(self, path: str) -> bool:
         """True the first time *path* is answered."""
@@ -478,7 +507,9 @@ class _Site:
                     }
                     site.accept_headers.append((self.path, sent))
                     site.cookies.append((self.path, self.headers.get("Cookie", "")))
-                status, body = site.reply(self.path, self.headers.get("Cookie", ""))
+                    authorization = self.headers.get("Authorization", "")
+                    site.authorizations.append((self.path, authorization))
+                status, body = site.reply(self.path, self.headers.get("Cookie", ""), authorization)
                 if status == HTTPStatus.MOVED_PERMANENTLY:
                     self.send_response(status)
                     self.send_header("Location", body)
@@ -1524,6 +1555,73 @@ class TestUserAgent:
         await crawl_and_save(site.url("/hints/"), depth=1, render_mode=HTTP)
         assert site.hints_for("/hints/") == {"/hints/": [{}], "/hints/next": [{}]}
         assert set(site.agents_for("/hints/")) == {OVERRIDE}
+
+
+@pytest.fixture
+def server_log(isolated_env) -> Iterator[Path]:
+    """server.log under the data root, installed as serve installs it, taken out afterwards."""
+    root = logging.getLogger()
+    root_level = root.level
+    handler_levels = [(handler, handler.level) for handler in root.handlers]
+    cfg.data_root = isolated_env
+    yield setup_server_log_file()
+    earlier = [handler for handler, _ in handler_levels]
+    for handler in [h for h in root.handlers if h not in earlier]:
+        root.removeHandler(handler)
+        handler.close()
+    for handler, level in handler_levels:
+        handler.setLevel(level)
+    root.setLevel(root_level)
+
+
+def _credentialed(site: _Site, path: str) -> str:
+    """The address of *path* on *site* with the seed username and password in it."""
+    return site.url(path).replace("://", f"://{SEED_USER}:{SEED_PASSWORD}@", 1)
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestSeedPasswordInTheServerLog:
+    @pytest.fixture(autouse=True)
+    def _sitemap_behind_basic_auth(self, site):
+        site.sitemap_authorization = SEED_BASIC_AUTH
+
+    @staticmethod
+    def _assert_sitemap_logged_without_password(site: _Site, log_path: Path) -> None:
+        for handler in logging.getLogger().handlers:
+            handler.flush()
+        logged = log_path.read_text(encoding="utf-8")
+        assert f"HTTP Request: GET {site.url(SITEMAP_PATH)}" in logged
+        assert SEED_PASSWORD not in logged
+        assert site.authorizations_for(SITEMAP_PATH) == [SEED_BASIC_AUTH]
+
+    def test_a_rest_site_crawl_logs_no_password(self, site, server_log):
+        auth_mod.session_manager.disable()
+        try:
+            response = TestClient(create_app()).post(
+                "/api/crawl",
+                json={
+                    "url": _credentialed(site, "/wide/"),
+                    "depth": 1,
+                    "max_pages": 2,
+                    "render_mode": HTTP,
+                },
+            )
+        finally:
+            auth_mod.session_manager.cleanup()
+        assert response.status_code == HTTPStatus.CREATED
+        assert b"files_written" in response.content
+        self._assert_sitemap_logged_without_password(site, server_log)
+
+    async def test_an_mcp_site_crawl_logs_no_password(self, site, server_log):
+        with mock.patch("lilbee.data.ingest.sync", new_callable=mock.AsyncMock):
+            started = await mcp_crawl(
+                url=_credentialed(site, "/wide/"), depth=1, max_pages=2, render_mode=HTTP
+            )
+            task = get_task(started["task_id"])
+            assert task is not None and task._async_task is not None
+            await asyncio.wait_for(task._async_task, timeout=60)
+        assert task.status is TaskStatus.DONE
+        self._assert_sitemap_logged_without_password(site, server_log)
 
 
 def _closed_port() -> int:
