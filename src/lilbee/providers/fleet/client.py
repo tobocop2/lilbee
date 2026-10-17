@@ -184,12 +184,16 @@ def _estimate_tokens(text: str) -> int:
     return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
 
 
-def _raise_for_status(resp: httpx.Response) -> None:
+def _raise_for_status(
+    resp: httpx.Response, model: str | None = None, engine_log: Path | None = None
+) -> None:
     """Raise including the server's error body, which ``raise_for_status`` drops.
 
     A llama-server failure otherwise surfaces as a bare "Internal Server Error"
     with no cause; the response body carries the actual reason (oversize prompt,
     decode failure, ...), which both diagnosis and the user-facing error need.
+    *model* and *engine_log* name the model and the file that holds its engine
+    output; a dead server's one-line message carries both.
     """
     if resp.is_success:
         return
@@ -227,7 +231,7 @@ def _raise_for_status(resp: httpx.Response) -> None:
         if classified is not None:
             kind = classified
         raise ProviderError(
-            _upstream_death_message(kind, resp.status_code),
+            _upstream_death_message(kind, resp.status_code, model, engine_log),
             provider=_PROVIDER_NAME,
             kind=kind,
         )
@@ -240,15 +244,22 @@ def _raise_for_status(resp: httpx.Response) -> None:
 
 
 _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
-    ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading the model",
-    ProviderErrorKind.PORT_CONFLICT: "The engine could not start because its port was taken",
+    ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading {model}",
+    ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
 }
+_UPSTREAM_DEATH_DEFAULT = "The engine for {model} stopped before it could answer"
 
 
-def _upstream_death_message(kind: ProviderErrorKind, status_code: int) -> str:
+def _upstream_death_message(
+    kind: ProviderErrorKind, status_code: int, model: str | None, engine_log: Path | None
+) -> str:
     """One plain line for a model server that exited, built from what lilbee knows."""
-    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, "The engine stopped before it could answer")
-    return f"{cause} (HTTP {status_code})."
+    subject = model if model is not None else "the model"
+    cause = _UPSTREAM_DEATH_MESSAGES.get(kind, _UPSTREAM_DEATH_DEFAULT).format(model=subject)
+    message = f"{cause} (HTTP {status_code})."
+    if engine_log is None:
+        return message
+    return f"{message} The full engine output is in {engine_log}."
 
 
 # What the engine prints when a device allocation fails during load. Every
@@ -557,12 +568,16 @@ class LlamaServerClient:
         embed_busy_deadline_s: float | None = None,
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
+        model_ref: str | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
-        # The proxy log that records this server's exits; None for a client no
-        # swap manager fronts (the one-off self-check).
+        # The file this server's own engine writes its output to; None when the
+        # launch writes none or no swap manager fronts the client (the self-check).
         self.engine_log = engine_log
         self._model = model
+        # The model as the user knows it (the registry ref); the replica id is not
+        # something a person recognises. None names it "the model".
+        self.model_ref = model_ref
         # Prefill observer: called with (processed, total) per engine progress
         # frame during a streamed chat's prompt processing, then None once the
         # first generated frame proves the prefill is over.
@@ -613,6 +628,10 @@ class LlamaServerClient:
             if self._healthy:
                 return True
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
+
+    def _raise_for_status(self, resp: httpx.Response) -> None:
+        """Raise the plain error for a failed *resp*, naming this client's model and log."""
+        _raise_for_status(resp, self.model_ref, self.engine_log)
 
     def mark_unhealthy(self) -> None:
         """Record a connection-level failure so the router skips this replica."""
@@ -704,7 +723,7 @@ class LlamaServerClient:
             resp = self._http.post(
                 _CHAT_PATH, json={**payload, "stream": False}, timeout=request_timeout
             )
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             # content is null for a refusal / content-filter stop / empty completion;
             # coerce to "" (like chat_result/chat_tools) so callers never see "None".
             return _inline_message_reasoning(
@@ -721,7 +740,7 @@ class LlamaServerClient:
                 "POST", _CHAT_PATH, json={**payload, "stream": True}, timeout=timeout
             ) as resp,
         ):
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             with self._abortable(resp):
                 for line in resp.iter_lines():
                     delta = inliner.feed(*_parse_sse_deltas(line))
@@ -783,7 +802,7 @@ class LlamaServerClient:
         async with http.stream("POST", _CHAT_PATH, json=payload) as resp:
             if not resp.is_success:
                 await resp.aread()
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             async for line in resp.aiter_lines():
                 parts.append(inliner.feed(*_parse_sse_deltas(line)))
         parts.append(inliner.finish())
@@ -814,7 +833,7 @@ class LlamaServerClient:
             payload["tool_choice"] = tool_choice
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             message = resp.json()["choices"][0]["message"]
         content = _inline_message_reasoning(message, enabled=self._inline_reasoning)
         native = _parse_native_tool_calls(message.get("tool_calls"))
@@ -844,7 +863,7 @@ class LlamaServerClient:
         )
         with self._track():
             resp = self._http.post(_CHAT_PATH, json=payload)
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             body = dict(resp.json())
         choice = body["choices"][0]
         usage = _usage_from_body(body) or TokenUsage()
@@ -916,7 +935,7 @@ class LlamaServerClient:
                 self._track(),
                 self._http.stream("POST", _CHAT_PATH, json=payload) as resp,
             ):
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
                 with self._abortable(resp):
                     for line in resp.iter_lines():
                         if on_prefill is not None:
@@ -1030,7 +1049,7 @@ class LlamaServerClient:
                 resp = self._http.post(
                     _CHAT_PATH, json=payload, timeout=_ALTERNATION_PROBE_TIMEOUT_S
                 )
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
         except (ProviderError, httpx.TransportError) as exc:
             return None if _is_transient_probe_failure(exc) else False
         return True
@@ -1144,7 +1163,7 @@ class LlamaServerClient:
         def _call() -> dict[str, Any]:
             with self._track():
                 resp = self._http.post(_CHAT_PATH, json=payload)
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
                 return dict(resp.json())
 
         return _llm_rerank_score(_first_token_top_logprobs(retry_on_busy(_call)))
@@ -1163,7 +1182,7 @@ class LlamaServerClient:
                         "encoding_format": _EMBED_ENCODING_FORMAT,
                     },
                 )
-                _raise_for_status(resp)
+                self._raise_for_status(resp)
                 data = resp.json()["data"]
             if len(data) != len(inputs):
                 raise ProviderError(
@@ -1258,7 +1277,7 @@ class LlamaServerClient:
                     "parse_special": parse_special,
                 },
             )
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             return list(resp.json()["tokens"])
 
         return self._with_busy_retry(_call)
@@ -1311,14 +1330,14 @@ class LlamaServerClient:
                 raise NotImplementedError(
                     f"This inference engine has no {_APPLY_TEMPLATE_PATH} route."
                 )
-            _raise_for_status(resp)
+            self._raise_for_status(resp)
             return str(resp.json()["prompt"])
 
         return self._with_busy_retry(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})
-        _raise_for_status(resp)
+        self._raise_for_status(resp)
         return str(resp.json()["content"])
 
     @contextlib.contextmanager

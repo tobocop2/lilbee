@@ -230,6 +230,15 @@ def engine_log_path(log_dir: Path, model_id: str) -> Path:
     return log_dir / _ENGINE_LOG_TEMPLATE.format(model_id=model_id)
 
 
+def writes_engine_log(argv: list[str]) -> bool:
+    """Whether a launch with *argv* writes the engine log file.
+
+    A launch carrying ``--memory`` serves its numbers over HTTP and gets no log
+    env, so no file exists for it.
+    """
+    return MEMORY_FLAG not in argv
+
+
 def engine_log_env(log_dir: Path, model_id: str) -> dict[str, str]:
     """Environment that makes the engine report what it allocated, and where."""
     path = str(engine_log_path(log_dir, model_id))
