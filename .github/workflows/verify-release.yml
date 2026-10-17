@@ -119,6 +119,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.resolve.outputs.tag }}
+          # The candidate that dispatched the publishers. A manual run has none.
+          RC_RUN_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
           # Generous: the flatpak variants publish one at a time against the
           # shared repo, behind their own wait for the binaries. A false timeout
           # here blocks promotion, which is worse than waiting.
@@ -156,6 +159,16 @@ jobs:
               grep -qxF "${name}" assets.txt || missing="${missing} ${name}"
             done
             [ -n "${missing}" ] || { echo "every channel artifact is on the release"; exit 0; }
+            # A publisher that finished, or was never started, delivers nothing
+            # more: fail now instead of polling out the whole wait. A failed
+            # lookup is not a verdict; the deadline below stays the backstop.
+            read -ra absent <<< "${missing}"
+            blocked=$(bash scripts/channel_asset_blockers.sh "${absent[@]}") || blocked=""
+            if [ -n "${blocked}" ]; then
+              echo "::error::channel artifacts that cannot arrive:"
+              echo "${blocked}"
+              exit 1
+            fi
             if [ "$(date +%s)" -ge "${deadline}" ]; then
               echo "::error::channel artifacts still missing after ${WAIT_MINUTES}m:${missing}"
               echo "a packaging fan-out dropped its artifact; re-run it before promoting"

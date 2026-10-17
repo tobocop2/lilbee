@@ -111,7 +111,11 @@ case "${sub}" in
     ;;
 
   release)
-    cat "${FIXTURE}/prerelease"
+    # gh release view <tag> --json assets --jq '.assets[].name': one name per line.
+    case " $* " in
+      *" assets "*) cat "${FIXTURE}/release_assets" ;;
+      *) cat "${FIXTURE}/prerelease" ;;
+    esac
     ;;
 
   *) echo "stub gh: unhandled ${sub}" >&2; exit 1 ;;
