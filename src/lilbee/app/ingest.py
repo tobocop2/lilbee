@@ -277,7 +277,7 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
 
     result, before = settings.mutate_value(config.data_root, "linked_roots", _mutate)
     if result.registered:
-        _follow_registered(before, result.registered)
+        _follow_registered(before, result)
     names = SourceLocations(config.linked_roots)
     taken = [names.name(root_location(before[label])) for label in result.absorbed]
     if taken:
@@ -286,14 +286,15 @@ def register_sources(paths: list[Path], *, force: bool = False) -> RegisterResul
     return result
 
 
-def _follow_registered(before: dict[str, str], labels: list[str]) -> None:
-    """Move the sources of each of *labels* that took a new folder there, then name by location.
+def _follow_registered(before: dict[str, str], result: RegisterResult) -> None:
+    """Move the sources of each label *result* gave a new folder there, then name by location.
 
-    A source whose label is now registered is stored where it is.
+    A source whose label is now registered is stored where it is. A parent that
+    takes in the source of its own label leaves that source's files where they are.
     """
     store = get_services().store
-    for label in labels:
-        if label in before:
+    for label in result.registered:
+        if label in before and label not in result.absorbed_into.get(label, []):
             store.relocate_root(before[label], active_config().linked_roots[label])
     store.fill_locations()
 

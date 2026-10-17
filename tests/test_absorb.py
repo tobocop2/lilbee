@@ -31,7 +31,7 @@ from tests.conftest import (
     make_mock_services,
     sync_lock_not_a_lock_file,
 )
-from tests.test_store import _KEY_COLUMNS, _dump, _holders, _mention
+from tests.test_store import _KEY_COLUMNS, _citation, _dump, _holders, _mention
 
 
 class _Killed(BaseException):
@@ -594,6 +594,55 @@ class TestAMovedFolderWithASourceInside:
         assert landed["after/work/deep/a.md"] == inner
         assert len(store.get_chunks_by_source("after/work/deep/a.md")) == 1
         assert synced.added == [] and synced.updated == []
+
+
+class TestAParentNamedLikeItsSource:
+    async def test_the_source_keeps_its_id_its_citations_and_its_embedding(self, library, tmp_path):
+        outer = tmp_path / "src" / "work"
+        inner = outer / "work"
+        _write(inner / "README.md", "# Inner\n\nThe inner readme about the spring release.\n")
+        _write(outer / "README.md", "# Outer\n\nThe outer readme about the harbour schedule.\n")
+        await _add(inner)
+        store = library.store
+        inner_id = store.source_ids(["work/README.md"])["work/README.md"]
+        store.add_citations([_citation("work/README.md")])
+        library.embedder.embed_batch.reset_mock()
+
+        result = register_sources([outer])
+
+        assert result.registered == ["work"]
+        assert store.source_ids(["work/work/README.md"]) == {"work/work/README.md": inner_id}
+        stored = (inner / "README.md").resolve().as_posix()
+        assert store.source_paths([inner_id]) == {inner_id: "work/work/README.md"}
+        assert _holders(store, stored) == {("_sources", "path")}
+
+        synced = await sync(quiet=True)
+
+        assert synced.added == ["work/README.md"]
+        assert store.source_ids(["work/work/README.md"]) == {"work/work/README.md": inner_id}
+        cited = store.get_citations_for_source("work/work/README.md")
+        assert [row["citation_key"] for row in cited] == ["src1"]
+        assert store.get_citations_for_source("work/README.md") == []
+        embedded = _embedded(library)
+        assert embedded and all("harbour" in text for text in embedded)
+
+    async def test_a_forced_label_takes_the_sources_of_the_folder_it_replaces(
+        self, library, tmp_path
+    ):
+        old = tmp_path / "a" / "work"
+        new = tmp_path / "b" / "work"
+        _write(old / "x.md", "# X\n\nThe old copy about apples.\n")
+        _write(new / "x.md", "# X\n\nThe new copy about bananas.\n")
+        await _add(old)
+        store = library.store
+        old_id = store.source_ids(["work/x.md"])["work/x.md"]
+
+        register_sources([new], force=True)
+        synced = await sync(quiet=True)
+
+        assert _keys(library) == ["work/x.md"]
+        assert synced.updated == ["work/x.md"]
+        assert store.source_ids(["work/x.md"]) == {"work/x.md": old_id}
 
 
 class TestAMovedFolderAddedAgain:
