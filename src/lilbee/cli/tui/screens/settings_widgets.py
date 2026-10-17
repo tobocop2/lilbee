@@ -17,6 +17,7 @@ from lilbee.cli.tui.pill import pill
 from lilbee.cli.tui.widgets.list_text_area import ListTextArea
 from lilbee.core.config import cfg
 from lilbee.core.config.model import env_value
+from lilbee.crawler import crawler_available
 
 if TYPE_CHECKING:
     from lilbee.catalog.types import ModelTask
@@ -180,8 +181,6 @@ def _litellm_installed() -> bool:
 
 
 def _crawler_installed() -> bool:
-    from lilbee.crawler import crawler_available
-
     return crawler_available()
 
 
