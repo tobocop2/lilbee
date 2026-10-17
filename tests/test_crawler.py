@@ -480,6 +480,24 @@ class TestValidateCrawlUrl:
         with pytest.raises(ValueError, match="no hostname"):
             validate_crawl_url("http://")
 
+    @pytest.mark.parametrize(
+        ("url", "host_part"),
+        [
+            ("http://example.com:8080\\path", "example.com:8080\\path"),
+            ("http://example.com:80a/", "example.com:80a"),
+            ("http://example.com:99999/", "example.com:99999"),
+        ],
+        ids=["backslash-after-port", "letter-in-port", "port-out-of-range"],
+    )
+    def test_rejects_a_port_that_is_not_a_number(self, monkeypatch, url: str, host_part: str):
+        monkeypatch.setattr(
+            "lilbee.crawler.url_filter.socket.getaddrinfo",
+            lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+        )
+        validate_crawl_url("http://example.com:8080/path")
+        with pytest.raises(ValueError, match=re.escape(f"URL has an invalid port: {host_part}")):
+            validate_crawl_url(url)
+
     def test_rejects_localhost(self, monkeypatch):
         monkeypatch.setattr(
             "lilbee.crawler.url_filter.socket.getaddrinfo",
