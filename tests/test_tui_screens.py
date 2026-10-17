@@ -1342,6 +1342,20 @@ async def test_settings_crawl_user_agent_editor_saves_the_override():
         assert cfg.crawl_user_agent == "Probe/1.0"
 
 
+async def test_settings_robots_txt_checkbox_turns_the_setting_off():
+    """The robots.txt checkbox starts ticked and unticking it stores off."""
+    from textual.widgets import Checkbox
+
+    cfg.crawl_respect_robots_txt = True
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        checkbox = app.screen.query_one("#ed-crawl_respect_robots_txt", Checkbox)
+        assert checkbox.value is True
+        checkbox.toggle()
+        await pump_until(pilot, lambda: cfg.crawl_respect_robots_txt is False)
+        assert cfg.crawl_respect_robots_txt is False
+
+
 async def test_settings_list_editor_restore_defaults():
     """Pressing Restore resets both cfg and the TextArea to the defaults."""
     from textual.widgets import Button

@@ -12,6 +12,7 @@ import time
 from unittest.mock import MagicMock
 
 import pytest
+from pytest_httpserver import HTTPServer
 
 crawlberg = pytest.importorskip("crawlberg")
 
@@ -82,6 +83,20 @@ def isolated_env(tmp_path):
     for name, val in snapshot.items():
         setattr(cfg, name, val)
     reset_services()
+
+
+def _serve_no_robots_txt(server: HTTPServer) -> None:
+    """Answer robots.txt with 404, as a site with no robots.txt does.
+
+    The server answers any other unexpected request with 500, which a crawl that honours
+    robots.txt reads as a robots.txt it cannot read, so it would crawl no page.
+    """
+    server.expect_request("/robots.txt").respond_with_data("Not Found", status=404)
+
+
+@pytest.fixture(autouse=True)
+def no_robots_txt(httpserver):
+    _serve_no_robots_txt(httpserver)
 
 
 @pytest.fixture()
@@ -209,6 +224,7 @@ class TestContentChangeDetection:
 
         # Change the server content
         httpserver.clear()
+        _serve_no_robots_txt(httpserver)
         v2 = "<html><body><h1>Version 2</h1><p>New content.</p></body></html>"
         httpserver.expect_request("/changing").respond_with_data(v2, content_type="text/html")
         paths2 = await crawl_and_save(url, depth=0)
