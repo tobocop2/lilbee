@@ -285,7 +285,7 @@ def _classify_error(status_code: int, body: str) -> ProviderErrorKind:
     ``_raise_for_status`` upgrades to SERVER once the upstream tail proves it).
     A bare gateway error (502/503/504) is a
     momentarily-unreachable upstream -- restarting, OOM-killed, mid-swap -- so
-    it is SERVER, which the busy retry treats as transient.
+    it is SERVER, which the gateway retry treats as transient.
     """
     if _BATCH_OVERFLOW_MARKER in body:
         return ProviderErrorKind.CONTEXT_OVERFLOW
@@ -306,9 +306,9 @@ def is_connection_failure(exc: Exception) -> bool:
 
 def _is_transient_probe_failure(exc: Exception) -> bool:
     """Whether a probe failure is transient (dead replica, busy 429, gateway
-    error), not a template verdict. A cold replica 429s or 502s its first
-    traffic, so neither response must be read as the template rejecting the
-    exchange."""
+    error), not a template verdict. llama-swap 429s past its concurrency limit
+    and a restarting replica 502s, so neither response must be read as the
+    template rejecting the exchange."""
     if is_connection_failure(exc):
         return True
     return isinstance(exc, ProviderError) and exc.kind in _TRANSIENT_KINDS
@@ -397,12 +397,14 @@ _HTTP_TOO_MANY_REQUESTS = 429
 # (502 crashing/restarting, 503 unavailable, 504 gateway timeout). The request
 # succeeds once the upstream is back, so these must never terminalize a call.
 _TRANSIENT_GATEWAY_STATUSES = frozenset({502, 503, 504})
-# Error kinds the busy retry treats as transient: a 429 (slots still loading)
-# and a bare gateway error (upstream momentarily unreachable) both clear on
-# their own once the server is ready again.
-_TRANSIENT_KINDS = frozenset(
-    {ProviderErrorKind.RATE_LIMIT, ProviderErrorKind.SERVER, ProviderErrorKind.PORT_CONFLICT}
-)
+# Error kinds the gateway retry re-sends: a bare gateway error (upstream
+# momentarily unreachable) and a lost port-bind race clear on their own once
+# the server is back. A 429 is llama-swap's concurrency limit, which the swap
+# config sizes for several lilbee processes at full load, so it is reported,
+# not re-sent.
+_RETRY_KINDS = frozenset({ProviderErrorKind.SERVER, ProviderErrorKind.PORT_CONFLICT})
+# Error kinds that leave a template probe undetermined: the retry kinds plus a 429.
+_TRANSIENT_KINDS = _RETRY_KINDS | {ProviderErrorKind.RATE_LIMIT}
 _DONE_SENTINEL = "[DONE]"
 _DATA_PREFIX = "data:"
 _DEFAULT_TIMEOUT_S = 300.0
@@ -411,17 +413,12 @@ _CANCEL_POLL_S = 0.1
 # Short, separate timeout for /health: a server can wedge under heavy prompt
 # processing, and readiness/monitor polls must not block on the request timeout.
 _HEALTH_TIMEOUT_S = 5.0
-# Retry a server-busy (HTTP 429) response with exponential backoff (capped): a
-# cold replica fleet 429s the first fan-out until its slots load. Interactive
-# callers fail fast after this short budget (~15s).
-_BUSY_RETRIES = 6
-_BUSY_BACKOFF_BASE_S = 0.5
-_BUSY_BACKOFF_MAX_S = 8.0
-# Bulk embed ingest is background work, so it waits out a full cold start rather
-# than dropping files: an 8B embedder warming while a large chat model loads on
-# neighboring cards can take well past the interactive budget. Capped backoff
-# keeps the total near ~80s (0.5+1+2+4 then 8 each), which covers a real warmup.
-_EMBED_BUSY_RETRIES = 14
+# Retry a gateway error with exponential backoff (capped). llama-swap holds a
+# request through a cold load, so a gateway error is a replica restarting, and
+# callers fail after this short budget (~15s).
+_GATEWAY_RETRIES = 6
+_GATEWAY_BACKOFF_BASE_S = 0.5
+_GATEWAY_BACKOFF_MAX_S = 8.0
 # Half-open recovery: a replica marked unhealthy becomes routable again after
 # this cool-down. Recovery is probe-by-traffic and unmetered: every concurrent
 # caller sees it routable once cooled down (a success restores it, another
@@ -459,27 +456,24 @@ class ChatDeadlineError(ProviderError):
     """
 
 
-def retry_on_busy(
-    call: Callable[[], _T], *, retries: int = _BUSY_RETRIES, deadline: float | None = None
+def retry_on_gateway_error(
+    call: Callable[[], _T], *, retries: int = _GATEWAY_RETRIES, deadline: float | None = None
 ) -> _T:
-    """Run *call*, retrying transient failures (429, gateway errors) with capped backoff.
+    """Run *call*, retrying gateway errors and a lost port-bind race with capped backoff.
 
-    A cold replica fleet 429s the first fan-out until its slots load, and a
-    replica restarting mid-run answers 502 until it is back; backing off and
-    retrying turns both drops into successes. With a *deadline*
+    A replica restarting mid-run answers 502 until it is back; backing off and
+    retrying turns that drop into a success. With a *deadline*
     (``time.monotonic`` epoch) the retry waits out the server until that
-    deadline -- a page on a deep OCR queue keeps waiting for a genuinely free
-    slot instead of dropping after a fixed budget. Without one, *retries* bounds
-    the attempts. Non-transient errors (and the final still-failing response)
-    propagate.
+    deadline; without one, *retries* bounds the attempts. Every other error,
+    a 429 included, and the final still-failing response propagate.
     """
-    delay = _BUSY_BACKOFF_BASE_S
+    delay = _GATEWAY_BACKOFF_BASE_S
     attempt = 0
     while True:
         try:
             return call()
         except ProviderError as exc:
-            if exc.kind not in _TRANSIENT_KINDS:
+            if exc.kind not in _RETRY_KINDS:
                 raise
             attempt += 1
             exhausted = (
@@ -488,7 +482,7 @@ def retry_on_busy(
             if exhausted:
                 raise
             time.sleep(delay)
-            delay = min(delay * 2, _BUSY_BACKOFF_MAX_S)
+            delay = min(delay * 2, _GATEWAY_BACKOFF_MAX_S)
 
 
 class LlamaServerClient:
@@ -506,7 +500,6 @@ class LlamaServerClient:
         timeout: float = _DEFAULT_TIMEOUT_S,
         rerank_mode: RerankMode | None = None,
         inline_reasoning: bool = False,
-        embed_busy_deadline_s: float | None = None,
         on_prefill: Callable[[tuple[int, int] | None], None] | None = None,
         engine_log: Path | None = None,
         model_ref: str | None = None,
@@ -523,12 +516,6 @@ class LlamaServerClient:
         # frame during a streamed chat's prompt processing, then None once the
         # first generated frame proves the prefill is over.
         self._on_prefill = on_prefill
-        # Cold-load budget (seconds) the embed path waits out a still-warming replica
-        # before dropping the input, in place of the short attempt cap. Set on the
-        # EMBED-role client to the same ceiling llama-swap keeps the server alive for,
-        # so a bulk ingest never gives up while the replica is legitimately loading.
-        # None (rerank, chat, vision, self-check) keeps the fixed interactive budget.
-        self._embed_busy_deadline_s = embed_busy_deadline_s
         self._http = http or httpx.Client(
             base_url=self._base, timeout=timeout, verify=_LOOPBACK_SSL_CONTEXT
         )
@@ -596,12 +583,12 @@ class LlamaServerClient:
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.CONTEXT_OVERFLOW,
             )
-        # A 429 (slots full) is transient: a cold replica fleet rejects the first ingest
-        # fan-out until its slots load. Tag RATE_LIMIT so the caller backs off and retries
-        # instead of dropping the input.
+        # llama-swap answers 429 once its concurrency limit for the model is reached.
+        # The swap config sizes that limit for several lilbee processes at full load,
+        # so a request past it is reported rather than re-sent into the same load.
         if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
             raise ProviderError(
-                "llama-server is busy (HTTP 429); replicas may still be warming.",
+                "The model is busy with too many requests. Try again in a moment.",
                 provider=_PROVIDER_NAME,
                 kind=ProviderErrorKind.RATE_LIMIT,
             )
@@ -1158,7 +1145,7 @@ class LlamaServerClient:
                 self._raise_for_status(resp)
                 return dict(resp.json())
 
-        return _llm_rerank_score(_first_token_top_logprobs(retry_on_busy(_call)))
+        return _llm_rerank_score(_first_token_top_logprobs(retry_on_gateway_error(_call)))
 
     def _embeddings_call(self, inputs: list[str]) -> list[dict[str, Any]]:
         """POST one already-budgeted sub-batch to ``/v1/embeddings``; return its data."""
@@ -1183,20 +1170,7 @@ class LlamaServerClient:
                 )
             return list(data)
 
-        return self._with_busy_retry(_call)
-
-    def _with_busy_retry(self, call: Callable[[], _T]) -> _T:
-        """Run *call*, waiting out a cold replica on the embed cold-load budget.
-
-        Bulk ingest waits out a cold-start warmup rather than dropping files. With
-        a cold-load deadline (the EMBED-role client) the retry waits out a
-        still-loading replica for the full budget llama-swap keeps it alive,
-        instead of dropping the file after the fixed attempt cap; without one the
-        fixed count bounds an interactive caller.
-        """
-        if self._embed_busy_deadline_s is not None:
-            return retry_on_busy(call, deadline=time.monotonic() + self._embed_busy_deadline_s)
-        return retry_on_busy(call, retries=_EMBED_BUSY_RETRIES)
+        return retry_on_gateway_error(_call)
 
     def _truncate_and_subbatch(self, texts: list[str], *, estimate: bool) -> list[list[str]]:
         """Token-truncate over-cap inputs, then pack into server-sized sub-batches.
@@ -1205,7 +1179,7 @@ class LlamaServerClient:
         n_batch) is truncated to it via the server's tokenizer, since the server
         cannot split a pooled embedding sequence. Inputs are then grouped so each
         request stays within both the token budget and ``_EMBED_N_SEQ_MAX``
-        sequences, bounding per-request size and the busy-retry window. No cap
+        sequences, bounding per-request size and the gateway-retry window. No cap
         (chat/vision) sends a single batch untouched.
 
         When ``estimate`` is set the per-input token count comes from
@@ -1258,7 +1232,7 @@ class LlamaServerClient:
         return f"{_UPSTREAM_PREFIX}/{self._model}{suffix}"
 
     def _tokenize(self, text: str, *, parse_special: bool = _TOKENIZE_PARSE_SPECIAL) -> list[int]:
-        """Token ids for *text*; a cold replica is waited out like an embedding."""
+        """Token ids for *text*; a gateway error is retried like an embedding."""
 
         def _call() -> list[int]:
             resp = self._http.post(
@@ -1272,7 +1246,7 @@ class LlamaServerClient:
             self._raise_for_status(resp)
             return list(resp.json()["tokens"])
 
-        return self._with_busy_retry(_call)
+        return retry_on_gateway_error(_call)
 
     def count_tokens(self, text: str) -> int:
         """Number of tokens *text* encodes to under the server's tokenizer."""
@@ -1325,7 +1299,7 @@ class LlamaServerClient:
             self._raise_for_status(resp)
             return str(resp.json()["prompt"])
 
-        return self._with_busy_retry(_call)
+        return retry_on_gateway_error(_call)
 
     def _detokenize(self, tokens: list[int]) -> str:
         resp = self._http.post(self._native_route(_DETOKENIZE_PATH), json={"tokens": tokens})

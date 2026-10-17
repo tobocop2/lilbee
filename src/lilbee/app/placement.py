@@ -228,7 +228,7 @@ def wait_chat_ready(
 
     ``reload_placement(wait=True)`` returns once the proxies are healthy while the
     restarted model still warms off-thread, so a chat request sent right after an
-    apply hits the busy 429 path. Callers that gate user input on the reload call
+    apply reaches a model that is still loading. Callers that gate user input on the reload call
     this to hold until the model actually serves. Waits only while a warm is
     actively in flight: with no fleet, no warm, or a failed/finished warm it
     returns at once, so a change that never restarts chat cannot stall the caller.

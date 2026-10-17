@@ -924,36 +924,6 @@ def test_adopt_group_threads_rerank_mode(monkeypatch) -> None:
     assert captured["rerank_mode"] is RerankMode.LLM
 
 
-def test_adopt_group_gives_embed_client_cold_load_deadline_only(monkeypatch) -> None:
-    # The EMBED client waits out a still-warming replica for the full cold-load
-    # budget (so a cold-start burst never drops files); rerank/chat/vision keep the
-    # short interactive attempt cap (deadline None). 6 GB loads well inside the
-    # embed floor, so the deadline is that floor.
-    weights = 6_000_000_000
-    launches = [
-        _fake_launch(WorkerRole.EMBED, weights_bytes=weights),
-        _fake_launch(WorkerRole.RERANK, weights_bytes=weights),
-    ]
-    for launch in launches:
-        launch.rerank_mode = None
-    captured: dict[WorkerRole, object] = {}
-
-    def _capture(_endpoint, model, **kw):
-        captured[model] = kw.get("embed_busy_deadline_s")
-        return _fake_client()
-
-    for launch in launches:
-        launch.model_id = launch.role
-    monkeypatch.setattr(prov_mod, "SwapManager", lambda _data_dir, _group: _FakeSwap())
-    monkeypatch.setattr(prov_mod, "LlamaServerClient", _capture)
-    monkeypatch.setattr(
-        planning_mod, "plan_all_launches", lambda: planning_mod.FleetPlan(tuple(launches))
-    )
-    FleetProvider()._ensure_fleet()
-    assert captured[WorkerRole.EMBED] == 120
-    assert captured[WorkerRole.RERANK] is None
-
-
 def test_adopt_group_logs_the_embed_window_warning(monkeypatch) -> None:
     """Every serving process passes through adoption, so the window check fires there."""
     launch = _fake_launch(WorkerRole.EMBED)
@@ -1345,25 +1315,24 @@ def test_vision_ocr_request_body_carries_sampler_options(
     assert body["repeat_last_n"] == 64
 
 
-def test_vision_ocr_retries_busy_then_succeeds(monkeypatch) -> None:
-    # A 429 mid-ingest is transient (cold replicas, slot contention); the vision
-    # path must back off and retry so the page is ingested, not dropped.
+def test_vision_ocr_retries_a_gateway_error_then_succeeds(monkeypatch) -> None:
+    # A 502 mid-ingest is a replica restarting; the vision path backs off and
+    # retries so the page is ingested, not dropped.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
-    busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
     client = _fake_client()
-    client.chat_abortable.side_effect = [busy, busy, "ocr text"]
+    client.chat_abortable.side_effect = [gateway, gateway, "ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf") == "ocr text"
     assert client.chat_abortable.call_count == 3
 
 
-def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
-    # On a deep OCR queue the drain time exceeds the fixed attempt budget, so a
-    # 429'd image must keep retrying until its own deadline rather than being
-    # dropped after _VISION_BUSY_RETRIES attempts (bb-z34 regression).
+def test_vision_ocr_reports_a_429_after_one_request(monkeypatch) -> None:
+    # A 429 is llama-swap's concurrency limit, sized for several processes at
+    # full load, so the page fails with the busy error instead of adding to it.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
@@ -1371,14 +1340,34 @@ def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     busy = ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
     client = _fake_client()
-    client.chat_abortable.side_effect = [busy] * (prov_mod._VISION_BUSY_RETRIES + 5) + ["ocr text"]
+    client.chat_abortable.side_effect = [busy, "ocr text"]
+    p = _provider_with_clients({WorkerRole.VISION: [client]})
+    with pytest.raises(ProviderError) as excinfo:
+        p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0)
+    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert client.chat_abortable.call_count == 1
+
+
+def test_vision_ocr_retries_past_attempt_cap_until_deadline(monkeypatch) -> None:
+    # A replica that restarts for longer than the fixed attempt budget: the
+    # image keeps retrying until its own deadline rather than being dropped
+    # after _VISION_GATEWAY_RETRIES attempts (bb-z34 regression).
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
+    monkeypatch.setattr("lilbee.providers.fleet.client.time.monotonic", lambda: 0.0)
+    monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
+    gateway = ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
+    client = _fake_client()
+    retries = prov_mod._VISION_GATEWAY_RETRIES
+    client.chat_abortable.side_effect = [gateway] * (retries + 5) + ["ocr text"]
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     assert p.vision_ocr(b"png", "org/repo/v.gguf", timeout=300.0) == "ocr text"
-    assert client.chat_abortable.call_count == prov_mod._VISION_BUSY_RETRIES + 6
+    assert client.chat_abortable.call_count == retries + 6
 
 
 def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
-    # A fleet that never frees a slot fails the page once its deadline passes.
+    # A replica that never comes back fails the page once its deadline passes.
     from lilbee.providers.base import ProviderError, ProviderErrorKind
 
     monkeypatch.setattr("lilbee.providers.fleet.client.time.sleep", lambda _s: None)
@@ -1388,16 +1377,16 @@ def test_vision_ocr_gives_up_when_deadline_passes(monkeypatch) -> None:
     monkeypatch.setattr(cfg, "vision_model", "org/repo/v.gguf")
     monkeypatch.setattr(cfg, "vision_load_budget_s", 0.0)  # deadline == the 20s timeout
 
-    def _busy(*_a, **_k):
+    def _gateway(*_a, **_k):
         clock["t"] += 5.0  # each attempt advances the clock toward the deadline
-        raise ProviderError("busy", provider="llama-server", kind=ProviderErrorKind.RATE_LIMIT)
+        raise ProviderError("HTTP 502", provider="llama-server", kind=ProviderErrorKind.SERVER)
 
     client = _fake_client()
-    client.chat_abortable.side_effect = _busy
+    client.chat_abortable.side_effect = _gateway
     p = _provider_with_clients({WorkerRole.VISION: [client]})
     with pytest.raises(ProviderError) as excinfo:
         p.vision_ocr(b"png", "org/repo/v.gguf", timeout=20.0)
-    assert excinfo.value.kind is ProviderErrorKind.RATE_LIMIT
+    assert excinfo.value.kind is ProviderErrorKind.SERVER
 
 
 def test_vision_ocr_deadline_passed_before_generation_raises_timeout(monkeypatch) -> None:
