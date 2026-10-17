@@ -15,11 +15,12 @@ from litestar.background_tasks import BackgroundTask
 from litestar.exceptions import NotAuthorizedException, ValidationException
 from litestar.response import Response, Stream
 
+from lilbee.app.models import with_configured_chat
 from lilbee.app.services import get_services
 from lilbee.catalog.types import ModelTask
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import ReasoningMode
-from lilbee.providers.model_ref import default_first, with_configured_remote_chat
+from lilbee.providers.model_ref import default_first
 from lilbee.retrieval.reasoning import effective_reasoning_cap
 from lilbee.server.auth import auth_checked_in_handler, session_manager
 from lilbee.server.chat_completions_api.errors import (
@@ -84,17 +85,9 @@ def _build_models_list_payload() -> ModelsListResponse:
     served_ctx = services.provider.served_chat_ctx()
     served_slots = services.provider.served_chat_slots()
     installed = {m.ref: m for m in services.registry.list_installed() if m.task == ModelTask.CHAT}
-    # A remote-configured chat model has no registry entry but is still listed,
-    # configured model first (the launcher's picker order).
-    listed = with_configured_remote_chat(sorted(installed), cfg.chat_model)
-    # A path-configured chat model is in no registry either; the chat routes
-    # serve whatever the known-model lookup resolves, so the list asks it too.
-    if (
-        cfg.chat_model
-        and cfg.chat_model not in listed
-        and services.known_models.resolve(cfg.chat_model) is not None
-    ):
-        listed = [cfg.chat_model, *listed]
+    # A remote or path-configured chat model has no registry entry but is still
+    # listed, configured model first (the launcher's picker order).
+    listed = with_configured_chat(sorted(installed), cfg.chat_model)
     refs = default_first(listed, cfg.chat_model)
     # A ref without a registry entry carries the newest native timestamp so a
     # client sorting by created desc does not bury the model lilbee serves.
