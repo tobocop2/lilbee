@@ -3883,6 +3883,7 @@ class TestAddWithUrls:
 
         async def refused(url, *, on_progress, **_kwargs):
             on_progress(EventType.CRAWL_PAGE_FAILED, CrawlPageFailedEvent(url=url, reason=reason))
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=1, files_written=0))
             return []
 
         flags = ["--json"] if json_mode else []
@@ -3915,6 +3916,22 @@ class TestAddWithUrls:
             result = runner.invoke(app, ["--json", "add", "https://example.com/", "--crawl"])
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout)["crawled"] == 1
+
+    def test_a_crawl_whose_pages_are_unchanged_and_one_failed_exits_0(self):
+        async def unchanged_and_one_failed(url, *, on_progress, **_kwargs):
+            failed = CrawlPageFailedEvent(url=f"{url}gone", reason="not_found: not found")
+            on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+            on_progress(EventType.CRAWL_DONE, CrawlDoneEvent(pages_crawled=2, files_written=0))
+            return []
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=unchanged_and_one_failed),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", "https://example.com/", "--crawl"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["crawled"] == 0
 
     @pytest.mark.parametrize("crawl", [[], ["--crawl"]], ids=["one-page", "site"])
     def test_a_seed_with_a_backslash_after_the_port_is_refused_by_name(self, crawl):
