@@ -91,6 +91,11 @@ RATE_LIMITED_ONCE = "/retry/once"
 # A page a default crawl_exclude_patterns entry matches.
 EXCLUDED_SEED = "/wiki/Special:Random"
 ONE_PAGE_LIMITS = {"depth-0": {"depth": 0}, "one-page": {"depth": 1, "max_pages": 1}}
+SITE_CRAWL_LIMITS = {
+    "two-pages": {"depth": 1, "max_pages": 2},
+    "no-page-limit": {"depth": 1, "max_pages": 0},
+    "no-depth-limit": {"max_pages": 2},
+}
 SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
 # Links as a page writes them: a raw letter, a raw space, one already percent-encoded, a
 # backslash, a raw letter before an escaped slash and before a slash, two control characters,
@@ -721,6 +726,23 @@ class TestCrawlAndSave:
         paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
         assert site.paths_since(0, EXCLUDED_SEED) == [EXCLUDED_SEED]
         assert len(paths) == 1
+
+    @pytest.mark.parametrize("limit", SITE_CRAWL_LIMITS.values(), ids=list(SITE_CRAWL_LIMITS))
+    async def test_a_site_crawl_of_a_seed_an_exclude_pattern_matches_names_the_pattern(
+        self, site, caplog, limit
+    ):
+        seed = site.url(EXCLUDED_SEED)
+        pattern = next(p for p in cfg.crawl_exclude_patterns if re.search(p, seed))
+        paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if record.name == FETCHER_LOGGER and record.levelname == "WARNING"
+        ]
+        # crawlberg 1.11.1 leaves out a seed an exclude pattern matches, at any limit.
+        assert site.paths_since(0, EXCLUDED_SEED) == []
+        assert paths == []
+        assert warnings == [LEFT_OUT.format(url=seed, pattern=pattern)]
 
     async def test_default_exclude_patterns_all_apply(self, site):
         """``/wiki/Special:`` is a default pattern that is not a regex anchor or digit class."""
