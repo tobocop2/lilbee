@@ -2422,6 +2422,63 @@ def test_a_kept_warm_build_without_a_reaper_keeps_the_idle_ttl(monkeypatch, tmp_
     assert swap.ttl_seconds == 900
 
 
+def test_a_default_build_beside_a_peers_keep_warm_marker_gets_ttl_zero(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """The peer's reaper unloads the weights, so llama-swap's own idle timer must not."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+    machine = prov_mod.machine_engine_dir()
+    request_keep_warm(machine, tmp_path / "peer-install", 5)
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.started
+    assert swap.ttl_seconds == 0
+    assert reaper_ensures == [machine, machine]
+
+
+def test_a_keep_warm_build_records_the_users_idle_minutes(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """A user who crashes leaves a marker; the reaper waits the minutes that user chose."""
+    from lilbee.runtime.engine_lock import keep_warm_idle_s
+
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 30)
+    _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    FleetProvider()._ensure_fleet()
+
+    # An unset marker would read as 12 minutes, so only a stored 30 gives 1800.
+    assert keep_warm_idle_s(prov_mod.machine_engine_dir(), unset_minutes=12) == 30 * 60
+
+
+@pytest.mark.parametrize(("peer_minutes", "expected_s"), [(5, 30 * 60), (45, 45 * 60)])
+def test_a_keep_warm_bind_beside_a_peer_marker_waits_the_longer_idle_time(
+    monkeypatch,
+    tmp_path: Path,
+    reaper_ensures: list[Path],
+    peer_minutes: int,
+    expected_s: int,
+) -> None:
+    """Binding a shared engine records this user's minutes; the longest opt-in decides."""
+    from lilbee.runtime.engine_lock import keep_warm_idle_s, request_keep_warm
+
+    _swap, machine = _bindable_machine(monkeypatch, tmp_path)
+    request_keep_warm(machine, tmp_path / "peer-install", peer_minutes)
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 30)
+
+    provider = FleetProvider()
+    assert provider._ensure_fleet() is True
+
+    assert keep_warm_idle_s(machine, unset_minutes=12) == expected_s
+
+
 @pytest.mark.parametrize(
     ("kernel_locks", "expected_ttl"),
     [(True, 900), (False, 0)],
