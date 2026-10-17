@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from filelock import FileLock, Timeout
 
 from lilbee.app.services import get_services, reset_services, set_services
 from lilbee.core.config import cfg
@@ -2923,6 +2924,30 @@ class TestRetireEarlier:
         assert not copy.exists()
         assert present_at_removal == [True]
         remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
+
+    def test_the_copy_is_deleted_while_another_crawl_waits_on_the_record(self, isolated_env):
+        record = self._record_with_copy("# Old")
+        other_crawl = FileLock(f"{_pages_file()}.lock")
+        record_free: list[bool] = []
+
+        def other_crawl_tries_the_record(_: list[str]) -> None:
+            try:
+                other_crawl.acquire(timeout=0)
+            except Timeout:
+                record_free.append(False)
+            else:
+                other_crawl.release()
+                record_free.append(True)
+
+        save_page(
+            CrawlResult(url=self.URL, markdown="# New"),
+            record,
+            MagicMock(side_effect=other_crawl_tries_the_record),
+        )
+        assert record_free == [False]
+        assert not (cfg.documents_dir / "_web" / self.EARLIER).exists()
+        other_crawl.acquire(timeout=0)
+        other_crawl.release()
 
     def test_an_unchanged_page_is_not_rewritten_but_its_earlier_copy_is_retired(self, isolated_env):
         page = _write_web(url_to_filename(self.URL), "# Page")
