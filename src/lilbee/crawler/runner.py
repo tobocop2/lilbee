@@ -17,7 +17,7 @@ from typing import Any
 from lilbee.app.services import get_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
-from lilbee.crawler import bootstrap, save, sitemap
+from lilbee.crawler import bootstrap, crawlberg_fetcher, save, sitemap
 from lilbee.crawler.bootstrap import (
     CHROMIUM_MISSING_MESSAGE,
     ChromiumMissingError,
@@ -95,9 +95,7 @@ def _resolve_page_limit(max_pages: int | None) -> int | None:
 
 def _require_crawler_extra() -> None:
     """Raise :class:`CrawlerBackendError` when the crawler extra is not installed."""
-    from lilbee.crawler import crawler_available
-
-    if not crawler_available():
+    if not crawlberg_fetcher.crawler_available():
         raise bootstrap.CrawlerBackendError(CRAWLER_MISSING_MESSAGE)
 
 
