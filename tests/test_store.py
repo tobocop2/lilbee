@@ -5030,7 +5030,7 @@ class TestOpenTimeMigration:
 
         store = _path_keyed_library(test_config)
         compared, overlapped = threading.Event(), []
-        real_add, real_missing = LanceTable.add_columns, core_mod._paths_missing_from
+        real_add, real_missing = LanceTable.add_columns, core_mod._keys_missing_from
 
         def _add(self, *args, **kwargs):
             if self.name == CHUNKS_TABLE:
@@ -5043,7 +5043,7 @@ class TestOpenTimeMigration:
             return real_missing(sources, table, column)
 
         monkeypatch.setattr(LanceTable, "add_columns", _add)
-        monkeypatch.setattr(core_mod, "_paths_missing_from", _missing)
+        monkeypatch.setattr(core_mod, "_keys_missing_from", _missing)
 
         store.get_db()
 
@@ -5081,24 +5081,51 @@ class TestOpenTimeMigration:
         assert _sources_of(store) == ["a.md", "b.md", "wiki/concepts/x.md"]
 
     @pytest.mark.parametrize("key_type", [pa.string(), pa.large_string()])
-    def test_the_missing_paths_are_the_keys_no_source_row_holds(self, tmp_path, key_type):
+    def test_the_missing_keys_are_the_keys_no_source_row_holds(self, tmp_path, key_type):
         import lancedb
 
-        from lilbee.data.store.core import _paths_missing_from
+        from lilbee.data.store.core import _keys_missing_from
 
         keys = ["a.md", "a.md", "", "it's.md", "日本/文書.md", "held.md", "wiki/p.md", "b.md"]
         keys += ["wiki/p.md", "wiki/p.md"]
         held = ["a.md", "held.md", "c.md", ""]
         db = lancedb.connect(str(tmp_path))
         table = db.create_table("t", pa.table({"source": pa.array(keys, key_type)}))
-        sources = db.create_table("s", pa.table({"path": held}))
+        rows = {"path": held, "source_type": [SourceType.DOCUMENT] * len(held)}
+        sources = db.create_table("s", pa.table(rows))
 
-        missing = _paths_missing_from(sources, table, "source")
+        missing = _keys_missing_from(sources, table, "source")
 
-        assert missing == sorted(set(keys) - set(held))
-        assert missing == ["b.md", "it's.md", "wiki/p.md", "日本/文書.md"]
+        assert [key for key, _ in missing] == sorted(set(keys) - set(held))
+        assert missing == [
+            (key, SourceType.DOCUMENT) for key in ["b.md", "it's.md", "wiki/p.md", "日本/文書.md"]
+        ]
 
-    def test_a_path_in_many_rows_of_several_tables_gets_one_source_row(self, test_config):
+    def test_a_wiki_chunk_misses_a_page_row_and_any_other_key_a_document_row(self, tmp_path):
+        import lancedb
+
+        from lilbee.data.store.core import _keys_missing_from
+
+        chunks = {
+            "source": ["wiki/p.md", "wiki/p.md", "wiki/q.md", "wiki/q.md", "d.md", "e.md"],
+            "chunk_type": ["wiki", "raw", "wiki", "raw", "raw", None],
+        }
+        held = {
+            "path": ["wiki/p.md", "wiki/q.md", "d.md"],
+            "source_type": [SourceType.DOCUMENT, SourceType.WIKI, SourceType.WIKI],
+        }
+        db = lancedb.connect(str(tmp_path))
+        table = db.create_table(CHUNKS_TABLE, pa.table(chunks))
+        sources = db.create_table("s", pa.table(held))
+
+        assert _keys_missing_from(sources, table, "source") == [
+            ("wiki/p.md", SourceType.WIKI),
+            ("d.md", SourceType.DOCUMENT),
+            ("e.md", SourceType.DOCUMENT),
+            ("wiki/q.md", SourceType.DOCUMENT),
+        ]
+
+    def test_a_key_in_many_rows_of_several_tables_gets_one_row_for_each_type(self, test_config):
         tables = _path_keyed_tables(test_config)
         pages = [
             {"source": "wiki/concepts/x.md", "page": number, "text": "t", "content_type": "text"}
@@ -5116,8 +5143,17 @@ class TestOpenTimeMigration:
 
         rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
 
-        assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
+        assert sorted((r["path"], r["source_type"]) for r in rows) == [
+            ("a.md", SourceType.DOCUMENT),
+            ("b.md", SourceType.DOCUMENT),
+            ("gone.md", SourceType.DOCUMENT),
+            ("wiki/concepts/x.md", SourceType.DOCUMENT),
+            ("wiki/concepts/x.md", SourceType.WIKI),
+        ]
         assert store.source_ids(["wiki/concepts/x.md"], SourceType.WIKI) == {
+            "wiki/concepts/x.md": _md5("wiki/concepts/x.md\0wiki")
+        }
+        assert store.source_ids(["wiki/concepts/x.md"], SourceType.DOCUMENT) == {
             "wiki/concepts/x.md": _md5("wiki/concepts/x.md")
         }
 
@@ -5253,6 +5289,88 @@ class TestOpenTimeMigration:
         from lilbee.data.store.types import META_SCHEMA_VERSION
 
         assert META_SCHEMA_VERSION == 3
+
+
+def _shared_key_tables(config):
+    """A library keyed by path where a document and a wiki page share ``wiki/concepts/x.md``."""
+    tables = _path_keyed_tables(config)
+    shared = "wiki/concepts/x.md"
+    sources = tables[SOURCES_TABLE].to_pylist()
+    tables[SOURCES_TABLE] = pa.Table.from_pylist([*sources, {**sources[0], "filename": shared}])
+    document = {**_axis_record(shared, 3, config.embedding_dim), "title": None}
+    tables[CHUNKS_TABLE] = pa.Table.from_pylist(
+        [*tables[CHUNKS_TABLE].to_pylist(), document], schema=tables[CHUNKS_TABLE].schema
+    )
+    return tables
+
+
+def _bodies(store, source_type):
+    """The text of each chunk of ``wiki/concepts/x.md`` as a source of *source_type*."""
+    source_id = store.source_ids(["wiki/concepts/x.md"], source_type)["wiki/concepts/x.md"]
+    rows = store.open_table(CHUNKS_TABLE).search().where(f"source_id = '{source_id}'")
+    return sorted(row["chunk"] for row in rows.limit(None).to_list())
+
+
+class TestAnUpgradeTypesWikiChunks:
+    """A document and a wiki page that share a key keep two rows and two ids at an upgrade."""
+
+    def test_the_page_and_the_document_each_keep_their_own_row_and_chunks(self, test_config):
+        store = _open_after(test_config, _shared_key_tables(test_config))
+        key = "wiki/concepts/x.md"
+
+        page = store.source_ids([key], SourceType.WIKI)
+        document = store.source_ids([key], SourceType.DOCUMENT)
+
+        assert page == {key: _md5(f"{key}\0wiki")}
+        assert document == {key: _md5(key)}
+        assert _bodies(store, SourceType.WIKI) == [f"{key} body"]
+        assert _bodies(store, SourceType.DOCUMENT) == [f"{key} body"]
+        assert [r["filename"] for r in store.get_sources()] == ["a.md", "b.md", key]
+
+    def test_a_page_written_again_leaves_no_old_body_and_the_document_keeps_its(self, test_config):
+        store = _open_after(test_config, _shared_key_tables(test_config))
+        key = "wiki/concepts/x.md"
+        page = {**_axis_record(key, 4, test_config.embedding_dim), "chunk_type": ChunkType.WIKI}
+
+        store.replace_chunks(key, ChunkType.WIKI, [{**page, "chunk": "new body"}])
+
+        assert _bodies(store, SourceType.WIKI) == ["new body"]
+        assert _bodies(store, SourceType.DOCUMENT) == [f"{key} body"]
+
+    def test_an_upgrade_killed_after_the_id_column_is_finished_by_the_next(
+        self, test_config, tmp_path
+    ):
+        from lancedb.table import LanceTable
+
+        whole = _open_after(
+            test_config.model_copy(update={"lancedb_dir": tmp_path / "whole"}),
+            _shared_key_tables(test_config),
+        )
+        whole.get_db()
+        killed = test_config.model_copy(update={"lancedb_dir": tmp_path / "killed"})
+        real = LanceTable.update
+
+        def _dies_typing_pages(self, *args, **kwargs):
+            if kwargs.get("where") == "chunk_type = 'wiki'":
+                raise KeyboardInterrupt
+            return real(self, *args, **kwargs)
+
+        with (
+            mock.patch.object(LanceTable, "update", _dies_typing_pages),
+            pytest.raises(KeyboardInterrupt),
+        ):
+            _open_after(killed, _shared_key_tables(test_config)).get_db()
+        import lancedb
+
+        half = lancedb.connect(str(killed.lancedb_dir)).open_table(CHUNKS_TABLE).schema.names
+        assert {"source", "source_id"} <= set(half)
+
+        store = Store(killed)
+
+        assert _untimed(_dump(store)) == _untimed(_dump(whole))
+        assert store.source_ids(["wiki/concepts/x.md"], SourceType.WIKI) == {
+            "wiki/concepts/x.md": _md5("wiki/concepts/x.md\0wiki")
+        }
 
 
 class TestSourcesWithoutChunks:

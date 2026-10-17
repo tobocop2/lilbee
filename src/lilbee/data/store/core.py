@@ -267,6 +267,13 @@ _LISTED = (
 _DOCUMENT = f"source_type = '{SourceType.DOCUMENT}'"
 # The source rows of wiki pages, which share no row with a source of another type.
 _WIKI = f"source_type = '{SourceType.WIKI}'"
+_SOURCE_TYPE = "source_type"
+_CHUNK_TYPE = "chunk_type"
+# The chunks of wiki pages; an upgrade gives them the id of a page, never of a document.
+_WIKI_CHUNK = f"{_CHUNK_TYPE} = '{ChunkType.WIKI}'"
+# What a wiki page's key is joined with before its md5 gives the page its id at an upgrade.
+_WIKI_ID_SUFFIX = "wiki"
+_WIKI_ID_SQL = "md5(concat({key}, chr(0), '" + _WIKI_ID_SUFFIX + "'))"
 # The source rows a move found by a sync carries: the listed ones and every failure.
 _MOVABLE = (
     f"source_type != '{SourceType.WIKI}'"
@@ -636,6 +643,11 @@ def _md5(text: str) -> str:
     return hashlib.md5(text.encode("utf-8"), usedforsecurity=False).hexdigest()
 
 
+def _wiki_id(key: str) -> str:
+    """The id the migration gives the wiki page at *key*, as ``_WIKI_ID_SQL`` computes it."""
+    return _md5(f"{key}\0{_WIKI_ID_SUFFIX}")
+
+
 def _holds_document(row: Mapping[str, Any]) -> bool:
     """Whether a document source *row* holds an indexed document, as ``_LISTED`` reads it."""
     kind = row[_HELD_OUT]
@@ -653,18 +665,6 @@ def _held_row(row: dict[str, Any], record: HeldRecord, *, holds_document: bool) 
     if record.kind is HeldOut.FAILED and holds_document:
         return held
     return {**held, "file_hash": None, "chunk_count": 0}
-
-
-def _wiki_page_keys(db: LanceDBConnection, names: list[str]) -> set[str]:
-    """The keys the chunks of a library keyed by path give wiki pages, read before any step."""
-    column = _PATH_KEY_BY_TABLE[CHUNKS_TABLE]
-    if CHUNKS_TABLE not in names:
-        return set()
-    chunks = db.open_table(CHUNKS_TABLE)
-    if column not in chunks.schema.names:
-        return set()
-    query = chunks.search().where(f"chunk_type = '{ChunkType.WIKI}'").select([column])
-    return set(pc.unique(query.limit(None).to_arrow().column(column)).to_pylist())
 
 
 def _keyed_by_path(db: LanceDBConnection) -> bool:
@@ -722,20 +722,42 @@ def _index_names(table: LanceTable) -> dict[str, list[str]]:
     return {index.name: index.columns for index in _index_registry(table) or []}
 
 
-def _key_column(table: LanceTable, column: str) -> pa.ChunkedArray:
-    """Every value of *column* in *table*, read as Arrow."""
-    return table.search().select([column]).limit(None).to_arrow().column(column)
+def _key_column(table: LanceTable, column: str, kind: str | None = None) -> pa.Table:
+    """*column* of every row of *table*, with *kind* beside it, read as Arrow."""
+    columns = [column] if kind is None else [column, kind]
+    return table.search().select(columns).limit(None).to_arrow()
 
 
-def _paths_missing_from(sources: LanceTable, table: LanceTable, column: str) -> list[str]:
-    """The distinct paths in *column* of *table* that no ``_sources`` row holds, sorted.
+def _wiki_mask(read: pa.Table, kind: str | None, wiki: str) -> pa.ChunkedArray:
+    """Whether the *kind* of each row of *read* is *wiki*; with no *kind*, no row is."""
+    if kind is None:
+        return pa.chunked_array([pa.repeat(pa.scalar(False), read.num_rows)])
+    return pc.fill_null(pc.equal(read.column(kind), wiki), False)
 
-    Arrow compares the two key columns, so no row becomes a Python object.
+
+def _keys_missing_from(
+    sources: LanceTable, table: LanceTable, column: str
+) -> list[tuple[str, SourceType]]:
+    """Each distinct key in *column* of *table* that no ``_sources`` row of its class holds.
+
+    A wiki chunk names a wiki page; every other key names a document. Arrow
+    compares the key columns, so no row becomes a Python object.
     """
-    keys = _key_column(table, column)
-    held = _key_column(sources, _PATH).cast(keys.type)
-    missing = pc.filter(keys, pc.invert(pc.is_in(keys, value_set=held)))
-    return sorted(pc.unique(missing).to_pylist())
+    kind = _CHUNK_TYPE if table.name == CHUNKS_TABLE else None
+    read = _key_column(table, column, kind)
+    held = _key_column(sources, _PATH, _SOURCE_TYPE)
+    pages = _wiki_mask(read, kind, ChunkType.WIKI)
+    wiki_rows = _wiki_mask(held, _SOURCE_TYPE, SourceType.WIKI)
+    keys, paths = read.column(column), held.column(_PATH).cast(read.column(column).type)
+    missing: list[tuple[str, SourceType]] = []
+    for source_type, mine, theirs in (
+        (SourceType.WIKI, pages, wiki_rows),
+        (SourceType.DOCUMENT, pc.invert(pages), pc.invert(wiki_rows)),
+    ):
+        wanted = pc.filter(keys, mine)
+        absent = pc.filter(wanted, pc.invert(pc.is_in(wanted, value_set=pc.filter(paths, theirs))))
+        missing += [(key, source_type) for key in sorted(pc.unique(absent).to_pylist())]
+    return missing
 
 
 def _add_source_id(db: LanceDBConnection, name: str, column: str) -> None:
@@ -745,6 +767,8 @@ def _add_source_id(db: LanceDBConnection, name: str, column: str) -> None:
     table = db.open_table(name)
     if _SOURCE_ID not in table.schema.names:
         table.add_columns({_SOURCE_ID: f"md5({column})"})
+    if name == CHUNKS_TABLE:
+        table.update(where=_WIKI_CHUNK, values_sql={_SOURCE_ID: _WIKI_ID_SQL.format(key=column)})
     indexes = _index_names(table)
     if [column] in indexes.values() and [_SOURCE_ID] not in indexes.values():
         table.create_index(_SOURCE_ID, config=BTree())
@@ -1494,7 +1518,6 @@ class Store:
         """
         names = table_names(db)
         steps = _upgrade_steps(db, names)
-        wiki_pages = _wiki_page_keys(db, names)
         keyed = [(name, _PATH_KEY_BY_TABLE[name]) for name, _ in steps if name != SOURCES_TABLE]
         # LanceDB adds a column one fragment at a time: each table's runs on its own thread
         # from the start, and its path column goes once its every path has a source row.
@@ -1514,7 +1537,7 @@ class Store:
                 if name == SOURCES_TABLE:
                     _migrate_sources_table(table)
                 else:
-                    self._hold_missing_paths(db, table, _PATH_KEY_BY_TABLE[name], wiki_pages)
+                    self._hold_missing_paths(db, table, _PATH_KEY_BY_TABLE[name])
             for (name, column), done in zip(keyed, added, strict=True):
                 done.result()
                 db.open_table(name).drop_columns([column])
@@ -1541,20 +1564,16 @@ class Store:
         remove_legacy_files(root)
         log.info("Moved the held-out file records of %s into the index", root)
 
-    def _hold_missing_paths(
-        self, db: LanceDBConnection, table: LanceTable, column: str, wiki_pages: set[str]
-    ) -> None:
-        """Give each path in *column* of *table* that no source row holds a row. Lock held.
+    def _hold_missing_paths(self, db: LanceDBConnection, table: LanceTable, column: str) -> None:
+        """Give each key in *column* of *table* no source row of its class holds a row. Lock held.
 
-        A wiki page of *wiki_pages*, or a removed source a citation names, gets one
-        under the id the column's path gives, so no path is lost when the column goes.
+        A wiki page, or a removed source a citation names, gets one under the id the
+        column's key and type give, so no key is lost when the column goes.
         """
         sources = ensure_table(db, SOURCES_TABLE, _sources_schema())
         writes = [
-            _SourceWrite(
-                key, SourceType.WIKI if key in wiki_pages else SourceType.DOCUMENT, new_id=_md5(key)
-            )
-            for key in _paths_missing_from(sources, table, column)
+            _SourceWrite(key, kind, new_id=_wiki_id(key) if _is_wiki(kind) else _md5(key))
+            for key, kind in _keys_missing_from(sources, table, column)
         ]
         self._put_sources_unlocked(sources, writes)
 
