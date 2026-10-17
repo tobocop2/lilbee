@@ -741,8 +741,8 @@ _K2R = [
     ("A~d880129e569e6bf6.md", "key.test/s/A~d880129e569e6bf6.md", True),
     ("%%341", "key.test/s/%%341/index.md", True),
     (
-        "A-d880129e569e6bf6.md~37d283bbdbe5039a.md/z",
-        "key.test/s/A-d880129e569e6bf6.md~37d283bbdbe5039a.md/z/index.md",
+        "A-d880129e569e6bf6~37d283bbdbe5039a.md/z",
+        "key.test/s/A-d880129e569e6bf6~37d283bbdbe5039a.md/z/index.md",
         False,
     ),
     ("A", "key.test/s/A/index.md", True),
