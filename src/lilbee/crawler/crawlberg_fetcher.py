@@ -579,9 +579,11 @@ class CrawlbergFetcher:
         )
         return _events(config, seed_url, cancel)
 
-    async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
+    async def fetch_single(
+        self, url: str, *, timeout: float, concurrency: ConcurrencySpec
+    ) -> FetchedPage:
         """Fetch *url* alone; a redirected page keeps the requested URL."""
-        spec = _CrawlSpec(depth=_SEED_DEPTH, max_pages=1, timeout=timeout)
+        spec = _CrawlSpec(depth=_SEED_DEPTH, max_pages=1, timeout=timeout, concurrency=concurrency)
         async with aclosing(self._stream(spec, url, None)) as events:
             async for event in events:
                 return _single_result(await _to_page(event, url), url)

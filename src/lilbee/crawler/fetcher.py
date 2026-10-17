@@ -42,8 +42,10 @@ class WebFetcher(Protocol):
         tb: Any,
     ) -> None: ...
 
-    async def fetch_single(self, url: str, *, timeout: float) -> FetchedPage:
-        """Fetch one URL and return its markdown + link set."""
+    async def fetch_single(
+        self, url: str, *, timeout: float, concurrency: ConcurrencySpec
+    ) -> FetchedPage:
+        """Fetch one URL with the pacing and retry settings of *concurrency*."""
         ...
 
     def fetch_recursive(

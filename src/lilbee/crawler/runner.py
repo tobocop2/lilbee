@@ -116,7 +116,9 @@ async def _fetch_single_page(
     try:
         async with _fetcher(render_mode) as fetcher:
             warm_up_done = _browser_warm_up(on_progress, render_mode)
-            page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
+            page = await fetcher.fetch_single(
+                url, timeout=cfg.crawl_timeout, concurrency=build_concurrency_spec()
+            )
             if warm_up_done is not None:
                 warm_up_done()
         return _fetched_to_result(page)
