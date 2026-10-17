@@ -82,6 +82,8 @@ RETRY_STATUSES = {
 }
 # A page that answers its first request with 429 and every later one with the page.
 RATE_LIMITED_ONCE = "/retry/once"
+# A page a default crawl_exclude_patterns entry matches.
+EXCLUDED_SEED = "/wiki/Special:Random"
 ONE_PAGE_LIMITS = {"depth-0": {"depth": 0}, "one-page": {"depth": 1, "max_pages": 1}}
 SCOPE_LINKS = ("/scope/skip/a", "/scope/keep/b", "/scope/la/drop", "/scope/la/keepme")
 # Links as a page writes them: a raw letter, a raw space, one already percent-encoded, a
@@ -657,6 +659,16 @@ class TestCrawlAndSave:
         await crawl_and_save(site.url("/wide/"), depth=1, max_pages=2)
         assert "/sitemap.xml" in site.paths_since(two_pages_from, "/")
         assert one_page == ["/wide/"]
+        assert len(paths) == 1
+
+    @pytest.mark.parametrize("limit", ONE_PAGE_LIMITS.values(), ids=list(ONE_PAGE_LIMITS))
+    async def test_a_one_page_crawl_of_a_seed_an_exclude_pattern_matches_saves_it(
+        self, site, limit
+    ):
+        seed = site.url(EXCLUDED_SEED)
+        assert any(re.search(pattern, seed) for pattern in cfg.crawl_exclude_patterns)
+        paths = await crawl_and_save(seed, render_mode=HTTP, **limit)
+        assert site.paths_since(0, EXCLUDED_SEED) == [EXCLUDED_SEED]
         assert len(paths) == 1
 
     async def test_default_exclude_patterns_all_apply(self, site):
