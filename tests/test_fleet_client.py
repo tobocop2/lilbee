@@ -7,6 +7,7 @@ import base64
 import json
 import threading
 import time
+from collections.abc import Iterable
 from itertools import pairwise
 
 import httpx
@@ -85,6 +86,11 @@ def _client(handler=_handler) -> LlamaServerClient:
     return client
 
 
+def _raise_for_status(resp: httpx.Response) -> None:
+    """Report *resp* through a client that knows no model and no engine log."""
+    _unprobed_client()._raise_for_status(resp)
+
+
 def test_rerank_scores_pairs_via_rank_pooling() -> None:
     seen: dict[str, list] = {}
 
@@ -103,7 +109,6 @@ def test_rerank_scores_pairs_via_rank_pooling() -> None:
 
 def test_raise_for_status_maps_429_to_rate_limit() -> None:
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(httpx.Response(429, json={"error": "busy"}))
@@ -116,7 +121,6 @@ def test_raise_for_status_maps_gateway_errors_to_server(status: int) -> None:
     # OOM-killed, mid-swap) with a gateway error; the kind must be retryable,
     # not terminal.
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     with pytest.raises(ProviderError) as excinfo:
         _raise_for_status(httpx.Response(status, text="Bad Gateway"))
@@ -128,7 +132,6 @@ def test_raise_for_status_gateway_premature_exit_stays_connection(monkeypatch) -
     # with it the replica failover path); the gateway status must not shadow it.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda _resp: "")
     with pytest.raises(ProviderError) as excinfo:
@@ -1050,7 +1053,6 @@ def test_raise_for_status_tags_context_overflow_400() -> None:
     # exceed_context_size_error type. It must surface as CONTEXT_OVERFLOW with a
     # user-facing message, not a generic internal error.
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     resp = httpx.Response(400, text='{"error":{"type":"exceed_context_size_error"}}')
     with pytest.raises(ProviderError) as excinfo:
@@ -1059,14 +1061,18 @@ def test_raise_for_status_tags_context_overflow_400() -> None:
     assert "context window" in str(excinfo.value).lower()
 
 
+_PREMATURE_BODY = (
+    '{"src":"llama-swap", "error": "unspecific error: upstream command exited prematurely"}'
+)
+
+
 def _premature_exit_response() -> httpx.Response:
     request = httpx.Request(
         "POST", "http://127.0.0.1:9100/v1/embeddings", json={"model": "embed-0"}
     )
     return httpx.Response(
         500,
-        text='{"src":"llama-swap", "error": "unspecific error: upstream command'
-        ' exited prematurely"}',
+        text=_PREMATURE_BODY,
         request=request,
     )
 
@@ -1076,7 +1082,6 @@ def test_raise_for_status_surfaces_upstream_tail_on_premature_exit(monkeypatch, 
     # client fetches the upstream's captured output, logs it, AND surfaces it in
     # the raised error so the real exit reason reaches the caller.
     import lilbee.providers.fleet.client as client_mod
-    from lilbee.providers.fleet.client import _raise_for_status
 
     seen: dict[str, str] = {}
 
@@ -1120,7 +1125,6 @@ def test_raise_for_status_bind_race_death_is_a_port_conflict(monkeypatch) -> Non
     # separately is what lets a port held for good reach a rebuild.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(
         client_mod,
@@ -1139,7 +1143,6 @@ def test_raise_for_status_non_bind_death_stays_connection(monkeypatch) -> None:
     # failover path still marks the replica unhealthy.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(
         client_mod,
@@ -1164,7 +1167,6 @@ def test_raise_for_status_load_failure_message_is_plain_and_the_log_keeps_the_du
     # status) and none of the engine's own text; the full output goes to the log.
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     class _Stream:
         def __enter__(self) -> _Stream:
@@ -1190,7 +1192,6 @@ def test_raise_for_status_load_failure_message_is_plain_and_the_log_keeps_the_du
 def test_raise_for_status_out_of_memory_death_says_so_in_one_line(monkeypatch) -> None:
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(
         client_mod, "_upstream_failure_tail", lambda resp: "cudaMalloc failed: out of memory"
@@ -1204,7 +1205,6 @@ def test_raise_for_status_out_of_memory_death_says_so_in_one_line(monkeypatch) -
 def test_raise_for_status_premature_exit_survives_log_fetch_failure(monkeypatch) -> None:
     # A dead log stream must not mask the original ProviderError.
     import lilbee.providers.fleet.client as client_mod
-    from lilbee.providers.fleet.client import _raise_for_status
 
     def _refuse(method: str, url: str, timeout: float) -> object:
         raise httpx.ConnectError("refused")
@@ -1229,6 +1229,84 @@ def test_a_clients_death_error_names_its_model_and_engine_log(monkeypatch, tmp_p
         client._raise_for_status(_premature_exit_response())
     assert str(excinfo.value) == (
         "The engine for acme/m-GGUF/m.gguf stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {log}."
+    )
+
+
+_DEAD_MODEL_REF = "acme/m-GGUF/m.gguf"
+_CHAT_MESSAGES = [{"role": "user", "content": "hi"}]
+_TOOLS = [{"type": "function", "function": {"name": "f", "parameters": {}}}]
+_LONG_TEXT = "x" * 400
+
+
+def _dead_engine_handler(request: httpx.Request) -> httpx.Response:
+    """Every route answers the premature-exit 500."""
+    return httpx.Response(500, text=_PREMATURE_BODY)
+
+
+def _dead_after_tokenize_handler(request: httpx.Request) -> httpx.Response:
+    """Tokenize works, so a request that then needs the next route reaches it."""
+    if request.url.path.endswith("/tokenize"):
+        return httpx.Response(200, json={"tokens": [1, 2, 3]})
+    return _dead_engine_handler(request)
+
+
+def _drain(result: Iterable[object] | str) -> None:
+    """Consume a streamed result so the request actually runs."""
+    if not isinstance(result, str):
+        for _ in result:
+            pass
+
+
+def _dead_engine_client(tmp_path, handler, **kwargs) -> tuple[LlamaServerClient, object]:
+    log = tmp_path / "engine-chat-0.log"
+    transport = httpx.MockTransport(handler)
+    client = LlamaServerClient(
+        "http://gpu0",
+        "chat-0",
+        http=httpx.Client(transport=transport, base_url="http://gpu0"),
+        async_transport=transport,
+        model_ref=_DEAD_MODEL_REF,
+        engine_log=log,
+        **kwargs,
+    )
+    client._needs_alternation = False
+    return client, log
+
+
+_CLIENT_REQUESTS = {
+    "chat": ({}, lambda c: c.chat(_CHAT_MESSAGES)),
+    "chat_stream": ({}, lambda c: _drain(c.chat(_CHAT_MESSAGES, stream=True))),
+    "chat_abortable": ({}, lambda c: c.chat_abortable(_CHAT_MESSAGES)),
+    "chat_tools": ({}, lambda c: c.chat_tools(_CHAT_MESSAGES, tools=_TOOLS)),
+    "chat_result": ({}, lambda c: c.chat_result(_CHAT_MESSAGES)),
+    "chat_stream_items": ({}, lambda c: _drain(c.chat_stream_items(_CHAT_MESSAGES))),
+    "embed": ({}, lambda c: c.embed(["a"])),
+    "rerank_rank_pooling": ({}, lambda c: c.rerank("q", ["a"])),
+    "rerank_llm": ({"rerank_mode": RerankMode.LLM}, lambda c: c.rerank("q", ["a"])),
+    "count_tokens": ({}, lambda c: c.count_tokens("a")),
+    "count_chat_prompt_tokens": ({}, lambda c: c.count_chat_prompt_tokens(_CHAT_MESSAGES)),
+    "embed_truncation_detokenize": ({"token_cap": 1}, lambda c: c.embed([_LONG_TEXT])),
+}
+_AFTER_TOKENIZE = {"embed_truncation_detokenize"}
+
+
+@pytest.mark.parametrize("name", sorted(_CLIENT_REQUESTS))
+def test_each_client_request_into_a_dead_engine_names_the_model_and_its_log(
+    name, monkeypatch, tmp_path
+) -> None:
+    """Every request path ends in the one plain line that names the model and its log."""
+    import lilbee.providers.fleet.client as client_mod
+
+    monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda resp: "")
+    monkeypatch.setattr(client_mod.time, "sleep", lambda _s: None)
+    kwargs, request = _CLIENT_REQUESTS[name]
+    handler = _dead_after_tokenize_handler if name in _AFTER_TOKENIZE else _dead_engine_handler
+    client, log = _dead_engine_client(tmp_path, handler, **kwargs)
+    with pytest.raises(ProviderError) as excinfo:
+        request(client)
+    assert str(excinfo.value) == (
+        f"The engine for {_DEAD_MODEL_REF} stopped before it could answer (HTTP 500). "
         f"The full engine output is in {log}."
     )
 
@@ -2242,7 +2320,6 @@ def test_embed_does_not_retry_on_non_overflow_error() -> None:
 def test_raise_for_status_tags_premature_exit_as_connection(monkeypatch) -> None:
     import lilbee.providers.fleet.client as client_mod
     from lilbee.providers.base import ProviderErrorKind
-    from lilbee.providers.fleet.client import _raise_for_status
 
     monkeypatch.setattr(client_mod, "_upstream_failure_tail", lambda _resp: "")
     with pytest.raises(ProviderError) as excinfo:

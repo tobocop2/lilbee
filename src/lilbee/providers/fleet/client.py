@@ -184,65 +184,6 @@ def _estimate_tokens(text: str) -> int:
     return max(1, -(-len(text) // _EMBED_EST_CHARS_PER_TOKEN))
 
 
-def _raise_for_status(
-    resp: httpx.Response, model: str | None = None, engine_log: Path | None = None
-) -> None:
-    """Raise including the server's error body, which ``raise_for_status`` drops.
-
-    A llama-server failure otherwise surfaces as a bare "Internal Server Error"
-    with no cause; the response body carries the actual reason (oversize prompt,
-    decode failure, ...), which both diagnosis and the user-facing error need.
-    *model* and *engine_log* name the model and the file that holds its engine
-    output; a dead server's one-line message carries both.
-    """
-    if resp.is_success:
-        return
-    resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
-    body = resp.text.strip()
-    # llama-server reports an oversize prompt/conversation as a 400 whose body
-    # carries the "exceed_context_size_error" type. Tag it CONTEXT_OVERFLOW with a
-    # user-facing message so the chat route returns a clean context_length_exceeded
-    # (400) instead of a generic internal_error -- a long conversation that fills
-    # the window then reads as "too long", not "Internal server error".
-    if resp.status_code == _HTTP_BAD_REQUEST and (
-        "exceed_context_size" in body.lower() or "context size" in body.lower()
-    ):
-        raise ProviderError(
-            "The conversation exceeds this model's context window. "
-            "Start a new conversation or shorten the input.",
-            provider=_PROVIDER_NAME,
-            kind=ProviderErrorKind.CONTEXT_OVERFLOW,
-        )
-    # A 429 (slots full) is transient: a cold replica fleet rejects the first ingest
-    # fan-out until its slots load. Tag RATE_LIMIT so the caller backs off and retries
-    # instead of dropping the input.
-    if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
-        raise ProviderError(
-            "llama-server is busy (HTTP 429); replicas may still be warming.",
-            provider=_PROVIDER_NAME,
-            kind=ProviderErrorKind.RATE_LIMIT,
-        )
-    kind = _classify_error(resp.status_code, body)
-    # llama-swap masks a dead server as "exited prematurely". The server's own
-    # captured output goes to the log (in _upstream_failure_tail) and decides the
-    # kind; the message the user sees stays one plain line.
-    if _UPSTREAM_DIED_MARKER in body:
-        classified = classify_upstream_death(_upstream_failure_tail(resp))
-        if classified is not None:
-            kind = classified
-        raise ProviderError(
-            _upstream_death_message(kind, resp.status_code, model, engine_log),
-            provider=_PROVIDER_NAME,
-            kind=kind,
-        )
-    detail = f": {body[:600]}" if body else ""
-    raise ProviderError(
-        f"llama-server returned HTTP {resp.status_code}{detail}",
-        provider=_PROVIDER_NAME,
-        kind=kind,
-    )
-
-
 _UPSTREAM_DEATH_MESSAGES: dict[ProviderErrorKind, str] = {
     ProviderErrorKind.CAPACITY: "The engine ran out of memory while loading {model}",
     ProviderErrorKind.PORT_CONFLICT: "The engine could not start {model}: its port was taken",
@@ -630,8 +571,59 @@ class LlamaServerClient:
             return time.monotonic() - self._unhealthy_since >= _UNHEALTHY_RETRY_S
 
     def _raise_for_status(self, resp: httpx.Response) -> None:
-        """Raise the plain error for a failed *resp*, naming this client's model and log."""
-        _raise_for_status(resp, self.model_ref, self.engine_log)
+        """Raise the plain error for a failed *resp*, naming this client's model and log.
+
+        The one place a client reports a failed response, so no call site can skip the
+        model name and the engine log. ``raise_for_status`` drops the server's error
+        body; the body carries the real reason (oversize prompt, decode failure, a
+        dead server), which both diagnosis and the user-facing error need.
+        """
+        if resp.is_success:
+            return
+        resp.read()  # streaming responses aren't read yet; a no-op for buffered ones
+        body = resp.text.strip()
+        # llama-server reports an oversize prompt/conversation as a 400 whose body
+        # carries the "exceed_context_size_error" type. Tag it CONTEXT_OVERFLOW with a
+        # user-facing message so the chat route returns a clean context_length_exceeded
+        # (400) instead of a generic internal_error -- a long conversation that fills
+        # the window then reads as "too long", not "Internal server error".
+        if resp.status_code == _HTTP_BAD_REQUEST and (
+            "exceed_context_size" in body.lower() or "context size" in body.lower()
+        ):
+            raise ProviderError(
+                "The conversation exceeds this model's context window. "
+                "Start a new conversation or shorten the input.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.CONTEXT_OVERFLOW,
+            )
+        # A 429 (slots full) is transient: a cold replica fleet rejects the first ingest
+        # fan-out until its slots load. Tag RATE_LIMIT so the caller backs off and retries
+        # instead of dropping the input.
+        if resp.status_code == _HTTP_TOO_MANY_REQUESTS:
+            raise ProviderError(
+                "llama-server is busy (HTTP 429); replicas may still be warming.",
+                provider=_PROVIDER_NAME,
+                kind=ProviderErrorKind.RATE_LIMIT,
+            )
+        kind = _classify_error(resp.status_code, body)
+        # llama-swap masks a dead server as "exited prematurely". The server's own
+        # captured output goes to the log (in _upstream_failure_tail) and decides the
+        # kind; the message the user sees stays one plain line.
+        if _UPSTREAM_DIED_MARKER in body:
+            classified = classify_upstream_death(_upstream_failure_tail(resp))
+            if classified is not None:
+                kind = classified
+            raise ProviderError(
+                _upstream_death_message(kind, resp.status_code, self.model_ref, self.engine_log),
+                provider=_PROVIDER_NAME,
+                kind=kind,
+            )
+        detail = f": {body[:600]}" if body else ""
+        raise ProviderError(
+            f"llama-server returned HTTP {resp.status_code}{detail}",
+            provider=_PROVIDER_NAME,
+            kind=kind,
+        )
 
     def mark_unhealthy(self) -> None:
         """Record a connection-level failure so the router skips this replica."""
