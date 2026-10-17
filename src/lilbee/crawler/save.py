@@ -94,11 +94,7 @@ def _sorted_query(address: str) -> str:
 
 
 def canonical_address(url: str) -> str:
-    """The key crawlberg 1.11.1 gives the page at *url*, or *url* when it does not parse.
-
-    The steps of crawlberg's ``normalize_url`` (``normalize.rs`` at v1.11.1): the WHATWG
-    parse, no fragment, the escapes of RFC 3986 section 6.2.2, the query sorted by name.
-    """
+    """The key crawlberg 1.11.1's ``normalize_url`` gives the page at *url*, or *url* unparsed."""
     parsed = _parsed(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
     if parsed is None:
         return url
@@ -146,11 +142,7 @@ def _address_parts(address: str) -> tuple[str, list[str]]:
 
 
 def page_name(address: str) -> str:
-    """The path under ``_web`` of the page at canonical *address*.
-
-    Readable folders, then the page's readable name, ``~`` and the start of the sha256 of
-    *address*. The hash keeps every page in a file of its own on any disk.
-    """
+    """The path under ``_web`` of canonical *address*: readable folders and name, ``~``, hash."""
     host, segments = _address_parts(address)
     *folders, last = segments
     digest = hashlib.sha256(address.encode("utf-8")).hexdigest()[:_HASH_HEX_DIGITS]
