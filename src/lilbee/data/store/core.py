@@ -69,7 +69,7 @@ from .lance_helpers import (
     refs_compatible,
     table_names,
 )
-from .locations import SourceLocations, root_location
+from .locations import SourceLocations, root_location, under_sql
 from .ranking import mmr_rerank
 from .schema import (
     _citations_schema,
@@ -366,15 +366,6 @@ def _check_vector_dims(records: list[dict], embedding_dim: int) -> None:
 def _citations_for_wiki_predicate(wiki_source: str) -> str:
     """SQL predicate selecting every citation row belonging to *wiki_source*."""
     return f"wiki_source = '{escape_sql_string(wiki_source)}'"
-
-
-def _under_sql(column: str, old: str) -> str:
-    """The filter for *old* and each key below it.
-
-    ``starts_with`` takes the key literally, so no character in a key is a wildcard.
-    """
-    old_literal = escape_sql_string(old)
-    return f"{column} = '{old_literal}' OR starts_with({column}, '{old_literal}/')"
 
 
 def _swap_head_sql(column: str, old_head: str, new_head: str) -> str:
@@ -813,7 +804,7 @@ def _migrate_sources_table(table: LanceTable) -> None:
 
 def _label_keyed(locations: SourceLocations) -> str:
     """The document rows still named by a registered label in place of their location."""
-    labels = " OR ".join(_under_sql(_PATH, label) for label in locations.roots)
+    labels = " OR ".join(under_sql(_PATH, label) for label in locations.roots)
     return f"{_DOCUMENT} AND ({labels})"
 
 
@@ -869,7 +860,7 @@ def _fold_landings(
 
     The citations of the folded row cite the row it lands on; its own rows go.
     """
-    landed = f"NOT ({_WIKI}) AND ({_under_sql(_PATH, new)}) AND NOT ({where})"
+    landed = f"NOT ({_WIKI}) AND {under_sql(_PATH, new)} AND NOT ({where})"
     if not sources.count_rows(landed):
         return
     pairs = _fill_pairs(db, sources, where, landed, (old, new))
@@ -956,7 +947,7 @@ def _fill_locations(db: LanceDBConnection, locations: SourceLocations) -> None:
     if sources is None or not _holds_label_keys(db, locations):
         return
     for root, label in locations.deepest_first:
-        _rekey_prefix(db, sources, f"{_DOCUMENT} AND ({_under_sql(_PATH, label)})", label, root)
+        _rekey_prefix(db, sources, f"{_DOCUMENT} AND {under_sql(_PATH, label)}", label, root)
     log.info("Stored where each source of the library at %s is", db.uri)
 
 
@@ -3295,7 +3286,7 @@ class Store:
         with self._write_lock():
             sources = self.open_table(SOURCES_TABLE)
             if sources is not None and old_at != new_at:
-                _rekey_prefix(self.get_db(), sources, _under_sql(_PATH, old_at), old_at, new_at)
+                _rekey_prefix(self.get_db(), sources, under_sql(_PATH, old_at), old_at, new_at)
         self._invalidate_source_cache()
 
     def fill_locations(self) -> None:

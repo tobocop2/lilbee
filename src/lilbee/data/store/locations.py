@@ -19,8 +19,11 @@ def _escape_like_wildcards(value: str) -> str:
     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
-def _under_sql(column: str, root: str) -> str:
-    """The predicate for *column* holding *root* or a location below it."""
+def under_sql(column: str, root: str) -> str:
+    """The predicate for *column* holding *root* or a key below it, in parentheses.
+
+    ``starts_with`` takes the key literally, so no character in a key is a wildcard.
+    """
     literal = escape_sql_string(root)
     return f"({column} = '{literal}' OR starts_with({column}, '{literal}/'))"
 
@@ -75,11 +78,11 @@ class SourceLocations:
     def named_by_sql(self, column: str, root: str) -> str:
         """The predicate for *column* holding a location whose name the registered *root* gives."""
         deeper = [
-            f"NOT {_under_sql(column, below)}"
+            f"NOT {under_sql(column, below)}"
             for below, _ in self._deepest_first
             if below.startswith(f"{root}/")
         ]
-        return " AND ".join([_under_sql(column, root), *deeper])
+        return " AND ".join([under_sql(column, root), *deeper])
 
     def search_filter(self, term: str, path: str, title: str) -> str:
         """The predicate for a shown name in *path*, or a title in *title*, holding *term*.
@@ -92,7 +95,7 @@ class SourceLocations:
         for root, label in self._deepest_first:
             shown = f"concat('{escape_sql_string(label)}', substr({path}, {len(root) + 1}))"
             arms.append(f"{self.named_by_sql(path, root)} AND LOWER({shown}) {pattern}")
-        outside = [f"NOT {_under_sql(path, root)}" for root, _ in self._deepest_first]
+        outside = [f"NOT {under_sql(path, root)}" for root, _ in self._deepest_first]
         arms.append(" AND ".join([*outside, f"LOWER({path}) {pattern}"]))
         arms.append(f"LOWER({title}) {pattern}")
         return "(" + " OR ".join(f"({arm})" for arm in arms) + ")"

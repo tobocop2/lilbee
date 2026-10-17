@@ -12,7 +12,7 @@ from lilbee.core import settings
 from lilbee.core.config import CITATIONS_TABLE, SOURCES_TABLE, cfg
 from lilbee.data.store import ChunkType, SourceType, Store
 from lilbee.data.store.lance_helpers import table_names
-from lilbee.data.store.locations import SourceLocations, root_location
+from lilbee.data.store.locations import SourceLocations, root_location, under_sql
 from tests.test_store import _citation, _dump, _holders, _seed_source
 
 
@@ -63,6 +63,23 @@ class TestTheRule:
     def test_a_root_is_stored_in_its_posix_spelling(self):
         assert root_location("/x/notes") == "/x/notes"
         assert SourceLocations({"notes": "/x/notes/"}).location("notes/a.md") == "/x/notes/a.md"
+
+    def test_a_clause_joined_to_the_root_filter_with_and_holds_for_every_row(self, tmp_path):
+        import lancedb
+
+        rows = [
+            {"path": path, "kind": kind}
+            for path in ("/x/notes", "/x/notes/a.md", "/x/notesy/b.md")
+            for kind in ("document", "wiki")
+        ]
+        table = lancedb.connect(tmp_path / "db").create_table("t", data=rows)
+
+        found = table.search().where(f"{under_sql('path', '/x/notes')} AND kind = 'wiki'")
+
+        assert sorted(row["path"] for row in found.limit(None).to_list()) == [
+            "/x/notes",
+            "/x/notes/a.md",
+        ]
 
 
 def _registry_of(rng: random.Random) -> dict[str, str]:
