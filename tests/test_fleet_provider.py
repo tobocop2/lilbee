@@ -2684,6 +2684,36 @@ def test_warm_up_blocking_fails_with_the_engine_when_no_engine_resolves(monkeypa
     assert "lilbee[engine]" in (snap.error or "")
 
 
+def test_a_chat_load_failure_names_the_model_and_where_the_engine_output_is(
+    monkeypatch, tmp_path
+) -> None:
+    """The warm failure a user reads names the model ref, the plain cause and the log file."""
+    from lilbee.providers.base import ProviderError, ProviderErrorKind
+    from lilbee.providers.fleet.client import LlamaServerClient
+
+    monkeypatch.setattr(cfg, "chat_model", "acme/gemma4-assistant-GGUF")
+    engine_log = tmp_path / "chat.log"
+    client = LlamaServerClient("http://127.0.0.1:1", "chat-0", engine_log=engine_log)
+
+    def _dies(*_args, **_kwargs):
+        raise ProviderError(
+            "The engine stopped before it could answer (HTTP 500).",
+            kind=ProviderErrorKind.CONNECTION,
+        )
+
+    monkeypatch.setattr(client, "chat", _dies)
+    p = FleetProvider()
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._warm_chat_role([client])
+    snap = p.warm_progress()
+    assert snap is not None
+    assert snap.error == (
+        "The chat model acme/gemma4-assistant-GGUF did not load: "
+        "The engine stopped before it could answer (HTTP 500). "
+        f"The full engine output is in {engine_log}."
+    )
+
+
 def test_warm_up_blocking_fails_when_chat_model_not_installed(monkeypatch) -> None:
     """Chat model configured but not installed: the warm ends in a terminal ERROR
     naming the cause, so the prompt path renders 'failed to load' instead of an
@@ -5904,6 +5934,7 @@ class TestAReplicaThatCannotLoadLeavesTheRoutingPool:
             client = mock.MagicMock(spec=LlamaServerClient)
             client.healthy = True
             client.index = i
+            client.engine_log = None
             made.append(client)
         return made, failing
 

@@ -480,9 +480,11 @@ def test_install_hint_indexes_are_documented() -> None:
     """
     import re
 
-    from lilbee.providers.fleet.binary import _INSTALL_HINT
+    from lilbee.providers.fleet.engine_install import InstallMethod, engine_install_hint
 
-    hint_indexes = set(re.findall(r"https://lilbee\.sh/(\w+)/", _INSTALL_HINT))
+    hint_indexes = set(
+        re.findall(r"https://lilbee\.sh/(\w+)/", engine_install_hint(InstallMethod.UNKNOWN))
+    )
     assert hint_indexes, "the hint must name at least one index"
 
     root = Path(__file__).resolve().parents[1]
