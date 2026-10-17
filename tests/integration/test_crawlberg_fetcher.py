@@ -201,6 +201,10 @@ INLINE_IMAGE_PAYLOAD = (
 # A page that links to a second page, each with text hidden three ways beside visible text.
 HIDDEN_PAGE = "/hidden/"
 HIDDEN_NEXT_PAGE = "/hidden/next"
+COOKIE_START = "/cookie/"
+COOKIE_NEED = "/cookie/need"
+SESSION_COOKIE = "lilbeesession=ok"
+COOKIE_TEXT = "Words behind the session cookie"
 VISIBLE_TEXT = "Visible harbor words"
 HIDDEN_TEXTS = {
     "display:none": "Styled away harbor words",
@@ -323,6 +327,11 @@ def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
         ROBOTS_ALLOWED: (HTTPStatus.OK, f"<html><body><h1>Open</h1>{filler}</body></html>"),
         HIDDEN_PAGE: (HTTPStatus.OK, _hidden_page(f'<a href="{HIDDEN_NEXT_PAGE}">next</a>')),
         HIDDEN_NEXT_PAGE: (HTTPStatus.OK, _hidden_page("")),
+        COOKIE_START: (
+            HTTPStatus.OK,
+            f'<html><body><h1>Start</h1><a href="{COOKIE_NEED}">need</a>{filler}</body></html>',
+        ),
+        COOKIE_NEED: (HTTPStatus.OK, f"<html><body><p>{COOKIE_TEXT}</p>{filler}</body></html>"),
         INLINE_IMAGE_PAGE: (
             HTTPStatus.OK,
             f"<html><body><h1>Logo</h1>{logo}{filler}</body></html>",
@@ -343,6 +352,7 @@ class _Site:
         self.agents: list[tuple[str, str]] = []
         self.hints: list[tuple[str, dict[str, str]]] = []
         self.accept_headers: list[tuple[str, dict[str, str]]] = []
+        self.cookies: list[tuple[str, str]] = []
         self.robots_status = HTTPStatus.OK
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
@@ -375,6 +385,17 @@ class _Site:
         """The headers of :data:`BROWSER_ACCEPT_HEADERS` each request under *prefix* carried."""
         with self._lock:
             return [sent for path, sent in self.accept_headers if path.startswith(prefix)]
+
+    def cookies_for(self, path: str) -> list[str]:
+        """The Cookie header of each request for exactly *path*."""
+        with self._lock:
+            return [cookie for at, cookie in self.cookies if at == path]
+
+    def reply(self, path: str, cookie: str) -> tuple[int, str]:
+        """The status and body for *path*; the cookie page refuses a request without the cookie."""
+        if path == COOKIE_NEED and SESSION_COOKIE not in cookie:
+            return HTTPStatus.FORBIDDEN, "<h1>forbidden</h1>"
+        return self._body(path)
 
     def close(self) -> None:
         self._server.shutdown()
@@ -422,7 +443,8 @@ class _Site:
                         if name.lower() in BROWSER_ACCEPT_HEADERS
                     }
                     site.accept_headers.append((self.path, sent))
-                status, body = site._body(self.path)
+                    site.cookies.append((self.path, self.headers.get("Cookie", "")))
+                status, body = site.reply(self.path, self.headers.get("Cookie", ""))
                 if status == HTTPStatus.MOVED_PERMANENTLY:
                     self.send_response(status)
                     self.send_header("Location", body)
@@ -432,6 +454,8 @@ class _Site:
                 data = body.encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "text/html")
+                if self.path == COOKIE_START:
+                    self.send_header("Set-Cookie", f"{SESSION_COOKIE}; Path=/")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -1433,3 +1457,36 @@ class TestRobotsTxtInBrowserMode:
             site_paths = asyncio.run(_robots_site_crawl(site, BROWSER))
             single_paths, _ = asyncio.run(_robots_single_crawl(site, BROWSER))
         _assert_robots_ignored(site, site_paths, single_paths)
+
+
+async def _cookie_crawl(site: _Site, mode: CrawlRenderMode) -> list[Path]:
+    return await crawl_and_save(site.url(COOKIE_START), depth=1, max_pages=0, render_mode=mode)
+
+
+def _assert_cookie_page_saved(site: _Site, paths: list[Path]) -> None:
+    """The page behind the cookie was asked for with it and saved with its text."""
+    assert site.cookies_for(COOKIE_START) != []
+    assert set(site.cookies_for(COOKIE_NEED)) == {SESSION_COOKIE}
+    assert len(paths) == 2
+    texts = [path.read_text(encoding="utf-8") for path in paths]
+    assert sum(COOKIE_TEXT in text for text in texts) == 1, texts
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestCookies:
+    async def test_a_cookie_a_page_sets_is_sent_to_the_next_page(self, site):
+        _assert_cookie_page_saved(site, await _cookie_crawl(site, HTTP))
+
+
+@full_crawl_only
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestCookiesInBrowserMode:
+    @pytest.fixture(autouse=True)
+    def _real_browsers(self, monkeypatch):
+        require_chromium()
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
+
+    def test_a_cookie_a_page_sets_is_sent_to_the_next_page(self, site):
+        with windows_proactor_loop():
+            paths = asyncio.run(_cookie_crawl(site, BROWSER))
+        _assert_cookie_page_saved(site, paths)
