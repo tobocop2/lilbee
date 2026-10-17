@@ -36,6 +36,7 @@ from lilbee.modelhub.models import list_installed_models
 from lilbee.runtime.lock import _no_sync_running
 from lilbee.runtime.progress import (
     CrawlDoneEvent,
+    CrawlPageFailedEvent,
     EventType,
     FileStartEvent,
     WikiPageEvent,
@@ -3874,6 +3875,46 @@ class TestAddWithUrls:
             assert json.loads(result.stdout) == {"error": str(refusal)}
         else:
             assert str(refusal) in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_crawl_that_saves_no_page_prints_each_reason_and_exits_1(self, json_mode):
+        seed = "https://example.com/"
+        reason = "The site's robots.txt could not be read"
+
+        async def refused(url, *, on_progress, **_kwargs):
+            on_progress(EventType.CRAWL_PAGE_FAILED, CrawlPageFailedEvent(url=url, reason=reason))
+            return []
+
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=refused),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock) as sync,
+        ):
+            result = runner.invoke(app, [*flags, "add", seed, "--crawl"])
+        assert result.exit_code == 1
+        sync.assert_not_awaited()
+        if json_mode:
+            assert json.loads(result.stdout) == {"error": f"{seed}: {reason}"}
+        else:
+            assert f"{seed}: {reason}" in result.output
+
+    def test_a_crawl_that_saves_a_page_and_fails_another_exits_0(self, tmp_path):
+        saved = tmp_path / "page.md"
+
+        async def one_failed(url, *, on_progress, **_kwargs):
+            failed = CrawlPageFailedEvent(url=f"{url}b", reason="forbidden")
+            on_progress(EventType.CRAWL_PAGE_FAILED, failed)
+            return [saved]
+
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch("lilbee.crawler.crawl_and_save", side_effect=one_failed),
+            mock.patch("lilbee.data.ingest.sync", new_callable=AsyncMock, return_value=_SYNC_NOOP),
+        ):
+            result = runner.invoke(app, ["--json", "add", "https://example.com/", "--crawl"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout)["crawled"] == 1
 
     @pytest.mark.parametrize("crawl", [[], ["--crawl"]], ids=["one-page", "site"])
     def test_a_seed_with_a_backslash_after_the_port_is_refused_by_name(self, crawl):
