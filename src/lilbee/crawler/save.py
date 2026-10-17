@@ -6,17 +6,20 @@ import hashlib
 import ipaddress
 import json
 import logging
+import os
 import re
 import string
 import tempfile
 import unicodedata
-from dataclasses import dataclass
-from pathlib import Path
+from collections.abc import Callable
+from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 from lilbee.core.config import cfg
-from lilbee.core.security import validate_path_within
+from lilbee.core.security import file_lock_or_warn, validate_path_within
 from lilbee.core.web_names import INDEX_STEM, PAGE_HASH_MARK, PAGE_SUFFIX, WEB_DIR
 from lilbee.crawler.models import CrawlResult
 
@@ -26,10 +29,11 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-# How often the crawl metadata JSON is rewritten during a streaming crawl.
-# Markdown files are durable per-page; metadata batches to keep write volume
-# bounded. Worst-case loss on crash is N-1 entries, recoverable from the files.
-METADATA_FLUSH_INTERVAL = 10
+_CRAWL_META_FILE = "crawl_meta.json"
+_CRAWL_PAGES_FILE = "crawl_pages.jsonl"
+# The field of a page record line that holds the page's canonical address.
+_RECORD_ADDRESS_FIELD = "url"
+_RECORD_LOCK_TIMEOUT_S = 10.0
 
 # The characters RFC 3986 section 2.3 calls unreserved: an escape of one names the character.
 _UNRESERVED = frozenset(string.ascii_letters + string.digits + "-._~")
@@ -179,7 +183,7 @@ def web_dir() -> Path:
 
 def _crawl_meta_path() -> Path:
     """Path to the crawl metadata sidecar JSON."""
-    return cfg.data_dir / "crawl_meta.json"
+    return cfg.data_dir / _CRAWL_META_FILE
 
 
 @dataclass
@@ -216,15 +220,17 @@ def save_crawl_metadata(meta: dict[str, CrawlMeta]) -> None:
     """Persist URL→metadata mapping to the JSON sidecar (atomic write)."""
     path = _crawl_meta_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    serializable = {
-        url: {"file": m.file, "content_hash": m.content_hash, "crawled_at": m.crawled_at}
-        for url, m in meta.items()
-    }
+    serializable = {url: asdict(m) for url, m in meta.items()}
+    _replace_atomically(path, json.dumps(serializable, indent=2))
+
+
+def _replace_atomically(path: Path, text: str) -> None:
+    """Write *text* to a temporary file beside *path*, then put it in place of *path*."""
     tmp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, suffix=".tmp", delete=False) as tmp:
             tmp_name = tmp.name
-            tmp.write(json.dumps(serializable, indent=2).encode("utf-8"))
+            tmp.write(text.encode("utf-8"))
         Path(tmp_name).replace(path)
     except BaseException:
         if tmp_name is not None:
@@ -254,49 +260,169 @@ def normalize_crawled_markdown(markdown: str) -> str:
     return _REFERENCE_LINK_RE.sub(r"[\1](\2)", markdown)
 
 
-@dataclass(frozen=True)
-class SaveOutcome:
-    """What ``_save_single_result`` wrote: the path, the page's key, its file name and hash."""
-
-    path: Path
-    address: str
-    filename: str
-    content_hash: str
+def _pages_path() -> Path:
+    """The page record: one JSON line per save, the last line for an address counts."""
+    return cfg.data_dir / _CRAWL_PAGES_FILE
 
 
-def _save_single_result(result: CrawlResult, meta: dict[str, CrawlMeta]) -> SaveOutcome | None:
-    """Write one crawl result to disk if it's new or changed.
+@dataclass
+class CrawlRecord:
+    """The pages saved at their names, by address, and the copies an earlier name rule saved."""
 
-    Returns the outcome (written path plus reusable filename/hash), or
-    None if skipped (failure, empty markdown, unchanged hash with file
-    on disk, or blocked by path traversal).
+    pages: dict[str, CrawlMeta] = field(default_factory=dict)
+    claimed: set[str] = field(default_factory=set)
+    earlier: dict[str, list[CrawlMeta]] = field(default_factory=dict)
+    earlier_by_text: dict[str, list[tuple[str, CrawlMeta]]] = field(default_factory=dict)
+
+    def add_earlier(self, key: str, entry: CrawlMeta) -> None:
+        """Record *entry*, saved under an earlier name, as a copy of the page *key* names."""
+        address = canonical_address(key)
+        self.earlier.setdefault(address, []).append(entry)
+        self.earlier_by_text.setdefault(entry.content_hash, []).append((address, entry))
+
+
+def _record_line(address: str, entry: CrawlMeta) -> str:
+    """The page record line of *entry* for the page at *address*."""
+    return json.dumps({_RECORD_ADDRESS_FIELD: address, **asdict(entry)}, ensure_ascii=False)
+
+
+def _read_pages(lines: list[str]) -> dict[str, CrawlMeta]:
+    """The last entry of each address in the page record *lines*; a malformed line is skipped."""
+    pages: dict[str, CrawlMeta] = {}
+    for line in filter(None, lines):
+        try:
+            data = json.loads(line)
+            address = data.pop(_RECORD_ADDRESS_FIELD)
+            pages[address] = CrawlMeta(**data)
+        except (json.JSONDecodeError, TypeError, KeyError, AttributeError):
+            log.warning("Skipping malformed crawl record line in %s", _pages_path())
+    return pages
+
+
+def _load_pages() -> dict[str, CrawlMeta]:
+    """The page record, rewritten with one line per page when it holds more lines than pages."""
+    path = _pages_path()
+    if not path.exists():
+        return {}
+    with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        pages = _read_pages(lines)
+        if len(pages) < len(list(filter(None, lines))):
+            text = "".join(f"{_record_line(a, e)}\n" for a, e in pages.items())
+            _replace_atomically(path, text)
+    return pages
+
+
+def load_crawl_record() -> CrawlRecord:
+    """The page record, with the earlier crawl metadata as copies to retire."""
+    record = CrawlRecord(pages=_load_pages())
+    for key, entry in load_crawl_metadata().items():
+        record.add_earlier(key, entry)
+    record.claimed = {entry.file for entry in record.pages.values()}
+    return record
+
+
+def _claim(address: str, entry: CrawlMeta, record: CrawlRecord) -> None:
+    """Append *entry* to the page record before its file is written; a cut line stays alone."""
+    path = _pages_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with file_lock_or_warn(path, _RECORD_LOCK_TIMEOUT_S), path.open("a", encoding="utf-8") as out:
+        out.write(f"\n{_record_line(address, entry)}\n")
+    record.pages[address] = entry
+    record.claimed.add(entry.file)
+
+
+def _same_file(one: str, other: str) -> bool:
+    """Whether two names under ``_web`` are one file as the disk resolves them."""
+    try:
+        return os.path.samefile(web_dir() / one, web_dir() / other)
+    except OSError:
+        return False
+
+
+def _holds_only(address: str, entry: CrawlMeta, record: CrawlRecord) -> bool:
+    """Whether *entry*'s file holds its page's text, and is the earlier copy of no other page."""
+    path = web_dir() / entry.file
+    try:
+        validate_path_within(path, web_dir().resolve())
+    except ValueError:
+        return False
+    if not path.is_file() or content_hash(path.read_text(encoding="utf-8")) != entry.content_hash:
+        return False
+    twins = record.earlier_by_text.get(entry.content_hash, [])
+    return not any(other != address and _same_file(twin.file, entry.file) for other, twin in twins)
+
+
+def _remove_empty_folders(folder: Path) -> None:
+    """Remove *folder* and each parent that is left empty, up to ``_web``."""
+    root = web_dir()
+    while folder != root and folder.is_relative_to(root) and not any(folder.iterdir()):
+        folder.rmdir()
+        folder = folder.parent
+
+
+def _disk_name(name: str) -> str:
+    """*name* as the disk spells it, which a case-folding disk may spell differently."""
+    folder, parts = web_dir(), []
+    for part in PurePosixPath(name).parts:
+        target = folder / part
+        found = (e.name for e in os.scandir(folder) if os.path.samefile(e.path, target))
+        parts.append(next(found, part))
+        folder = folder / parts[-1]
+    return "/".join(parts)
+
+
+def _retire_earlier(
+    address: str, record: CrawlRecord, remove_sources: Callable[[list[str]], object]
+) -> None:
+    """Delete each earlier copy of the page at *address* that holds its text and no other's.
+
+    The copy's index source goes first: the sync never removes the source of a vanished file.
     """
+    for entry in record.earlier.pop(address, []):
+        if entry.file in record.claimed or not _holds_only(address, entry, record):
+            continue
+        remove_sources([PurePosixPath(WEB_DIR, _disk_name(entry.file)).as_posix()])
+        (web_dir() / entry.file).unlink()
+        _remove_empty_folders((web_dir() / entry.file).parent)
+
+
+def _page_path(result: CrawlResult, address: str, record: CrawlRecord) -> Path | None:
+    """Where the page at *address* is saved, or None when its name is not free for it."""
+    root = web_dir()
+    path = root / page_name(address)
+    try:
+        validate_path_within(path, root.resolve())
+    except ValueError:
+        log.warning("Path traversal blocked: %s -> %s", result.url, path)
+        return None
+    if os.path.lexists(path) and (address not in record.pages or not path.is_file()):
+        log.warning("Page %s is not saved: %s holds a file or folder of its own", result.url, path)
+        return None
+    return path
+
+
+def save_page(
+    result: CrawlResult, record: CrawlRecord, remove_sources: Callable[[list[str]], object]
+) -> Path | None:
+    """Write one crawled page at its name; the path, or None when nothing was written."""
     if result.failure_reason() is not None:
         return None
-    markdown = normalize_crawled_markdown(result.markdown)
     address = canonical_address(result.url)
-    prev = meta.get(address)
-    filename = prev.file if prev is not None else page_name(address)
-    root = web_dir()
-    file_path = root / filename
-    try:
-        validate_path_within(file_path, root.resolve())
-    except ValueError:
-        log.warning("Path traversal blocked: %s -> %s", result.url, file_path)
+    path = _page_path(result, address, record)
+    if path is None:
         return None
+    markdown = normalize_crawled_markdown(result.markdown)
     new_hash = content_hash(markdown)
-    if prev is not None and prev.content_hash == new_hash and file_path.exists():
+    prev = record.pages.get(address)
+    written: Path | None = None
+    if prev is None or prev.content_hash != new_hash or not path.is_file():
+        now = datetime.now(UTC).isoformat()
+        _claim(address, CrawlMeta(page_name(address), new_hash, now), record)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(markdown, encoding="utf-8")
+        written = path
+    else:
         log.info("Content unchanged, skipping save: %s", result.url)
-        return None
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    file_path.write_text(markdown, encoding="utf-8")
-    return SaveOutcome(path=file_path, address=address, filename=filename, content_hash=new_hash)
-
-
-def _update_single_metadata(meta: dict[str, CrawlMeta], outcome: SaveOutcome, now: str) -> None:
-    """Record *outcome* in *meta* under the page's canonical address."""
-    meta[outcome.address] = CrawlMeta(
-        file=outcome.filename,
-        content_hash=outcome.content_hash,
-        crawled_at=now,
-    )
+    _retire_earlier(address, record, remove_sources)
+    return written

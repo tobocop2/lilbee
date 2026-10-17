@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import ipaddress
 import json
 import os
@@ -738,17 +739,24 @@ class TestWholeUrlExcludePatterns:
         assert crawled == {"/scope/", *SCOPE_LINKS}
 
 
+def _earlier_name(url: str) -> str:
+    """A name an earlier name rule gave *url*: one per page, never its name today."""
+    digest = hashlib.sha256(save.canonical_address(url).encode("utf-8")).hexdigest()[:8]
+    return f"earlier/{digest}/index.md"
+
+
 def _library_with(*urls: str) -> list[Path]:
-    """A library that holds each of *urls* as spelled, each with its own text no page serves."""
+    """An earlier library that holds each of *urls* under an earlier name, with its own text."""
     entries = {}
     paths = []
     for url in urls:
-        name = save.url_to_filename(url)
+        name = _earlier_name(url)
         path = cfg.documents_dir / "_web" / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"{STALE_TEXT} of {url}", encoding="utf-8")
+        text = f"{STALE_TEXT} of {url}"
+        path.write_text(text, encoding="utf-8")
         entries[url] = CrawlMeta(
-            file=name, content_hash="stale", crawled_at="2026-01-01T00:00:00+00:00"
+            file=name, content_hash=save.content_hash(text), crawled_at="2026-01-01T00:00:00+00:00"
         )
         paths.append(path)
     save.save_crawl_metadata(entries)
@@ -756,26 +764,47 @@ def _library_with(*urls: str) -> list[Path]:
 
 
 def _pair_library(site: _Site) -> list[tuple[Path, Path]]:
-    """A library that holds both addresses of each pair of PAIR_LINKS: the two copies of each."""
+    """An earlier library that holds both addresses of each pair of PAIR_LINKS."""
     copies = _library_with(*(site.url(link) for pair in PAIR_LINKS for link in pair))
     assert len(set(copies)) == len(copies)
     return list(zip(copies[::2], copies[1::2], strict=True))
 
 
-def _pair_texts(library: list[tuple[Path, Path]]) -> dict[tuple[str, str], tuple[str, str]]:
-    """The text of the two copies of each pair of PAIR_LINKS."""
+def _current_file(url: str, earlier: Path) -> Path:
+    """The page of *url* at its name when the crawl saved it, else its *earlier* copy."""
+    page = cfg.documents_dir / "_web" / save.url_to_filename(url)
+    return page if page.is_file() else earlier
+
+
+def _pair_texts(
+    site: _Site, library: list[tuple[Path, Path]]
+) -> dict[tuple[str, str], tuple[str, str]]:
+    """The text of the two pages of each pair of PAIR_LINKS, saved or still earlier copies."""
     return {
-        pair: (one.read_text(encoding="utf-8"), other.read_text(encoding="utf-8"))
-        for pair, (one, other) in zip(PAIR_LINKS, library, strict=True)
+        (one, other): (
+            _current_file(site.url(one), one_copy).read_text(encoding="utf-8"),
+            _current_file(site.url(other), other_copy).read_text(encoding="utf-8"),
+        )
+        for (one, other), (one_copy, other_copy) in zip(PAIR_LINKS, library, strict=True)
     }
 
 
-def _assert_each_pair_is_two_pages(library: list[tuple[Path, Path]]) -> None:
-    """Each pair has a copy the crawl rewrote, and no pair holds one text twice."""
-    texts = _pair_texts(library)
+def _assert_each_pair_is_two_pages(site: _Site, library: list[tuple[Path, Path]]) -> None:
+    """Each pair has a page the crawl saved, no pair holds one text twice, each save recorded."""
+    texts = _pair_texts(site, library)
     assert [pair for pair, both in texts.items() if FRESH_TEXT not in "".join(both)] == []
     assert [pair for pair, (one, other) in texts.items() if one == other] == []
     assert [pair for pair, both in texts.items() if not _own_pages(pair, both)] == []
+    saved = [
+        link
+        for pair in PAIR_LINKS
+        for link in pair
+        if (cfg.documents_dir / "_web" / save.url_to_filename(site.url(link))).is_file()
+    ]
+    assert set(save.load_crawl_record().pages) == {
+        save.canonical_address(site.url("/pair/")),
+        *(save.canonical_address(site.url(link)) for link in saved),
+    }
 
 
 def _own_pages(pair: tuple[str, str], texts: tuple[str, str]) -> bool:
@@ -789,9 +818,9 @@ def _own_pages(pair: tuple[str, str], texts: tuple[str, str]) -> bool:
 def _assert_saved_in_readable_folders(site: _Site) -> None:
     """The ``/spell/`` pages are stored as crawlberg requested them and saved in SPELL_FOLDERS."""
     assert set(site.paths_since(0, "/spell/")) == {"/spell/", *SPELL_REQUESTS}
-    meta = save.load_crawl_metadata()
-    stored = [site.url(path) for path in SPELL_REQUESTS]
-    assert set(meta) == {site.url("/spell/"), *stored}
+    meta = save.load_crawl_record().pages
+    stored = [save.canonical_address(site.url(path)) for path in SPELL_REQUESTS]
+    assert set(meta) == {save.canonical_address(site.url("/spell/")), *stored}
     web = cfg.documents_dir / "_web"
     files = [web / meta[url].file for url in stored]
     readable = [file.parent.relative_to(web) / page_stem(file.name) for file in files]
@@ -801,16 +830,17 @@ def _assert_saved_in_readable_folders(site: _Site) -> None:
 
 @pytest.mark.usefixtures("allow_loopback", "isolated_env")
 class TestStoredSpellingOfAnAddress:
-    async def test_a_page_stored_under_an_equivalent_address_is_updated_in_place(self, site):
+    async def test_a_page_stored_under_an_equivalent_address_replaces_its_earlier_copy(self, site):
         stored = site.url(EQUIVALENT_STORED)
         (copy,) = _library_with(stored)
         await crawl_and_save(site.url("/same/"), depth=1, max_pages=0)
         assert site.paths_since(0, "/same/x") == [EQUIVALENT_LINK]
-        assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in copy.read_text(encoding="utf-8")
-        meta = save.load_crawl_metadata()
-        assert set(meta) == {site.url("/same/"), stored}
-        assert meta[stored].content_hash != "stale"
-        assert len(list((cfg.documents_dir / "_web").rglob("*.md"))) == len(meta)
+        page = cfg.documents_dir / "_web" / save.url_to_filename(stored)
+        assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in page.read_text(encoding="utf-8")
+        assert not copy.exists()
+        pages = save.load_crawl_record().pages
+        assert set(pages) == {save.canonical_address(url) for url in (site.url("/same/"), stored)}
+        assert len(list((cfg.documents_dir / "_web").rglob("*.md"))) == len(pages)
 
     async def test_a_page_stored_under_two_equivalent_addresses_keeps_one_entry(self, site):
         stored, as_written = site.url(EQUIVALENT_STORED), site.url(EQUIVALENT_LINK)
@@ -818,18 +848,17 @@ class TestStoredSpellingOfAnAddress:
         plain_copy, escaped_copy, other_copy = _library_with(stored, as_written, other)
         assert plain_copy == escaped_copy
         await crawl_and_save(site.url("/same/"), depth=1, max_pages=0)
-        assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in plain_copy.read_text(encoding="utf-8")
+        page = cfg.documents_dir / "_web" / save.url_to_filename(stored)
+        assert f"{FRESH_TEXT} {EQUIVALENT_LINK}." in page.read_text(encoding="utf-8")
+        assert not plain_copy.exists()
         assert other_copy.read_text(encoding="utf-8") == f"{STALE_TEXT} of {other}"
-        meta = save.load_crawl_metadata()
-        assert set(meta) == {site.url("/same/"), stored, other}
-        assert meta[stored].content_hash != "stale"
-        assert meta[other].content_hash == "stale"
+        pages = save.load_crawl_record().pages
+        assert set(pages) == {save.canonical_address(url) for url in (site.url("/same/"), stored)}
 
     async def test_two_stored_pages_stay_two_pages_after_an_http_recrawl(self, site):
         library = _pair_library(site)
         await crawl_and_save(site.url("/pair/"), depth=1, max_pages=0)
-        _assert_each_pair_is_two_pages(library)
-        assert len(save.load_crawl_metadata()) == 1 + 2 * len(PAIR_LINKS)
+        _assert_each_pair_is_two_pages(site, library)
 
     async def test_a_new_page_is_saved_in_a_folder_that_reads_as_its_link(self, site):
         await crawl_and_save(site.url("/spell/"), depth=1, max_pages=0)
@@ -839,12 +868,13 @@ class TestStoredSpellingOfAnAddress:
         for listing in ORDER_LISTINGS:
             await crawl_and_save(site.url(listing), depth=1, max_pages=0)
         assert site.paths_since(0, "/twice/na").count("/twice/na%C3%AFve") == len(ORDER_LISTINGS)
-        meta = save.load_crawl_metadata()
+        meta = save.load_crawl_record().pages
         assert set(meta) == {
-            *(site.url(listing) for listing in ORDER_LISTINGS),
-            site.url("/twice/na%C3%AFve"),
+            *(save.canonical_address(site.url(listing)) for listing in ORDER_LISTINGS),
+            save.canonical_address(site.url("/twice/na%C3%AFve")),
         }
-        leaf = cfg.documents_dir / "_web" / meta[site.url("/twice/na%C3%AFve")].file
+        leaf_entry = meta[save.canonical_address(site.url("/twice/na%C3%AFve"))]
+        leaf = cfg.documents_dir / "_web" / leaf_entry.file
         assert f"{FRESH_TEXT} /twice/na%C3%AFve." in leaf.read_text(encoding="utf-8")
         saved = sorted(page_stem(path.name) for path in leaf.parent.rglob("*.md"))
         assert saved == ["again", "index", "naïve"]
@@ -1141,7 +1171,7 @@ class TestBrowserLaunch:
     def test_two_stored_pages_stay_two_pages_after_a_browser_recrawl(self, site):
         library = _pair_library(site)
         self._crawl(site.url("/pair/"), depth=1, max_pages=0)
-        _assert_each_pair_is_two_pages(library)
+        _assert_each_pair_is_two_pages(site, library)
 
     def test_a_new_page_is_saved_in_a_folder_that_reads_as_its_link(self, site):
         self._crawl(site.url("/spell/"), depth=1, max_pages=0)
