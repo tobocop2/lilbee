@@ -214,7 +214,6 @@ def register_paths(
 ) -> RegisterResult:
     """Register *paths* as source roots, reporting what happened to each.
 
-    Setting *cancel* ends the wait for the records lock, with nothing registered.
     An add does not wait for a running sync: it takes the sync lock once, and a
     *cancel* set at that take ends the add, with nothing registered.
     """
@@ -267,8 +266,8 @@ def add_paths(
     overrides the foreground sync call and receives the registration result
     (the CLI passes a Ctrl+C-cancellable runner); it defaults to a plain
     ``asyncio.run(sync())``. The sync runs when a path reached the corpus, or
-    when *sync_anyway* says the caller has other new content to index. Setting
-    *cancel* ends the registration's wait for the records lock.
+    when *sync_anyway* says the caller has other new content to index. A
+    *cancel* set when the registration takes the sync lock ends the add.
     """
     registration = register_paths(paths, con, force=force, cancel=cancel)
     summary = describe_registration(registration)
