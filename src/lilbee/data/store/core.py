@@ -879,7 +879,10 @@ def _fold_landings(
 def _fill_pairs(
     db: LanceDBConnection, sources: LanceTable, where: str, landed: str, heads: tuple[str, str]
 ) -> LanceTable:
-    """A scratch table of each *landed* row under its *old* path, with the row moving onto it."""
+    """A scratch table of each *landed* row under its *old* path, with the row moving onto it.
+
+    It replaces any table of its name, so one a killed fold left is made again.
+    """
     from lancedb.index import BTree
 
     old, new = heads
@@ -938,12 +941,6 @@ def _looked_up_sql(keys: list[str], values: list[str]) -> str:
     return f"array_element(make_array({_in_list(values)}), {at})"
 
 
-def _drop_fill_pairs(db: LanceDBConnection) -> None:
-    """Drop the scratch table of a fill that was killed before its end."""
-    if _FILL_PAIRS_TABLE in table_names(db):
-        db.drop_table(_FILL_PAIRS_TABLE)
-
-
 def _fill_locations(db: LanceDBConnection, locations: SourceLocations) -> None:
     """Give each source row a registered label names its location in place of that key. Lock held.
 
@@ -954,7 +951,6 @@ def _fill_locations(db: LanceDBConnection, locations: SourceLocations) -> None:
     sources = open_committed(db, SOURCES_TABLE)
     if sources is None or not _holds_label_keys(db, locations):
         return
-    _drop_fill_pairs(db)
     for root, label in locations.deepest_first:
         _rekey_prefix(db, sources, f"{_DOCUMENT} AND ({_under_sql(_PATH, label)})", label, root)
     log.info("Stored where each source of the library at %s is", db.uri)
