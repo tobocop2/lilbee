@@ -47,6 +47,9 @@ from lilbee.runtime.progress import (
 
 log = logging.getLogger(__name__)
 
+# A crawl limited to this many pages fetches only its seed.
+_ONE_PAGE = 1
+
 
 def _get_crawl_semaphore() -> asyncio.Semaphore | None:
     """Return the process-wide crawl semaphore, or None when unlimited."""
@@ -337,13 +340,14 @@ async def _run_crawl(
 
     Resolves the depth ceiling here (permitting the seed-only ``0``) so a
     ``cfg.crawl_max_depth`` of 0 routes to the single-page path instead of
-    blowing up inside the recursive resolver. A crawl whose ``cancel`` is
-    already set fetches nothing and builds no engine, at any depth.
+    blowing up inside the recursive resolver. A page limit of one also takes
+    the single-page path, so the crawl reads no sitemap. A crawl whose
+    ``cancel`` is already set fetches nothing and builds no engine, at any depth.
     """
     depth = _resolve_depth(depth, cfg.crawl_max_depth)
     if cancel is not None and cancel.is_set():
         return 0
-    if depth == 0:
+    if depth == 0 or _resolve_page_limit(max_pages) == _ONE_PAGE:
         result = await crawl_single(url, render_mode=render_mode, on_progress=on_progress)
         try:
             await flush_page(result)
