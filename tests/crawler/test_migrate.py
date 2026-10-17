@@ -217,8 +217,7 @@ def test_a_disk_with_no_inodes_groups_names_by_their_resolved_path(store: MagicM
 
     def stat_without_inode(name: str) -> os.stat_result | None:
         stat = real_stat(name)
-        assert stat is not None
-        return os.stat_result((stat.st_mode, 0, *list(stat)[2:]))
+        return None if stat is None else os.stat_result((stat.st_mode, 0, *list(stat)[2:]))
 
     monkeypatch.setattr(migrate, "_file_stat", stat_without_inode)
     meta = {
@@ -250,23 +249,31 @@ def test_a_moved_source_keeps_the_stat_it_was_indexed_with(store: MagicMock):
     ] == [None]
 
 
-def test_a_file_that_cannot_move_leaves_the_index_and_the_record_alone(
-    store: MagicMock, monkeypatch: pytest.MonkeyPatch
+def test_a_file_that_cannot_move_stays_and_every_other_page_moves(
+    store: MagicMock, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ):
+    other, other_earlier = "https://example.com/t/other", "example.com/t/other/index.md"
     _write(_EARLIER, "# Page")
-    stored = {_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")}
-    save_crawl_metadata(stored)
+    _write(other_earlier, "# Other")
+    stays = CrawlMeta(_EARLIER, content_hash("# Page"), "t")
+    real_replace = os.replace
 
-    def refused(source: object, target: object) -> None:
-        raise PermissionError(13, "Permission denied", str(target))
+    def refused(source: Path, target: Path) -> None:
+        if source == _web() / _EARLIER:
+            raise PermissionError(13, "Permission denied", str(target))
+        real_replace(source, target)
 
     monkeypatch.setattr("lilbee.crawler.migrate.os.replace", refused)
-    with pytest.raises(PermissionError, match="Permission denied"):
-        move_saved_pages(store)
-    store.relocate_sources.assert_not_called()
+    meta = {_PAGE: stays, other: CrawlMeta(other_earlier, content_hash("# Other"), "t")}
+    moved = _moved(store, meta)
+    other_name = url_to_filename(other)
+    assert moved == {_PAGE: stays, other: CrawlMeta(other_name, content_hash("# Other"), "t")}
+    assert _moved_sources(store) == [((f"_web/{other_earlier}",), f"_web/{other_name}")]
     store.remove_documents.assert_not_called()
-    assert load_crawl_metadata() == stored
     assert (_web() / _EARLIER).read_text(encoding="utf-8") == "# Page"
+    assert [
+        r.message for r in caplog.records if _EARLIER in r.message and "Permission" in r.message
+    ]
 
 
 def test_a_move_cut_short_before_its_record_keeps_every_entry(
@@ -288,3 +295,18 @@ def test_a_move_cut_short_before_its_record_keeps_every_entry(
     assert load_crawl_metadata() == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
     store.remove_documents.assert_called_once_with([f"_web/{_EARLIER}"])
     assert _moved_sources(store) == []
+
+
+def test_a_page_that_stays_keeps_a_key_no_later_move_reads_as_another_page(store: MagicMock):
+    # The canonical address of /t/%%341 is /t/%41, which read again as an address is /t/A.
+    odd, plain = "https://example.com/t/%%341", "https://example.com/t/A"
+    odd_earlier = "example.com/t/odd/index.md"
+    _write(odd_earlier, "# Odd")
+    (_web() / url_to_filename(odd)).mkdir(parents=True)
+    _write(url_to_filename(plain), "# Plain")
+    meta = {
+        odd: CrawlMeta(odd_earlier, content_hash("# Odd"), "1"),
+        plain: CrawlMeta(url_to_filename(plain), content_hash("# Plain"), "1"),
+    }
+    assert _moved(store, meta) == meta
+    assert move_saved_pages(store) == meta
