@@ -216,14 +216,6 @@ def load_crawl_metadata() -> dict[str, CrawlMeta]:
     return result
 
 
-def save_crawl_metadata(meta: dict[str, CrawlMeta]) -> None:
-    """Persist URL→metadata mapping to the JSON sidecar (atomic write)."""
-    path = _crawl_meta_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    serializable = {url: asdict(m) for url, m in meta.items()}
-    _replace_atomically(path, json.dumps(serializable, indent=2))
-
-
 def _replace_atomically(path: Path, text: str) -> None:
     """Write *text* to a temporary file beside *path*, then put it in place of *path*."""
     tmp_name: str | None = None
