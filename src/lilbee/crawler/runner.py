@@ -106,6 +106,7 @@ def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
         chrome_args=cfg.crawl_browser_extra_args,
         user_agent=cfg.crawl_user_agent,
         respect_robots_txt=cfg.crawl_respect_robots_txt,
+        extra_wait_ms=cfg.crawl_browser_extra_wait_ms,
     )
 
 

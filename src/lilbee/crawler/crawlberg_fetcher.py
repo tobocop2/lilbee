@@ -289,22 +289,25 @@ def _headless_shell() -> str:
 
 
 def _browser_config(
-    render_mode: CrawlRenderMode, timeout_ms: int, chrome_args: Sequence[str]
+    render_mode: CrawlRenderMode, timeout_ms: int, chrome_args: Sequence[str], extra_wait_ms: int
 ) -> crawlberg.BrowserConfig:
     """The browser settings, with a deadline on each whole browser fetch.
 
-    Only browser mode names a Chrome binary and launch flags.
+    Only browser mode names a Chrome binary, launch flags and the wait after a page loads.
+    The deadline adds that wait, which crawlberg counts inside it.
     """
     import crawlberg
 
     browser = render_mode is CrawlRenderMode.BROWSER
+    extra_wait = extra_wait_ms if browser else None
     return crawlberg.BrowserConfig(
         mode=_BROWSER_MODES[render_mode],
         timeout=timeout_ms,
-        overall_timeout=timeout_ms * _BROWSER_OVERALL_TIMEOUTS,
+        overall_timeout=timeout_ms * _BROWSER_OVERALL_TIMEOUTS + (extra_wait or 0),
         shutdown_timeout=_BROWSER_SHUTDOWN_TIMEOUT_MS,
         chrome_path=_headless_shell() if browser else None,
         chrome_args=list(chrome_args) if browser else [],
+        extra_wait=extra_wait,
     )
 
 
@@ -314,6 +317,7 @@ def _crawl_config(
     chrome_args: Sequence[str],
     user_agent: str,
     respect_robots_txt: bool,
+    extra_wait_ms: int,
 ) -> crawlberg.CrawlConfig:
     """The crawlberg config for one crawl, with every default lilbee depends on set.
 
@@ -353,7 +357,7 @@ def _crawl_config(
         soft_http_errors=False,
         download_documents=False,
         content=_content_config(),
-        browser=_browser_config(render_mode, timeout_ms, chrome_args),
+        browser=_browser_config(render_mode, timeout_ms, chrome_args, extra_wait_ms),
         ssrf=_ssrf_policy(),
     )
 
@@ -571,11 +575,13 @@ class CrawlbergFetcher:
         chrome_args: Sequence[str] = (),
         user_agent: str = "",
         respect_robots_txt: bool = True,
+        extra_wait_ms: int = 0,
     ) -> None:
         self._render_mode = render_mode
         self._chrome_args = tuple(chrome_args)
         self._user_agent = user_agent
         self._respect_robots_txt = respect_robots_txt
+        self._extra_wait_ms = extra_wait_ms
 
     async def __aenter__(self) -> CrawlbergFetcher:
         return self
@@ -593,7 +599,12 @@ class CrawlbergFetcher:
     ) -> AsyncGenerator[_Event, None]:
         """This crawl's events; browser mode finds the headless shell before any engine starts."""
         config = _crawl_config(
-            self._render_mode, spec, self._chrome_args, self._user_agent, self._respect_robots_txt
+            self._render_mode,
+            spec,
+            self._chrome_args,
+            self._user_agent,
+            self._respect_robots_txt,
+            self._extra_wait_ms,
         )
         return _events(config, seed_url, cancel)
 
