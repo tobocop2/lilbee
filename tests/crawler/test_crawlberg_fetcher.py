@@ -1085,6 +1085,21 @@ class TestExcludedLinks:
             await _recursive(_http(), filters=FilterSpec([pattern]), seed=seed)
         assert _named(caplog) == [_left_out(named, pattern)]
 
+    @pytest.mark.parametrize("userinfo", ["user:pw@", "user@", ":pw@"])
+    async def test_a_seed_is_matched_without_its_username_and_password(self, caplog, userinfo: str):
+        pattern = r"^https://example\.com/feed/$"
+        with StubCrawlberg([complete(0)]).installed():
+            seed = f"https://{userinfo}example.com/feed/"
+            await _recursive(_http(), filters=FilterSpec([pattern]), seed=seed)
+        assert _named(caplog) == [_left_out(FEED, pattern)]
+
+    async def test_a_link_is_matched_without_its_username_and_password(self, caplog):
+        pattern = r"^https://example\.com/feed/$"
+        script = [page(SEED, depth=0, links=["https://user:pw@example.com/feed/"])]
+        with StubCrawlberg(script).installed():
+            await _recursive(_http(), filters=FilterSpec([pattern]))
+        assert _named(caplog) == [_left_out(FEED, pattern)]
+
     async def test_a_seed_the_url_parser_refuses_is_matched_by_no_pattern(self, caplog):
         every_address = FilterSpec([r"."])
         for seed in ("http://exa mple.com/", "http://example.com/parsed"):
