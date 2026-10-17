@@ -50,7 +50,7 @@ from lilbee.crawler.save import (
     save_page,
 )
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
-from lilbee.crawler.url_filter import without_userinfo
+from lilbee.crawler.url_filter import UNPARSED_ADDRESS, without_userinfo
 from lilbee.data.ingest.discovery import discover_files
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
@@ -683,11 +683,9 @@ class TestWithoutUserinfo:
             ("https://alice:se%40cret@example.com/a", "https://example.com/a"),
             ("https://alice:se@cret@example.com/a", "https://example.com/a"),
             ("https://alice:se%cret@example.com/a", "https://example.com/a"),
-            ("https://alice:se/cret@example.com/a", "https://example.com/a"),
-            ("https://alice:se#cret@example.com/a", "https://example.com/a"),
-            ("https://alice:se?cret@example.com/a", "https://example.com/a"),
-            ("https://alice:se@cret@example.com:80a/", "https://example.com:80a/"),
-            ("https://alice:secret@[::1/a", "https://[::1/a"),
+            ("https://alice@example.com/x#", "https://example.com/x#"),
+            ("https://:pw@example.com/", "https://example.com/"),
+            ("HTTP://alice:pw@Example.COM/a?", "http://example.com/a?"),
         ],
         ids=[
             "plain",
@@ -699,11 +697,9 @@ class TestWithoutUserinfo:
             "escaped-at",
             "raw-at",
             "raw-percent",
-            "raw-slash",
-            "raw-hash",
-            "raw-question-mark",
-            "raw-at-and-a-bad-port",
-            "unclosed-ipv6-host",
+            "username-only",
+            "password-only",
+            "written-as-the-url-standard-writes-it",
         ],
     )
     def test_a_password_of_any_character_is_cut(self, url: str, shown: str):
@@ -712,11 +708,45 @@ class TestWithoutUserinfo:
     @pytest.mark.parametrize(
         "url",
         [
+            "https://alice:se/cret@example.com/a",
+            "https://alice:se#cret@example.com/a",
+            "https://alice:se?cret@example.com/a",
+            "https://alice:se@cret@example.com:80a/",
+            "https://alice:secret@[::1/a",
+            "http://example.com:80a/?next=a@evil.example",
+            "http://alice:se/cret@example.com/?mail=bob@corp.example",
+        ],
+        ids=[
+            "raw-slash",
+            "raw-hash",
+            "raw-question-mark",
+            "raw-at-and-a-bad-port",
+            "unclosed-ipv6-host",
+            "at-in-the-query-and-a-bad-port",
+            "raw-slash-and-at-in-the-query",
+        ],
+    )
+    def test_an_address_with_an_at_that_does_not_parse_is_shown_as_a_placeholder(self, url: str):
+        assert without_userinfo(url) == UNPARSED_ADDRESS
+
+    @pytest.mark.parametrize(
+        "url",
+        [
             "https://example.com/@user",
             "https://example.com/a?b=c@d",
             "http://example.com:8080\\path",
+            "http://alice:12/3@example.com/",
+            "HTTP://Example.COM/a?b=c@d#",
+            "http://example.com:80a/",
         ],
-        ids=["at-in-path", "at-in-query", "backslash-after-port"],
+        ids=[
+            "at-in-path",
+            "at-in-query",
+            "backslash-after-port",
+            "port-before-an-at-in-the-path",
+            "upper-case-and-empty-fragment",
+            "bad-port-and-no-at",
+        ],
     )
     def test_an_address_without_userinfo_is_unchanged(self, url: str):
         assert without_userinfo(url) == url
