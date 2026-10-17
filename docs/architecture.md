@@ -744,12 +744,16 @@ flowchart LR
   architecture holds. **llama-server's own fit places the layers** (`--n-gpu-layers -1`):
   lilbee keeps the window, the slot count and the cross-card placement, and sends
   `--fit-target` per card: the engine's own 1024 MiB margin plus the memory held for the
-  other roles on that card. When full offload leaves KV room for less than a grounded
+  roles that load after chat on that card (vision, which warms on the first OCR). Embed
+  and rerank warm before chat, so the card's free memory already excludes them when the
+  fit runs. When full offload leaves KV room for less than a grounded
   prompt (`planning.fit_chat_ctx`), the window is raised to the smallest one that answers
   and the fit moves dense layers or MoE experts to system memory to hold it. That needs
-  the fit to run: an auto layer count, no expert overrides, and a card with memory of its
-  own. The fit reads free memory at load, so roles that share a card warm one at a time,
-  chat last (`provider._warm_chains`). Chat slots share one KV pool (`--kv-unified
+  the fit to run: an auto layer count, no expert overrides, a card with memory of its
+  own, and an engine whose `--help` lists `--fit-target`. When the engine reports more
+  of chat in system memory than the estimate expects with every layer on the card, the
+  readback warns once. The fit reads free memory at load, so roles that share a card warm
+  one at a time, chat last (`provider._warm_chains`). Chat slots share one KV pool (`--kv-unified
   --kv-unified-per-slot <window>`), sized at slots x window as before, on an engine whose
   `--help` lists the per-slot cap.
 Header math (`model_cache.compute_dynamic_ctx`) is the fallback

@@ -60,6 +60,12 @@ class InstanceLaunch:
     per device in its mmproj field, so that path compares the full estimate and
     ignores this.
     """
+    est_host_bytes: int = 0
+    """Host bytes the estimate expects chat to hold when the engine fits its layers.
+
+    The readback says the engine left chat weights in system memory when the
+    host holds more than this. 0 where the engine's fit does not run.
+    """
 
     def to_state(self) -> dict:
         """JSON-safe form written into every engine state file so a guest lilbee
@@ -80,6 +86,7 @@ class InstanceLaunch:
             "est_vram_bytes": self.est_vram_bytes,
             "est_vram_by_device": dict(self.est_vram_by_device),
             "est_unreported_bytes": self.est_unreported_bytes,
+            "est_host_bytes": self.est_host_bytes,
         }
 
     @classmethod
@@ -96,6 +103,7 @@ class InstanceLaunch:
             slots=int(payload.get("slots") or 1),
             est_vram_bytes=int(payload.get("est_vram_bytes") or 0),
             est_unreported_bytes=int(payload.get("est_unreported_bytes") or 0),
+            est_host_bytes=int(payload.get("est_host_bytes") or 0),
             est_vram_by_device={
                 str(k): int(v) for k, v in (payload.get("est_vram_by_device") or {}).items()
             },

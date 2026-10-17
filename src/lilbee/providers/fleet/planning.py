@@ -70,6 +70,9 @@ if TYPE_CHECKING:
 _CHAT_SLOTS = 4
 # The free memory llama-server's own fit leaves on a card when ``--fit-target`` is not given.
 ENGINE_FIT_MARGIN_MIB = 1024
+# Roles the warm-up loads before chat on a card they share (provider._warm_chains).
+# Their memory is gone from the card's free memory when chat's fit runs.
+_LOADED_BEFORE_CHAT = frozenset({WorkerRole.EMBED, WorkerRole.RERANK})
 # Stand-in in the launch log for a host whose devices could not be read.
 _NO_DEVICES = "none"
 
@@ -490,23 +493,55 @@ def fit_chat_ctx(
         expert_offload=_role_expert_offload(model_path),
     )
     needed = engine_params.min_usable_chat_ctx()
-    if ctx >= needed or ctx_ceiling < needed or not _engine_fits_chat_offload(model_path):
+    if (
+        ctx >= needed
+        or ctx_ceiling < needed
+        or not _engine_fits_chat_offload(model_path, _engine_binary())
+    ):
         return ctx
     quantum = model_cache._DYNAMIC_CTX_QUANTUM
     return min(ctx_ceiling, -(-needed // quantum) * quantum)
 
 
-def _engine_fits_chat_offload(model_path: Path) -> bool:
+def _engine_fits_chat_offload(model_path: Path, binary: Path | None) -> bool:
     """Whether llama-server's own fit places the chat layers at load.
 
     It does for an auto layer count with no expert overrides, on a card with
-    memory of its own; a numeric ``n_gpu_layers`` or tensor override stops it.
+    memory of its own, when *binary* lists the fit flags in its ``--help``; a
+    numeric ``n_gpu_layers`` or tensor override stops it.
     """
     return (
         _role_gpu_layers(WorkerRole.CHAT) == engine_params.N_GPU_LAYERS_AUTO
         and not _role_expert_offload(model_path)
         and not plan_sizing_is_unified()
+        and binary is not None
+        and engine_advertises(binary, FLAG_FIT_TARGET)
     )
+
+
+def _engine_binary() -> Path | None:
+    """The llama-server lilbee launches, or None on a host without one."""
+    try:
+        return resolve_llama_server()
+    except ProviderError:
+        return None
+
+
+def _chat_host_estimate(model_path: Path, ctx: int, slots: int) -> int:
+    """Host bytes gguf-parser expects chat to hold at its configured offload; 0 when unsized."""
+    try:
+        estimate = estimate_instance_footprint(
+            model_path,
+            ctx=ctx,
+            slots=slots,
+            gpu_layers=_role_gpu_layers(WorkerRole.CHAT),
+            flash_attn=_role_flash(WorkerRole.CHAT),
+            kv_cache_type=_role_kv_cache_type(WorkerRole.CHAT),
+            expert_offload=_role_expert_offload(model_path),
+        )
+    except (ProviderError, OSError):
+        return 0
+    return estimate.ram_bytes
 
 
 def _role_ctx(
@@ -1575,9 +1610,9 @@ def _chat_fit_target_mib(
 ) -> tuple[int, ...]:
     """Memory, in MiB, the engine's fit leaves free on each of chat's cards.
 
-    The engine's own margin plus what the card holds back for the other roles
-    placed on it. Empty for an engine without ``--fit-target`` and on shared
-    memory, where a layer moved off the device frees nothing.
+    The engine's own margin plus what *reserved* holds on the card for roles
+    that load after chat. Empty for an engine without ``--fit-target`` and on
+    shared memory, where a layer moved off the device frees nothing.
     """
     if any(device.unified for device in chosen) or not engine_advertises(binary, FLAG_FIT_TARGET):
         return ()
@@ -1600,6 +1635,7 @@ def _launch_for(
     unified_budget: int | None = None,
     chat_reservation: int = 0,
     reserved_by_device: dict[int, int] | None = None,
+    reserved_after_chat: dict[int, int] | None = None,
     est_vram_bytes: int = 0,
     model_path: Path | None = None,
 ) -> InstanceLaunch:
@@ -1690,6 +1726,11 @@ def _launch_for(
         )
     )
     spec = _server_spec(plan.role, rerank_mode, meta)
+    # Where the engine's fit can move chat layers off the card, the readback
+    # compares the host memory it reports with this to say so.
+    fit_moves_chat = (
+        is_chat and placed_device is not None and _engine_fits_chat_offload(model_path, binary)
+    )
     # Cross-encoder embed/rerank pools the whole input in one batch; an LLM reranker
     # is generative and uses the default batching plus flash attention.
     cross_encoder_pooled = plan.role in _EMBED_ROLES and not is_llm_rerank
@@ -1711,7 +1752,9 @@ def _launch_for(
         n_cpu_moe=expert_offload_layers(meta),
         device_names=_device_names(chosen) or _cpu_pin_when_every_device_was_refused(),
         memory_endpoint=supports_memory_readback(binary),
-        fit_target_mib=_chat_fit_target_mib(binary, chosen, reserved) if is_chat else (),
+        fit_target_mib=(
+            _chat_fit_target_mib(binary, chosen, reserved_after_chat or {}) if is_chat else ()
+        ),
         kv_unified_per_slot=ctx if is_chat and _engine_shares_kv(binary) else None,
     )
     return InstanceLaunch(
@@ -1740,6 +1783,7 @@ def _launch_for(
         est_vram_bytes=est_vram_bytes,
         est_vram_by_device=_charge_by_device(chosen, plan.tensor_split, est_vram_bytes),
         est_unreported_bytes=_unreported_bytes(plan.role, mmproj),
+        est_host_bytes=_chat_host_estimate(model_path, ctx, slots) if fit_moves_chat else 0,
     )
 
 
@@ -3039,6 +3083,11 @@ def _planned_launches(
     )
     _log_placement_findings(placement, model_refs)
     reserved_by_device = _non_chat_reservation(placement.instances, inputs, placement.co_tenants)
+    reserved_after_chat = _non_chat_reservation(
+        [inst for inst in placement.instances if inst.role not in _LOADED_BEFORE_CHAT],
+        inputs,
+        placement.co_tenants,
+    )
     charged = {inp.role: inp.est_vram_bytes for inp in inputs}
     launches: list[InstanceLaunch] = []
     skipped_unusable_ctx: dict[WorkerRole, str] = {}
@@ -3051,6 +3100,7 @@ def _planned_launches(
             unified_budget=unified_budget,
             chat_reservation=reservation,
             reserved_by_device=reserved_by_device,
+            reserved_after_chat=reserved_after_chat,
             est_vram_bytes=charged.get(plan.role, 0),
         )
         reason = _unusable_chat_ctx_reason(launch)

@@ -433,6 +433,7 @@ class SwapManager:
                 launch.est_vram_bytes,
                 launch.est_vram_by_device,
                 launch.est_unreported_bytes,
+                launch.est_host_bytes,
             )
             if warning is not None:
                 with self._warnings_lock:
@@ -472,6 +473,7 @@ class SwapManager:
             launch.est_vram_bytes,
             launch.est_vram_by_device,
             payload,
+            launch.est_host_bytes,
         )
         if warning is not None:
             with self._warnings_lock:
