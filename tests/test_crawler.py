@@ -126,6 +126,9 @@ SAVED_NAMES = [
         "https://example.com/con/Com1.txt/nul", "example.com/_con/_Com1.txt/_nul", id="device"
     ),
     pytest.param("https://example.com/a//b", "example.com/a/b", id="empty-segment"),
+    pytest.param("https://example.com/s/a.md%3F/z", "example.com/s/a-md/z", id="folder-suffix"),
+    pytest.param("https://example.com/s/A.MD./z", "example.com/s/A-MD/z", id="folder-suffix-case"),
+    pytest.param("https://example.com/s/a.md", "example.com/s/a.md", id="page-suffix"),
     pytest.param("https://evil.com/../../etc/passwd", "evil.com/etc/passwd", id="dot-segments"),
     pytest.param("https://bücher.example/t", "bücher.example/t", id="unicode-host"),
     pytest.param("https://xn--bcher-kva.example/t", "bücher.example/t", id="punycode-host"),
