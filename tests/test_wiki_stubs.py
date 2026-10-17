@@ -60,6 +60,9 @@ class _FakeStore:
     def source_paths(self, ids):
         return {i: self.paths.get(i, i) for i in ids if i in self._chunks}
 
+    def missing_sources(self, names):
+        return set(names) - {self.paths.get(i, i) for i in self._chunks}
+
     def source_ids(self, paths):
         held = {self.paths.get(i, i): i for i in self._chunks}
         return {path: held[path] for path in paths if path in held}

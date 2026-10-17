@@ -5860,6 +5860,7 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
+        mock_svc.store.missing_sources.return_value = set()
         read = mock.MagicMock(return_value={"ford": _stub_of("kept-id")})
         written = mock.MagicMock()
         monkeypatch.setattr("lilbee.wiki.stubs.load_stub_index", read)
@@ -5878,6 +5879,7 @@ class TestForgetMissingFromWikiIndex:
 
         monkeypatch.setattr(cfg, "wiki", True)
         mock_svc.store.source_paths.return_value = {"kept-id": "kept.txt"}
+        mock_svc.store.missing_sources.return_value = set()
         mock_svc.store.wiki_mention_rows.return_value = []
         asked = mock.MagicMock()
         written = mock.MagicMock()

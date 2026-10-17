@@ -47,11 +47,10 @@ log = logging.getLogger(__name__)
 # on every browse and a wipe should remove it with everything else.
 STUB_INDEX_FILENAME = "stubs.json"
 
-# Schema marker, so a future shape change can be detected rather than parsed
-# as garbage. A mismatch is treated as no index at all and the next sync
-# rebuilds it.
+# Schema marker, so a shape change is detected rather than parsed as garbage.
 # Version 4 names each source by its id. A file of another version is
-# aggregated again from the store's mention table, which needs no extraction.
+# aggregated again from the store's mention table, which needs no extraction;
+# with no mention rows it reads as no index at all and the next sync rebuilds it.
 _INDEX_VERSION = 4
 
 _NO_EXTRACTOR = "Wiki entity extractor unavailable; leaving the stub index unchanged"
@@ -316,9 +315,14 @@ def _sources_of(stubs: dict[str, WikiStub]) -> set[str]:
 
 
 def _gone_sources(store: Store, stubs: dict[str, WikiStub]) -> set[str]:
-    """The ids *stubs* list that no source row holds."""
+    """The ids *stubs* list that no listed source row holds.
+
+    A removed source that a citation names keeps its row, held out of every listing.
+    """
     listed = _sources_of(stubs)
-    return listed - store.source_paths(listed).keys()
+    paths = store.source_paths(listed)
+    unlisted = store.missing_sources(paths.values())
+    return {i for i in listed if i not in paths or paths[i] in unlisted}
 
 
 def shown_sources(stub: WikiStub, store: Store) -> list[str]:

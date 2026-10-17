@@ -985,6 +985,29 @@ class TestAMovedFileInTheWiki:
         assert shown == before.replace("old.txt", "renamed.txt")
 
 
+class TestARemovedFileInTheWiki:
+    async def test_a_cited_file_that_is_removed_leaves_the_index(self, tmp_path, monkeypatch):
+        extractor = MagicMock()
+        extractor.available.return_value = True
+        extractor.extract.side_effect = _subjects_of
+        monkeypatch.setattr("lilbee.wiki.stubs.get_entity_extractor", lambda *args: extractor)
+        cfg.wiki = True
+        cfg.wiki_entity_min_mentions = 1
+        library = Library(tmp_path / "lib", 1)
+        library.write_notes("note", 2)
+        await library.sync()
+        library.use()
+        _cited_page("note0.txt")
+
+        library.remove("note0.txt")
+
+        library.use()
+        assert Store(cfg).source_ids(["note0.txt"]), "the cited file kept no row: nothing proven"
+        assert "note0.txt" not in library.sources()
+        assert "note0.txt" not in _shown_subjects().get("experiments", ())
+        assert "about-note0.txt" not in _shown_subjects()
+
+
 class TestTheWikiIndex:
     """The browse index of the wiki after a fan-out sync lists what a one-process sync lists."""
 
