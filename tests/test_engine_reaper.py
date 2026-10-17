@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,16 @@ from lilbee.runtime.engine_lock import (
     try_hold_reaper_lock,
     withdraw_keep_warm,
 )
+
+
+class _FakeReaper:
+    """A launched reaper whose exit code is fixed: None while it runs."""
+
+    def __init__(self, *, exit_code: int | None) -> None:
+        self._exit_code = exit_code
+
+    def poll(self) -> int | None:
+        return self._exit_code
 
 
 def _record_engine(engine_dir: Path) -> None:
@@ -176,11 +187,29 @@ def test_main_watches_the_dir_named_in_argv(
     assert stops == [tmp_path]
 
 
+def test_main_claims_the_dir_past_a_users_brief_probe(
+    tmp_path: Path, stops, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A starting user probes the reaper lock while the reaper starts; the reaper still claims."""
+    _record_engine(tmp_path)
+    probe = _held(tmp_path)
+    timer = threading.Timer(0.3, probe.release)
+    timer.start()
+    monkeypatch.setattr(sys, "argv", ["engine_reaper", str(tmp_path)])
+    try:
+        reaper_mod.main()
+    finally:
+        timer.join()
+
+    assert stops == [tmp_path]
+
+
 def test_main_leaves_a_dir_another_reaper_watches(
     tmp_path: Path, stops, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _record_engine(tmp_path)
     other = _held(tmp_path)
+    monkeypatch.setattr(reaper_mod, "_CLAIM_TIMEOUT_S", 0.1)
     monkeypatch.setattr(sys, "argv", ["engine_reaper", str(tmp_path)])
     try:
         reaper_mod.main()
@@ -198,7 +227,7 @@ class TestEnsureEngineReaper:
         monkeypatch.setattr(sm.subprocess, "Popen", lambda *a, **k: spawned.append(a))
         held = _held(tmp_path)
         try:
-            assert sm._ensure_engine_reaper(tmp_path) is True
+            assert sm.ensure_engine_reaper(tmp_path) is True
         finally:
             held.release()
         assert spawned == []
@@ -207,9 +236,18 @@ class TestEnsureEngineReaper:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         spawned: list[tuple[list[str], dict[str, object]]] = []
-        monkeypatch.setattr(sm.subprocess, "Popen", lambda argv, **k: spawned.append((argv, k)))
+        claims: list[FileLock] = []
 
-        assert sm._ensure_engine_reaper(tmp_path) is True
+        def _reaper_claims(argv: list[str], **kwargs: object) -> _FakeReaper:
+            spawned.append((argv, kwargs))
+            claims.append(_held(tmp_path))
+            return _FakeReaper(exit_code=None)
+
+        monkeypatch.setattr(sm.subprocess, "Popen", _reaper_claims)
+        try:
+            assert sm.ensure_engine_reaper(tmp_path) is True
+        finally:
+            claims[0].release()
 
         assert len(spawned) == 1
         argv, kwargs = spawned[0]
@@ -227,8 +265,40 @@ class TestEnsureEngineReaper:
 
         monkeypatch.setattr(sm.subprocess, "Popen", _refuse)
         with caplog.at_level(logging.WARNING, logger=sm.__name__):
-            assert sm._ensure_engine_reaper(tmp_path) is False
-        assert "Could not start the engine reaper" in caplog.text
+            assert sm.ensure_engine_reaper(tmp_path) is False
+        assert "Could not launch the engine reaper" in caplog.text
+
+    def test_a_reaper_that_exits_without_claiming_is_reported(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A reaper that dies on import launched fine; only its missing claim shows it."""
+        monkeypatch.setattr(sm.subprocess, "Popen", lambda *_a, **_k: _FakeReaper(exit_code=1))
+        with caplog.at_level(logging.WARNING, logger=sm.__name__):
+            assert sm.ensure_engine_reaper(tmp_path) is False
+        assert "did not report running" in caplog.text
+
+    def test_a_reaper_that_never_claims_times_out(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(sm.subprocess, "Popen", lambda *_a, **_k: _FakeReaper(exit_code=None))
+        monkeypatch.setattr(sm, "_REAPER_READY_TIMEOUT_S", 0.2)
+        assert sm.ensure_engine_reaper(tmp_path) is False
+
+    def test_a_reaper_that_lost_the_claim_to_a_live_one_counts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Two users ensure at once: the loser's reaper exits, and the winner's lock answers."""
+        winner: list[FileLock] = []
+
+        def _loses(*_a: object, **_k: object) -> _FakeReaper:
+            winner.append(_held(tmp_path))
+            return _FakeReaper(exit_code=0)
+
+        monkeypatch.setattr(sm.subprocess, "Popen", _loses)
+        try:
+            assert sm.ensure_engine_reaper(tmp_path) is True
+        finally:
+            winner[0].release()
 
 
 def test_the_spawned_module_is_the_reaper_module() -> None:

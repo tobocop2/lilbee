@@ -121,6 +121,10 @@ _PROBE_TIMEOUT_S = 5.0
 _LIVENESS_TIMEOUT = httpx.Timeout(connect=0.5, read=2.0, write=2.0, pool=2.0)
 # Run as `python -m`; the frozen build dispatches `-m lilbee.*` to the module's main().
 _REAPER_MODULE = "lilbee.providers.fleet.engine_reaper"
+# A reaper reports running within one interpreter start; a frozen onefile start
+# on a slow disk is the long case.
+_REAPER_READY_TIMEOUT_S = 10.0
+_REAPER_READY_POLL_S = 0.05
 
 
 @lru_cache(maxsize=1)
@@ -269,8 +273,8 @@ class SwapManager:
         shortens it for the roles that are warmed.
 
         *lifetime* says what ends the engine. ``USERS`` needs the caller to hold
-        the dir's build lock, and falls back to ``BUILDER`` when the dir's reaper
-        cannot start, so an engine nothing would stop is never spawned.
+        the dir's build lock, and falls back to ``BUILDER`` when no reaper reports
+        running for the dir, so the engine is never left unbound and unwatched.
         """
         # Idempotent safety net; the provider reaps before planning so the GPU
         # probe already saw the real free memory.
@@ -308,7 +312,8 @@ class SwapManager:
         self._log_path.parent.mkdir(parents=True, exist_ok=True)
         self._log_file = self._log_path.open("ab")
         self._log_offset = self._log_path.stat().st_size
-        if lifetime is EngineLifetime.USERS and not _ensure_engine_reaper(self._data_dir):
+        if lifetime is EngineLifetime.USERS and not ensure_engine_reaper(self._data_dir):
+            log.warning("The engine at %s stops with this process.", self._data_dir)
             lifetime = EngineLifetime.BUILDER
         self._proc = spawn_bound_child(
             [
@@ -904,12 +909,16 @@ def stop_engine(data_dir: Path) -> list[str]:
     return stopped
 
 
-def _ensure_engine_reaper(data_dir: Path) -> bool:
-    """Make sure a reaper watches *data_dir*; False when none could start."""
+def ensure_engine_reaper(data_dir: Path) -> bool:
+    """Make sure a live reaper watches *data_dir*; False when none reports running.
+
+    A reaper reports running by holding the dir's reaper lock. Waiting for that,
+    not only for the launch, also catches a reaper that dies on import.
+    """
     if reaper_running(data_dir):
         return True
     try:
-        subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
+        reaper = subprocess.Popen(  # noqa: S603 - argv is this interpreter and a fixed module
             [sys.executable, "-m", _REAPER_MODULE, str(data_dir)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
@@ -918,12 +927,18 @@ def _ensure_engine_reaper(data_dir: Path) -> bool:
             creationflags=_CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS,
         )
     except OSError:
-        log.warning(
-            "Could not start the engine reaper for %s; the engine stops with this process.",
-            data_dir,
-        )
+        log.warning("Could not launch the engine reaper for %s.", data_dir)
         return False
-    return True
+    deadline = time.monotonic() + _REAPER_READY_TIMEOUT_S
+    while time.monotonic() < deadline and reaper.poll() is None:
+        if reaper_running(data_dir):
+            return True
+        time.sleep(_REAPER_READY_POLL_S)
+    # An exited reaper either lost the claim to a live one or failed to start.
+    if reaper_running(data_dir):
+        return True
+    log.warning("The engine reaper for %s did not report running.", data_dir)
+    return False
 
 
 def reap_stale(data_dir: Path) -> None:

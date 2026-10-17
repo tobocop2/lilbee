@@ -113,7 +113,8 @@ fi
 # its JSON decoder but is entered as a module, and a probe that cannot start
 # reads as "the loader has no opinion", which would degrade GPU classification
 # silently on exactly the builds users install. The engine reaper is never
-# statically imported; without it a shared engine dies with its builder.
+# statically imported; without it no reaper reports running, so every engine
+# is bound to its builder and a peer loses the engine when the builder exits.
 CHILD_MODULE_FLAGS=(
     --include-module=lilbee.runtime._splash_runner
     --include-module=lilbee.providers.fleet.vulkan_probe

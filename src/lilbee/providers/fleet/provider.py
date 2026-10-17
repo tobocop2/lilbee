@@ -62,6 +62,7 @@ from lilbee.providers.fleet.swap_manager import (
     SwapManager,
     SwapState,
     engine_record_exists,
+    ensure_engine_reaper,
     find_live_state,
     reap_stale,
     state_is_healthy,
@@ -879,32 +880,49 @@ def _can_build_engine(wanted: set[tuple[WorkerRole, str]]) -> bool:
 def _engine_lifetime(engine_dir: Path) -> EngineLifetime:
     """What ends an engine this process builds in *engine_dir*.
 
-    Shared ownership needs kernel-arbitrated user locks; without them the engine
-    dies with its builder unless keep-warm asks it to outlive lilbee.
+    A keep-warm engine outlives lilbee, so nothing watches it. Otherwise shared
+    ownership needs kernel-arbitrated user locks; without them the engine dies
+    with its builder.
     """
+    if cfg.keep_engine_warm:
+        return EngineLifetime.DETACHED
     if kernel_arbitrates_locks(engine_dir):
         return EngineLifetime.USERS
-    return EngineLifetime.DETACHED if cfg.keep_engine_warm else EngineLifetime.BUILDER
+    return EngineLifetime.BUILDER
 
 
-def _warm_ttl_seconds(*, hold_warm_for_session: bool = False) -> int:
+def _watch_bound_engine(engine_dir: Path) -> None:
+    """Make sure a reaper watches the engine this process just bound in *engine_dir*.
+
+    A reaper can die (killed, or a failed start) while its engine serves. Every
+    bind repairs that, so the users of a live engine leave a reaper behind them.
+    A kept-warm engine is meant to outlive its users and is not watched.
+    """
+    if keep_warm_requested(engine_dir) or not kernel_arbitrates_locks(engine_dir):
+        return
+    if not ensure_engine_reaper(engine_dir):
+        log.warning(
+            "No reaper watches the engine at %s; it stops at a clean last exit only.", engine_dir
+        )
+
+
+def _warm_ttl_seconds(lifetime: EngineLifetime, *, hold_warm_for_session: bool = False) -> int:
     """llama-swap idle-unload timer in seconds for the spawned fleet.
 
     A ttl of 0 keeps weights resident until the engine is stopped; otherwise an
     idle engine releases its weights after ``engine_idle_ttl_minutes`` and reloads
-    transparently on the next prompt. The timer is held off (ttl 0) while someone
-    who owns the engine's lifetime depends on an instant response: an interactive
-    session (*hold_warm_for_session*) whose engine dies with it, or a bulk ingest
-    whose unevenly loaded replicas must not idle-unload and reload cold mid-run.
+    transparently on the next prompt. The timer is held off (ttl 0) for an engine
+    bound to its builder (*lifetime* ``BUILDER``) while the builder depends on an
+    instant response: an interactive session (*hold_warm_for_session*), or a bulk
+    ingest whose unevenly loaded replicas must not idle-unload and reload cold.
 
-    A ``keep_engine_warm`` engine outlives every holder, so no holder may pin its
-    weights: llama-swap's ttl is fixed at launch, and a session hold baked into a
-    detached engine would keep the weights loaded for as long as the machine
-    stays up. Keep-warm keeps the engine process (a small proxy, no weights)
-    alive across launches; the weights follow the idle window like every other
-    mode, and only the user's explicit 0 keeps them loaded.
+    An engine that outlives its builder (shared by its users, or kept warm) takes
+    no hold: llama-swap's ttl is fixed at launch, so a hold baked into it would
+    keep the weights loaded after the session or ingest ended, for as long as any
+    other user or the machine stays up. Its weights follow the idle window like
+    every other mode, and only the user's explicit 0 keeps them loaded.
     """
-    if not cfg.keep_engine_warm and (hold_warm_for_session or ingest_keep_warm()):
+    if lifetime is EngineLifetime.BUILDER and (hold_warm_for_session or ingest_keep_warm()):
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 
@@ -916,8 +934,8 @@ class FleetProvider:
         # An interactive session (the TUI) owns this process for its whole
         # lifetime, so a fleet bound to it stays resident instead of idle-unloading
         # under a user who is still in the app; closing lilbee releases it. A
-        # keep-warm fleet outlives the session, so _warm_ttl_seconds ignores the
-        # hold for it. Set by the container that built this provider, never
+        # fleet that outlives the session (shared or keep-warm) takes no hold, so
+        # _warm_ttl_seconds ignores it there. Set by the container that built this provider, never
         # mutated afterwards.
         self._hold_warm_for_session = hold_warm
         # One llama-swap per placed group, so restarting one group's servers (a
@@ -1102,6 +1120,7 @@ class FleetProvider:
             states = _healthy_states(engine_dir)
             if wanted and self._bind_all_in_dir(engine_dir, states, pin, demand):
                 self._hold_membership(engine_dir)
+                _watch_bound_engine(engine_dir)
                 return True
             replaceable = not live_users_exist(engine_dir) or _healthy_groups_ours(
                 states, pin, wanted
@@ -1237,15 +1256,13 @@ class FleetProvider:
         by_group = _launches_by_group(plan)
         started: dict[SwapGroup, SwapManager] = {}
         try:
+            lifetime = _engine_lifetime(data_dir)
+            ttl_seconds = _warm_ttl_seconds(
+                lifetime, hold_warm_for_session=self._hold_warm_for_session
+            )
             for group, group_launches in by_group.items():
                 swap = SwapManager(data_dir, group)
-                swap.start(
-                    list(group_launches),
-                    ttl_seconds=_warm_ttl_seconds(
-                        hold_warm_for_session=self._hold_warm_for_session
-                    ),
-                    lifetime=_engine_lifetime(data_dir),
-                )
+                swap.start(list(group_launches), ttl_seconds=ttl_seconds, lifetime=lifetime)
                 started[group] = swap
         except BaseException:
             for swap in started.values():
@@ -2633,12 +2650,13 @@ class FleetProvider:
                 for group in sorted(changed & set(new), key=lambda g: g.value):
                     group_launches = list(new[group])
                     swap = SwapManager(reload_dir, group)
+                    lifetime = _engine_lifetime(reload_dir)
                     swap.start(
                         group_launches,
                         ttl_seconds=_warm_ttl_seconds(
-                            hold_warm_for_session=self._hold_warm_for_session
+                            lifetime, hold_warm_for_session=self._hold_warm_for_session
                         ),
-                        lifetime=_engine_lifetime(reload_dir),
+                        lifetime=lifetime,
                     )
                     with self._lock:
                         self._adopt_group(group, swap, group_launches)

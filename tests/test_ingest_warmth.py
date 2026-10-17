@@ -9,6 +9,7 @@ from lilbee.core.config import cfg
 from lilbee.data import offload
 from lilbee.providers.fleet.ingest_warmth import ingest_keep_warm, keep_fleet_warm
 from lilbee.providers.fleet.provider import _warm_ttl_seconds
+from lilbee.providers.fleet.swap_manager import EngineLifetime
 
 
 @pytest.fixture(autouse=True)
@@ -29,17 +30,17 @@ class TestKeepFleetWarm:
         cfg.keep_engine_warm = False
         cfg.engine_idle_ttl_minutes = 5
         assert not ingest_keep_warm()
-        assert _warm_ttl_seconds() == 300
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 300
 
     def test_ingest_holds_the_fleet_resident(self):
         cfg.keep_engine_warm = False
         cfg.engine_idle_ttl_minutes = 5
         with keep_fleet_warm():
             assert ingest_keep_warm()
-            assert _warm_ttl_seconds() == 0  # never idle-unload mid-ingest
+            assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 0  # never idle-unload mid-ingest
         # Released after the block: back to the on-demand idle window.
         assert not ingest_keep_warm()
-        assert _warm_ttl_seconds() == 300
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 300
 
     def test_keep_engine_warm_ignores_the_ingest_hold(self):
         # An ingest hold pins weights only in an engine bound to this process. A
@@ -48,16 +49,23 @@ class TestKeepFleetWarm:
         cfg.engine_idle_ttl_minutes = 5
         with keep_fleet_warm():
             assert ingest_keep_warm()
-            assert _warm_ttl_seconds() == 300
+            assert _warm_ttl_seconds(EngineLifetime.DETACHED) == 300
+
+    def test_a_shared_engine_ignores_the_ingest_hold(self):
+        # An engine shared by its users outlives the ingest that built it.
+        cfg.keep_engine_warm = False
+        cfg.engine_idle_ttl_minutes = 5
+        with keep_fleet_warm():
+            assert _warm_ttl_seconds(EngineLifetime.USERS) == 300
 
     def test_nested_scopes_restore_correctly(self):
         cfg.keep_engine_warm = False
         cfg.engine_idle_ttl_minutes = 10
         with keep_fleet_warm():
             with keep_fleet_warm():
-                assert _warm_ttl_seconds() == 0
-            assert _warm_ttl_seconds() == 0  # still inside the outer hold
-        assert _warm_ttl_seconds() == 600
+                assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 0
+            assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 0  # still inside the outer hold
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 600
 
     def test_max_inflight_override_raises_admission(self):
         # bb-emkt0: on a multi-GPU box the auto cap is CPU-bound; the override
@@ -116,6 +124,6 @@ class TestKeepFleetWarm:
         with keep_fleet_warm():
             ctx = contextvars.copy_context()
         # Outside the block the live context is released...
-        assert _warm_ttl_seconds() == 300
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 300
         # ...but the snapshot captured mid-ingest still reports the hold.
-        assert ctx.run(_warm_ttl_seconds) == 0
+        assert ctx.run(_warm_ttl_seconds, EngineLifetime.BUILDER) == 0

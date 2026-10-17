@@ -16,7 +16,8 @@ from pathlib import Path
 import psutil
 import pytest
 
-from lilbee.providers.fleet.swap_manager import _ensure_engine_reaper
+from lilbee.providers.fleet import swap_manager as sm
+from lilbee.providers.fleet.swap_manager import ensure_engine_reaper
 from lilbee.runtime.engine_lock import reaper_running
 
 pytestmark = pytest.mark.slow
@@ -73,7 +74,7 @@ def test_the_reaper_ends_the_engine_only_after_every_user_is_killed(tmp_path: Pa
     record.write_text(f'{{"pid": {gone.pid}, "member_ports": []}}', encoding="utf-8")
     first, second = _start_user(engine_dir), _start_user(engine_dir)
     try:
-        assert _ensure_engine_reaper(engine_dir) is True
+        assert ensure_engine_reaper(engine_dir) is True
         assert _until(lambda: reaper_running(engine_dir), 30), "the reaper never took its lock"
         first.kill()
         first.wait(timeout=10)
@@ -90,3 +91,49 @@ def test_the_reaper_ends_the_engine_only_after_every_user_is_killed(tmp_path: Pa
         for pid in _reaper_pids(engine_dir):
             with contextlib.suppress(psutil.NoSuchProcess):
                 psutil.Process(pid).kill()
+
+
+@pytest.mark.timeout(90)
+def test_a_killed_reaper_is_replaced_by_the_next_bind(tmp_path: Path) -> None:
+    """The bind's check starts a new reaper, so the killed one leaves no orphan."""
+    engine_dir = tmp_path / "engine"
+    engine_dir.mkdir()
+    record = engine_dir / "llama-swap.state.1.chat.json"
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait(timeout=30)
+    record.write_text(f'{{"pid": {gone.pid}, "member_ports": []}}', encoding="utf-8")
+    builder = _start_user(engine_dir)
+    binder = None
+    try:
+        assert ensure_engine_reaper(engine_dir) is True
+        # A Windows venv runs the interpreter under a launcher with the same command
+        # line, so every match is killed.
+        first = _reaper_pids(engine_dir)
+        assert first, "no reaper process found"
+        for pid in first:
+            psutil.Process(pid).kill()
+        assert _until(lambda: not reaper_running(engine_dir), 10), "the killed reaper kept its lock"
+        binder = _start_user(engine_dir)
+        assert ensure_engine_reaper(engine_dir) is True  # the bind's check
+        assert reaper_running(engine_dir)
+        builder.kill()
+        binder.kill()
+        assert _until(lambda: not record.exists(), 20), "the engine outlived every user"
+    finally:
+        for user in (builder, binder):
+            if user is not None and user.poll() is None:
+                user.kill()
+        for pid in _reaper_pids(engine_dir):
+            with contextlib.suppress(psutil.NoSuchProcess):
+                psutil.Process(pid).kill()
+
+
+@pytest.mark.timeout(60)
+def test_a_reaper_that_dies_on_import_is_not_reported_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing module (as in a frozen build without it) launches, then exits at once."""
+    monkeypatch.setattr(sm, "_REAPER_MODULE", "lilbee.providers.fleet.no_such_reaper")
+
+    assert ensure_engine_reaper(tmp_path) is False
+    assert reaper_running(tmp_path) is False

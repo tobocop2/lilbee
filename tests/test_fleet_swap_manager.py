@@ -221,7 +221,7 @@ class TestStart:
 
         monkeypatch.setattr(sm, "resolve_llama_swap", lambda: Path("/fake/llama-swap"))
         monkeypatch.setattr(sm, "spawn_bound_child", _capturing_popen)
-        monkeypatch.setattr(sm, "_ensure_engine_reaper", _ensure)
+        monkeypatch.setattr(sm, "ensure_engine_reaper", _ensure)
         monkeypatch.setattr(sm, "_stop_own_fleet", lambda cfg, ports: None)
         _patch_http(monkeypatch, lambda _url: _fake_response(status=200))
 

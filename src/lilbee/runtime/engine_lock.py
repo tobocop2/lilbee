@@ -264,12 +264,12 @@ def live_users_exist(engine_dir: Path) -> bool:
     return False
 
 
-def try_hold_reaper_lock(engine_dir: Path) -> FileLock | None:
-    """Hold *engine_dir*'s reaper lock, or return None when another reaper holds it."""
+def try_hold_reaper_lock(engine_dir: Path, *, timeout: float = _PROBE_TIMEOUT_S) -> FileLock | None:
+    """Hold *engine_dir*'s reaper lock, or return None when it stays held for *timeout*."""
     engine_dir.mkdir(parents=True, exist_ok=True)
     lock = FileLock(engine_dir / _REAPER_LOCK_NAME, thread_local=False)
     try:
-        lock.acquire(timeout=_PROBE_TIMEOUT_S)
+        lock.acquire(timeout=timeout)
     except FileLockTimeout:
         return None
     return lock
