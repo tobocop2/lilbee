@@ -35,11 +35,6 @@ from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
 
-# Rows appended to the Documents table per refresh tick. Each ``add_row`` runs
-# on the UI thread, so dumping a whole ingested wiki in one loop froze the
-# screen for seconds; rendering a bounded batch per ``call_after_refresh`` lets
-# the user scroll and interact while the rest streams in.
-
 
 @dataclass
 class _DocsResult:
@@ -331,7 +326,7 @@ class StatusScreen(Screen[None]):
                     self._pending_arch = arch
 
     def _apply_docs(self, docs: _DocsResult) -> None:
-        """Render *docs* into the Documents table (batched) + storage section."""
+        """Render *docs* into the Documents table + storage section."""
         self._load_documents(docs)
         self._load_held_out(docs)
         self._load_storage(docs.document_count)
