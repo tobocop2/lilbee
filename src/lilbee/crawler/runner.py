@@ -27,6 +27,7 @@ from lilbee.crawler.bootstrap import (
 from lilbee.crawler.crawlberg_fetcher import CrawlbergFetcher
 from lilbee.crawler.discovery import build_concurrency_spec, build_filter_spec
 from lilbee.crawler.events import (
+    _browser_warm_up,
     _drain_page_stream,
     _emit_page_failure,
     _fetched_to_result,
@@ -98,11 +99,16 @@ def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
     )
 
 
-async def _fetch_single_page(url: str, render_mode: CrawlRenderMode) -> CrawlResult:
+async def _fetch_single_page(
+    url: str, render_mode: CrawlRenderMode, on_progress: DetailedProgressCallback | None
+) -> CrawlResult:
     """One single-URL fetch; a failure to fetch the page becomes a failed result."""
     try:
         async with _fetcher(render_mode) as fetcher:
+            warm_up_done = _browser_warm_up(on_progress, render_mode)
             page = await fetcher.fetch_single(url, timeout=cfg.crawl_timeout)
+            if warm_up_done is not None:
+                warm_up_done()
         return _fetched_to_result(page)
     except (CrawlerBrowserError, CrawlEngineRefusedError):
         raise
@@ -115,12 +121,14 @@ async def crawl_single(
     url: str,
     *,
     render_mode: CrawlRenderMode = CrawlRenderMode.BROWSER,
+    on_progress: DetailedProgressCallback | None = None,
 ) -> CrawlResult:
     """Fetch a single URL.
 
     ``render_mode`` defaults to ``BROWSER`` for direct callers; the public
     entry point :func:`crawl_and_save` resolves it from ``cfg.crawl_render_mode``
-    and passes the canonical value down.
+    and passes the canonical value down. ``on_progress`` receives the setup
+    bracket of a browser crawl's warm-up.
 
     Raises :class:`CrawlerBackendError` if the crawler extra isn't installed.
     When the headless Chromium shell is missing at launch, runs the bootstrap
@@ -134,11 +142,11 @@ async def crawl_single(
             "Web crawling is not available. Run 'uv sync --extra crawler' to enable it."
         )
     try:
-        return await _fetch_single_page(url, render_mode)
+        return await _fetch_single_page(url, render_mode, on_progress)
     except ChromiumMissingError:
         log.warning("Chromium missing for %s; bootstrapping then retrying", url)
         await bootstrap.bootstrap_chromium(on_progress=None)
-        return await _fetch_single_page(url, render_mode)
+        return await _fetch_single_page(url, render_mode, on_progress)
 
 
 async def crawl_recursive(
@@ -226,6 +234,7 @@ async def crawl_recursive(
                     sitemap_total=sitemap_total,
                     pages_cap=_pages_cap(pages),
                     cancel=cancel,
+                    render_mode=render_mode,
                 )
             finally:
                 await page_stream.aclose()
@@ -334,7 +343,7 @@ async def _run_crawl(
     if cancel is not None and cancel.is_set():
         return 0
     if depth == 0:
-        result = await crawl_single(url, render_mode=render_mode)
+        result = await crawl_single(url, render_mode=render_mode, on_progress=on_progress)
         try:
             await flush_page(result)
         except OSError:
