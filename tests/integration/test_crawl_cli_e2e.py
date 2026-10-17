@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from lilbee.cli.app import app
 from lilbee.core.config.enums import CrawlRenderMode
 from tests._windows_loop import windows_proactor_loop
 from tests.integration import _crawl_site as site_mod
@@ -72,6 +77,11 @@ NOT_SAVED_TEXT = [
     site_mod.SUB_TEXT,
     "404 Not Found",
 ]
+
+
+# Written to the process's standard output descriptor before a JSON crawl: the control that
+# proves the descriptor-level capture sees what a native library would print.
+STDOUT_PROBE = b"stdout probe\n"
 
 
 @dataclass(frozen=True)
@@ -253,3 +263,32 @@ class TestBrowserModeCrawl:
         with windows_proactor_loop(), crawl_sandbox(tmp_path, CrawlRenderMode.BROWSER) as root:
             run = run_add(root, crawl_site.url("/js/"))
         assert site_mod.SCRIPT_TEXT in run.pages["js/index"]
+
+
+class TestJsonOutput:
+    """``lilbee --json add --crawl`` writes one JSON object to stdout and nothing else."""
+
+    def _json_crawl(
+        self, tmp: Path, site: CrawlSite, render_mode: CrawlRenderMode, capfd: pytest.CaptureFixture
+    ) -> None:
+        os.write(sys.stdout.fileno(), STDOUT_PROBE)
+        with crawl_sandbox(tmp, render_mode) as root:
+            args = ["add", site.url("/"), "--data-dir", str(root), "--crawl", "--depth", "1"]
+            result = CliRunner().invoke(app, ["--json", *args])
+        assert result.exit_code == 0, result.output
+        report = json.loads(result.stdout)
+        assert report["crawled"] > MIN_PAGES_BEYOND_SEED
+        assert capfd.readouterr().out == STDOUT_PROBE.decode()
+
+    def test_http_crawl_stdout_is_one_json_object(
+        self, tmp_path: Path, crawl_site: CrawlSite, capfd: pytest.CaptureFixture
+    ) -> None:
+        self._json_crawl(tmp_path, crawl_site, CrawlRenderMode.HTTP, capfd)
+
+    @full_crawl_only
+    def test_browser_crawl_stdout_is_one_json_object(
+        self, tmp_path: Path, crawl_site: CrawlSite, capfd: pytest.CaptureFixture
+    ) -> None:
+        require_chromium()
+        with windows_proactor_loop():
+            self._json_crawl(tmp_path, crawl_site, CrawlRenderMode.BROWSER, capfd)
