@@ -53,6 +53,7 @@ from .lance_helpers import (
     _vector_index_dangling,
     ensure_table,
     escape_sql_string,
+    open_committed,
     refs_compatible,
     table_names,
 )
@@ -503,17 +504,16 @@ def _md5(text: str) -> str:
 
 def _keyed_by_path(db: LanceDBConnection) -> bool:
     """Whether a table of *db* still names a source by path, or ``_sources`` lacks a column."""
-    names = table_names(db)
-    if SOURCES_TABLE in names:
-        held = set(db.open_table(SOURCES_TABLE).schema.names)
+    sources = open_committed(db, SOURCES_TABLE)
+    if sources is not None:
         added = (_SOURCE_ID, _PATH, *_SOURCE_STAT_COLUMNS, *_SOURCE_META_COLUMNS, _HELD_OUT)
-        if not held.issuperset(added):
+        if not set(sources.schema.names).issuperset(added):
             return True
-    return any(
-        column in db.open_table(name).schema.names
-        for name, column in _PATH_KEY_COLUMNS
-        if name in names
-    )
+    for name, column in _PATH_KEY_COLUMNS:
+        table = open_committed(db, name)
+        if table is not None and column in table.schema.names:
+            return True
+    return False
 
 
 def _index_names(table: LanceTable) -> dict[str, list[str]]:
@@ -1025,11 +1025,7 @@ class Store:
 
     def open_table(self, name: str) -> LanceTable | None:
         """Open a table if it exists, otherwise return None."""
-        db = self.get_db()
-        if name not in table_names(db):
-            return None
-        table: LanceTable = db.open_table(name)
-        return table
+        return open_committed(self.get_db(), name)
 
     def ensure_fts_index(self, *, blocking: bool = True) -> None:
         """Create the chunks FTS index, or run ``optimize()`` once it exists.

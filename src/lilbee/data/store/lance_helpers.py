@@ -61,6 +61,22 @@ def table_names(db: LanceDBConnection) -> list[str]:
             return names
 
 
+def open_committed(db: LanceDBConnection, name: str) -> LanceTable | None:
+    """Open table *name*, or ``None`` when it is absent or no process has committed it yet.
+
+    The listing names a table as soon as its folder exists, before its first
+    version is written, so a table that another process is creating is listed
+    but cannot be opened. It holds no rows yet.
+    """
+    if name not in table_names(db):
+        return None
+    try:
+        table: LanceTable = db.open_table(name)
+    except ValueError:
+        return None
+    return table
+
+
 def ensure_table(db: LanceDBConnection, name: str, schema: pa.Schema) -> LanceTable:
     table: LanceTable
     if name in table_names(db):

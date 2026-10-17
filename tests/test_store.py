@@ -37,6 +37,7 @@ from lilbee.data.store.lance_helpers import (
     _has_scalar_index,
     _has_vector_index,
     _index_registry,
+    table_names,
 )
 from lilbee.runtime.lock import LockingUnsupportedError, write_lock
 from tests._mock_effects import repeat_last
@@ -5604,6 +5605,29 @@ class TestRekeyReplacesAndSkips:
         assert {name: store.open_table(name).version for name, _ in _KEY_COLUMNS} == versions
         store.rekey_sources_under("work", "notes/work")
         assert store.open_table("_sources").version > versions["_sources"]
+
+
+class TestATableAnotherProcessIsCreating:
+    """The listing names a table once its folder exists, before its first version does."""
+
+    @pytest.fixture()
+    def half_made(self, test_config):
+        store = Store(test_config)
+        store.get_db()
+        (test_config.lancedb_dir / "_sources.lance").mkdir()
+        assert "_sources" in table_names(store.get_db()), "the folder must be listed"
+        with pytest.raises(ValueError, match="was not found"):
+            store.get_db().open_table("_sources")
+        return store
+
+    def test_a_second_process_opens_the_library(self, half_made, test_config):
+        reopened = Store(test_config)
+
+        assert reopened.get_db() is not None
+
+    def test_the_table_reads_as_absent(self, half_made):
+        assert half_made.open_table("_sources") is None
+        assert half_made.source_ids(["a.md"]) == {}
 
 
 def _citation(source, key="src1", **changes):
