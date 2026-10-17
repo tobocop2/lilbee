@@ -2655,14 +2655,13 @@ class TestSavePage:
         assert synced[0] == ("record", False)
         assert page.read_text(encoding="utf-8") == "# P"
 
-    def test_a_cut_record_line_does_not_join_the_next_line(self, isolated_env, caplog):
-        _pages_file().write_text('{"url": "https://example.com/cut", "fi', encoding="utf-8")
-        url = "https://example.com/p"
-        save_page(CrawlResult(url=url, markdown="# P"), load_crawl_record(), MagicMock())
-        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
-            pages = load_crawl_record().pages
-        assert set(pages) == {url}
-        assert any("malformed crawl record line" in r.message for r in caplog.records)
+    def test_a_cut_record_line_does_not_join_the_next_line(self, isolated_env):
+        cut = '{"url": "https://example.com/cut", "fi'
+        _pages_file().write_text(cut, encoding="utf-8")
+        entry = CrawlMeta("example.com/p~1.md", "h", "t")
+        _claim("https://example.com/p", entry, CrawlRecord())
+        lines = _pages_file().read_text(encoding="utf-8").splitlines()
+        assert lines == [cut, _record_lines(("https://example.com/p", entry)).strip()]
 
     @pytest.mark.parametrize("damage", ["zero-tail", "garbage"])
     def test_a_page_whose_record_line_was_lost_is_adopted_and_updated_later(
