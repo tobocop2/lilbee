@@ -159,6 +159,9 @@ dev = [
     # without this, chardet only arrives via the crawler extra, and the bare
     # `uv sync --locked` CI test env cannot run those tests.
     "chardet>=7",
+    # The saved-page names and their tests parse addresses with ada-url, which
+    # otherwise only the crawler and release extras install.
+    "ada-url>=4.0.0",
     "hypothesis>=6.100",
     "mypy>=1.19.1",
     "packaging>=24",
