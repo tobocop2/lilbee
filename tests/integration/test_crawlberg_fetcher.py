@@ -1544,8 +1544,11 @@ class TestRobotsTxt:
         single_paths, _ = await _robots_single_crawl(site, HTTP)
         _assert_robots_ignored(site, site_paths, single_paths)
 
-    async def test_a_robots_txt_that_cannot_be_read_skips_the_page_and_says_why(self, site):
-        site.robots_status = HTTPStatus.SERVICE_UNAVAILABLE
+    @pytest.mark.parametrize(
+        "status", [HTTPStatus.SERVICE_UNAVAILABLE, HTTPStatus.REQUEST_TIMEOUT], ids=["503", "408"]
+    )
+    async def test_a_robots_txt_that_cannot_be_read_skips_the_page_and_says_why(self, site, status):
+        site.robots_status = status
         events: list[tuple[EventType, object]] = []
         paths = await crawl_and_save(
             site.url(ROBOTS_ALLOWED),
