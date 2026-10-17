@@ -428,17 +428,6 @@ SETTINGS_MAP: dict[str, SettingDef] = {
             "Applies to Vulkan, CUDA, and ROCm. Requires a restart to take effect."
         ),
     ),
-    "main_gpu": SettingDef(
-        int,
-        nullable=True,
-        group=SettingGroup.GENERATION,
-        help_text=(
-            "Primary GPU index for llama.cpp when multiple devices are visible. "
-            "Empty = let llama.cpp pick (index 0). Set this together with "
-            "gpu_devices to pin inference to a specific card. Requires a restart "
-            "to take effect."
-        ),
-    ),
     "seed": SettingDef(
         int,
         nullable=True,

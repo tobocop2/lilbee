@@ -916,10 +916,10 @@ touching the running fleet.
   get raw, un-normalized vectors (the server would L2-normalize pooled output by
   default, which would also collapse a rank score to +-1). Context and GPU-layer
   counts come from the shared `engine_params` helpers, never a hardcoded budget.
-  `main_gpu` is forwarded
-  as `--main-gpu` only to a server placed on more than one card, as an index into
-  that server's own device list; it is part of the engine pin, so a process with a
-  different index binds its own engine.
+  No launch sends `--main-gpu`: llama-server reads it only under split mode
+  `none`, and a server sees only the cards it was placed on. `gpu_devices` and
+  `placement` choose the cards; a `main_gpu` key in `config.toml` or a
+  `LILBEE_MAIN_GPU` variable is refused with a warning at load.
 - **Lifecycle** (`swap_manager.py` / `provider.py`): each swap group runs behind its own
   llama-swap process with its own config file, so restarting one group (a placement or
   per-role model change) never touches another group's loaded servers. A reload

@@ -23,7 +23,9 @@ A setting is one field of lilbee's configuration. Five surfaces read or write it
 
 An empty environment value counts as unset, so the next surface decides. The exception is `vision_model` and `reranker_model`: an empty `LILBEE_VISION_MODEL` or `LILBEE_RERANKER_MODEL` clears that model for the process.
 
-An environment value that its setting refuses stops every command with one line that names the variable, the value and what the setting takes. `--help` still prints. The exception is the settings whose default is automatic or off, `flash_attention`, `gpu_devices`, `main_gpu`, `n_gpu_layers` and `semantic_chunking`: a refused value prints a warning and the setting takes its default. A write of text they cannot read over MCP or HTTP stores the default too, with a warning in the log. A refused value in `config.toml` is dropped with a warning: that setting takes its default and the rest of the file loads.
+An environment value that its setting refuses stops every command with one line that names the variable, the value and what the setting takes. `--help` still prints. The exception is the settings whose default is automatic or off, `flash_attention`, `gpu_devices`, `n_gpu_layers` and `semantic_chunking`: a refused value prints a warning and the setting takes its default. A write of text they cannot read over MCP or HTTP stores the default too, with a warning in the log. A refused value in `config.toml` is dropped with a warning: that setting takes its default and the rest of the file loads.
+
+`main_gpu` is not a setting. A `main_gpu` key in `config.toml` or a `LILBEE_MAIN_GPU` variable prints a warning and is ignored: choose the cards with `gpu_devices` or `placement`.
 
 There is no general `lilbee set` command. From a shell, set the environment variable or edit `config.toml`. The two CLI commands that do write a setting are named in the CLI column. The top-level `--data-dir`, `--model`, `--log-level` and `--json` flags override their setting for one invocation and do not persist.
 

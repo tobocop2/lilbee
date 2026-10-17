@@ -86,8 +86,15 @@ _USES_ITS_DEFAULT = "uses its default"
 # A variable its setting refuses stops the command and a write of one is refused,
 # except on these: each takes its default, automatic or off, with a warning.
 _TAKES_DEFAULT_WHEN_REFUSED = frozenset(
-    {"flash_attention", "n_gpu_layers", "main_gpu", "gpu_devices", "semantic_chunking"}
+    {"flash_attention", "n_gpu_layers", "gpu_devices", "semantic_chunking"}
 )
+
+# A key that is not a setting, by name, and what to use instead. A stored or
+# exported one is refused out loud rather than silently ignored.
+_NOT_SETTINGS: dict[str, str] = {
+    # llama-server reads it only under split mode none, which no fleet launch uses.
+    "main_gpu": "choose the cards with gpu_devices or placement",
+}
 
 
 def value_is_set(field_name: str, raw: object) -> bool:
@@ -877,12 +884,6 @@ class Config(BaseSettings):
     # Vulkan-loader's default ordering in place.
     gpu_devices: str | None = ConfigField(default=None, writable=True)
 
-    # Primary GPU index passed to ``Llama(main_gpu=...)``. Only matters
-    # when multiple devices remain visible after ``gpu_devices``; with
-    # a single visible device, llama.cpp ignores this. ``None``
-    # (default) lets llama.cpp pick (index 0).
-    main_gpu: int | None = ConfigField(default=None, writable=True)
-
     # Manual GPU placement override stored as a JSON scalar (the config.toml store
     # is flat, and core must not depend on the provider PlacementSpec type). When
     # set, it fully replaces the automatic placement planner: each active role pins
@@ -1237,22 +1238,6 @@ class Config(BaseSettings):
                 raise ValueError("use a whole number, cpu or auto") from None
         return int(v)
 
-    @field_validator("main_gpu", mode="before")
-    @classmethod
-    def _parse_main_gpu(cls, v: Any) -> int | None:
-        """Empty/auto strings -> None, integers parsed verbatim."""
-        if v is None:
-            return None
-        if isinstance(v, str):
-            label = v.strip().lower()
-            if label in ("", "auto", "none"):
-                return None
-            try:
-                return int(label)
-            except ValueError:
-                raise ValueError("use a whole number or auto") from None
-        return int(v)
-
     @field_validator("gpu_devices", mode="before")
     @classmethod
     def _parse_gpu_devices(cls, v: Any) -> str | None:
@@ -1545,6 +1530,11 @@ def _variable(settings_cls: type[BaseSettings], field_name: str) -> str:
     return f"{settings_cls.model_config.get('env_prefix', '')}{field_name.upper()}"
 
 
+def _not_a_setting(name: str, key: str) -> str:
+    """The warning for *name*, which sets *key* although *key* is not a setting."""
+    return f"{name} is not a setting and is ignored; {_NOT_SETTINGS[key]}"
+
+
 def _expected(error: ErrorDetails) -> str:
     """What one validation error says about the value, in the words of a settings file."""
     words = _EXPECTED_BY_ERROR.get(error["type"])
@@ -1616,6 +1606,10 @@ class _PlainEnvSource:
             warn_on_load(f"{variable} = {values[key]!r} {refused[key]}; {key} uses its default")
             values[key] = self._settings_cls.model_fields[key].default
             del refused[key]
+        for key in _NOT_SETTINGS:
+            variable = _variable(self._settings_cls, key)
+            if os.environ.get(variable, "").strip():
+                warn_on_load(_not_a_setting(variable, key))
         return {key: value for key, value in values.items() if key not in refused}
 
 
@@ -1667,6 +1661,14 @@ class _TomlSource:
             fallback = f"{_variable(self._settings_cls, key)} sets {key}"
         return f"{label}: {key} = {values[key]!r} {reason}; {fallback}"
 
+    def _refuse_not_settings(self, data: dict[str, Any]) -> None:
+        """Report each key in *data* that is not a setting, as a refused value is reported."""
+        for key in _NOT_SETTINGS.keys() & data.keys():
+            if self._only not in (None, key):
+                continue
+            if f"{CONFIG_FILE_NAME}: {_not_a_setting(key, key)}" not in self._reported:
+                self._warn(f"{self._label}: {_not_a_setting(key, key)}")
+
     def __call__(self) -> dict[str, Any]:
         import tomllib
 
@@ -1678,6 +1680,7 @@ class _TomlSource:
             if unreadable not in self._reported:
                 self._warn(unreadable)
             return {}
+        self._refuse_not_settings(data)
         # A blank string is unset (the field default applies, since pydantic
         # cannot coerce "" to int|None), except on a clearable model role,
         # where it clears the model. TOML's native types pass through as-is.

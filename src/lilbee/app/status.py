@@ -101,7 +101,6 @@ class StatusConfig(BaseModel):
     n_gpu_layers: int | None = None
     cpu_moe: bool | None = None
     n_cpu_moe: int | None = None
-    main_gpu: int | None = None
     gpu_devices: str | None = None
 
 
@@ -178,7 +177,6 @@ def gather_status() -> StatusResult:
             n_gpu_layers=cfg.n_gpu_layers,
             cpu_moe=cfg.cpu_moe,
             n_cpu_moe=cfg.n_cpu_moe,
-            main_gpu=cfg.main_gpu,
             gpu_devices=cfg.gpu_devices,
         ),
         sources=[

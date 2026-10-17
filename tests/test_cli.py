@@ -1680,7 +1680,6 @@ class TestAValidVariableRunsTheCommand:
         [
             ("LILBEE_FLASH_ATTENTION", "enabled"),
             ("LILBEE_N_GPU_LAYERS", "all"),
-            ("LILBEE_MAIN_GPU", "cuda:0"),
             ("LILBEE_GPU_DEVICES", "cpu"),
             ("LILBEE_SEMANTIC_CHUNKING", "auto"),
         ],
@@ -6172,7 +6171,6 @@ class TestSelfCheck:
             "n_gpu_layers",
             "cpu_moe",
             "n_cpu_moe",
-            "main_gpu",
             "gpu_devices",
         }
 

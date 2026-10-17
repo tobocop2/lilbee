@@ -794,40 +794,6 @@ class TestNGpuLayersConfig:
             assert c.n_gpu_layers == 3
 
 
-class TestMainGpuConfig:
-    def test_default_is_none(self, tmp_path) -> None:
-        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            assert c.main_gpu is None
-
-    def test_explicit_int_from_env(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "1"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.main_gpu == 1
-
-    def test_auto_string_means_none(self, tmp_path) -> None:
-        env = {**clean_env(tmp_path), "LILBEE_MAIN_GPU": "auto"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            c = Config()
-            assert c.main_gpu is None
-
-    def test_an_invalid_string_warns_and_means_auto(self, tmp_path) -> None:
-        built, warnings = _build_with(tmp_path, "", LILBEE_MAIN_GPU="garbage")
-        assert built.main_gpu is None
-        assert warnings == (
-            "LILBEE_MAIN_GPU = 'garbage' is refused (use a whole number or auto); "
-            "main_gpu uses its default",
-        )
-
-    def test_non_string_input_coerces_to_int(self, tmp_path) -> None:
-        """Direct assignment with a non-string value falls through to int(v)."""
-        with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
-            c = Config()
-            c.main_gpu = 2.0  # type: ignore[assignment]
-            assert c.main_gpu == 2
-
-
 class TestGpuDevicesConfig:
     def test_default_is_none(self, tmp_path) -> None:
         with mock.patch.dict(os.environ, clean_env(tmp_path), clear=True):
@@ -921,7 +887,6 @@ class TestSemanticChunkingConfig:
         [
             ("flash_attention", '"maybe"', None, "is refused (use true, false or auto)"),
             ("n_gpu_layers", '"lots"', None, "is refused (use a whole number, cpu or auto)"),
-            ("main_gpu", '"first"', None, "is refused (use a whole number or auto)"),
             (
                 "gpu_devices",
                 '"a,b"',
@@ -943,7 +908,6 @@ class TestSemanticChunkingConfig:
         [
             ("flash_attention", "maybe"),
             ("n_gpu_layers", "lots"),
-            ("main_gpu", "first"),
             ("gpu_devices", "a,b"),
             ("semantic_chunking", "flase"),
         ],
@@ -2226,7 +2190,6 @@ _REFUSED_VARIABLES = [
 _FALLBACK_VARIABLES = [
     ("flash_attention", "enabled", "true", None),
     ("n_gpu_layers", "all", "12", None),
-    ("main_gpu", "cuda:0", "1", None),
     ("gpu_devices", "cpu", '"0,1"', None),
     ("semantic_chunking", "auto", "true", False),
 ]

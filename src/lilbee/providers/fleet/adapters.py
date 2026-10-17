@@ -8,7 +8,6 @@ to assemble one llama-server command line.
 
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -16,8 +15,6 @@ from pathlib import Path
 from lilbee.core.config.enums import RerankerType
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cpu import engine_thread_count
-
-log = logging.getLogger(__name__)
 
 _HOST = "127.0.0.1"
 # llama-server batch flags; gguf-parser accepts the same names, so vram.py shares these.
@@ -101,7 +98,6 @@ _RERANK_MODE_SPECS: dict[RerankMode, RoleServerSpec] = {
 # server can decode concurrently instead of serializing the fan-out.
 LLM_RERANK_CONCURRENCY = 8
 
-_FLAG_MAIN_GPU = "--main-gpu"
 _FLAG_THREADS = "--threads"
 
 
@@ -192,36 +188,6 @@ def _attention_args(flash_attn: str | None, cache_type: str | None) -> list[str]
     return args
 
 
-def _main_gpu_args(devices: tuple[int, ...]) -> list[str]:
-    """``--main-gpu`` for this instance, empty when it does not apply.
-
-    The index is into this instance's own device list, which is the space its
-    visibility pin exposes to the engine, and it is what the setting's help text
-    already describes. llama.cpp ignores the flag with a single device, so it is
-    only emitted where it changes something: which card holds the model under
-    split-mode none, and the intermediate results and KV under split-mode row.
-
-    An index past the end is refused and said out loud. It was previously not
-    emitted at all, so a user could set it, watch it save, and get nothing.
-    """
-    from lilbee.core.config import cfg
-
-    main_gpu = cfg.main_gpu
-    if main_gpu is None or len(devices) <= 1:
-        return []
-    if not 0 <= main_gpu < len(devices):
-        log.warning(
-            "Ignoring main_gpu=%d: this server runs on %d device(s), so the index has "
-            "to be between 0 and %d. It counts within the cards this role was placed "
-            "on, not across every card in the machine.",
-            main_gpu,
-            len(devices),
-            len(devices) - 1,
-        )
-        return []
-    return [_FLAG_MAIN_GPU, str(main_gpu)]
-
-
 def _thread_args() -> list[str]:
     """``--threads`` when a CPU cap applies to this process, else empty.
 
@@ -276,7 +242,6 @@ def build_server_argv(
         "--ctx-size",
         str(ctx_per_slot * slots),
     ]
-    argv += _main_gpu_args(devices)
     argv += _thread_args()
     argv += _attention_args(flash_attn, cache_type)
     if batch_size is not None:
