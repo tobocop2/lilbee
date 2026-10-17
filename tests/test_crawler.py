@@ -2777,6 +2777,27 @@ class TestSavePage:
         assert any("is not saved" in r.getMessage() for r in caplog.records)
         assert not _pages_file().exists()
 
+    def test_a_file_where_a_host_folder_belongs_refuses_its_pages_with_one_warning(
+        self, isolated_env, caplog
+    ):
+        host = _write_web("example.com", "a user's file")
+        record = load_crawl_record()
+        with caplog.at_level("WARNING", logger="lilbee.crawler.save"):
+            saved = [
+                save_page(
+                    CrawlResult(url=f"https://example.com/{p}", markdown=f"# {p}"),
+                    record,
+                    MagicMock(),
+                )
+                for p in ("a", "b")
+            ]
+        assert saved == [None, None]
+        warned = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert len(warned) == 1
+        assert str(host) in warned[0]
+        assert "move or delete it" in warned[0]
+        assert not _pages_file().exists()
+
     def test_a_recorded_page_whose_name_holds_a_folder_is_not_written(self, isolated_env):
         url = "https://example.com/p"
         name = url_to_filename(url)
@@ -3424,6 +3445,25 @@ class TestStreamingFlush:
         assert paths == []
         assert not _pages_file().exists()
         assert not (cfg.data_dir / "crawl_meta.json").exists()
+
+    async def test_a_file_at_the_host_folder_warns_once_per_crawl_without_a_traceback(
+        self, isolated_env, caplog
+    ):
+        """A user's file where the host's folder belongs gives one warning, no flush failure."""
+        _write_web("example.com", "a user's file")
+
+        async def _gen():
+            for path in ("a", "b", "c"):
+                yield cb.page(f"https://example.com/{path}", f"# {path}")
+
+        stub = cb.StubCrawlberg(_gen)
+        with stub.installed(), caplog.at_level("WARNING"):
+            paths = await crawl_and_save("https://example.com", depth=2, max_pages=10)
+        assert paths == []
+        warned = [r for r in caplog.records if r.levelname in ("WARNING", "ERROR")]
+        assert [r.exc_info for r in warned] == [None]
+        assert "example.com" in warned[0].getMessage()
+        assert not _pages_file().exists()
 
     async def test_done_event_reports_partial_counts_on_cancel(self, isolated_env):
         """CRAWL_DONE fires even on cancel and reports what was actually flushed."""

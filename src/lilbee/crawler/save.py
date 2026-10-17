@@ -270,6 +270,8 @@ class CrawlRecord:
     claimed: set[str] = field(default_factory=set)
     earlier: dict[str, list[CrawlMeta]] = field(default_factory=dict)
     earlier_by_text: dict[str, list[tuple[str, CrawlMeta]]] = field(default_factory=dict)
+    # Files standing where a folder of a page belongs, each warned about once per crawl.
+    blocked: set[Path] = field(default_factory=set)
 
     def add_earlier(self, key: str, entry: CrawlMeta) -> None:
         """Record *entry*, saved under an earlier name, as a copy of the page *key* names."""
@@ -388,6 +390,30 @@ def _retire_earlier(
         _remove_empty_folders((web_dir() / entry.file).parent)
 
 
+def _blocking_file(path: Path) -> Path | None:
+    """The file that stands where a folder of *path* under ``_web`` belongs, or None."""
+    root = web_dir()
+    return next(
+        (
+            folder
+            for folder in path.parents
+            if folder.is_relative_to(root) and os.path.lexists(folder) and not folder.is_dir()
+        ),
+        None,
+    )
+
+
+def _folders_are_free(path: Path, record: CrawlRecord) -> bool:
+    """Whether the folders of *path* can be made; a file in their way is warned about once."""
+    blocker = _blocking_file(path)
+    if blocker is None:
+        return True
+    if blocker not in record.blocked:
+        record.blocked.add(blocker)
+        log.warning("Pages under %s are not saved: it is a file; move or delete it", blocker)
+    return False
+
+
 def _page_path(result: CrawlResult, address: str, record: CrawlRecord) -> Path | None:
     """Where the page at *address* is saved, or None when its name is not free for it."""
     root = web_dir()
@@ -396,6 +422,8 @@ def _page_path(result: CrawlResult, address: str, record: CrawlRecord) -> Path |
         validate_path_within(path, root.resolve())
     except ValueError:
         log.warning("Path traversal blocked: %s -> %s", result.url, path)
+        return None
+    if not _folders_are_free(path, record):
         return None
     if os.path.lexists(path) and (path.is_symlink() or not path.is_file()):
         log.warning(_NOT_SAVED, result.url, path)
