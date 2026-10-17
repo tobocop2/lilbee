@@ -91,11 +91,12 @@ def _resolve_page_limit(max_pages: int | None) -> int | None:
 
 
 def _fetcher(render_mode: CrawlRenderMode) -> CrawlbergFetcher:
-    """The fetcher for one crawl, with the browser launch flags and user agent from ``cfg``."""
+    """The fetcher for one crawl, with its browser, user agent and robots.txt settings."""
     return CrawlbergFetcher(
         render_mode=render_mode,
         chrome_args=cfg.crawl_browser_extra_args,
         user_agent=cfg.crawl_user_agent,
+        respect_robots_txt=cfg.crawl_respect_robots_txt,
     )
 
 

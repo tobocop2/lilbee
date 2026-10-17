@@ -1354,6 +1354,13 @@ class TestConfigUpdateRoute:
         assert resp.json()["updated"] == ["crawl_user_agent"]
         assert cfg.crawl_user_agent == "Probe/1.0"
 
+    def test_crawl_respect_robots_txt_is_stored(self, client):
+        cfg.crawl_respect_robots_txt = True
+        resp = client.patch("/api/config", json={"crawl_respect_robots_txt": False})
+        assert resp.status_code == 200
+        assert resp.json()["updated"] == ["crawl_respect_robots_txt"]
+        assert cfg.crawl_respect_robots_txt is False
+
     def test_crawl_user_agent_with_a_control_character_is_refused(self, client):
         before = cfg.crawl_user_agent
         resp = client.patch("/api/config", json={"crawl_user_agent": "Probe\n1.0"})
