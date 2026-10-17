@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, NoReturn
 import typer
 
 from lilbee.app.services import (
+    exit_after_signal,
     report_library_upgrade,
     set_server_exit_hook,
     wait_for_hard_exit_teardown,
@@ -242,4 +243,8 @@ def mcp_cmd(
     _report_upgrade_as_log_lines()
     from lilbee.mcp_server import main
 
-    main()
+    try:
+        main()
+    except SystemExit as exc:
+        exit_after_signal(exc.code if isinstance(exc.code, int) else 1)
+        raise

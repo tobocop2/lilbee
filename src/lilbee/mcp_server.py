@@ -41,7 +41,12 @@ from lilbee.app.placement import (
     set_placement,
 )
 from lilbee.app.search import clean_result
-from lilbee.app.services import get_services, reset_services, reset_store
+from lilbee.app.services import (
+    exit_on_signals_in_loop,
+    get_services,
+    reset_services,
+    reset_store,
+)
 from lilbee.app.settings import (
     SettingInfo,
     apply_settings_update,
@@ -1708,6 +1713,12 @@ def _exit_on_parent_death() -> None:
     os._exit(0)
 
 
+async def _serve_stdio(server: LilbeeMCP) -> None:
+    """Serve over stdio until stdin closes or a signal ends the process."""
+    exit_on_signals_in_loop(asyncio.get_running_loop())
+    await server.run_stdio_async()
+
+
 def main() -> None:
     """Entry point for the stdio MCP server."""
     # Preload so the first tool call doesn't pay the cold-start cost
@@ -1725,4 +1736,4 @@ def main() -> None:
     if parent_pid is not None:
         watch_parent_thread(parent_pid, _exit_on_parent_death)
 
-    build_mcp_server().run()
+    asyncio.run(_serve_stdio(build_mcp_server()))
