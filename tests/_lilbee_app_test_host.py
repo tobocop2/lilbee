@@ -75,12 +75,16 @@ def ready_services():
     thread, so an unpinned False routes the test to the catalog on a slow
     runner's schedule.
     """
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock, create_autospec, patch
 
     from lilbee.app.services import set_services
+    from lilbee.data.store import Store
+    from lilbee.data.store.types import SourceSummary
 
     services = MagicMock()
     services.provider.role_ready.return_value = True
+    services.store = create_autospec(Store, instance=True)
+    services.store.source_summary.return_value = SourceSummary(0, 0, {}, [])
     set_services(services)
     try:
         with (

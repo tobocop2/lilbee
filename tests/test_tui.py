@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -17,6 +18,7 @@ from lilbee.catalog import CatalogResult
 from lilbee.cli.tui.screens.catalog_utils import catalog_to_row, remote_to_row
 from lilbee.cli.tui.widgets.message import AssistantMessage, UserMessage
 from lilbee.core.config import cfg
+from lilbee.data.store import Store
 from tests._lilbee_app_test_host import await_chat, pump_until
 from tests._lilbee_app_test_host import ready_services as _ready_services
 
@@ -676,14 +678,15 @@ class TestStatusScreenAsync:
     async def test_status_screen(
         self,
         mock_catalog: mock.MagicMock,
+        tmp_path: Path,
     ) -> None:
         mock_catalog.return_value = _EMPTY_CATALOG
-        mock_svc = mock.MagicMock()
-        mock_svc.store.get_sources.return_value = []
         from lilbee.app.services import set_services
         from lilbee.cli.tui.app import LilbeeApp
         from lilbee.cli.tui.screens.status import StatusScreen
 
+        mock_svc = mock.MagicMock()
+        mock_svc.store = Store(cfg.model_copy(update={"lancedb_dir": tmp_path / "status_lancedb"}))
         set_services(mock_svc)
         try:
             app = LilbeeApp()
