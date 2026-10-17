@@ -404,21 +404,25 @@ def _error_text(error: str) -> str:
 
 
 def _parse_event(raw: object) -> _Event | None:
-    """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds."""
+    """Read a crawlberg event, whose payload is only reachable as JSON; None for other kinds.
+
+    Every address of the event is read without its username and password.
+    """
     payload: dict[str, Any] = json.loads(str(raw))
     kind = _EVENT_KINDS.get(payload["type"])
     if kind is None:
         return None
     if kind is _EventKind.ERROR:
-        return _Event(kind, payload["url"], error=_error_text(payload["error"]))
+        url = url_filter.without_userinfo(payload["url"])
+        return _Event(kind, url, error=_error_text(payload["error"]))
     result: dict[str, Any] = payload["result"]
     markdown: dict[str, Any] = result.get("markdown") or {}
     return _Event(
         kind,
-        result["url"],
+        url_filter.without_userinfo(result["url"]),
         depth=result.get("depth", _SEED_DEPTH),
         markdown=markdown.get("content") or "",
-        links=tuple(link["url"] for link in result.get("links") or ()),
+        links=tuple(url_filter.without_userinfo(link["url"]) for link in result.get("links") or ()),
     )
 
 
@@ -548,13 +552,11 @@ class _ExcludedLinks:
         )
 
     def _check(self, url: str) -> None:
-        # crawlberg matches an exclude pattern against the address without its userinfo.
-        text = url_filter.without_userinfo(url)
-        matched = next((p.pattern for p in self._patterns if p.search(text)), None)
+        matched = next((p.pattern for p in self._patterns if p.search(url)), None)
         if matched is not None:
             log.warning(
                 "Left out %s: it matches %s, a pattern of the crawl_exclude_patterns setting",
-                text,
+                url,
                 matched,
             )
 
@@ -598,12 +600,13 @@ class CrawlbergFetcher:
     async def fetch_single(
         self, url: str, *, timeout: float, concurrency: ConcurrencySpec
     ) -> FetchedPage:
-        """Fetch *url* alone; a redirected page keeps the requested URL."""
+        """Fetch *url* alone; a redirected page keeps the requested URL, without its userinfo."""
         spec = _CrawlSpec(depth=_SEED_DEPTH, max_pages=1, timeout=timeout, concurrency=concurrency)
+        shown = url_filter.without_userinfo(url)
         async with aclosing(self._stream(spec, url, None)) as events:
             async for event in events:
-                return _single_result(await _to_page(event, url), url)
-        return _single_result(None, url)
+                return _single_result(await _to_page(event, shown), shown)
+        return _single_result(None, shown)
 
     async def fetch_recursive(
         self,
@@ -622,15 +625,16 @@ class CrawlbergFetcher:
         like a link filtered out before it is fetched; a refused seed is a failed page.
         """
         spec = _CrawlSpec(depth, max_pages, timeout, concurrency, filters)
-        excluded = _ExcludedLinks(spec, seed_url)
-        excluded.record_seed(seed_url)
+        shown = url_filter.without_userinfo(seed_url)
+        excluded = _ExcludedLinks(spec, shown)
+        excluded.record_seed(shown)
         async with aclosing(self._stream(spec, seed_url, cancel)) as events:
             async for event in events:
                 excluded.record(event)
-                if event.refused_by_ssrf and event.url != seed_url:
+                if event.refused_by_ssrf and event.url != shown:
                     log.debug("crawlberg refused %s: %s", event.url, event.error)
                     continue
-                page = await _to_page(event, seed_url)
+                page = await _to_page(event, shown)
                 if page is not None:
                     yield page
 

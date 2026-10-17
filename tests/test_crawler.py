@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import re
 import sys
@@ -49,6 +50,7 @@ from lilbee.crawler.save import (
     save_page,
 )
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.ingest.discovery import discover_files
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
@@ -386,6 +388,89 @@ class TestCrawlEventStream:
         assert '"component": "browser"' in frames[1]
 
 
+CREDENTIALED_SEED = "https://alice:s3cr%3At!@example.com/"
+SHOWN_SEED = "https://example.com/"
+SEED_PASSWORD = "s3cr%3At!"
+
+
+def _public_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "lilbee.crawler.url_filter.socket.getaddrinfo",
+        lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
+    )
+
+
+class TestNoUserinfoReachesWhatTheCrawlKeeps:
+    """A credentialed seed is crawled with its password; nothing lilbee keeps holds it."""
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["one-page", "site"])
+    async def test_the_crawl_record_names_the_seed_without_the_password(
+        self, monkeypatch, mock_services, depth: int
+    ):
+        _public_dns(monkeypatch)
+        reported: list[object] = []
+        stub = cb.StubCrawlberg([cb.page(SHOWN_SEED, "# Home", depth=0), cb.complete(1)])
+        with stub.installed():
+            paths = await crawl_and_save(
+                CREDENTIALED_SEED, depth=depth, on_progress=lambda _t, data: reported.append(data)
+            )
+        assert stub.seeds == [CREDENTIALED_SEED]
+        assert len(paths) == 1
+        record = _pages_file().read_text(encoding="utf-8")
+        assert SHOWN_SEED in record
+        assert SEED_PASSWORD not in record
+        assert "alice" not in repr(reported)
+        assert SHOWN_SEED in repr(reported)
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["one-page", "site"])
+    async def test_a_failed_seed_page_is_reported_without_the_password(
+        self, monkeypatch, mock_services, depth: int
+    ):
+        _public_dns(monkeypatch)
+        failed: list[str] = []
+
+        def on_progress(event_type: EventType, data: object) -> None:
+            if event_type == EventType.CRAWL_PAGE_FAILED:
+                failed.append(f"{data.url}: {data.reason}")  # type: ignore[attr-defined]
+
+        reason = "not_found: HTTP 404 for " + SHOWN_SEED
+        stub = cb.StubCrawlberg([cb.error(SHOWN_SEED, reason), cb.complete(0)])
+        with stub.installed():
+            await crawl_and_save(CREDENTIALED_SEED, depth=depth, on_progress=on_progress)
+        assert failed == [f"{SHOWN_SEED}: {reason}"]
+
+    async def test_a_seed_whose_crawl_raises_is_named_without_the_password(self, monkeypatch):
+        _public_dns(monkeypatch)
+        with cb.StubCrawlberg(_failing_stream("timeout")).installed():
+            single = await crawl_single(CREDENTIALED_SEED)
+            site = await crawl_recursive(
+                CREDENTIALED_SEED, max_depth=1, render_mode=CrawlRenderMode.HTTP
+            )
+        assert [single.url, *(result.url for result in site)] == [SHOWN_SEED, SHOWN_SEED]
+        assert "timeout" in single.error
+
+    async def test_the_chromium_retry_log_names_the_seed_without_the_password(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        _public_dns(monkeypatch)
+        monkeypatch.setattr(
+            "lilbee.crawler.bootstrap.headless_shell_executable",
+            MagicMock(side_effect=repeat_last(None, tmp_path / "chrome-headless-shell")),
+        )
+
+        async def fake_bootstrap(on_progress):
+            return None
+
+        monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", fake_bootstrap)
+        with (
+            caplog.at_level(logging.WARNING, logger="lilbee.crawler.runner"),
+            cb.StubCrawlberg([cb.page(SHOWN_SEED, "# Test", depth=0)]).installed(),
+        ):
+            await crawl_single(CREDENTIALED_SEED)
+        assert f"Chromium missing for {SHOWN_SEED}" in caplog.text
+        assert SEED_PASSWORD not in caplog.text
+
+
 class TestContentHash:
     def test_consistent(self):
         assert content_hash("hello") == content_hash("hello")
@@ -482,23 +567,29 @@ class TestValidateCrawlUrl:
             validate_crawl_url("http://")
 
     @pytest.mark.parametrize(
-        ("url", "host_part"),
+        "url",
         [
-            ("http://example.com:8080\\path", "example.com:8080\\path"),
-            ("http://example.com:80a/", "example.com:80a"),
-            ("http://example.com:99999/", "example.com:99999"),
-            ("http://user:secret@example.com:80a/", "example.com:80a"),
+            "http://example.com:8080\\path",
+            "http://example.com:80a/",
+            "http://example.com:99999/",
+            "http://user:secret@example.com:80a/",
+            "http://alice:se/cret@example.com/",
         ],
-        ids=["backslash-after-port", "letter-in-port", "port-out-of-range", "with-a-password"],
+        ids=[
+            "backslash-after-port",
+            "letter-in-port",
+            "port-out-of-range",
+            "with-a-password",
+            "with-a-slash-in-the-password",
+        ],
     )
-    def test_rejects_a_port_that_is_not_a_number(self, monkeypatch, url: str, host_part: str):
+    def test_rejects_a_port_that_is_not_a_number_naming_no_part_of_it(self, monkeypatch, url: str):
         monkeypatch.setattr(
             "lilbee.crawler.url_filter.socket.getaddrinfo",
             lambda *a, **kw: [(2, 1, 6, "", ("93.184.216.34", 0))],
         )
         validate_crawl_url("http://example.com:8080/path")
-        refusal = re.escape(f"URL has an invalid port: {host_part}")
-        with pytest.raises(ValueError, match=f"^{refusal}$"):
+        with pytest.raises(ValueError, match=r"^URL has an invalid port$"):
             validate_crawl_url(url)
 
     def test_rejects_localhost(self, monkeypatch):
@@ -577,6 +668,58 @@ class TestValidateCrawlUrl:
         )
         with pytest.raises(ValueError, match="Cannot resolve"):
             validate_crawl_url("http://nonexistent.invalid")
+
+
+class TestWithoutUserinfo:
+    @pytest.mark.parametrize(
+        ("url", "shown"),
+        [
+            ("https://alice:hunter2@example.com/a", "https://example.com/a"),
+            ("https://alice:s3cr%3At!@example.com/a", "https://example.com/a"),
+            ("https://alice:se%2Fcret@example.com/a", "https://example.com/a"),
+            ("https://alice:se%23cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se%3Fcret@example.com/a", "https://example.com/a"),
+            ("https://alice:se%25cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se%40cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se@cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se%cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se/cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se#cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se?cret@example.com/a", "https://example.com/a"),
+            ("https://alice:se@cret@example.com:80a/", "https://example.com:80a/"),
+            ("https://alice:secret@[::1/a", "https://[::1/a"),
+        ],
+        ids=[
+            "plain",
+            "escaped-colon",
+            "escaped-slash",
+            "escaped-hash",
+            "escaped-question-mark",
+            "escaped-percent",
+            "escaped-at",
+            "raw-at",
+            "raw-percent",
+            "raw-slash",
+            "raw-hash",
+            "raw-question-mark",
+            "raw-at-and-a-bad-port",
+            "unclosed-ipv6-host",
+        ],
+    )
+    def test_a_password_of_any_character_is_cut(self, url: str, shown: str):
+        assert without_userinfo(url) == shown
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com/@user",
+            "https://example.com/a?b=c@d",
+            "http://example.com:8080\\path",
+        ],
+        ids=["at-in-path", "at-in-query", "backslash-after-port"],
+    )
+    def test_an_address_without_userinfo_is_unchanged(self, url: str):
+        assert without_userinfo(url) == url
 
 
 class TestRequireValidCrawlUrl:
