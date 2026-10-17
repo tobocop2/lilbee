@@ -4934,6 +4934,13 @@ class TestChunkBatches:
     def test_an_empty_store_yields_no_batch(self, store):
         assert list(store.chunk_batches(["source", "chunk"], 10)) == []
 
+    def test_a_chunk_no_source_row_names_is_left_out(self, store):
+        store.add_chunks(_make_records(2))
+        assert [len(rows) for rows in store.chunk_batches(["source"], 10)] == [2]
+        store.get_db().drop_table(SOURCES_TABLE)
+
+        assert list(store.chunk_batches(["source", "chunk_index"], 10)) == [[]]
+
     def test_each_row_names_its_source_by_path(self, store):
         store.add_chunks(_make_records(3))
 
