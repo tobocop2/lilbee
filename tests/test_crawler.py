@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import types
@@ -18,6 +19,7 @@ from lilbee.app.services import get_services, reset_services, set_services
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import CrawlRenderMode
 from lilbee.crawler import (
+    CRAWLER_MISSING_MESSAGE,
     CrawlMeta,
     CrawlResult,
     content_hash,
@@ -697,7 +699,7 @@ class TestCrawlSingle:
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match=f"^{re.escape(CRAWLER_MISSING_MESSAGE)}$"):
             await crawl_single("https://example.com")
 
 
@@ -1503,7 +1505,7 @@ class TestCrawlRecursive:
 
         monkeypatch.setattr("lilbee.crawler.crawler_available", lambda: False)
         monkeypatch.setattr("lilbee.crawler.crawlberg_fetcher.crawler_available", lambda: False)
-        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match=f"^{re.escape(CRAWLER_MISSING_MESSAGE)}$"):
             await crawl_recursive("https://example.com", max_depth=1)
 
 
@@ -1847,7 +1849,7 @@ class TestCrawlAndSave:
             bootstrap_called.append(on_progress)
 
         monkeypatch.setattr("lilbee.crawler.bootstrap.bootstrap_chromium", _fake_bootstrap)
-        with pytest.raises(CrawlerBackendError, match="Web crawling is not available"):
+        with pytest.raises(CrawlerBackendError, match=f"^{re.escape(CRAWLER_MISSING_MESSAGE)}$"):
             await crawl_and_save("https://example.com", depth=0)
         assert bootstrap_called == []
 
