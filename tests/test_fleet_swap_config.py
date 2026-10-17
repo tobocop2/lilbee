@@ -252,6 +252,32 @@ class TestWarmTtlSeconds:
 
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
         monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: True)
+        monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: True)
+
+    def test_a_kept_warm_build_without_a_reaper_keeps_the_idle_window(self, monkeypatch, tmp_path):
+        # Nothing would unload weights held by ttl 0 once lilbee exits.
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import provider as prov_mod
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
+        from lilbee.runtime.engine_lock import request_keep_warm
+
+        monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: False)
+        monkeypatch.setattr(cfg, "keep_engine_warm", True)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.DETACHED, tmp_path) == 900
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        request_keep_warm(tmp_path, tmp_path / "peer-install", 5)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.USERS, tmp_path) == 900
+
+    def test_a_warm_off_build_starts_no_reaper_for_the_ttl(self, monkeypatch, tmp_path):
+        from lilbee.core.config import cfg
+        from lilbee.providers.fleet import provider as prov_mod
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
+
+        asked: list[object] = []
+        monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda d: asked.append(d) or True)
+        monkeypatch.setattr(cfg, "keep_engine_warm", False)
+        assert prov_mod._warm_ttl_seconds(EngineLifetime.USERS, tmp_path) == 900
+        assert asked == []
 
     def test_keep_engine_warm_holds_weights_while_users_remain(self, monkeypatch, tmp_path):
         # The reaper unloads a keep-warm engine after the last user, so llama-swap never does.

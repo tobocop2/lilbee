@@ -920,12 +920,13 @@ def _warm_ttl_seconds(
     An engine that outlives its builder takes no such hold: llama-swap's ttl is
     fixed at launch, so a hold baked into it would keep the weights loaded after
     the session or ingest ended. A kept-warm engine (this process's setting or
-    any user's marker) also gets ttl 0 when its users can be counted, because
-    its reaper unloads the weights after the last user leaves instead.
+    any user's marker) also gets ttl 0 when its users can be counted and a reaper
+    is confirmed running, because that reaper unloads the weights after the last
+    user leaves. Without a confirmed reaper the idle ttl stays.
     """
     if lifetime is EngineLifetime.BUILDER and (hold_warm_for_session or ingest_keep_warm()):
         return 0
-    if _reaper_unloads_weights(engine_dir):
+    if _reaper_unloads_weights(engine_dir) and ensure_engine_reaper(engine_dir):
         return 0
     return cfg.engine_idle_ttl_minutes * 60
 

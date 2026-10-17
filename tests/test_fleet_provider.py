@@ -2404,7 +2404,22 @@ def test_a_build_on_kernel_locks_hands_the_engine_to_its_users_unless_kept_warm(
     assert swap.started
     assert swap.lifetime is expected
     assert swap.ttl_seconds == (0 if keep_warm else 900)
-    assert reaper_ensures == [prov_mod.machine_engine_dir()]
+    # A kept-warm build confirms the reaper before it picks ttl 0, and again at the bind.
+    machine = prov_mod.machine_engine_dir()
+    assert reaper_ensures == ([machine, machine] if keep_warm else [machine])
+
+
+def test_a_kept_warm_build_without_a_reaper_keeps_the_idle_ttl(monkeypatch, tmp_path: Path) -> None:
+    """With no reaper to unload the weights, ttl 0 would leave them loaded after lilbee exits."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", True)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: False)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+
+    FleetProvider()._ensure_fleet()
+
+    assert swap.lifetime is EngineLifetime.DETACHED
+    assert swap.ttl_seconds == 900
 
 
 @pytest.mark.parametrize(
