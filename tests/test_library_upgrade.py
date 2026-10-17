@@ -804,6 +804,24 @@ class TestTuiShowsTheUpgrade:
 
             assert after == before
 
+    async def test_a_wait_line_that_wraps_on_a_narrow_terminal_is_not_cut(self):
+        from lilbee.cli.tui.screens.startup_gate import StartupGate
+        from tests._async_wait import wait_until
+        from tests._lilbee_app_test_host import LilbeeAppHost
+
+        waiting = LibraryUpgradeEvent(phase=UpgradePhase.WAITING, elapsed_s=125)
+        app = LilbeeAppHost()
+        async with app.run_test(size=(60, 24)) as pilot:
+            gate = StartupGate()
+            with mock.patch.object(StartupGate, "_retire_splash"):
+                await app.push_screen(gate)
+            gate._show_event(waiting)
+            await wait_until(pilot, lambda: "125 s" in _gate_text(gate))
+            shown = " ".join(_gate_text(gate).split())
+
+            assert len(waiting.text) > 60
+            assert f"{UPGRADE_HEADLINE} {waiting.text}" == shown
+
     @pytest.mark.parametrize("size", [(60, 24), (80, 24), (120, 36)])
     async def test_the_headline_and_the_progress_line_fit_with_nothing_cut(self, size):
         from lilbee.cli.tui.screens.startup_gate import StartupGate
