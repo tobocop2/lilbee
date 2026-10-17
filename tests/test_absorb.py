@@ -618,6 +618,27 @@ class TestAMovedFolderAddedAgain:
         assert _embedded(library) == []
 
 
+class TestASyncWhileTheRegistryChanges:
+    async def test_the_sync_names_sources_by_the_registry_it_started_with(self, library, notes):
+        await _add(notes / "work")
+        from lilbee.data.ingest import pipeline
+
+        real = pipeline.discover_corpus
+        seen: list[list[str]] = []
+
+        def _registry_changes_meanwhile(*args, **kwargs):
+            scan = real(*args, **kwargs)
+            cfg.linked_roots = {"notes": str(notes.resolve())}
+            seen.append(_keys(library))
+            return scan
+
+        with mock.patch.object(pipeline, "discover_corpus", _registry_changes_meanwhile):
+            await sync(quiet=True)
+
+        assert seen == [["work/budget.md", "work/plan.md"]]
+        assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
+
+
 class TestWhatIsNotAbsorbed:
     @pytest.mark.parametrize(
         ("child", "ignore"),
