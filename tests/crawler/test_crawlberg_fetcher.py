@@ -1055,6 +1055,18 @@ class TestExcludedLinks:
             _left_out(tags[1], TAG_PATTERN),
         ]
 
+    async def test_a_seed_a_pattern_matches_is_named_with_its_pattern(self, caplog):
+        with StubCrawlberg([complete(0)]).installed():
+            fetched = await _recursive(_http(), filters=EXCLUDES, seed=f"{FEED}?utm_source=x")
+        assert fetched == []
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
+
+    async def test_a_seed_a_pattern_matches_is_named_once_when_a_page_links_to_it(self, caplog):
+        script = [page("https://example.com/a", depth=1, links=[FEED])]
+        with StubCrawlberg(script).installed():
+            await _recursive(_http(), filters=EXCLUDES, seed=FEED)
+        assert _named(caplog) == [_left_out(FEED, FEED_PATTERN)]
+
     async def test_a_crawl_that_excludes_nothing_logs_no_warning(self, caplog):
         script = [page(SEED, depth=0, links=["https://example.com/a"]), complete(1)]
         with StubCrawlberg(script).installed():
