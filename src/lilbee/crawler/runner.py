@@ -413,7 +413,7 @@ async def crawl_and_save(
             start_depth = depth if depth is not None else 0
             on_progress(EventType.CRAWL_START, CrawlStartEvent(url=url, depth=start_depth))
 
-        meta = await asyncio.to_thread(migrate.move_saved_pages)
+        meta = await asyncio.to_thread(migrate.move_saved_pages, get_services().store)
         written_paths: list[Path] = []
         counter = _FlushCounter()
         flush_page = _make_flush_page(meta, written_paths, counter)

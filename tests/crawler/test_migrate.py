@@ -10,7 +10,6 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from lilbee.app.services import set_services
 from lilbee.core.config import Config, cfg
 from lilbee.crawler import migrate
 from lilbee.crawler.migrate import move_saved_pages
@@ -22,7 +21,6 @@ from lilbee.crawler.save import (
     url_to_filename,
 )
 from lilbee.data.store.types import RemoveResult, SourceRelocation
-from tests.conftest import make_mock_services
 
 _PAGE = "https://example.com/t/page"
 _EARLIER = "example.com/t/page/index.md"
@@ -40,7 +38,6 @@ def store(tmp_path: Path) -> Iterator[MagicMock]:
     store = MagicMock()
     store.relocate_sources.side_effect = lambda moves: SourceRelocation({}, len(moves))
     store.remove_documents.return_value = RemoveResult(removed=[], not_found=[])
-    set_services(make_mock_services(store=store))
     yield store
     for name in type(cfg).model_fields:
         setattr(cfg, name, getattr(snapshot, name))
@@ -57,10 +54,10 @@ def _write(name: str, text: str) -> Path:
     return path
 
 
-def _moved(meta: dict[str, CrawlMeta]) -> dict[str, CrawlMeta]:
+def _moved(store: MagicMock, meta: dict[str, CrawlMeta]) -> dict[str, CrawlMeta]:
     """Store *meta*, run the move, and check the metadata it wrote is what it returned."""
     save_crawl_metadata(meta)
-    moved = move_saved_pages()
+    moved = move_saved_pages(store)
     assert load_crawl_metadata() == moved
     return moved
 
@@ -75,7 +72,7 @@ def _moved_sources(store: MagicMock) -> list[tuple[tuple[str, ...], str]]:
 
 def test_a_page_moves_to_its_name_with_its_index_source(store: MagicMock):
     _write(_EARLIER, "# Page")
-    moved = _moved({_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
+    moved = _moved(store, {_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
     name = url_to_filename(_PAGE)
     assert moved == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
     assert (_web() / name).read_text(encoding="utf-8") == "# Page"
@@ -89,12 +86,12 @@ def test_a_page_moves_to_its_name_with_its_index_source(store: MagicMock):
 
 def test_a_second_run_moves_nothing_and_holds_no_lock(store: MagicMock, monkeypatch):
     _write(_EARLIER, "# Page")
-    meta = _moved({_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
+    meta = _moved(store, {_PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t")})
     store.relocate_sources.reset_mock()
     held = MagicMock()
     monkeypatch.setattr("lilbee.crawler.migrate.library_held", held)
     monkeypatch.setattr("lilbee.crawler.save.save_crawl_metadata", held)
-    assert move_saved_pages() == meta
+    assert move_saved_pages(store) == meta
     held.assert_not_called()
     store.relocate_sources.assert_not_called()
 
@@ -110,17 +107,17 @@ def test_a_crawl_that_moved_the_pages_first_leaves_this_one_nothing_to_move(
         config: Config, running: str, wait: float
     ) -> AbstractContextManager[object]:
         monkeypatch.setattr("lilbee.crawler.migrate.library_held", held)
-        move_saved_pages()
+        move_saved_pages(store)
         return held(config, running, wait)
 
     monkeypatch.setattr("lilbee.crawler.migrate.library_held", held_after_another_crawl)
     name = url_to_filename(_PAGE)
-    assert move_saved_pages() == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
+    assert move_saved_pages(store) == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
     assert (_web() / name).read_text(encoding="utf-8") == "# Page"
     assert len(_moved_sources(store)) == 1
 
 
-def test_spellings_of_one_page_keep_the_entry_crawled_last():
+def test_spellings_of_one_page_keep_the_entry_crawled_last(store: MagicMock):
     name = url_to_filename(_PAGE)
     _write(name, "# Page")
     meta = {
@@ -128,16 +125,16 @@ def test_spellings_of_one_page_keep_the_entry_crawled_last():
         "https://EXAMPLE.com/t/page#top": CrawlMeta(name, "newer", "2026-02-01"),
         _PAGE: CrawlMeta(name, "oldest", "2025-01-01"),
     }
-    assert _moved(meta) == {_PAGE: CrawlMeta(name, "newer", "2026-02-01")}
+    assert _moved(store, meta) == {_PAGE: CrawlMeta(name, "newer", "2026-02-01")}
 
 
 @pytest.mark.parametrize(
     "earlier", ["example.com/t/gone/index.md", "../outside.md"], ids=["no-file", "outside"]
 )
-def test_an_entry_with_no_file_under_the_web_folder_is_dropped(earlier: str):
+def test_an_entry_with_no_file_under_the_web_folder_is_dropped(store: MagicMock, earlier: str):
     outside = cfg.documents_dir / "outside.md"
     outside.write_text("# Mine", encoding="utf-8")
-    assert _moved({_PAGE: CrawlMeta(earlier, "h", "t")}) == {}
+    assert _moved(store, {_PAGE: CrawlMeta(earlier, "h", "t")}) == {}
     assert outside.read_text(encoding="utf-8") == "# Mine"
 
 
@@ -170,16 +167,16 @@ def test_a_shared_file_goes_to_one_page_and_the_others_are_saved_afresh(
     _write(_SHARED, "# Second")
     address, crawled_at = owner
     name = url_to_filename(address)
-    assert _moved(meta) == {address: CrawlMeta(name, content_hash("# Second"), crawled_at)}
+    assert _moved(store, meta) == {address: CrawlMeta(name, content_hash("# Second"), crawled_at)}
     assert (_web() / name).read_text(encoding="utf-8") == "# Second"
     assert _moved_sources(store) == [((f"_web/{_SHARED}",), f"_web/{name}")]
 
 
-def test_a_file_that_is_not_utf_8_goes_to_the_latest_page():
+def test_a_file_that_is_not_utf_8_goes_to_the_latest_page(store: MagicMock):
     (_web() / "example.com/t/a_b").mkdir(parents=True)
     (_web() / _SHARED).write_bytes(b"\xff\xfe")
     meta = {_COLON: CrawlMeta(_SHARED, "old", "2"), _UNDERSCORE: CrawlMeta(_SHARED, "old", "1")}
-    assert list(_moved(meta)) == [_COLON]
+    assert list(_moved(store, meta)) == [_COLON]
 
 
 def test_pages_that_share_a_file_through_an_empty_segment_move_it_once(store: MagicMock):
@@ -188,7 +185,7 @@ def test_pages_that_share_a_file_through_an_empty_segment_move_it_once(store: Ma
         "https://example.com/t//x": CrawlMeta("example.com/t//x/index.md", "old", "1"),
         "https://example.com/t/x": CrawlMeta("example.com/t/x/index.md", content_hash("# X"), "2"),
     }
-    assert list(_moved(meta)) == ["https://example.com/t/x"]
+    assert list(_moved(store, meta)) == ["https://example.com/t/x"]
     assert _moved_sources(store) == [
         (
             ("_web/example.com/t/x/index.md",),
@@ -197,7 +194,7 @@ def test_pages_that_share_a_file_through_an_empty_segment_move_it_once(store: Ma
     ]
 
 
-def test_a_disk_with_no_inodes_groups_names_by_their_resolved_path(monkeypatch):
+def test_a_disk_with_no_inodes_groups_names_by_their_resolved_path(store: MagicMock, monkeypatch):
     _write("example.com/t/a/index.md", "# A")
     _write("example.com/t/b/index.md", "# B")
     real_stat = migrate._file_stat
@@ -212,7 +209,7 @@ def test_a_disk_with_no_inodes_groups_names_by_their_resolved_path(monkeypatch):
         "https://example.com/t/a": CrawlMeta("example.com/t/a/index.md", content_hash("# A"), "1"),
         "https://example.com/t/b": CrawlMeta("example.com/t/b/index.md", content_hash("# B"), "1"),
     }
-    assert sorted(_moved(meta)) == ["https://example.com/t/a", "https://example.com/t/b"]
+    assert sorted(_moved(store, meta)) == ["https://example.com/t/a", "https://example.com/t/b"]
 
 
 def test_an_earlier_copy_beside_a_page_already_at_its_name_is_removed(store: MagicMock):
@@ -220,7 +217,7 @@ def test_an_earlier_copy_beside_a_page_already_at_its_name_is_removed(store: Mag
     _write(name, "# Newer")
     _write(_EARLIER, "# Older")
     _write("example.com/t/page/keep.md", "# Mine")
-    assert _moved({_PAGE: CrawlMeta(_EARLIER, "h", "t")}) == {}
+    assert _moved(store, {_PAGE: CrawlMeta(_EARLIER, "h", "t")}) == {}
     assert not (_web() / _EARLIER).exists()
     assert (_web() / name).read_text(encoding="utf-8") == "# Newer"
     assert (_web() / "example.com/t/page/keep.md").exists()
