@@ -53,6 +53,13 @@ class SourceLocations:
                 return label + location[len(root) :]
         return location
 
+    def below_root(self, location: str) -> str | None:
+        """The part of *location* below the deepest root that holds it, from its slash."""
+        for root, _ in self._deepest_first:
+            if location.startswith(f"{root}/"):
+                return location[len(root) :]
+        return None
+
     def location(self, name: str) -> str:
         """Where the source named *name* is: its root's location plus the rest, else *name*."""
         label, _, rest = name.partition("/")

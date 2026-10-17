@@ -607,15 +607,15 @@ class _MovePool:
         self,
         absent: list[str],
         existing_sources: dict[str, SourceRecord],
-        failed: Mapping[str, str] | None = None,
+        held: Mapping[str, str] | None = None,
     ) -> None:
         by_hash: dict[str, list[str]] = {}
         for name in absent:
             record = existing_sources.get(name)
             if record is not None:
                 by_hash.setdefault(record["file_hash"], []).append(name)
-        # An absent failed file is offered at the hash it failed at.
-        for name, digest in (failed or {}).items():
+        # An absent held-out file is offered at the hash it is held out at.
+        for name, digest in (held or {}).items():
             by_hash.setdefault(digest, []).append(name)
         # One tuple for each content: every new file of that content is offered the same one.
         self._by_hash = {digest: tuple(sorted(names)) for digest, names in by_hash.items()}
@@ -656,10 +656,10 @@ class _IndexMovePool(_MovePool):
                 self._by_hash[digest] = absent
 
 
-def _moved_failures(store: Store, relocated: list[str]) -> set[str]:
-    """The *relocated* files a failure holds out: they moved with their record and stay out."""
+def _moved_held_out(store: Store, relocated: list[str]) -> set[str]:
+    """The *relocated* files a record holds out: they moved with their record and stay out."""
     held = store.held_records()
-    return {name for name in relocated if name in held and held[name].kind is HeldOut.FAILED}
+    return {name for name in relocated if name in held}
 
 
 def _detect_moves(
@@ -771,20 +771,19 @@ def _move_pool(
 ) -> _MovePool:
     """The absent sources a brand-new file of this sync can be paired with as a move.
 
-    A failed file moves with its folder, so it stays held out at its new path.
+    A held-out file moves with its folder, so it stays held out at its new path.
     """
     if shard is not None:
         return _worker_move_pool(store, shard, disk_files, gone, rules)
     absent = [name for name in _absent_sources(sources, disk_files) if name not in gone]
-    failed = {
+    held = {
         name: record.file_hash
         for name, record in store.held_records().items()
-        if record.kind is HeldOut.FAILED
-        and name not in disk_files
+        if name not in disk_files
         and name not in gone
         and not _in_archive(name, disk_files.__contains__)
     }
-    return _MovePool(absent, {source["filename"]: source for source in sources}, failed)
+    return _MovePool(absent, {source["filename"]: source for source in sources}, held)
 
 
 # A plan batch is only done when its slowest hash is, so the first one is small (work
@@ -867,9 +866,9 @@ async def _absorb_plan_batch(
         entries, relocated = _apply_moves(taken.keys(), entries, plan.added)
         for name in relocated:
             state.added.pop(name, None)
-        failures = await to_ingest_thread(_moved_failures, store, relocated)
-        state.held_out.update(dict.fromkeys(failures))
-        state.relocated.extend(name for name in relocated if name not in failures)
+        held_out = await to_ingest_thread(_moved_held_out, store, relocated)
+        state.held_out.update(dict.fromkeys(held_out))
+        state.relocated.extend(name for name in relocated if name not in held_out)
     if plan.stat_backfills:
         backfills = plan.stat_backfills
         await to_ingest_thread(

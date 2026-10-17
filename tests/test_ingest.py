@@ -2128,6 +2128,63 @@ class TestHeldOutRecordLifecycle:
         assert [held.filename for held in moved.held_out] == ["new/bad.pdf"]
         assert "possible silent drop" not in caplog.text
 
+    async def _remove_then_move(self, tmp_path, rename: str | None = None):
+        """Index notes/ under a root, remove notes/a/gone.md, then move the folder on disk.
+
+        An edit of config.toml re-points the root at the new folder; with *rename* the
+        removed file also takes that name below the root. Returns the sync after the
+        move and the mock that counts each extraction it ran.
+        """
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        def settings_of(roots):
+            settings.set_value(cfg.data_root, "linked_roots", roots)
+
+        _install_real_store()
+        old = tmp_path / "src" / "notes"
+        (old / "a").mkdir(parents=True)
+        (old / "a" / "gone.md").write_text("removed by the user", encoding="utf-8")
+        (old / "kept.md").write_text("kept in the index", encoding="utf-8")
+        settings_of({"notes": str(old)})
+        await sync(quiet=True)
+        remove_documents_durably(["notes/a/gone.md"])
+        assert held_kinds() == {"notes/a/gone.md": HeldOut.REMOVED}
+        new = tmp_path / "dst" / "notes"
+        new.parent.mkdir()
+        old.rename(new)
+        if rename is not None:
+            (new / "a" / "gone.md").rename(new / rename)
+        settings_of({"notes": str(new)})
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for()
+        ) as produce:
+            moved = await sync(quiet=True)
+        return moved, produce
+
+    async def test_a_removal_moves_with_a_root_that_config_toml_points_elsewhere(
+        self, isolated_env, tmp_path, overlay_reads_config_toml
+    ):
+        """The removed file keeps its removal when its root moves with its name below it."""
+        moved, produce = await self._remove_then_move(tmp_path)
+
+        produce.assert_not_called()
+        assert held_kinds() == {"notes/a/gone.md": HeldOut.REMOVED}
+        assert "notes/a/gone.md" not in [*moved.added, *moved.relocated, *moved.skipped]
+        assert sorted(moved.relocated) == ["notes/kept.md"]
+
+    async def test_a_removed_file_under_another_name_below_its_root_is_indexed(
+        self, isolated_env, tmp_path, overlay_reads_config_toml
+    ):
+        """A removal stays only while the name below the root does; another name is indexed."""
+        moved, produce = await self._remove_then_move(tmp_path, rename="b.md")
+
+        assert [call.args[1] for call in produce.call_args_list] == ["notes/b.md"]
+        assert moved.added == ["notes/b.md"]
+        old = (tmp_path / "src" / "notes" / "a" / "gone.md").as_posix()
+        assert held_kinds() == {old: HeldOut.REMOVED}
+
     @classmethod
     def _zero_for(cls, *targets: str):
         from lilbee.data.ingest.pipeline import produce_records as orig

@@ -184,7 +184,7 @@ class TestRelease:
         assert store.release_failed() == []
 
 
-class TestMovesCarryFailures:
+class TestMovesCarryHeldRecords:
     def test_a_moved_failure_keeps_its_record_at_the_new_path(self, store):
         store.hold_failed({"a/empty.md": _failed("e")})
         step = store.relocate_sources([SourceMove(("a/empty.md",), "c/empty.md", None)])
@@ -197,13 +197,48 @@ class TestMovesCarryFailures:
         assert step.taken == {}
         assert store.held_records() == {"a/gone.md": _removed("g")}
 
-    def test_sources_by_hash_offers_a_failure_at_the_hash_it_failed_at(self, store):
+    def test_sources_by_hash_offers_a_failure_and_a_removal_at_their_hashes(self, store):
         _index(store, "a.md", file_hash="old")
         store.hold_failed({"a.md": _failed("new"), "b.pdf": _failed("hb")})
+        store.remove_documents([], {"gone.md": _removed("hg")})
         version = store.sources_version()
         assert version is not None
-        found = store.sources_by_hash(["old", "new", "hb"], version=version)
-        assert found == {"old": ["a.md"], "new": ["a.md"], "hb": ["b.pdf"]}
+        found = store.sources_by_hash(["old", "new", "hb", "hg"], version=version)
+        assert found == {"old": ["a.md"], "new": ["a.md"], "hb": ["b.pdf"], "hg": ["gone.md"]}
+
+    @pytest.mark.parametrize(
+        ("new", "moves"),
+        [("notes/a/gone.md", True), ("notes/b/gone.md", False), ("loose/a/gone.md", False)],
+    )
+    def test_a_removal_moves_only_with_its_name_below_a_root_that_moved(
+        self, store, tmp_path, new, moves
+    ):
+        before, after = tmp_path / "before" / "notes", tmp_path / "after" / "notes"
+        store._config.linked_roots = {"notes": str(before)}
+        store.remove_documents([], {"notes/a/gone.md": _removed("g")})
+        store._config.linked_roots = {"notes": str(after)}
+        old = (before / "a" / "gone.md").as_posix()
+
+        step = store.relocate_sources([SourceMove((old,), new, None)])
+
+        assert step.taken == ({new: old} if moves else {})
+        assert store.held_records() == {new if moves else old: _removed("g")}
+
+    def test_a_move_takes_the_removal_of_its_name_before_a_listed_file(self, store, tmp_path):
+        before, after = tmp_path / "before" / "notes", tmp_path / "after" / "notes"
+        store._config.linked_roots = {"notes": str(before)}
+        _index(store, "notes/a/kept.md", file_hash="g")
+        store.remove_documents([], {"notes/b/gone.md": _removed("g")})
+        store._config.linked_roots = {"notes": str(after)}
+        pool = tuple(sorted((before / name).as_posix() for name in ("a/kept.md", "b/gone.md")))
+
+        step = store.relocate_sources(
+            [SourceMove(pool, "notes/b/gone.md", None), SourceMove(pool, "notes/c.md", None)]
+        )
+
+        assert step.taken == {"notes/b/gone.md": pool[1], "notes/c.md": pool[0]}
+        assert store.held_records() == {"notes/b/gone.md": _removed("g")}
+        assert _listed(store) == ["notes/c.md"]
 
 
 def _write_legacy(root, markers, reasons=None, kinds=None):
