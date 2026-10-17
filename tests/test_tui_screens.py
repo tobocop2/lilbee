@@ -1742,24 +1742,29 @@ async def test_reset_nullable_to_none():
 
 async def test_reset_select_clears_when_default_none():
     """Resetting a Select-backed field to a None default clears the widget."""
+    import dataclasses
+
     from textual.widgets import Select
 
-    from lilbee.app.settings_map import SettingDef
+    from lilbee.app.settings_map import SETTINGS_MAP, SettingDef
     from lilbee.cli.tui.screens.settings import SettingsScreen
 
+    # The blank row exists only on a Select built for a nullable setting.
+    nullable = dataclasses.replace(SETTINGS_MAP["wiki_clusterer"], nullable=True)
     app = SettingsTestApp()
-    async with app.run_test(size=(120, 40)) as _pilot:
-        screen = app.screen
-        assert isinstance(screen, SettingsScreen)
-        # Find any existing Select editor (wiki_clusterer is a choice-based field).
-        select_widget = screen.query_one("#ed-wiki_clusterer", Select)
-        # Seed a non-default choice so we can detect the clear.
-        select_widget.value = "embedding"
-        defn = SettingDef(type=str, nullable=True, group="Wiki", choices=("embedding", "concepts"))
-        screen._refresh_editor("wiki_clusterer", defn, None)
-        # clear() yields the "no selection" sentinel; value should no longer be the seeded choice.
-        assert select_widget.value != "embedding"
-        assert select_widget.value not in {"embedding", "concepts"}
+    with patch.dict(SETTINGS_MAP, {"wiki_clusterer": nullable}):
+        async with app.run_test(size=(120, 40)) as _pilot:
+            screen = app.screen
+            assert isinstance(screen, SettingsScreen)
+            select_widget = screen.query_one("#ed-wiki_clusterer", Select)
+            # Seed a non-default choice so we can detect the clear.
+            select_widget.value = "embedding"
+            defn = SettingDef(
+                type=str, nullable=True, group="Wiki", choices=("embedding", "concepts")
+            )
+            screen._refresh_editor("wiki_clusterer", defn, None)
+            # clear() yields the "no selection" sentinel, not the seeded choice.
+            assert select_widget.value is Select.NULL
 
 
 async def test_reset_select_sets_value_when_default_provided():
@@ -16176,3 +16181,49 @@ async def test_settings_invalid_regex_error_shows_brackets_as_written():
         error = screen.query_one(f"#{LIST_ERROR_ID_PREFIX}crawl_exclude_patterns", Static)
         rendered = str(error.render())
     assert "bad character in group name '[/x]'" in rendered
+
+
+async def test_a_choice_select_offers_no_blank_when_the_setting_is_not_nullable():
+    """A choice setting that cannot be unset gives the user no blank row to pick."""
+    from textual.widgets import Select
+    from textual.widgets._select import InvalidSelectValueError
+
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        select = screen.query_one("#ed-chat_mode", Select)
+        before = cfg.chat_mode
+        with pytest.raises(InvalidSelectValueError):
+            select.value = Select.NULL
+        await pilot.pause()
+        assert select.value == before
+
+
+async def test_blanking_a_select_hands_the_save_an_empty_value():
+    """A blank Select saves "" (the unset value), never the text of the NULL sentinel."""
+    from textual.widgets import Select
+
+    from lilbee.app.settings_map import SETTINGS_MAP
+    from lilbee.cli.tui.screens.settings import SettingsScreen
+    from lilbee.cli.tui.screens.settings_widgets import make_select
+
+    app = SettingsTestApp()
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = app.screen
+        assert isinstance(screen, SettingsScreen)
+        # A value outside the choices builds the Select with its blank row, as in production.
+        await screen.query_one("#ed-chat_mode", Select).remove()
+        select = make_select("chat_mode", SETTINGS_MAP["chat_mode"], "not-a-choice")
+        await screen.mount(select)
+        saved: list[str] = []
+        with patch.object(
+            screen, "_persist_value", side_effect=lambda _key, _defn, raw: saved.append(raw)
+        ):
+            select.value = "chat"
+            assert await pump_until(pilot, lambda: saved == ["chat"])
+            select.value = Select.NULL
+            assert await pump_until(pilot, lambda: len(saved) == 2)
+        assert saved == ["chat", ""]
