@@ -11,6 +11,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import KvCacheType, OcrMode, RerankerType
 from lilbee.providers.engine_params import ChatFit
+from lilbee.providers.fleet import binary as binary_mod
 from lilbee.providers.fleet import planning as planning_mod
 from lilbee.providers.fleet.devices import (
     VULKAN_BACKEND,
@@ -1146,6 +1147,39 @@ class TestBuildFleetWiring:
         assert "network filesystem" in caplog.text.lower()
         assert "--no-mmap" not in launch.argv  # too big to malloc; mmap kept
 
+    @pytest.mark.parametrize(
+        ("help_line", "expected"),
+        [
+            ("-lm,   --load-mode MODE   model loading mode", ["--load-mode", "none"]),
+            ("--mmap, --no-mmap   whether to memory-map model", ["--no-mmap"]),
+            ("--port PORT   port to listen", []),
+        ],
+        ids=["load-mode-build", "no-mmap-build", "neither"],
+    )
+    def test_launch_for_network_fs_chat_sends_the_listed_no_mmap_flag(
+        self, tmp_path, monkeypatch, help_line: str, expected: list[str]
+    ) -> None:
+        # A chat model on a network volume that fits RAM loads without mmap, with
+        # the flag the binary lists: each build refuses the other's flag at startup.
+        model = tmp_path / "chat.gguf"
+        model.write_bytes(b"x" * 2048)
+        monkeypatch.setattr("lilbee.providers.engine_params.resolve_model_path", lambda _r: model)
+        monkeypatch.setattr("lilbee.providers.gguf_meta.read_gguf_metadata", lambda _p: {})
+        monkeypatch.setattr(planning_mod, "_role_ctx", lambda _r, _p, _m, *_a: 4096)
+        monkeypatch.setattr(planning_mod, "is_network_path", lambda _p: True)
+        monkeypatch.setattr(planning_mod, "_weights_bytes", lambda _p: 10 * 10**9)
+        monkeypatch.setattr("lilbee.providers.model_cache.total_system_memory", lambda: 100 * 10**9)
+        monkeypatch.setattr(
+            binary_mod.subprocess,
+            "run",
+            lambda *_a, **_k: SimpleNamespace(stdout=help_line, stderr=""),
+        )
+        device = FleetDevice("CUDA", 0, "gpu", 80 * _GB, 70 * _GB)
+        plan = InstancePlan(role=WorkerRole.CHAT, devices=(0,))
+        launch = planning_mod._launch_for(plan, "ref", Path("/bin/llama-server"), {0: device})
+        got = [t for t in launch.argv if t in ("--no-mmap", "--load-mode", "none")]
+        assert got == expected
+
     def test_launch_for_split_chat_subtracts_reserved_headroom(self, tmp_path, monkeypatch) -> None:
         # An embed/rerank server on a shared card leaves less room for the chat KV
         # than the card's raw free VRAM; sizing the split against raw free over-commits
@@ -1953,6 +1987,7 @@ _NON_SIZING_LAUNCH_FLAGS = {
     "--cont-batching",
     "--jinja",
     "--no-mmap",
+    "--load-mode",
     "--no-prefill-assistant",
     "--reasoning-format",
     "--embeddings",

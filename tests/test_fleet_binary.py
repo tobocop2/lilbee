@@ -481,3 +481,36 @@ def test_install_hint_indexes_are_documented() -> None:
         text = (root / doc).read_text(encoding="utf-8")
         documented = set(re.findall(r"https://lilbee\.sh/(\w+)/", text))
         assert hint_indexes <= documented, f"{doc} is missing {hint_indexes - documented}"
+
+
+class TestEngineHelp:
+    def test_joins_stdout_and_stderr(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            binary_mod.subprocess,
+            "run",
+            lambda *_a, **_k: SimpleNamespace(stdout="--port PORT", stderr="--no-mmap"),
+        )
+        assert binary_mod.engine_help(Path("/bin/llama-server")) == "--port PORT\n--no-mmap"
+
+    def test_a_binary_that_hangs_reads_as_empty(self, monkeypatch) -> None:
+        def _hang(*_a, **_k):
+            raise binary_mod.subprocess.TimeoutExpired("llama-server", 15.0)
+
+        monkeypatch.setattr(binary_mod.subprocess, "run", _hang)
+        assert binary_mod.engine_help(Path("/bin/llama-server")) == ""
+
+
+@pytest.mark.parametrize(
+    ("help_text", "flag", "listed"),
+    [
+        ("-lm,   --load-mode MODE   loading mode", "--load-mode", True),
+        ("--mmap, --no-mmap   whether to memory-map", "--no-mmap", True),
+        ("-ngl,  --n-gpu-layers N   see --load-mode", "--load-mode", False),
+        ("        (with --load-mode none the load is slower)", "--load-mode", False),
+        ("--load-mode-extra   a longer flag", "--load-mode", False),
+        ("", "--load-mode", False),
+    ],
+    ids=["short-and-long", "pair", "in-description", "continuation", "longer-flag", "empty"],
+)
+def test_help_lists_option_reads_option_names_only(help_text: str, flag: str, listed: bool) -> None:
+    assert binary_mod.help_lists_option(help_text, flag) is listed

@@ -902,13 +902,13 @@ touching the running fleet.
   the estimate sizes against f16 to match). A mixture-of-experts model also offloads its expert
   weights to system memory when `cpu_moe`/`n_cpu_moe` is set (`--cpu-moe`/
   `--n-cpu-moe`, gated on the GGUF declaring routed experts), and the VRAM estimate
-  charges the same tensors to the host so the plan matches the launch. Chat also
-  loads with `--no-mmap`
-  (a malloc'd host copy) when its weights fit in at most half of total system
-  RAM -- a buffered sequential read reaches ready ~20% faster than mmap's
-  page-fault-driven upload (measured 33s vs 43s for a 112GB model on 3 GPUs),
-  while replicated roles keep mmap so their replicas share one set of
-  page-cache pages. The gate reads total (not free) memory so replans never
+  charges the same tensors to the host so the plan matches the launch. Chat on a network
+  filesystem loads without mmap (a malloc'd host copy) when its weights fit in
+  85% of total system RAM, because page faults served over the wire can wedge
+  the loader. The flag is the one the binary's `--help` lists: `--load-mode none`
+  on a current build, `--no-mmap` on an older one, and none when it lists
+  neither, since each build refuses the other's flag at startup. Local disk and
+  the other roles keep mmap. The gate reads total (not free) memory so replans never
   flap the flag; embed and rerank raise
   `--batch-size`/`--ubatch-size` to the full context (the server caps embeddings at
   `n_ubatch`, default 512); vision uses the full-core thread default and always

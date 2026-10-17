@@ -30,13 +30,12 @@ still finds every line. A build that stops matching is reported, not swallowed
 
 from __future__ import annotations
 
-import functools
 import logging
 import re
-import subprocess
 from pathlib import Path
 
 from lilbee.core.health_warnings import HealthWarning, WarningCode
+from lilbee.providers.fleet.binary import engine_help
 from lilbee.providers.fleet.devices import FleetDevice
 from lilbee.providers.fleet.vram import usable_vram_fraction
 from lilbee.providers.roles import WorkerRole
@@ -419,34 +418,17 @@ MEMORY_FLAG = "--memory"
 # The flag as --help advertises it. The lookahead keeps historic longer flags
 # (--memory-f32) from reading as support for the endpoint.
 _HELP_MEMORY_RE = re.compile(r"--memory(?!\S)")
-# --help exits from arg parsing, before any backend or model load, so this is
-# generous; a binary that cannot even print usage in this time is not one the
-# fleet should silently trust either way.
-_HELP_PROBE_TIMEOUT_S = 15.0
 
 
-@functools.lru_cache(maxsize=8)
 def supports_memory_readback(binary: Path) -> bool:
     """Whether *binary* serves ``GET /memory`` when launched with ``--memory``.
 
-    Read from the binary's own ``--help``, once per path: a stock llama-server
-    exits with "unknown argument" when handed a flag it lacks, so the launch
-    must never carry it on advertisement it did not see. Any failure to run or
-    to answer reads as unsupported, which degrades to the log path rather than
-    a failed launch.
+    Read from the binary's own ``--help``: a stock llama-server exits with
+    "unknown argument" when handed a flag it lacks, so the launch must never
+    carry it on advertisement it did not see. A binary that cannot run or answer
+    reads as unsupported, which degrades to the log path rather than a failed launch.
     """
-    try:
-        done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
-            [str(binary), "--help"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_HELP_PROBE_TIMEOUT_S,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    return bool(_HELP_MEMORY_RE.search(f"{done.stdout}\n{done.stderr}"))
+    return bool(_HELP_MEMORY_RE.search(engine_help(binary)))
 
 
 # The per-device byte fields of one GET /memory row. Summed because the total

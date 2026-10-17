@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import shutil
+import subprocess
 from enum import StrEnum
 from importlib.metadata import version as _pkg_version
 from pathlib import Path
 
 from lilbee.providers.base import ProviderError, ProviderErrorKind
 from lilbee.providers.fleet.engine_install import engine_install_hint
+
+# --help exits from arg parsing, before any backend or model load, so this is
+# generous; a binary that cannot even print usage in this time is not one the
+# fleet should silently trust either way.
+_HELP_PROBE_TIMEOUT_S = 15.0
 
 
 class EngineTool(StrEnum):
@@ -221,3 +228,41 @@ def llama_server_runtime_env() -> dict[str, str]:
     from lilbee.providers.fleet.cuda_runtime import cuda_runtime_env
 
     return cuda_runtime_env()
+
+
+@functools.lru_cache(maxsize=8)
+def engine_help(binary: Path) -> str:
+    """The usage text *binary* prints for ``--help``, stdout then stderr, read once per path.
+
+    Empty when the binary cannot run or answer in time: every caller reads an
+    absent flag as unsupported, so a launch never carries a flag it did not see.
+    """
+    try:
+        done = subprocess.run(  # noqa: S603 - argv is the resolved engine binary and a literal
+            [str(binary), "--help"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_HELP_PROBE_TIMEOUT_S,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return f"{done.stdout}\n{done.stderr}"
+
+
+def help_lists_option(help_text: str, flag: str) -> bool:
+    """Whether an option line of *help_text* names *flag*.
+
+    An option line starts with ``-`` and names its flags up to the first word
+    that is not one, so a flag quoted in another option's description does not count.
+    """
+    for line in help_text.splitlines():
+        if not line.startswith("-"):
+            continue
+        for token in line.split():
+            if not token.startswith("-"):
+                break
+            if token.rstrip(",") == flag:
+                return True
+    return False

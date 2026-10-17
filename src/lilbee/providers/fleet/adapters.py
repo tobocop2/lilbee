@@ -13,6 +13,7 @@ from enum import StrEnum
 from pathlib import Path
 
 from lilbee.core.config.enums import RerankerType
+from lilbee.providers.fleet.binary import engine_help, help_lists_option
 from lilbee.providers.roles import RerankMode, WorkerRole
 from lilbee.runtime.cpu import engine_thread_count
 
@@ -199,6 +200,24 @@ def _thread_args() -> list[str]:
     return [] if threads is None else [_FLAG_THREADS, str(threads)]
 
 
+# The flags that load the weights into a host copy instead of mapping the file.
+# llama.cpp replaced --no-mmap with --load-mode, and each build refuses the
+# other's flag at startup, so the binary's own --help picks one.
+_FLAG_LOAD_MODE = "--load-mode"
+_LOAD_MODE_NO_MMAP = "none"
+_FLAG_NO_MMAP = "--no-mmap"
+
+
+def _no_mmap_args(binary: Path) -> list[str]:
+    """The no-mmap flag *binary* lists in its ``--help``, ``--load-mode`` first; else empty."""
+    help_text = engine_help(binary)
+    if help_lists_option(help_text, _FLAG_LOAD_MODE):
+        return [_FLAG_LOAD_MODE, _LOAD_MODE_NO_MMAP]
+    if help_lists_option(help_text, _FLAG_NO_MMAP):
+        return [_FLAG_NO_MMAP]
+    return []
+
+
 def build_server_argv(
     *,
     binary: Path,
@@ -226,7 +245,8 @@ def build_server_argv(
     wins over ``cpu_moe``; the pair would offload the same tensors twice.
     ``memory_endpoint`` is set only for a binary whose ``--help`` advertises
     ``--memory`` (readback.supports_memory_readback): a stock engine dies at
-    launch on the unknown flag.
+    launch on the unknown flag. ``no_mmap`` sends the no-mmap flag the binary's
+    ``--help`` lists, or nothing when it lists neither.
     """
     argv = [
         str(binary),
@@ -265,7 +285,7 @@ def build_server_argv(
         # a load-time out-of-memory.
         argv += ["--tensor-split", ",".join(str(r) for r in tensor_split)]
     if no_mmap:
-        argv += ["--no-mmap"]
+        argv += _no_mmap_args(binary)
     if n_cpu_moe is not None:
         argv += ["--n-cpu-moe", str(n_cpu_moe)]
     elif cpu_moe:
