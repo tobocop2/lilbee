@@ -487,7 +487,8 @@ class TestAdd:
 
         assert result.exit_code == 0
         assert "Warning" in result.output
-        assert "is taken by another source" in result.output
+        said = " ".join(result.output.split())
+        assert "The name corpus is taken by another source (use --force to overwrite)." in said
 
     @pytest.mark.parametrize("flags", [[], ["--force"]], ids=["plain", "force"])
     def test_add_of_a_parent_named_like_its_source_takes_the_source_in(
