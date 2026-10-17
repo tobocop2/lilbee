@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import threading
 from contextlib import contextmanager
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -46,6 +48,7 @@ from lilbee.cli.helpers import (
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler import is_url
+from lilbee.crawler.url_filter import without_userinfo
 
 _SYNC_CANCELLED_MESSAGE = "Sync cancelled."
 # The shell's exit status for a command stopped by Ctrl+C (128 + SIGINT).
@@ -150,6 +153,44 @@ def _partition_inputs(inputs: list[str]) -> tuple[list[Path], list[str]]:
     return paths, urls
 
 
+@dataclass(frozen=True)
+class _FailedSource:
+    """A requested URL that added nothing, and why."""
+
+    url: str
+    reason: str
+
+
+@dataclass
+class _CrawlOutcome:
+    """The pages the crawls of one add saved, and the URLs that failed."""
+
+    saved: list[Path] = field(default_factory=list)
+    failed: list[_FailedSource] = field(default_factory=list)
+
+    def record(
+        self,
+        url: str,
+        crawl_one: Callable[[], list[Path]],
+        page_failures: list[str],
+        crawled: dict[str, int],
+    ) -> list[Path]:
+        """Crawl *url* with *crawl_one* and keep its pages, or its failure, in this outcome.
+
+        *url* failed when its address is refused (ValueError), or when it saved no page and
+        every page its crawl counted failed.
+        """
+        try:
+            paths = crawl_one()
+        except ValueError as exc:
+            self.failed.append(_FailedSource(without_userinfo(url), str(exc)))
+            return []
+        self.saved.extend(paths)
+        if page_failures and not paths and len(page_failures) >= crawled.get("n", 0):
+            self.failed.append(_FailedSource(without_userinfo(url), "\n".join(page_failures)))
+        return paths
+
+
 def _crawl_urls_blocking(
     urls: list[str],
     *,
@@ -158,11 +199,11 @@ def _crawl_urls_blocking(
     max_pages: int | None,
     cancel_event: threading.Event,
     include_subdomains: bool = False,
-) -> list[Path]:
-    """Crawl each URL in turn and return the pages saved; a set *cancel_event* raises a cancel.
+) -> _CrawlOutcome:
+    """Crawl each URL in turn; a set *cancel_event* raises a cancel.
 
-    When no page is saved and every crawled page failed, ValueError carries each failed
-    page's reason.
+    A URL whose address is refused, or whose crawl saved nothing and failed on every page,
+    is a failed source; the next URL is still crawled.
     """
     from rich.progress import Progress, SpinnerColumn, TaskID
 
@@ -181,9 +222,7 @@ def _crawl_urls_blocking(
     from lilbee.runtime.console import PlainConsole
 
     err_console = PlainConsole(stderr=True)
-    all_paths: list[Path] = []
-    failures: list[str] = []
-    pages_seen = 0
+    outcome = _CrawlOutcome()
     with Progress(
         SpinnerColumn(),
         literal_text_column("{task.description}"),
@@ -194,9 +233,12 @@ def _crawl_urls_blocking(
         for url in urls:
             ptask = progress.add_task(f"Crawling {url}...", total=None)
             crawled: dict[str, int] = {}
+            failures: list[str] = []
 
             def _make_callback(
-                _t: TaskID = ptask, _crawled: dict[str, int] = crawled
+                _t: TaskID = ptask,
+                _crawled: dict[str, int] = crawled,
+                _failures: list[str] = failures,
             ) -> DetailedProgressCallback:
                 def on_progress(event_type: EventType, data: ProgressEvent) -> None:
                     if event_type == EventType.CRAWL_PAGE:
@@ -212,21 +254,25 @@ def _crawl_urls_blocking(
                     elif event_type == EventType.CRAWL_PAGE_FAILED and isinstance(
                         data, CrawlPageFailedEvent
                     ):
-                        failures.append(f"{data.url}: {data.reason}")
+                        _failures.append(f"{data.url}: {data.reason}")
 
                 return on_progress
 
-            paths = _run_crawl_with_signal_cancel(
+            paths = outcome.record(
                 url,
-                depth=effective_depth,
-                max_pages=effective_pages,
-                on_progress=_make_callback(),
-                cancel_event=cancel_event,
-                crawl_and_save=crawl_and_save,
-                include_subdomains=include_subdomains,
+                functools.partial(
+                    _run_crawl_with_signal_cancel,
+                    url,
+                    depth=effective_depth,
+                    max_pages=effective_pages,
+                    on_progress=_make_callback(),
+                    cancel_event=cancel_event,
+                    crawl_and_save=crawl_and_save,
+                    include_subdomains=include_subdomains,
+                ),
+                failures,
+                crawled,
             )
-            all_paths.extend(paths)
-            pages_seen += crawled.get("n", 0)
             progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
             # No explicit cap given and the crawl filled the protective default:
             # tell the user how to go unlimited without editing settings.
@@ -236,9 +282,7 @@ def _crawl_urls_blocking(
                     f"Stopped at the default {default_cap}-page limit; "
                     f"pass --max-pages 0 to crawl unlimited (or --max-pages N for a higher cap).",
                 )
-    if failures and not all_paths and len(failures) >= pages_seen:
-        raise ValueError("\n".join(failures))
-    return all_paths
+    return outcome
 
 
 def _run_crawl_with_signal_cancel(
@@ -549,31 +593,42 @@ def _crawl_urls_step(
     max_pages: int | None,
     include_subdomains: bool,
     cancel_event: threading.Event,
-) -> list[Path]:
-    """Crawl URLs (or fail fast when crawler extra is missing). Returns saved paths."""
+) -> _CrawlOutcome:
+    """Crawl URLs (or fail fast when crawler extra is missing)."""
     if not urls:
-        return []
+        return _CrawlOutcome()
     from lilbee.crawler import CRAWLER_MISSING_MESSAGE, crawler_available
 
     if not crawler_available():
         _refuse_crawl(CRAWLER_MISSING_MESSAGE)
-    try:
-        crawled_paths = _crawl_urls_blocking(
-            urls,
-            crawl=crawl,
-            depth=depth,
-            max_pages=max_pages,
-            cancel_event=cancel_event,
-            include_subdomains=include_subdomains,
-        )
-    except ValueError as exc:
-        _refuse_crawl(str(exc))
+    outcome = _crawl_urls_blocking(
+        urls,
+        crawl=crawl,
+        depth=depth,
+        max_pages=max_pages,
+        cancel_event=cancel_event,
+        include_subdomains=include_subdomains,
+    )
     if not cfg.json_mode:
         console.print(
-            f"Crawled {len(crawled_paths)} page(s) from {len(urls)} URL(s)",
+            f"Crawled {len(outcome.saved)} page(s) from {len(urls)} URL(s)",
             style=theme.MUTED,
         )
-    return crawled_paths
+    return outcome
+
+
+def _report_failed_sources(payload: dict | None, failed: list[_FailedSource]) -> None:
+    """Print the add result with each failed source's reason; exit 1 when a source failed."""
+    error = "\n".join(source.reason for source in failed)
+    if payload is not None:
+        if failed:
+            payload["error"] = error
+            payload["failed"] = [{"url": s.url, "reason": s.reason} for s in failed]
+        json_output(payload)
+    elif failed:
+        console.print(error, style=theme.ERROR, soft_wrap=True)
+    if failed:
+        raise SystemExit(1)
 
 
 def _add_json_mode(
@@ -606,7 +661,6 @@ def _register_and_sync(
     file_paths: list[Path],
     crawled_paths: list[Path],
     *,
-    sync_urls: bool,
     force: bool,
     cancel_event: threading.Event,
     rollback: AddRollback,
@@ -632,8 +686,7 @@ def _register_and_sync(
             run_sync=_sync,
             sync_anyway=bool(crawled_paths),
         )
-    elif sync_urls:
-        # URLs already saved; just trigger sync
+    elif crawled_paths:
         console.print(_sync(RegisterResult()))
     return None
 
@@ -667,7 +720,7 @@ def add(
     rollback = AddRollback(paths=file_paths, at_sync=False)
     try:
         with _ctrl_c_stops(cancel_event, rollback):
-            crawled_paths = _crawl_urls_step(
+            outcome = _crawl_urls_step(
                 urls,
                 crawl=crawl,
                 depth=depth,
@@ -677,8 +730,7 @@ def add(
             )
             payload = _register_and_sync(
                 file_paths,
-                crawled_paths,
-                sync_urls=bool(urls),
+                outcome.saved,
                 force=force,
                 cancel_event=cancel_event,
                 rollback=rollback,
@@ -693,8 +745,7 @@ def add(
             raise SystemExit(1) from None
         print_prefixed(console, "Error: ", exc, style=theme.ERROR)
         raise SystemExit(1) from None
-    if payload is not None:
-        json_output(payload)
+    _report_failed_sources(payload, outcome.failed)
 
 
 _chunks_source_argument = typer.Argument(..., help="Source name to inspect chunks for.")
