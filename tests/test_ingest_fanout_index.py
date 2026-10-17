@@ -171,12 +171,12 @@ class TestWhereTheWorkIs:
         """A file that failed is accounted for and is not named."""
         library = Library(tmp_path / "lib", 2)
         library.write_notes("note", 12)
-        real_rows = Store._batch_source_rows
+        real_writes = Store._batch_source_writes
         monkeypatch.setattr(
             Store,
-            "_batch_source_rows",
-            lambda store, items, ids: [
-                row for row in real_rows(store, items, ids) if row["path"] != "note3.txt"
+            "_batch_source_writes",
+            lambda store, items: [
+                write for write in real_writes(store, items) if write.name != "note3.txt"
             ],
         )
         real_ingest = pipeline_mod.ingest_document
@@ -693,7 +693,7 @@ class TestAStoppedSync:
             library.write_notes("report", 8)
             if library.processes > 1:
                 with monkeypatch.context() as patch:
-                    patch.setattr(Store, "_replace_source_rows_unlocked", _stops)
+                    patch.setattr(Store, "_batch_source_writes", _stops)
                     failed.extend((await library.sync()).failed)
                 orphans = [name for name in library.chunk_sources() if name.startswith("report")]
                 assert len(orphans) == 8
@@ -706,7 +706,7 @@ class TestAStoppedSync:
         _assert_equal_to_one_process(fanned, single)
 
 
-def _stops(store, rows):
+def _stops(store, items):
     """A flush that ends after its chunks and before its source rows."""
     raise OSError("the writer stopped")
 

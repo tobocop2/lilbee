@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import PurePath
 
 from .lance_helpers import escape_sql_string
+from .types import SourceType
 
 
 def root_location(root: str) -> str:
@@ -59,6 +60,10 @@ class SourceLocations:
         if root is None:
             return name
         return f"{root}/{rest}" if rest else root
+
+    def key(self, name: str, source_type: SourceType) -> str:
+        """What ``_sources.path`` holds for *name*: a document's location, else the name."""
+        return self.location(name) if source_type == SourceType.DOCUMENT else name
 
     def named_by_sql(self, column: str, root: str) -> str:
         """The predicate for *column* holding a location whose name the registered *root* gives."""

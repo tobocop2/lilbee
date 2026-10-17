@@ -10,7 +10,7 @@ import pytest
 
 from lilbee.core import settings
 from lilbee.core.config import CITATIONS_TABLE, SOURCES_TABLE, cfg
-from lilbee.data.store import SourceType, Store
+from lilbee.data.store import ChunkType, SourceType, Store
 from lilbee.data.store.locations import SourceLocations, root_location
 from tests.test_store import _citation, _holders, _seed_source
 
@@ -144,7 +144,7 @@ class TestAFolderNamedLikeTheWikiFolder:
         store = Store(config)
         _seed_source(store, "wiki/notes.md")
         store.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
-        store.add_citations([_citation("wiki/concepts/b.md")])
+        store.replace_chunks("wiki/concepts/b.md", ChunkType.WIKI, [])
         pages = ["wiki/summaries/a.md", "wiki/concepts/b.md"]
         ids = store.source_ids(pages)
 
@@ -154,7 +154,6 @@ class TestAFolderNamedLikeTheWikiFolder:
         assert (tmp_path / "home" / "wiki" / "notes.md").as_posix() in _paths(store)
         assert store.source_ids(pages) == ids
         assert len(ids) == 2
-        assert len(store.get_citations_for_source("wiki/concepts/b.md")) == 1
 
     def test_the_open_leaves_a_wiki_page_under_its_key(self, config, tmp_path):
         old = Store(config)

@@ -251,7 +251,7 @@ def _page_records(source, n, chunk_type=ChunkType.WIKI):
 class TestReplaceChunks:
     def test_replaces_the_source_rows_of_the_type_in_place(self, store):
         store.add_chunks(_page_records("wiki/a.md", 2))
-        store.add_chunks(_page_records("wiki/a.md", 1, chunk_type="raw"))
+        store.add_chunks(_page_records("a.md", 1, chunk_type="raw"))
         store.add_chunks(_page_records("wiki/b.md", 1))
         replacement = _page_records("wiki/a.md", 1)
         replacement[0]["chunk"] = "the only wiki row left"
@@ -260,11 +260,11 @@ class TestReplaceChunks:
 
         assert added == 1
         rows = store.get_chunks_by_source("wiki/a.md")
-        assert sorted((r.chunk_type, r.chunk) for r in rows) == [
-            ("raw", "chunk number 0 with some text"),
-            (ChunkType.WIKI, "the only wiki row left"),
+        assert [(r.chunk_type, r.chunk) for r in rows] == [
+            (ChunkType.WIKI, "the only wiki row left")
         ]
         assert len(store.get_chunks_by_source("wiki/b.md")) == 1
+        assert len(store.get_chunks_by_source("a.md")) == 1
 
     def test_empty_replacement_just_clears(self, store):
         store.add_chunks(_page_records("wiki/a.md", 2))
@@ -3762,7 +3762,7 @@ class TestSourceStatColumns:
         assert source_stat(records["old.md"]) is None  # backfilled sentinel
         assert source_stat(records["new.md"]) == SourceStat(5, 6)
 
-    def test_update_source_stats_batches_one_delete_one_add(self, store):
+    def test_update_source_stats_batches_one_write(self, store):
         from lilbee.data.store import SourceStat, SourceStatBackfill, source_stat
 
         store.upsert_source("a.md", "ha", 1)
@@ -3774,7 +3774,7 @@ class TestSourceStatColumns:
             SourceStatBackfill(records["b.md"], SourceStat(3, 4)),
         ]
         with mock.patch.object(
-            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            store, "_put_sources_unlocked", wraps=store._put_sources_unlocked
         ) as spy:
             store.update_source_stats(backfills)
         spy.assert_called_once()
@@ -3802,12 +3802,12 @@ class TestSourceStatColumns:
         with (
             mock.patch.object(core_mod, "_SOURCE_STAT_BATCH_ROWS", batch_rows),
             mock.patch.object(
-                store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+                store, "_put_sources_unlocked", wraps=store._put_sources_unlocked
             ) as spy,
         ):
             store.update_source_stats(backfills)
         assert spy.call_count == math.ceil(total / batch_rows)
-        assert all(len(call.args[0]) <= batch_rows for call in spy.call_args_list)
+        assert all(len(call.args[1]) <= batch_rows for call in spy.call_args_list)
 
         records = {r["filename"]: r for r in store.get_sources()}
         assert len(records) == total
@@ -3821,9 +3821,9 @@ class TestSourceStatColumns:
 
 
 class TestBatchedSourceUpserts:
-    """One flush of N files produces one delete + one add on the sources table."""
+    """One flush of N files gives the new ones ids in one write and every row in one more."""
 
-    def test_write_chunks_batch_single_source_table_pass(self, store):
+    def test_write_chunks_batch_puts_every_source_row_in_one_write(self, store):
         from lilbee.data.store import ChunkWrite
 
         items = [
@@ -3831,11 +3831,11 @@ class TestBatchedSourceUpserts:
             for i in range(5)
         ]
         with mock.patch.object(
-            store, "_replace_source_rows_unlocked", wraps=store._replace_source_rows_unlocked
+            store, "_put_sources_unlocked", wraps=store._put_sources_unlocked
         ) as spy:
             store.write_chunks_batch(items)
-        spy.assert_called_once()
-        assert len(spy.call_args.args[0]) == 5
+        assert spy.call_count == 2
+        assert len(spy.call_args.args[1]) == 5
         assert len(store.get_sources()) == 5
 
     def test_optimize_sources_compacts(self, store):
@@ -5003,8 +5003,17 @@ class TestOpenTimeMigration:
 
         store = _path_keyed_library(test_config)
 
-        with mock.patch.object(LanceQueryBuilder, "to_list", side_effect=AssertionError):
+        real, converted = LanceQueryBuilder.to_list, []
+
+        def _counted(self, *args, **kwargs):
+            rows = real(self, *args, **kwargs)
+            converted.extend(rows)
+            return rows
+
+        with mock.patch.object(LanceQueryBuilder, "to_list", _counted):
             store.get_db()
+
+        assert converted == []
 
         rows = store.open_table(SOURCES_TABLE).to_arrow().to_pylist()
         assert sorted(r["path"] for r in rows) == ["a.md", "b.md", "gone.md", "wiki/concepts/x.md"]
@@ -5126,7 +5135,7 @@ class TestOpenTimeMigration:
             *(("add_columns", nth) for nth in range(1, 8)),
             *(("drop_columns", nth) for nth in range(1, 6)),
             ("alter_columns", 1),
-            *(("add", nth) for nth in (1, 2)),
+            *(("merge_insert", nth) for nth in (1, 2)),
         ],
     )
     def test_an_open_stopped_part_way_is_finished_by_the_next(
