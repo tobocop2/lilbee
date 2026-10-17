@@ -22,7 +22,7 @@ from lilbee.core.config.enums import OcrMode
 from lilbee.crawler.task import clear_tasks, get_task
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
-from lilbee.data.store import SearchChunk, Store
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, DOCUMENTS_PAGE_MAX, SearchChunk, Store
 from lilbee.mcp_server import (
     add,
     catalog_browse,
@@ -582,14 +582,50 @@ class TestRemove:
 class TestListDocuments:
     def test_returns_documents(self, mock_svc):
         mock_svc.store.get_sources.return_value = [{"filename": "a.md", "chunk_count": 3}]
+        mock_svc.store.count_sources.return_value = 1
         result = list_documents()
         assert result["total"] == 1
         assert result["documents"][0]["filename"] == "a.md"
+        assert result["has_more"] is False
 
     def test_empty(self, mock_svc):
         mock_svc.store.get_sources.return_value = []
+        mock_svc.store.count_sources.return_value = 0
         result = list_documents()
         assert result["total"] == 0
+
+    def test_pages_through_the_store_listing_the_http_route_uses(self, mock_svc):
+        mock_svc.store.get_sources.return_value = [{"filename": "b.md"}]
+        mock_svc.store.count_sources.return_value = 5
+
+        result = list_documents(limit=2, offset=1)
+
+        mock_svc.store.get_sources.assert_called_once_with(limit=2, offset=1)
+        mock_svc.store.count_sources.assert_called_once_with()
+        assert result["documents"] == [{"filename": "b.md", "chunk_count": 0}]
+        assert result["total"] == 5
+        assert result["has_more"] is True
+
+    def test_defaults_match_the_http_route(self, mock_svc):
+        mock_svc.store.get_sources.return_value = []
+        mock_svc.store.count_sources.return_value = 0
+
+        list_documents()
+
+        mock_svc.store.get_sources.assert_called_once_with(limit=DOCUMENTS_PAGE_DEFAULT, offset=0)
+
+    @pytest.mark.parametrize("limit", [0, -1, DOCUMENTS_PAGE_MAX + 1])
+    def test_a_limit_outside_the_http_bounds_is_refused(self, mock_svc, limit):
+        result = list_documents(limit=limit)
+
+        assert result == {"error": "limit must be from 1 to 1000"}
+        mock_svc.store.get_sources.assert_not_called()
+
+    def test_a_negative_offset_is_refused(self, mock_svc):
+        result = list_documents(offset=-1)
+
+        assert result == {"error": "offset must be 0 or more"}
+        mock_svc.store.get_sources.assert_not_called()
 
 
 class TestReset:
@@ -2892,10 +2928,11 @@ class TestToolsSchemaSize:
         # 8_800 originally, measured over whatever the environment registered.
         # Pinning the surface put it at 8_799; moving the session tools behind
         # mcp_sessions_enabled (off by default) takes them off the default wire
-        # and drops it to 6_996. 7_500 leaves room for a tool or two. Each
+        # and drops it to 6_996. 7_500 left room for a tool or two; paging
+        # list_documents (limit, offset) took 71 bytes of it, so the cap is 7_700. Each
         # tool's docstring becomes its schema description, so trim verbose Args
         # sections before raising this.
-        ceiling = 7_500
+        ceiling = 7_700
         assert total_bytes <= ceiling, (
             f"Default OpenAI tools schema is {total_bytes} bytes, exceeds {ceiling}."
         )
