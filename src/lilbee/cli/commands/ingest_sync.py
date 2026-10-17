@@ -177,7 +177,7 @@ class _CrawlOutcome:
         page_failures: list[str],
         crawled: dict[str, int],
     ) -> list[Path]:
-        """Crawl *url* with *crawl_one* and keep its pages, or its failure, in this outcome.
+        """Crawl the seed shown as *url* with *crawl_one*; keep its pages, or its failure.
 
         *url* failed when its address is refused (ValueError), or when it saved no page and
         every page its crawl counted failed.
@@ -185,11 +185,11 @@ class _CrawlOutcome:
         try:
             paths = crawl_one()
         except ValueError as exc:
-            self.failed.append(_FailedSource(without_userinfo(url), str(exc)))
+            self.failed.append(_FailedSource(url, f"{url}: {exc}"))
             return []
         self.saved.extend(paths)
         if page_failures and not paths and len(page_failures) >= crawled.get("n", 0):
-            self.failed.append(_FailedSource(without_userinfo(url), "\n".join(page_failures)))
+            self.failed.append(_FailedSource(url, "\n".join(page_failures)))
         return paths
 
 
@@ -233,7 +233,8 @@ def _crawl_urls_blocking(
         disable=cfg.json_mode,
     ) as progress:
         for url in urls:
-            ptask = progress.add_task(f"Crawling {url}...", total=None)
+            shown = without_userinfo(url)
+            ptask = progress.add_task(f"Crawling {shown}...", total=None)
             crawled: dict[str, int] = {}
             failures: list[str] = []
 
@@ -261,7 +262,7 @@ def _crawl_urls_blocking(
                 return on_progress
 
             paths = outcome.record(
-                url,
+                shown,
                 functools.partial(
                     _run_crawl_with_signal_cancel,
                     url,
@@ -275,7 +276,7 @@ def _crawl_urls_blocking(
                 failures,
                 crawled,
             )
-            progress.update(ptask, description=f"Done: {url} ({len(paths)} pages)")
+            progress.update(ptask, description=f"Done: {shown} ({len(paths)} pages)")
             # No explicit cap given and the crawl filled the protective default:
             # tell the user how to go unlimited without editing settings.
             default_cap = cfg.crawl_max_pages or cfg.crawl_safety_max_pages

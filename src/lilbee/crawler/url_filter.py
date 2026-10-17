@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import ParseResult, urlparse, urlsplit, urlunsplit
+from urllib.parse import ParseResult, SplitResult, urlparse, urlsplit, urlunsplit
 
 _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("0.0.0.0/8"),  # "this host" range; 0.0.0.0 routes to localhost
@@ -27,6 +27,10 @@ _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
 # The mark that ends a username and password in the host part of an address.
 _USERINFO_END = "@"
+# The mark that starts the host part of an address.
+_AUTHORITY_START = "//"
+# The refusal of a port that is not a number; the port text can hold part of a password.
+INVALID_PORT_MESSAGE = "URL has an invalid port"
 
 
 def get_blocked_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -65,18 +69,35 @@ def _host_part(netloc: str) -> str:
     return netloc.rpartition(_USERINFO_END)[2]
 
 
+def _parsed_authority(url: str) -> SplitResult | None:
+    """*url* split, or None when it has no host name or its host part does not parse."""
+    try:
+        parts = urlsplit(url)
+        _ = parts.port
+    except ValueError:
+        return None
+    return parts if parts.hostname else None
+
+
 def without_userinfo(url: str) -> str:
-    """*url* without the username and password of its host part."""
-    parts = urlsplit(url)
-    return urlunsplit(parts._replace(netloc=_host_part(parts.netloc)))
+    """*url* without the username and password of its host part.
+
+    When the host part does not parse, where the password ends is unknown, so everything
+    from the scheme's ``//`` to the last ``@`` of the address is cut.
+    """
+    parts = _parsed_authority(url)
+    if parts is not None:
+        return urlunsplit(parts._replace(netloc=_host_part(parts.netloc)))
+    head, slashes, rest = url.partition(_AUTHORITY_START)
+    return head + slashes + rest.rpartition(_USERINFO_END)[2]
 
 
 def _checked_port(parsed: ParseResult) -> int | None:
-    """The port of *parsed*; ValueError naming the host part when the port is not a number."""
+    """The port of *parsed*; a ValueError naming no part of the address when it is no number."""
     try:
         return parsed.port
     except ValueError as exc:
-        raise ValueError(f"URL has an invalid port: {_host_part(parsed.netloc)}") from exc
+        raise ValueError(INVALID_PORT_MESSAGE) from exc
 
 
 def validate_crawl_url(url: str) -> None:

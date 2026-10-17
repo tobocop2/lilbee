@@ -506,6 +506,43 @@ def test_start_crawl_none_uses_config_without_persisting(monkeypatch) -> None:
     bar.start_task.assert_called_once()
 
 
+def test_start_crawl_names_a_credentialed_seed_without_its_password(monkeypatch) -> None:
+    """The task name and the notice show the seed without its username and password."""
+    from lilbee.core.config import cfg
+    from lilbee.core.config.enums import CrawlRenderMode
+
+    monkeypatch.setattr(cfg, "crawl_render_mode", CrawlRenderMode.HTTP)
+    notified: list[str] = []
+    with _chat_screen_with_task_bar() as (screen, bar):
+        screen.notify = lambda *a, **kw: notified.append(str(a[0]))  # type: ignore[assignment]
+        screen._start_crawl("https://alice:hunter2@example.com/", 0, 5)
+    shown = [bar.start_task.call_args.args[0], *notified]
+    assert all("https://example.com/" in text for text in shown)
+    assert not any("hunter2" in text for text in shown)
+
+
+def test_do_crawl_names_a_credentialed_seed_without_its_password() -> None:
+    """The start and success messages of a crawl show the seed without its password."""
+    from lilbee.cli.tui.screens.chat import ChatScreen
+
+    screen = ChatScreen.__new__(ChatScreen)
+    reporter = MagicMock(spec=ProgressReporter)
+    url = "https://alice:hunter2@example.com/"
+
+    async def fake_crawl(seed, **_kwargs):
+        assert seed == url
+        return []
+
+    with (
+        patch("lilbee.cli.tui.screens.chat.call_from_thread") as on_ui,
+        patch("lilbee.crawler.crawl_and_save", side_effect=fake_crawl),
+    ):
+        screen._do_crawl(url, 0, 2, reporter)
+    shown = [str(c.args) for c in reporter.update.call_args_list + on_ui.call_args_list]
+    assert any("https://example.com/" in text for text in shown)
+    assert not any("hunter2" in text for text in shown)
+
+
 def test_persist_crawl_render_mode_swallows_write_errors() -> None:
     """A failed settings write is logged, not raised, so the crawl still proceeds."""
     from lilbee.cli.tui.screens.chat import ChatScreen

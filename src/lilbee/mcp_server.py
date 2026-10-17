@@ -64,6 +64,7 @@ from lilbee.crawler import (
     require_valid_crawl_url,
 )
 from lilbee.crawler.task import get_task, start_crawl
+from lilbee.crawler.url_filter import without_userinfo
 from lilbee.data.store import (
     EmbeddingModelMismatchError,
     MemoryKind,
@@ -398,7 +399,7 @@ async def _crawl_add_urls(
             # event loop like the sibling crawl tool does.
             await anyio.to_thread.run_sync(require_valid_crawl_url, url)
         except ValueError as exc:
-            errors.append(f"{url}: {exc}")
+            errors.append(f"{without_userinfo(url)}: {exc}")
             continue
         # add fetches single pages (depth=0); site crawls go through the crawl tool
         crawled_paths = await crawl_and_save(
@@ -523,7 +524,7 @@ async def crawl(
         render_mode=render_mode,
         include_subdomains=include_subdomains,
     )
-    return {"status": "started", "task_id": task_id, "url": url}
+    return {"status": "started", "task_id": task_id, "url": without_userinfo(url)}
 
 
 @_tool_if(crawler_available)
@@ -534,7 +535,7 @@ def crawl_status(task_id: str) -> dict[str, Any]:
         return _error(f"No task found with id: {task_id}")
     return {
         "task_id": task.task_id,
-        "url": task.url,
+        "url": task.shown_url,
         "status": task.status.value,
         "pages_crawled": task.pages_crawled,
         "pages_total": task.pages_total,
