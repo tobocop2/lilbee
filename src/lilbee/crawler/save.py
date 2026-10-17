@@ -15,17 +15,13 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 from lilbee.core.config import cfg
 from lilbee.core.security import file_lock_or_warn, validate_path_within
 from lilbee.core.web_names import INDEX_STEM, PAGE_HASH_MARK, PAGE_SUFFIX, WEB_DIR
 from lilbee.crawler.models import CrawlResult
-
-# ada-url is in the optional ``crawler`` extra, so each function that needs it imports it on call.
-if TYPE_CHECKING:
-    import ada_url
+from lilbee.crawler.url_filter import parsed_url
 
 log = logging.getLogger(__name__)
 
@@ -73,16 +69,6 @@ _DEVICE_NAMES = frozenset(
 )
 
 
-def _parsed(url: str) -> ada_url.URL | None:
-    """*url* parsed by the WHATWG URL standard, or None when it does not parse."""
-    import ada_url
-
-    try:
-        return ada_url.URL(url)
-    except ValueError:
-        return None
-
-
 def _normalized_escape(escape: re.Match[str]) -> str:
     """The unreserved character *escape* names, or *escape* with upper-case hex digits."""
     char = chr(int(escape.group(1), _HEX))
@@ -105,7 +91,7 @@ def _sorted_query(address: str) -> str:
 
 def parsed_address(url: str) -> str | None:
     """*url* without its fragment as crawlberg 1.11.1's URL parser writes it; None if it fails."""
-    parsed = _parsed(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
+    parsed = parsed_url(_ANY_CARET_ESCAPE.sub(_CARET_ESCAPE_LOWER, url))
     if parsed is None:
         return None
     parsed.hash = ""
@@ -158,7 +144,7 @@ def _readable_host(hostname: str) -> str:
 
 def _address_parts(address: str) -> tuple[str, list[str]]:
     """The host, readable and with any port, and the path segments of *address*."""
-    parsed = _parsed(address)
+    parsed = parsed_url(address)
     if parsed is None:
         return _UNKNOWN_HOST, [""]
     host = _readable_host(parsed.hostname)

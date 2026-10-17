@@ -30,6 +30,7 @@ from lilbee.cli.tui import messages as msg
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.core.security import PathTraversalError
+from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
 from lilbee.data.store import SearchChunk
 from lilbee.modelhub.models import ensure_chat_model as _real_ensure_chat_model
@@ -4027,8 +4028,8 @@ class TestAddWithUrls:
         data = json.loads(result.stdout)
         assert data["failed"] == [
             {
-                "url": "http://example.com:80a/",
-                "reason": "http://example.com:80a/: URL has an invalid port",
+                "url": UNPARSED_ADDRESS,
+                "reason": f"{UNPARSED_ADDRESS}: URL has an invalid port",
             }
         ]
 
@@ -4038,7 +4039,7 @@ class TestAddWithUrls:
         with mock.patch("lilbee.crawler.crawler_available", return_value=True):
             result = runner.invoke(app, [*flags, "add", "http://alice:cret@[::1/a"])
         assert result.exit_code == 1
-        assert "http://[::1/a: Invalid IPv6 URL" in result.output
+        assert f"{UNPARSED_ADDRESS}: Invalid IPv6 URL" in result.output
         assert "cret" not in result.output
 
     @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
@@ -4048,9 +4049,20 @@ class TestAddWithUrls:
         with mock.patch("lilbee.crawler.crawler_available", return_value=True):
             result = runner.invoke(app, [*flags, "add", seed])
         assert result.exit_code == 1
-        assert "http://example.com/: URL has an invalid port" in result.output
+        assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result.output
         assert "alice" not in result.output
         assert "cret" not in result.output
+
+    @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
+    def test_a_refused_seed_is_never_named_by_a_host_in_its_query(self, json_mode):
+        flags = ["--json"] if json_mode else []
+        with mock.patch("lilbee.crawler.crawler_available", return_value=True):
+            result = runner.invoke(
+                app, [*flags, "add", "http://example.com:80a/?next=a@evil.example"]
+            )
+        assert result.exit_code == 1
+        assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result.output
+        assert "evil.example" not in result.output
 
     @pytest.mark.parametrize("json_mode", [True, False], ids=["json", "human"])
     def test_a_credentialed_seed_whose_page_fails_prints_no_password(self, json_mode, monkeypatch):

@@ -17,6 +17,7 @@ import lilbee.app.services as svc_mod
 from lilbee.core.config import cfg
 from lilbee.core.config.enums import OcrMode
 from lilbee.crawler.task import clear_tasks, get_task
+from lilbee.crawler.url_filter import UNPARSED_ADDRESS
 from lilbee.data.ingest import SyncResult
 from lilbee.data.ingest.discovery import ExclusionReason
 from lilbee.data.store import SearchChunk, Store
@@ -1274,7 +1275,7 @@ class TestAddWithUrls:
         self, mock_sync, _mock_avail, isolated_env
     ):
         result = await add(paths=["http://alice:hunter2@example.com:80a/"])
-        assert "http://example.com:80a/: URL has an invalid port" in result["error"]
+        assert f"{UNPARSED_ADDRESS}: URL has an invalid port" in result["error"]
         assert "hunter2" not in str(result)
         assert "alice" not in str(result)
 
