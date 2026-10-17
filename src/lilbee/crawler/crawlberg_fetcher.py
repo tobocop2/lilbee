@@ -348,6 +348,7 @@ def _crawl_config(
         ),
         retry_max_delay_ms=_ms(concurrency.retry_max_backoff),
         respect_robots_txt=respect_robots_txt,
+        cookies_enabled=True,
         soft_http_errors=False,
         download_documents=False,
         content=_content_config(),
