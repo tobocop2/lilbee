@@ -92,10 +92,13 @@ class TestWhichKeyIsSent:
         _chat(RoutingProvider(), model)
         assert wire.last_key() == "provider-key"
 
-    def test_llm_api_key_alone_is_sent(self, wire: _Wire, model: str) -> None:
+    def test_llm_api_key_alone_is_not_sent(self, wire: _Wire, model: str) -> None:
+        provider = model.split("/")[0]
         cfg.llm_api_key = "generic-key"
-        _chat(RoutingProvider(), model)
-        assert wire.last_key() == "generic-key"
+        with pytest.raises(ProviderError):
+            _chat(RoutingProvider(), model)
+        assert not [r for r in wire.requests if "generic-key" in str(r.headers)]
+        assert key_check.provider_key_status(provider) is KeyStatus.MISSING_KEY
 
     def test_provider_key_wins_over_llm_api_key(self, wire: _Wire, model: str) -> None:
         provider = model.split("/")[0]

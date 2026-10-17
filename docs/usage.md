@@ -1360,13 +1360,18 @@ OpenAI-compatible daemon alongside lilbee's native GGUF models.
 export LILBEE_LLM_PROVIDER=auto          # "auto" routes between local and remote
 export LILBEE_OLLAMA_BASE_URL=http://localhost:11434  # Ollama URL (blank = default)
 export LILBEE_LM_STUDIO_BASE_URL=http://localhost:1234/v1  # LM Studio URL (blank = default)
-export LILBEE_LLM_API_KEY=sk-...         # API key for your provider
+export LILBEE_LLM_API_KEY=sk-...         # API key for a remote endpoint or local server
 export LILBEE_CHAT_MODEL=your-model      # any remotely-supported model name
 ```
 
 Provider options: `auto` (default; native GGUF models run on the local managed
 llama-server fleet, remote model names route to the SDK backend) and `remote`
 (everything goes to an external OpenAI-compatible endpoint).
+
+`LILBEE_LLM_API_KEY` goes only to the remote endpoint and to local model
+servers. A hosted model (Anthropic, Gemini, OpenAI, and so on) needs its own
+provider key, for example `LILBEE_GEMINI_API_KEY`. lilbee never sends
+`LILBEE_LLM_API_KEY` to a hosted provider.
 
 ---
 

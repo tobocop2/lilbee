@@ -3279,6 +3279,15 @@ class TestHostedRequestKey:
         cfg.openai_api_key = "sk-openai"
         assert _api_key_for(parse_model_ref("ollama/llama3")) == "sk-generic"
 
+    def test_hosted_ref_never_sends_llm_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from lilbee.providers.model_ref import parse_model_ref
+        from lilbee.providers.sdk_llm_provider import _api_key_for
+
+        monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+        cfg.llm_api_key = "sk-generic"
+        cfg.gemini_api_key = ""
+        assert _api_key_for(parse_model_ref("gemini/gemini-2.0-flash")) is None
+
     def test_no_key_sends_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from lilbee.providers.model_ref import parse_model_ref
         from lilbee.providers.sdk_llm_provider import _api_key_for

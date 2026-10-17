@@ -939,7 +939,10 @@ SETTINGS_MAP: dict[str, SettingDef] = {
         nullable=False,
         group=SettingGroup.API_KEYS,
         secret=True,
-        help_text="API key for the remote OpenAI-compatible endpoint (llm_provider = remote)",
+        help_text=(
+            "API key for the remote OpenAI-compatible endpoint and local model servers. "
+            "Hosted models use their own provider key, never this one"
+        ),
     ),
     "hf_token": SettingDef(
         str,
