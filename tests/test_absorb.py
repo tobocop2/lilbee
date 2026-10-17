@@ -596,6 +596,28 @@ class TestAMovedFolderWithASourceInside:
         assert synced.added == [] and synced.updated == []
 
 
+class TestAMovedFolderAddedAgain:
+    async def test_its_documents_keep_their_names_and_nothing_is_read_again(
+        self, library, tmp_path
+    ):
+        before = tmp_path / "before" / "work"
+        _write(before / "plan.md", "# Plan\n\nThe plan for the spring release.\n")
+        await _add(before)
+        after = tmp_path / "after" / "work"
+        after.parent.mkdir()
+        before.rename(after)
+        library.embedder.embed_batch.reset_mock()
+
+        result, synced = await _add(after)
+
+        assert result.registered == ["work"]
+        assert _registry() == {"work": str(after.resolve())}
+        assert _keys(library) == ["work/plan.md"]
+        assert (synced.added, synced.updated, synced.relocated) == ([], [], [])
+        assert synced.unchanged == 1
+        assert _embedded(library) == []
+
+
 class TestWhatIsNotAbsorbed:
     @pytest.mark.parametrize(
         ("child", "ignore"),
