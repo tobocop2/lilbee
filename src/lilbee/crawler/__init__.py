@@ -11,7 +11,7 @@ from lilbee.crawler.bootstrap import (
     chromium_installed,
     crawler_browsers_path,
 )
-from lilbee.crawler.crawlberg_fetcher import crawler_available
+from lilbee.crawler.crawlberg_fetcher import CRAWLER_MISSING_MESSAGE, crawler_available
 from lilbee.crawler.fetcher import WebFetcher
 from lilbee.crawler.models import (
     CancelToken,
@@ -39,6 +39,7 @@ from lilbee.crawler.url_filter import (
 )
 
 __all__ = [
+    "CRAWLER_MISSING_MESSAGE",
     "CancelToken",
     "ConcurrencySpec",
     "CrawlMeta",
