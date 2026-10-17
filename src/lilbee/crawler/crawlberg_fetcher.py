@@ -523,6 +523,12 @@ class _ExcludedLinks:
         self._seen_links: set[str] = set()
         self._checked: set[str] = set()
 
+    def record_seed(self, seed_url: str) -> None:
+        """Log the seed when a pattern matches it: crawlberg then crawls nothing."""
+        url = _queued_url(seed_url)
+        self._checked.add(url)
+        self._check(url)
+
     def record(self, event: _Event) -> None:
         """Log each link of *event* that the crawl leaves out, the first time a page holds it."""
         if self._depth is not None and event.depth >= self._depth:
@@ -614,6 +620,7 @@ class CrawlbergFetcher:
         """
         spec = _CrawlSpec(depth, max_pages, timeout, concurrency, filters)
         excluded = _ExcludedLinks(spec, seed_url)
+        excluded.record_seed(seed_url)
         async with aclosing(self._stream(spec, seed_url, cancel)) as events:
             async for event in events:
                 excluded.record(event)
