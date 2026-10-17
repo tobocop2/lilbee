@@ -57,7 +57,12 @@ from lilbee.core.config import cfg, validate_ocr_timeout
 from lilbee.core.config.enums import CrawlRenderMode, OcrMode
 from lilbee.core.settings import overlay_persisted_settings
 from lilbee.core.system import LOCAL_ROOT_DIRNAME, canonical_data_root
-from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.crawler import (
+    CRAWLER_MISSING_MESSAGE,
+    crawler_available,
+    is_url,
+    require_valid_crawl_url,
+)
 from lilbee.crawler.task import get_task, start_crawl
 from lilbee.data.store import (
     EmbeddingModelMismatchError,
@@ -439,7 +444,7 @@ async def add(
         from lilbee.crawler import crawler_available
 
         if not crawler_available():
-            return _error("Web crawling requires: pip install 'lilbee[crawler]'")
+            return _error(CRAWLER_MISSING_MESSAGE)
         crawled_count, url_errors = await _crawl_add_urls(urls, render_mode)
         errors.extend(url_errors)
 
@@ -491,7 +496,7 @@ async def crawl(
     from lilbee.crawler import crawler_available
 
     if not crawler_available():
-        return _error("Web crawling requires: pip install 'lilbee[crawler]'")
+        return _error(CRAWLER_MISSING_MESSAGE)
     # Mirror the REST CrawlRequest bounds so a negative value is a clean error,
     # not an unbounded crawl.
     if depth is not None and depth < 0:

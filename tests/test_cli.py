@@ -3813,6 +3813,32 @@ class TestAddWithUrls:
             assert result.exit_code == 1
             assert "pip install 'lilbee[crawler]'" in result.output
 
+    def test_json_add_url_without_crawler_installed_prints_a_json_error(self):
+        with mock.patch("lilbee.crawler.crawler_available", return_value=False):
+            result = runner.invoke(app, ["--json", "add", "https://example.com", "--crawl"])
+        assert result.exit_code == 1
+        assert json.loads(result.stdout) == {
+            "error": "Web crawling requires: pip install 'lilbee[crawler]'"
+        }
+
+    @pytest.mark.parametrize("json_mode", [True, False])
+    def test_a_refused_crawl_address_prints_its_error_without_a_traceback(self, json_mode):
+        refusal = ValueError("Crawling private/reserved IP 127.0.0.1 is not allowed")
+        flags = ["--json"] if json_mode else []
+        with (
+            mock.patch("lilbee.crawler.crawler_available", return_value=True),
+            mock.patch(
+                "lilbee.crawler.crawl_and_save", new_callable=AsyncMock, side_effect=refusal
+            ),
+        ):
+            result = runner.invoke(app, [*flags, "add", "http://127.0.0.1:9/", "--crawl"])
+        assert result.exit_code == 1
+        assert not isinstance(result.exception, ValueError)
+        if json_mode:
+            assert json.loads(result.stdout) == {"error": str(refusal)}
+        else:
+            assert str(refusal) in result.output
+
     def test_add_nonexistent_path_fails(self, tmp_path):
         """Adding a nonexistent file path fails with error."""
         result = runner.invoke(app, ["add", str(tmp_path / "nonexistent_crawl_test_xyz.txt")])
