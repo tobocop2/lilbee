@@ -45,29 +45,29 @@ MIN_PAGES_BEYOND_SEED = 2
 # Pages a depth-2 crawl of the home page saves, by name under the host's ``_web`` dir.
 HOME_DEPTH_2_PAGES = {
     "index",
-    "a/index",
-    "a/b/index",
-    "rel/child.html",
-    "rel/sibling.html",
-    "docs/base/page.html",
-    "other/leaf.html",
+    "a",
+    "a/b",
+    "rel/child",
+    "rel/sibling",
+    "docs/base/page",
+    "other/leaf",
     "redirect-me",
-    "landing/next.html",
+    "landing/next",
 }
-BEYOND_DEPTH_2_PREFIX = "a/b/c/"
-TREE_DEPTH_2_PAGES = {"a/index", "a/b/index", "a/b/c/index"}
+BEYOND_DEPTH_2_PREFIX = "a/b/c"
+TREE_DEPTH_2_PAGES = {"a", "a/b", "a/b/c"}
 
 KEY_TEXT = [
     ("index", site_mod.HOME_TEXT),
     ("index", site_mod.NAV_TEXT),
-    ("a/index", site_mod.TREE_TEXT.format(path="/a/")),
-    ("a/b/index", site_mod.TREE_TEXT.format(path="/a/b/")),
-    ("rel/child.html", site_mod.CHILD_TEXT),
-    ("rel/sibling.html", site_mod.SIBLING_TEXT),
-    ("docs/base/page.html", site_mod.BASE_TEXT),
-    ("other/leaf.html", site_mod.LEAF_TEXT),
+    ("a", site_mod.TREE_TEXT.format(path="/a/")),
+    ("a/b", site_mod.TREE_TEXT.format(path="/a/b/")),
+    ("rel/child", site_mod.CHILD_TEXT),
+    ("rel/sibling", site_mod.SIBLING_TEXT),
+    ("docs/base/page", site_mod.BASE_TEXT),
+    ("other/leaf", site_mod.LEAF_TEXT),
     ("redirect-me", site_mod.TARGET_TEXT),
-    ("landing/next.html", site_mod.NEXT_TEXT),
+    ("landing/next", site_mod.NEXT_TEXT),
 ]
 
 NOT_SAVED_TEXT = [
@@ -156,7 +156,7 @@ class TestRecursiveCrawl:
     def test_base_href_page_links_resolve_against_the_base(
         self, http_crawl: MainCrawl, crawl_site: CrawlSite
     ) -> None:
-        page = http_crawl.first.pages["docs/base/page.html"]
+        page = http_crawl.first.pages["docs/base/page"]
         assert crawl_site.url("/other/leaf.html") in page
         assert crawl_site.url("/docs/base/leaf.html") not in page
 
@@ -170,7 +170,7 @@ class TestRecursiveCrawl:
     def test_relative_links_resolve_against_the_page(
         self, http_crawl: MainCrawl, crawl_site: CrawlSite
     ) -> None:
-        assert crawl_site.url("/rel/sibling.html") in http_crawl.first.pages["rel/child.html"]
+        assert crawl_site.url("/rel/sibling.html") in http_crawl.first.pages["rel/child"]
 
     def test_recrawl_writes_nothing_new(self, http_crawl: MainCrawl) -> None:
         assert http_crawl.recrawl.report["crawled"] == 0
@@ -179,7 +179,7 @@ class TestRecursiveCrawl:
     def test_search_returns_the_crawled_page(self, http_crawl: MainCrawl) -> None:
         top_hit, *_rest = http_crawl.search_sources
         assert re.search(
-            rf"_web/{re.escape(LOOPBACK)}-\d+/rel/child\.html~[0-9a-f]{{16}}\.md$", top_hit
+            rf"_web/{re.escape(LOOPBACK)}-\d+/rel/child~[0-9a-f]{{16}}\.md$", top_hit
         ), http_crawl.search_sources
 
 
@@ -262,7 +262,7 @@ class TestBrowserModeCrawl:
         require_chromium()
         with windows_proactor_loop(), crawl_sandbox(tmp_path, CrawlRenderMode.BROWSER) as root:
             run = run_add(root, crawl_site.url("/js/"))
-        assert site_mod.SCRIPT_TEXT in run.pages["js/index"]
+        assert site_mod.SCRIPT_TEXT in run.pages["js"]
 
 
 class TestJsonOutput:

@@ -200,8 +200,8 @@ async def test_single_page_crawl_saves_only_the_seed(root: Path, crawl_site: Cra
 async def test_recursive_crawl_saves_the_linked_pages(root: Path, crawl_site: CrawlSite) -> None:
     url = crawl_site.url("/rel/child.html")
     _app, pages = await _run_crawl(root, url, _dialog(url, recursive=True))
-    assert set(pages) == {"rel/child.html", "rel/sibling.html"}
-    assert site_mod.SIBLING_TEXT in pages["rel/sibling.html"]
+    assert set(pages) == {"rel/child", "rel/sibling"}
+    assert site_mod.SIBLING_TEXT in pages["rel/sibling"]
 
 
 async def test_browser_mode_crawl_saves_the_linked_pages(
@@ -210,8 +210,8 @@ async def test_browser_mode_crawl_saves_the_linked_pages(
     require_chromium()
     url = crawl_site.url("/rel/child.html")
     _app, pages = await _run_crawl(browser_root, url, _dialog(url, recursive=True, browser=True))
-    assert set(pages) == {"rel/child.html", "rel/sibling.html"}
-    assert site_mod.SIBLING_TEXT in pages["rel/sibling.html"]
+    assert set(pages) == {"rel/child", "rel/sibling"}
+    assert site_mod.SIBLING_TEXT in pages["rel/sibling"]
 
 
 async def test_cancel_stops_the_crawl(root: Path, crawl_site: CrawlSite) -> None:
@@ -243,7 +243,7 @@ async def test_cancel_stops_the_crawl(root: Path, crawl_site: CrawlSite) -> None
 async def test_typed_crawl_command_honours_its_depth(root: Path, crawl_site: CrawlSite) -> None:
     url = crawl_site.url("/a/")
     _app, pages = await _run_crawl(root, url, _slash(f"/crawl {url} --depth {SLASH_DEPTH}"))
-    assert set(pages) == {"a/index", "a/b/index"}
+    assert set(pages) == {"a", "a/b"}
 
 
 async def test_typed_crawl_command_honours_its_max_pages(root: Path, crawl_site: CrawlSite) -> None:
@@ -261,7 +261,7 @@ async def test_typed_render_flag_selects_browser_mode(
     url = crawl_site.url("/js/")
     command = f"/crawl {url} --depth {SEED_ONLY_DEPTH} --render {CrawlRenderMode.BROWSER.value}"
     _app, pages = await _run_crawl(browser_root, url, _slash(command))
-    assert site_mod.SCRIPT_TEXT in pages["js/index"]
+    assert site_mod.SCRIPT_TEXT in pages["js"]
 
 
 @needs_named_hosts
@@ -291,7 +291,7 @@ async def test_config_max_depth_applies_without_a_flag(root: Path, crawl_site: C
     cfg.crawl_max_depth = CONFIG_MAX_DEPTH
     url = crawl_site.url("/a/")
     _app, pages = await _run_crawl(root, url, _slash(f"/crawl {url}"))
-    assert set(pages) == {"a/index", "a/b/index"}
+    assert set(pages) == {"a", "a/b"}
 
 
 async def test_config_render_mode_applies_without_a_flag(
@@ -303,7 +303,7 @@ async def test_config_render_mode_applies_without_a_flag(
     _app, pages = await _run_crawl(
         browser_root, url, _slash(f"/crawl {url} --depth {SEED_ONLY_DEPTH}")
     )
-    assert site_mod.SCRIPT_TEXT in pages["js/index"]
+    assert site_mod.SCRIPT_TEXT in pages["js"]
 
 
 async def test_a_crawl_crawlberg_refuses_ends_as_a_failed_task_with_the_reason(
@@ -334,6 +334,6 @@ async def test_failed_pages_are_reported_and_the_crawl_completes(
     cfg.crawl_timeout = TIMEOUT_S
     url = crawl_site.url("/timeout/")
     app, pages = await _run_crawl(root, url, _slash(f"/crawl {url} --depth {RECURSIVE_DEPTH}"))
-    assert set(pages) == {"timeout/index", "timeout/fast-a", "timeout/fast-b"}
+    assert set(pages) == {"timeout", "timeout/fast-a", "timeout/fast-b"}
     notice = msg.CMD_CRAWL_PAGES_FAILED.format(count=FAILED_PAGE_COUNT, reason="")
     assert any(message.startswith(notice) for message in app.messages), app.messages
