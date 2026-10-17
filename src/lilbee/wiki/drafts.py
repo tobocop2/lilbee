@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import difflib
 import logging
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,6 +45,7 @@ from lilbee.wiki.shared import (
     WikiSubdir,
     atomic_write_text,
     parse_frontmatter,
+    rewrite_keeping_time,
 )
 
 __all__ = [
@@ -358,9 +358,7 @@ def _keyed_source_ids(draft: Path, text: str, store: Store) -> dict[str, str]:
         with WIKI_BUILD_LOCK:
             # A writer that replaced the draft since the read keeps its text.
             if draft.read_text(encoding="utf-8") == text:
-                written = draft.stat()
-                atomic_write_text(draft, recorded)
-                os.utime(draft, ns=(written.st_atime_ns, written.st_mtime_ns))
+                rewrite_keeping_time(draft, recorded)
     return source_ids
 
 

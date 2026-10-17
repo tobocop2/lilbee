@@ -222,6 +222,13 @@ def atomic_write_text(path: Path, text: str) -> None:
         raise
 
 
+def rewrite_keeping_time(path: Path, text: str) -> None:
+    """Replace the text of the file *path* atomically; it keeps its access and modified times."""
+    written = path.stat()
+    atomic_write_text(path, text)
+    os.utime(path, ns=(written.st_atime_ns, written.st_mtime_ns))
+
+
 def _left_by_a_dead_writer(name: str) -> bool:
     """Whether *name* is a temp file of ``atomic_write_text`` whose process has ended."""
     match = _TEMP_NAME_RE.fullmatch(name)

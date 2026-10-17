@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import TYPE_CHECKING, Any
 
 import yaml
 
 from lilbee.wiki.citations import fence_flags, format_source_ref
 from lilbee.wiki.grammar import FOOTNOTE_RE
-from lilbee.wiki.shared import WIKI_BUILD_LOCK, atomic_write_text, frontmatter_span
+from lilbee.wiki.shared import WIKI_BUILD_LOCK, frontmatter_span, rewrite_keeping_time
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -166,9 +165,7 @@ def _rerender(store: Store, page: Path, wiki_source: str) -> Path | None:
     if rendered == text:
         return None
     # The page keeps its time: the stale check of a pending draft compares the two.
-    written = page.stat()
-    atomic_write_text(page, rendered)
-    os.utime(page, ns=(written.st_atime_ns, written.st_mtime_ns))
+    rewrite_keeping_time(page, rendered)
     return page
 
 

@@ -464,11 +464,14 @@ listing shows.
 
 **The wiki after a move.** The subject index `wiki/stubs.json` and the wiki mention rows
 name each source by its id, so a move leaves them as they are. A page file shows paths:
-its frontmatter `sources` and provenance, and its citation footnotes. After a sync moves
-files, each page whose citation rows cite a moved id is rendered again. A footnote whose
-text is its citation row under another path takes the current path, and that old path is
-replaced by the new one in the frontmatter. The step reads only the page and the store,
-so running it again changes nothing. A draft has no citation rows: its frontmatter
+its frontmatter `sources` and provenance, and its citation footnotes. Every sync renders
+again each page that shows a path other than the one the store holds for a cited id, so
+the next sync repairs a page that a stopped sync left. An absorb renders again the pages
+that cite the sources it moves. A
+footnote whose text is its citation row under another path takes the current path, and
+that old path is replaced by the new one in the frontmatter. The step reads only the page
+and the store, so running it again changes nothing. A page written again keeps its
+modified time, which the stale check of its pending draft compares. A draft has no citation rows: its frontmatter
 `source_ids` names the id of each source path it was written with, and accepting it or
 showing its diff renders the path each id has now, so a move never rewrites a draft. A
 draft written before drafts named ids takes them the first time it is accepted or diffed:
