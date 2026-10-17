@@ -453,8 +453,9 @@ sources inside a moved archive move with it. The vectors are not read or embedde
 failed file moves too, at the hash it failed at, and stays held out. A removed file does
 not move: its removal stays at its old path, and the file at its new path is indexed.
 `lilbee add` at a moved folder's new place moves the folder's rows and then releases the
-removals under the added path, as an add of a path always does. So a moved folder forgets
-the removed files under it, by an add at the new place or by an edit of `config.toml`.
+removals under the added path, because adding a path asks for its removed files back. So
+a moved folder forgets the removed files under it, by an add at the new place or by an
+edit of `config.toml`.
 
 **One hold of the write lock** moves at most 2,000 files. The sync pauses for 0.1 s
 between two holds, so other writers get a turn. A sync that stops between two holds
@@ -531,7 +532,9 @@ Four limits of stored locations remain:
 - **A folder moved and pointed at by an edit of `config.toml` forgets its removals.** A
   move that a sync finds carries listed and failed files only, so the sync indexes the
   folder's removed files again at the new place. Before stored locations, a removal was
-  kept by name, and the name did not change, so these files stayed removed.
+  kept by name, and the name did not change, so these files stayed removed. An older
+  library that this version first opens after the edit keeps them too: the first open
+  stores each location by the folders that `config.toml` names at that time.
 - **A root pointed around an unmoved file keeps its removal.** If an edit of
   `config.toml` adds a root at the folder of a removed file, or points a root at a folder
   above or below it, the file's name changes but its place does not. The removal is kept
