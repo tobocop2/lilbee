@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import re
+import socket
 import stat
 import threading
 import time
@@ -1403,6 +1404,13 @@ class TestUserAgent:
         assert set(site.agents_for("/hints/")) == {OVERRIDE}
 
 
+def _closed_port() -> int:
+    """A loopback port nothing listens on."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 def _failure_reasons(events: list[tuple[EventType, object]]) -> list[str]:
     return [
         data.reason
@@ -1490,6 +1498,23 @@ class TestRobotsTxt:
         assert site.paths_since(0, ROBOTS_ALLOWED) == []
         assert "The site's robots.txt could not be read (" in result["error"], result
         assert "crawl_respect_robots_txt" in result["error"], result
+
+    async def test_a_site_that_does_not_answer_is_named_and_robots_txt_is_not_blamed(self):
+        events: list[tuple[EventType, object]] = []
+        paths = await crawl_and_save(
+            f"http://127.0.0.1:{_closed_port()}/page",
+            depth=0,
+            render_mode=HTTP,
+            on_progress=lambda kind, data: events.append((kind, data)),
+        )
+        result = await mcp_add(paths=[f"http://127.0.0.1:{_closed_port()}/page"], render_mode=HTTP)
+        assert paths == []
+        reasons = [*_failure_reasons(events), result["error"]]
+        assert len(reasons) == 2
+        for reason in reasons:
+            assert "The site did not answer (connection: " in reason, reason
+            assert "robots" not in reason, reason
+            assert "crawl_respect_robots_txt" not in reason, reason
 
 
 @full_crawl_only
