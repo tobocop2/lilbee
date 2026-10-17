@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from urllib.parse import ParseResult, urlparse
+from urllib.parse import ParseResult, urlparse, urlsplit, urlunsplit
 
 _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
     ipaddress.ip_network("0.0.0.0/8"),  # "this host" range; 0.0.0.0 routes to localhost
@@ -25,6 +25,8 @@ _BLOCKED_NETWORKS: tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...] = (
 
 _NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
 _IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")  # RFC 6052 SIIT
+# The mark that ends a username and password in the host part of an address.
+_USERINFO_END = "@"
 
 
 def get_blocked_networks() -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -58,12 +60,23 @@ def is_url(value: str) -> bool:
     return value.startswith(("http://", "https://"))
 
 
+def _host_part(netloc: str) -> str:
+    """*netloc* without its username and password."""
+    return netloc.rpartition(_USERINFO_END)[2]
+
+
+def without_userinfo(url: str) -> str:
+    """*url* without the username and password of its host part."""
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(netloc=_host_part(parts.netloc)))
+
+
 def _checked_port(parsed: ParseResult) -> int | None:
     """The port of *parsed*; ValueError naming the host part when the port is not a number."""
     try:
         return parsed.port
     except ValueError as exc:
-        raise ValueError(f"URL has an invalid port: {parsed.netloc}") from exc
+        raise ValueError(f"URL has an invalid port: {_host_part(parsed.netloc)}") from exc
 
 
 def validate_crawl_url(url: str) -> None:
