@@ -391,6 +391,8 @@ class TestCrawl:
 
         server = HTTPServer(host="127.0.0.1")
         server.expect_request("/quantum").respond_with_data(page_html, content_type="text/html")
+        # The server answers an unexpected request with 500, a robots.txt a crawl cannot read.
+        server.expect_request("/robots.txt").respond_with_data("Not Found", status=404)
         server.start()
 
         loopback_v4 = ipaddress.ip_network("127.0.0.0/8")

@@ -31,12 +31,14 @@ from lilbee.crawler.bootstrap import CrawlEngineRefusedError  # noqa: E402
 from lilbee.crawler.crawlberg_fetcher import (  # noqa: E402
     _SSRF_ERROR_CODE,
     CRAWLBERG_DENIED_NETWORKS,
+    ROBOTS_REFUSED_MESSAGE,
     CrawlbergFetcher,
     _queued_url,
     admitted_networks,
 )
 from lilbee.crawler.models import ConcurrencySpec, FetchedPage, FilterSpec  # noqa: E402
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl  # noqa: E402
+from lilbee.runtime.progress import CrawlPageFailedEvent, EventType  # noqa: E402
 from tests._crawl_meta import write_crawl_metadata  # noqa: E402
 from tests._private_mode import posix_only  # noqa: E402
 from tests._windows_loop import windows_proactor_loop  # noqa: E402
@@ -239,8 +241,13 @@ DEFAULTS_EXCLUDED = {
     "/cart": r"^https?://[^/?#]+/cart(?:/|\?|#|$)",
     "/login?next=%2F": r"^https?://[^/?#]+/login(?:/|\?|#|$)",
 }
-# The requests a crawl of that listing makes before it follows a link: the listing and its sitemap.
-SEED_REQUESTS = {"/defaults/", "/sitemap.xml"}
+# The requests a crawl of that listing makes before it follows a link: the listing, its sitemap
+# and its robots.txt.
+SEED_REQUESTS = {"/defaults/", "/sitemap.xml", "/robots.txt"}
+ROBOTS_LISTING = "/robots/"
+ROBOTS_DISALLOWED = "/robots/private/page"
+ROBOTS_ALLOWED = "/robots/open"
+ROBOTS_TXT = "User-agent: *\nDisallow: /robots/private/\n"
 # A link of the same listing to a host the crawl does not follow, which a default pattern matches.
 OTHER_HOST_LINK = "http://other.test/feed/"
 # Where a served page that is not a listing starts, besides the listing prefixes.
@@ -294,7 +301,7 @@ def _hidden_page(link: str) -> str:
     return f"<html><body><p>{VISIBLE_TEXT}</p>{hidden}{link}</body></html>"
 
 
-def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
+def _fixed_pages(filler: str, robots_status: int) -> dict[str, tuple[int, str]]:
     """The status and body, or redirect target, of each page served at one exact path."""
     image = f"data:image/png;base64,{INLINE_IMAGE_PAYLOAD}"
     logo = f'<img alt="{INLINE_IMAGE_ALT}" src="{image}">'
@@ -306,6 +313,14 @@ def _fixed_pages(filler: str) -> dict[str, tuple[int, str]]:
             f"<html><body><h1>Index</h1>{defaults}{filler}</body></html>",
         ),
         "/moved": (HTTPStatus.MOVED_PERMANENTLY, "/query/target"),
+        "/robots.txt": (robots_status, ROBOTS_TXT),
+        ROBOTS_LISTING: (
+            HTTPStatus.OK,
+            f'<html><body><h1>Robots</h1><a href="{ROBOTS_DISALLOWED}">private</a> '
+            f'<a href="{ROBOTS_ALLOWED}">open</a>{filler}</body></html>',
+        ),
+        ROBOTS_DISALLOWED: (HTTPStatus.OK, f"<html><body><h1>Private</h1>{filler}</body></html>"),
+        ROBOTS_ALLOWED: (HTTPStatus.OK, f"<html><body><h1>Open</h1>{filler}</body></html>"),
         HIDDEN_PAGE: (HTTPStatus.OK, _hidden_page(f'<a href="{HIDDEN_NEXT_PAGE}">next</a>')),
         HIDDEN_NEXT_PAGE: (HTTPStatus.OK, _hidden_page("")),
         INLINE_IMAGE_PAGE: (
@@ -328,6 +343,7 @@ class _Site:
         self.agents: list[tuple[str, str]] = []
         self.hints: list[tuple[str, dict[str, str]]] = []
         self.accept_headers: list[tuple[str, dict[str, str]]] = []
+        self.robots_status = HTTPStatus.OK
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._server.daemon_threads = True
@@ -366,7 +382,7 @@ class _Site:
 
     def _body(self, path: str) -> tuple[int, str]:
         filler = "<p>" + "Ordinary prose for a real page. " * 6 + "</p>"
-        fixed = _fixed_pages(filler)
+        fixed = _fixed_pages(filler, self.robots_status)
         if path in fixed:
             return fixed[path]
         if path.startswith(("/query/", *LINK_LISTINGS)):
@@ -1310,3 +1326,110 @@ class TestUserAgent:
         await crawl_and_save(site.url("/hints/"), depth=1, render_mode=HTTP)
         assert site.hints_for("/hints/") == {"/hints/": [{}], "/hints/next": [{}]}
         assert set(site.agents_for("/hints/")) == {OVERRIDE}
+
+
+def _failure_reasons(events: list[tuple[EventType, object]]) -> list[str]:
+    return [
+        data.reason
+        for kind, data in events
+        if kind is EventType.CRAWL_PAGE_FAILED and isinstance(data, CrawlPageFailedEvent)
+    ]
+
+
+async def _robots_site_crawl(site: _Site, mode: CrawlRenderMode) -> list[Path]:
+    return await crawl_and_save(site.url(ROBOTS_LISTING), depth=1, max_pages=0, render_mode=mode)
+
+
+async def _robots_single_crawl(
+    site: _Site, mode: CrawlRenderMode
+) -> tuple[list[Path], list[tuple[EventType, object]]]:
+    events: list[tuple[EventType, object]] = []
+    paths = await crawl_and_save(
+        site.url(ROBOTS_DISALLOWED),
+        depth=0,
+        render_mode=mode,
+        on_progress=lambda kind, data: events.append((kind, data)),
+    )
+    return paths, events
+
+
+def _assert_site_crawl_honours_robots(site: _Site, paths: list[Path]) -> None:
+    assert site.paths_since(0, ROBOTS_DISALLOWED) == []
+    assert site.paths_since(0, ROBOTS_ALLOWED) == [ROBOTS_ALLOWED]
+    assert site.paths_since(0, "/robots.txt")
+    assert len(paths) == 2
+
+
+def _assert_single_crawl_honours_robots(
+    site: _Site, paths: list[Path], events: list[tuple[EventType, object]]
+) -> None:
+    assert site.paths_since(0, ROBOTS_DISALLOWED) == []
+    assert site.paths_since(0, "/robots.txt")
+    assert paths == []
+    assert _failure_reasons(events) == [ROBOTS_REFUSED_MESSAGE]
+
+
+def _assert_robots_ignored(site: _Site, site_paths: list[Path], single_paths: list[Path]) -> None:
+    assert site.paths_since(0, ROBOTS_DISALLOWED) == [ROBOTS_DISALLOWED] * 2
+    assert site.paths_since(0, "/robots.txt") == []
+    assert len(site_paths) == 3
+    assert single_paths != []
+
+
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestRobotsTxt:
+    async def test_a_site_crawl_never_requests_a_page_robots_txt_disallows(self, site):
+        _assert_site_crawl_honours_robots(site, await _robots_site_crawl(site, HTTP))
+
+    async def test_a_disallowed_single_page_is_not_requested_and_the_crawl_says_why(self, site):
+        paths, events = await _robots_single_crawl(site, HTTP)
+        _assert_single_crawl_honours_robots(site, paths, events)
+
+    async def test_with_the_setting_off_the_disallowed_page_is_crawled(self, site):
+        cfg.crawl_respect_robots_txt = False
+        site_paths = await _robots_site_crawl(site, HTTP)
+        single_paths, _ = await _robots_single_crawl(site, HTTP)
+        _assert_robots_ignored(site, site_paths, single_paths)
+
+    async def test_a_robots_txt_that_cannot_be_read_skips_the_page_and_says_why(self, site):
+        site.robots_status = HTTPStatus.SERVICE_UNAVAILABLE
+        events: list[tuple[EventType, object]] = []
+        paths = await crawl_and_save(
+            site.url(ROBOTS_ALLOWED),
+            depth=0,
+            render_mode=HTTP,
+            on_progress=lambda kind, data: events.append((kind, data)),
+        )
+        assert site.paths_since(0, ROBOTS_ALLOWED) == []
+        assert site.paths_since(0, "/robots.txt")
+        assert paths == []
+        reasons = _failure_reasons(events)
+        assert len(reasons) == 1
+        assert reasons[0].startswith("The site's robots.txt could not be read ("), reasons
+        assert "crawl_respect_robots_txt" in reasons[0]
+
+
+@full_crawl_only
+@pytest.mark.usefixtures("allow_loopback", "isolated_env")
+class TestRobotsTxtInBrowserMode:
+    @pytest.fixture(autouse=True)
+    def _real_browsers(self, monkeypatch):
+        require_chromium()
+        monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", REAL_BROWSERS_PATH)
+
+    def test_a_site_crawl_never_requests_a_page_robots_txt_disallows(self, site):
+        with windows_proactor_loop():
+            paths = asyncio.run(_robots_site_crawl(site, BROWSER))
+        _assert_site_crawl_honours_robots(site, paths)
+
+    def test_a_disallowed_single_page_is_not_requested_and_the_crawl_says_why(self, site):
+        with windows_proactor_loop():
+            paths, events = asyncio.run(_robots_single_crawl(site, BROWSER))
+        _assert_single_crawl_honours_robots(site, paths, events)
+
+    def test_with_the_setting_off_the_disallowed_page_is_crawled(self, site):
+        cfg.crawl_respect_robots_txt = False
+        with windows_proactor_loop():
+            site_paths = asyncio.run(_robots_site_crawl(site, BROWSER))
+            single_paths, _ = asyncio.run(_robots_single_crawl(site, BROWSER))
+        _assert_robots_ignored(site, site_paths, single_paths)

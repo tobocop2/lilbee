@@ -27,6 +27,8 @@ from lilbee.crawler.models import (
 )
 from lilbee.crawler.runner import crawl_and_save, crawl_recursive
 from lilbee.runtime.progress import CrawlDoneEvent, CrawlStartEvent, EventType
+from tests._crawlberg_stub import StubCrawlberg, complete
+from tests._crawlberg_stub import page as crawlberg_page
 
 
 @pytest.fixture(autouse=True)
@@ -546,6 +548,20 @@ class TestResolveDepth:
     def test_negative_raises(self):
         with pytest.raises(ValueError, match="seed only"):
             runner_mod._resolve_depth(-1, None)
+
+
+class TestRobotsSetting:
+    """``crawl_respect_robots_txt`` reaches crawlberg from every crawl shape."""
+
+    @pytest.mark.parametrize("depth", [0, 1], ids=["single", "site"])
+    @pytest.mark.parametrize("respect", [True, False])
+    async def test_the_setting_reaches_crawlberg(self, depth: int, respect: bool):
+        cfg.crawl_respect_robots_txt = respect
+        home = crawlberg_page("https://example.com/", "# Home", depth=0)
+        stub = StubCrawlberg([home, complete(1)])
+        with stub.installed():
+            await crawl_and_save("https://example.com/", depth=depth, max_pages=5)
+        assert [config.kwargs["respect_robots_txt"] for config in stub.configs] == [respect]
 
 
 class TestFetcherModuleNotDirectlyImported:
