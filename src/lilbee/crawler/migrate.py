@@ -81,8 +81,25 @@ def _file_key(name: str, stat: os.stat_result) -> tuple[int, int | str]:
     return stat.st_dev, os.path.normcase((web_dir() / name).resolve())
 
 
+def _own_copy(page: _SavedPage) -> _SavedPage | None:
+    """*page* at a copy under its own name, if it has one."""
+    stat = _file_stat(page.name)
+    if stat is None:
+        return None
+    text = (web_dir() / page.name).read_text(encoding="utf-8", errors="replace")
+    entry = replace(page.entry, file=page.name, content_hash=content_hash(text))
+    return _SavedPage(page.address, entry, page.name, stat, (page.name,))
+
+
+def _kept(group: list[_SavedPage]) -> list[_SavedPage]:
+    """The owner of the file *group* shares, and each other page that has a copy of its own."""
+    owner = _owner(group)
+    copies = (_own_copy(page) for page in group if page.address != owner.address)
+    return [owner, *(page for page in copies if page is not None)]
+
+
 def _file_owners(pages: dict[str, CrawlMeta]) -> list[_SavedPage]:
-    """The page that owns each file, as the disk resolves it; a page with no file is left out."""
+    """The pages that keep an entry: each file's owner, as the disk resolves it, and own copies."""
     sharing: dict[tuple[int, int | str], list[_SavedPage]] = {}
     for address, entry in pages.items():
         found = _found(address, entry)
@@ -90,7 +107,7 @@ def _file_owners(pages: dict[str, CrawlMeta]) -> list[_SavedPage]:
             name, stat = found
             page = _SavedPage(address, entry, name, stat, (entry.file,))
             sharing.setdefault(_file_key(name, stat), []).append(page)
-    return [_owner(group) for group in sharing.values()]
+    return [page for group in sharing.values() for page in _kept(group)]
 
 
 def _source(name: str) -> str:
