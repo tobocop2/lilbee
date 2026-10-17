@@ -55,6 +55,7 @@ from .lance_helpers import (
     _vector_index_dangling,
     ensure_table,
     escape_sql_string,
+    open_committed,
     refs_compatible,
     table_names,
 )
@@ -1000,11 +1001,7 @@ class Store:
 
     def open_table(self, name: str) -> LanceTable | None:
         """Open a table if it exists, otherwise return None."""
-        db = self.get_db()
-        if name not in table_names(db):
-            return None
-        table: LanceTable = db.open_table(name)
-        return table
+        return open_committed(self.get_db(), name)
 
     def ensure_fts_index(self, *, blocking: bool = True) -> None:
         """Create the chunks FTS index, or run ``optimize()`` once it exists.

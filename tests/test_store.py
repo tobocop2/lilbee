@@ -36,6 +36,7 @@ from lilbee.data.store.lance_helpers import (
     _has_scalar_index,
     _has_vector_index,
     _index_registry,
+    table_names,
 )
 from lilbee.runtime.lock import LockingUnsupportedError, write_lock
 from tests._mock_effects import repeat_last
@@ -5634,3 +5635,40 @@ class TestDropCitationsRepeatedUnder:
         assert store.remove_documents(["work/a.md"]).removed == ["work/a.md"]
 
         assert len(store.get_citations_for_source("work/a.md")) == 1
+
+
+class TestATableAnotherProcessIsCreating:
+    """The listing names a table once its folder exists, before its first version does."""
+
+    @pytest.fixture()
+    def half_made(self, test_config):
+        store = Store(test_config)
+        store.get_db()
+        (test_config.lancedb_dir / f"{META_TABLE}.lance").mkdir()
+        assert META_TABLE in table_names(store.get_db()), "the folder must be listed"
+        with pytest.raises(ValueError, match="was not found"):
+            store.get_db().open_table(META_TABLE)
+        return store
+
+    def test_the_table_reads_as_absent(self, half_made):
+        assert half_made.open_table(META_TABLE) is None
+
+    def test_the_store_identity_reads_as_unset(self, half_made):
+        assert half_made.get_meta() is None
+
+
+class TestATableThatCannotBeRead:
+    """A table that exists but fails to open for a real reason is an error, not an absent table."""
+
+    def test_the_store_raises(self, store, test_config):
+        import pyarrow as pa
+
+        store.get_db().create_table("scratch", schema=pa.schema([("a", pa.string())]))
+        versions = test_config.lancedb_dir / "scratch.lance" / "_versions"
+        manifests = [path for path in versions.iterdir() if path.suffix == ".manifest"]
+        assert manifests, "the table must have a manifest to garble"
+        for manifest in manifests:
+            manifest.write_bytes(b"garbage")
+
+        with pytest.raises(RuntimeError, match="does not have sufficient data"):
+            Store(test_config).open_table("scratch")
