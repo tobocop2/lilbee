@@ -48,6 +48,15 @@ _QUERY_VALUE_MARK = "="
 _HASH_HEX_DIGITS = 16
 _MAX_SLUG_BYTES = 80
 _MAX_PATH_BYTES = 200
+# The bytes a readable name may take: the path less a full host folder, "/", "~", hash and suffix.
+_MAX_NAME_BYTES = (
+    _MAX_PATH_BYTES
+    - _MAX_SLUG_BYTES
+    - len("/")
+    - len(PAGE_HASH_MARK)
+    - _HASH_HEX_DIGITS
+    - len(PAGE_SUFFIX)
+)
 # A slug keeps letters, digits and these; every other run of characters becomes one fill.
 _SLUG_KEPT = frozenset("-_.")
 _SLUG_FILL = "-"
@@ -111,15 +120,44 @@ def _cut(text: str, limit: int) -> str:
     return text.encode("utf-8")[:limit].decode("utf-8", errors="ignore")
 
 
-def _slug(part: str) -> str:
-    """A legal, readable file name for one escaped part of an address; lossy by design."""
+def _filled(part: str) -> str:
+    """One escaped part of an address, decoded, NFC, with every other run of characters as ``-``."""
     text = unicodedata.normalize("NFC", unquote(part, errors="replace"))
     kept = "".join(c if c.isalnum() or c in _SLUG_KEPT else _SLUG_FILL for c in text)
-    slug = _cut(_SLUG_FILL_RUN.sub(_SLUG_FILL, kept), _MAX_SLUG_BYTES).strip(_SLUG_ENDS)
-    slug = slug or _EMPTY_SLUG
+    return _SLUG_FILL_RUN.sub(_SLUG_FILL, kept)
+
+
+def _legal(text: str) -> str:
+    """*text* with legal ends, never empty, and a mark before a Windows device name."""
+    slug = text.strip(_SLUG_ENDS) or _EMPTY_SLUG
     if slug.split(_EXTENSION_MARK)[0].upper() in _DEVICE_NAMES:
         return _DEVICE_MARK + slug
     return slug
+
+
+def _slug(part: str) -> str:
+    """A legal, readable file name for one escaped part of an address; lossy by design."""
+    return _legal(_cut(_filled(part), _MAX_SLUG_BYTES))
+
+
+def _without_suffix(text: str) -> str:
+    """*text* without its last ``.`` and the text after it, when text stands on both sides."""
+    stem, mark, suffix = text.rpartition(_EXTENSION_MARK)
+    return stem if stem and mark and suffix else text
+
+
+def _cut_at_word(text: str, limit: int) -> str:
+    """*text* cut to at most *limit* UTF-8 bytes, at the last separator when a word would break."""
+    head = _cut(text, limit)
+    if len(head) == len(text) or text[len(head)] in _SLUG_KEPT:
+        return head
+    end = max(head.rfind(c) for c in _SLUG_KEPT)
+    return head[:end] if end > 0 else head
+
+
+def _page_slug(segment: str) -> str:
+    """The readable name of the page whose last path segment is *segment*, without its suffix."""
+    return _legal(_cut_at_word(_without_suffix(_filled(segment)), _MAX_NAME_BYTES))
 
 
 def _folder_slug(part: str) -> str:
@@ -154,12 +192,17 @@ def _address_parts(address: str) -> tuple[str, list[str]]:
 
 
 def page_name(address: str) -> str:
-    """The path under ``_web`` of canonical *address*: readable folders and name, ``~``, hash."""
+    """The path under ``_web`` of canonical *address*: readable folders and name, ``~``, hash.
+
+    The name comes from the last non-empty segment of the path, less its suffix.
+    """
     host, segments = _address_parts(address)
-    *folders, last = segments
+    named = [segment for segment in segments if segment]
+    *folders, last = named or [""]
     digest = hashlib.sha256(address.encode("utf-8")).hexdigest()[:_HASH_HEX_DIGITS]
-    file_name = f"{_slug(last) if last else INDEX_STEM}{PAGE_HASH_MARK}{digest}{PAGE_SUFFIX}"
-    head = [_slug(host), *(_folder_slug(folder) for folder in folders if folder)]
+    readable = _page_slug(last) if last else INDEX_STEM
+    file_name = f"{readable}{PAGE_HASH_MARK}{digest}{PAGE_SUFFIX}"
+    head = [_slug(host), *map(_folder_slug, folders)]
     while len("/".join([*head, file_name]).encode("utf-8")) > _MAX_PATH_BYTES:
         head.pop()
     return "/".join([*head, file_name])
@@ -272,6 +315,13 @@ class CrawlRecord:
         self.earlier.setdefault(address, []).append(entry)
         self.earlier_by_text.setdefault(entry.content_hash, []).append((address, entry))
 
+    def retire_line(self, address: str, previous: CrawlMeta) -> None:
+        """Make *previous*, the earlier line of the page at *address*, a copy to retire."""
+        self.earlier.setdefault(address, []).append(previous)
+        self.earlier_by_text.setdefault(previous.content_hash, []).append((address, previous))
+        if all(entry.file != previous.file for entry in self.pages.values()):
+            self.claimed.discard(previous.file)
+
 
 def _record_line(address: str, entry: CrawlMeta) -> str:
     """The page record line of *entry* for the page at *address*."""
@@ -322,8 +372,11 @@ def _claim(address: str, entry: CrawlMeta, record: CrawlRecord) -> None:
         out.write(f"\n{_record_line(address, entry)}\n")
         out.flush()
         os.fsync(out.fileno())
+    previous = record.pages.get(address)
     record.pages[address] = entry
     record.claimed.add(entry.file)
+    if previous is not None and previous.file != entry.file:
+        record.retire_line(address, previous)
 
 
 def _same_file(one: str, other: str) -> bool:

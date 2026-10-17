@@ -122,12 +122,24 @@ def _named(readable: str, url: str) -> str:
 # An address and the readable part of the path it is saved under.
 SAVED_NAMES = [
     pytest.param("https://example.com/page", "example.com/page", id="page"),
-    pytest.param(
-        "https://docs.python.org/3/tutorial/", "docs.python.org/3/tutorial/index", id="slash"
-    ),
+    pytest.param("https://docs.python.org/3/tutorial/", "docs.python.org/3/tutorial", id="slash"),
+    pytest.param("https://example.com/a//", "example.com/a", id="two-slashes"),
+    pytest.param("https://example.com//", "example.com/index", id="root-slashes"),
     pytest.param("https://example.com/", "example.com/index", id="root"),
     pytest.param("https://example.com", "example.com/index", id="root-no-slash"),
-    pytest.param("https://example.com/docs/guide.html", "example.com/docs/guide.html", id="ext"),
+    pytest.param("https://example.com/docs/guide.html", "example.com/docs/guide", id="ext"),
+    pytest.param("https://example.com/f/file.tar.gz", "example.com/f/file.tar", id="two-suffixes"),
+    pytest.param("https://example.com/.htaccess", "example.com/htaccess", id="dot-file"),
+    pytest.param(
+        "https://example.com/Report.v2.final.", "example.com/Report.v2.final", id="end-dot"
+    ),
+    pytest.param("https://example.com/t/CHANGES.RST", "example.com/t/CHANGES", id="suffix-case"),
+    pytest.param(
+        "https://example.com/t/Caf%C3%A9_cr%C3%A8me.html",
+        "example.com/t/Café_crème",
+        id="non-ascii-ext",
+    ),
+    pytest.param("https://example.com/t/con.html", "example.com/t/_con", id="device-ext"),
     pytest.param("https://example.com/page?q=1", "example.com/page", id="query"),
     pytest.param("https://example.com/page#section", "example.com/page", id="fragment"),
     pytest.param("https://example.com/t/caf%C3%A9", "example.com/t/café", id="escaped-letter"),
@@ -142,7 +154,7 @@ SAVED_NAMES = [
     pytest.param("https://example.com/a//b", "example.com/a/b", id="empty-segment"),
     pytest.param("https://example.com/s/a.md%3F/z", "example.com/s/a-md/z", id="folder-suffix"),
     pytest.param("https://example.com/s/A.MD./z", "example.com/s/A-MD/z", id="folder-suffix-case"),
-    pytest.param("https://example.com/s/a.md", "example.com/s/a.md", id="page-suffix"),
+    pytest.param("https://example.com/s/a.md", "example.com/s/a", id="page-suffix"),
     pytest.param("https://evil.com/../../etc/passwd", "evil.com/etc/passwd", id="dot-segments"),
     pytest.param("https://bücher.example/t", "bücher.example/t", id="unicode-host"),
     pytest.param("https://xn--bcher-kva.example/t", "bücher.example/t", id="punycode-host"),
@@ -162,9 +174,32 @@ class TestUrlToFilename:
         b = url_to_filename("https://example.com/page?q=2")
         assert a != b
 
-    def test_a_long_part_is_cut_to_80_bytes(self):
-        name = url_to_filename("https://example.com/" + "漢" * 40)
-        assert name == _named("example.com/" + "漢" * 26, "https://example.com/" + "漢" * 40)
+    def test_a_long_folder_is_cut_to_80_bytes(self):
+        url = "https://example.com/" + "漢" * 40 + "/page"
+        assert url_to_filename(url) == _named("example.com/" + "漢" * 26 + "/page", url)
+
+    def test_a_long_name_is_cut_to_99_bytes_without_a_separator_to_cut_at(self):
+        url = "https://example.com/" + "漢" * 40
+        assert url_to_filename(url) == _named("example.com/" + "漢" * 33, url)
+
+    @pytest.mark.parametrize("separator", ["-", "_", "."])
+    def test_a_long_name_is_cut_at_the_last_separator_inside_99_bytes(self, separator: str):
+        words = [f"word{n:02d}" for n in range(40)]
+        url = "https://example.com/t/" + separator.join(words) + ".html"
+        kept = words[:14]
+        assert url_to_filename(url) == _named("example.com/t/" + separator.join(kept), url)
+
+    def test_a_name_that_ends_on_a_separator_at_99_bytes_is_kept_whole(self):
+        words = ["a" * 9] * 10
+        url = "https://example.com/" + "-".join(words) + "-more.html"
+        assert url_to_filename(url) == _named("example.com/" + "-".join(words), url)
+
+    def test_the_host_folder_stays_when_the_name_is_cut(self):
+        host = "h" * 63 + ".test"
+        url = f"https://{host}/a/b/" + "-".join(f"word{n}" for n in range(40))
+        name = url_to_filename(url)
+        assert name.startswith(f"{host}/")
+        assert len(name.encode("utf-8")) <= 200
 
     def test_the_deepest_folders_go_first_when_the_path_is_too_long(self):
         url = "https://example.com/" + "folder/" * 40 + "page"
@@ -3207,6 +3242,45 @@ class TestRetireEarlier:
         assert page.stat().st_mtime_ns == before
         assert not (cfg.documents_dir / "_web" / self.EARLIER).exists()
         remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
+
+    def _record_with_old_line(self, text: str, old_file: str) -> CrawlRecord:
+        """A record whose page line for URL names *old_file*, a file that holds *text*."""
+        _write_web(old_file, text)
+        old = CrawlMeta(old_file, content_hash(text), "t")
+        _pages_file().write_text(_record_lines((self.URL, old)), encoding="utf-8")
+        return load_crawl_record()
+
+    @pytest.mark.parametrize("markdown", ["# Page", "# New"], ids=["same-text", "changed-text"])
+    def test_a_page_line_naming_another_file_is_retired_at_the_new_name(
+        self, isolated_env, markdown
+    ):
+        old_file = "example.com/t/page.html~0123456789abcdef.md"
+        record = self._record_with_old_line("# Page", old_file)
+        remove_sources = MagicMock()
+        path = save_page(CrawlResult(url=self.URL, markdown=markdown), record, remove_sources)
+        assert path == cfg.documents_dir / "_web" / url_to_filename(self.URL)
+        assert path.read_text(encoding="utf-8") == markdown
+        assert not (cfg.documents_dir / "_web" / old_file).exists()
+        remove_sources.assert_called_once_with([f"_web/{old_file}"])
+        assert load_crawl_record().pages[self.URL].file == url_to_filename(self.URL)
+
+    def test_a_page_line_naming_a_file_the_user_edited_leaves_that_file(self, isolated_env):
+        old_file = "example.com/t/page.html~0123456789abcdef.md"
+        record = self._record_with_old_line("# Page", old_file)
+        (cfg.documents_dir / "_web" / old_file).write_text("# Mine", encoding="utf-8")
+        remove_sources = MagicMock()
+        save_page(CrawlResult(url=self.URL, markdown="# Page"), record, remove_sources)
+        assert (cfg.documents_dir / "_web" / old_file).read_text(encoding="utf-8") == "# Mine"
+        remove_sources.assert_not_called()
+
+    def test_a_page_line_file_that_another_page_line_names_is_kept(self, isolated_env):
+        old_file = "example.com/t/page.html~0123456789abcdef.md"
+        record = self._record_with_old_line("# Page", old_file)
+        record.pages["https://example.com/other"] = CrawlMeta(old_file, content_hash("# Page"), "t")
+        remove_sources = MagicMock()
+        save_page(CrawlResult(url=self.URL, markdown="# Page"), record, remove_sources)
+        assert (cfg.documents_dir / "_web" / old_file).read_text(encoding="utf-8") == "# Page"
+        remove_sources.assert_not_called()
 
     def test_an_earlier_copy_whose_text_differs_from_its_entry_is_kept(self, isolated_env):
         record = self._record_with_copy("# Edited by the user", entry_text="# Crawled")
