@@ -24,16 +24,25 @@ from textual.worker import Worker, WorkerState
 
 from lilbee.app.services import get_services
 from lilbee.app.settings import SCANNED_PAGES_LABEL, scanned_pages_state
-from lilbee.app.status import STATUS_RECENT_LIMIT, held_out_sources
+from lilbee.app.status import held_out_sources
 from lilbee.cli.tui import messages as msg
 from lilbee.cli.tui.browse_bindings import BROWSE_LIST_BINDINGS, browse_back_bindings
 from lilbee.cli.tui.pill import pill
 from lilbee.core.config import cfg
-from lilbee.data.store import SourceHead
+from lilbee.data.store import DOCUMENTS_PAGE_DEFAULT, SourceRecord
 from lilbee.data.types import SkippedSource
 from lilbee.modelhub.model_info import ModelArchInfo, get_model_architecture
 
 log = logging.getLogger(__name__)
+
+# Rows per page of the Documents table. Must exceed the table's visible height
+# (``max-height`` in status.tcss) or the table never scrolls and never asks for more.
+_DOCS_PAGE_SIZE = DOCUMENTS_PAGE_DEFAULT
+# Load the next page when the table is scrolled this far down. Moving the cursor
+# scrolls the table, so the cursor reaches the same trigger.
+_DOCS_SCROLL_PREFETCH_RATIO = 0.85
+_WORKER_FETCH_SOURCES = "status_fetch_sources"
+_WORKER_FETCH_DOCS_PAGE = "status_fetch_docs_page"
 
 
 @dataclass
@@ -44,11 +53,19 @@ class _DocsResult:
     from "the read raised" so the UI shows the right placeholder.
     """
 
-    sources: list[SourceHead]
+    sources: list[SourceRecord]
     load_failed: bool
     document_count: int = 0
     held_out: list[SkippedSource] = field(default_factory=list)
     held_out_total: int = 0
+
+
+@dataclass
+class _DocsPage:
+    """One further page of sources, or the fact that reading it failed."""
+
+    sources: list[SourceRecord]
+    load_failed: bool = False
 
 
 def _model_pill(name: str) -> Content:
@@ -164,6 +181,12 @@ class StatusScreen(Screen[None]):
         self._sections_mounted: bool = False
         self._pending_docs: _DocsResult | None = None
         self._pending_arch: ModelArchInfo | None = None
+        self._docs_loaded: int = 0
+        self._docs_total: int = 0
+        self._docs_has_more: bool = False
+        self._docs_loading: bool = False
+        self._docs_page_failed: bool = False
+        self._docs_scroll_watched: bool = False
 
     def compose(self) -> ComposeResult:
         from textual.widgets import Footer
@@ -214,6 +237,7 @@ class StatusScreen(Screen[None]):
             [
                 Collapsible(
                     DataTable(id="docs-table"),
+                    Static(id="docs-more"),
                     title=msg.STATUS_DOCS_TITLE,
                     id="docs-section",
                     collapsed=False,
@@ -276,28 +300,38 @@ class StatusScreen(Screen[None]):
         with contextlib.suppress(NoMatches):
             self.query_one("#arch-info", Static).update(Content.styled("Loading...", "$text-muted"))
 
-    @work(thread=True, name="status_fetch_sources", exit_on_error=False)
+    @work(thread=True, name=_WORKER_FETCH_SOURCES, exit_on_error=False)
     def _fetch_sources_worker(self) -> _DocsResult:
-        """Read the source totals and the newest few off the UI thread.
+        """Read the source count and the first page off the UI thread.
 
         ``load_failed`` is True only when the store read actually raised;
         an empty store with zero documents is the routine first-run state.
-        The read is one bounded pass, so a library of millions of sources costs
-        the same screen as a library of ten.
+        The read is one count and one page, so a library of millions of sources
+        costs the same screen as a library of ten.
         """
         try:
             held_out, held_out_total = held_out_sources()
-            summary = get_services().store.source_summary(STATUS_RECENT_LIMIT)
+            store = get_services().store
             return _DocsResult(
-                sources=summary.newest,
+                sources=store.get_sources(limit=_DOCS_PAGE_SIZE, offset=0),
                 load_failed=False,
-                document_count=summary.document_count,
+                document_count=store.count_sources(),
                 held_out=held_out,
                 held_out_total=held_out_total,
             )
         except Exception:
             log.debug("Failed to read store for status screen", exc_info=True)
             return _DocsResult(sources=[], load_failed=True)
+
+    @work(thread=True, name=_WORKER_FETCH_DOCS_PAGE, exit_on_error=False)
+    def _fetch_docs_page_worker(self, offset: int) -> _DocsPage:
+        """Read one further page of sources off the UI thread."""
+        try:
+            page = get_services().store.get_sources(limit=_DOCS_PAGE_SIZE, offset=offset)
+            return _DocsPage(sources=page)
+        except Exception:
+            log.debug("Failed to read a page of sources for status screen", exc_info=True)
+            return _DocsPage(sources=[], load_failed=True)
 
     @work(thread=True, name="status_fetch_arch", exit_on_error=False)
     def _fetch_arch_worker(self) -> ModelArchInfo:
@@ -310,7 +344,10 @@ class StatusScreen(Screen[None]):
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         if event.state != WorkerState.SUCCESS:
             return
-        if event.worker.name == "status_fetch_sources":
+        if event.worker.name == _WORKER_FETCH_DOCS_PAGE:
+            page = event.worker.result
+            self._append_docs_page(page if isinstance(page, _DocsPage) else _DocsPage([], True))
+        elif event.worker.name == _WORKER_FETCH_SOURCES:
             result = event.worker.result
             docs = result if isinstance(result, _DocsResult) else _DocsResult([], True)
             if self._sections_mounted:
@@ -361,12 +398,21 @@ class StatusScreen(Screen[None]):
         self.query_one("#config-info", Static).update(_build_config_content())
 
     def _load_documents(self, docs: _DocsResult) -> None:
-        """Fill the table with the newest sources and a count of those not shown."""
+        """Fill the table with the first page of sources and arm the paging."""
         from textual.css.query import NoMatches
 
         with contextlib.suppress(NoMatches):
             table = self.query_one("#docs-table", DataTable)
             table.clear()
+            self._docs_loaded = len(docs.sources)
+            self._docs_total = docs.document_count
+            self._docs_has_more = self._docs_loaded < self._docs_total
+            self._docs_loading = False
+            self._docs_page_failed = False
+            if not self._docs_scroll_watched:
+                self.watch(table, "scroll_y", self._on_docs_scrolled, init=False)
+                self._docs_scroll_watched = True
+            self._show_docs_hint()
             if not docs.sources:
                 placeholder = (
                     msg.STATUS_DOCS_LOAD_FAILED if docs.load_failed else msg.STATUS_DOCS_EMPTY
@@ -375,9 +421,44 @@ class StatusScreen(Screen[None]):
                 return
             for src in docs.sources:
                 table.add_row(Text(src["filename"]), str(src["chunk_count"]))
-            hidden = docs.document_count - len(docs.sources)
-            if hidden > 0:
-                table.add_row(msg.STATUS_DOCS_MORE.format(count=hidden), "")
+
+    def _append_docs_page(self, page: _DocsPage) -> None:
+        """Add a further page of sources under the rows already shown."""
+        from textual.css.query import NoMatches
+
+        self._docs_loading = False
+        with contextlib.suppress(NoMatches):
+            table = self.query_one("#docs-table", DataTable)
+            for src in page.sources:
+                table.add_row(Text(src["filename"]), str(src["chunk_count"]))
+            self._docs_loaded += len(page.sources)
+            self._docs_page_failed = page.load_failed
+            # An empty page means the library shrank under the count; stop asking.
+            self._docs_has_more = bool(page.sources) and self._docs_loaded < self._docs_total
+            self._show_docs_hint()
+
+    def _show_docs_hint(self) -> None:
+        """Say how many sources are loaded while more remain, and that a read failed."""
+        hint = self.query_one("#docs-more", Static)
+        if self._docs_page_failed:
+            hint.update(msg.STATUS_DOCS_LOAD_FAILED)
+        elif self._docs_has_more:
+            hint.update(msg.STATUS_DOCS_MORE.format(count=self._docs_loaded))
+        hint.display = self._docs_page_failed or self._docs_has_more
+
+    def _load_more_docs(self) -> None:
+        """Start the next page unless one is already loading or none is left."""
+        if self._docs_loading or not self._docs_has_more:
+            return
+        self._docs_loading = True
+        self._fetch_docs_page_worker(self._docs_loaded)
+
+    def _on_docs_scrolled(self, _scroll_y: float) -> None:
+        """Load the next page when the user scrolls near the bottom of the table."""
+        table = self.query_one("#docs-table", DataTable)
+        max_y = table.max_scroll_y
+        if max_y > 0 and table.scroll_y / max_y >= _DOCS_SCROLL_PREFETCH_RATIO:
+            self._load_more_docs()
 
     def _load_storage(self, doc_count: int) -> None:
         """Populate the storage section."""

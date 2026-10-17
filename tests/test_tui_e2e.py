@@ -2361,14 +2361,14 @@ class TestStatusInteractions:
         from textual.widgets import DataTable
 
         from lilbee.cli.tui.app import LilbeeApp
-        from lilbee.data.store import SourceSummary
 
         mock_sources = [
             {"filename": "doc1.md", "file_hash": "h1", "chunk_count": 5, "ingested_at": "2026"},
             {"filename": "doc2.pdf", "file_hash": "h2", "chunk_count": 12, "ingested_at": "2026"},
         ]
         services = mock.MagicMock()
-        services.store.source_summary.return_value = SourceSummary(2, 17, {}, mock_sources)
+        services.store.get_sources.return_value = mock_sources
+        services.store.count_sources.return_value = 2
         with (
             _mock_status_deps(),
             mock.patch(
