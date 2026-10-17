@@ -398,7 +398,9 @@ class Config(BaseSettings):
     # ("tire tire tire...") on some open-weights models.
     repeat_penalty: float | None = ConfigField(default=1.1, ge=0.0, writable=True)
     num_ctx: int | None = ConfigField(default=None, ge=1, writable=True)
-    max_tokens: int | None = ConfigField(default=4096, ge=1, writable=True)
+    # None sends no cap: the engine stops at the served context, which the fleet
+    # already fits the prompt to, so a long reasoning answer is not cut at a fixed number.
+    max_tokens: int | None = ConfigField(default=None, ge=1, writable=True)
     seed: int | None = ConfigField(default=None, writable=True)
     llm_provider: LlmProvider = ConfigField(default=LlmProvider.AUTO, writable=True)
     # Path to a llama-server binary. Empty = use the bundled lilbee-engine

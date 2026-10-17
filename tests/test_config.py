@@ -1247,24 +1247,30 @@ class TestGenerationOptions:
         opts = c.generation_options()
         assert opts == {"temperature": 0.3, "seed": 42}
 
+    def test_max_tokens_default_sends_no_cap(self):
+        c = Config()
+        assert c.max_tokens is None
+        assert "num_predict" not in c.generation_options()
+
     def test_max_tokens_reaches_the_providers_as_num_predict(self):
         from lilbee.providers.base import filter_options, normalize_generation_options
 
         c = Config()
+        c.max_tokens = 2048
         opts = c.generation_options()
-        assert opts["num_predict"] == 4096
+        assert opts["num_predict"] == 2048
         assert "max_tokens" not in opts
-        assert filter_options(opts)["num_predict"] == 4096
-        assert normalize_generation_options(opts)["max_tokens"] == 4096
+        assert filter_options(opts)["num_predict"] == 2048
+        assert normalize_generation_options(opts)["max_tokens"] == 2048
 
-    def test_model_default_cap_uses_the_same_name(self):
+    def test_model_default_cap_wins_over_the_unset_config_cap(self):
         from lilbee.providers.model_defaults import ModelDefaults
 
         c = Config()
         c.apply_model_defaults(ModelDefaults(max_tokens=512))
-        assert c.generation_options()["num_predict"] == 4096
-        c.max_tokens = None
         assert c.generation_options()["num_predict"] == 512
+        c.max_tokens = 2048
+        assert c.generation_options()["num_predict"] == 2048
 
     def test_remaps_top_k_sampling(self):
         c = Config()
@@ -1982,7 +1988,7 @@ class TestBuildCfg:
         with mock.patch.dict(os.environ, env, clear=True):
             built_cfg, warnings = _build_cfg()
         assert warnings == ()
-        assert built_cfg.max_tokens == 4096
+        assert built_cfg.max_tokens is None
 
 
 def _build_with(tmp_path, toml: str, **env: str):
