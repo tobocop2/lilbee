@@ -22,6 +22,10 @@ from lilbee.data.store.lance_helpers import ensure_table
 from lilbee.data.store.schema import _sources_schema
 
 _REASON = "no text extracted (0 chunks)"
+_NOTES = {"notes": "before/notes"}
+_NESTED = {"work": "work", "notes": "work/notes"}
+_LEFT = {"notes": "old/notes", "work": "work"}
+_TWO = {"notes": "a/notes", "other": "b/notes"}
 
 
 @pytest.fixture()
@@ -225,34 +229,60 @@ class TestMovesCarryHeldRecords:
         assert store.held_records() == {new if moves else old: _removed("g")}
 
     @pytest.mark.parametrize(
-        ("after", "new", "stays_removed"),
+        ("before", "removed", "after", "new", "stays_removed"),
         [
-            ({"notes": "after/notes"}, "notes/a/gone.md", True),
-            ({"notes": "after/notes"}, "notes/a/kept.md", False),
-            ({"notes": "after/notes"}, "notes/gone.md", True),
-            ({"notes": "before/notes"}, "notes/gone.md", False),
-            ({"notes": "before/notes", "work": "work"}, "work/a/gone.md", False),
-            ({"notes": "before/notes", "work": "work"}, "work/gone.md", False),
-            ({"notes": "before/notes"}, "notes/a/x/gone.md", False),
+            (_NOTES, "notes/a/gone.md", {"notes": "after/notes"}, "notes/a/gone.md", True),
+            (_NOTES, "notes/a/gone.md", {"notes": "after/archive"}, "notes/a/gone.md", True),
+            (_NOTES, "notes/a/gone.md", {"notes": "after/notes"}, "notes/a/kept.md", False),
+            (_NOTES, "notes/a/gone.md", {"notes": "after/notes"}, "notes/gone.md", False),
+            (_NOTES, "notes/a/gone.md", _NOTES, "notes/gone.md", False),
+            (_NOTES, "notes/a/gone.md", {**_NOTES, "work": "work"}, "work/a/gone.md", False),
+            (_NOTES, "notes/a/gone.md", {**_NOTES, "work": "work"}, "work/gone.md", False),
+            (_NOTES, "notes/a/gone.md", _NOTES, "notes/a/x/gone.md", False),
+            (
+                _NESTED,
+                "notes/a/gone.md",
+                {"work": "work", "notes": "notes"},
+                "notes/a/gone.md",
+                True,
+            ),
+            (_LEFT, "notes/a/gone.md", {"work": "work"}, "work/a/gone.md", False),
+            (_NOTES, "notes/notes/a/gone.md", _NOTES, "notes/a/gone.md", False),
+            (_TWO, "other/a/gone.md", _TWO, "notes/a/gone.md", False),
+            (
+                {"docs": "before/notes"},
+                "docs/a/gone.md",
+                {"docs": "after/notes"},
+                "docs/a/gone.md",
+                False,
+            ),
+            (_NOTES, "notes/notes/a/gone.md", {"notes": "after/notes"}, "notes/a/gone.md", True),
         ],
         ids=[
             "same-name-root-moved",
+            "root-moved-to-a-folder-of-another-name",
             "renamed-root-moved",
             "up-one-root-moved",
             "up-one-root-unmoved",
             "other-root-same-tail",
             "other-root-up-one",
             "down-one-root-unmoved",
+            "nested-root-moved-out-of-its-parent",
+            "root-left-other-root-same-tail",
+            "up-one-out-of-a-folder-named-like-the-label-root-unmoved",
+            "other-root-of-a-folder-named-like-the-label",
+            "label-not-its-folder-name-limit",
+            "up-one-out-of-a-folder-named-like-the-label-root-moved-limit",
         ],
     )
-    def test_a_removal_moves_only_out_of_a_root_no_longer_registered(
-        self, store, tmp_path, after, new, stays_removed
+    def test_a_removal_moves_only_with_its_own_root_pointed_elsewhere(
+        self, store, tmp_path, before, removed, after, new, stays_removed
     ):
-        before = tmp_path / "before" / "notes"
-        store._config.linked_roots = {"notes": str(before)}
-        store.remove_documents([], {"notes/a/gone.md": _removed("g")})
+        store._config.linked_roots = {label: str(tmp_path / at) for label, at in before.items()}
+        store.remove_documents([], {removed: _removed("g")})
+        label, _, rest = removed.partition("/")
+        old = (tmp_path / before[label] / rest).as_posix()
         store._config.linked_roots = {label: str(tmp_path / at) for label, at in after.items()}
-        old = (before / "a" / "gone.md").as_posix()
 
         step = store.relocate_sources([SourceMove((old,), new, None)])
 

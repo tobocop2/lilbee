@@ -56,12 +56,20 @@ class SourceLocations:
                 return label + location[len(root) :]
         return location
 
-    def below_root(self, location: str) -> str | None:
-        """The part of *location* below the deepest root that holds it, from its slash."""
-        for root, _ in self._deepest_first:
-            if location.startswith(f"{root}/"):
-                return location[len(root) :]
-        return None
+    def left_with_its_root(self, old: str, new: str) -> bool:
+        """Whether *old* is *new*'s place below an earlier folder of *new*'s root.
+
+        That folder carries the root's label as its name, as a registered folder
+        does, and is neither a registered root nor inside the root's folder now.
+        """
+        name = self.name(new)
+        label = name.partition("/")[0]
+        root = self._at.get(label)
+        if root is None or not old.endswith(f"/{name}"):
+            return False
+        folder = old[: len(old) - len(name) + len(label)]
+        inside = f"{folder}/".startswith(f"{root}/")
+        return not inside and folder not in self._at.values()
 
     def location(self, name: str) -> str:
         """Where the source named *name* is: its root's location plus the rest, else *name*."""

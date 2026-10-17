@@ -450,11 +450,13 @@ content is taken, so no old name stays while a file of its content is added.
 from the old file name, and the file's stat, in one merge of the source table. The chunk
 table takes an update only for the files whose title changes, one update a title. The
 sources inside a moved archive move with it. The vectors are not read or embedded again. A held-out file moves too, at the hash it is
-held out at, and stays held out. A removed file moves only out of a folder that the
-registry no longer names, and only to a path whose part below its new folder ends its old
-path: a folder moved on disk and pointed at in `config.toml` keeps its removals, and a
-copy under another name is indexed. A removed file moved inside a registered folder, or
-into another one, is indexed again.
+held out at, and stays held out. A removed file moves only with its own folder: its old
+path must end in the folder's label and its whole name below that folder, and that old
+folder must be no registered folder and lie outside the folder's place now. So a folder
+moved on disk and pointed at in `config.toml` keeps its removals, also out of a parent
+folder that stays registered, and a copy under another name is indexed. A removed file
+moved inside a registered folder, into another one, or out of a folder that left the
+registry is indexed again.
 
 **One hold of the write lock** moves at most 2,000 files. The sync pauses for 0.1 s
 between two holds, so other writers get a turn. A sync that stops between two holds
@@ -528,11 +530,13 @@ label with no folder keeps them; a row that lands on a name another row holds fo
 
 Three limits of stored locations remain:
 
-- **A removed file moved up inside a moved folder.** If you move a registered folder,
-  point `config.toml` at its new place, and also move a removed file up to a folder whose
-  path ends its old path (`notes/a/gone.md` to `notes/gone.md`), the file stays removed.
-  The index keeps no record of the old folder, so it cannot tell this move from the folder
-  move alone.
+- **A removed file's label comes from its old path.** The add labels a folder by its
+  folder name, and the index keeps no record of the old folder, so it reads the label of
+  a removed file from the folder name in its old path. If an edit of `config.toml` gave a
+  folder another label, and you move the folder and point `config.toml` at its new place,
+  its removed files are indexed again. In a moved folder, a removed file moved up out of
+  a subfolder named like the folder's label (`notes/notes/a/gone.md` to
+  `notes/a/gone.md`) stays removed.
 - **A file added under another label.** The add labels a file by its file name. If you
   give it another label by an edit of `config.toml` and then add a parent folder, the
   document keeps the title it had under the old label.

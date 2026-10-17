@@ -2219,6 +2219,68 @@ class TestHeldOutRecordLifecycle:
         assert moved.added == [name]
         assert held_kinds() == {"notes/a/gone.md": HeldOut.REMOVED}
 
+    async def _remove_then_reroot(self, tmp_path, before, after, target):
+        """Sync roots *before*, remove notes/a/gone.md, move it to *target*, sync roots *after*.
+
+        Root paths and *target* are relative to ``tmp_path / "src"``. Returns the
+        sync after the move and the mock that counts each extraction it ran.
+        """
+        from lilbee.app.ingest import remove_documents_durably
+        from lilbee.core import settings
+        from lilbee.data.ingest import sync
+
+        _install_real_store()
+        src = tmp_path / "src"
+        gone = src / before["notes"] / "a" / "gone.md"
+        gone.parent.mkdir(parents=True)
+        gone.write_text("removed by the user", encoding="utf-8")
+        (src / "work").mkdir(exist_ok=True)
+        (src / "work" / "kept.md").write_text("kept in the index", encoding="utf-8")
+        roots = {label: str(src / at) for label, at in before.items()}
+        settings.set_value(cfg.data_root, "linked_roots", roots)
+        await sync(quiet=True)
+        remove_documents_durably(["notes/a/gone.md"])
+        (src / target).parent.mkdir(parents=True, exist_ok=True)
+        gone.rename(src / target)
+        roots = {label: str(src / at) for label, at in after.items()}
+        settings.set_value(cfg.data_root, "linked_roots", roots)
+        with mock.patch(
+            "lilbee.data.ingest.pipeline.produce_records", side_effect=self._zero_for()
+        ) as produce:
+            moved = await sync(quiet=True)
+        return moved, produce
+
+    async def test_a_removal_moves_with_a_root_pointed_out_of_its_parent(
+        self, isolated_env, tmp_path, overlay_reads_config_toml
+    ):
+        """A root inside another root, moved out and pointed at, keeps its removals."""
+        moved, produce = await self._remove_then_reroot(
+            tmp_path,
+            {"work": "work", "notes": "work/notes"},
+            {"work": "work", "notes": "notes"},
+            "notes/a/gone.md",
+        )
+
+        produce.assert_not_called()
+        assert "notes/a/gone.md" not in [*moved.added, *moved.relocated, *moved.skipped]
+        assert held_kinds() == {"notes/a/gone.md": HeldOut.REMOVED}
+
+    async def test_a_removed_file_of_a_root_that_left_moved_to_another_root_is_indexed(
+        self, isolated_env, tmp_path, overlay_reads_config_toml
+    ):
+        """A removal stays behind when its root leaves and the file moves into another root."""
+        moved, produce = await self._remove_then_reroot(
+            tmp_path,
+            {"notes": "old/notes", "work": "work"},
+            {"work": "work"},
+            "work/a/gone.md",
+        )
+
+        assert [call.args[1] for call in produce.call_args_list] == ["work/a/gone.md"]
+        assert moved.added == ["work/a/gone.md"]
+        old = (tmp_path / "src" / "old" / "notes" / "a" / "gone.md").as_posix()
+        assert held_kinds() == {old: HeldOut.REMOVED}
+
     @classmethod
     def _zero_for(cls, *targets: str):
         from lilbee.data.ingest.pipeline import produce_records as orig
