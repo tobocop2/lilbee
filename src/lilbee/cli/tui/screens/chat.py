@@ -90,6 +90,7 @@ from lilbee.core.config import cfg
 from lilbee.core.config.enums import ChatMode, CrawlRenderMode
 from lilbee.core.config.model import CLEARABLE_MODEL_FIELDS
 from lilbee.crawler import crawler_available, is_url, require_valid_crawl_url
+from lilbee.crawler.events import BROWSER_SETUP_COMPONENT
 from lilbee.data.store import (
     ChunkType,
     EmbeddingModelMismatchError,
@@ -116,6 +117,7 @@ from lilbee.runtime.lock import ResetRefusedError
 from lilbee.runtime.progress import (
     EventType,
     ProgressEvent,
+    SetupStartEvent,
 )
 from lilbee.sessions import (
     MessageRole,
@@ -1105,10 +1107,11 @@ class ChatScreen(Screen[None]):
 
         reporter.update(0, msg.CMD_CRAWL_STARTED.format(url=url))
         failures: list[str] = []
+        setup_labels = {BROWSER_SETUP_COMPONENT: msg.SETUP_BROWSER_WARM_UP}
 
         def on_progress(event_type: EventType, data: ProgressEvent) -> None:
-            if event_type == EventType.SETUP_START:
-                reporter.update(0, msg.SETUP_CHROMIUM_NAME)
+            if event_type == EventType.SETUP_START and isinstance(data, SetupStartEvent):
+                reporter.update(0, setup_labels.get(data.component, msg.SETUP_CHROMIUM_NAME))
             elif event_type == EventType.SETUP_PROGRESS and isinstance(data, SetupProgressEvent):
                 if data.total_bytes:
                     pct = int(data.downloaded_bytes * 100 / data.total_bytes)
