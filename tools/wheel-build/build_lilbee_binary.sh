@@ -157,6 +157,7 @@ uv run --no-sync python -m nuitka \
     --include-package=xberg          --include-package-data=xberg \
     --include-package=litellm            --include-package=litellm.llms      --include-package-data=litellm \
     --include-package=crawlberg          --include-package-data=crawlberg \
+    --include-package=ada_url            --include-package-data=ada_url \
     --include-package=chardet            --include-package-data=chardet \
     --include-package=playwright \
     --enable-plugin=spacy \
