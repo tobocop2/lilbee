@@ -449,14 +449,12 @@ content is taken, so no old name stays while a file of its content is added.
 `_sources` row holds its path. A move changes that path, the title when the title came
 from the old file name, and the file's stat, in one merge of the source table. The chunk
 table takes an update only for the files whose title changes, one update a title. The
-sources inside a moved archive move with it. The vectors are not read or embedded again. A held-out file moves too, at the hash it is
-held out at, and stays held out. A removed file moves only with its own folder: its old
-path must end in the folder's label and its whole name below that folder, and that old
-folder must be no registered folder and lie outside the folder's place now. So a folder
-moved on disk and pointed at in `config.toml` keeps its removals, also out of a parent
-folder that stays registered, and a copy under another name is indexed. A removed file
-moved inside a registered folder, into another one, or out of a folder that left the
-registry is indexed again.
+sources inside a moved archive move with it. The vectors are not read or embedded again. A
+failed file moves too, at the hash it failed at, and stays held out. A removed file does
+not move: its removal stays at its old path, and the file at its new path is indexed.
+`lilbee add` at a moved folder's new place moves the folder's rows and then releases the
+removals under the added path, as an add of a path always does. So a moved folder forgets
+the removed files under it, by an add at the new place or by an edit of `config.toml`.
 
 **One hold of the write lock** moves at most 2,000 files. The sync pauses for 0.1 s
 between two holds, so other writers get a turn. A sync that stops between two holds
@@ -528,15 +526,17 @@ that a citation names, and an import that runs again writes the same rows. When 
 leaves the registry, the rows it keeps for citations are stored by their names again, as a
 label with no folder keeps them; a row that lands on a name another row holds folds into it.
 
-Three limits of stored locations remain:
+Four limits of stored locations remain:
 
-- **A removed file's label comes from its old path.** The add labels a folder by its
-  folder name, and the index keeps no record of the old folder, so it reads the label of
-  a removed file from the folder name in its old path. If an edit of `config.toml` gave a
-  folder another label, and you move the folder and point `config.toml` at its new place,
-  its removed files are indexed again. In a moved folder, a removed file moved up out of
-  a subfolder named like the folder's label (`notes/notes/a/gone.md` to
-  `notes/a/gone.md`) stays removed.
+- **A folder moved and pointed at by an edit of `config.toml` forgets its removals.** A
+  move that a sync finds carries listed and failed files only, so the sync indexes the
+  folder's removed files again at the new place. Before stored locations, a removal was
+  kept by name, and the name did not change, so these files stayed removed.
+- **A root pointed around an unmoved file keeps its removal.** If an edit of
+  `config.toml` adds a root at the folder of a removed file, or points a root at a folder
+  above or below it, the file's name changes but its place does not. The removal is kept
+  by place, so the file stays removed. Before stored locations, the file was indexed
+  again under its new name.
 - **A file added under another label.** The add labels a file by its file name. If you
   give it another label by an edit of `config.toml` and then add a parent folder, the
   document keeps the title it had under the old label.

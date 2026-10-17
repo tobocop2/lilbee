@@ -888,7 +888,9 @@ A folder can take in a source with the same name: `lilbee add ~/work` after
 `lilbee add ~/work/work` gives the documents the names `work/work/...`.
 
 If you move an added folder, add it again at its new place. Its documents keep
-their index entries and their names.
+their index entries and their names. The files you removed from the folder are
+indexed again, because adding a path asks for its removed files back. The same
+happens if you edit `config.toml` to point the folder at its new place.
 
 ### Manage documents
 

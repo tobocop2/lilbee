@@ -671,6 +671,86 @@ class TestAMovedFolderAddedAgain:
         assert _embedded(library) == []
 
 
+async def _moved_folder_with_a_removed_file(tmp_path: Path) -> Path:
+    """``work`` added, its ``gone.md`` removed, then the folder moved on disk; the new place."""
+    before = tmp_path / "before" / "work"
+    _write(before / "plan.md", "# Plan\n\nThe plan for the spring release.\n")
+    _write(before / "gone.md", "# Gone\n\nA page the user removed from the index.\n")
+    await _add(before)
+    remove_documents_durably(["work/gone.md"])
+    after = tmp_path / "after" / "work"
+    after.parent.mkdir()
+    before.rename(after)
+    return after
+
+
+class TestAMovedFolderWithARemovedFile:
+    async def test_an_add_at_the_new_place_indexes_it_again(self, library, tmp_path):
+        """Adding a path again asks for its removed files back, as on main."""
+        after = await _moved_folder_with_a_removed_file(tmp_path)
+        library.embedder.embed_batch.reset_mock()
+
+        _, synced = await _add(after)
+
+        assert _keys(library) == ["work/gone.md", "work/plan.md"]
+        assert synced.added == ["work/gone.md"]
+        assert (synced.updated, synced.relocated) == ([], [])
+        assert held_kinds() == {}
+
+    async def test_an_edit_of_config_toml_to_the_new_place_indexes_it_again(
+        self, library, tmp_path
+    ):
+        """A move a sync finds carries no removal, so the file at the new place is new."""
+        after = await _moved_folder_with_a_removed_file(tmp_path)
+
+        settings.set_value(cfg.data_root, "linked_roots", {"work": str(after.resolve())})
+        synced = await sync(quiet=True)
+
+        assert _keys(library) == ["work/gone.md", "work/plan.md"]
+        assert synced.added == ["work/gone.md"]
+        assert synced.relocated == ["work/plan.md"]
+        assert "work/gone.md" not in held_kinds()
+
+
+class TestARootPointedAroundAnUnmovedRemovedFile:
+    @pytest.mark.parametrize(
+        ("before", "after", "name"),
+        [
+            pytest.param(
+                "p/notes",
+                {"notes": "p/notes", "work": "p/notes/work"},
+                "work/a/gone.md",
+                id="root-added-at-its-folder",
+            ),
+            pytest.param(
+                "p/notes",
+                {"notes": "p"},
+                "notes/notes/work/a/gone.md",
+                id="root-pointed-to-the-parent",
+            ),
+            pytest.param("p", {"notes": "p/notes"}, "notes/work/a/gone.md", id="root-pointed-down"),
+        ],
+    )
+    async def test_the_removal_stays_though_the_name_changes(
+        self, library, tmp_path, before, after, name
+    ):
+        """The removal is kept by place, so a new name for the same file keeps it out."""
+        src = tmp_path / "src"
+        gone = _write(src / "p" / "notes" / "work" / "a" / "gone.md", "# Gone\n\nRemoved.\n")
+        _write(src / "p" / "notes" / "kept.md", "# Kept\n\nKept.\n")
+        await _add(src / before)
+        old_name = (src / before).name + "/" + gone.relative_to(src / before).as_posix()
+        remove_documents_durably([old_name])
+        roots = {label: str((src / at).resolve()) for label, at in after.items()}
+
+        settings.set_value(cfg.data_root, "linked_roots", roots)
+        synced = await sync(quiet=True)
+
+        assert name not in _keys(library)
+        assert synced.added == []
+        assert held_kinds() == {name: HeldOut.REMOVED}
+
+
 class TestASyncWhileTheRegistryChanges:
     async def test_the_sync_names_sources_by_the_registry_it_started_with(self, library, notes):
         await _add(notes / "work")
