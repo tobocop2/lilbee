@@ -18,7 +18,7 @@ from litestar.testing import AsyncTestClient
 
 import lilbee.data.store.core as core_mod
 from lilbee.app import services as services_mod
-from lilbee.core.config import cfg
+from lilbee.core.config import META_TABLE, cfg
 from lilbee.core.health_warnings import WarningCode
 from lilbee.data.store import Store
 from lilbee.runtime.lock import LockTimeoutError, write_lock
@@ -29,7 +29,7 @@ from lilbee.runtime.progress import (
     UpgradePhase,
 )
 from lilbee.server import auth as auth_mod
-from tests.test_store import _path_keyed_tables
+from tests.test_store import _meta_rows, _path_keyed_tables
 
 # The tables of ``_path_keyed_tables`` an upgrade visits, in order, with their rows.
 _STEPS = [
@@ -117,7 +117,11 @@ class TestStoreReportsTheUpgrade:
         store.close()
         assert store.health_warnings() == []
 
-    def test_an_upgraded_library_reports_nothing(self, library):
+    @pytest.mark.parametrize("stamped", [None, 1, 2])
+    def test_an_upgraded_library_reports_nothing(self, library, stamped):
+        if stamped is not None:
+            db = lancedb.connect(str(library.lancedb_dir))
+            db.create_table(META_TABLE, _meta_rows(library, stamped))
         Store(library).get_db()
         events, record = _recorder()
 

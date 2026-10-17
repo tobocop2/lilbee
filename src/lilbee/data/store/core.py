@@ -248,6 +248,8 @@ _PATH_KEY_BY_TABLE = dict(_PATH_KEY_COLUMNS)
 _UPGRADE_ORDER = (SOURCES_TABLE, *_PATH_KEY_BY_TABLE)
 # The path column of ``_sources`` before it was renamed.
 _OLD_PATH = "filename"
+# The ``_meta`` rows an upgrade has yet to stamp; a store stamped 1 keeps 1.
+_UNSTAMPED = f"schema_version >= 2 AND schema_version < {META_SCHEMA_VERSION}"
 
 # The source rows a listing shows: neither held out nor a wiki page.
 _LISTED = f"{_HELD_OUT} IS NULL AND source_type != '{SourceType.WIKI}'"
@@ -542,6 +544,14 @@ def _keyed_by_path(db: LanceDBConnection) -> bool:
         if table is not None and column in table.schema.names:
             return True
     return False
+
+
+def _upgrade_pending(db: LanceDBConnection) -> bool:
+    """Whether *db* is keyed by path, or ``_meta`` still waits for the upgrade's stamp."""
+    if _keyed_by_path(db):
+        return True
+    meta = open_committed(db, META_TABLE)
+    return meta is not None and meta.count_rows(_UNSTAMPED) > 0
 
 
 def _upgrade_steps(db: LanceDBConnection, names: list[str]) -> list[tuple[str, LanceTable]]:
@@ -1103,7 +1113,7 @@ class Store:
         db = LanceDBConnection(
             str(self._config.lancedb_dir), read_consistency_interval=READ_CONSISTENCY_INTERVAL
         )
-        if _keyed_by_path(db):
+        if _upgrade_pending(db):
             self._upgrade_library(db)
         self._db = db
         return db
@@ -1119,7 +1129,7 @@ class Store:
                     self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.WAITING))
                     held.enter_context(write_lock(self._config.lancedb_dir, timeout=None))
                 # Another process can have upgraded it during the wait.
-                if _keyed_by_path(db):
+                if _upgrade_pending(db):
                     self._migrate_unlocked(db)
             elapsed = time.monotonic() - started
             self._report_upgrade(LibraryUpgradeEvent(phase=UpgradePhase.DONE, elapsed_s=elapsed))
@@ -1134,10 +1144,11 @@ class Store:
     def _migrate_unlocked(self, db: LanceDBConnection) -> None:
         """Key every table by ``source_id``. Caller holds the write lock.
 
-        Each step reads the table's columns, so a run that was killed is finished
-        by the next one. An existing source takes the md5 of its path as its id. A
-        store stamped 2 or later is stamped 3 at the end; a store stamped 1 predates
-        the document prefix, and keeps 1 so that the stale-prefix warning still names it.
+        Each step reads the table's columns, and the stamp reads ``_meta``, so a
+        run that was killed is finished by the next one. An existing source takes
+        the md5 of its path as its id. A store stamped 2 is stamped 3 at the end; a
+        store stamped 1 predates the document prefix, and keeps 1 so that the
+        stale-prefix warning still names it.
         """
         names = table_names(db)
         steps = _upgrade_steps(db, names)

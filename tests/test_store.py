@@ -5255,6 +5255,19 @@ def _path_keyed_tables(config):
     }
 
 
+def _meta_rows(config, stamped):
+    """The ``_meta`` row of a library stamped schema version *stamped*."""
+    from lilbee.data.store.schema import _meta_schema
+
+    row = {
+        "embedding_model": config.embedding_model,
+        "embedding_dim": config.embedding_dim,
+        "schema_version": stamped,
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    return pa.Table.from_pylist([row], schema=_meta_schema())
+
+
 def _untimed(dump):
     """*dump* without the time each source row was written."""
     return {
@@ -5547,24 +5560,34 @@ class TestOpenTimeMigration:
 
     @pytest.mark.parametrize(("stamped", "after"), [(2, 3), (1, 1)])
     def test_a_migrated_library_reads_schema_version_three(self, test_config, stamped, after):
-        from lilbee.data.store.schema import _meta_schema
-
         tables = _path_keyed_tables(test_config)
-        tables["_meta"] = pa.Table.from_pylist(
-            [
-                {
-                    "embedding_model": test_config.embedding_model,
-                    "embedding_dim": test_config.embedding_dim,
-                    "schema_version": stamped,
-                    "updated_at": "2026-01-01T00:00:00+00:00",
-                }
-            ],
-            schema=_meta_schema(),
-        )
+        tables[META_TABLE] = _meta_rows(test_config, stamped)
 
         store = _open_after(test_config, tables)
 
         assert store.get_meta()["schema_version"] == after
+
+    def test_an_open_stopped_before_its_schema_stamp_is_stamped_by_the_next(self, test_config):
+        import lancedb
+        from lancedb.table import LanceTable
+
+        tables = _path_keyed_tables(test_config)
+        tables[META_TABLE] = _meta_rows(test_config, 2)
+        real = LanceTable.update
+
+        def _stops(self, *args, **kwargs):
+            if self.name == META_TABLE:
+                raise KeyboardInterrupt
+            return real(self, *args, **kwargs)
+
+        with mock.patch.object(LanceTable, "update", _stops), pytest.raises(KeyboardInterrupt):
+            _open_after(test_config, tables).get_db()
+        db = lancedb.connect(str(test_config.lancedb_dir))
+        left = {name: set(db.open_table(name).schema.names) for name in tables}
+        assert not any({"source", "chunk_source", "source_filename"} & n for n in left.values())
+        assert db.open_table(META_TABLE).to_arrow().column("schema_version").to_pylist() == [2]
+
+        assert Store(test_config).get_meta()["schema_version"] == 3
 
     def test_the_stamped_schema_version_is_three(self):
         from lilbee.data.store.types import META_SCHEMA_VERSION

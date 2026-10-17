@@ -483,7 +483,8 @@ again from the mention rows the first time it is read, with no extraction.
 **The first open of an older library** keys it in place under the write lock. Each table
 gains `source_id` as the md5 of its path, takes the BTREE index of the path column when
 it had one, and loses the path column; `_sources.filename` becomes `path`. Each step reads
-the table's columns, so an open that stops part way is finished by the next. LanceDB adds
+the table's columns, and the schema stamp reads `_meta`, so an open that stops part way is
+finished by the next, also when it stops after the last column drop. LanceDB adds
 a column one fragment at a time, so each table gains its id column on a thread of its own
 from the start of the open. A path column goes only after every path in it has a source
 row, and the key comparison runs in Arrow. Measured on a library of 8.8 million chunks of
