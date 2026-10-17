@@ -5645,6 +5645,62 @@ def test_ladder_adopts_a_warm_engine_planned_with_a_different_ctx_target(
         holder.release_and_check_last()
 
 
+def _ladder_against_live_chat_engine(
+    monkeypatch, tmp_path: Path, recorded_pin: str
+) -> tuple[_BindableSwap, Path, list[Path], list[Path]]:
+    """Run this lilbee's ladder against a live chat engine recorded with *recorded_pin*."""
+    from lilbee.providers.fleet import binary as binary_mod
+    from lilbee.runtime.engine_lock import hold_user_lock
+
+    swap, machine, built = _install_ladder(
+        monkeypatch, tmp_path, launches=[_chat_launch()], pin=binary_mod.engine_pin()
+    )
+    stopped: list[Path] = []
+    monkeypatch.setattr(prov_mod, "stop_engine", lambda d: stopped.append(Path(d)))
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin=recorded_pin, model="m-chat", role="chat")
+    holder = hold_user_lock(machine, pid=999_888)  # the other process still serves from it
+    monkeypatch.setattr(cfg, "data_root", tmp_path / "root", raising=False)
+    try:
+        assert FleetProvider()._ensure_fleet() is True
+    finally:
+        holder.release_and_check_last()
+    return swap, machine, built, stopped
+
+
+def test_ladder_does_not_adopt_an_engine_started_with_an_older_swap_config(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """An engine recorded without the swap-config revision is never bound.
+
+    An older lilbee wrote no concurrency limit, so llama-swap's default of 10
+    answers a full ingest pool with 429s. The ladder takes the pin-mismatch
+    path: the engine in use is left running and this process overflows.
+    """
+    from lilbee.providers.fleet import binary as binary_mod
+
+    older_pin = f"{binary_mod.engine_build_id()}|{binary_mod._load_config_signature()}"
+    swap, machine, built, stopped = _ladder_against_live_chat_engine(
+        monkeypatch, tmp_path, older_pin
+    )
+    assert swap.binds == []
+    assert stopped == []
+    assert built and machine not in built
+
+
+def test_ladder_adopts_an_engine_started_by_the_same_lilbee(monkeypatch, tmp_path: Path) -> None:
+    """A second process of this lilbee binds the engine the first one started."""
+    from lilbee.providers.fleet import binary as binary_mod
+
+    swap, _machine, _built, stopped = _ladder_against_live_chat_engine(
+        monkeypatch, tmp_path, binary_mod.engine_pin()
+    )
+    assert len(swap.binds) == 1
+    assert swap.started == [] and stopped == []
+
+
 def test_ladder_restarts_when_the_demand_exceeds_the_live_window(
     monkeypatch, tmp_path: Path
 ) -> None:

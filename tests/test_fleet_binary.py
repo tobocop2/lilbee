@@ -12,6 +12,7 @@ import pytest
 from lilbee.core.config import cfg
 from lilbee.providers.base import ProviderError
 from lilbee.providers.fleet import binary as binary_mod
+from lilbee.providers.fleet import swap_config as swap_config_mod
 from lilbee.providers.fleet.binary import (
     EngineTool,
     engine_build_id,
@@ -369,6 +370,15 @@ class TestEnginePin:
         pin_on = engine_pin()
         assert pin_off != pin_on
         assert pin_on.startswith("build-x|")  # build identity still leads the pin
+
+    def test_pin_folds_in_the_swap_config_revision(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A peer whose llama-swap config is another revision never shares its engine.
+        monkeypatch.setattr(binary_mod, "engine_build_id", lambda: "build-x")
+        current = engine_pin()
+        revision = swap_config_mod.SWAP_CONFIG_REVISION
+        monkeypatch.setattr(swap_config_mod, "SWAP_CONFIG_REVISION", revision + 1)
+        assert engine_pin() != current
+        assert current.endswith(f"|swap-config={revision}")
 
     def test_pin_is_stable_for_identical_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # The load signature is deterministic: identical config yields the same pin

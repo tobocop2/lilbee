@@ -1004,7 +1004,9 @@ through the same ladder, under a cross-process build lock:
    models plus the bundled **engine pin**) covers the configuration. Binders
    spawn nothing and write nothing. lilbee version is not in the contract:
    releases sharing a pin share an engine; differing pins never run on a
-   build they were not tested against.
+   build they were not tested against. The pin carries the revision of the
+   llama-swap config, so a release that writes a new config key never binds
+   an engine started without it.
 2. **Build** into the empty slot otherwise. An incumbent is replaced in place
    when no live user holds it, and also when it is this contract's own engine
    left partially dead (a killed group) or partially covering (config grew a
