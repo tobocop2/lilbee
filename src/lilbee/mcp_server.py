@@ -414,9 +414,9 @@ async def add(
     render_mode: CrawlRenderMode | None = None,
 ) -> dict[str, Any]:
     """Add files, directories, or URLs to the knowledge base, then sync.
-    Paths are absolute and resolve on the machine running lilbee, which is not
-    the caller's machine when the server is remote. URLs are fetched as single
-    pages; use ``crawl`` for sites."""
+    Paths are absolute and resolve on the machine running lilbee, not the
+    caller's when the server is remote. URLs are fetched as single pages; use
+    ``crawl`` for sites."""
     from lilbee.app.ingest import LIBRARY_REFUSALS, register_sources
 
     try:
@@ -596,8 +596,8 @@ def init(path: str = "") -> dict[str, Any]:
 async def remove(names: list[str]) -> dict[str, Any]:
     """Remove documents from the index by source name, folder, or glob pattern.
 
-    Source files are never deleted. A folder name removes every document indexed
-    beneath it; a glob (``*``/``?``/``[]``) removes every matching source."""
+    Source files are never deleted. A folder removes everything indexed beneath
+    it; a glob (``*``/``?``/``[]``) removes every match."""
     from lilbee.app.ingest import LIBRARY_REFUSALS, remove_documents_durably
 
     try:
@@ -609,7 +609,7 @@ async def remove(names: list[str]) -> dict[str, Any]:
 
 @_tool
 def list_documents(limit: int = DOCUMENTS_PAGE_DEFAULT, offset: int = 0) -> dict[str, Any]:
-    """List indexed documents with chunk counts, paged (limit 1-1000)."""
+    """List documents and chunk counts, paged (limit 1-1000)."""
     if not 1 <= limit <= DOCUMENTS_PAGE_MAX:
         return _error(f"limit must be from 1 to {DOCUMENTS_PAGE_MAX}")
     if offset < 0:
@@ -1270,7 +1270,7 @@ async def model_pull(
     """Download a model and stream progress.
 
     ``source`` is ``native`` (GGUF) or ``remote`` (SDK).
-    ``allow_unsupported`` overrides the supported-architecture refusal.
+    ``allow_unsupported`` overrides the architecture refusal.
     """
     from lilbee.app.models import pull_model_data
     from lilbee.catalog import DownloadProgress
@@ -1664,10 +1664,10 @@ def preview_placement_tool(spec: dict[str, Any] | None = None) -> dict[str, Any]
 def set_placement_tool(spec: dict[str, Any]) -> dict[str, Any]:
     """Set and apply a manual multi-GPU placement spec (persists to config).
 
-    The spec maps a role ("chat"/"embed"/"rerank"/"vision") to a placement, e.g.
+    Maps a role ("chat"/"embed"/"rerank"/"vision") to a placement, e.g.
     ``{"chat": {"devices": [0, 1], "tensor_split": [1, 1]}}``. ``devices`` is the
     GPU indices (get_gpus lists them); ``tensor_split`` is optional per-device
-    weights (omit for an even split). Omit a role to leave it auto-placed.
+    weights (omit for an even split). A role left out is auto-placed.
     """
     from lilbee.providers.fleet.placement_spec import PlacementSpec
 
