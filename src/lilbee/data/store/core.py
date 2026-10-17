@@ -551,14 +551,13 @@ def _found_rows(
 
 
 def _stat_write(backfill: SourceStatBackfill) -> _SourceWrite:
-    """The write that gives a tracked source its verified stat and no held-out record."""
+    """The write that gives a tracked source its verified stat; a record names no held-out one."""
     record, stat = backfill
     fields = {name: value for name, value in record.items() if name != _OLD_PATH}
     fields |= {
         "size_bytes": stat.size_bytes,
         "mtime_ns": stat.mtime_ns,
         "stat_captured_ns": stat.captured_ns,
-        **dict.fromkeys(_HELD_COLUMNS),
     }
     return _SourceWrite(record["filename"], SourceType(record["source_type"]), fields)
 
