@@ -49,6 +49,7 @@ from lilbee.crawler.save import (
     save_page,
 )
 from lilbee.crawler.task import CrawlTask, TaskStatus, run_crawl
+from lilbee.data.ingest.discovery import discover_files
 from lilbee.runtime.progress import EventType
 from tests import _crawlberg_stub as cb
 from tests._crawl_meta import write_crawl_metadata
@@ -2959,14 +2960,16 @@ class TestRetireEarlier:
         assert not (cfg.documents_dir / "_web" / self.EARLIER).exists()
         remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
 
-    def test_the_index_source_is_removed_before_the_copy_is_deleted(self, isolated_env):
+    def test_a_sync_at_the_index_removal_finds_the_page_and_not_the_copy(self, isolated_env):
         record = self._record_with_copy("# Old")
         copy = cfg.documents_dir / "_web" / self.EARLIER
-        present_at_removal: list[bool] = []
-        remove_sources = MagicMock(side_effect=lambda _: present_at_removal.append(copy.exists()))
+        seen_by_sync: list[set[str]] = []
+        remove_sources = MagicMock(side_effect=lambda _: seen_by_sync.append(set(discover_files())))
         save_page(CrawlResult(url=self.URL, markdown="# New"), record, remove_sources)
         assert not copy.exists()
-        assert present_at_removal == [True]
+        assert len(seen_by_sync) == 1
+        assert f"_web/{url_to_filename(self.URL)}" in seen_by_sync[0]
+        assert f"_web/{self.EARLIER}" not in seen_by_sync[0]
         remove_sources.assert_called_once_with([f"_web/{self.EARLIER}"])
 
     def test_the_copy_is_deleted_while_another_crawl_waits_on_the_record(
