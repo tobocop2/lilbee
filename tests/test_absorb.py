@@ -688,6 +688,28 @@ class TestASyncWhileTheRegistryChanges:
         assert _keys(library) == ["notes/work/budget.md", "notes/work/plan.md"]
 
 
+class TestACitedSourceOfARemovedFolder:
+    async def test_it_shows_its_name_and_takes_its_folder_again_on_a_new_add(self, library, notes):
+        await _add(notes)
+        store = library.store
+        cited_id = store.source_ids(["notes/loose.md"])["notes/loose.md"]
+        store.add_citations([_citation("notes/loose.md")])
+
+        remove_documents_durably(["notes"])
+
+        assert _registry() == {}
+        assert store.source_paths([cited_id]) == {cited_id: "notes/loose.md"}
+        cited = store.get_citations_for_source("notes/loose.md")
+        assert [row["source_filename"] for row in cited] == ["notes/loose.md"]
+        assert _holders(store, (notes / "loose.md").resolve().as_posix()) == set()
+
+        register_sources([notes])
+
+        assert store.source_ids(["notes/loose.md"]) == {"notes/loose.md": cited_id}
+        stored = (notes / "loose.md").resolve().as_posix()
+        assert _holders(store, stored) == {("_sources", "path")}
+
+
 class TestWhatIsNotAbsorbed:
     @pytest.mark.parametrize(
         ("child", "ignore"),

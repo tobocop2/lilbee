@@ -503,6 +503,7 @@ def remove_documents_durably(
 def forget_roots(names: list[str]) -> list[str]:
     """Un-register every root named in *names* and drop the held-out records under it.
 
+    A source row a root keeps for a citation is stored by its shown name first.
     The roots are un-registered even when the records cannot be changed; the
     error is raised after.
     """
@@ -513,6 +514,7 @@ def forget_roots(names: list[str]) -> list[str]:
         # Records resolve through the registry, so they go before un-registering.
         # A root that stays keeps its records, also when it names the folder of one that goes.
         unmark_sources_under(named, spared=roots.keys() - set(labels))
+        get_services().store.name_by_label(labels)
     finally:
         unregistered = unregister_roots(names)
     return unregistered

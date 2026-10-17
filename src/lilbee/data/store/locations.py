@@ -60,6 +60,15 @@ class SourceLocations:
             return name
         return f"{root}/{rest}" if rest else root
 
+    def named_by_sql(self, column: str, root: str) -> str:
+        """The predicate for *column* holding a location whose name the registered *root* gives."""
+        deeper = [
+            f"NOT {_under_sql(column, below)}"
+            for below, _ in self._deepest_first
+            if below.startswith(f"{root}/")
+        ]
+        return " AND ".join([_under_sql(column, root), *deeper])
+
     def search_filter(self, term: str, path: str, title: str) -> str:
         """The predicate for a shown name in *path*, or a title in *title*, holding *term*.
 
@@ -68,14 +77,10 @@ class SourceLocations:
         """
         pattern = f"LIKE '%{escape_sql_string(_escape_like_wildcards(term.lower()))}%' ESCAPE '\\'"
         arms: list[str] = []
-        unders: dict[str, str] = {}
         for root, label in self._deepest_first:
-            under = _under_sql(path, root)
-            deeper = [f"NOT {sql}" for below, sql in unders.items() if below.startswith(f"{root}/")]
             shown = f"concat('{escape_sql_string(label)}', substr({path}, {len(root) + 1}))"
-            arms.append(" AND ".join([under, *deeper, f"LOWER({shown}) {pattern}"]))
-            unders[root] = under
-        outside = [f"NOT {sql}" for sql in unders.values()]
+            arms.append(f"{self.named_by_sql(path, root)} AND LOWER({shown}) {pattern}")
+        outside = [f"NOT {_under_sql(path, root)}" for root, _ in self._deepest_first]
         arms.append(" AND ".join([*outside, f"LOWER({path}) {pattern}"]))
         arms.append(f"LOWER({title}) {pattern}")
         return "(" + " OR ".join(f"({arm})" for arm in arms) + ")"

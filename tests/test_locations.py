@@ -389,6 +389,44 @@ class TestARootThatMoves:
         assert store.open_table(SOURCES_TABLE) is None
 
 
+class TestARootThatLeaves:
+    def test_its_rows_take_its_label_and_a_root_inside_it_keeps_its_own(self, config, tmp_path):
+        outer, inner = tmp_path / "outer", tmp_path / "outer" / "a" / "inner"
+        config.linked_roots = {"outer": str(outer), "inner": str(inner), "home": str(tmp_path)}
+        store = Store(config)
+        _seed_source(store, "outer/x.md")
+        _seed_source(store, "inner/y.md")
+        store.upsert_source("wiki/summaries/a.md", "h", 1, SourceType.WIKI)
+        cited = store.source_ids(["outer/x.md"])["outer/x.md"]
+
+        store.name_by_label(["outer", "home"])
+        config.linked_roots = {"inner": str(inner)}
+
+        assert _paths(store) == sorted(
+            [(inner / "y.md").as_posix(), "outer/x.md", "wiki/summaries/a.md"]
+        )
+        assert store.source_paths([cited]) == {cited: "outer/x.md"}
+        assert len(store.get_citations_for_source("outer/x.md")) == 1
+
+    def test_a_root_with_no_row_writes_nothing(self, config, tmp_path):
+        config.linked_roots = {"notes": str(tmp_path / "notes"), "empty": str(tmp_path / "e")}
+        store = Store(config)
+        _seed_source(store, "notes/a.md")
+        version = store.sources_version()
+
+        store.name_by_label(["empty", "unknown"])
+
+        assert store.sources_version() == version
+
+    def test_a_store_with_no_source_table_writes_nothing(self, config, tmp_path):
+        config.linked_roots = {"notes": str(tmp_path / "notes")}
+        store = Store(config)
+
+        store.name_by_label(["notes"])
+
+        assert store.open_table(SOURCES_TABLE) is None
+
+
 class TestTheMoveCarriesTheCitations:
     def test_a_folded_row_gives_its_citation_to_the_row_it_lands_on(self, config, tmp_path):
         store = Store(config)

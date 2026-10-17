@@ -3105,6 +3105,26 @@ class Store:
             _fill_locations(self.get_db(), self._locations())
         self._invalidate_source_cache()
 
+    def name_by_label(self, labels: Iterable[str]) -> None:
+        """Store each document of the registered roots *labels* by its shown name.
+
+        A root about to leave the registry calls it, so a row it keeps for a
+        citation shows its name and not a path on disk, as a label with no root
+        does. A document of a root below one of *labels* that stays keeps its place.
+        """
+        going = set(labels)
+        locations = self._locations()
+        with self._write_lock():
+            sources = self.open_table(SOURCES_TABLE)
+            for root, label in locations.deepest_first:
+                if sources is None or label not in going:
+                    continue
+                where = f"{_DOCUMENT} AND {locations.named_by_sql(_PATH, root)}"
+                value = _swap_head_sql(_PATH, root, label)
+                if sources.count_rows(where):
+                    sources.update(where=where, values_sql={_PATH: value})
+        self._invalidate_source_cache()
+
     def member_sources(self, name: str) -> list[str]:
         """Sources ingested out of the archive *name*: every path under ``name/``."""
         table = self.open_table(SOURCES_TABLE)
