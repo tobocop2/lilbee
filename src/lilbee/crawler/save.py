@@ -123,6 +123,15 @@ def _slug(part: str) -> str:
     return slug
 
 
+def _folder_slug(part: str) -> str:
+    """The slug of a folder; one ending in the page suffix ends in ``-md``, never a file's name."""
+    slug = _slug(part)
+    if not slug.lower().endswith(PAGE_SUFFIX):
+        return slug
+    mark = len(slug) - len(PAGE_SUFFIX)
+    return f"{slug[:mark]}{_SLUG_FILL}{slug[mark + 1 :]}"
+
+
 def _address_parts(address: str) -> tuple[str, list[str]]:
     """The host, in Unicode and with any port, and the path segments of *address*."""
     import ada_url
@@ -146,7 +155,7 @@ def page_name(address: str) -> str:
     *folders, last = segments
     digest = hashlib.sha256(address.encode("utf-8")).hexdigest()[:_HASH_HEX_DIGITS]
     file_name = f"{_slug(last) if last else INDEX_STEM}{PAGE_HASH_MARK}{digest}{PAGE_SUFFIX}"
-    head = [_slug(host), *(_slug(folder) for folder in folders if folder)]
+    head = [_slug(host), *(_folder_slug(folder) for folder in folders if folder)]
     while len("/".join([*head, file_name]).encode("utf-8")) > _MAX_PATH_BYTES:
         head.pop()
     return "/".join([*head, file_name])
