@@ -496,9 +496,9 @@ the table's columns, and the schema stamp reads `_meta`, so an open that stops p
 finished by the next, also when it stops after the last column drop. LanceDB adds
 a column one fragment at a time, so each table gains its id column on a thread of its own
 from the start of the open. A path column goes only after every path in it has a source
-row of its type, and the key comparison runs in Arrow. Measured on a library of 8.8 million chunks of
-4096 dimensions, 4,425 fragments per table, on an 8-core host: 34 s and 2.4 GiB at most,
-with the full-text, vector and bitmap indexes kept. An older lilbee then fails on the renamed column
+row of its type, and the key comparison runs in Arrow. On a library of 8.8 million chunks,
+the first open takes about 35 s and about 2.3 GiB of peak memory, with the full-text,
+vector and bitmap indexes kept. An older lilbee then fails on the renamed column
 (`KeyError: 'filename'`) in every command that reads the index, and changes nothing.
 `lilbee rebuild` of the older version works and starts the library again.
 
