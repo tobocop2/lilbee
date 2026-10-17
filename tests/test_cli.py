@@ -2214,6 +2214,20 @@ class TestRemove:
         assert "Removed" in result.output
         assert "test.pdf" in result.output
 
+    @pytest.mark.parametrize("flags", [[], ["--json"]], ids=["text", "json"])
+    def test_remove_where_the_library_cannot_lock_files_exits_1(self, mock_svc, flags):
+        from lilbee.runtime.lock import LockingUnsupportedError
+
+        refused = "/data is on a filesystem that does not support file locking."
+        mock_svc.store.get_sources.return_value = [{"filename": "a.pdf"}]
+        mock_svc.store.remove_documents.side_effect = LockingUnsupportedError(refused)
+
+        result = runner.invoke(app, [*flags, "remove", "a.pdf"])
+
+        assert result.exit_code == 1
+        assert "does not support file locking" in result.output
+        assert "Removed" not in result.output
+
     def test_remove_nonexistent_source(self, mock_svc):
         from lilbee.data.store import RemoveResult
 
