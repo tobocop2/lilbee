@@ -3178,6 +3178,30 @@ def test_preload_serializes_roles_sharing_a_device(monkeypatch) -> None:
     assert order == ["embed", "chat"]
 
 
+def test_preload_starts_chat_only_after_the_card_mate_finished_loading(monkeypatch) -> None:
+    # The engine's fit reads free memory at load, so chat must not start loading
+    # while embed still allocates on the same card.
+    events: list[str] = []
+    chat, embed = _fake_client(), _fake_client()
+
+    def _embed(*_a, **_k):
+        events.append("embed-start")
+        time.sleep(0.05)
+        events.append("embed-ready")
+        return [[0.1]]
+
+    embed.embed.side_effect = _embed
+    chat.chat.side_effect = lambda *a, **k: (events.append("chat-start"), MagicMock())[1]
+    p = _provider_with_clients({WorkerRole.CHAT: [chat], WorkerRole.EMBED: [embed]})
+    p._launches = {
+        SwapGroup.CHAT: (_pinned_launch(WorkerRole.CHAT, "0"),),
+        SwapGroup.EMBED: (_pinned_launch(WorkerRole.EMBED, "0"),),
+    }
+    monkeypatch.setattr(p, "_prewarm_chat_weights", lambda: None)
+    p._preload_roles()
+    assert events == ["embed-start", "embed-ready", "chat-start"]
+
+
 def test_preload_chain_gives_every_role_its_warm_attempt(monkeypatch) -> None:
     # An unexpected error warming one chain role (a listener blowing up) must
     # not rob the roles behind it of their warm; it surfaces after the chain.
