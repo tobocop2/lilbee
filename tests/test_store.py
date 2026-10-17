@@ -5414,6 +5414,7 @@ class TestOpenTimeMigration:
         from lilbee.data.store.core import _paths_missing_from
 
         keys = ["a.md", "a.md", "", "it's.md", "日本/文書.md", "held.md", "wiki/p.md", "b.md"]
+        keys += ["wiki/p.md", "wiki/p.md"]
         held = ["a.md", "held.md", "c.md", ""]
         db = lancedb.connect(str(tmp_path))
         table = db.create_table("t", pa.table({"source": pa.array(keys, key_type)}))
@@ -5432,6 +5433,11 @@ class TestOpenTimeMigration:
         ]
         tables[PAGE_TEXTS_TABLE] = pa.Table.from_pylist(
             tables[PAGE_TEXTS_TABLE].to_pylist() + pages
+        )
+        wiki = tables[CHUNKS_TABLE].to_pylist()[-1]
+        chunks = [{**wiki, "chunk_index": number} for number in range(1, 3)]
+        tables[CHUNKS_TABLE] = pa.Table.from_pylist(
+            tables[CHUNKS_TABLE].to_pylist() + chunks, schema=tables[CHUNKS_TABLE].schema
         )
         store = _open_after(test_config, tables)
 
