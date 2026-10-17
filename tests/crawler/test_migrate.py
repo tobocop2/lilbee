@@ -311,3 +311,46 @@ def test_a_page_that_stays_keeps_a_key_no_later_move_reads_as_another_page(store
     }
     assert _moved(store, meta) == meta
     assert move_saved_pages(store) == meta
+
+
+def test_a_page_with_no_file_never_takes_the_file_of_another_page_at_its_name(store: MagicMock):
+    # An earlier rule saved /t/x~<hash of /t/x>.md as written: at the name of /t/x.
+    name = url_to_filename(_PAGE)
+    other = f"https://example.com/t/{name.rpartition('/')[2]}"
+    _write(name, "# Other")
+    meta = {
+        _PAGE: CrawlMeta(_EARLIER, "gone", "2"),
+        other: CrawlMeta(name, content_hash("# Other"), "1"),
+    }
+    other_name = url_to_filename(other)
+    assert _moved(store, meta) == {other: CrawlMeta(other_name, content_hash("# Other"), "1")}
+    assert (_web() / other_name).read_text(encoding="utf-8") == "# Other"
+    assert not (_web() / name).exists()
+
+
+def test_a_stale_entry_never_claims_the_file_a_cut_move_put_at_its_name(
+    store: MagicMock, monkeypatch: pytest.MonkeyPatch
+):
+    name = url_to_filename(_PAGE)
+    stale = "https://example.com/t/stale"
+    _write(_EARLIER, "# Page")
+    save_crawl_metadata(
+        {
+            _PAGE: CrawlMeta(_EARLIER, content_hash("# Page"), "t"),
+            stale: CrawlMeta(name, "gone", "t"),
+        }
+    )
+    writes: list[dict[str, CrawlMeta]] = []
+
+    def cut_after_the_first(meta: dict[str, CrawlMeta]) -> None:
+        if writes:
+            raise OSError(28, "No space left on device")
+        writes.append(meta)
+        save_crawl_metadata(meta)
+
+    monkeypatch.setattr("lilbee.crawler.save.save_crawl_metadata", cut_after_the_first)
+    with pytest.raises(OSError, match="No space left"):
+        move_saved_pages(store)
+    monkeypatch.undo()
+    assert move_saved_pages(store) == {_PAGE: CrawlMeta(name, content_hash("# Page"), "t")}
+    assert (_web() / name).read_text(encoding="utf-8") == "# Page"
