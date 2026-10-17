@@ -129,6 +129,9 @@ ROBOTS_UNREACHABLE_MESSAGE = (
     "The site's robots.txt could not be read ({reason}), so no page of the site is crawled. "
     "Set crawl_respect_robots_txt to false to crawl it."
 )
+# The crawlberg 1.11.1 error codes of a request that never reached the site.
+_NO_ANSWER_CODES = ("timeout: ", "connection: ", "dns: ", "ssl: ")
+SITE_NO_ANSWER_MESSAGE = "The site did not answer ({reason})."
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 # The headers a browser sends with a page request, which crawlberg's HTTP client does not send.
 # Browser mode sends none: crawlberg adds custom headers to Chrome's requests too.
@@ -389,7 +392,7 @@ def _error_text(error: str) -> str:
     """crawlberg's *error* for a page, in lilbee's words when robots.txt refused the page.
 
     A robots.txt that could not be read because the SSRF policy refuses its address is
-    that SSRF refusal.
+    that SSRF refusal, and one the site never answered is a site that did not answer.
     """
     # crawlberg's error event has no code for a robots.txt refusal; only its text tells it.
     if error.startswith(_ROBOTS_DISALLOWED_START):
@@ -399,6 +402,8 @@ def _error_text(error: str) -> str:
     reason = error.removeprefix(_ROBOTS_UNREACHABLE_START)
     if reason.startswith(_SSRF_ERROR_CODE):
         return reason
+    if reason.startswith(_NO_ANSWER_CODES):
+        return SITE_NO_ANSWER_MESSAGE.format(reason=reason)
     return ROBOTS_UNREACHABLE_MESSAGE.format(reason=reason)
 
 
