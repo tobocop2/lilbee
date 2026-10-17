@@ -1009,14 +1009,20 @@ Lifetime is kernel-refcounted membership: each process holds a user lock the
 OS releases on any death. The engine belongs to that set of users, not to the
 process that built it: it ends when no user lock and no keep-warm opt-in is
 left, judged under the build lock. The last clean exit applies that rule
-itself. For deaths with no exit hook, every build starts one engine reaper per
-engine dir (`providers/fleet/engine_reaper.py`, a detached `python -m`
-process holding `engine-reaper.lock`), which polls the user locks once a
-second and applies the same rule. On a filesystem without kernel-arbitrated
-locks the users cannot be counted, so the engine is bound to its builder
-instead (PDEATHSIG, a kill-on-close job object, or a death pipe).
-`keep_engine_warm` opts the engine into outliving lilbee; the idle TTL
-(`engine_idle_ttl_minutes`, default five minutes) applies in every mode;
+itself. For deaths with no exit hook, one engine reaper per engine dir
+(`providers/fleet/engine_reaper.py`, a detached `python -m` process holding
+`engine-reaper.lock`) polls the user locks once a second and applies the same
+rule. Every build and every bind makes sure a reaper holds that lock, starting
+one when none does, so a reaper that died is replaced by the next user. A
+build spawns the engine unbound only after its reaper holds the lock; when no
+reaper reports running, the engine is bound to its builder. On a filesystem
+without kernel-arbitrated locks the users cannot be counted, so the engine is
+bound to its builder (PDEATHSIG, a kill-on-close job object, or a death pipe).
+`keep_engine_warm` opts the engine into outliving lilbee: it is spawned
+detached, and no reaper watches it. The idle TTL (`engine_idle_ttl_minutes`,
+default five minutes) applies in every mode. Only an engine bound to its
+builder takes the TUI's and a bulk ingest's no-unload hold, because llama-swap
+fixes the TTL at launch and a shared engine outlives the holder. The command
 `lilbee engine stop` frees everything now, whoever started it. Reaping never
 disagrees with binding: an engine answering on its proxy is spared, anything
 else is stopped through its state record.
@@ -1043,10 +1049,12 @@ flowchart TD
 ```
 
 A SIGKILLed last user cannot run its exit hook, so the reaper stops the
-engine within about a second of the death. The only processes that can
-outlive a session are the engine's own and its reaper, either because another
-lilbee still uses them or because the user opted into warm. The reaper exits
-with the engine.
+engine within about a second of the death. A reaper killed while its engine
+serves is replaced at the next bind; if every user then dies before any user
+binds again, the engine lingers until the next lilbee run cleans it. The only
+processes that can outlive a session are the engine's own, because another
+lilbee still uses them or because the user opted into warm, and the reaper of
+a shared engine. The reaper exits with the engine.
 
 ### Chat context-window management
 

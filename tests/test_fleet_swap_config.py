@@ -248,57 +248,65 @@ class TestWarmTtlSeconds:
         # the weights: it outlives every holder, so its idle unload stays armed.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds() == 900
+        assert _warm_ttl_seconds(EngineLifetime.DETACHED) == 900
 
     def test_keep_engine_warm_ignores_the_session_hold(self, monkeypatch) -> None:
         # A session hold pins weights only in an engine bound to that session. A
         # keep-warm engine survives the session, so the hold must not follow it.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds(hold_warm_for_session=True) == 900
+        assert _warm_ttl_seconds(EngineLifetime.DETACHED, hold_warm_for_session=True) == 900
 
     def test_keep_engine_warm_with_zero_ttl_keeps_weights_loaded(self, monkeypatch) -> None:
         # The user's explicit 0 is the only way a keep-warm engine pins weights.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", True)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
-        assert _warm_ttl_seconds(hold_warm_for_session=True) == 0
+        assert _warm_ttl_seconds(EngineLifetime.DETACHED, hold_warm_for_session=True) == 0
 
     def test_interactive_session_pins_weights_resident(self, monkeypatch) -> None:
         # A provider serving an interactive session (the TUI) holds its bound
         # engine warm for its whole lifetime, regardless of the idle window.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds(hold_warm_for_session=True) == 0
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER, hold_warm_for_session=True) == 0
         # A provider not serving one still unloads on the idle window.
-        assert _warm_ttl_seconds() == 900
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 900
+        # An engine shared by its users outlives the session, so the hold is off.
+        assert _warm_ttl_seconds(EngineLifetime.USERS, hold_warm_for_session=True) == 900
 
     def test_on_demand_unloads_after_idle_ttl(self, monkeypatch) -> None:
         # No interactive session and no keep_engine_warm: the fleet releases its
         # weights after the idle window.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
-        assert _warm_ttl_seconds() == 900
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 900
 
     def test_on_demand_with_zero_ttl_keeps_weights_until_teardown(self, monkeypatch) -> None:
         # 0 disables the idle unload even for an on-demand fleet.
         from lilbee.core.config import cfg
         from lilbee.providers.fleet.provider import _warm_ttl_seconds
+        from lilbee.providers.fleet.swap_manager import EngineLifetime
 
         monkeypatch.setattr(cfg, "keep_engine_warm", False)
         monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 0)
-        assert _warm_ttl_seconds() == 0
+        assert _warm_ttl_seconds(EngineLifetime.BUILDER) == 0

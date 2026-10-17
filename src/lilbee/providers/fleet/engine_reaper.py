@@ -24,6 +24,9 @@ from lilbee.runtime.engine_lock import (
 log = logging.getLogger(__name__)
 
 _POLL_S = 1.0
+# A starting user probes the reaper lock for an instant; a claim that waits this
+# long outlasts any probe, while a live reaper holds the lock for its whole life.
+_CLAIM_TIMEOUT_S = 2.0
 
 
 def _watch_is_over(engine_dir: Path, reaper_lock: FileLock) -> bool:
@@ -62,7 +65,7 @@ def watch(engine_dir: Path, reaper_lock: FileLock, *, poll_s: float = _POLL_S) -
 def main() -> None:
     """Watch the engine dir named in argv, unless another reaper already does."""
     engine_dir = Path(sys.argv[1])
-    reaper_lock = try_hold_reaper_lock(engine_dir)
+    reaper_lock = try_hold_reaper_lock(engine_dir, timeout=_CLAIM_TIMEOUT_S)
     if reaper_lock is not None:
         watch(engine_dir, reaper_lock)
 

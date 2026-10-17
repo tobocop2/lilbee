@@ -330,10 +330,11 @@ def mark_interactive_session() -> None:
 
     The TUI owns the process for its whole lifetime, so an engine bound to it
     keeps its weights resident rather than idle-unloading under a user who is
-    still in the app; closing lilbee releases it. A keep-warm engine outlives the
-    session and keeps its idle window instead. Called by the interactive entry point
-    before anything touches ``get_services``, so the provider is constructed with
-    that intent; a one-shot CLI or the MCP server never calls it.
+    still in the app; closing lilbee releases it. An engine that outlives the
+    session (shared with its other users, or kept warm) keeps its idle window
+    instead. Called by the interactive entry point before anything touches
+    ``get_services``, so the provider is constructed with that intent; a
+    one-shot CLI or the MCP server never calls it.
     """
     _state.interactive = True
 

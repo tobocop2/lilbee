@@ -35,6 +35,19 @@ _GB = 1024**3
 _real_plan_all_launches = planning_mod.plan_all_launches
 
 
+@pytest.fixture(autouse=True)
+def reaper_ensures(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
+    """Record each bind's reaper check; a real one would launch a reaper process."""
+    asked: list[Path] = []
+
+    def _ensure(engine_dir: Path) -> bool:
+        asked.append(engine_dir)
+        return True
+
+    monkeypatch.setattr(prov_mod, "ensure_engine_reaper", _ensure)
+    return asked
+
+
 def _fake_client(in_flight: int = 0) -> MagicMock:
     client = MagicMock()
     client.in_flight = in_flight
@@ -83,6 +96,7 @@ class _FakeSwap:
     def start(self, launches: list, **kwargs: object) -> None:
         self.started.append(launches)
         self.lifetime = kwargs.get("lifetime")
+        self.ttl_seconds = kwargs.get("ttl_seconds")
         self.running = True
 
     def endpoint(self) -> str:
@@ -2332,18 +2346,41 @@ def test_chat_starts_swap_on_first_use(monkeypatch) -> None:
     assert swap.lifetime is EngineLifetime.USERS
 
 
-@pytest.mark.parametrize("keep_warm", [False, True])
-def test_a_build_on_kernel_locks_hands_the_engine_to_its_users(
-    monkeypatch, tmp_path: Path, keep_warm: bool
+@pytest.mark.parametrize(
+    ("keep_warm", "expected"),
+    [(False, EngineLifetime.USERS), (True, EngineLifetime.DETACHED)],
+)
+def test_a_build_on_kernel_locks_hands_the_engine_to_its_users_unless_kept_warm(
+    monkeypatch, tmp_path: Path, keep_warm: bool, expected: EngineLifetime
 ) -> None:
-    """With kernel-arbitrated user locks the reaper ends the engine, keep-warm or not."""
+    """The reaper ends a shared engine; a keep-warm engine is detached with no reaper."""
     monkeypatch.setattr(cfg, "keep_engine_warm", keep_warm)
     swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
 
     FleetProvider()._ensure_fleet()
 
     assert swap.started
-    assert swap.lifetime is EngineLifetime.USERS
+    assert swap.lifetime is expected
+
+
+@pytest.mark.parametrize(
+    ("kernel_locks", "expected_ttl"),
+    [(True, 900), (False, 0)],
+)
+def test_a_session_hold_pins_weights_only_in_an_engine_bound_to_the_session(
+    monkeypatch, tmp_path: Path, kernel_locks: bool, expected_ttl: int
+) -> None:
+    """A shared engine outlives the TUI, so its ttl is the idle window, not the TUI's 0."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: kernel_locks)
+    swap = _install_engine(monkeypatch, tmp_path, launches=[_fake_launch(WorkerRole.CHAT)])
+    monkeypatch.setattr(prov_mod, "private_engine_dir", lambda _root: tmp_path / "private")
+
+    FleetProvider(hold_warm=True)._ensure_fleet()
+
+    assert swap.started
+    assert swap.ttl_seconds == expected_ttl
 
 
 @pytest.mark.parametrize(
@@ -2385,6 +2422,31 @@ def test_a_reload_restart_hands_the_engine_to_its_users(monkeypatch, tmp_path: P
 
     assert len(fresh.started) == 1
     assert fresh.lifetime is EngineLifetime.USERS
+
+
+def test_a_reload_restart_of_a_session_engine_takes_no_hold_when_shared(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """A reload restarts the group with the same ttl rule as a fresh build."""
+    monkeypatch.setattr(cfg, "keep_engine_warm", False)
+    monkeypatch.setattr(cfg, "engine_idle_ttl_minutes", 15)
+    monkeypatch.setattr(prov_mod, "machine_engine_dir", lambda: tmp_path)
+    fresh = _FakeSwap()
+    monkeypatch.setattr(prov_mod, "SwapManager", lambda _d, _g: fresh)
+    monkeypatch.setattr(prov_mod, "reap_stale", lambda _d, **_kw: None)
+    monkeypatch.setattr(prov_mod, "LlamaServerClient", lambda _e, _m, **_kw: _fake_client())
+    monkeypatch.setattr(
+        planning_mod,
+        "plan_all_launches",
+        lambda: planning_mod.FleetPlan((_fake_launch(WorkerRole.CHAT),)),
+    )
+    p = FleetProvider(hold_warm=True)
+    p._swaps = {SwapGroup.CHAT: _FakeSwap()}
+    p._role_group = {WorkerRole.CHAT: SwapGroup.CHAT}
+
+    p._reload_pass()
+
+    assert fresh.ttl_seconds == 900
 
 
 def test_concurrent_first_requests_start_swap_once(monkeypatch) -> None:
@@ -4774,6 +4836,61 @@ def test_ladder_binds_to_a_matching_machine_engine(monkeypatch, tmp_path: Path) 
     assert list((machine / "engine-users").glob("*.lock"))
 
 
+def test_a_bind_makes_sure_a_reaper_watches_the_engine(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """A reaper that died is replaced by the next user that binds."""
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+
+    assert FleetProvider()._ensure_fleet() is True
+
+    assert len(swap.binds) == 1
+    assert reaper_ensures == [machine]
+
+
+def test_a_bind_to_a_kept_warm_engine_starts_no_reaper(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """A kept-warm engine outlives its users, so a reaper beside it would never stop it."""
+    from lilbee.runtime.engine_lock import request_keep_warm
+
+    swap, machine, _built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
+    monkeypatch.setattr(
+        prov_mod, "_configured_model_for", lambda role: "m-chat" if role is WorkerRole.CHAT else ""
+    )
+    _engine_state_file(machine, "chat", pin="pin-a", model="m-chat", role="chat")
+    request_keep_warm(machine, tmp_path / "other-install")
+
+    assert FleetProvider()._ensure_fleet() is True
+
+    assert len(swap.binds) == 1
+    assert reaper_ensures == []
+
+
+def test_a_bind_without_kernel_locks_starts_no_reaper(
+    monkeypatch, tmp_path: Path, reaper_ensures: list[Path]
+) -> None:
+    """Without kernel locks no user is counted, so a reaper would stop an engine in use."""
+    monkeypatch.setattr(prov_mod, "kernel_arbitrates_locks", lambda _d: False)
+
+    prov_mod._watch_bound_engine(tmp_path)
+
+    assert reaper_ensures == []
+
+
+def test_a_bind_reports_a_reaper_that_does_not_start(
+    monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(prov_mod, "ensure_engine_reaper", lambda _d: False)
+    with caplog.at_level(logging.WARNING, logger=prov_mod.__name__):
+        prov_mod._watch_bound_engine(tmp_path)
+    assert "No reaper watches the engine" in caplog.text
+
+
 def test_ladder_builds_into_the_machine_dir_when_slot_is_empty(monkeypatch, tmp_path: Path) -> None:
     swap, machine, built = _install_ladder(monkeypatch, tmp_path, launches=[_chat_launch()])
     p = FleetProvider()
@@ -5040,7 +5157,7 @@ def test_a_prior_runs_keep_warm_is_reclaimed_when_the_setting_goes_off(
 def test_ttl_applies_with_warm_off(monkeypatch) -> None:
     monkeypatch.setattr(prov_mod.cfg, "keep_engine_warm", False, raising=False)
     monkeypatch.setattr(prov_mod.cfg, "engine_idle_ttl_minutes", 7, raising=False)
-    assert prov_mod._warm_ttl_seconds() == 420
+    assert prov_mod._warm_ttl_seconds(EngineLifetime.BUILDER) == 420
 
 
 def test_shutdown_latches_regardless_of_warm(monkeypatch, tmp_path: Path) -> None:
