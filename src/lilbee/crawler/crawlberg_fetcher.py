@@ -129,9 +129,10 @@ ROBOTS_UNREACHABLE_MESSAGE = (
     "The site's robots.txt could not be read ({reason}), so no page of the site is crawled. "
     "Set crawl_respect_robots_txt to false to crawl it."
 )
-# The crawlberg 1.11.1 error codes of a request the site's server never answered. A TLS
-# failure is not one: the server answered the handshake.
-_NO_ANSWER_STARTS = ("timeout: ", "connection: ", "dns: ")
+# How crawlberg 1.11.1 starts the error of a request the site's server never answered: the code,
+# then the tag of a failure with no response, which an HTTP 408 does not carry. A TLS failure is
+# not one: the server answered the handshake.
+_NO_ANSWER_STARTS = ("timeout: [network:", "connection: [network:", "dns: [network:")
 SITE_NO_ANSWER_MESSAGE = "The site did not answer ({reason})."
 _BROWSER_MODES = {CrawlRenderMode.HTTP: "never", CrawlRenderMode.BROWSER: "always"}
 # The headers a browser sends with a page request, which crawlberg's HTTP client does not send.
